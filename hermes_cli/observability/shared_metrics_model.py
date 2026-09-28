@@ -165,6 +165,7 @@ def record_tool_call_quality(agent: Any, tool_calls: Iterable[Any], repaired_ids
 
         if not tool_calls or not enabled():
             return
+        from .shared_metrics_signals import tool_unavailable_fields
         route = model_route(getattr(agent, "provider", None), getattr(agent, "model", None))
         valid_names = getattr(agent, "valid_tool_names", None) or frozenset()
         required = _required_params(getattr(agent, "tools", None))
@@ -175,6 +176,8 @@ def record_tool_call_quality(agent: Any, tool_calls: Iterable[Any], repaired_ids
                 repaired=id(tc) in repaired_ids or getattr(fn, "args_repaired", False) is True,
             )
             record_process_mark(contract.MODEL_TOOL_QUALITY_MARK, {**route, "call_role": "primary", "issue": issue})
+            if (unavailable := tool_unavailable_fields(agent, fn.name, issue, route)) is not None:
+                record_process_mark(contract.TOOL_UNAVAILABLE_MARK, unavailable)
     except Exception:
         logger.debug("Shared-metrics tool-call quality not recorded", exc_info=True)
 

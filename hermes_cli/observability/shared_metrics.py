@@ -19,6 +19,7 @@ from utils import atomic_json_write
 from .shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
     COUNTER_METRICS,
+    FEATURE_ADOPTION_METRIC,
     INSTALL_SNAPSHOT_METRIC,
     MILESTONE_METRIC,
     MODEL_ROUTE_METRIC,
@@ -36,6 +37,8 @@ _LOCAL_HISTORY_RETENTION_DAYS = 30
 _ACTIVE_INSTALL_STATE_KEY = "client_active_recorded_at"
 _INSTALL_SNAPSHOT_STATE_KEY = "install_snapshot_recorded_at"
 _MILESTONE_STATE_PREFIX = "milestone:"
+_FEATURE_STATE_PREFIX = "feature:"
+_DAILY_ONCE_STATE_PREFIX = "daily_once:"
 _ACTIVE_INSTALL_INTERVAL = timedelta(hours=24)
 # Column order of the client resource in every counter_aggregates statement.
 _RESOURCE_COLUMNS = ("hermes_version", "os_family", "architecture", "install_method")
@@ -295,27 +298,65 @@ class SharedMetricsStore:
             )
 
     def recorded_milestones(self) -> frozenset[str]:
-        with self._connection() as connection:
-            rows = connection.execute(
-                "SELECT key FROM telemetry_state WHERE key LIKE ?", (f"{_MILESTONE_STATE_PREFIX}%",)
-            ).fetchall()
-        return frozenset(row["key"][len(_MILESTONE_STATE_PREFIX):] for row in rows)
+        return self._latched(_MILESTONE_STATE_PREFIX)
 
     def record_milestone(self, milestone: str, install_age_bucket: str, resource: dict[str, str]) -> bool:
         """Record an install milestone at most once, ever (compare-and-set across processes)."""
         dimensions = {"install_age_bucket": install_age_bucket, "milestone": milestone}
-        self._validate_counter(MILESTONE_METRIC, dimensions, resource)
+        return self._record_once_ever(f"{_MILESTONE_STATE_PREFIX}{milestone}", MILESTONE_METRIC, dimensions, resource)
+
+    # ---- v5 signals ----
+    def recorded_features(self) -> frozenset[str]:
+        return self._latched(_FEATURE_STATE_PREFIX)
+
+    def record_feature_adoption(self, feature: str, days_bucket: str, resource: dict[str, str]) -> bool:
+        """Record a feature's first use at most once per install, ever (same latch as milestones)."""
+        dimensions = {"days_since_install_bucket": days_bucket, "feature": feature}
+        return self._record_once_ever(f"{_FEATURE_STATE_PREFIX}{feature}", FEATURE_ADOPTION_METRIC, dimensions, resource)
+
+    def record_counter_once_per_day(self, metric_name: str, dimensions: dict[str, str], resource: dict[str, str]) -> bool:
+        """Count at most once per UTC day per dimension set, whatever the surface (``surface`` is
+        attribution of the first one that day). One state row per dimension set, overwritten daily."""
+        self._validate_counter(metric_name, dimensions, resource)
+        now = _utc_now()
+        today = now.date().isoformat()
+        key = f"{_DAILY_ONCE_STATE_PREFIX}{metric_name}:" + _compact_json(
+            {k: v for k, v in dimensions.items() if k != "surface"})
+        with self._write() as connection:
+            changed = connection.execute(
+                "INSERT INTO telemetry_state(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE"
+                " SET value = excluded.value WHERE telemetry_state.value != excluded.value",
+                (key, today),
+            ).rowcount
+            if not changed:
+                return False
+            self._install_id(connection)
+            self._record_counter_in_transaction(connection, metric_name, dimensions, resource, today)
+        return True
+    # ---- end v5 signals ----
+
+    def _latched(self, prefix: str) -> frozenset[str]:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT key FROM telemetry_state WHERE key LIKE ?", (f"{prefix}%",)
+            ).fetchall()
+        return frozenset(row["key"][len(prefix):] for row in rows)
+
+    def _record_once_ever(
+        self, state_key: str, metric_name: str, dimensions: dict[str, str], resource: dict[str, str],
+    ) -> bool:
+        self._validate_counter(metric_name, dimensions, resource)
         now = _utc_now()
         with self._write() as connection:
             inserted = connection.execute(
                 "INSERT INTO telemetry_state(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING",
-                (f"{_MILESTONE_STATE_PREFIX}{milestone}", _isoformat(now)),
+                (state_key, _isoformat(now)),
             ).rowcount
             if not inserted:
                 return False
             self._install_id(connection)
             self._record_counter_in_transaction(
-                connection, MILESTONE_METRIC, dimensions, resource, now.date().isoformat()
+                connection, metric_name, dimensions, resource, now.date().isoformat()
             )
         return True
 

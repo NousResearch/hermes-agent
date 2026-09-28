@@ -255,6 +255,18 @@
           },
           {
             "$ref": "#/$defs/desktop_dislike_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_unavailable_counter"
+          },
+          {
+            "$ref": "#/$defs/provider_setup_counter"
+          },
+          {
+            "$ref": "#/$defs/feature_adoption_counter"
+          },
+          {
+            "$ref": "#/$defs/feature_disabled_counter"
           }
         ]
       }
@@ -4108,6 +4120,342 @@
         "value": {
           "type": "integer",
           "minimum": 1
+        }
+      }
+    },
+    "tool_unavailable_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_unavailable.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "provider",
+            "tool_name"
+          ],
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "tool_name": {
+              "enum": [
+                "annotate_preview",
+                "browser_back",
+                "browser_cdp",
+                "browser_click",
+                "browser_console",
+                "browser_dialog",
+                "browser_exec",
+                "browser_get_images",
+                "browser_navigate",
+                "browser_press",
+                "browser_scroll",
+                "browser_snapshot",
+                "browser_type",
+                "browser_vault_enter_code",
+                "browser_vault_fill",
+                "browser_vault_list",
+                "browser_vault_save_login",
+                "browser_vault_unlock",
+                "browser_vision",
+                "clarify",
+                "close_terminal",
+                "computer_use",
+                "cronjob_manage",
+                "delegate_task",
+                "desktop_preview",
+                "desktop_project",
+                "discord",
+                "discord_admin",
+                "drive_preview",
+                "execute_code",
+                "feishu_doc_read",
+                "feishu_drive_add_comment",
+                "feishu_drive_list_comment_replies",
+                "feishu_drive_list_comments",
+                "feishu_drive_reply_comment",
+                "focus_pane",
+                "gui_tour",
+                "ha_call_service",
+                "ha_get_state",
+                "ha_list_entities",
+                "ha_list_services",
+                "image_generate",
+                "kanban_attach",
+                "kanban_attach_url",
+                "kanban_attachments",
+                "kanban_block",
+                "kanban_comment",
+                "kanban_complete",
+                "kanban_create",
+                "kanban_heartbeat",
+                "kanban_link",
+                "kanban_list",
+                "kanban_request_changes",
+                "kanban_request_review",
+                "kanban_show",
+                "kanban_unblock",
+                "manage_catalog",
+                "manage_connections",
+                "memory",
+                "patch",
+                "process_manage",
+                "react_to_message",
+                "read_file",
+                "read_terminal",
+                "read_window_below",
+                "search_files",
+                "session_search",
+                "show_tip",
+                "skill_manage",
+                "skill_view",
+                "skills_list",
+                "spotify_albums",
+                "spotify_devices",
+                "spotify_library",
+                "spotify_playback",
+                "spotify_playlists",
+                "spotify_queue",
+                "spotify_search",
+                "terminal",
+                "text_to_speech",
+                "todo_list",
+                "video_analyze",
+                "video_generate",
+                "vision_analyze",
+                "web_extract",
+                "web_search",
+                "write_file",
+                "x_search",
+                "xai_video_edit",
+                "xai_video_extend",
+                "yb_query_group_info",
+                "yb_query_group_members",
+                "yb_search_sticker",
+                "yb_send_dm",
+                "yb_send_sticker"
+              ]
+            }
+          },
+          "description": "A model called a tool Hermes ships that this session did not enable (background reviews and delegated children excluded)."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "provider_setup_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.provider_setup.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "failure_class",
+            "provider",
+            "surface"
+          ],
+          "properties": {
+            "event": {
+              "enum": [
+                "abandoned",
+                "completed",
+                "failed",
+                "started"
+              ]
+            },
+            "failure_class": {
+              "enum": [
+                "auth",
+                "cancelled",
+                "network",
+                "no_models",
+                "none",
+                "other"
+              ]
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "surface": {
+              "enum": [
+                "cli_model",
+                "cli_setup",
+                "dashboard",
+                "desktop",
+                "tui"
+              ]
+            }
+          },
+          "description": "One per provider-setup flow transition; failure_class is none unless event=failed. Custom endpoints read custom."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "feature_adoption_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.feature_adoption.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "days_since_install_bucket",
+            "feature"
+          ],
+          "properties": {
+            "days_since_install_bucket": {
+              "enum": [
+                "1d_to_7d",
+                "30d_to_90d",
+                "7d_to_30d",
+                "gte_90d",
+                "same_day",
+                "unknown"
+              ]
+            },
+            "feature": {
+              "enum": [
+                "bot_mode",
+                "browser",
+                "cron",
+                "curator",
+                "delegation",
+                "desktop",
+                "gateway_platform",
+                "kanban",
+                "mcp",
+                "memory",
+                "plugins",
+                "projects",
+                "skills_created",
+                "tui",
+                "voice"
+              ]
+            }
+          },
+          "description": "Emitted once per feature per install, at its first real use; the bucket is the owning profile's age then."
+        },
+        "value": {
+          "const": 1
+        }
+      }
+    },
+    "feature_disabled_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.feature_disabled.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "kind",
+            "name",
+            "surface"
+          ],
+          "properties": {
+            "event": {
+              "enum": [
+                "disabled",
+                "re_enabled"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "compression",
+                "curator",
+                "memory",
+                "platform",
+                "plugin",
+                "setting",
+                "skill",
+                "toolset"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "surface": {
+              "enum": [
+                "cli_config",
+                "cli_slash",
+                "cli_tools",
+                "dashboard",
+                "desktop",
+                "tui"
+              ]
+            }
+          },
+          "description": "A user turned off something Hermes ships on (or removed a shipped skill), or turned it back on. name is a shipped toolset / bundled or catalog skill or plugin / DEFAULT_CONFIG key path (never a value), else custom. At most once per (kind, name, event) per day."
+        },
+        "value": {
+          "const": 1
         }
       }
     }

@@ -381,8 +381,10 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     _info("Choose how to connect to your main chat model.",
           f"   Guide: {_DOCS_BASE}/integrations/providers", None)
     from hermes_cli.main import select_provider_and_model
+    from hermes_cli.observability.shared_metrics_setup import provider_setup_surface
     try:
-        select_provider_and_model()
+        with provider_setup_surface("cli_setup"):
+            select_provider_and_model()
     except (SystemExit, KeyboardInterrupt):
         _info(None, "Provider setup skipped.")
     except Exception as exc:

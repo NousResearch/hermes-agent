@@ -335,11 +335,17 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     if is_redacted_credential_preview(body.value):
         raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
     with _env_write_errors("PUT /api/env failed"):
-        from hermes_cli.credential_lifecycle import save_provider_env_credential
+        return await scoped_to_thread(body.profile or profile, lambda: _save_env_credential(body.key, body.value))
 
-        return await scoped_to_thread(
-            body.profile or profile, lambda: save_provider_env_credential(body.key, body.value)
-        )
+
+def _save_env_credential(key: str, value: str) -> Any:
+    """Save under the request's profile scope; a provider API key also counts as a provider setup."""
+    from hermes_cli.credential_lifecycle import save_provider_env_credential
+    from hermes_cli.observability.shared_metrics_setup import record_api_key_saved, web_setup_surface
+
+    result = save_provider_env_credential(key, value)
+    record_api_key_saved(key, web_setup_surface())
+    return result
 
 
 # Live credential probes keyed by env var: (url, auth) where auth is "bearer"
@@ -721,9 +727,19 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
             save_config(cfg)
             response = _custom_endpoint_response(cfg)
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+        _record_custom_endpoint_setup(home)
         response["ok"] = True
         response["id"] = endpoint_id
         return response
+
+
+def _record_custom_endpoint_setup(home: Any) -> None:
+    """Counted after the config lock is released (a cold metrics runtime must not stall writers)."""
+    from hermes_cli.observability.shared_metrics_setup import record_provider_setup_done, web_setup_surface
+
+    record_provider_setup_done(web_setup_surface(), "custom", hermes_home=home, background=True)
 
 
 @router.post("/api/providers/custom-endpoints/{endpoint_id}/activate")

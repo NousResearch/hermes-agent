@@ -12,11 +12,14 @@ from hermes_cli.config import detect_install_method
 from hermes_constants import get_hermes_home
 
 from . import shared_metrics_engagement as engagement
+from . import shared_metrics_signals as signals
 from .shared_metrics import SharedMetricsStore
 from .shared_metrics_fields import milestones_for
 from .shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
     COMMIT_TICKET_KEY,
+    FEATURE_DISABLED_METRIC,
+    FEATURE_USED_MARK,
     INSTALL_SNAPSHOT_METRIC,
     MODEL_ROUTE_METRIC,
     TOOL_CALL_METRIC,
@@ -48,6 +51,7 @@ _COUNTERS = (
     tool_approval_counter,
     skill_counter,
     decision_counter,
+    signals.feature_used_counter,
 )
 
 
@@ -76,6 +80,7 @@ class SharedMetricsSubscriber:
         self._active = True
         self._lock = threading.RLock()
         self._milestones_done: set[str] = set(store.recorded_milestones())
+        self._features_done: set[str] = set(store.recorded_features())
         self._saved_tickets: dict[str, int] = {}
         # Events arrive on the Relay thread, which carries no profile binding.
         self._hermes_home = get_hermes_home()
@@ -116,6 +121,33 @@ class SharedMetricsSubscriber:
             except Exception:
                 logger.warning("Unable to update the Hermes engagement rollup", exc_info=True)
 
+    def _persist(self, metric_name: str, dimensions: dict, amount: int) -> None:
+        store, resource = self.store, self._client_resource
+        special = {
+            FEATURE_USED_MARK: lambda: None,  # a first-use fact, not a counter row
+            FEATURE_DISABLED_METRIC: lambda: store.record_counter_once_per_day(metric_name, dimensions, resource),
+            CLIENT_ACTIVE_METRIC: lambda: store.record_client_active(resource),
+            INSTALL_SNAPSHOT_METRIC: lambda: store.record_install_snapshot(dimensions, resource),
+        }.get(metric_name)
+        if special is not None:
+            special()
+        else:
+            store.record_counter(metric_name, dimensions, resource, amount)
+
+    def _record_features(self, metric_name: str, dimensions: dict) -> None:
+        """Latch each feature's first real use (once per install, with the owning profile's age)."""
+        reached = [f for f in signals.features_for(metric_name, dimensions) if f not in self._features_done]
+        if not reached:
+            return
+        age = signals.days_since_install_bucket(self._hermes_home)
+        for feature in reached:
+            try:
+                self.store.record_feature_adoption(feature, age, self._client_resource)
+            except Exception:  # the counter row is saved; a later use retries the latch
+                logger.debug("Feature adoption not latched: %s", feature, exc_info=True)
+                continue
+            self._features_done.add(feature)
+
     def take_saved(self, ticket: str) -> int:
         """How many events carrying ``ticket`` settled without a store error (and forget the ticket)."""
         with self._lock:
@@ -138,13 +170,9 @@ class SharedMetricsSubscriber:
                 if not self._active:
                     return
                 try:
-                    if metric_name == CLIENT_ACTIVE_METRIC:
-                        self.store.record_client_active(self._client_resource)
-                    elif metric_name == INSTALL_SNAPSHOT_METRIC:
-                        self.store.record_install_snapshot(dimensions, self._client_resource)
-                    else:
-                        self.store.record_counter(metric_name, dimensions, self._client_resource, amount)
+                    self._persist(metric_name, dimensions, amount)
                     self._record_milestones(metric_name, dimensions)
+                    self._record_features(metric_name, dimensions)
                 except Exception:
                     saved = False
                     logger.warning(

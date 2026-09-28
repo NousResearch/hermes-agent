@@ -188,9 +188,11 @@ def _report_dead_markers(home: Path, own: Path) -> None:
                 record = None
             rows = [(contract.PROCESS_EXIT_MARK, process_exit_fields(record))] if isinstance(record, dict) else []
             settle_claim(claimed, path, emit_saved(rows) == len(rows))
+        from .shared_metrics_setup import report_abandoned_setups
         from .shared_metrics_update import report_pending_updates
 
         report_pending_updates()
+        report_abandoned_setups(home)
     except Exception:
         logger.debug("Dead process markers not reported", exc_info=True)
     finally:

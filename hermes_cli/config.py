@@ -2487,6 +2487,8 @@ def save_config(
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+    from hermes_cli.observability.shared_metrics_disabled import record_config_saved
+    record_config_saved(_raw_for_paths, current_normalized)
 
 
 def load_env() -> Dict[str, str]:
@@ -3514,7 +3516,8 @@ def _exit_invalid(msg: str) -> None:
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
     """Write only the user's raw config back (never the merged defaults)."""
     ensure_hermes_home()
-    atomic_config_write(config_path, user_config)
+    from hermes_cli.observability.shared_metrics_disabled import recording_raw_config_write
+    recording_raw_config_write(config_path, user_config, atomic_config_write)
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:

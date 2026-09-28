@@ -347,6 +347,30 @@ _DAY_MS = 86_400_000
 _VERSION_AGE_THRESHOLDS = ((7 * _DAY_MS, "lt_7d"), (30 * _DAY_MS, "7d_to_30d"), (90 * _DAY_MS, "30d_to_90d"))
 
 
+# ---- v5 signals ----
+TOOL_UNAVAILABLE_MARK = TOOL_UNAVAILABLE_METRIC = "hermes.tool_unavailable.count"
+PROVIDER_SETUP_MARK = PROVIDER_SETUP_METRIC = "hermes.provider_setup.count"
+FEATURE_ADOPTION_METRIC = "hermes.feature_adoption.count"
+# Not a counter: a first-use fact the subscriber turns into at most one adoption row per feature.
+FEATURE_USED_MARK = "hermes.feature.used"
+PROVIDER_SETUP_SURFACES = frozenset({"cli_model", "cli_setup", "dashboard", "desktop", "tui"})
+PROVIDER_SETUP_EVENTS = frozenset({"abandoned", "completed", "failed", "started"})
+PROVIDER_SETUP_FAILURE_CLASSES = frozenset({"auth", "cancelled", "network", "no_models", "none", "other"})
+FEATURES = frozenset({
+    "browser", "bot_mode", "cron", "curator", "delegation", "desktop", "gateway_platform", "kanban", "mcp",
+    "memory", "plugins", "projects", "skills_created", "tui", "voice",
+})
+DAYS_SINCE_INSTALL_BUCKETS = frozenset({"same_day", "1d_to_7d", "7d_to_30d", "30d_to_90d", "gte_90d", "unknown"})
+FEATURE_DISABLED_MARK = FEATURE_DISABLED_METRIC = "hermes.feature_disabled.count"
+FEATURE_DISABLED_KINDS = frozenset({
+    "compression", "curator", "memory", "platform", "plugin", "setting", "skill", "toolset",
+})
+FEATURE_DISABLED_SURFACES = frozenset({"cli_config", "cli_slash", "cli_tools", "dashboard", "desktop", "tui"})
+FEATURE_DISABLED_EVENTS = frozenset({"disabled", "re_enabled"})
+FEATURE_DISABLED_NAME_MAX_LENGTH = 64
+# ---- end v5 signals ----
+
+
 def update_duration_bucket(duration_ms: Any) -> str:
     """Bucket an update (or update stage) wall time; non-numbers count as instant."""
     value = _non_negative_number(duration_ms) or 0
@@ -800,6 +824,17 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "direction": DESKTOP_DISLIKE_DIRECTIONS, "signal": DESKTOP_DISLIKE_SIGNALS, "target": DESKTOP_DISLIKE_TARGET_VALUES,
     },
     # ---- end v5 desktop ----
+    # ---- v5 signals ----
+    TOOL_UNAVAILABLE_METRIC: {"tool_name": BUILTIN_TOOL_NAMES},
+    PROVIDER_SETUP_METRIC: {
+        "event": PROVIDER_SETUP_EVENTS, "failure_class": PROVIDER_SETUP_FAILURE_CLASSES,
+        "surface": PROVIDER_SETUP_SURFACES,
+    },
+    FEATURE_ADOPTION_METRIC: {"days_since_install_bucket": DAYS_SINCE_INSTALL_BUCKETS, "feature": FEATURES},
+    FEATURE_DISABLED_METRIC: {
+        "event": FEATURE_DISABLED_EVENTS, "kind": FEATURE_DISABLED_KINDS, "surface": FEATURE_DISABLED_SURFACES,
+    },
+    # ---- end v5 signals ----
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -836,6 +871,11 @@ _IDENTIFIER_FIELDS: dict[str, dict[str, int]] = {
     # ---- v5 desktop ----
     DESKTOP_DISLIKE_METRIC: {"setting": DESKTOP_SETTING_KEY_MAX_LENGTH},
     # ---- end v5 desktop ----
+    # ---- v5 signals ----
+    TOOL_UNAVAILABLE_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    PROVIDER_SETUP_METRIC: {"provider": PROVIDER_IDENTIFIER_MAX_LENGTH},
+    FEATURE_DISABLED_METRIC: {"name": FEATURE_DISABLED_NAME_MAX_LENGTH},
+    # ---- end v5 signals ----
 }
 # ---- v5 engagement ----
 # Conversation volume on the session row: new fields, so rows recorded before them still package.
@@ -915,6 +955,10 @@ _DECISION_MARK_METRICS = {
     DESKTOP_ONBOARDING_MARK: DESKTOP_ONBOARDING_METRIC, DESKTOP_MODE_USE_MARK: DESKTOP_MODE_USE_METRIC,
     DESKTOP_ACTION_USE_MARK: DESKTOP_ACTION_USE_METRIC, DESKTOP_DISLIKE_MARK: DESKTOP_DISLIKE_METRIC,
     # ---- end v5 desktop ----
+    # ---- v5 signals ----
+    TOOL_UNAVAILABLE_MARK: TOOL_UNAVAILABLE_METRIC, PROVIDER_SETUP_MARK: PROVIDER_SETUP_METRIC,
+    FEATURE_DISABLED_MARK: FEATURE_DISABLED_METRIC,
+    # ---- end v5 signals ----
 }
 
 

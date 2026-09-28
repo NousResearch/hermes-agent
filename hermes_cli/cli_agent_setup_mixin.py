@@ -483,7 +483,9 @@ class CLIAgentSetupMixin:
             return False
         try:
             from hermes_cli.main import select_provider_and_model
-            select_provider_and_model()
+            from hermes_cli.observability.shared_metrics_setup import provider_setup_surface
+            with provider_setup_surface("cli_setup"):
+                select_provider_and_model()
         except (KeyboardInterrupt, EOFError, SystemExit):
             print()
             _cprint("  Setup cancelled. Run 'hermes model' any time.")

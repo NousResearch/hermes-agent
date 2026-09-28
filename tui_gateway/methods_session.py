@@ -383,10 +383,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     composer_override_profile = None
     if session_model_override and _flag(params, "follow_profile_config"):
-        # A composer pick on a Bot Chat must remember the profile model it
-        # diverged from. Without this marker, resume treats the row as an
-        # unmarked profile-following chat and silently falls back to the
-        # profile default instead of restoring the pick.
+        # Same provenance a mid-chat switch records (_apply_model_switch): without the OWNING profile's
+        # model beside the pick, resume reads the row as an unmarked Bot Chat and drops the pick (#123805).
         with _profile_build_scope(profile_home):
             profile_model, profile_provider = _config_model_target()
         composer_override_profile = {"model": profile_model, "provider": profile_provider}

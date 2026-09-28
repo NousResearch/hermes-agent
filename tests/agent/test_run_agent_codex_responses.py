@@ -2612,3 +2612,58 @@ def test_codex_text_only_max_output_incomplete_keeps_codex_continuation(monkeypa
     assert result["completed"] is True
     assert not any(m.get("_length_continuation_nudge") for m in result["messages"])
     assert any(m.get("finish_reason") == "incomplete" for m in result["messages"] if m["role"] == "assistant")
+
+
+def test_codex_tool_call_repeating_incomplete_text_is_still_marked(monkeypatch):
+    """incomplete(text) -> tool call(same text) -> final, with no interim or stream
+    delivery: the tool-call row is deduplicated for emission only, and its undelivered
+    text still carries the marker in its API sidecar."""
+    from agent.turn_tool_round import UNDELIVERED_INTERIM_MARKER
+
+    agent = _build_agent(monkeypatch)
+    agent.interim_assistant_callback = None
+    agent.stream_delta_callback = None
+    text = "Unit price = $128 and total price = $519 for four items."
+    message_and_call = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=text)],
+            ),
+            SimpleNamespace(
+                type="function_call", id="fc_1", call_id="call_1", name="terminal", arguments="{}",
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=12, output_tokens=4, total_tokens=16),
+        status="completed",
+        model="gpt-5-codex",
+    )
+    responses = [
+        _codex_incomplete_message_response(text),
+        message_and_call,
+        _codex_message_response("When do you need them by?"),
+    ]
+    requests = []
+
+    def _call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _call)
+    monkeypatch.setattr("model_tools.handle_function_call", lambda *args, **kwargs: "ok")
+
+    result = agent.run_conversation("how much for 4 items?")
+
+    assert len(requests) == 3
+    assert result["final_response"] == "When do you need them by?"
+    rows = [
+        (msg.get("finish_reason"), msg.get("content"), msg.get("api_content"))
+        for msg in result["messages"]
+        if msg.get("role") == "assistant"
+    ]
+    assert rows == [
+        ("incomplete", text, None),
+        ("tool_calls", text, f"{text}\n\n{UNDELIVERED_INTERIM_MARKER}"),
+        ("stop", "When do you need them by?", None),
+    ]

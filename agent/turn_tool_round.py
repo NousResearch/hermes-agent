@@ -22,8 +22,9 @@ logger = logging.getLogger("agent.conversation_loop")
 # Post-response housekeeping tools: a round made only of these mutes tool progress.
 _HOUSEKEEPING_TOOLS = frozenset({"memory", "todo_list", "skill_manage", "session_search"})
 
-# Appended to the API view of a tool-call row whose material text never reached the user
-# (interim messages disabled, nothing streamed), so the model's next reply can carry it.
+# Appended to the API view of a tool-call row whose material text never fully reached the
+# user (interim messages disabled, and the text not streamed or only partly streamed), so
+# the model's next reply can carry it.
 UNDELIVERED_INTERIM_MARKER = (
     "[The text above was not shown to the user. Any fact they need from it must go in "
     "your reply.]"
@@ -111,9 +112,10 @@ def run_tool_round(
     assistant_msg, duplicate_previous_interim = stage_tool_call_message(
         agent, assistant_message=assistant_message, finish_reason=finish_reason, messages=messages
     )
-    if not duplicate_previous_interim:
-        # Before the append and flush below, so the durable row carries the marked sidecar.
-        mark_undelivered_interim(agent, assistant_message=assistant_message, assistant_msg=assistant_msg)
+    # Before the append and flush below, so the durable row carries the marked sidecar. Not
+    # gated on ``duplicate_previous_interim``: that flag only stops a second emission of text
+    # an ``incomplete`` row already emitted, which says nothing about whether it was delivered.
+    mark_undelivered_interim(agent, assistant_message=assistant_message, assistant_msg=assistant_msg)
     append_message(messages, assistant_msg)
 
     # Mixed batch: error-result invalid calls and drop them from execution.
@@ -320,8 +322,8 @@ def mark_undelivered_interim(agent: Any, *, assistant_message: Any, assistant_ms
     text will not reach the user; returns whether it did.
 
     With interim messages disabled (no ``interim_assistant_callback``) and the text not
-    already fully streamed, the user never sees it, and a later reply that assumes they
-    did leaves them without it. The marker tells the next call so, with full context.
+    streamed, or streamed only in part, the user never sees all of it, and a later reply
+    that assumes they did leaves them without it. The marker tells the next call so, with full context.
     Only the sidecar changes: ``content`` stays what the user-facing transcript shows, and
     the sidecar is persisted with the row and replayed verbatim, so this row's wire bytes
     are identical on every later call. It is decided before the row is flushed (interim

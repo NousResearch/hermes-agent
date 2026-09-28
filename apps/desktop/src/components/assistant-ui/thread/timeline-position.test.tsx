@@ -61,7 +61,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  document.body.innerHTML = ''
+  window.document.body.innerHTML = ''
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -87,23 +87,23 @@ function mount(count: number) {
       parts: [{ type: 'text', text: `prompt ${index}` }]
     }))
   )
-  const root = document.createElement('div')
+  const root = window.document.createElement('div')
   root.dataset.sessionAnchor = 'owned'
-  const viewport = document.createElement('div')
+  const viewport = window.document.createElement('div')
   viewport.dataset.slot = 'aui_thread-viewport'
   viewport.dataset.following = 'false'
-  const content = document.createElement('div')
+  const content = window.document.createElement('div')
   content.dataset.slot = 'aui_thread-content'
   viewport.append(content)
-  const host = document.createElement('div')
+  const host = window.document.createElement('div')
   root.append(viewport, host)
-  document.body.append(root)
+  window.document.body.append(root)
   const reads = { outer: 0, inner: 0 }
   const tops = Array.from({ length: count }, (_, index) => 100 + index * 123)
   vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect(50, 600))
 
   const groups = tops.map((_, index) => {
-    const group = document.createElement('div')
+    const group = window.document.createElement('div')
     group.dataset.slot = 'aui_message-group'
     group.style.contentVisibility = 'auto'
     group.innerHTML = `<div data-slot="aui_turn-pair"><div data-message-id="u${index}"></div></div>`
@@ -137,10 +137,12 @@ describe('timeline position in the real rail component', () => {
     for (const index of [count - 1, 32, 301, 0, 255]) {
       ui.reads.outer = ui.reads.inner = 0
       ui.viewport.scrollTop = ui.tops[index] + 20
+
       // A burst is one measurement, not one sweep per browser event.
       for (let event = 0; event < 10; event++) {
         fireEvent.scroll(ui.viewport)
       }
+
       await flushFrame()
       expect(ui.getByTestId('active').textContent).toBe(`u${index}`)
       expect(ui.reads.inner).toBe(0)
@@ -151,10 +153,12 @@ describe('timeline position in the real rail component', () => {
     expect(sweeps()).toBe(1)
     // Markdown growth invalidates geometry, not membership. No stale cached
     // offsets and no full message query after a text-only subtree commit.
-    ui.groups[2].append(document.createElement('p'))
+    ui.groups[2].append(window.document.createElement('p'))
+
     for (let index = 3; index < count; index++) {
       ui.tops[index] += 123
     }
+
     await flushFrame()
     expect(ui.getByTestId('active').textContent).toBe('u254')
     expect(sweeps()).toBe(1)
@@ -185,11 +189,13 @@ describe('timeline position in the real rail component', () => {
 
     // Late image/tool layout can move the boundary without a scroll event.
     ui.tops[10] += 60
+
     for (const observer of resizes) {
       if (observer.targets.has(ui.content)) {
         observer.callback([], observer as unknown as ResizeObserver)
       }
     }
+
     await flushFrame()
     expect(ui.getByTestId('active').textContent).toBe('u9')
 

@@ -596,6 +596,10 @@ class GatewayInboundMixin:
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
             return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
 
+        plugin_handled, plugin_result = await self._dispatch_busy_plugin_command(event, source)
+        if plugin_handled:
+            return True, plugin_result
+
         # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.
         if event.message_type == MessageType.PHOTO:
@@ -1059,8 +1063,14 @@ class GatewayInboundMixin:
         if command:
             try:
                 from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+                plugin_name = command.replace("_", "-")
+                plugin_handler = get_plugin_command_handler(plugin_name)
                 if plugin_handler:
+                    # Bind authorization to the final normalized command at the execution sink:
+                    # aliases and hooks may have changed it after the earlier registry gate.
+                    _denied = self._check_slash_access(source, plugin_name)
+                    if _denied is not None:
+                        return True, _denied, command
                     # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
                     # sits before it, so a handler reading get_session_env() would see an empty or a
                     # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,

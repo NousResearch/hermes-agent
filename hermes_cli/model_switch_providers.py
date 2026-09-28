@@ -581,15 +581,20 @@ def _group_display_name(display_name: str) -> str:
 def _discover_endpoint_models(
     api_key: Any, api_url: str, native_catalog_provider: str, has_explicit_models: bool, *,
     headers: dict | None, api_mode: str | None, probe_live: bool, discovery_allowed: bool,
-    for_picker: bool) -> tuple[list | None, bool]:
+    fast_custom_probe: bool) -> tuple[list | None, bool]:
     """Return ``(models, native_catalog_empty)`` for a custom endpoint row.
 
     ``probe_live`` runs the native-aware picker fetch; otherwise, when discovery is allowed, a
     warm same-fingerprint cache entry still serves the full catalog with no round-trip.
     ``has_explicit_models`` gates the *probe* (a network-cost guard for keyless endpoints that
     declare a catalog), never the cache read — applying it to the read re-pins the endpoint to
-    its declared subset. Returns ``(None, False)`` when nothing usable was found."""
-    timeout = 1.5 if for_picker else 5.0
+    its declared subset. Returns ``(None, False)`` when nothing usable was found.
+
+    ``fast_custom_probe`` picks the discovery budget (1.5s fast / 5s full) independently of the
+    caller's exhausted-pool visibility flag: a picker that keeps cooldown providers visible
+    still deserves the full budget when it is the one surface that live-probes the current
+    custom endpoint."""
+    timeout = 1.5 if fast_custom_probe else 5.0
     if probe_live:
         try:
             live_models = _fetch_picker_live_models(
@@ -683,6 +688,10 @@ class _PickerBuild:
     refresh: bool
     excluded: set
     curated: dict
+    # Discovery budget override for custom endpoints (1.5s fast / 5s full). None keeps the
+    # historical coupling to for_picker; callers that only want exhausted-pool visibility set
+    # for_picker=True, fast_custom_probe=False so their probe budget is unchanged (#103843).
+    fast_custom_probe: bool | None = None
     # GUI read path: catalogs are read from cache only; stale/missing ones warm in the background.
     non_blocking_catalogs: bool = False
     results: list = field(default_factory=list)
@@ -699,6 +708,11 @@ class _PickerBuild:
     @property
     def current_base_url_norm(self) -> str:
         return self.current_base_url.rstrip("/").lower()
+
+    @property
+    def resolved_fast_custom_probe(self) -> bool:
+        """None defers to for_picker so pre-existing callers keep their timeout."""
+        return self.for_picker if self.fast_custom_probe is None else self.fast_custom_probe
 
     def can_probe_custom(self, *, row_is_current: bool) -> bool:
         return bool(self.probe_custom_providers or (self.probe_current_custom_provider and row_is_current))
@@ -773,7 +787,7 @@ class _PickerBuild:
         discovered, native_catalog_empty = _discover_endpoint_models(
             api_key, api_url, native_provider, has_explicit_models,
             headers=headers, api_mode=api_mode, probe_live=probe_live,
-            discovery_allowed=discovery_allowed, for_picker=self.for_picker)
+            discovery_allowed=discovery_allowed, fast_custom_probe=self.resolved_fast_custom_probe)
         return discovered, native_catalog_empty, probe_live
 
 
@@ -1033,7 +1047,7 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
         discovered, native_catalog_empty = _discover_endpoint_models(
             "", api_url, "custom", False, headers=None, api_mode=None,
             probe_live=bool(b.refresh or b.probe_current_custom_provider), discovery_allowed=True,
-            for_picker=b.for_picker)
+            fast_custom_probe=b.resolved_fast_custom_probe)
         if discovered is not None:
             models = discovered
     except Exception:
@@ -1173,7 +1187,7 @@ def list_authenticated_providers(
     max_models: int | None = None, current_model: str = "", refresh: bool = False,
     probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
     for_picker: bool = False, excluded_providers: list | None = None,
-    non_blocking_catalogs: bool = False) -> List[dict]:
+    non_blocking_catalogs: bool = False, fast_custom_probe: bool | None = None) -> List[dict]:
     """Detect which providers have credentials and list their curated (not full models.dev) models.
 
     Returns dicts with ``slug`` (the --provider value), ``name``, ``is_current``,
@@ -1185,7 +1199,10 @@ def list_authenticated_providers(
     true, GUI false); ``probe_current_custom_provider`` probes only the selected custom endpoint.
     ``non_blocking_catalogs`` is the GUI read path (``model.options``): provider catalogs come from
     the disk cache only and stale/missing ones warm in the background, so a degraded provider
-    never stalls the picker (#114215)."""
+    never stalls the picker (#114215). ``fast_custom_probe`` overrides the custom-endpoint
+    discovery budget ``for_picker`` otherwise implies (1.5s vs 5s) — ``None`` keeps the
+    historical coupling, ``False`` retains the full 5s budget for callers that only want
+    exhausted-pool visibility (#103843)."""
 
     from agent.models_dev import fetch_models_dev
     from hermes_cli.config import coerce_provider_id, stringify_provider_map
@@ -1218,7 +1235,7 @@ def list_authenticated_providers(
         max_models=max_models, for_picker=for_picker, force_fresh_nous_tier=force_fresh_nous_tier,
         probe_custom_providers=probe_custom_providers, probe_current_custom_provider=probe_current_custom_provider,
         refresh=refresh, excluded={str(p).strip().lower() for p in (excluded_providers or []) if p},
-        non_blocking_catalogs=non_blocking_catalogs,
+        non_blocking_catalogs=non_blocking_catalogs, fast_custom_probe=fast_custom_probe,
         curated=_build_curated_lists(current_provider, current_base_url, current_model,
                                      non_blocking=non_blocking_catalogs))
 

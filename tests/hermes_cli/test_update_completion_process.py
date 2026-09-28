@@ -136,6 +136,7 @@ def transition(tmp_path):
         "import contextvars, json, os, pathlib\n"
         "_current = contextvars.ContextVar('receipt', default=None)\n"
         "class UpdateReceipt: pass\n"
+        "def record_stage(*args, **kwargs): pass\n"
         "def finalize_pending_update_receipt(code, reason):\n"
         "    r = _current.get()\n"
         "    if r is None: return\n"

@@ -12,6 +12,7 @@ import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { announceNewSessionDraftKey } from '@/store/composer'
+import { recordAction } from '@/store/desktop-metrics'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
 import {
@@ -494,7 +495,10 @@ export function useDesktopIntegrations({
 
   // File > Open Folder… — same open-folder-as-project upsert as the ⌘O keybind.
   useEffect(() => {
-    const unsubscribe = window.hermesDesktop?.onOpenFolderRequested?.(() => void openFolderAsProject())
+    const unsubscribe = window.hermesDesktop?.onOpenFolderRequested?.(() => {
+      recordAction('workspace.openFolder', 'menu')
+      void openFolderAsProject()
+    })
 
     return () => unsubscribe?.()
   }, [])

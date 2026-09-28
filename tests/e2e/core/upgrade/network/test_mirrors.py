@@ -70,12 +70,7 @@ def test_pip_mirror_update_restages_pm_runtime_through_the_mirror(inst):
         edge.close()
         pip_conf.unlink()
     public = _public_index_hits(edge)
-    with known_failure(
-        r"needs to be updated, but `--locked` was provided",
-        "gated on #124418: with a pip index mirror bridged into uv, `uv sync --locked` rejects the "
-        "committed pm/uv.lock (registry URL mismatch) and the update fails restaging the PM runtime",
-    ):
-        assert r.rc == 0 and inst.head() == new, "update with a pip mirror configured failed\n" + r.report(inst)
+    assert r.rc == 0 and inst.head() == new, "update with a pip mirror configured failed\n" + r.report(inst)
     after = inst.state()
     assert after["pm_runtime"] != before["pm_runtime"], "the PM runtime was not restaged for its new inputs\n" + r.report(inst)
     assert not public, f"a public index was contacted despite the mirror: {public}\n" + r.report(inst)

@@ -42,6 +42,7 @@ def test_service_gets_diagnostics_from_config_declared_server(tmp_path, monkeypa
     home.mkdir()
     (home / "config.yaml").write_text(json.dumps({"lsp": {
         "install_strategy": "manual", "wait_timeout": 5.0, "idle_timeout": 0,
+        "trusted_workspaces": [str(tmp_path / "ws")],
         "servers": {"panache": {"command": [sys.executable, _MOCK], "extensions": [".pnch"],
                                 "env": {"MOCK_LSP_SCRIPT": "errors"}}},
     }}), encoding="utf-8")

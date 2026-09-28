@@ -1466,7 +1466,7 @@ class TestTodoSnapshotScaffoldingTails:
             {
                 k: v
                 for k, v in m.items()
-                if k not in {"_row_id", "timestamp", _DB_PERSISTED_MARKER, DB_ROW_SNAPSHOT}
+                if k not in {"_row_id", "timestamp", "message_uid", _DB_PERSISTED_MARKER, DB_ROW_SNAPSHOT}
             }
             for m in compressed
         ] == expected

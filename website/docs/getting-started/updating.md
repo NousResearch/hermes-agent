@@ -127,7 +127,7 @@ Pinned or noninteractive installations can disable passive CLI version and banne
 hermes config set updates.check false
 ```
 
-This suppresses both cached update notices and passive update-check network requests. The default is `true`. Explicit `hermes update --check` and `hermes update` still work; this setting does not control the Desktop application's updater.
+This suppresses both cached update notices and passive update-check network requests, including the dashboard's and the Desktop's periodic background update checks. The default is `true`. Explicit checks and updates still work: `hermes update --check`, `hermes update`, the dashboard's Check-now button, and Desktop update actions.
 
 ### What happens during an update
 

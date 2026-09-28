@@ -415,6 +415,8 @@ def main() -> None:
     parser.add_argument("--cache-path", type=Path)
     parser.add_argument("--branch-config-path", type=Path)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--passive", action="store_true",
+                        help="honour updates.check:false instead of forcing a network check")
     args = parser.parse_args()
     with contextlib.redirect_stdout(sys.stderr):
         result = check_for_updates(**vars(args))

@@ -1806,6 +1806,7 @@ class GatewayStartupMixin:
             ),
             source=dest.source,
             internal=True,
+            metadata={"handoff": True, "handoff_session_id": cli_session_id},
         )
         logger.info(
             "Handoff: dispatching synthetic turn for CLI session %s → %s "
@@ -1819,7 +1820,9 @@ class GatewayStartupMixin:
             return
         # Reply into the new thread (else the home channel) via the resolved transport, so a relay-fronted
         # logical platform is stamped on the outbound frame.
-        send_metadata = {"thread_id": dest.effective_thread_id} if dest.effective_thread_id else None
+        send_metadata = {"handoff": True, "handoff_session_id": cli_session_id}
+        if dest.effective_thread_id:
+            send_metadata["thread_id"] = dest.effective_thread_id
         try:
             result = await dest.transport.send(
                 dest.platform, str(dest.home.chat_id), response_text, send_metadata,

@@ -50,6 +50,13 @@ class DeliveryTransport:
     async def send(self, logical_platform: Platform, chat_id: str, content: str,
                    metadata: Optional[Dict[str, Any]]) -> Any:
         """Send through this transport while preserving the logical platform."""
+        from gateway.delivery_guard import guard_pre_delivery
+
+        guard_pre_delivery(
+            platform=logical_platform, content=content, target={"chat_id": str(chat_id)},
+            session_id=(metadata or {}).get("handoff_session_id"),
+            turn_id=(metadata or {}).get("handoff_turn_id"), metadata=metadata,
+        )
         return await (self.adapter.send_for_platform(logical_platform, chat_id, content, metadata=metadata)
                       if self.is_relay else self.adapter.send(chat_id, content, metadata=metadata))
 

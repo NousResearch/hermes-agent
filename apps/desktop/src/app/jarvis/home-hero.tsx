@@ -19,6 +19,7 @@ import { $jarvisRailVisible } from './focus-mode'
 import { plasmaTone } from './plasma'
 import { JarvisQuickAccess } from './quick-access'
 import { $jarvisUi } from './store'
+import type { JarvisVoiceState } from './types'
 import { useLiveAutostart } from './use-live-autostart'
 
 type IconComponent = React.ComponentType<{ className?: string }>
@@ -71,7 +72,12 @@ export function JarvisHomeHero({
   const name = rawName && rawName.toLowerCase() !== 'default' ? rawName : undefined
   const character = useStore($character)
   const greeting = greetingFor(character, new Date(), copy.greetings)
-  const tone = plasmaTone(listening ? 'listening' : state.voice, state.task.phase)
+  // The conversation owns the orb's voice state (`publishJarvisVoiceState`):
+  // Live voice reports listening/speaking from the renderer, so masking the
+  // state with `listening` would freeze the orb while Gemini actually speaks.
+  // The fallback still shows a just-opened conversation as listening.
+  const orbVoice: JarvisVoiceState = listening && state.voice === 'idle' ? 'listening' : state.voice
+  const tone = plasmaTone(orbVoice, state.task.phase)
 
   const hint = !connected
     ? copy.offline
@@ -155,7 +161,7 @@ export function JarvisHomeHero({
           data-tone={tone}
         >
           <span aria-hidden="true" className="jarvis-home__orbit" />
-          <JarvisCore live taskPhase={state.task.phase} variant="hero" voice={listening ? 'listening' : state.voice} />
+          <JarvisCore live taskPhase={state.task.phase} variant="hero" voice={orbVoice} />
         </div>
 
         <div

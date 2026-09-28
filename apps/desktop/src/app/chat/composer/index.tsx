@@ -4,6 +4,8 @@ import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, u
 
 import { useTourMarker } from '@/app/chat/tour-marker'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
+import { desktopOrbVoice } from '@/app/jarvis/desktop-orb-voice'
+import { publishJarvisVoiceState } from '@/app/jarvis/store'
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
@@ -1028,6 +1030,20 @@ export function ChatBar({
 
     return () => resetMicLevel()
   }, [conversation.level, conversation.muted, scope.target, voiceConversationActive])
+
+  // The orb's voice state. Live voice drives its own status in the renderer, so
+  // no gateway `voice.status` event ever arrives for it: this conversation is
+  // what the home orb, the dashboard header and the popped-out orb follow
+  // (idle → listening → speaking), whichever engine is speaking.
+  useEffect(() => {
+    if (scope.target !== 'main') {
+      return undefined
+    }
+
+    publishJarvisVoiceState(desktopOrbVoice(conversation.status, voiceConversationActive))
+
+    return () => publishJarvisVoiceState('idle')
+  }, [conversation.status, scope.target, voiceConversationActive])
 
   useEffect(() => {
     if (scope.target !== 'main' || !onVoiceConversationStateChange) {

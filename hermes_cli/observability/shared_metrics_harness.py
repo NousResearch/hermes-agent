@@ -469,4 +469,3 @@ def record_reply_content(agent: Any, response: Any, assistant_message: Any) -> N
         _record("MODEL_REPLY_ISSUE_MARK", {**_route(agent), "issue": reply_content_issue(agent, assistant_message)})
     except Exception:
         logger.debug("Shared-metrics reply content not recorded", exc_info=True)
-

@@ -214,8 +214,10 @@ class CLILoopsMixin:
             else f"This removes the last {_undo_n} user turns from history.")
         if self._confirm_destructive_slash("undo", _undo_desc, cmd_original=cmd_original) is None:
             return True  # confirmation cancelled — command handled, keep REPL alive
-        self._record_model_friction("undo")
+        _history = self.conversation_history
         self.undo_last(_undo_n)
+        if self.conversation_history is not _history:  # only a successful rewind installs a new history
+            self._record_model_friction("undo")
 
     def _cmd_skills(self, cmd_original: str):
         with self._busy_command(self._slow_command_status(cmd_original)):

@@ -201,3 +201,44 @@ def test_multiplexed_gateway_switch_records_in_the_owning_profile(direct_runtime
 
     assert not _all_rows(tmp_path / "hermes-home")
     assert sorted(name for name, _ in _all_rows(home_b)) == ["hermes.model_friction.count", "hermes.model_switch.count"]
+
+
+def _cli(db):
+    from hermes_cli.cli_loops_mixin import CLILoopsMixin
+    from hermes_cli.cli_session_mixin import CLISessionMixin
+
+    class FakeCLI(CLILoopsMixin, CLISessionMixin):
+        _slash_metrics_surface = "cli"
+
+        def __init__(self):
+            self.conversation_history = [
+                {"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+            self._session_db, self.session_id, self.agent = db, "s-cli" if db else None, None
+            self.provider, self.model = "openrouter", PUBLIC
+
+        def _confirm_destructive_slash(self, *a, **k):
+            return True
+
+        def _prefill_input_buffer(self, text):
+            return None
+
+    return FakeCLI()
+
+
+def test_cli_undo_counts_friction_only_when_something_was_undone(direct_runtime, tmp_path):
+    class LeasedDB:
+        def rewind_user_turn(self, *a, **k):
+            raise RuntimeError("active turn lease")
+
+    failed = _cli(LeasedDB())
+    failed._cmd_undo("/undo")
+    _flush()
+    assert len(failed.conversation_history) == 2
+    assert not _stored_values(tmp_path, "hermes.model_friction.count")
+
+    done = _cli(None)
+    done._cmd_undo("/undo")
+    _flush()
+    assert done.conversation_history == []
+    assert _stored_values(tmp_path, "hermes.model_friction.count") == [
+        ({"model": PUBLIC, "provider": "openrouter", "signal": "undo"}, 1)]

@@ -2,7 +2,7 @@
 behind a success (the partial_overflow contract, ``BasePlatformAdapter._with_partial_send``).
 
 Regression for #68713 (WhatsApp) and the same send loop in the Mattermost, Slack, Teams, Matrix, SMS,
-WhatsApp Cloud and Google Chat adapters.
+WhatsApp Cloud, Google Chat, BlueBubbles, Signal and Weixin adapters.
 """
 
 import asyncio
@@ -175,6 +175,58 @@ def _google_chat(failure, screen):
     return adapter, 4000
 
 
+def _bluebubbles(failure, screen):
+    from gateway.platforms.bluebubbles import BlueBubblesAdapter
+    adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={"server_url": "http://bb.invalid", "password": "pw"}))
+    calls = []
+
+    async def post(url, json=None, **kwargs):
+        request = httpx.Request("POST", url)
+        if "/chat/query" in url:
+            return httpx.Response(200, json={"data": [{"chatIdentifier": "chat", "guid": "iMessage;-;chat"}]},
+                                  request=request)
+        calls.append(1)
+        if len(calls) == 2:
+            return failure(request)
+        screen.append(json["message"])
+        return httpx.Response(200, json={"status": 200, "data": {"guid": f"g{len(calls)}"}}, request=request)
+    adapter.client = MagicMock()
+    adapter.client.post = AsyncMock(side_effect=post)
+    return adapter, adapter.MAX_MESSAGE_LENGTH
+
+
+def _signal(failure, screen):
+    from gateway.platforms.signal import SignalAdapter
+    adapter = SignalAdapter(PlatformConfig(enabled=True, extra={"http_url": "http://signal.invalid", "account": "+15550009999"}))
+    calls = []
+
+    async def rpc(method, params, *args, **kwargs):
+        if method != "send":
+            return {}
+        calls.append(1)
+        if len(calls) == 2:
+            return failure()
+        screen.append(params["message"])
+        return {"timestamp": 1700000000000 + len(calls), "results": [{"type": "SUCCESS"}]}
+    adapter._rpc = rpc
+    return adapter, adapter.MAX_MESSAGE_LENGTH
+
+
+def _weixin(failure, screen):
+    from tests.gateway.test_weixin import _make_adapter as _weixin_adapter
+    adapter = _weixin_adapter()
+    adapter._send_session, adapter._token = MagicMock(), "test-token"
+    calls = []
+
+    async def send_text_chunk(*, chat_id, chunk, context_token, client_id):
+        calls.append(1)
+        if len(calls) == 2:
+            raise failure()
+        screen.append(chunk)
+    adapter._send_text_chunk = send_text_chunk
+    return adapter, adapter.MAX_MESSAGE_LENGTH
+
+
 def _graph_response(status, body):
     return SimpleNamespace(status_code=status, json=lambda: body, text="")
 
@@ -225,6 +277,14 @@ CASES = [
     pytest.param(_google_chat, lambda: _FakeHttpError(429, reason="Too Many Requests"), _UNSENT, id="google-chat-429"),
     pytest.param(_google_chat, lambda: _FakeHttpError(503, reason="Service unavailable"), _MAYBE_SENT,
                  id="google-chat-503"),
+    pytest.param(_bluebubbles, lambda request: _raise(httpx.ConnectError("Connection refused", request=request)),
+                 _UNSENT, id="bluebubbles-connect"),
+    pytest.param(_bluebubbles, lambda request: httpx.Response(429, request=request), _UNSENT, id="bluebubbles-429"),
+    pytest.param(_bluebubbles, lambda request: httpx.Response(500, request=request), _MAYBE_SENT, id="bluebubbles-500"),
+    pytest.param(_signal, lambda: None, _MAYBE_SENT, id="signal-rpc-failure"),
+    pytest.param(_weixin, _connect_refused, _UNSENT, id="weixin-connect"),
+    pytest.param(_weixin, lambda: RuntimeError("iLink sendmessage error: ret=-1 errcode=-1 errmsg=system error"),
+                 _MAYBE_SENT, id="weixin-ilink-error"),
 ]
 
 

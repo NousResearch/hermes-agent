@@ -710,6 +710,7 @@ class SignalAdapter(BasePlatformAdapter):
         base_params = await self._with_target({"account": self.account}, chat_id)
         chunks = self._split_signal_formatted_message(*markdown_to_signal(content), self.MAX_MESSAGE_LENGTH)
         last_result = None
+        delivered: List[str] = []
         for idx, (plain_text, text_styles) in enumerate(chunks, start=1):
             params: Dict[str, Any] = dict(base_params, message=plain_text)
             if len(text_styles) == 1:
@@ -720,7 +721,10 @@ class SignalAdapter(BasePlatformAdapter):
                         chat_id)
             last_result, err = await self._rpc_send(params, "RPC send failed")
             if err:
-                return err
+                # _rpc swallows the transport error, so whether this chunk reached anyone is unknown: after
+                # an earlier chunk landed, report a partial delivery so no retry repeats the visible head.
+                return self._split_send_failed(err, [c for c, _ in chunks[idx - 1:]], delivered, unsent=False)
+            delivered.append(str(last_result.get("timestamp") if isinstance(last_result, dict) else idx))
         # No editable message identifier; message_id=None keeps the stream consumer on the non-edit path.
         return SendResult(success=True, message_id=None, raw_response=last_result)
 

@@ -1932,6 +1932,13 @@ DEFAULT_CONFIG = {
         # root profile named "default", so on a shared kanban.db every home can otherwise claim
         # default-assigned cards.
         "dispatch_profiles": None,
+        # Per-profile structural tool fence for kanban workers (#126923): tool names this
+        # profile's sessions never offer, subtracted after every grant — including the
+        # dispatcher-spawned kanban lifecycle handoff. List or JSON-array string (parsed like
+        # agent.disabled_toolsets). e.g. ["kanban_complete", "kanban_request_review"] makes a
+        # reviewer profile read-only on the board; ["terminal"] hides the terminal toolset's
+        # tools from its workers. Unknown names subtract nothing.
+        "worker_excluded_tools": None,
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.
         "auto_decompose": True,

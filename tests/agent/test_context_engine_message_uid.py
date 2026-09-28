@@ -369,6 +369,23 @@ def test_an_assistant_fold_that_discards_the_later_text_is_no_witness(kept, drop
     assert survivor["_absorbed_row_ids"] == [9]
 
 
+def test_a_fold_ignores_a_non_dict_uid_map_on_either_turn():
+    """A plugin-built dict can carry a malformed map; the fold keeps the well-formed side instead of raising."""
+    from agent.agent_runtime_helpers import _merge_assistant_into
+
+    def turn(call_id, uids):
+        return {"role": "assistant", "content": "",
+                "tool_calls": [{"id": call_id, "type": "function", "function": {"name": "t", "arguments": "{}"}}],
+                "_tool_call_uids": uids}
+
+    prev, new = turn("X", "junk"), turn("Y", {"Y": "b" * 32})
+    _merge_assistant_into(prev, new)
+    assert prev["_tool_call_uids"] == {"Y": "b" * 32}
+    prev, new = turn("X", {"X": "a" * 32}), turn("Y", ["junk"])
+    _merge_assistant_into(prev, new)
+    assert prev["_tool_call_uids"] == {"X": "a" * 32}
+
+
 def test_a_select_context_selection_is_stripped_before_the_provider():
     """The request copy is stripped BEFORE ``select_context``; an engine that hands back the
     ``conversation_messages`` clones must not put the ids back on the wire."""

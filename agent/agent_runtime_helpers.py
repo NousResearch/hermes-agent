@@ -395,7 +395,8 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> bool:
         # The absorbed turn's calls keep the per-occurrence ids they were persisted with.
         if isinstance(extra := msg.get(TOOL_CALL_UIDS), dict) and extra:
             prev[TOOL_CALL_UIDS] = merge_tool_call_uids(
-                per_occurrence_tool_call_uids(prev.get(TOOL_CALL_UIDS) or {}, prev_calls),
+                per_occurrence_tool_call_uids(
+                    own if isinstance(own := prev.get(TOOL_CALL_UIDS), dict) else {}, prev_calls),
                 per_occurrence_tool_call_uids(extra, new_calls))
         calls_changed = True
     elif prev_calls:

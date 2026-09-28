@@ -2267,14 +2267,37 @@ export function focusOpenSession(
 
   // Already the main session: front the workspace tab and drop tile focus so
   // the readouts + sidebar highlight come home (a no-op when main is focused).
-  if (workspaceScope.workspaceMode === 'sessions' && aliases.includes($selectedStoredSessionId.get() ?? '')) {
-    revealTreePane('workspace')
-    noteActiveTreeGroup(null)
-
+  // Bot scopes never claim main here — a Bot tab for the same stored id must
+  // stay mintable — they front through frontMainIfSelected at their own door.
+  if (workspaceScope.workspaceMode === 'sessions' && frontMainIfSelected(storedSessionId)) {
     return 'main'
   }
 
   return null
+}
+
+/** Front the workspace pane when `storedSessionId` names the chat MAIN already
+ *  holds (through any compression-lineage alias). False when main holds
+ *  another chat or nothing — the caller then owns the open.
+ *
+ *  The door for a Bot Mode roster click whose owner lost its tile: closing the
+ *  main tab promotes a neighbouring tile INTO the workspace pane (dropping its
+ *  tile, close-tab.ts), so the canonical Bot Chat lives in main with no tile
+ *  left. The route already points at that session, so navigating is a no-op,
+ *  and focusOpenSession won't claim the 'main' hit for a Bot scope — a Bot tab
+ *  for the same stored id must stay mintable. Without this front, a zone
+ *  parked on another bot's tile left the row click looking dead (#125899). */
+export function frontMainIfSelected(storedSessionId: string): boolean {
+  const aliases = lineageAliases(storedSessionId, $sessions.get())
+
+  if (!aliases.includes($selectedStoredSessionId.get() ?? '')) {
+    return false
+  }
+
+  revealTreePane('workspace')
+  noteActiveTreeGroup(null)
+
+  return true
 }
 
 /** Front the tab a Bot Mode owner already has open and report its stored id:

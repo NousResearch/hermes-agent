@@ -212,4 +212,3 @@ def record_desktop_update(**raw: Any) -> None:
     from .shared_metrics_events import _emit
 
     _emit(contract.UPDATE_RUN_MARK, desktop_update_fields, **raw)
-

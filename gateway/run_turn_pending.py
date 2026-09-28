@@ -1,11 +1,13 @@
 """Post-turn pending input selection for GatewayRunner."""
 
 import asyncio
+import dataclasses
 import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from gateway.session import SessionSource
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.base_pending import reserve_pending_dispatch, release_pending_dispatch, release_pending_dispatch_record, pending_dispatch_withdrawn
 
 if TYPE_CHECKING:
@@ -23,7 +25,8 @@ class GatewayPendingDrainMixin:
 
 
     async def _run_agent_drain_pending(
-        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str]
+        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str],
+        processing_event: Optional[MessageEvent] = None,
     ) -> tuple[Any, Optional[str]]:
         """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
 
@@ -100,8 +103,16 @@ class GatewayPendingDrainMixin:
         # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
         leftover_steer = (result.get("pending_steer") or "").strip() if result else None
         if leftover_steer:
+            pending_steer_input = (
+                processing_event._processing_state.take_pending_input()
+                if processing_event is not None else None
+            )
             if not pending and not pending_event:
                 pending = leftover_steer
+                if pending_steer_input is not None:
+                    pending_event = dataclasses.replace(
+                        pending_steer_input, text=pending, message_type=MessageType.TEXT,
+                    )
                 logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
             elif pending_event and adapter and session_key:
                 # User steered during the turn, but a background event or queued message arrived.
@@ -120,21 +131,29 @@ class GatewayPendingDrainMixin:
                         overflow.insert(0, pending_event)
                     else:
                         self._session_state(session_key).conversation.queued_events.insert(0, pending_event)
-                pending_event = None
+                pending_event = (
+                    dataclasses.replace(pending_steer_input, text=leftover_steer, message_type=MessageType.TEXT)
+                    if pending_steer_input is not None else None
+                )
                 pending = leftover_steer
                 logger.debug(
                     "Delivering leftover /steer before queued event for session %s: '%s...'",
                     session_key, pending[:40],
                 )
             elif pending and not pending_event:
-                from gateway.platforms.base import MessageEvent
                 # A deferred steer continues the active channel context, just like an
                 # eventless follow-up. Reuse its pins without marking the user as internal.
                 steer_prompt, steer_source = self._pinned_channel_inputs(
                     session_key, None, source, internal=True,
                 )
-                steer_event = MessageEvent(
-                    text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
+                steer_event = (
+                    dataclasses.replace(
+                        pending_steer_input, text=leftover_steer, source=steer_source,
+                        channel_prompt=steer_prompt, message_type=MessageType.TEXT,
+                    )
+                    if pending_steer_input is not None else MessageEvent(
+                        text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
+                    )
                 )
                 if session_key:
                     self._enqueue_fifo(session_key, steer_event, adapter)

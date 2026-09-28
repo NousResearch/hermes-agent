@@ -30,8 +30,8 @@ def matrix_feedback() -> MatrixFeedbackSettings:
 
 
 @pytest.fixture
-def gateway_busy_input_mode() -> str:
-    return "queue"
+def gateway_busy_input_mode(request: pytest.FixtureRequest) -> str:
+    return getattr(request, "param", "queue")
 
 
 @pytest.fixture
@@ -45,13 +45,17 @@ def turn_gates() -> Iterator[list[tuple[Event, Event]]]:
 
 
 @pytest.fixture
-def model_responder(turn_gates: list[tuple[Event, Event]]) -> Callable[[dict], Text]:
+def model_responder(
+    turn_gates: list[tuple[Event, Event]], gateway_busy_input_mode: str
+) -> Callable[[dict], Text]:
     calls = 0
 
     def respond(_request: dict) -> Text:
         nonlocal calls
         index = calls
         calls += 1
+        if gateway_busy_input_mode == "interrupt":
+            index = min(index, len(turn_gates) - 1)
         assert index < len(turn_gates), "Unexpected extra model turn"
         started, release = turn_gates[index]
         started.set()
@@ -185,6 +189,77 @@ def test_inline_status_receipt_does_not_change_turn_reactions(
         except TimeoutError:
             pytest.fail(
                 "Inline receipt timed out:\n"
+                + gateway.container
+                .get_wrapped_container()
+                .logs()
+                .decode(errors="replace")[-6000:]
+            )
+        finally:
+            for _started, release in turn_gates:
+                release.set()
+            await client.close()
+
+    asyncio.run(exchange())
+
+
+@pytest.mark.parametrize("gateway_busy_input_mode", ["interrupt"], indirect=True)
+def test_queue_and_recursive_correction_receipts_wait_for_processing(
+    gateway: LiveGateway,
+    live_room: LiveRoom,
+    turn_gates: list[tuple[Event, Event]],
+) -> None:
+    async def exchange() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        seen = FeedbackObserver(client, live_room)
+        try:
+            await client.sync(timeout=0)
+            opening = await seen.send("First turn [in:recursive-opening]")
+            assert await asyncio.to_thread(turn_gates[0][0].wait, 5)
+            await seen.observe_until(lambda: seen.reactions.get(opening) == ["👀"])
+            queued = await seen.send("/queue Follow-up [in:recursive-queue]")
+            await seen.observe_until(
+                lambda: any(
+                    "Queued for the next turn" in reply for reply in seen.replies
+                )
+            )
+            assert (seen.receipts, seen.reactions) == (set(), {opening: ["👀"]})
+            turn_gates[0][1].set()
+            assert await asyncio.to_thread(turn_gates[1][0].wait, 5)
+            await seen.observe_until(
+                lambda: (
+                    opening in seen.receipts and seen.reactions.get(queued) == ["👀"]
+                )
+            )
+            assert (seen.receipts, seen.reactions) == (
+                {opening},
+                {opening: ["👀", "✅"], queued: ["👀"]},
+            )
+            correction = await seen.send(
+                "Please answer this correction [in:recursive-correction]"
+            )
+            await seen.observe_until(
+                lambda: any("Redirected current run" in reply for reply in seen.replies)
+            )
+            assert (seen.receipts, seen.reactions) == (
+                {opening},
+                {opening: ["👀", "✅"], queued: ["👀"]},
+            )
+            turn_gates[1][1].set()
+            await seen.observe_until(
+                lambda: (
+                    correction in seen.receipts
+                    and seen.reactions.get(queued) == ["👀", "✅"]
+                    and "Completed Matrix turn 2" in seen.replies
+                )
+            )
+            assert (seen.receipts, seen.reactions) == (
+                {opening, correction},
+                {opening: ["👀", "✅"], queued: ["👀", "✅"]},
+            )
+            assert "Completed Matrix turn 2" in seen.replies
+        except TimeoutError:
+            pytest.fail(
+                "Recursive correction receipt timed out:\n"
                 + gateway.container
                 .get_wrapped_container()
                 .logs()

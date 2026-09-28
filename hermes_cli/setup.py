@@ -666,6 +666,24 @@ _FIRST_TIME_MODES = (
 )
 
 
+def _is_existing_install(config: dict) -> bool:
+    """A provider is already configured, so the first-install defaults (agent budget, compression,
+    tool checklist) must not overwrite the user's values. Any provider counts, not only OpenRouter:
+    a provider chosen in config.yaml (the installer template's ``auto`` is not a choice), a provider
+    key or endpoint in the Hermes .env, or an auth-store login. Host-wide credentials such as gh
+    auth do not make a fresh home an existing install."""
+    from hermes_cli.auth import get_active_provider
+    from hermes_cli.main import _dotenv_has_provider_key, _provider_env_var_names
+
+    model_cfg = config.get("model")
+    provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
+    return bool(
+        get_env_value("OPENROUTER_API_KEY") or get_env_value("OPENAI_BASE_URL")
+        or get_active_provider() is not None
+        or str(provider or "").strip().lower() not in ("", "auto")
+        or _dotenv_has_provider_key(get_env_path(), _provider_env_var_names()))
+
+
 def _run_setup_wizard_impl(args):
     """Run the interactive setup wizard: full/quick (auto-detected), ``--portal``, or one
     ``hermes setup <section>`` from SETUP_SECTIONS."""
@@ -700,10 +718,7 @@ def _run_setup_wizard_impl(args):
         _run_setup_section(config, section)
         return
 
-    # Existing installation == a provider is configured
-    from hermes_cli.auth import get_active_provider
-    is_existing = bool(get_env_value("OPENROUTER_API_KEY") or get_env_value("OPENAI_BASE_URL")
-                       or get_active_provider() is not None)
+    is_existing = _is_existing_install(config)
     _print_banner("│             ☤ Hermes Agent Setup Wizard                │",
                   "├─────────────────────────────────────────────────────────┤",
                   "│  Let's configure your Hermes Agent installation.       │",

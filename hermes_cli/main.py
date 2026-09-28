@@ -1071,6 +1071,18 @@ def _auth_store_logged_in(auth_file: Path, registry, strict_profile_scope: bool)
     return False
 
 
+def _provider_env_var_names() -> set:
+    """Env vars that configure an inference provider. OPENAI_BASE_URL alone counts — local models
+    (vLLM, llama.cpp) often need no API key."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    names = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
+    for pconfig in PROVIDER_REGISTRY.values():
+        if pconfig.auth_type == "api_key":
+            names.update(pconfig.api_key_env_vars)
+    return names
+
+
 def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     """Check if at least one inference provider is usable. Never creates one: the Nous free tier
     counts only once its identity exists, and the boot bootstrap (``hermes_cli.free_tier_bootstrap``)
@@ -1097,18 +1109,7 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
     # Claude Code credentials so they don't skip setup on a fresh install.
     _has_hermes_config = _model_name and _model_name != DEFAULT_CONFIG.get("model", "")
 
-    # Env vars (.env or shell). OPENAI_BASE_URL alone counts — local models
-    # (vLLM, llama.cpp) often need no API key.
-    provider_env_vars = {
-        "OPENROUTER_API_KEY",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_TOKEN",
-        "OPENAI_BASE_URL",
-    }
-    for pconfig in PROVIDER_REGISTRY.values():
-        if pconfig.auth_type == "api_key":
-            provider_env_vars.update(pconfig.api_key_env_vars)
+    provider_env_vars = _provider_env_var_names()
     if strict_profile_scope:
         from agent.secret_scope import current_secret_scope
 

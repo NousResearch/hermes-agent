@@ -314,6 +314,7 @@ import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { CURL_TITLE_WRITE_OUT, parseCurlTitleResponse } from './link-title-curl'
+import { isSafeTitleFetchTarget, literalTitleBlockReason, sensitiveTitleQueryParam } from './link-title-guard'
 import { canonicalTitleCacheKey, isFetchableHttpUrl } from './link-title-url'
 import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
@@ -5580,20 +5581,16 @@ function parseHtmlTitle(html) {
 
 const URL_EFFECTIVE_TAIL_BYTES = 4096
 
-function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; title: string }> {
+// One curl request without --location. Redirects are followed manually so
+// every hop is re-admitted by the destination guard before it is dialed
+// (#126885); %{redirect_url} / %{http_code} say whether a hop happened.
+function curlTitleRequest(
+  url: string
+): Promise<{ authWall: boolean; httpCode: number; redirectUrl: string; title: string }> {
   return new Promise(resolve => {
-    const url = String(rawUrl || '').trim()
-
-    if (!url) {
-      return resolve({ authWall: false, title: '' })
-    }
-
     const args = [
       '--silent',
       '--show-error',
-      '--location',
-      '--max-redirs',
-      String(TITLE_MAX_REDIRECTS),
       '--max-time',
       String(Math.max(2, Math.ceil(TITLE_TIMEOUT_MS / 1000))),
       '--connect-timeout',
@@ -5607,8 +5604,9 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; ti
       '--header',
       'Accept-Encoding: identity',
       '--raw',
-      // Arrival URL after redirects, on its own line after the body: a sign-in
-      // wall is proven from where curl landed even when the page has no markup id.
+      // Arrival URL and redirect hint, each on its own line after the body: a
+      // sign-in wall is proven from where curl landed even when the page has
+      // no markup id, and the redirect hint is what the manual ladder re-checks.
       '--write-out',
       CURL_TITLE_WRITE_OUT,
       url
@@ -5635,24 +5633,66 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; ti
       bytes += next.length
     })
 
-    child.on('error', () => resolve({ authWall: false, title: '' }))
+    child.on('error', () => resolve({ authWall: false, httpCode: 0, redirectUrl: '', title: '' }))
     child.on('close', () => {
       if (!chunks.length) {
-        return resolve({ authWall: false, title: '' })
+        return resolve({ authWall: false, httpCode: 0, redirectUrl: '', title: '' })
       }
 
       // The trailer is inside `bodyWithTrailer` unless the budget cut it off;
       // then it is still present in the separately retained tail.
       const bodyWithTrailer = Buffer.concat(chunks)
-      const { effectiveUrl, html } = parseCurlTitleResponse(bodyWithTrailer, tail)
+      const { effectiveUrl, html, httpCode, redirectUrl } = parseCurlTitleResponse(bodyWithTrailer, tail)
 
       const title = parseHtmlTitle(html)
 
       // A sign-in wall answers the cookieless title partition, and tier 2 must
       // never load it: the wall asks the OS for a passkey.
-      resolve({ authWall: isAuthWall({ body: html, effectiveUrl, title }), title })
+      resolve({ authWall: isAuthWall({ body: html, effectiveUrl, title }), httpCode, redirectUrl, title })
     })
   })
+}
+
+function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; title: string }> {
+  // Manual redirect ladder (#126885): curl no longer follows Location itself,
+  // so each next hop passes isSafeTitleFetchTarget — private, loopback,
+  // link-local, CGNAT and metadata destinations get no GET even mid-chain.
+  return (async () => {
+    let url = String(rawUrl || '').trim()
+
+    if (!url) {
+      return { authWall: false, title: '' }
+    }
+
+    for (let hop = 0; hop <= TITLE_MAX_REDIRECTS; hop += 1) {
+      const result = await curlTitleRequest(url)
+
+      if (!result.redirectUrl || result.httpCode < 300 || result.httpCode >= 400) {
+        return result
+      }
+
+      let next: URL
+
+      try {
+        next = new URL(result.redirectUrl, url)
+      } catch {
+        return { authWall: false, title: '' }
+      }
+
+      // The scheme check curl's own --proto-redir would have done.
+      if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+        return { authWall: false, title: '' }
+      }
+
+      if (!(await isSafeTitleFetchTarget(next.href))) {
+        return { authWall: false, title: '' }
+      }
+
+      url = next.href
+    }
+
+    return { authWall: false, title: '' }
+  })()
 }
 
 function getLinkTitleSession() {
@@ -5662,7 +5702,22 @@ function getLinkTitleSession() {
 
   linkTitleSession = session.fromPartition('hermes:link-titles', { cache: false })
   linkTitleSession.webRequest.onBeforeRequest((details, callback) => {
-    callback({ cancel: RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType) })
+    if (RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType)) {
+      return callback({ cancel: true })
+    }
+
+    // Literal private/metadata destinations and credential-bearing queries are
+    // refused synchronously here too (#126885): this hook also sees the hidden
+    // window's own redirects, which nothing else re-checks once loadURL runs.
+    let blocked = false
+
+    try {
+      blocked = !!literalTitleBlockReason(new URL(details.url).hostname) || !!sensitiveTitleQueryParam(details.url)
+    } catch {
+      blocked = false
+    }
+
+    callback({ cancel: blocked })
   })
   guardLinkTitleSession(linkTitleSession)
 
@@ -5785,6 +5840,12 @@ function fetchLinkTitle(rawUrl) {
     return Promise.resolve('')
   }
 
+  // Credential-bearing queries (#126885): a title GET would consume the
+  // one-time link (magic login, OAuth code, signed URL) just by rendering it.
+  if (sensitiveTitleQueryParam(url)) {
+    return Promise.resolve('')
+  }
+
   const key = canonicalTitleCacheKey(url)
 
   if (!key) {
@@ -5799,15 +5860,29 @@ function fetchLinkTitle(rawUrl) {
     return Promise.resolve(titleInflight.get(key))
   }
 
-  const pending = resolveLinkTitle({
-    curl: () => fetchHtmlTitleWithCurl(url),
-    renderer: () => fetchHtmlTitleWithRenderer(url),
-    url
-  }).then(clean => {
-    cacheTitle(key, clean)
-    titleInflight.delete(key)
+  // Destination admission (#126885): the prefetch fires for links tool
+  // payloads can inject, so private/loopback/link-local/CGNAT/metadata
+  // targets are refused before curl or loadURL() dials anything. A refusal
+  // is cached like a title so repeated links cost one lookup, not one DNS
+  // resolution each.
+  const pending = isSafeTitleFetchTarget(url).then(admitted => {
+    if (!admitted) {
+      cacheTitle(key, '')
+      titleInflight.delete(key)
 
-    return clean
+      return ''
+    }
+
+    return resolveLinkTitle({
+      curl: () => fetchHtmlTitleWithCurl(url),
+      renderer: () => fetchHtmlTitleWithRenderer(url),
+      url
+    }).then(clean => {
+      cacheTitle(key, clean)
+      titleInflight.delete(key)
+
+      return clean
+    })
   })
 
   titleInflight.set(key, pending)

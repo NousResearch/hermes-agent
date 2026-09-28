@@ -1085,6 +1085,14 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
             _forced_release_count += 1
             stale.append((job_id, age, allowance, fut, reason))
 
+    if stale:
+        # Forced releases move the in-flight count without passing through
+        # release_running_job; notify lifecycle observers (the gateway's
+        # active_agents persist) so the count never goes stale here — the
+        # sweep is the recovery path for wedged claims, exactly where the
+        # file must not keep reading busy (#122813).
+        _notify_job_lifecycle()
+
     for job_id, age, allowance, fut, _reason in stale:
         _record_stale_release(by_id.get(job_id) or {}, job_id, age, allowance, fut, _reason)
     return [s[0] for s in stale]
@@ -2809,6 +2817,11 @@ def run_one_job(
     with _running_lock:
         _running_fire_owners.setdefault(_fire_key, {})[execution_token] = (
             fire_owner or None, profile_home)
+    # Split-fire path: registrations here never pass through
+    # try_register_running_job, so the count moves without notify. Fire here
+    # so every scheduler mode (in-process, multiplex, external providers) —
+    # all of which funnel through run_one_job — persists the count change.
+    _notify_job_lifecycle()
     try:
         with self_removal_delivery_scope(job["id"]):
             return _run_with_fire_claim_heartbeat(
@@ -2829,6 +2842,7 @@ def run_one_job(
                 executions.pop(execution_token, None)
                 if not executions:
                     _running_fire_owners.pop(_fire_key, None)
+        _notify_job_lifecycle()
 
 
 _OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completion."

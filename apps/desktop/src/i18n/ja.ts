@@ -3404,6 +3404,7 @@ export const ja = defineLocale({
       pin: 'ピン留め',
       unpin: 'ピン留めを解除',
       shiftClickHint: 'Shift クリックでモデルをピン留め',
+      pinShortcut: '⇧ クリック',
       effort: '努力度',
       minimal: '最小',
       low: '低',

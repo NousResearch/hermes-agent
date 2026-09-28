@@ -5059,6 +5059,7 @@ export const deOverrides = {
       pin: 'Anpinnen',
       unpin: 'Lösen',
       shiftClickHint: 'Shift-Klick auf ein Modell zum Anpinnen',
+      pinShortcut: '⇧ Klick',
       effort: 'Aufwand',
       minimal: 'Minimal',
       low: 'Niedrig',

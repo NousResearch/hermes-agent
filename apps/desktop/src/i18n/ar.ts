@@ -2955,6 +2955,7 @@ export const ar = defineLocale({
       pin: 'تثبيت',
       unpin: 'إلغاء التثبيت',
       shiftClickHint: 'انقر مع Shift على نموذج لتثبيته',
+      pinShortcut: '⇧ نقرة',
       effort: 'الجهد',
       minimal: 'أدنى',
       low: 'منخفض',

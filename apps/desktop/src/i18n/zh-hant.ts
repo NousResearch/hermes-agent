@@ -3585,6 +3585,7 @@ export const zhHant = defineLocale({
       pin: '釘選',
       unpin: '取消釘選',
       shiftClickHint: 'Shift + 點擊模型以釘選',
+      pinShortcut: '⇧ 點擊',
       effort: '推理強度',
       minimal: '最小',
       low: '低',

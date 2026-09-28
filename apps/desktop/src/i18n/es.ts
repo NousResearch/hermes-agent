@@ -5051,6 +5051,7 @@ export const esOverrides = {
       pin: 'Fijar',
       unpin: 'Desfijar',
       shiftClickHint: 'Mayús-clic en un modelo para fijarlo',
+      pinShortcut: '⇧ Clic',
       effort: 'Esfuerzo',
       minimal: 'Mínimo',
       low: 'Bajo',

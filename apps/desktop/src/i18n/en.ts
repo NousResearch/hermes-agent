@@ -4662,6 +4662,7 @@ export const en: Translations = {
       pin: 'Pin',
       unpin: 'Unpin',
       shiftClickHint: 'Shift-click a model to pin',
+      pinShortcut: '⇧ Click',
       effort: 'Effort',
       minimal: 'Minimal',
       low: 'Low',

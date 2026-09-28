@@ -5073,6 +5073,7 @@ export const frOverrides = {
       pin: 'Épingler',
       unpin: 'Désépingler',
       shiftClickHint: "Shift-clic sur un modèle pour l'épingler",
+      pinShortcut: '⇧ Clic',
       effort: 'Effort',
       minimal: 'Minimal',
       low: 'Faible',

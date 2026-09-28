@@ -4360,6 +4360,7 @@ export const zh = defineLocale({
       pin: '置顶',
       unpin: '取消置顶',
       shiftClickHint: 'Shift+ 单击模型以置顶',
+      pinShortcut: '⇧ 单击',
       effort: '推理强度',
       minimal: '最小',
       low: '低',

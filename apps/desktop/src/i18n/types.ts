@@ -3913,6 +3913,7 @@ export interface Translations {
       pin: string
       unpin: string
       shiftClickHint: string
+      pinShortcut: string
       effort: string
       minimal: string
       low: string

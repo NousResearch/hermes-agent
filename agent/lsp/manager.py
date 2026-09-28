@@ -573,8 +573,7 @@ class LSPService:
             return await self._attach_root(srv, client, root)
         if not owner:
             try:
-                # Each caller owns its timeout, not the shared spawn outcome.
-                client = await asyncio.shield(spawning)
+                client = await spawning
             except Exception:  # noqa: BLE001
                 return None
             return await self._attach_root(srv, client, root) if client is not None else None

@@ -28,7 +28,6 @@ from gateway.session import Platform, SessionSource
 
 OPERATOR_ID = "387972437901312000"
 
-
 @pytest.fixture(autouse=True)
 def _clean_auth_env(monkeypatch):
     for var in (
@@ -41,7 +40,6 @@ def _clean_auth_env(monkeypatch):
     ):
         monkeypatch.delenv(var, raising=False)
 
-
 def _make_runner(adapter=None):
     """Bare GatewayRunner (object.__new__ pattern, AGENTS.md pitfall #17)."""
     from gateway.run import GatewayRunner
@@ -50,7 +48,6 @@ def _make_runner(adapter=None):
     runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
     runner.adapters = {Platform.DISCORD: adapter} if adapter is not None else {}
     return runner
-
 
 def _discord_source(user_id: str = OPERATOR_ID):
     return SessionSource(
@@ -62,7 +59,6 @@ def _discord_source(user_id: str = OPERATOR_ID):
         is_bot=False,
     )
 
-
 def _resolved_adapter(ids=frozenset({OPERATOR_ID, "111222333444555666"})):
     """Stand-in for a connected DiscordAdapter after username resolution.
 
@@ -71,7 +67,6 @@ def _resolved_adapter(ids=frozenset({OPERATOR_ID, "111222333444555666"})):
     attribute can auto-truthy through other authz branches.
     """
     return SimpleNamespace(resolved_allowlist_user_ids=lambda: set(ids))
-
 
 class TestResolvedAllowlistSurvivesEnvReload:
     def test_username_env_plus_resolved_adapter_authorizes(self, monkeypatch):
@@ -142,7 +137,6 @@ class TestResolvedAllowlistSurvivesEnvReload:
         # stranger still denied
         assert runner._is_user_authorized(_discord_source("666000666000666000")) is False
 
-
 class TestDiscordAdapterResolvedAccessor:
     def _adapter(self, allowed_ids):
         from plugins.platforms.discord.adapter import DiscordAdapter
@@ -164,4 +158,3 @@ class TestDiscordAdapterResolvedAccessor:
         gateway layer to allow-everyone from adapter memory alone."""
         adapter = self._adapter({"teknium", "*", OPERATOR_ID})
         assert adapter.resolved_allowlist_user_ids() == {OPERATOR_ID}
-

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
 from hermes_time import get_timezone
-from utils import atomic_replace, atomic_write_text
+from utils import atomic_replace, atomic_write_text, fsync_directory
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
 # module attribute: a monkeypatched value wins because _ensure_croniter only probes while None.
@@ -298,7 +298,7 @@ def _jobs_lock():
         try:
             try:
                 ensure_dirs()
-                lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8")
+                lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8-sig")
                 lock_fd.seek(0)
                 if _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS) is False:
                     logger.error(
@@ -1253,7 +1253,7 @@ def record_ticker_heartbeat(success: bool = False) -> None:
 def _epoch_file_age(name: str) -> Optional[float]:
     """Seconds since the epoch stamp stored in ``<cron_dir>/<name>``; None = missing/unreadable."""
     try:
-        raw = (_current_cron_store().cron_dir / name).read_text(encoding="utf-8").strip()
+        raw = (_current_cron_store().cron_dir / name).read_text(encoding="utf-8-sig").strip()
         return max(0.0, time.time() - float(raw))
     except Exception:
         return None
@@ -1284,7 +1284,7 @@ def get_catch_up_occurrence_count() -> int:
     """Return the profile-local stale-schedule catch-up count."""
     path = _current_cron_store().cron_dir / "catch_up_occurrences"
     try:
-        return max(0, int(path.read_text(encoding="utf-8").strip()))
+        return max(0, int(path.read_text(encoding="utf-8-sig").strip()))
     except (OSError, ValueError):
         return 0
 
@@ -1309,7 +1309,7 @@ def clear_ticker_error() -> None:
 def get_ticker_last_error() -> Optional[str]:
     """Return the most recent recorded tick error message, or None."""
     try:
-        raw = (_current_cron_store().cron_dir / "ticker_last_error").read_text(encoding="utf-8")
+        raw = (_current_cron_store().cron_dir / "ticker_last_error").read_text(encoding="utf-8-sig")
     except Exception:
         return None
     lines = raw.splitlines()
@@ -1353,29 +1353,72 @@ def load_jobs() -> List[Dict[str, Any]]:
         raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
 
     # Accept the canonical dict, or a bare list (auto-repair); any other top-level shape is
-    # corruption.
+    # corruption. Repair details are logged only by the locked pass (an unlocked pass re-runs
+    # under the lock below), so each warning is emitted once per repair.
     repair = "had invalid control characters" if _strict_retry else None
+    notes: List[str] = []
+    unmergeable = False  # disk shape _peek_jobs_unlocked cannot read: only a replace save fixes it
     if isinstance(data, dict):
         jobs = data.get("jobs", [])
         if isinstance(jobs, dict):
             # ID-keyed map from external tools: flatten (inline "id" wins, else the key), skip junk.
-            # _peek_jobs_unlocked deliberately does NOT flatten, so saves never merge against it.
+            # _peek_jobs_unlocked deliberately does NOT flatten, so a merging save refuses this
+            # shape; the repair below rewrites it with replace=True.
             skipped = [k for k, v in jobs.items() if not isinstance(v, dict)]
             if skipped:
-                logger.warning(
-                    "Skipping %d non-dict entr%s in id-keyed jobs map: %s",
+                notes.append("Skipping %d non-dict entr%s in id-keyed jobs map: %s" % (
                     len(skipped), "y" if len(skipped) == 1 else "ies",
-                    ", ".join(map(repr, skipped)))
+                    ", ".join(map(repr, skipped))))
             jobs = [{**v, "id": v.get("id") or k} for k, v in jobs.items() if isinstance(v, dict)]
             repair = "id-keyed jobs map flattened to list"
+            unmergeable = True
+        elif not isinstance(jobs, list):
+            notes.append("Replacing invalid jobs.json 'jobs' field (%s) with an empty list"
+                         % type(jobs).__name__)
+            jobs = []
+            repair = "invalid jobs field replaced with list"
+            unmergeable = True
     elif isinstance(data, list):
         jobs = data
         repair = "bare list wrapped as dict"
     else:
         raise RuntimeError(
             f"Cron database corrupted: expected {{'jobs': [...]}}, got {type(data).__name__}")
-    if jobs and repair:
-        save_jobs(jobs)
+    junk = [j for j in jobs if not isinstance(j, dict)]
+    if junk:
+        # Every reader and the due scan index records as dicts: one junk entry would crash the
+        # whole tick and freeze every healthy sibling job, so skip it like the id-keyed map does.
+        # Types only: the raw values are arbitrary file content and must not reach the logs.
+        notes.append("Skipping %d non-object entr%s in jobs.json (types: %s)" % (
+            len(junk), "y" if len(junk) == 1 else "ies",
+            ", ".join(sorted({type(j).__name__ for j in junk}))))
+        jobs = [j for j in jobs if isinstance(j, dict)]
+        repair = repair or "non-object entries dropped"
+    for job in jobs:
+        # A hand-edited "completed" that is not a non-negative int (null, "2", 1.0, -5, Infinity)
+        # would crash every counter reader (None += 1, "2" + 1), render as "None/3" / "2.0/3", or
+        # grant extra runs; normalize it once here so readers can trust a non-negative int.
+        # OverflowError: json.loads turns Infinity / 1e999 into float inf, and int(inf) raises.
+        rep = job.get("repeat")
+        if isinstance(rep, dict) and "completed" in rep and (
+                type(rep["completed"]) is not int or rep["completed"] < 0):
+            try:
+                rep["completed"] = max(int(rep["completed"]), 0)
+            except (TypeError, ValueError, OverflowError):
+                rep["completed"] = 0
+            repair = repair or "invalid repeat.completed normalized"
+    # Persist even an empty result, or an all-junk store repeats the repair on every tick.
+    if repair:
+        if not getattr(_jobs_lock_state, "depth", 0):
+            # An unlocked snapshot may predate a locked writer's update to a job it already holds
+            # (the shrink-merge only restores missing ids), so re-read and repair under the lock.
+            with _jobs_lock():
+                return load_jobs()
+        for note in notes:
+            logger.warning("%s", note)
+        # Keep the shrink-merge (a degraded-lock sibling's create may have landed since the read)
+        # unless disk is STILL a shape the merge would refuse: a sibling may have rewritten it.
+        save_jobs(jobs, replace=unmergeable and _peek_jobs_unlocked() is None)
         logger.warning("Auto-repaired jobs.json (%s)", repair)
     _record_load_stamp(pre_read_stamp)
     return jobs
@@ -1425,14 +1468,15 @@ def _unmerged_disk_jobs(
     jobs: List[Dict[str, Any]], removed_ids: Optional[Collection[str]]
 ) -> List[Dict[str, Any]]:
     """On-disk jobs missing from *jobs* and not intentionally removed. Stamp match => nothing
-    landed, return without parsing; unreadable store => ``[]`` (never merge against an unknown
-    baseline)."""
+    landed, return without parsing; unreadable store => raise RuntimeError (fail closed: writing
+    over an unknown baseline would silently drop every job in it)."""
     stamp = getattr(_jobs_lock_state, "load_stamp", None)
     if stamp is not None and _jobs_file_stamp(_current_cron_store().jobs_file) == stamp:
         return []
     disk_jobs = _peek_jobs_unlocked()
     if disk_jobs is None:
-        return []
+        raise RuntimeError(
+            f"Cron database corrupted; refusing to overwrite {_current_cron_store().jobs_file}")
     seen = {str(j["id"]) for j in jobs if isinstance(j, dict) and j.get("id")}
     seen |= {str(i) for i in (removed_ids or ()) if i}
     recovered: List[Dict[str, Any]] = []
@@ -1493,8 +1537,8 @@ def _save_jobs_unlocked(
     replace: bool = False,
 ):
     """Save all jobs; caller must hold _jobs_lock(). ``removed_ids`` = intentional deletes;
-    ``replace=True`` skips the shrink-merge guard (wholesale rewrite for tests/disaster
-    recovery)."""
+    ``replace=True`` skips the shrink-merge guard and the corrupt-store refusal (wholesale
+    rewrite for tests, disaster recovery and load_jobs' auto-repair of unmergeable shapes)."""
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
     # Owner snapshot BEFORE replace so a root writer can hand the file back to the gateway user.
@@ -1520,8 +1564,10 @@ def _save_jobs_unlocked(
                 _unlink_quiet(tmp_path)
                 tmp_path = None
                 continue
-            atomic_replace(tmp_path, jobs_file)
+            # fsync the directory the rename actually landed in (atomic_replace resolves symlinks).
+            replaced = Path(atomic_replace(tmp_path, jobs_file))
             tmp_path = None
+            fsync_directory(replaced.parent)
             _secure_file(jobs_file)
             _preserve_file_ownership(jobs_file, _stat_before)
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk
@@ -1678,11 +1724,13 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "no_agent": bool,
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
+    "interpreter": _normalize_job_optional_text,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
+    "interpreter": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
 }
 
@@ -1754,6 +1802,7 @@ def create_job(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: bool = False,
+    interpreter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1762,7 +1811,9 @@ def create_job(
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
+    (a venv can be rebuilt or moved after creation)."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1847,7 +1898,7 @@ def create_job(
     # jobs.
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
-        ("failure_deliver", f["failure_deliver"]),
+        ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
     ):
         if value is not None:
             job[key] = value
@@ -2378,6 +2429,7 @@ def mark_job_run(
     expected_fire_owner: Optional[str] = None,
     model_unreachable: bool = False,
     quota_hold_seconds: Optional[float] = None,
+    recover_consumed_fire: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2393,8 +2445,10 @@ def mark_job_run(
     (Cowork-style; see cron/unreachable_retry.py).
 
     ``quota_hold_seconds``: the provider said it stays closed for this long (a quota 429 with
-    ``retry after <N>s``). Recurring jobs are parked at their first occurrence after the window
-    instead of re-firing into it on every tick (cron/quota_hold.py, #89376).
+    ``retry after <N>s``). Recurring jobs are parked through the window instead of re-firing into
+    it on every tick. ``recover_consumed_fire`` lets a scheduled sparse cron recover its
+    consumed fire when the provider reopens; manual runs retain the natural schedule
+    (cron/quota_hold.py, #89376).
     """
     def apply(jobs, _i, job):
         if expected_fire_owner is not None:
@@ -2416,7 +2470,7 @@ def mark_job_run(
             # Any run that reached the model (either outcome) resets the re-run ladder.
             clear_state(job)
         if not success and quota_hold_seconds and not is_terminal_job(job):
-            quota_hold.plan_hold(job, quota_hold_seconds)
+            quota_hold.plan_hold(job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire)
         else:
             quota_hold.clear_state(job)
         save_jobs(jobs)
@@ -2985,13 +3039,20 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     """Stale-schedule guard for a due cron instant; True when re-anchored without firing.
 
     A direct edit of schedule.expr leaves next_run_at on the old lattice, so re-anchor first (from
-    the current expr, so this converges). An offset-representation migration also moves a legacy
-    instant off the lattice, and re-anchoring THAT swallowed a due occurrence — so classify, and
-    let
-    the migration case fall through to fire ONCE (at-most-once holds: nothing re-reads the legacy
-    instant after advance/mark_job_run rewrites it)."""
+    the current expr, so this converges). Some instants are off the lattice on purpose and
+    authorize one fire instead: an offset-representation migration that would otherwise swallow
+    a never-fired occurrence, and the failure-path planners' parked instants (a quota recovery
+    before a sparse cron's next natural occurrence, an unreachable-model retry rung). All fall
+    through to fire ONCE (at-most-once holds: completion rewrites the instant)."""
     stale_class = _classify_stale_cron_next_run(d.schedule, d.raw_next_run_dt, d.next_run_dt)
     if stale_class == STALE_CRON_EXPR_EDIT:
+        from cron.quota_hold import is_recovery_fire
+        from cron.unreachable_retry import is_retry_fire
+        if is_recovery_fire(d.job, d.next_run) or is_retry_fire(d.job, d.next_run):
+            logger.info(
+                "cron.off_lattice_fire job='%s' id=%s expr=%r at=%s",
+                d.label, d.job.get("id"), d.schedule.get("expr"), d.next_run)
+            return False
         new_next = d.recompute_next()
         logger.info(
             "Job '%s' next_run_at %s does not match its current "

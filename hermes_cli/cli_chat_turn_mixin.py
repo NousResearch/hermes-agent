@@ -93,7 +93,7 @@ class CLIChatTurnMixin:
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-        print(flush=True)
+        _cprint("")
 
         from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
         with notification_policy_snapshot(agent, "cli", notification_config_snapshot()):
@@ -106,6 +106,7 @@ class CLIChatTurnMixin:
                 # Not part of _reset_stream_state: must persist across intermediate turn
                 # boundaries (tool-calling loops), reset once per user turn.
                 self._reasoning_shown_this_turn = False
+                self._streamed_text_this_turn = ""
                 self._chat_setup_turn_audio(turn, message, voice_input)
                 # Per-prompt elapsed timer — frozen when the agent thread finishes.
                 self._prompt_start_time = time.time()
@@ -117,7 +118,7 @@ class CLIChatTurnMixin:
                 self._chat_settle_turn(turn)
                 return self._chat_render_turn(turn, agent_thread, interrupt_msg)
             except Exception as e:
-                print(f"Error: {e}")
+                _cprint(f"Error: {e}")
                 return None
             finally:
                 self._chat_release_turn_audio(turn)
@@ -397,7 +398,7 @@ class CLIChatTurnMixin:
 
     def _chat_monitor_agent_thread(self, turn, agent_thread):
         """Poll the interrupt queue while the agent thread runs; returns the interrupting message (or None)."""
-        from cli import _hermes_home, logger
+        from cli import _cprint, _hermes_home, logger
         # Ambient "thinking" blips in voice mode; skipped per-blip while TTS speaks, the mic
         # records or a barge capture is live. voice.thinking_sound gates it (default on).
         if self._voice_mode:
@@ -430,7 +431,7 @@ class CLIChatTurnMixin:
                     pass
                 interrupt_msg = None
                 continue
-            print("\n⚡ New message detected, interrupting...")
+            _cprint("\n⚡ New message detected, interrupting...")
             if turn.stop_event is not None:
                 turn.stop_event.set()
             self.agent.interrupt(interrupt_msg)
@@ -594,16 +595,16 @@ class CLIChatTurnMixin:
             payload = (combined, image_parts) if image_parts else combined
             preview = combined[:50] + ("..." if len(combined) > 50 else "")
             if len(all_parts) > 1:
-                print(f"\n⚡ Sending {len(all_parts)} messages after interrupt: '{preview}'")
+                _cprint(f"\n⚡ Sending {len(all_parts)} messages after interrupt: '{preview}'")
             else:
-                print(f"\n⚡ Sending after interrupt: '{preview}'")
+                _cprint(f"\n⚡ Sending after interrupt: '{preview}'")
             self._pending_input.put(payload)
 
         # A /steer the agent finished before absorbing becomes the next user turn.
         _leftover_steer = turn.result.get("pending_steer") if turn.result else None
         if _leftover_steer:
             preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
-            print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
+            _cprint(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
             self._pending_input.put(_leftover_steer)
 
         return response
@@ -680,7 +681,16 @@ class CLIChatTurnMixin:
                 _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
 
             is_error_response = turn.result and (turn.result.get("failed") or turn.result.get("partial"))
-            already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
+            # An interrupted reply that streamed before a tool-call boundary reset the segment
+            # state is already on screen (#65666). Only suppress when the response IS that text:
+            # unstreamed interrupt/status messages and completed replies still get their Panel.
+            _interrupted_streamed = bool(
+                self._last_turn_interrupted and response.strip()
+                and " ".join(response.split()) in " ".join(self._streamed_text_this_turn.split())
+            )
+            already_streamed = (
+                (self._stream_started and self._stream_box_opened) or _interrupted_streamed
+            ) and not is_error_response
             if turn.use_streaming_tts and turn.box_opened and not is_error_response:
                 # Text already printed sentence-by-sentence; just close the box.
                 _cprint(f"\n{_ACCENT}╰{'─' * (self._scrollback_box_width() - 2)}╯{_RST}")

@@ -18,6 +18,7 @@ import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/ass
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
+import { parseMaybeObject, toolCallFailed } from '@/components/assistant-ui/tool/fallback-model'
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
@@ -28,9 +29,11 @@ import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
+import { isCardTool } from '@/lib/tool-render-class'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
+import { useForcedTextDirection } from '@/store/text-direction'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
@@ -73,7 +76,20 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
   )
 }
 
+// A failure the user still has to see. The gateway's tool.complete carries the
+// failure inside `result`, never as the top-level error that sets isError, so
+// this reads the body like the run summary does. A non-zero exit_code counts
+// too, matching the gateway's _tool_result_needs_user, which forwards terminal
+// {output, exit_code: 1, error: null} in answer-only mode.
+const failedCallNeedsUser = (part: TimelineToolCallProps): boolean => {
+  const exitCode = parseMaybeObject(part.result).exit_code
+
+  return toolCallFailed(part) || (typeof exitCode === 'number' && exitCode !== 0)
+}
+
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {
+  const showReasoning = useStore($showReasoning)
+
   // todo parts are hoisted to a dedicated panel above the message content.
   if (isTodoToolName(props.toolName)) {
     return null
@@ -136,6 +152,13 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
 
   if (toolLabels(props.args).length > 0) {
     return <ConnectorExecution {...props} />
+  }
+
+  // Answer-only: process chrome (reads, searches, commands) stays off the
+  // transcript. Cards, approvals, and failed calls the user must act on remain.
+  // reasoning_effort is not a display switch.
+  if (!showReasoning && !failedCallNeedsUser(props) && !isCardTool(props.toolName)) {
+    return null
   }
 
   return <ToolFallback {...props} />
@@ -390,6 +413,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   // rendered without a ReasoningGroup wrapper (assistant-ui drops the group
   // when a ChainOfThought component is registered).
   const showReasoning = useStore($showReasoning)
+  const textDirection = useForcedTextDirection()
 
   if (!showReasoning) {
     return null
@@ -402,6 +426,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
       isRunning={status.type === 'running' || messageRunning}
       scratchpad
       text={separateGluedReasoningBlocks(text.trimStart())}
+      textDirection={textDirection}
     />
   )
 }

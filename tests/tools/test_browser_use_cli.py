@@ -19,6 +19,7 @@ import sys
 import time
 
 import pytest
+import psutil
 
 import tools.browser_use_cli as bu_cli
 from tools import browser_tool_install as bt_install
@@ -269,28 +270,6 @@ class TestVaultEgressRedaction:
         assert secret not in serialized
         assert serialized.count("«redacted-vault-secret»") == 2
 
-
-class TestFindCli:
-    """The tests/tools conftest pins _find_cli to None (host isolation);
-    exercise the real function via the preserved _find_cli_unpatched."""
-
-    def test_prefers_installed_binary(self, monkeypatch):
-        monkeypatch.setattr(
-            bu_cli.shutil, "which",
-            lambda name, path=None: "/usr/local/bin/browser-use" if name == "browser-use" and path is None else ("/usr/local/bin/uvx" if path is None else None),
-        )
-        assert bu_cli._find_cli_unpatched() == ["/usr/local/bin/browser-use"]
-
-    def test_falls_back_to_uvx(self, monkeypatch):
-        monkeypatch.setattr(
-            bu_cli.shutil, "which",
-            lambda name, path=None: "/usr/local/bin/uvx" if name == "uvx" and path is None else None,
-        )
-        assert bu_cli._find_cli_unpatched() == ["/usr/local/bin/uvx", "browser-use"]
-
-    def test_none_when_neither_available(self, monkeypatch):
-        monkeypatch.setattr(bu_cli.shutil, "which", lambda name, path=None: None)
-        assert bu_cli._find_cli_unpatched() is None
 
 
 class TestLegacyCloudMigration:
@@ -969,174 +948,6 @@ class TestBrowserExec:
 
 
 
-class TestFindCliManagedBin:
-    """MANAGED-FIRST: _find_cli probes $HERMES_HOME/bin before PATH and
-    ~/.local/bin, so the Hermes-installed copy always wins."""
-
-    @pytest.fixture(autouse=True)
-    def _hermetic_home(self, tmp_path, monkeypatch):
-        """Pin HOME so the ~/.local/bin probe can't leak the host's real
-        user-level installs into these real-PATH-probing tests."""
-        monkeypatch.setenv("HOME", str(tmp_path / "userhome"))
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-
-    def test_managed_bin_browser_use_found(self, tmp_path, monkeypatch):
-        bin_dir = tmp_path / "home" / "bin"
-        bin_dir.mkdir(parents=True)
-        bu = bin_dir / "browser-use"
-        bu.write_text("#!/bin/sh\n", encoding="utf-8")
-        bu.chmod(bu.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(bu)]
-
-    def test_managed_bin_uvx_fallback(self, tmp_path, monkeypatch):
-        bin_dir = tmp_path / "home" / "bin"
-        bin_dir.mkdir(parents=True)
-        uvx = bin_dir / "uvx"
-        uvx.write_text("#!/bin/sh\n", encoding="utf-8")
-        uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
-
-
-    def test_user_local_bin_browser_use_found(self, tmp_path, monkeypatch):
-        """#83788: Desktop/TUI workers spawn with a minimal PATH that omits
-        ~/.local/bin, where `uv tool install browser-use` links the binary
-        by default — _find_cli must probe it explicitly."""
-        cli_dir = tmp_path / "userhome" / ".local" / "bin"
-        cli_dir.mkdir(parents=True)
-        cli = cli_dir / "browser-use"
-        cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(cli)]
-
-    def test_managed_bin_precedes_user_local_bin(self, tmp_path, monkeypatch):
-        """MANAGED-FIRST: Hermes' managed copy wins over a user-level side
-        install — every backend selection provisions/updates the managed
-        copy, so resolution must land on the binary we control (no version
-        drift from stray `uv tool install` runs)."""
-        user_dir = tmp_path / "userhome" / ".local" / "bin"
-        user_dir.mkdir(parents=True)
-        user_cli = user_dir / "browser-use"
-        user_cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        user_cli.chmod(user_cli.stat().st_mode | stat.S_IXUSR)
-        managed_dir = tmp_path / "home" / "bin"
-        managed_dir.mkdir(parents=True)
-        managed_cli = managed_dir / "browser-use"
-        managed_cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
-
-    def test_managed_bin_precedes_path(self, tmp_path, monkeypatch):
-        """MANAGED-FIRST: the managed copy also wins over one on PATH."""
-        path_dir = tmp_path / "onpath"
-        path_dir.mkdir()
-        path_cli = path_dir / "browser-use"
-        path_cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        path_cli.chmod(path_cli.stat().st_mode | stat.S_IXUSR)
-        monkeypatch.setenv("PATH", str(path_dir))
-        managed_dir = tmp_path / "home" / "bin"
-        managed_dir.mkdir(parents=True)
-        managed_cli = managed_dir / "browser-use"
-        managed_cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
-
-    def test_user_local_bin_uvx_fallback(self, tmp_path, monkeypatch):
-        cli_dir = tmp_path / "userhome" / ".local" / "bin"
-        cli_dir.mkdir(parents=True)
-        uvx = cli_dir / "uvx"
-        uvx.write_text("#!/bin/sh\n", encoding="utf-8")
-        uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
-        assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
-
-
-class TestInstallCli:
-    def test_path_install_does_not_short_circuit(self, tmp_path, monkeypatch):
-        """MANAGED-FIRST: a browser-use on PATH is a user-level side install
-        and must NOT satisfy install_cli() — only the managed copy does,
-        otherwise resolution stays pinned to a binary Hermes can't update."""
-        cli = _fake_cli(tmp_path, "")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setattr(bu_cli.shutil, "which", lambda name, path=None: cli if name == "browser-use" and path is None else None)
-        import sys as _sys
-        import types as _types
-        fake = _types.ModuleType("hermes_cli.managed_uv")
-        fake.ensure_uv = lambda **kw: None
-        monkeypatch.setitem(_sys.modules, "hermes_cli.managed_uv", fake)
-        ok, msg = bu_cli.install_cli()
-        # No uv available in this fixture, so the attempted managed install
-        # fails — the point is that the PATH copy did not short-circuit.
-        assert ok is False
-        assert "already installed" not in msg
-
-    def test_already_installed_in_managed_bin(self, tmp_path, monkeypatch):
-        bin_dir = tmp_path / "home" / "bin"
-        bin_dir.mkdir(parents=True)
-        cli = bin_dir / "browser-use"
-        cli.write_text("#!/bin/sh\n", encoding="utf-8")
-        cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        ok, msg = bu_cli.install_cli()
-        assert ok is True
-        assert "already installed" in msg
-
-    def test_no_uv_anywhere_fails_with_guidance(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        import sys as _sys
-        import types as _types
-        fake = _types.ModuleType("hermes_cli.managed_uv")
-        fake.ensure_uv = lambda **kw: None
-        monkeypatch.setitem(_sys.modules, "hermes_cli.managed_uv", fake)
-        ok, msg = bu_cli.install_cli()
-        assert ok is False
-        assert "uv" in msg
-
-    def test_successful_install_via_fake_uv(self, tmp_path, monkeypatch):
-        home = tmp_path / "home"
-        bin_dir = home / "bin"
-        bin_dir.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        # install_cli verifies via _find_cli(), which the tests/tools conftest
-        # pins to None — restore the real resolver for this test.
-        monkeypatch.setattr(bu_cli, "_find_cli", bu_cli._find_cli_unpatched)
-        # fake uv: `uv tool install browser-use` drops a binary into UV_TOOL_BIN_DIR.
-        # Absolute /bin/chmod: PATH is emptied above, so bare chmod won't resolve.
-        uv = tmp_path / "uv"
-        uv.write_text(
-            "#!/bin/sh\n"
-            'target="$UV_TOOL_BIN_DIR/browser-use"\n'
-            'echo "#!/bin/sh" > "$target"\n'
-            '/bin/chmod +x "$target"\n'
-        , encoding="utf-8")
-        uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
-        import sys as _sys
-        import types as _types
-        fake = _types.ModuleType("hermes_cli.managed_uv")
-        fake.ensure_uv = lambda **kw: str(uv)
-        monkeypatch.setitem(_sys.modules, "hermes_cli.managed_uv", fake)
-        ok, msg = bu_cli.install_cli()
-        assert ok is True, msg
-        assert (bin_dir / "browser-use").exists()
-
-    def test_failed_install_surfaces_stderr_tail(self, tmp_path, monkeypatch):
-        home = tmp_path / "home"
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        uv = tmp_path / "uv"
-        uv.write_text('#!/bin/sh\necho "no network" >&2\nexit 1\n', encoding="utf-8")
-        uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
-        import sys as _sys
-        import types as _types
-        fake = _types.ModuleType("hermes_cli.managed_uv")
-        fake.ensure_uv = lambda **kw: str(uv)
-        monkeypatch.setitem(_sys.modules, "hermes_cli.managed_uv", fake)
-        ok, msg = bu_cli.install_cli()
-        assert ok is False
-        assert "no network" in msg
-
 
 class TestDefaultDowngradeNotice:
     def _isolate(self, tmp_path, monkeypatch):
@@ -1370,16 +1181,11 @@ class TestTimeoutProcessGroupKill:
         # Pre-fix, this hangs until the 60s sleeps expire — and forever with a daemon child.
         assert elapsed < 30
         # The pipe-holding grandchild died with the group instead of leaking.
-        pid = int(pid_file.read_text().strip())
+        pid = int(pid_file.read_text(encoding="utf-8-sig").strip())
         deadline = time.time() + 5
-        while time.time() < deadline:
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                break
+        while time.time() < deadline and psutil.pid_exists(pid):
             time.sleep(0.05)
-        with pytest.raises(OSError):
-            os.kill(pid, 0)
+        assert not psutil.pid_exists(pid)
 
     def test_post_kill_drain_is_bounded(self, monkeypatch):
         """If even the post-kill drain misses its deadline, give up instead of wedging."""

@@ -30,10 +30,11 @@ import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
+import { findCatalogProvider } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
-import { notifyError, readableError } from '@/store/notifications'
+import { notify, notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 
 import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -43,7 +44,7 @@ import { PanelEmpty } from '../overlays/panel'
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ModelSelect, withActive } from './model-select'
-import { ListRow, Pill, SectionHeading } from './primitives'
+import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
@@ -70,22 +71,10 @@ export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'sub
 
       {(subpage === undefined || subpage === 'auxiliary' || subpage === 'moa') && (
         <section>
-          <div className="mb-2.5 flex items-center gap-2 pt-2">
-            <Skeleton className="size-4" />
-            <Skeleton className="h-4 w-36" />
-          </div>
+          <SectionHeadingSkeleton />
           <div className="grid gap-1">
             {[0, 1, 2, 3].map(row => (
-              <div
-                className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center"
-                key={row}
-              >
-                <div className="min-w-0 space-y-1.5">
-                  <Skeleton className="h-3.5 w-32" />
-                  <Skeleton className="h-3 w-52 max-w-full" />
-                </div>
-                <Skeleton className="h-8 w-full @2xl:justify-self-end @2xl:w-56" />
-              </div>
+              <ListRowSkeleton key={row} />
             ))}
           </div>
         </section>
@@ -303,26 +292,56 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       setSkewRestart(false)
 
       try {
-        const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
+        // Degrade per call: a hung /api/model/info (its context-length probe
+        // hits the configured provider, which can be unreachable) must not
+        // block the config-backed sections — auxiliary and MOA are fast
+        // config-file reads — behind a single all-or-nothing Promise.all.
+        const [modelInfoResult, modelOptionsResult, auxiliaryModelsResult, moaModelsResult] = await Promise.allSettled([
           getGlobalModelInfo(scopeProfile),
           getGlobalModelOptions(undefined, scopeProfile),
           getAuxiliaryModels(scopeProfile),
-          getMoaModels(scopeProfile).catch(() => null)
+          getMoaModels(scopeProfile)
         ])
 
         if (profileEpoch.current !== epoch) {
           return
         }
 
-        setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
-        setCatalogProviders(modelOptions.providers || [])
+        const failures: string[] = []
 
-        if (replaceSelection) {
-          setSelectedProvider(modelInfo.provider)
-          setSelectedModel(modelInfo.model)
-        } else {
-          setSelectedProvider(prev => prev || modelInfo.provider)
-          setSelectedModel(prev => prev || modelInfo.model)
+        const settledValue = <T,>(result: PromiseSettledResult<T>): T | null => {
+          if (result.status === 'fulfilled') {
+            return result.value
+          }
+
+          failures.push(result.reason instanceof Error ? result.reason.message : String(result.reason))
+
+          return null
+        }
+
+        const modelInfo = settledValue(modelInfoResult)
+        const modelOptions = settledValue(modelOptionsResult)
+        const auxiliaryModels = settledValue(auxiliaryModelsResult)
+        // MOA has always been optional-on-failure; keep it out of the banner.
+        const moaModels = moaModelsResult.status === 'fulfilled' ? moaModelsResult.value : null
+        // The main assignment also lives in the auxiliary config read, so the
+        // page still knows the current model when only the live probe failed.
+        const resolvedMain = modelInfo ?? auxiliaryModels?.main ?? null
+
+        if (resolvedMain) {
+          setMainModel({ model: resolvedMain.model, provider: resolvedMain.provider })
+
+          if (replaceSelection) {
+            setSelectedProvider(resolvedMain.provider)
+            setSelectedModel(resolvedMain.model)
+          } else {
+            setSelectedProvider(prev => prev || resolvedMain.provider)
+            setSelectedModel(prev => prev || resolvedMain.model)
+          }
+        }
+
+        if (modelOptions) {
+          setCatalogProviders(modelOptions.providers || [])
         }
 
         setAuxiliary(auxiliaryModels)
@@ -330,6 +349,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
         if (moaModels) {
           setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))
+        }
+
+        if (failures.length > 0) {
+          setCaughtError(new Error(failures.join('; ')), m.loadFailed)
         }
 
         // The config record loads via its own shared query; a model switch can
@@ -372,7 +395,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // leaving it out of the real inventory used for readiness/setup metadata.
   const mainProviderOptions = useMemo(
     () =>
-      selectedProvider && !providers.some(provider => provider.slug === selectedProvider)
+      selectedProvider && !findCatalogProvider(providers, selectedProvider)
         ? [{ name: selectedProvider, slug: selectedProvider, models: [] }, ...providers]
         : providerOptions,
     [providerOptions, providers, selectedProvider]
@@ -384,7 +407,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   const moaSlotProviderOptions = providerOptions.filter(provider => (provider.slug || '').toLowerCase() !== 'moa')
 
   const selectedProviderRow = useMemo(
-    () => providers.find(provider => provider.slug === selectedProvider),
+    () => findCatalogProvider(providers, selectedProvider),
     [providers, selectedProvider]
   )
 
@@ -402,12 +425,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   }, [selectedProvider])
 
   const auxDraftProviderModels = useMemo(
-    () => providers.find(provider => provider.slug === auxDraft.provider)?.models ?? [],
+    () => findCatalogProvider(providers, auxDraft.provider)?.models ?? [],
     [auxDraft.provider, providers]
   )
 
   const modelsForProvider = useCallback(
-    (provider: string) => providers.find(row => row.slug === provider)?.models ?? [],
+    (provider: string) => findCatalogProvider(providers, provider)?.models ?? [],
     [providers]
   )
 
@@ -563,7 +586,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // reasoning/speed controls the same way the composer picker gates per-model
   // edits (reasoning defaults on, fast defaults off when unreported).
   const mainCaps = useMemo(() => {
-    const row = providers.find(provider => provider.slug === mainModel?.provider)
+    const row = mainModel ? findCatalogProvider(providers, mainModel.provider) : undefined
 
     return mainModel ? row?.capabilities?.[mainModel.model] : undefined
   }, [providers, mainModel])
@@ -670,15 +693,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     const lower = slug.toLowerCase()
 
     if (lower === 'custom' || lower === 'local' || lower.startsWith('custom:')) {
-      startManualLocalEndpoint()
+      startManualLocalEndpoint(null, scopeProfile)
     } else if (rowSlug) {
-      startManualProviderOAuth(rowSlug)
+      startManualProviderOAuth(rowSlug, scopeProfile)
     } else {
       // An absent row has no trustworthy auth metadata. Open the generic
       // provider picker instead of deep-linking an unknown or stale slug.
-      startManualOnboarding()
+      startManualOnboarding(undefined, scopeProfile)
     }
-  }, [selectedProvider, selectedProviderRow])
+  }, [scopeProfile, selectedProvider, selectedProviderRow])
 
   const applyMainModel = useCallback(async () => {
     if (!selectedProvider || !selectedModel) {
@@ -707,6 +730,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       const model = result.model || selectedModel
       setMainModel({ provider, model })
       setSwitchStaleAux(result.stale_aux ?? [])
+      notify({ kind: 'success', title: m.mainAppliedTitle, message: m.mainAppliedMessage(model) })
 
       // Live UI stores mirror the ACTIVE profile's model; a scoped apply
       // changed a different profile and must not repaint them.
@@ -721,7 +745,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       setApplying(false)
     }
   }, [
-    m.loadFailed,
+    m,
     onMainModelChanged,
     refresh,
     scopeProfile,
@@ -738,7 +762,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // main endpoint.
   const endpointForProvider = useCallback(
     (provider: string) => {
-      const row = providers.find(entry => entry.slug === provider)
+      const row = findCatalogProvider(providers, provider)
 
       return row?.api_url ? { base_url: row.api_url } : {}
     },
@@ -893,7 +917,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         <section>
           <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
           <div className="flex flex-wrap items-center gap-2">
-            <Select onValueChange={setSelectedProvider} value={selectedProvider}>
+            <Select onValueChange={setSelectedProvider} value={selectedProviderRow?.slug ?? selectedProvider}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
                 <SelectValue placeholder={m.provider} />
               </SelectTrigger>
@@ -1076,7 +1100,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                           <div className="flex flex-wrap items-center gap-2">
                             <Select
                               onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
-                              value={auxDraft.provider}
+                              value={findCatalogProvider(providers, auxDraft.provider)?.slug ?? auxDraft.provider}
                             >
                               <SelectTrigger
                                 aria-label={`${copy.label} provider`}
@@ -1097,7 +1121,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                               className="min-w-48"
                               models={auxDraftProviderModels}
                               onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
-                              provider={providers.find(row => row.slug === auxDraft.provider)}
+                              provider={findCatalogProvider(providers, auxDraft.provider)}
                               providerSlug={auxDraft.provider}
                               value={auxDraft.model}
                             />
@@ -1329,7 +1353,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                           )
                         }))
                       }
-                      provider={providers.find(row => row.slug === slot.provider)}
+                      provider={findCatalogProvider(providers, slot.provider)}
                       providerSlug={slot.provider}
                       value={slot.model}
                     />
@@ -1415,7 +1439,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                         aggregator: updateMoaSlot(prev.aggregator, { model: value })
                       }))
                     }
-                    provider={providers.find(row => row.slug === currentMoaPreset.aggregator.provider)}
+                    provider={findCatalogProvider(providers, currentMoaPreset.aggregator.provider)}
                     providerSlug={currentMoaPreset.aggregator.provider}
                     value={currentMoaPreset.aggregator.model}
                   />

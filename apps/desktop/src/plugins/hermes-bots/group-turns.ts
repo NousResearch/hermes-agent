@@ -6,7 +6,7 @@
  * Room-level sequencing lives in group-rounds.ts, which drives these.
  */
 
-import { host } from '@hermes/plugin-sdk'
+import { APPROVAL_RESPOND_TIMEOUT_MS, host } from '@hermes/plugin-sdk'
 
 import { noteBotAttention } from './data'
 import { groupFailureReason, recordGroupActivity } from './group-activity'
@@ -226,7 +226,9 @@ export function retainedGroupTurnError(state: GroupSessionSnapshot | null | unde
  *  carries no start time, so two identical consecutive failures differ only
  *  by `turn_started_at`. */
 function retainedGroupTurnKey(state: GroupSessionSnapshot | null | undefined): null | string {
-  return retainedGroupTurnError(state) === null ? null : JSON.stringify([state?.turn_started_at ?? null, state?.inflight])
+  return retainedGroupTurnError(state) === null
+    ? null
+    : JSON.stringify([state?.turn_started_at ?? null, state?.inflight])
 }
 
 /** Does a user row follow the stranded turn's own prompt? Then a later turn
@@ -814,11 +816,18 @@ export async function answerGroupClarify(
 
   try {
     if (entry.kind === 'approval') {
-      await requestForBot(member, 'approval.respond', {
-        session_id: entry.sessionId || undefined,
-        request_id: entry.requestId,
-        choice: typeof answers === 'string' && answers ? answers : 'deny'
-      })
+      // Ride the backend's approvals.timeout (300s default), not the generic
+      // request timeout — the user owns the full approval window (#60654).
+      await requestForBot(
+        member,
+        'approval.respond',
+        {
+          session_id: entry.sessionId || undefined,
+          request_id: entry.requestId,
+          choice: typeof answers === 'string' && answers ? answers : 'deny'
+        },
+        { timeoutMs: APPROVAL_RESPOND_TIMEOUT_MS }
+      )
     } else if (entry.questions && entry.questions.length) {
       for (const question of entry.questions) {
         // Question ids are opaque on the wire (`GroupPrompt.questions` types
@@ -1378,7 +1387,9 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     const retained = laterTurnAfterStranded(messages, strandedBefore) ? null : retainedGroupTurnError(state)
 
     const pick =
-      retained === null && messages.length > strandedBefore ? pickStrandedGroupTurnReply(messages, strandedBefore) : null
+      retained === null && messages.length > strandedBefore
+        ? pickStrandedGroupTurnReply(messages, strandedBefore)
+        : null
 
     const reply = typeof pick === 'string' ? pick : null
     const failedNotice = typeof pick === 'string' ? null : (pick?.failedNotice ?? null)

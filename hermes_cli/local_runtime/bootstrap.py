@@ -35,7 +35,7 @@ def _detect_gpu_vendor() -> str | None:
     with suppress(OSError, subprocess.TimeoutExpired):
         out = subprocess.run(
             [smi, "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         if out.returncode == 0 and out.stdout.strip():
             return "nvidia " + out.stdout.strip().splitlines()[0]
     return None
@@ -74,6 +74,50 @@ def staged_in(models_dir: Path, *, require_complete: bool = True) -> "list[Path]
                                        for i in range(2, total + 1)):
             out.append(p)
     return out
+
+
+def adopt_legacy_models() -> "list[Path]":
+    """Move GGUFs left in the old per-profile ``<profile home>/models`` layout (and its assets/)
+    into the machine-scoped dirs, so everything downstream keeps reading one directory.
+
+    ``os.rename`` only: within one filesystem it is instant even for a 20 GB model, while
+    ``shutil.move`` silently degrades to a copy across devices. A cross-device profile dir is left
+    in place with a warning rather than copying tens of GB at session start. A name that already
+    exists in the destination is left alone (check-then-rename: the only window is two processes
+    adopting two profiles' same-named file at once, and a same name is the same catalog variant).
+    Two processes racing on one file are harmless: the loser's rename finds the source gone and
+    skips it. Returns the new paths of the moved files."""
+    from hermes_constants import get_default_hermes_root, named_profile_has_identity
+
+    profiles_root = get_default_hermes_root() / "profiles"
+    if not profiles_root.is_dir():
+        return []
+    moved: list[Path] = []
+    for home in sorted(profiles_root.iterdir()):
+        old = home / "models"
+        if home.name.startswith(".") or not old.is_dir() or not named_profile_has_identity(home):
+            continue
+        for src_dir, dest_dir in ((old, models_dir()), (old / "assets", assets_dir())):
+            for src in sorted(src_dir.glob("*.gguf")):
+                dest = dest_dir / src.name
+                if dest.exists():
+                    logger.warning("legacy model %s not moved: %s already exists", src, dest)
+                    continue
+                try:
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    os.rename(src, dest)
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    logger.warning("legacy model %s not moved to %s: %s", src, dest_dir, exc)
+                    continue
+                moved.append(dest)
+        for emptied in (old / "assets", old):
+            with suppress(OSError):
+                emptied.rmdir()
+    if moved:
+        logger.info("moved %d legacy model file(s) into %s", len(moved), models_dir())
+    return moved
 
 
 def staged_models() -> "list[Path]":
@@ -275,6 +319,10 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     if _SUPERVISOR is not None:
         return _SUPERVISOR
 
+    try:
+        adopt_legacy_models()
+    except OSError as exc:  # an unreadable profiles dir must not block serving what's staged
+        logger.warning("legacy model adoption failed: %s", exc)
     # Residency: no staged models means nothing to serve — don't boot an empty server (delete
     # your last model and boots stop). force boots as ever.
     if not force and not staged_models():
@@ -303,35 +351,19 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
             _stop_state_server(state)
 
         try:
-            from hermes_cli.local_runtime.binaries import (
-                default_tag, ensure_runtime_installed, installed_tags, select_backend)
+            from hermes_cli.local_runtime.binaries import installed_engine
             from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
-            backend = section.get("backend", "auto")
-            if backend == "auto":
-                backend = select_backend(_detect_gpu_vendor())
-            # Boot ladder: serve what is INSTALLED, never download here. The configured tag is
-            # preferred; when it isn't installed yet, the newest installed tag serves and the
-            # status endpoint reports the pending update — the download is a deliberate click in
-            # the pane, not a boot-path surprise (a multi-minute inline download here is exactly
-            # how the onboarding bounce returns).
-            tag = section.get("tag") or default_tag()
-            have = installed_tags()
-            if tag not in have:
-                if not have:
-                    logger.info("local runtime enabled but no build installed; "
-                                "install happens in the Local Models pane")
-                    return None
-                logger.info("configured tag %s not installed; serving %s "
-                            "(update is a click in Local Models)", tag, have[0])
-                tag = have[0]
-            install_dir = ensure_runtime_installed(tag, backend)
+            engine = installed_engine(section.get("backend", "auto"))
+            if engine is None:
+                logger.info("local runtime enabled but no PM engine installed; use the Local Models pane")
+                return None
 
             mdir = models_dir()
             mdir.mkdir(parents=True, exist_ok=True)
             preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
 
-            sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
+            sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
                                         models_max=_admitted_models_max(
                                             mdir, int(section.get("models_max", 4))),
                                         port=int(section.get("port", 0)) or None)
@@ -344,7 +376,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
                     sup.stop()
                 raise
             _SUPERVISOR = sup
-            logger.info("managed llama-server up at %s (backend=%s tag=%s)", sup.base_url, backend, tag)
+            logger.info("managed llama-server up at %s (backend=%s tag=%s)", sup.base_url, engine.backend, engine.tag)
             _start_idle_sweeper(sup)
             return sup
         except Exception as exc:  # noqa: BLE001 — never break session start

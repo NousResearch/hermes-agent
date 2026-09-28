@@ -162,31 +162,53 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
     return None
 
 
-def _node_fallback(command: str, *, windows: Optional[bool] = None) -> str:
-    """Well-known Node install locations for bare ``npx``/``npm``/``node``; *command* unchanged when none exists.
+def _launcher_fallback(command: str, *, windows: Optional[bool] = None) -> str:
+    """Well-known install locations for bare launcher commands; *command* unchanged when none exists.
 
-    The managed tree comes from ``iter_hermes_node_dirs`` (Windows unpacks into ``<home>\\node``, POSIX into
-    ``<home>/node/bin``) under the active profile's ``get_hermes_home()``; on Windows the real files are
-    ``npx.cmd``/``node.exe`` (``windows`` injectable, as for ``_npx_bin_candidates``)."""
-    from hermes_constants import get_hermes_home, iter_hermes_node_dirs
+    One resolver for two launcher families. ``npx``/``npm``/``node``: the managed tree comes from
+    ``iter_hermes_node_dirs`` (Windows unpacks into ``<home>\\node``, POSIX into ``<home>/node/bin``)
+    under the active profile's ``get_hermes_home()``; on Windows the real files are
+    ``npx.cmd``/``node.exe`` (``windows`` injectable, as for ``_npx_bin_candidates``).
+    ``uv``/``uvx``: GUI launches (the Electron desktop app, macOS LaunchAgents) inherit the bare
+    ``/usr/bin:/bin:/usr/sbin:/sbin`` PATH, which carries none of uv's install locations, so a bare
+    ``command: uvx`` MCP server fails with ENOENT at ``execvp`` from Desktop even though it works
+    from an interactive terminal (#37589). The directory table lives in
+    ``hermes_platform.resolver.known_dirs.uv_tool_dirs`` (probed in the order uv's own docs install
+    it: the per-user installer first, then Homebrew); the Hermes-managed ``<home>/bin`` is probed
+    before it."""
+    from hermes_constants import get_hermes_home
+    from hermes_platform.resolver.known_dirs import uv_tool_dirs
     home = os.path.expanduser("~")
-    # /usr/local/bin: canonical Node location (from-source Linux, Hermes Docker image, Intel Homebrew),
-    # needed when a hand-authored env.PATH omits it — npx's shebang re-execs /usr/bin/env node.
-    directories = [*map(str, iter_hermes_node_dirs(get_hermes_home())), os.path.join(home, ".local", "bin"),
-                   os.path.join(os.sep, "usr", "local", "bin")]
+    if command in {"uv", "uvx"}:
+        # expanduser: the table carries the ``~`` form so both this walk and
+        # locate_command's expandvars+expanduser agree on one spelling.
+        directories = [os.path.join(str(get_hermes_home()), "bin"),
+                       *(os.path.expanduser(d) for d in uv_tool_dirs())]
+    else:
+        from hermes_constants import iter_hermes_node_dirs
+        # /usr/local/bin: canonical Node location (from-source Linux, Hermes Docker image, Intel
+        # Homebrew), needed when a hand-authored env.PATH omits it — npx's shebang re-execs
+        # /usr/bin/env node.
+        directories = [*map(str, iter_hermes_node_dirs(get_hermes_home())),
+                      os.path.join(home, ".local", "bin"), os.path.join(os.sep, "usr", "local", "bin")]
     candidates = (c for d in directories for c in _npx_bin_candidates(d, command, windows=windows))
     return next((c for c in candidates if os.path.isfile(c) and os.access(c, os.X_OK)), command)
 
 
+# Historical name (tests and external callers import _node_fallback).
+_node_fallback = _launcher_fallback
+
+
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
-    """Resolve a stdio command against the exact subprocess env (bare ``npx``/``npm``/``node`` under a filtered PATH).
+    """Resolve a stdio command against the exact subprocess env (bare launchers under a filtered PATH).
 
     A ``PATH`` lookup only runs when the child env actually carries one: ``shutil.which`` with
     ``path=None`` silently falls back to the PARENT's ``os.environ["PATH"]``, letting a command
     "resolve" against an env the child will never be spawned with. An absent child PATH is a
     miss; an explicitly empty one keeps its cwd-only meaning (same distinction the child's
-    ``execvp`` will see). Bare ``npx``/``npm``/``node`` still fall through to the explicit
-    well-known Node directories, everything else stays as-written for an honest spawn failure."""
+    ``execvp`` will see). Bare ``npx``/``npm``/``node``/``uv``/``uvx`` still fall through to
+    their explicit well-known install directories, everything else stays as-written for an
+    honest spawn failure."""
     resolved_command = os.path.expanduser(str(command).strip())
     resolved_env = dict(env or {})
     if os.sep not in resolved_command:
@@ -196,8 +218,8 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
             which_hit = _which_with_config_pathext(resolved_command, path_arg, resolved_env)
         if which_hit:
             resolved_command = which_hit
-        elif resolved_command in {"npx", "npm", "node"}:
-            resolved_command = _node_fallback(resolved_command)
+        elif resolved_command in {"npx", "npm", "node", "uv", "uvx"}:
+            resolved_command = _launcher_fallback(resolved_command)
     command_dir = os.path.dirname(resolved_command)
     if command_dir:
         resolved_env = _prepend_path(resolved_env, command_dir)
@@ -256,7 +278,7 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
     for entry in entries:
         manifest = os.path.join(npx_root, entry, "package.json")
         try:
-            with open(manifest, "r", encoding="utf-8") as fh:
+            with open(manifest, "r", encoding="utf-8-sig") as fh:
                 deps = (json.load(fh) or {}).get("dependencies") or {}
         except (OSError, ValueError, TypeError):
             continue
@@ -264,7 +286,7 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
             continue
         pkg_json = os.path.join(npx_root, entry, "node_modules", spec, "package.json")
         try:
-            with open(pkg_json, "r", encoding="utf-8") as fh:
+            with open(pkg_json, "r", encoding="utf-8-sig") as fh:
                 bin_field = (json.load(fh) or {}).get("bin")
         except (OSError, ValueError, TypeError):
             continue

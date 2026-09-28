@@ -10,6 +10,7 @@ tests/docker/test_container_restart.py.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,8 @@ from hermes_cli.container_boot import (
     ReconcileAction,
     reconcile_profile_gateways,
 )
+
+pytestmark = pytest.mark.platforms("linux")
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +49,9 @@ def _hermetic_container_argv(monkeypatch: pytest.MonkeyPatch) -> None:
         "hermes_cli.container_boot._read_container_argv",
         lambda: (),
     )
+    # This fixture owns real files, but does not run as the image's service user.
+    monkeypatch.setattr("hermes_cli.service_manager._HERMES_UID", os.getuid())
+    monkeypatch.setattr("hermes_cli.service_manager._HERMES_GID", os.getgid())
 
 
 def _make_profile(

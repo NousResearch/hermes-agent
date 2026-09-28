@@ -95,7 +95,7 @@ _BUNDLED_PLUGINS_DIR = (
 
 
 def _sync_auth_registry() -> None:
-    """Mirror profiles into ``hermes_cli.auth.PROVIDER_REGISTRY`` if that module is loaded.
+    """Mirror profiles into the ``hermes_cli`` snapshots (auth registry, picker catalog) that are loaded.
 
     ``hermes_cli.auth`` takes its own snapshot of ``list_providers()`` when it is imported. If a
     plugin's imports pull that module in while :func:`_discover_providers` is still running, the
@@ -105,13 +105,17 @@ def _sync_auth_registry() -> None:
     top-level code mid-scan and risk a circular import). Never raises: registration must not fail
     because of the auth mirror.
     """
-    sync = getattr(sys.modules.get("hermes_cli.auth"), "sync_plugin_provider_registry", None)
-    if sync is None:
-        return
-    try:
-        sync()
-    except Exception as exc:  # pragma: no cover — never break discovery
-        logger.debug("auth registry sync skipped: %s", exc)
+    for module, attr in (
+        ("hermes_cli.auth", "sync_plugin_provider_registry"),
+        ("hermes_cli.models_catalog_static", "sync_plugin_provider_catalog"),
+    ):
+        sync = getattr(sys.modules.get(module), attr, None)
+        if sync is None:
+            continue
+        try:
+            sync()
+        except Exception as exc:  # pragma: no cover — never break discovery
+            logger.debug("%s sync skipped: %s", module, exc)
 
 
 def register_provider(profile: ProviderProfile) -> None:
@@ -269,6 +273,13 @@ def _refresh_home_layer(layer: _HomeLayer, home: Path | None, key: str, *, force
     if stamps != layer.stamps:
         _scan_home_layer(layer, key)
         layer.stamps = stamps
+        # Publish the completed layer -- stamps AND check time -- before auth
+        # sync: it calls list_providers(), which re-enters this function. An
+        # unpublished stamp rescanned forever; an unpublished check time
+        # re-stats the plugin dirs inside the TTL.
+        layer.stamp_checked_at = now
+        if _discovered and not _discovering:
+            _sync_auth_registry()
     layer.stamp_checked_at = now
     return True
 
@@ -315,7 +326,7 @@ def _declares_model_provider_kind(plugin_dir: Path) -> bool:
 
     Only that kind is imported from the flat install directory — every other
     plugin there belongs to ``PluginManager``, which owns its lifecycle and
-    consent flow. Parsed with PyYAML when available, falling back to a line
+    consent flow. Parsed with ruamel.yaml when available, falling back to a line
     scan so provider discovery never hard-depends on it.
     """
     for filename in ("plugin.yaml", "plugin.yml"):
@@ -372,8 +383,6 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
     finally:
         _REGISTRATION_TARGET.reset(token)
         _discovering = prior_discovering
-    if _discovered and not _discovering:
-        _sync_auth_registry()
 
 
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:

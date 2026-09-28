@@ -2977,6 +2977,24 @@
       }
     },
     {
+      "name": "session.archive",
+      "summary": "Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionArchiveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionArchiveResult"
+        }
+      }
+    },
+    {
       "name": "session.branch",
       "summary": "Fork a live session into a new stored child that shares the parent's history so far.",
       "params": [
@@ -2991,6 +3009,42 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionBranchResult"
+        }
+      }
+    },
+    {
+      "name": "session.branch_stored",
+      "summary": "Whole-session branch of a stored parent: the owning backend reads and copies the transcript, which never crosses the wire (a separate method so an older gateway fails loudly, not with an empty branch).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionBranchStoredParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionBranchStoredResult"
+        }
+      }
+    },
+    {
+      "name": "session.branch_whole",
+      "summary": "session.branch of the whole history without echoing the copied transcript back.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionBranchWholeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionBranchWholeResult"
         }
       }
     },
@@ -13056,6 +13110,72 @@
         "title": "ErrorSurface",
         "type": "object"
       },
+      "FailedDelegation": {
+        "additionalProperties": false,
+        "description": "``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation.",
+        "properties": {
+          "delegation_id": {
+            "title": "Delegation Id",
+            "type": "string"
+          },
+          "task_index": {
+            "default": 0,
+            "title": "Task Index",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "goal": {
+            "default": "",
+            "title": "Goal",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "dispatched_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Dispatched At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completed At"
+          }
+        },
+        "required": [
+          "delegation_id",
+          "status"
+        ],
+        "title": "FailedDelegation",
+        "type": "object"
+      },
       "FileAttachParams": {
         "additionalProperties": false,
         "description": "``path`` when the file is gateway-visible, else ``data_url`` carries the bytes; ``name`` labels\nan uploaded file.",
@@ -17560,6 +17680,18 @@
             "default": null,
             "title": "Response Previewed"
           },
+          "response_transformed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Response Transformed"
+          },
           "billing": {
             "anyOf": [
               {
@@ -21064,6 +21196,7 @@
         "enum": [
           "connected",
           "app_not_running",
+          "hermes_not_connected",
           "endpoint_unavailable",
           "no_interactive_session",
           "version_too_old",
@@ -21553,6 +21686,21 @@
             "default": null,
             "title": "Python Dependencies"
           },
+          "known_issues": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Known Issues"
+          },
           "after_install_path": {
             "anyOf": [
               {
@@ -21799,6 +21947,18 @@
             ],
             "default": null,
             "title": "Max"
+          },
+          "allow_shortcut": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Shortcut"
           }
         },
         "required": [
@@ -24049,6 +24209,11 @@
             "title": "Iskanban",
             "type": "boolean"
           },
+          "isGit": {
+            "default": true,
+            "title": "Isgit",
+            "type": "boolean"
+          },
           "sessions": {
             "items": {
               "$ref": "#/components/schemas/ProjectTreeSession"
@@ -24489,6 +24654,18 @@
             ],
             "default": null,
             "title": "Lineage Ids"
+          },
+          "continuation_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Continuation Kind"
           },
           "profile": {
             "anyOf": [
@@ -27600,6 +27777,74 @@
         "title": "SessionActiveListResult",
         "type": "object"
       },
+      "SessionArchiveParams": {
+        "additionalProperties": false,
+        "description": "``session_id`` (or its ``session_key`` alias) is a live runtime id first, else a stored id / key / title.",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "session_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Key"
+          },
+          "archived": {
+            "default": true,
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "SessionArchiveParams",
+        "type": "object"
+      },
+      "SessionArchiveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "archived": {
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "session_key": {
+            "title": "Session Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "archived",
+          "session_key"
+        ],
+        "title": "SessionArchiveResult",
+        "type": "object"
+      },
       "SessionBranchParams": {
         "additionalProperties": false,
         "properties": {
@@ -27694,6 +27939,183 @@
           "info"
         ],
         "title": "SessionBranchResult",
+        "type": "object"
+      },
+      "SessionBranchStoredParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "parent_session_id": {
+            "minLength": 1,
+            "title": "Parent Session Id",
+            "type": "string"
+          },
+          "cols": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cols"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          }
+        },
+        "required": [
+          "parent_session_id"
+        ],
+        "title": "SessionBranchStoredParams",
+        "type": "object"
+      },
+      "SessionBranchStoredResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "message_count": {
+            "title": "Message Count",
+            "type": "integer"
+          },
+          "messages_omitted": {
+            "title": "Messages Omitted",
+            "type": "boolean"
+          },
+          "info": {
+            "$ref": "#/components/schemas/SessionLiveInfo"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "message_count",
+          "messages_omitted",
+          "info"
+        ],
+        "title": "SessionBranchStoredResult",
+        "type": "object"
+      },
+      "SessionBranchWholeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionBranchWholeParams",
+        "type": "object"
+      },
+      "SessionBranchWholeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "parent": {
+            "title": "Parent",
+            "type": "string"
+          },
+          "message_count": {
+            "title": "Message Count",
+            "type": "integer"
+          },
+          "messages_omitted": {
+            "title": "Messages Omitted",
+            "type": "boolean"
+          },
+          "info": {
+            "$ref": "#/components/schemas/SessionLiveInfo"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "title",
+          "parent",
+          "message_count",
+          "messages_omitted",
+          "info"
+        ],
+        "title": "SessionBranchWholeResult",
         "type": "object"
       },
       "SessionCloseParams": {
@@ -28416,6 +28838,18 @@
             ],
             "default": null,
             "title": "Cwd"
+          },
+          "cwd_explicit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd Explicit"
           },
           "messages": {
             "anyOf": [
@@ -29905,6 +30339,11 @@
           "close_on_disconnect": {
             "default": false,
             "title": "Close On Disconnect",
+            "type": "boolean"
+          },
+          "inline_images": {
+            "default": true,
+            "title": "Inline Images",
             "type": "boolean"
           }
         },
@@ -32609,7 +33048,7 @@
       },
       "SubagentListResult": {
         "additionalProperties": false,
-        "description": "``delegations`` is reserved for async delegation records and is currently always empty.",
+        "description": "``delegations``: recently failed async delegation tasks for the session (durable store), newest first.",
         "properties": {
           "subagents": {
             "items": {
@@ -32620,8 +33059,7 @@
           },
           "delegations": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/FailedDelegation"
             },
             "title": "Delegations",
             "type": "array"
@@ -34672,7 +35110,7 @@
       },
       "TranscriptMessage": {
         "additionalProperties": true,
-        "description": "One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):\n``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the\ndurable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``.\nAssistant detail sidecars (``reasoning``, \u2026) ride as extra keys.",
+        "description": "One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):\n``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id``\nrewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``.\nAssistant detail sidecars (``reasoning``, \u2026) ride as extra keys.",
         "properties": {
           "role": {
             "title": "Role",
@@ -34689,6 +35127,28 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "content": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Content"
+          },
+          "tool_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Call Id"
           },
           "timestamp": {
             "anyOf": [
@@ -37897,6 +38357,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/PreviewRestartProgressPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "projects.changed",
+      "summary": "projects.db moved; refetch the project list + tree.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ChangeSignalPayload"
           }
         }
       ]

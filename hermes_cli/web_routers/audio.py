@@ -358,7 +358,13 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
         if payload.active:
             with _config_profile_scope(profile):
                 return acquire_tts_lease(lease)
-        return release_tts_lease(lease)
+        # Release reads the requester's keep_warm_seconds, but must drop the lease even when
+        # that profile is gone — a stuck lease pins the local model in memory.
+        try:
+            with _config_profile_scope(profile):
+                return release_tts_lease(lease)
+        except HTTPException:
+            return release_tts_lease(lease)
 
     try:
         result = await asyncio.get_running_loop().run_in_executor(None, _apply)
@@ -368,6 +374,100 @@ async def tts_lease(payload: TTSLeaseRequest, profile: Optional[str] = None):
         _log.warning("TTS lease %s (%s) failed: %s", lease, payload.active, exc)
         result = {"leases": None, "action": "error", "error": str(exc)}
     return {"ok": True, "lease": lease, "active": payload.active, **result}
+
+
+class _SyncSentencePCMStreamer:
+    """Speak one sentence through the sync TTS tool and yield int16 mono PCM.
+
+    Not a second provider: ``text_to_speech_tool`` is the same stack the CLI
+    speaker uses for edge and every other non-chunked provider. The desktop
+    socket only plays PCM, so the written file is decoded before it is sent.
+    ``sample_rate`` is updated before the first yield, matching the chunked
+    streamers whose rate is only final once synthesis has answered.
+    """
+
+    sample_rate = 24000
+    channels = 1
+
+    def stream(self, text: str):
+        pcm, rate = _sync_sentence_to_pcm(text)
+        if rate:
+            self.sample_rate = rate
+        if pcm:
+            yield pcm
+
+
+def _sync_sentence_to_pcm(text: str) -> tuple:
+    """Synthesize *text* with the configured sync provider and return PCM."""
+    from tools.tts_tool import text_to_speech_tool
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+    os.close(fd)
+    extra = None
+    try:
+        raw = text_to_speech_tool(text=text, output_path=tmp_path)
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Invalid TTS response") from exc
+        if not isinstance(payload, dict) or not payload.get("success"):
+            detail = str(payload.get("error") or "") if isinstance(payload, dict) else ""
+            raise RuntimeError(detail or "Speech synthesis failed")
+        written = payload.get("file_path") or tmp_path
+        if not isinstance(written, str) or not os.path.isfile(written) or os.path.getsize(written) <= 0:
+            raise RuntimeError("Audio file missing")
+        if os.path.abspath(written) != os.path.abspath(tmp_path):
+            extra = written
+        pcm, rate = _audio_file_to_pcm(written)
+        if not pcm:
+            raise RuntimeError("TTS audio decoded to silence")
+        return pcm, rate
+    finally:
+        _unlink_quietly(tmp_path)
+        if extra:
+            _unlink_quietly(extra)
+
+
+def _audio_file_to_pcm(path: str) -> tuple:
+    """Decode *path* to int16 mono PCM. WAV via the stdlib; anything else via ffmpeg."""
+    with open(path, "rb") as fh:
+        head = fh.read(12)
+    if len(head) >= 12 and head.startswith(b"RIFF") and head[8:12] == b"WAVE":
+        pcm, rate = _wav_s16le_mono(path)
+        if pcm:
+            return pcm, rate
+    return _ffmpeg_s16le_mono(path)
+
+
+def _wav_s16le_mono(path: str) -> tuple:
+    import wave
+
+    try:
+        with wave.open(path, "rb") as wf:
+            if wf.getsampwidth() != 2 or wf.getnchannels() != 1 or wf.getframerate() <= 0:
+                return b"", 0
+            return wf.readframes(wf.getnframes()), int(wf.getframerate())
+    except (wave.Error, EOFError, OSError):
+        return b"", 0
+
+
+def _ffmpeg_s16le_mono(path: str) -> tuple:
+    import shutil
+
+    from tools.tts_tool_delivery import _ffmpeg_run
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required to decode TTS audio for speak-stream")
+    result = _ffmpeg_run(
+        ffmpeg,
+        ["-i", path, "-f", "s16le", "-ac", "1", "-ar", "24000", "-loglevel", "error", "pipe:1"],
+        timeout=60,
+    )
+    if result.returncode != 0 or not result.stdout:
+        stderr = (result.stderr or b"").decode("utf-8", "replace")[:200]
+        raise RuntimeError(f"TTS audio decode failed: {stderr}")
+    return result.stdout, 24000
 
 
 @router.websocket("/api/audio/speak-stream")
@@ -386,8 +486,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
       server → ``{"type": "start", "sample_rate": N, "channels": 1}`` (sent
                with the first PCM frame, once the provider's rate is final),
                binary PCM frames, then ``{"type": "end"}``
-      server → ``{"type": "fallback"}`` when the configured provider has no
-               chunked API — the client uses the POST endpoint instead.
+      server → ``{"type": "fallback"}`` only when sentence synthesis produced
+               no audio. Providers with no chunked API (edge, the default)
+               still speak per sentence via ``text_to_speech_tool`` and stream
+               that PCM — the client POST is the last resort, not the Edge path.
     """
     if not _ws_auth_ok(ws):
         await ws.close(code=4401)
@@ -410,19 +512,19 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         with _config_profile_scope(profile):
             cfg = _load_tts_config()
             streamer = resolve_streaming_provider(cfg)
-            cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
+            cap = _resolve_max_text_length(_get_provider(cfg), cfg)
         return streamer, cap, cfg
 
     try:
         streamer, cap, cfg = await loop.run_in_executor(None, _resolve)
     except Exception:
         _log.exception("speak-stream provider resolution failed")
-        streamer, cap = None, 0
+        streamer, cap, cfg = None, 0, {}
     if streamer is None:
-        with contextlib.suppress(Exception):
-            await ws.send_json({"type": "fallback"})
-            await ws.close()
-        return
+        # Edge (the default) and every other non-chunked provider still have a
+        # documented per-sentence path. type=fallback here is what makes Desktop
+        # wait for the whole reply and POST it to /api/audio/speak.
+        streamer = _SyncSentencePCMStreamer()
 
     # The start frame is deferred until the first PCM chunk (or end-of-speech):
     # the OpenAI-compatible streamer only learns the endpoint's real rate from
@@ -440,6 +542,8 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         )
 
     stop = threading.Event()
+    produced_audio = False
+    synthesis_failed = False
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
     chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
 
@@ -451,6 +555,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             _synthesize()
 
     def _synthesize():
+        nonlocal produced_audio, synthesis_failed
         from tools.tts_streaming import SentenceChunker
         from tools.tts_text_normalize import _strip_markdown_for_tts
 
@@ -493,9 +598,11 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
                     for chunk in streamer.stream(piece):
                         if stop.is_set():
                             return
+                        produced_audio = True
                         loop.call_soon_threadsafe(chunks.put_nowait, chunk)
         except Exception as exc:
             _log.warning("speak-stream synthesis failed: %s", exc)
+            synthesis_failed = True
         finally:
             loop.call_soon_threadsafe(chunks.put_nowait, None)
 
@@ -527,8 +634,13 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             await _send_start()
             await ws.send_bytes(chunk)
         if not stop.is_set():
-            await _send_start()
-            await ws.send_json({"type": "end"})
+            # Fallback is the last resort: sentence synthesis was asked for and
+            # produced nothing. A normal edge reply has already streamed PCM.
+            if synthesis_failed and not produced_audio:
+                await ws.send_json({"type": "fallback"})
+            else:
+                await _send_start()
+                await ws.send_json({"type": "end"})
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:

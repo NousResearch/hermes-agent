@@ -3,7 +3,64 @@ import { expect, test } from 'vitest'
 import { httpStatusError } from './api-transport'
 import { isGatewayAuthRejection } from './connection-config'
 import { NativeAuthChangedError } from './native-access-token'
-import { mintGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
+import { mintGatewayWsTicket, requestWithOauthFallback, shouldReplayAfterCookie401 } from './oauth-rest-request'
+
+const GATE_401 = () =>
+  httpStatusError(
+    401,
+    JSON.stringify({ error: 'unauthenticated', detail: 'Unauthorized', reason: 'no_cookie', login_url: '/login' })
+  )
+
+test('a cookie 401 is replayed only for a gate refusal on an idempotent or vouched operation', () => {
+  // Pre-auth gate refusal + idempotent method → replay.
+  expect(shouldReplayAfterCookie401(GATE_401(), { method: 'GET' })).toBe(true)
+  expect(shouldReplayAfterCookie401(GATE_401(), {})).toBe(true)
+  expect(shouldReplayAfterCookie401(GATE_401(), { method: 'HEAD' })).toBe(true)
+  expect(
+    shouldReplayAfterCookie401(
+      httpStatusError(401, JSON.stringify({ error: 'session_expired', reason: 'invalid_or_expired_session' })),
+      { method: 'GET' }
+    )
+  ).toBe(true)
+
+  // Gate refusal on a mutation: only when the caller vouches for the operation.
+  expect(shouldReplayAfterCookie401(GATE_401(), { method: 'POST' })).toBe(false)
+  expect(shouldReplayAfterCookie401(GATE_401(), { method: 'POST', replayOn401: true })).toBe(true)
+  expect(shouldReplayAfterCookie401(GATE_401(), { method: 'DELETE', replayOn401: 'yes' })).toBe(false)
+
+  // An application-level 401 (endpoint/plugin/backend; no gate shape) never replays.
+  expect(shouldReplayAfterCookie401(httpStatusError(401, 'rejected'), { method: 'GET' })).toBe(false)
+  expect(
+    shouldReplayAfterCookie401(httpStatusError(401, JSON.stringify({ error: 'forbidden_tool' })), { method: 'GET' })
+  ).toBe(false)
+  expect(
+    shouldReplayAfterCookie401(httpStatusError(401, JSON.stringify({ error: 'unauthenticated' })), { method: 'GET' })
+  ).toBe(false)
+  expect(shouldReplayAfterCookie401(GATE_401(), { method: 'POST' })).toBe(false)
+
+  // Not a 401 at all.
+  expect(
+    shouldReplayAfterCookie401(httpStatusError(403, JSON.stringify({ error: 'unauthenticated', reason: 'x' })), {})
+  ).toBe(false)
+  expect(shouldReplayAfterCookie401(new Error('socket reset'), {})).toBe(false)
+})
+
+test('ws-ticket minting vouches for replay on a cookie 401', async () => {
+  let seen: any
+
+  await mintGatewayWsTicket('https://gw.test', {
+    ensureNativeAccessToken: async () => null,
+    fetchJson: async () => ({}),
+    fetchJsonViaOauthSession: async (_url, options) => {
+      seen = options
+
+      return { ticket: 't' }
+    }
+  })
+
+  expect(seen.method).toBe('POST')
+  expect(seen.replayOn401).toBe(true)
+})
 
 test('native failures remain transport failures unless an independent cookie session succeeds', async () => {
   for (const nativeError of [new Error('timeout'), httpStatusError(503, 'down'), new Error('malformed response')]) {

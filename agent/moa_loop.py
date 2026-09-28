@@ -515,6 +515,7 @@ def _trim_messages_for_reference(
 
 
 _REFERENCE_POLL_INTERVAL_S = 5.0
+_REFERENCE_INTERRUPT_SETTLE_S = 0.05
 
 # Sentinel for a reference aborted by user interrupt; the facade must never cache it.
 _INTERRUPTED_REFERENCE_NOTE = "[skipped: interrupted by user]"
@@ -585,6 +586,19 @@ def _run_references_parallel(
     # Shared per-fan-out context-length cache (dict get/set is GIL-atomic).
     ctx_len_cache: dict[tuple[str, str], int | None] = {}
     cache_disabled, cache_ttl = _agent_cache_opts(agent)
+
+    def collect(done: set[Any]) -> None:
+        nonlocal completed
+        for future in done:
+            idx = futures[future]
+            results[idx] = future.result()
+            completed += 1
+            if progress_callback is not None:
+                try:
+                    progress_callback(completed, total, _slot_label(reference_models[idx]))
+                except Exception as exc:  # pragma: no cover - display must never break
+                    logger.debug("MoA progress_callback failed: %s", exc)
+
     try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -600,16 +614,13 @@ def _run_references_parallel(
         pending = set(futures)
         while pending:
             done, pending = _futures_wait(pending, timeout=_REFERENCE_POLL_INTERVAL_S)
-            for future in done:
-                idx = futures[future]
-                results[idx] = future.result()
-                completed += 1
-                if progress_callback is not None:
-                    try:
-                        progress_callback(completed, total, _slot_label(reference_models[idx]))
-                    except Exception as exc:  # pragma: no cover - display must never break
-                        logger.debug("MoA progress_callback failed: %s", exc)
+            collect(done)
             if pending and agent is not None and getattr(agent, "_interrupt_requested", False):
+                # A worker can raise the interrupt immediately before publishing
+                # its own result. Give concurrently-finishing work one scheduler
+                # turn so completed output is not replaced by an interrupt note.
+                done, pending = _futures_wait(pending, timeout=_REFERENCE_INTERRUPT_SETTLE_S)
+                collect(done)
                 interrupted = True
                 _settle_interrupted(futures, results, reference_models, late_accounting_sink)
                 break

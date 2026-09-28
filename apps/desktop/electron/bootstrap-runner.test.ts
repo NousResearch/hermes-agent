@@ -132,7 +132,7 @@ test('fallback install stamps use an unpinned branch ref', () => {
   )
 })
 
-test('resolveMarkerPinnedCommit prefers real HEAD over fallback stamp zeros', () => {
+test('resolveMarkerPinnedCommit prefers installed checkout HEAD over the packaged artifact', () => {
   const realHead = 'c'.repeat(40)
   assert.equal(
     resolveMarkerPinnedCommit({ commit: ZERO_COMMIT, branch: 'main' }, '/tmp/checkout', {
@@ -144,8 +144,8 @@ test('resolveMarkerPinnedCommit prefers real HEAD over fallback stamp zeros', ()
     resolveMarkerPinnedCommit({ commit: 'd'.repeat(40), branch: 'main' }, '/tmp/checkout', {
       resolveHead: () => realHead
     }),
-    'd'.repeat(40),
-    'packaged real pin wins over checkout HEAD'
+    realHead,
+    'the installed checkout owns source runtime identity'
   )
   assert.equal(
     resolveMarkerPinnedCommit({ commit: ZERO_COMMIT, branch: 'main' }, '/tmp/missing', {

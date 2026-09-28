@@ -1,0 +1,32 @@
+name: hermes-switchyard
+repo: https://github.com/bgrablin/hermes-switchyard
+sha: 22cd6bcc04bc7eb0db61abe1bb86ce45037190dd
+subdir: ""
+description: "Jev-powered Hermes plugin for skill/model routing, typed assess, DOM/Cua computer use, adaptive reasoning effort, and FTS rerank. Disclosure: the default-on adaptive llm_request may send task-presence/length metadata, prior effort, and recent tool status codes to TypeSafe/OpenRouter; it does not send user-message text or tool-result excerpts on that path (disable via adaptive_reasoning_effort false). Separate default-on hosted skill routing sends up to 4,000 characters of each user turn plus skill names/descriptions to the same provider after a local blocklist scan (opt down to local_only). Model routing remains advisory."
+maintainer: bgrablin
+tier: community
+category: tools
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/bgrablin/hermes-switchyard/blob/22cd6bcc04bc7eb0db61abe1bb86ce45037190dd/docs/SETUP.md
+version: "0.5.3"
+image: https://raw.githubusercontent.com/bgrablin/hermes-switchyard/22cd6bcc04bc7eb0db61abe1bb86ce45037190dd/docs/assets/hermes-switchyard-overview.png
+readme: true
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools:
+    - jev_assess
+    - jev_computer_use
+    - jev_skill_select
+    - jev_skill_select_many
+    - jev_model_route
+    - jev_model_route_approved
+    - jev_session_search_rerank
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+  provides_middleware:
+    - llm_request
+  requires_env: []

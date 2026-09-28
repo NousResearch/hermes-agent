@@ -65,7 +65,6 @@ _PROVIDER_ENV_HINTS = (
     "TOKENHUB_API_KEY", "TOKENPLAN_API_KEY",
 )
 
-
 @doctor_check()
 def _check_auth_providers(should_fix: bool, f: Finding) -> None:
     """Refresh-free OAuth status snapshot (doctor must never trigger a token refresh)."""

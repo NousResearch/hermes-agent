@@ -20,10 +20,8 @@ from unittest.mock import patch
 from tools.cronjob_tools import cronjob, _execute_job_now
 from tools.environments.base import set_activity_callback
 
-
 _JOB = {"id": "job-run-1", "name": "manual run", "prompt": "hi",
         "schedule": {"kind": "cron", "expr": "0 9 * * *"}}
-
 
 class TestCronjobRunExecutesImmediately:
     def test_run_action_claims_and_fires_via_run_one_job(self):
@@ -114,7 +112,6 @@ class TestCronjobRunExecutesImmediately:
         assert out["job"]["execution_success"] is False
         assert out["job"]["execution_error"] == "provider 500"
 
-
     def test_execute_job_now_passes_live_gateway_context_to_delivery(self):
         """Manual runs must deliver on the live gateway adapter's owning loop."""
         adapters = {"matrix": object()}
@@ -204,7 +201,6 @@ class TestCronjobRunExecutesImmediately:
         finally:
             set_activity_callback(None)
 
-
     def test_heartbeat_stops_at_ceiling_but_job_completes(self):
         """Past _CRON_RUN_HEARTBEAT_CEILING the heartbeat stops (so the
         gateway watchdog regains authority over a wedged run) while the job
@@ -268,7 +264,6 @@ class TestCronjobRunExecutesImmediately:
         finally:
             set_activity_callback(None)
 
-
 class TestManualRunReportsDeliveryFailure:
     """#83993: a manual run whose agent succeeded but whose delivery failed
     must not come back as success=True with no error — the calling agent
@@ -290,4 +285,3 @@ class TestManualRunReportsDeliveryFailure:
         assert res["claimed"] is True
         assert res["success"] is False
         assert "502" in res["error"]
-

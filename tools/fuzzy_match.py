@@ -9,6 +9,7 @@ still land on the intended region::
         content, old_string, new_string, replace_all=False)
 """
 
+import bisect
 import re
 from difflib import SequenceMatcher
 from typing import Callable, Optional
@@ -509,12 +510,12 @@ def _preserve_unicode_in_replacement(content: str, matches: list[Span],
         return new_string  # strategy shouldn't have fired; fall back
 
     file_orig_to_norm = _build_orig_to_norm_map(file_region)
-    file_norm_to_orig = _invert_norm_map(file_orig_to_norm)
 
     result_parts: list[str] = []
     for tag, i1, i2, j1, j2 in SequenceMatcher(None, norm_old, new_string).get_opcodes():
         if tag == "equal":
-            orig_start = file_norm_to_orig.get(i1, 0)
+            # The original char owning norm index i1, even one inside a multi-char expansion (em-dash -> '--').
+            orig_start = bisect.bisect_right(file_orig_to_norm, i1) - 1
             orig_end = _norm_end_to_orig(file_orig_to_norm, orig_start, i2)
             result_parts.append(file_region[orig_start:orig_end])
         elif tag != "delete":

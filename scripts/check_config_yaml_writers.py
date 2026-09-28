@@ -58,7 +58,7 @@ def _is_yaml_dump(call: ast.Call, src: str) -> bool:
 
 
 def scan_file(path: Path) -> list[str]:
-    src = path.read_text(encoding="utf-8")
+    src = path.read_text(encoding="utf-8-sig")
     try:
         tree = ast.parse(src)
     except SyntaxError:

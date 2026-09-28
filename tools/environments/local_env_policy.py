@@ -193,7 +193,8 @@ _ACTIVE_VENV_MARKER_VARS = ("VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONHOME")
 # CONDA_EXE / _CE_M / _CE_CONDA / CONDA_PYTHON_EXE are NOT companions: the hook re-emits
 # them and ``conda`` must stay runnable in children. VIRTUAL_ENV has no companion vars,
 # so conda is the only marker with this hazard.
-_CONDA_STATE_COMPANIONS = ("CONDA_SHLVL", "CONDA_DEFAULT_ENV", "CONDA_PROMPT_MODIFIER")
+_CONDA_STATE_COMPANIONS = ("CONDA_SHLVL", "CONDA_DEFAULT_ENV", "CONDA_PROMPT_MODIFIER",
+                           "CONDA_PREFIX_1")
 
 
 def _is_hermes_internal_secret(key: str) -> bool:

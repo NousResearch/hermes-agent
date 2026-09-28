@@ -118,6 +118,7 @@ def test_conda_state_companions_follow_the_prefix():
     # hook re-emits (so `conda` stays runnable) are preserved byte-for-byte.
     env = {"CONDA_PREFIX": "/unrelated/conda", "CONDA_SHLVL": "1",
            "CONDA_DEFAULT_ENV": "base", "CONDA_PROMPT_MODIFIER": "(base) ",
+           "CONDA_PREFIX_1": "/unrelated/conda",
            "CONDA_EXE": "/unrelated/conda/bin/conda",
            "CONDA_PYTHON_EXE": "/unrelated/conda/bin/python",
            "_CE_CONDA": "", "_CE_M": ""}
@@ -126,6 +127,7 @@ def test_conda_state_companions_follow_the_prefix():
     assert "CONDA_SHLVL" not in env
     assert "CONDA_DEFAULT_ENV" not in env
     assert "CONDA_PROMPT_MODIFIER" not in env
+    assert "CONDA_PREFIX_1" not in env
     assert env["CONDA_EXE"] == "/unrelated/conda/bin/conda"
     assert env["CONDA_PYTHON_EXE"] == "/unrelated/conda/bin/python"
     assert env["_CE_CONDA"] == "" and env["_CE_M"] == ""
@@ -138,6 +140,28 @@ def test_stray_conda_shlvl_without_prefix_is_also_cleared():
     assert "CONDA_SHLVL" not in env
     assert "CONDA_DEFAULT_ENV" not in env
     assert "CONDA_PROMPT_MODIFIER" not in env
+
+
+def test_companion_strip_is_unconditional_prefix_or_not():
+    # Regression for the dead-guard review: the companions are popped
+    # unconditionally. An earlier revision wrapped the pop in
+    # `if not env.get("CONDA_PREFIX")` — dead code, because the marker loop
+    # right above always removes CONDA_PREFIX first, making the false branch
+    # unreachable and the predicate untestable. Pin the post-image: identical
+    # companion outcome with the prefix present AND absent, and no code path
+    # in the sanitizer that reads CONDA_PREFIX at all.
+    with_prefix = {"CONDA_PREFIX": "/unrelated/conda", "CONDA_SHLVL": "1",
+                   "CONDA_DEFAULT_ENV": "base", "CONDA_PROMPT_MODIFIER": "(base) ",
+                   "CONDA_PREFIX_1": "/unrelated/conda"}
+    without_prefix = {"CONDA_SHLVL": "1", "CONDA_DEFAULT_ENV": "base",
+                      "CONDA_PROMPT_MODIFIER": "(base) ", "CONDA_PREFIX_1": "/unrelated/conda"}
+    pp._strip_hermes_owned_pythonpath_and_runtime_markers(with_prefix)
+    pp._strip_hermes_owned_pythonpath_and_runtime_markers(without_prefix)
+    for env in (with_prefix, without_prefix):
+        assert "CONDA_SHLVL" not in env
+        assert "CONDA_DEFAULT_ENV" not in env
+        assert "CONDA_PROMPT_MODIFIER" not in env
+        assert "CONDA_PREFIX_1" not in env
 
 
 @pytest.mark.parametrize("builder,base_force,extra_force", [

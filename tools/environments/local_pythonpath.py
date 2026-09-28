@@ -123,15 +123,16 @@ def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:
     load-bearing: PYTHONPATH filtering runs BEFORE the markers go so a validated Windows
     base-interpreter launch (VIRTUAL_ENV -> <repo>/venv) can still prove ownership.
 
-    Conda companions follow the prefix: dropping CONDA_PREFIX while leaving
-    CONDA_SHLVL/CONDA_DEFAULT_ENV/CONDA_PROMPT_MODIFIER hands children a half-active
-    conda state that crashes conda's own shell hook (see _CONDA_STATE_COMPANIONS)."""
+    Conda's activation state is cleared unconditionally, companions included: the
+    marker loop above always removes CONDA_PREFIX, so a conditional strip could
+    never keep the companions in step — half-states (stray CONDA_SHLVL without a
+    prefix, or CONDA_PREFIX_1 from a doubly-activated parent) crash conda's own
+    shell hook just the same (see _CONDA_STATE_COMPANIONS)."""
     _strip_hermes_owned_pythonpath(env)
     for _marker in _ACTIVE_VENV_MARKER_VARS:
         env.pop(_marker, None)
-    if not env.get("CONDA_PREFIX"):
-        for _companion in _CONDA_STATE_COMPANIONS:
-            env.pop(_companion, None)
+    for _companion in _CONDA_STATE_COMPANIONS:
+        env.pop(_companion, None)
 
 
 def _strip_hermes_owned_pythonpath(env: dict) -> None:

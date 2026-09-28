@@ -1427,10 +1427,35 @@ class MatrixAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=str(retry_exc))
         return SendResult(success=True, message_id=last_event_id)
 
+    async def _call_with_rate_limit_backoff(self, op, *, label: str, retries: int = 3,
+                                            base_delay: float = 1.5) -> Any:
+        """Run ``await op()`` and retry while the homeserver answers 429/M_LIMIT_EXCEEDED.
+
+        mautrix 0.21's ``MLimitExceeded`` no longer carries ``retry_after_ms``, so retries
+        use capped exponential backoff (1.5s/3s/6s) — enough to ride out a matrix.org burst
+        limit instead of dropping the send (e.g. a reaction-based approval prompt)."""
+        from mautrix.errors.request import MLimitExceeded, MatrixRequestError
+        for attempt in range(retries + 1):
+            try:
+                return await op()
+            except MatrixRequestError as exc:
+                if not isinstance(exc, MLimitExceeded) and getattr(exc, "http_status", None) != 429:
+                    raise
+                if attempt >= retries:
+                    raise
+                delay = min(base_delay * (2 ** attempt), 15.0)
+                logger.warning("Matrix: %s rate limited (M_LIMIT_EXCEEDED); retry %d/%d in %.1fs",
+                               label, attempt + 1, retries, delay)
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")  # pragma: no cover
+
     async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
         event_id = await asyncio.wait_for(
-            self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
+            self._call_with_rate_limit_backoff(
+                lambda: self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content),
+                label="send"),
+            timeout=45)
         return str(event_id)
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
@@ -2412,7 +2437,9 @@ class MatrixAdapter(BasePlatformAdapter):
             return None
         content = {"m.relates_to": {"rel_type": "m.annotation", "event_id": event_id, "key": emoji}}
         try:
-            resp_event_id = await self._client.send_message_event(RoomID(room_id), EventType.REACTION, content)
+            resp_event_id = await self._call_with_rate_limit_backoff(
+                lambda: self._client.send_message_event(RoomID(room_id), EventType.REACTION, content),
+                label="reaction")
             logger.debug("Matrix: sent reaction %s to %s", emoji, event_id)
             return str(resp_event_id)
         except Exception as exc:
@@ -2668,8 +2695,12 @@ class MatrixAdapter(BasePlatformAdapter):
             return False
 
     async def redact_message(self, room_id: str, event_id: str, reason: str = "") -> bool:
+        async def _redact_with_backoff():
+            await self._call_with_rate_limit_backoff(
+                lambda: self._client.redact(RoomID(room_id), EventID(event_id), reason=reason or None),
+                label="redact")
         return await self._client_op(
-            lambda: self._client.redact(RoomID(room_id), EventID(event_id), reason=reason or None),
+            _redact_with_backoff,
             ("Matrix: redacted %s in %s", event_id, room_id), "Matrix: redact error: %s")
 
     async def create_room(

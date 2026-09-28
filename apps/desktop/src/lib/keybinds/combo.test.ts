@@ -138,6 +138,22 @@ describe('actionAllowedInInput', () => {
     expect(comboFromEvent(keydown({ code: 'ArrowRight', metaKey: true, altKey: true }))).toBe('mod+alt+right')
     expect(comboFromEvent(keydown({ code: 'ArrowLeft', metaKey: true, altKey: true }))).toBe('mod+alt+left')
   })
+
+  it('fires reasoning level actions from an editable target on modified chords, never on bare keys (#71627)', () => {
+    // Alt/Numpad-style chords without a primary modifier — the shapes users
+    // actually pick for runtime dials — reach the action while typing.
+    expect(actionAllowedInInput('composer.reasoningUp', 'alt+.')).toBe(true)
+    expect(actionAllowedInInput('composer.reasoningDown', 'alt+,')).toBe(true)
+    expect(actionAllowedInInput('composer.reasoningUp', 'mod+alt+down')).toBe(true)
+    // Primary-modifier chords were already global; the opt-in adds nothing new.
+    expect(actionAllowedInInput('composer.reasoningUp', 'mod+shift+m')).toBe(true)
+
+    // A bare or shift-only rebind stays with the input: typing '.' or 'U'
+    // in the composer must never change the reasoning level.
+    expect(actionAllowedInInput('composer.reasoningUp', '.')).toBe(false)
+    expect(actionAllowedInInput('composer.reasoningUp', 'shift+.')).toBe(false)
+    expect(actionAllowedInInput('composer.reasoningDown', ',')).toBe(false)
+  })
 })
 
 describe('comboFromEvent — IME composition keydowns never resolve to combos (#84957)', () => {

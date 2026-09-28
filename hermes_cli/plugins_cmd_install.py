@@ -269,6 +269,14 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
         )
 
 
+def _known_issue_warnings(entry) -> list[str]:
+    """Catalog ``known_issues`` are informational (#124058): surface them as warnings, never a gate.
+
+    The guard for the traps they describe belongs at the mode-selection seam (#122341 / #123771).
+    """
+    return [f"Known issue: {issue}" for issue in entry.known_issues]
+
+
 def _install_plugin_core(
     identifier: str,
     *,
@@ -542,6 +550,7 @@ def dashboard_install_plugin(
         entry = catalog.get_live_catalog_entry(catalog_name)
         if entry is None:
             return {"ok": False, "error": f"'{catalog_name}' is not in the Hermes plugin catalog."}
+        warnings.extend(_known_issue_warnings(entry))
         identifier = entry.install_identifier
     else:
         warnings.append("Custom (unreviewed) source — not from the Hermes catalog.")
@@ -596,4 +605,5 @@ def dashboard_install_plugin(
         "python_dependencies": deps,
         "missing_env": [s["name"] for s in _pc()._missing_env_specs(installed_manifest)],
         "after_install_path": str(ap) if ap.exists() else None, "enabled": enable, **activated,
+        "known_issues": list(entry.known_issues) if entry else [],
     }

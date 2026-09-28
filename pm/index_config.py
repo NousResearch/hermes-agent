@@ -90,6 +90,34 @@ def pip_conf_index_url(env: Mapping[str, str]) -> str | None:
         return None
 
 
+NPM_PUBLIC_REGISTRY = "https://registry.npmjs.org/"
+
+
+def npm_registry(env: Mapping[str, str]) -> str:
+    """The npm registry the user configured, as npm resolves it: ``npm_config_registry`` (any
+    case) beats ``registry=`` in the user npmrc (``npm_config_userconfig`` or ``~/.npmrc``)."""
+    lowered = {key.lower(): value for key, value in env.items()}
+    value = (lowered.get("npm_config_registry") or "").strip()
+    if not value:
+        npmrc = Path(lowered.get("npm_config_userconfig") or Path.home() / ".npmrc").expanduser()
+        try:
+            lines = npmrc.read_text(encoding="utf-8-sig").splitlines()
+        except (OSError, UnicodeDecodeError):
+            lines = []
+        for line in lines:
+            key, sep, candidate = line.partition("=")
+            if sep and key.strip().lower() == "registry":
+                value = candidate.strip().strip("\"'")
+    return value.rstrip("/") + "/" if value.startswith(("https://", "http://")) else NPM_PUBLIC_REGISTRY
+
+
+def npm_registry_url(url: str, env: Mapping[str, str]) -> str:
+    """*url* on the configured npm registry; non-npm URLs are returned unchanged."""
+    if not url.startswith(NPM_PUBLIC_REGISTRY):
+        return url
+    return npm_registry(env) + url[len(NPM_PUBLIC_REGISTRY):]
+
+
 def bridged_index_settings(ambient: Mapping[str, str]) -> dict[str, str]:
     """The uv index/transport settings *ambient* asks for, pip knobs translated.
 

@@ -20,15 +20,16 @@ logger = logging.getLogger(__name__)
 
 
 def register_timeout_notice(
-    runner, approval_data: dict, *, command: str, card_message_id: Optional[str]) -> None:
+    runner, approval_data: dict, *, command: str, card_message_id: Optional[str], card_future=None) -> None:
     """Arm a settle hook that posts the timed-out notice for ``approval_data['request_id']``.
 
     ``runner`` is the ``TurnRunner`` (for ``_ctx`` and ``_schedule``); ``card_message_id`` is the
     delivered BUTTON card's id when the adapter returned one, so the card itself is edited in place
     (which also drops its buttons). The plain-text prompt passes ``None``: it has no buttons to
     drop and rewriting it would erase the record of what was asked. ``command`` is the
-    already-redacted command shown to the user. The notice is skipped when the run is no longer
-    current (``ctx._run_still_current``).
+    already-redacted command shown to the user. An ambiguous button send supplies ``card_future``;
+    its late receipt is read without waiting when the approval expires. The notice is skipped
+    when the run is no longer current (``ctx._run_still_current``).
     """
     from tools.approval import register_gateway_settle
 
@@ -46,8 +47,17 @@ def register_timeout_notice(
         still_current = getattr(runner._ctx, "_run_still_current", None)
         if callable(still_current) and not still_current():
             return
+        message_id = card_message_id
+        if card_future is not None:
+            try:
+                result = card_future.result(timeout=0)
+                if getattr(result, "success", False):
+                    message_id = getattr(result, "message_id", None)
+            except Exception:
+                # Missing/failed ACK must not suppress the notice or trigger a duplicate prompt.
+                logger.debug("Approval card receipt unavailable at timeout", exc_info=True)
         runner._schedule(
-            _post_timeout_notice(runner._ctx, command, card_message_id, timeout_s),
+            _post_timeout_notice(runner._ctx, command, message_id, timeout_s),
             "Approval timeout notice scheduling error")
 
     register_gateway_settle(session_key, request_id, settle)
@@ -58,12 +68,21 @@ async def _post_timeout_notice(ctx, command: str, card_message_id: Optional[str]
 
     adapter = ctx._status_adapter
     notice = format_approval_timed_out_notice(timeout_s)
-    metadata = _interim_metadata(ctx._status_thread_metadata)
+    metadata = _interim_metadata({**(ctx._status_thread_metadata or {}), "notify": True})
     try:
-        # Plain markdown, not the card's platform markup: ``edit_message`` re-formats it itself.
-        if card_message_id and await _edit_card(adapter, ctx._status_chat_id, card_message_id, f"{notice}\n```\n{command}\n```"):
+        retire = getattr(type(adapter), "retire_exec_approval_card", None)
+        if card_message_id and callable(retire):
+            try:
+                await retire(adapter, ctx._status_chat_id, card_message_id)
+            except Exception:
+                logger.warning("Could not retire expired approval buttons", exc_info=True)
+            # Keep the original question visible. A separate notice must not erase evidence
+            # of the prompt or make a missing-button incident look like a user refusal.
+        elif card_message_id and await _edit_card(adapter, ctx._status_chat_id, card_message_id, f"{notice}\n```\n{command}\n```"):
             return
-        await adapter.send(ctx._status_chat_id, notice, metadata=metadata)
+        result = await adapter.send(ctx._status_chat_id, notice, metadata=metadata)
+        logger.info("Approval timeout notice: card_message_id=%s delivered=%s",
+                    card_message_id, bool(getattr(result, "success", False)))
     except Exception:
         logger.debug("Approval timeout notice failed", exc_info=True)
 

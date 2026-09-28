@@ -2,9 +2,7 @@ name: unbrowse
 repo: https://github.com/unbrowse-ai/unbrowse
 sha: a82c59dfb05583836ecfa21fdc3f8a2ea73bfb76
 subdir: plugins/hermes
-description: 'Unbrowse: websites as APIs. Read any page as clean markdown, run tasks on sites through
-  learned first-party APIs (no browser), and drive a cloud browser with saved logins when nothing
-  matches. Also a web_extract backend and a guard that routes public-web browser_* calls to Unbrowse.'
+description: "Unbrowse: websites as APIs. Read any page as clean markdown, run tasks on sites through learned first-party APIs (no browser), and drive a cloud browser with saved logins when nothing matches. Also a web_extract backend and a guard that routes public-web browser_* calls to Unbrowse. Disclosure — hosted service: page URLs, task text and tool arguments are sent to unbrowse.ai with your API key, pages are fetched and site logins are stored on Unbrowse's side, and verified calls bill the Unbrowse account; once UNBROWSE_API_KEY is set the plugin blocks the built-in browser_* tools and web_extract on public URLs by default (settings blockBrowser/blockWebExtract, or UNBROWSE_ALLOW_BUILTIN_BROWSER=1)."
 maintainer: unbrowse-ai
 tier: community
 category: web

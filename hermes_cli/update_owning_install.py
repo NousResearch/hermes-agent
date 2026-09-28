@@ -54,7 +54,7 @@ def _pm_environment_owner(venv: Path) -> Path | None:
         return None
     try:
         # pm.environments.record_activation_inputs writes it on every full install.
-        owner = Path((state / "inputs" / ".project-root").read_text(encoding="utf-8").strip())
+        owner = Path((state / "inputs" / ".project-root").read_text(encoding="utf-8-sig").strip())
     except OSError:
         return None
     if install_key(owner) != state.name or not (owner / "hermes_cli" / "main.py").is_file():

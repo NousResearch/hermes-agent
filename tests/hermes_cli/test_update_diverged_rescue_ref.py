@@ -148,4 +148,3 @@ def test_operational_ff_failure_preserves_git_error_without_reset(
     assert "HEAD is still an ancestor of origin/main" in out
     assert "Local history has diverged" not in out
     assert "git reset --hard" not in out
-

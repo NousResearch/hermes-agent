@@ -606,8 +606,13 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # Keep this marker after the override: a replay pass needs the same
             # prefix to avoid overwriting the older unanswered turn again.
             # Private scaffolding is stripped from the wire.
-            if prev_content and new_content:
-                prev["_merged_turn_prefix"] = prev_content + "\n\n"
+            if prev_content:
+                # Even an empty incoming turn is absorbed. Its persist override
+                # must retain all earlier unanswered text, not a stale prefix
+                # left by the previous merge of two unanswered rows.
+                prev["_merged_turn_prefix"] = (
+                    prev_content + "\n\n" if new_content else prev_content
+                )
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
             # Pop the persist marker only when the durable row actually changed: a merge that

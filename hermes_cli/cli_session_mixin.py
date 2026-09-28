@@ -303,7 +303,22 @@ class CLISessionMixin:
                 lines.append(t("gateway.status.free_tier"))
         except Exception:
             pass
-        optional = (("Reasoning", reasoning_label), ("Approvals", approval_label), ("Context", ctx_label))
+        # Local llama-server engine telemetry (issue #123678): last-turn tokens/s +
+        # context-window usage; shown only when the managed runtime actually serves this model.
+        local_label = None
+        try:
+            from hermes_cli.local_runtime.telemetry import get_runtime_stats
+            stats = get_runtime_stats(
+                getattr(agent, "model", None) or getattr(self, "model", None))
+            if stats is not None:
+                local_label = " · ".join(
+                    part for part in (stats.get("throughput_label"), stats.get("context_label"))
+                    if part
+                ) or None
+        except Exception:
+            local_label = None
+        optional = (("Reasoning", reasoning_label), ("Approvals", approval_label), ("Context", ctx_label),
+                    ("Local runtime", local_label))
         for label, value in optional:
             if value:
                 lines.append(f"{label}: {value}")

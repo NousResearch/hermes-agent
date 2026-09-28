@@ -155,6 +155,11 @@ def record_response_usage(
 
     # Stash canonical usage for on_turn_complete(); keep the latest call's.
     agent._last_turn_usage = dict(usage_dict)
+    # Local llama-server engines attach a ``timings`` object to the completion: stash this
+    # turn's prompt/gen rates for the /status + status-bar + Local Models telemetry readouts.
+    with suppress(Exception):
+        from hermes_cli.local_runtime.telemetry import record_response_timings
+        record_response_timings(agent.model, response)
     # The parent's CURRENT prompt size for headroom math (delegate summary budgets): the
     # aggregator's own prompt, never the MoA-folded total (advisor prompts are not in this context).
     agent._last_prompt_size_tokens = int(aggregator_usage.prompt_tokens or 0)

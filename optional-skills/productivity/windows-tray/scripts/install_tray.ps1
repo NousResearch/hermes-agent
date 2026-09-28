@@ -11,7 +11,12 @@ $plugin = Join-Path $env:LOCALAPPDATA "hermes\plugins\tray-needs-input"
 $lnk    = Join-Path ([Environment]::GetFolderPath("Startup")) "HermesTray.lnk"
 
 if ($Uninstall) {
-    Stop-Process -Name pythonw -Force -ErrorAction SilentlyContinue
+    # scope the kill: match only our tray process, never every pythonw on the box
+    Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | ForEach-Object {
+        if ($_.CommandLine -like "*hermes_tray.py*") {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    }
     if (Test-Path $lnk) { Remove-Item $lnk -Force }
     Write-Host "uninstalled: startup shortcut removed, tray stopped."
     Write-Host "leftovers you can delete manually: $dst  and  $plugin"

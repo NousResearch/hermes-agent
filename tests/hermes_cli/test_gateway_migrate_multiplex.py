@@ -8,6 +8,7 @@ fingerprint and port-binding predicates, so the tests assert verdict → effect,
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -41,6 +42,9 @@ def fleet(tmp_path, monkeypatch):
         pids={"coder": 4101, "ops": 4102},
         ops=[],
         refused_at_start={},
+        # (profile, kind, system) of units whose boot enablement survived; secondaries boot-start,
+        # the pre-existing default unit starts DISABLED unless a test/migration enables it.
+        enabled={("coder", "systemd", False), ("ops", "systemd", False)},
     )
 
     def _service_op(kind, system, verb, home, *, run_as_user=None):
@@ -59,6 +63,9 @@ def fleet(tmp_path, monkeypatch):
                 state.services.pop(name, None)
         elif verb == "install":
             state.services[name] = (kind, system)
+            state.enabled.add((name, kind, system))
+        elif verb == "enable":
+            state.enabled.add((name, kind, system))
         elif verb in ("start", "restart") and name == "default":
             (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
             runtime_path = root / "gateway_state.json"
@@ -251,7 +258,7 @@ def test_apply_clears_the_manifest_on_success_and_the_compensator_restores(fleet
     # the flock race and respawn at exit 75 forever.
     assert fleet.services == {"default": ("systemd", False)}
     assert [op for op in fleet.ops if op[0] != "default"] == []
-    assert fleet.ops[-1] == ("default", "restart")
+    assert fleet.ops[-1] == ("default", "enable")
     assert "coder, ops" in capsys.readouterr().out
     runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
     assert runtime["served_profiles"] == []
@@ -716,7 +723,7 @@ def test_interruption_after_the_default_unit_exists_is_still_interrupted_not_alr
     assert plan.interrupted and not plan.already_multiplexed
     fleet.ops.clear()
     assert gm.apply_migration(plan, served_wait=5.0) is True
-    assert fleet.ops[-1] == ("default", "restart") and "serves 3 profiles" in capsys.readouterr().out
+    assert fleet.ops[-1] == ("default", "enable") and "serves 3 profiles" in capsys.readouterr().out
     # Postcondition met: the next plan sees the live multiplexer and stops.
     assert gm.build_migration_plan().already_multiplexed
 
@@ -853,6 +860,56 @@ def test_half_migrated_host_converges_on_a_re_run(fleet, capsys):
     out = capsys.readouterr().out
     assert "Half-migrated host" in out and "serves 3 profiles" in out
     assert gm.build_migration_plan().already_multiplexed
+
+
+def test_migrate_enables_the_survivor_unit_for_boot(fleet, capsys):
+    """A pre-existing survivor unit is restarted, and restarted is not enabled: the fold just
+    destroyed every secondary's default.target.wants symlink, so a survivor left disabled boots
+    into a host with no gateway at all while the migration reports success."""
+    fleet.services["default"] = ("systemd", False)  # unit exists; NOT in fleet.enabled
+    assert ("default", "systemd", False) not in fleet.enabled
+
+    with pytest.raises(SystemExit) as exc:
+        gm.cmd_migrate(SimpleNamespace(multiplex=True, dry_run=False, yes=True))
+    assert exc.value.code == 0
+
+    assert fleet.services == {"default": ("systemd", False)}
+    assert ("default", "restart") in fleet.ops and ("default", "enable") in fleet.ops
+    assert fleet.ops.index(("default", "enable")) > fleet.ops.index(("default", "restart"))
+    assert ("default", "systemd", False) in fleet.enabled, "the survivor must survive a reboot"
+    assert "serves 3 profiles" in capsys.readouterr().out
+
+
+def test_enable_verb_runs_systemctl_enable_and_warns_without_failing(tmp_path, monkeypatch, capsys):
+    """The enable verb is an idempotent systemctl call (never a hard failure: a restart-only
+    migration still converges), and the non-systemd backends are no-ops by construction."""
+    from hermes_cli import gateway as gw
+    from types import SimpleNamespace as NS
+
+    calls = []
+    monkeypatch.setattr(gw, "get_service_name", lambda: "hermes-gateway.service")
+    monkeypatch.setattr(gw, "_run_systemctl",
+                        lambda args, **kw: calls.append(args) or NS(returncode=0))
+    monkeypatch.setattr(gm, "_home_env", lambda home: contextlib.nullcontext())
+
+    gm._service_op("systemd", False, "enable", tmp_path)
+    assert calls == [["enable", "hermes-gateway.service"]]
+
+    # A failing enable is a warning, not an exception: the migration still converged for serving.
+    calls.clear()
+    monkeypatch.setattr(gw, "_run_systemctl",
+                        lambda args, **kw: calls.append(args) or NS(returncode=1))
+    gm._service_op("systemd", False, "enable", tmp_path)
+    assert calls == [["enable", "hermes-gateway.service"]]
+    assert "could not enable" in capsys.readouterr().out
+
+    # launchd/Windows/s6 load at boot by construction — the verb must not touch them.
+    calls.clear()
+    monkeypatch.setattr(gw, "_run_systemctl", lambda args, **kw: calls.append(args) or NS(returncode=0))
+    gm._service_op("launchd", False, "enable", tmp_path)
+    gm._service_op("windows", False, "enable", tmp_path)
+    gm._service_op("s6", False, "enable", tmp_path)
+    assert calls == []
 
 
 def test_plan_names_every_process_it_will_sigterm_before_it_signals_anything(fleet, capsys):

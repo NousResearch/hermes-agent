@@ -161,7 +161,17 @@ def test_only_operator_workspaces_and_listed_directories_are_trusted(tmp_path, m
     # The workspace a surface points the session at is the operator's too (hermes -w, a Desktop project)...
     monkeypatch.setenv("TERMINAL_CWD", str(sibling))
     assert shell_linted(sibling) == 2
-    # ...but never $HOME: a dotfiles repo there would trust every directory below it.
+    # ...but not one the model scheduled: a cron job's workdir or a kanban task's workspace...
+    from gateway.session_context import clear_session_vars, set_session_vars
+    tokens = set_session_vars(cron_session="1")
+    try:
+        assert shell_linted(sibling) == 0
+    finally:
+        clear_session_vars(tokens)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_1")
+    assert shell_linted(sibling) == 0
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    # ...and never $HOME: a dotfiles repo there would trust every directory below it.
     monkeypatch.setenv("HOME", str(sibling))
     monkeypatch.setenv("USERPROFILE", str(sibling))
     assert shell_linted(sibling) == 0

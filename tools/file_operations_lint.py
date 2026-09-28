@@ -262,7 +262,7 @@ class LintMixin:
         from hermes_cli.config import load_config_readonly
         lsp_cfg = load_config_readonly().get("lsp")
         trusted = parse_trusted_workspaces(lsp_cfg.get("trusted_workspaces") if isinstance(lsp_cfg, dict) else None)
-        return not is_trusted_workspace(self.env.cwd or self.cwd, trusted, operator_workspace_roots())
+        return not is_trusted_workspace(getattr(self.env, "cwd", None) or self.cwd, trusted, operator_workspace_roots())
 
     def _lsp_service(self):
         """The active LSPService, or None on a non-local backend / any failure.

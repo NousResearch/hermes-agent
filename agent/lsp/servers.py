@@ -236,9 +236,9 @@ _VUE_TSDK_MSG = (
 
 
 def _node_modules_trees(bin_path: str, root: Optional[str]) -> List[str]:
-    """``node_modules`` trees that may hold the Vue server and its TypeScript SDK:
-    the launcher's own tree (symlinks resolved), Hermes staging, then the project's
-    (``root`` is None for an untrusted workspace, whose own JavaScript must not load)."""
+    """``node_modules`` trees that may hold a server and its TypeScript SDK: the launcher's own tree
+    (symlinks resolved), Hermes staging, then the project's (``root`` None: Hermes's trees only, for
+    TypeScript's SDK pin in an untrusted workspace, whose own JavaScript must not load)."""
     from agent.lsp.install import hermes_lsp_bin_dir
     trees = [str(hermes_lsp_bin_dir().parent / "node_modules")] + ([os.path.join(root, "node_modules")] if root else [])
     real = os.path.realpath(bin_path)

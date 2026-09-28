@@ -73,16 +73,20 @@ Hermes therefore treats every workspace as untrusted unless it is:
 
 - the git worktree of a directory you pointed Hermes at: where you
   launched it (`cd my-app && hermes`), the worktree `hermes -w`
-  created, the project a Desktop or TUI session is opened in, a
-  gateway's `terminal.cwd`, or a cron job's workdir, or
+  created, the project a Desktop or TUI session is opened in, or a
+  gateway's `terminal.cwd`, or
 - a directory listed under `lsp.trusted_workspaces` (or any
   directory below one).
 
-The agent cannot widen this: a `cd` in its terminal does not move the
-session's workspace. A checkout nested inside a trusted worktree has
-its own `.git`, so it is not trusted, and neither is a git repository
-at your home directory itself (a dotfiles repo there would otherwise
-trust everything below it).
+A `cd` in the agent's terminal does not move the session's workspace.
+Cron jobs and Kanban workers get no automatic trust, because the agent
+can choose their workdir or workspace; list the directories they should
+trust under `lsp.trusted_workspaces`. A checkout nested inside a trusted
+worktree has its own `.git`, so it is not trusted, and neither is a git
+repository at or above your home directory (a dotfiles repo there would
+otherwise trust everything below it). Trust covers the whole directory
+you pointed Hermes at, including anything later cloned into it, and
+lasts until Hermes exits.
 
 In an untrusted workspace Hermes **denies by default**: only the
 servers below start, each with settings that keep it on Hermes-side

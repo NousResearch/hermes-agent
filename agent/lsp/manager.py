@@ -44,27 +44,32 @@ def _float_or(value: Any, default: float) -> float:
         return default
 
 
-def _parse_path_list(value: Any, key: str, expected: str, consequence: str, invalid: Optional[List[str]]):
-    """Normalise a ``~``-expanded list of paths; ``invalid`` (with a WARNING) for a non-list value."""
+def _path_list(value: Any) -> Optional[List[str]]:
+    """A config list of paths, ``~``-expanded; ``None`` when the value is not a list of strings."""
     if value is None:
         return []
     if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
-        eventlog.event_log.warning("lsp.%s must be %s (got %s); %s until the key is fixed",
-                                   key, expected, type(value).__name__, consequence)
-        return invalid
+        return None
     return [os.path.expanduser(p) for p in value if p]
 
 
 def _parse_exclude_roots(value: Any) -> Optional[List[str]]:
     """``lsp.exclude_roots``; ``None`` (fail closed: every root excluded) for a malformed value."""
-    return _parse_path_list(value, "exclude_roots", "a list of glob patterns, e.g. ['~/big-monorepo', '/srv/*/vendor']",
-                            "LSP is skipped for every workspace", None)
+    if (roots := _path_list(value)) is None:
+        eventlog.event_log.warning(
+            "lsp.exclude_roots must be a list of glob patterns, e.g. ['~/big-monorepo', '/srv/*/vendor'] "
+            "(got %s); LSP is skipped for every workspace until the key is fixed", type(value).__name__)
+    return roots
 
 
 def parse_trusted_workspaces(value: Any) -> List[str]:
     """``lsp.trusted_workspaces``; a malformed value trusts nothing extra."""
-    return _parse_path_list(value, "trusted_workspaces", "a list of directories, e.g. ['~/code/my-app']",
-                            "only the workspaces you launched Hermes or opened the session in are trusted", [])
+    if (roots := _path_list(value)) is None:
+        eventlog.event_log.warning(
+            "lsp.trusted_workspaces must be a list of directories, e.g. ['~/code/my-app'] (got %s); only the "
+            "workspaces you launched Hermes or opened a session in are trusted until the key is fixed",
+            type(value).__name__)
+    return roots or []
 
 
 def _client_key(srv: ServerDef, root: str, trusted: bool) -> _Key:
@@ -163,7 +168,7 @@ class LSPService:
         self._exclude_roots: Optional[List[str]] = _parse_exclude_roots(exclude_roots)
         self._trusted_workspaces: List[str] = parse_trusted_workspaces(trusted_workspaces)
         self._untrusted_skipped: set = set()  # (server_id, root) pairs denied by workspace trust
-        self._operator_roots: frozenset = frozenset()  # see _trusted
+        self._operator_roots = frozenset(operator_workspace_roots())  # see _note_operator_roots
 
         self._loop = _BackgroundLoop()
         if self._enabled:
@@ -265,6 +270,7 @@ class LSPService:
         if self._root_excluded(key[1]):
             eventlog.log_root_excluded(srv.server_id, key[1], file_path, invalid=self._exclude_roots is None)
             return False
+        self._note_operator_roots()
         if self._untrusted_denied(srv, key[1], file_path, self._trusted(key[1])):
             return False
         if self._is_broken(key):
@@ -272,13 +278,23 @@ class LSPService:
             return False
         return True
 
-    def _trusted(self, root: str) -> bool:
-        """Trust for ``root``; remembers each ``operator_workspace_roots`` answer, because a tool thread
-        sees the session's cwd while the loop thread that spawns servers does not."""
+    def _note_operator_roots(self) -> None:
+        """Remember this thread's ``operator_workspace_roots``.  Called where a tool thread enters (it sees
+        the session's cwd; the loop thread that spawns servers does not), so trust is per process: a
+        workspace any session was opened in stays trusted until shutdown."""
         if not (roots := operator_workspace_roots()) <= self._operator_roots:
             with self._state_lock:  # rebind, never mutate: other threads read the old set lock-free
                 self._operator_roots = self._operator_roots | roots
+
+    def _trusted(self, root: str) -> bool:
         return is_trusted_workspace(root, self._trusted_workspaces, self._operator_roots)
+
+    def _live_key(self, srv: ServerDef, root: str) -> _Key:
+        """The client key for ``root`` (under ``_state_lock``): a multi-root server started while
+        ``root`` was untrusted keeps its own client after ``root`` becomes trusted, so it is found and
+        released rather than orphaned."""
+        own = (srv.server_id, root)
+        return own if own in self._clients or own in self._spawning else _client_key(srv, root, self._trusted(root))
 
     def _untrusted_denied(self, srv: ServerDef, root: str, file_path: str, trusted: bool) -> bool:
         """True iff ``srv`` may run project code and ``root`` is not a trusted workspace (deny by default:
@@ -324,7 +340,7 @@ class LSPService:
         if key is None:
             return self._wait_timeout
         with self._state_lock:
-            client = self._clients.get(_client_key(srv, key[1], self._trusted(key[1])))
+            client = self._clients.get(self._live_key(srv, key[1]))
         return self._wait_timeout if client is not None and client.is_running else self._warmup_timeout
 
     def snapshot_baseline(self, file_path: str) -> None:
@@ -425,8 +441,8 @@ class LSPService:
             return
         already_broken = self._is_broken(key)
         self._mark_broken(key)
-        ckey = _client_key(srv, key[1], self._trusted(key[1]))
         with self._state_lock:
+            ckey = self._live_key(srv, key[1])
             client = self._clients.pop(ckey, None)
             self._last_used.pop(ckey, None)
         if client is not None:
@@ -458,7 +474,7 @@ class LSPService:
                 for c in self._clients.values()
             ]
             broken = [key for key, deadline in self._broken.items() if time.monotonic() < deadline]
-            untrusted = sorted(self._untrusted_skipped)
+            untrusted = sorted(pair for pair in self._untrusted_skipped if not self._trusted(pair[1]))
         return {
             "enabled": self._enabled, "wait_mode": self._wait_mode, "wait_timeout": self._wait_timeout,
             "install_strategy": self._install_strategy, "clients": clients, "broken": broken,
@@ -516,7 +532,7 @@ class LSPService:
         if root is None:
             return []
         with self._state_lock:
-            client = self._clients.get(_client_key(srv, root, self._trusted(root)))
+            client = self._clients.get(self._live_key(srv, root))
         return list(client.diagnostics_for(file_path, fresh_only=True)) if client else []
 
     async def _get_or_spawn(self, file_path: str) -> Optional[LSPClient]:
@@ -534,13 +550,15 @@ class LSPService:
         if root is None:
             eventlog.log_disabled(srv.server_id, file_path, "exclude marker hit (server gated off)")
             return None
-        trusted = self._trusted(root)
-        if self._untrusted_denied(srv, root, file_path, trusted):
+        if self._untrusted_denied(srv, root, file_path, self._trusted(root)):
             return None
         if self._is_broken((srv.server_id, root)):
             return None
-        key = _client_key(srv, root, trusted)
         with self._state_lock:
+            key = self._live_key(srv, root)
+            # Derived with the key: trust only grows, so one read before the lock could store an
+            # untrusted spawn under the shared multi-root key every trusted root then attaches to.
+            trusted = key[1] == "" or self._trusted(root)
             client = self._clients.get(key)
             if client is not None and client.is_running:
                 self._last_used[key] = time.time()

@@ -18,14 +18,30 @@ def _cleared_status_copy(entry: PooledCredential) -> PooledCredential:
                    extra={k: v for k, v in entry.extra.items() if k != "failure_reason"})
 
 
+def _activated_copy(entry: PooledCredential, *, at: Optional[float] = None) -> PooledCredential:
+    """Stamp a deliberate activation so a live session adopts this entry at its next turn boundary.
+
+    Reordering the pool only changes what a NEW session resolves; a session that already holds a
+    credential keeps billing it until a 429/402 rotates it off. ``activated_at`` is the signal
+    ``adopt_activated_credential`` reads to migrate an open chat onto the account the user just
+    picked, without touching the request in flight.
+    """
+    return replace(entry, extra={**entry.extra, "activated_at": at if at is not None else time.time()})
+
+
 class CredentialPoolAdminMixin:
     def reset_status(self, credential_id: str) -> Optional[PooledCredential]:
-        """Clear only the target's local error state, preserving sibling cooldowns."""
+        """Clear only the target's local error state, preserving sibling cooldowns.
+
+        A reset is a deliberate "use this one again", so it stamps ``activated_at`` alongside the
+        clear: a live session sitting on the credential this one was benched for adopts it back at
+        its next turn boundary instead of waiting for its own 429/402.
+        """
         with self._lock:
             entry = self._find(lambda e: e.id == credential_id)
             if entry is None:
                 return None
-            cleared = _cleared_status_copy(entry)
+            cleared = _activated_copy(_cleared_status_copy(entry))
             self._replace_entry(entry, cleared)
             self._persist(status_cleared_ids=[cleared.id])
             return cleared
@@ -36,6 +52,10 @@ class CredentialPoolAdminMixin:
         stripped explicitly. The persist declares the cleared ids because the
         disk-recency merge reads a cleared ``last_status_at`` (None -> epoch 0)
         as a stale snapshot and would copy a still-binding cooldown back.
+
+        No ``activated_at`` stamp here, unlike ``reset_status``: a bulk clear says "lift the
+        cooldowns", not "put me on that account", and stamping would drag every live session onto
+        whichever entry happened to be benched.
         """
         from agent.credential_pool import _CLEAR_STATUS
 
@@ -65,13 +85,19 @@ class CredentialPoolAdminMixin:
             return removed
 
     def move_entry(self, credential_id: str, priority: int) -> Optional[PooledCredential]:
-        """Place an entry at a clamped zero-based position and persist contiguous priorities."""
+        """Place an entry at a clamped zero-based position and persist contiguous priorities.
+
+        Promoting to the head is a deliberate account choice, so it stamps ``activated_at``:
+        reordering alone only steers NEW sessions, while the stamp lets an open chat adopt the
+        chosen credential at its next turn boundary (``adopt_activated_credential``).
+        """
         from agent.credential_pool import _normalize_pool_priorities
 
         with self._lock:
             entry = self._find(lambda e: e.id == credential_id)
             if entry is None:
                 return None
+            entry = _activated_copy(entry)
             others = [e for e in self._entries if e.id != credential_id]
             others.insert(max(0, min(int(priority), len(others))), entry)
             entries = [replace(e, priority=p) for p, e in enumerate(others)]

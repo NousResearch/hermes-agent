@@ -92,6 +92,9 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Reuse the conversation's pinned channel prompt/parent override without changing the event's
+    # authorization or user-facing behavior. Goal continuations and heartbeat prompts use this.
+    inherit_channel_inputs: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

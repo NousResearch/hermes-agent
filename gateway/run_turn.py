@@ -2198,6 +2198,7 @@ class GatewayTurnMixin:
             # Internal events reuse the last human turn's channel inputs (see _pinned_channel_inputs).
             _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(
                 session_key, event.channel_prompt, source, internal=event.internal,
+                inherit_channel_inputs=event.inherit_channel_inputs,
             )
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=_turn_source,
@@ -3868,6 +3869,7 @@ class GatewayTurnMixin:
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
             next_channel_prompt, next_source = self._pinned_channel_inputs(
                 next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
+                inherit_channel_inputs=pending_event.inherit_channel_inputs,
             )
             next_message_type = getattr(pending_event, "message_type", None)
 

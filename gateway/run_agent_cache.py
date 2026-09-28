@@ -643,17 +643,17 @@ class GatewayAgentCacheMixin:
 
     def _pinned_channel_inputs(
         self, session_key: Optional[str], channel_prompt: Optional[str], source: SessionSource, *, internal: bool,
+        inherit_channel_inputs: bool = False,
     ):
         """``(channel_prompt, source)`` for this turn's agent run.
 
         The ephemeral system prompt also appends ``channel_prompt`` and the ``channel_overrides``
-        prompt (looked up by chat/thread/``parent_chat_id``). Internal events carry
-        ``channel_prompt=None`` and a source without ``parent_chat_id``, so they dropped both and
-        toggled the system prompt like the context pin did. Human turns record their inputs;
-        internal turns reuse them."""
+        prompt (looked up by chat/thread/``parent_chat_id``). Internal events and explicitly
+        inheriting synthetic events reuse the pin; only human turns replace it. Keeping inheritance
+        separate from ``internal`` lets goal/heartbeat turns retain normal authorization."""
         if not session_key:
             return channel_prompt, source
-        if not internal:
+        if not internal and not inherit_channel_inputs:
             self._session_state(session_key).conversation.channel_pin = (channel_prompt, source.parent_chat_id)
             return channel_prompt, source
         state = self._peek_session_state(session_key)

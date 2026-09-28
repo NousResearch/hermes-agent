@@ -107,7 +107,10 @@ class GatewayGoalsMixin:
         would quote that stale message (Telegram DM topics route anchorless via the topic id).
         """
         source = dataclasses.replace(source, message_id=None) if getattr(source, "message_id", None) else source
-        return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=internal)
+        return MessageEvent(
+            text=text, message_type=MessageType.TEXT, source=source, internal=internal,
+            inherit_channel_inputs=True,
+        )
 
     def _register_heartbeat_watch(self, quick_key: str, source: Any, session_id: str) -> None:
         """Track the canonical route and start the restart-recoverable poller."""

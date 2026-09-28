@@ -109,7 +109,9 @@ def _capture(runner, sink: list):
 
 
 async def _drive(runner, turns, *, channel_prompt=None):
-    for internal, src in turns:
+    for turn in turns:
+        internal, src = turn[:2]
+        inherit_channel_inputs = bool(turn[2]) if len(turn) > 2 else False
         event = MessageEvent(
             text="[kanban] wake" if internal else "hi",
             source=src,
@@ -117,7 +119,8 @@ async def _drive(runner, turns, *, channel_prompt=None):
             internal=internal,
             # Adapters resolve channel_prompts onto human events; the kanban
             # wake is built without one.
-            channel_prompt=None if internal else channel_prompt,
+            channel_prompt=None if internal or inherit_channel_inputs else channel_prompt,
+            inherit_channel_inputs=inherit_channel_inputs,
         )
         await runner._handle_message_with_agent(event, src, KEY, 1)
 
@@ -207,3 +210,24 @@ async def test_internal_event_keeps_channel_prompt_and_parent_override(monkeypat
     eph = [_effective_ephemeral(runner, kw) for kw in calls]
     assert "Channel hint." in eph[0] and "Parent persona." in eph[0]
     assert eph[0] == eph[1] == eph[2], "internal event toggled the channel ephemeral components"
+
+
+@pytest.mark.asyncio
+async def test_non_internal_synthetic_event_inherits_channel_pin(monkeypatch):
+    """Goal/heartbeat prompts keep authorization while inheriting human channel inputs."""
+    runner = _make_runner(monkeypatch)
+    calls: list[dict] = []
+    _capture(runner, calls)
+
+    await _drive(
+        runner,
+        ((False, _human_thread_source()), (False, _wake_thread_source(), True),
+         (False, _human_thread_source())),
+        channel_prompt="Channel hint.",
+    )
+
+    assert len(calls) == 3
+    assert calls[1]["channel_prompt"] == "Channel hint."
+    eph = [_effective_ephemeral(runner, kw) for kw in calls]
+    assert eph[0] == eph[1] == eph[2], "non-internal synthetic event replaced the channel pin"
+    assert runner._peek_session_state(KEY).conversation.channel_pin == ("Channel hint.", PARENT_ID)

@@ -404,7 +404,7 @@ def gateway(
     mode = settings.mode
     resolution_pause = mode == "pause-resolution"
     context_pause = mode in {"pause-context", "pause-image-context", "pause-image-conversion", "pause-queued-context"}
-    native_images = mode in {"pause-image-context", "pause-image-conversion"}
+    native_images = mode in {"pause-image-context", "pause-image-conversion", "image-packs"}
     home = tmp_path / "hermes"
     home.mkdir()
     route = _host_route(network)
@@ -422,7 +422,7 @@ def gateway(
                 + (f"    free_response_rooms:\n      - {room_id!r}\n" if resolution_pause else "")
                 + "updates:\n  check: false\n"
                 + ("auxiliary:\n  background_review:\n    enabled: false\n  title_generation:\n    model_upgrade_enabled: false\n"
-                   if mode in {"inspection", "pause-image-context"} else "")
+                   if mode in {"inspection", "pause-image-context", "image-packs"} else "")
                 + ("display:\n  busy_input_mode: queue\n  busy_ack_enabled: false\n"
                    if mode == "pause-queued-context" else "")
                 + ("plugins:\n  enabled:\n    - matrix-live-context\n"

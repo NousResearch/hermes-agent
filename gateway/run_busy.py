@@ -1097,9 +1097,10 @@ class GatewayBusySessionMixin:
     def _check_slash_access(self, source: SessionSource, canonical_cmd: str) -> Optional[str]:
         """Denial message if ``source`` cannot run ``canonical_cmd``, else None (both dispatch paths
         use it so an in-flight agent can't bypass admin gating; no ``allow_admin_from`` → None)."""
+        from gateway.slash_access import policy_for_runner_source
         if not canonical_cmd:
             return None
-        policy = self._slash_access_policy_for_source(source)
+        policy = policy_for_runner_source(self, source)
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None
         logger.info(

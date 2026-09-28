@@ -143,7 +143,8 @@ async def test_whoami_non_admin_lists_runnable_commands():
 
 @pytest.mark.asyncio
 async def test_secondary_profile_slash_policy_uses_its_own_config():
-    """the launch profile's empty policy must not bypass a routed profile's gate."""
+    """#121705: a bot configured only in a secondary profile is gated by THAT profile's
+    ``allow_admin_from``; the launch profile's empty policy must not make it unrestricted."""
     runner = _make_runner(multiplex_profiles=True)
     runner._profile_configs["beta"] = GatewayConfig(
         platforms={
@@ -163,33 +164,24 @@ async def test_secondary_profile_slash_policy_uses_its_own_config():
     assert runner._check_slash_access(admin, "restart") is None
     assert runner._resume_caller_is_admin(admin) is True
 
-    primary = _make_source(user_id="user")
-    assert runner._check_slash_access(primary, "restart") is None
-
-    pinned = _make_source(user_id="user", profile="primary")
-    pinned._identity = RoutingIdentity(
-        transport_profile="primary",
-        runtime_profile="beta",
-        authorization_home=Path("/profiles/primary"),
-        runtime_home=Path("/profiles/beta"),
+    # The launch profile's own (ungated) bot stays ungated ...
+    assert runner._check_slash_access(_make_source(user_id="user"), "restart") is None
+    # ... including a turn ROUTED to beta: ``allow_admin_from`` is per bot, so the bot-owning
+    # (transport) profile's config decides, the owner ``authorization_home`` already names.
+    routed = _make_source(user_id="user", profile="beta")
+    routed._identity = RoutingIdentity(
+        transport_profile="primary", runtime_profile="beta",
+        authorization_home=Path("/profiles/primary"), runtime_home=Path("/profiles/beta"),
     )
-    assert runner._check_slash_access(pinned, "restart") is not None
+    assert runner._check_slash_access(routed, "restart") is None
 
 
-@pytest.mark.asyncio
-async def test_missing_secondary_profile_config_fails_closed():
-    """a missing routed-profile config must not inherit the launch profile's open policy."""
+def test_missing_secondary_profile_config_fails_closed():
+    """A served profile whose config is not cached must not inherit the launch profile's open policy."""
     runner = _make_runner(multiplex_profiles=True)
     denied = runner._check_slash_access(_make_source(user_id="user", profile="beta"), "restart")
     assert denied is not None and "⛔" in denied
-
-
-def test_missing_source_fails_closed_for_multiplexed_policy():
-    runner = _make_runner(multiplex_profiles=True)
-    policy = runner._slash_access_policy_for_source(None)
-    assert policy.enabled
-    assert not policy.can_run(None, "restart")
-    assert policy.can_run(None, "help")
+    assert runner._check_slash_access(_make_source(user_id="user", profile="beta"), "help") is None
 
 
 @pytest.mark.asyncio

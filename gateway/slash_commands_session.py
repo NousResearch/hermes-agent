@@ -305,7 +305,8 @@ class GatewaySessionCommandsMixin:
         Stricter than ``SlashAccessPolicy.is_admin()``, which is True for every caller when slash
         gating is DISABLED — the default config would make everyone cross-origin-capable (IDOR)."""
         try:
-            policy = self._slash_access_policy_for_source(source)
+            from gateway.slash_access import policy_for_runner_source
+            policy = policy_for_runner_source(self, source)
             uid = getattr(source, "user_id", None)
             return bool(policy.enabled and uid and policy.is_admin(uid))
         except Exception:

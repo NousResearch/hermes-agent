@@ -41,7 +41,12 @@ export function LogTail({ className, emptyLabel, lines, onMatchCountChange, quer
   }, [lines, query])
 
   useEffect(() => {
-    if (!query.trim() || firstMatchLine < 0) {
+    if (!query.trim()) {
+      stickRef.current = true
+      return
+    }
+
+    if (firstMatchLine < 0) {
       return
     }
 

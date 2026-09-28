@@ -76,8 +76,9 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   (`cron/__init__.py` → `cron/worker_bootstrap.py`, ahead of the `cron.jobs` import — `-m
   cron.scheduler` runs the package first) then runs PM's `activate_dependencies`, which
   leases the committed generation for the worker's lifetime, runs its `.pth` files and
-  activates it before the first third-party import. The pin is the fallback the worker still
-  imports through if that boot fails; the gateway never re-runs the boot — `hermes_bootstrap`
+  activates it before the first third-party import. A failed activation is fatal: the worker
+  exits before its ownership ack (a reported dispatch failure) rather than run on an unleased
+  generation the collector may delete. The gateway never re-runs the boot — `hermes_bootstrap`
   already did at its own launch (#122222).
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the

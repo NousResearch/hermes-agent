@@ -39,18 +39,18 @@ def _committed_dependency_site_packages(project_root: Path) -> Path | None:
 
     Asked of PM's own committed selection -- the record ``activate_dependencies`` resolves
     at process boot -- rather than re-derived from this process's ``sys.path``: the record
-    is scoped to this home, so the lookup cannot walk a path under the *real* home when a
-    test runs against an isolated one. A runner that owns its dependencies (wheel / pipx /
-    developer venv / Nix: no committed generation) has nothing to restore, so ``None``
-    means "pin the tree only" and nothing is invented.
+    belongs to this install (``install_state_dir``, shared by every profile it serves). A
+    runner that owns its dependencies (wheel / pipx / developer venv / Nix: no committed
+    generation) has nothing to restore, so ``None`` means "pin the tree only" and nothing
+    is invented.
     """
     try:
         from pm.environments import committed_venv, site_packages
 
         environment = committed_venv(project_root)
     except Exception as exc:
-        # No PM on this tree, or a record naming a generation PM already removed: keep the
-        # previous behaviour (tree only) rather than failing the handoff.
+        # An unreadable record: pin the tree only. The cron worker's own boot re-reads it and
+        # fails the dispatch with PM's error.
         logger.warning(
             "cron worker: could not read the committed dependency environment: %s", exc
         )
@@ -71,9 +71,9 @@ def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     and pinning it would move site-packages ahead of the stdlib on ``sys.path``.
 
     Order (checkout, generation, sanitizer-kept) mirrors ``activate_dependencies``' own
-    ``sys.path``. The worker's boot (``cron/worker_bootstrap.py``) re-selects and leases the
-    committed generation before any third-party import; this pin is what the worker still
-    imports through if that boot fails.
+    ``sys.path``. For the cron worker, its boot (``cron/worker_bootstrap.py``) then re-selects
+    and leases the committed generation before any third-party import, and exits the worker
+    if it cannot.
     """
     root = str(repo_root)
     if _installed_purelib() == Path(root).resolve():

@@ -40,12 +40,14 @@ from tests.integration.matrix_live import conftest as live_fixtures
         MatrixFeedbackPolicy(ReadReceiptMode.IMMEDIATE, False), id="extra-overrides-module",
     ),
 ])
+@pytest.mark.parametrize("mode", ["pause-queued-context", "pause-edit-followups", "pause-edit-default"])
 def test_queued_context_receives_feedback_defaults(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     feedback: live_fixtures.MatrixFeedbackSettings,
     module_feedback: live_fixtures.MatrixFeedbackSettings | None,
     extra_feedback: live_fixtures.MatrixFeedbackSettings | None,
     expected_feedback: MatrixFeedbackPolicy,
+    mode: str,
 ) -> None:
     authored_config = yaml.safe_load(inspect.unwrap(live_fixtures.gateway_config)())
     if module_feedback is not None:
@@ -67,7 +69,7 @@ def test_queued_context_receives_feedback_defaults(
         }}
     composed = live_fixtures._gateway_yaml_config(
         yaml.safe_dump(authored_config), feedback,
-        live_fixtures.GatewaySettings(mode="pause-queued-context"),
+        live_fixtures.GatewaySettings(mode=mode),
         "!feedback:matrix.test", "interrupt", yaml.safe_dump(extra),
     )
     write_hermes_home(tmp_path, "http://127.0.0.1:1/v1", extra_config=composed)
@@ -79,6 +81,20 @@ def test_queued_context_receives_feedback_defaults(
         "read_receipts": expected_feedback.read_receipts.value,
         "reactions": expected_feedback.reactions,
     }
+
+    if mode == "pause-edit-followups":
+        expected_matrix["process_edits"] = {"!feedback:matrix.test": True}
+    expected_auxiliary = extra["auxiliary"]
+    if mode in {"pause-edit-followups", "pause-edit-default"}:
+        expected_auxiliary = {
+            "background_review": {"enabled": False},
+            "title_generation": {"enabled": False, "model_upgrade_enabled": False},
+        }
+    expected_display = {
+        "status": "compact", "busy_input_mode": "interrupt", "busy_text_mode": "interrupt",
+    }
+    if mode == "pause-queued-context":
+        expected_display.update({"busy_input_mode": "queue", "busy_ack_enabled": False})
 
     assert {
         "platforms": raw["platforms"],
@@ -93,11 +109,10 @@ def test_queued_context_receives_feedback_defaults(
         "matrix": raw["matrix"],
     } == {
         "platforms": {"matrix": expected_matrix},
-        "display": {"status": "compact", "busy_input_mode": "queue",
-                    "busy_ack_enabled": False, "busy_text_mode": "interrupt"},
+        "display": expected_display,
         "plugins": {"enabled": ["module-plugin", "matrix-live-context"],
                     "directory": "module-plugins"},
-        "auxiliary": extra["auxiliary"],
+        "auxiliary": expected_auxiliary,
         "approvals": {"mode": "manual", "timeout": 15},
         "updates": authored_config["updates"],
         "matrix_enabled": True,

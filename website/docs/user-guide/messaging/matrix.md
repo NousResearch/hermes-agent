@@ -119,7 +119,7 @@ matrix:
     - "^@telegram_"
     - "^@whatsapp_"
   process_notices: false          # Ignore m.notice by default
-  process_edits: false            # Ignore message edits (m.replace) by default
+  process_edits: {}               # No rooms trigger follow-ups from edits by default
   session_scope: room             # auto|room|thread; room is recommended for project rooms
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
@@ -165,6 +165,33 @@ MATRIX_AUTO_THREAD=true
 MATRIX_DM_MENTION_THREADS=false
 MATRIX_ALLOW_ROOM_MENTIONS=false
 ```
+
+### Follow-ups from message edits
+
+Message edits update the visible Matrix context without changing earlier model turns.
+By default, an edit does not start a new turn. To request correction follow-ups in
+specific rooms, configure exact room IDs in `config.yaml`:
+
+```yaml
+matrix:
+  process_edits:
+    "!project:example.org": true
+    "!quiet:example.org": false
+```
+
+Hermes accepts a correction only when the editor authored the original message in
+that room. The original message determines the thread. The corrected content must
+pass the current sender, room and mention policies. Corrections to `m.notice` also
+require `process_notices: true`.
+
+While a turn runs, corrections wait in the gateway queue. Repeated pending edits to
+the same message produce one follow-up with the latest corrected text. The follow-up
+runs after the active turn, includes the original event ID, and appends to the
+conversation. Earlier model messages and the cached system prompt remain unchanged.
+Edited slash commands are conversational text and cannot control the gateway.
+
+`process_edits` must be a room-ID map with boolean values. A global boolean is
+rejected. The setting is local to each adapter and has no environment-variable alias.
 
 ### Read receipts and lifecycle reactions
 

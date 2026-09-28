@@ -523,6 +523,18 @@ class GatewayBusySessionMixin:
             return True
         self._flush_buffered_pending(session_key, adapter)
         existing = pending_slot.get(session_key)
+        if event._pending_coalesce_key is not None:
+            if (isinstance(pending_slot, dict) and existing is not None
+                    and existing._pending_coalesce_key == event._pending_coalesce_key):
+                pending_slot[session_key] = event
+                event._gateway_accepted = True
+                return True
+            overflow = self._overflow_queue(session_key)
+            for index, pending in enumerate(overflow or ()):
+                if pending._pending_coalesce_key == event._pending_coalesce_key:
+                    overflow[index] = event
+                    event._gateway_accepted = True
+                    return True
         merge_types = {
             getattr(existing, "message_type", None),
             getattr(event, "message_type", None),
@@ -1042,6 +1054,9 @@ class GatewayBusySessionMixin:
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping
             await self._send_busy_drain_notice(event, session_key, effective_mode)
+            return True
+        if event._queue_at_turn_boundary:
+            self._queue_or_replace_pending_event(session_key, event)
             return True
         if await self._route_plaintext_approval_while_busy(event, session_key):
             return True

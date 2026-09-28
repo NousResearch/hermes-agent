@@ -40,6 +40,7 @@ from hermes_cli.models_catalog_static import (
     _BORROWED_MODEL_PROVIDERS,
     _COPILOT_MODEL_ALIASES,
     _LIVE_FIRST_PICKER_PROVIDERS,
+    _LIVE_TERMINAL_PICKER_PROVIDERS,
     _MODELS_DEV_PREFERRED,
     _OPENAI_FAST_MODE_PREFIXES,
     _PROVIDER_ALIASES,
@@ -1586,9 +1587,15 @@ def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base
 def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -> Optional[list[str]]:
     """Combine a profile's live catalog with its curated list the way the ``/model`` picker does, so
     first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
-    picker will later show. Empty live → ``fallback_models`` (None when the profile has none)."""
+    picker will later show. Empty live → ``fallback_models`` (None when the profile has none).
+
+    Subscription-tier providers (``_LIVE_TERMINAL_PICKER_PROVIDERS``) skip the merge entirely when
+    the live probe succeeds: entitlements vary per plan, so curated-only ids are phantom rows that
+    404 every turn and can never age out through a merge that only adds (#119481)."""
     if not live:
         rows = CuratedFallbackModels(profile.fallback_models) if profile.fallback_models else None
+    elif normalized in _LIVE_TERMINAL_PICKER_PROVIDERS:
+        rows = live
     else:
         curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
         if not curated:

@@ -554,6 +554,16 @@ _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
 _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go", "meta-ai"})
 
 
+# Subscription-tier providers whose entitlements differ per plan (intl vs cn, key tier), so no
+# single static list can be right for every account: a SUCCESSFUL live /v1/models is terminal for
+# the picker — curated ids the account's live catalog omits are phantom rows that 404 on every
+# turn, so they must not be merged back in (#119481). The curated list only fills in when the probe
+# fails (no key / network error), exactly like every other provider.
+_LIVE_TERMINAL_PICKER_PROVIDERS: frozenset[str] = frozenset({
+    "alibaba-token-plan", "alibaba-token-plan-cn", "tencent-tokenplan",
+})
+
+
 # Models supporting OpenAI Priority Processing (service_tier="priority"; see
 # openai.com/api-priority-processing). Pattern-based: any OpenAI flagship (gpt-*, o1*, o3*, o4*).
 # Non-OpenAI endpoints (OpenRouter/Copilot/opencode-zen proxies) strip service_tier, so false

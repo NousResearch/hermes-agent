@@ -1174,6 +1174,8 @@ export const deOverrides = {
       textDirection: { auto: 'Auto', rtl: 'Rechts nach links', ltr: 'Links nach rechts' },
       introSplashTitle: 'Intro-Splash',
       introSplashDesc: 'Das Wortzeichen und der Prompt, die bei einem leeren Chat angezeigt werden.',
+      modelPricingTitle: 'Modellpreise',
+      modelPricingDesc: 'Eingabe-, Ausgabe- und Cache-Lesepreise pro Million Tokens in der Modellauswahl anzeigen.',
       reactionsTitle: 'Nachrichten-Reaktionen',
       reactionsDesc:
         'Emoji-Tapbacks im iMessage-Stil – reagieren Sie auf Nachrichten, und Hermes kann auf Ihre reagieren.',
@@ -4635,6 +4637,7 @@ export const deOverrides = {
     updateNow: 'Jetzt aktualisieren',
     maybeLater: 'Später',
     moreChanges: count => `+ ${count} weitere Änderung${count === 1 ? '' : 'en'} enthalten.`,
+    copyFullLog: 'Vollständiges Änderungsprotokoll kopieren',
     manualTitle: 'Über Ihr Terminal aktualisieren',
     manualUnavailableTitle: 'Aktualisierung hier nicht möglich',
     manualBody:
@@ -5000,7 +5003,11 @@ export const deOverrides = {
       editModels: 'Modelle bearbeiten…',
       followDefault: 'Standard aus den Einstellungen verwenden',
       refreshModels: 'Modelle aktualisieren',
-      fast: 'Schnell'
+      fast: 'Schnell',
+      free: 'kostenlos',
+      cacheRead: 'Cache-Lesung',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'Keine Optionen für dieses Modell',

@@ -515,7 +515,7 @@ terminal:
 
 **Required:** Either `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` environment variables, or a `~/.modal.toml` config file.
 
-**Persistence:** When enabled, the sandbox filesystem is snapshotted on cleanup and restored on next session. Snapshots are tracked in `~/.hermes/modal_snapshots.json`. This preserves filesystem state, not live processes, PID space, or background jobs.
+**Persistence:** When enabled, the sandbox filesystem is snapshotted on cleanup and restored on next session. Snapshots are tracked in `~/.hermes/modal_snapshots.json` and are retained until you delete them (Hermes opts out of the Modal SDK's 30-day snapshot expiry). This preserves filesystem state, not live processes, PID space, or background jobs.
 
 **Credential files:** Automatically mounted from `~/.hermes/` (OAuth tokens, etc.) and synced before each command.
 

@@ -670,6 +670,8 @@ export const zhHant = defineLocale({
       textDirection: { auto: '自動', rtl: '從右到左', ltr: '從左到右' },
       introSplashTitle: '開場標識',
       introSplashDesc: '空白對話中顯示的字標和提示語。',
+      modelPricingTitle: '模型價格',
+      modelPricingDesc: '在模型選擇器中顯示每百萬 token 的輸入、輸出和快取讀取價格。',
       reactionsTitle: '訊息回應',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
       tipsTitle: '應用程式內提示',
@@ -3260,6 +3262,7 @@ export const zhHant = defineLocale({
     updateNow: '立即更新',
     maybeLater: '稍後再說',
     moreChanges: count => `另有 ${count} 項變更。`,
+    copyFullLog: '複製完整更新日誌',
     manualTitle: '從終端機更新',
     manualUnavailableTitle: '無法從這裡更新',
     manualBody: '您是從命令列安裝的 Hermes，因此更新也需要在那裡執行。請將此指令貼到終端機：',
@@ -3531,7 +3534,11 @@ export const zhHant = defineLocale({
       editModels: '編輯模型…',
       followDefault: '使用設定中的預設模型',
       refreshModels: '重新整理模型',
-      fast: '快速'
+      fast: '快速',
+      free: '免費',
+      cacheRead: '快取讀取',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `輸入 ${input}/Mtok · 輸出 ${output}/Mtok` + (cache ? ` · 快取讀取 ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: '此模型沒有可用選項',

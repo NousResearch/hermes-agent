@@ -992,6 +992,8 @@ export interface Translations {
       textDirection: { auto: string; rtl: string; ltr: string }
       introSplashTitle: string
       introSplashDesc: string
+      modelPricingTitle: string
+      modelPricingDesc: string
       reactionsTitle: string
       reactionsDesc: string
       tipsTitle: string
@@ -3484,6 +3486,7 @@ export interface Translations {
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
+    copyFullLog: string
     manualTitle: string
     manualUnavailableTitle: string
     manualBody: string
@@ -3857,6 +3860,9 @@ export interface Translations {
       followDefault: string
       refreshModels: string
       fast: string
+      free: string
+      cacheRead: string
+      priceTitle: (input: string, output: string, cache: string) => string
     }
     modelOptions: {
       noOptions: string

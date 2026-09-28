@@ -1172,6 +1172,8 @@ export const esOverrides = {
       textDirection: { auto: 'Auto', rtl: 'De derecha a izquierda', ltr: 'De izquierda a derecha' },
       introSplashTitle: 'Pantalla de bienvenida',
       introSplashDesc: 'El logotipo y la indicación que se muestran en un chat vacío.',
+      modelPricingTitle: 'Precios de modelos',
+      modelPricingDesc: 'Muestra los precios de entrada, salida y lectura de caché por millón de tokens en el selector de modelos.',
       reactionsTitle: 'Reacciones a mensajes',
       reactionsDesc:
         'Reacciones emoji estilo iMessage — reacciona a los mensajes, y Hermes puede reaccionar a los tuyos.',
@@ -4628,6 +4630,7 @@ export const esOverrides = {
     updateNow: 'Actualizar ahora',
     maybeLater: 'Quizá más tarde',
     moreChanges: count => `+ ${count} ${count === 1 ? 'cambio incluido' : 'cambios incluidos'}.`,
+    copyFullLog: 'Copiar el registro de cambios completo',
     manualTitle: 'Actualizar desde la terminal',
     manualUnavailableTitle: 'No se puede actualizar desde aquí',
     manualBody:
@@ -4990,7 +4993,11 @@ export const esOverrides = {
       editModels: 'Editar modelos…',
       followDefault: 'Usar el predeterminado de Ajustes',
       refreshModels: 'Actualizar modelos',
-      fast: 'Rápido'
+      fast: 'Rápido',
+      free: 'gratis',
+      cacheRead: 'lectura en caché',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Entrada ${input}/Mtok · Salida ${output}/Mtok` + (cache ? ` · Lectura en caché ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'No hay opciones para este modelo',

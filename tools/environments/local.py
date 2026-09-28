@@ -450,11 +450,11 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
     installing a HERMES_HOME override without that flag."""
     from agent.secret_scope import _is_global_env, load_env_file
-    from hermes_constants import get_hermes_home_override, get_process_hermes_home
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     target = target_home or get_hermes_home_override()
     if not target or not _is_routed_home(target):
         return env
-    launch_home = get_process_hermes_home()
+    launch_home = get_routing_process_hermes_home()
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
     # Folded strip: on Windows the env block is case-insensitive, so residue
     # stored under a variant casing is the same variable and must go too. The

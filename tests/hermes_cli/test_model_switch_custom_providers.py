@@ -288,6 +288,40 @@ def test_providers_singular_model_does_not_suppress_ollama_native_discovery(monk
     assert ollama["models"] == ["qwen3:latest", "llama3.2:latest"]
 
 
+def test_list_splits_comma_chain_custom_provider_model(monkeypatch):
+    """A comma-separated custom-provider ``model:`` chain surfaces as individual entries.
+
+    Regression (fixes #50557): picker rows are fed from ``list_authenticated_providers``
+    and previously rendered the whole fallback chain as one dropdown entry. The raw chain
+    stays first so the server-side fallback behaviour remains the default pick.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openai-codex",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Volcengine Agent Plan",
+                "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                "model": "deepseek-v4-flash, deepseek-v4-pro, glm-5.2, deepseek-v4-flash",
+            }
+        ],
+        max_models=50,
+    )
+
+    rows = [p for p in providers if p["name"] == "Volcengine Agent Plan"]
+    assert len(rows) == 1
+    assert rows[0]["models"] == [
+        "deepseek-v4-flash, deepseek-v4-pro, glm-5.2, deepseek-v4-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "glm-5.2",
+    ]
+    assert rows[0]["total_models"] == 4
+
+
 def test_list_authenticated_providers_can_skip_custom_provider_live_probe(monkeypatch):
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})

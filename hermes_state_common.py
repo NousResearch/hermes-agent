@@ -453,7 +453,9 @@ CREATE TABLE IF NOT EXISTS messages (
     display_identity BLOB,
     display_order INTEGER,
     message_uid TEXT,
-    absorbed_message_uids TEXT
+    absorbed_message_uids TEXT,
+    tool_call_uids TEXT,
+    tool_call_uid TEXT
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (

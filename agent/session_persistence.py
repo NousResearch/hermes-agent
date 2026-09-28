@@ -23,7 +23,9 @@ from agent.memory_manager import sanitize_context
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, MESSAGE_UID, REPAIR_BOOKKEEPING_FIELDS
+from agent.message_metadata import (
+    ABSORBED_MESSAGE_UIDS, DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, MESSAGE_UID, REPAIR_BOOKKEEPING_FIELDS, TOOL_CALL_UID,
+    TOOL_CALL_UIDS, tool_call_uid_from_history)
 from agent.transcript_repair import sync_flushed_message_markers
 
 
@@ -242,6 +244,10 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
         # The merge witness rides on the survivor's row (an owned column: a row-addressed rewrite of the
         # survivor writes it too), so a restart sees which rows the composite folded.
         row[ABSORBED_MESSAGE_UIDS] = list(msg[ABSORBED_MESSAGE_UIDS])
+    if isinstance(msg.get(TOOL_CALL_UIDS), dict) and msg[TOOL_CALL_UIDS]:
+        row[TOOL_CALL_UIDS] = dict(msg[TOOL_CALL_UIDS])
+    if isinstance(msg.get(TOOL_CALL_UID), str) and msg[TOOL_CALL_UID]:
+        row[TOOL_CALL_UID] = msg[TOOL_CALL_UID]
     if isinstance(msg.get(DB_ROW_SNAPSHOT), str):
         row[DB_ROW_SNAPSHOT] = msg[DB_ROW_SNAPSHOT]
     return row
@@ -277,6 +283,11 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
             # context intact while transcript pollers omit unsolicited presentation.
             msg["display_kind"] = "hidden"
             msg["display_metadata"] = {**(msg.get("display_metadata") or {}), "notification_category": "diagnostic"}
+        if msg.get("role") == "tool" and not msg.get(TOOL_CALL_UID):
+            # A result whose call was flushed in an earlier batch: pair it with the uid that assistant row
+            # minted (same-batch pairing happens inside the insert).
+            if (tool_uid := tool_call_uid_from_history(messages, msg_idx)) is not None:
+                msg[TOOL_CALL_UID] = tool_uid
         batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message))
         batch_msgs.append(msg)
     return batch_rows, batch_msgs

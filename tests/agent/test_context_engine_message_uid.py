@@ -214,7 +214,42 @@ def test_restart_after_a_merge_still_sees_the_composites_constituents(db):
     assert prompt["message_uid"] in survivor["_absorbed_message_uids"]
 
 
+def test_tool_result_flushed_after_its_call_pairs_through_the_live_list(db):
+    """Tool round shape: the assistant(tool_calls) row is flushed first, the result in a later flush."""
+    sid = "20260928_120400_tool"
+    db.create_session(sid, "cli", model="test/model")
+    agent = _make_agent(db, sid)
+    agent._session_db_created = True
+    assistant = {"role": "assistant", "content": "",
+                 "tool_calls": [{"id": "call_x", "type": "function", "function": {"name": "t", "arguments": "{}"}}]}
+    messages = [{"role": "user", "content": "q"}, assistant]
+    agent._persist_user_message_idx = 0
+    agent._persist_session(messages, conversation_history=None)
+    uid = assistant["_tool_call_uids"]["call_x"]
+    result = {"role": "tool", "content": "r", "tool_call_id": "call_x", "tool_name": "t"}
+    messages.append(result)
+    agent._persist_session(messages, conversation_history=None)
+    assert result["_tool_call_uid"] == uid
+    stored = db._conn.execute(
+        "SELECT tool_call_uid FROM messages WHERE session_id = ? AND role = 'tool'", (sid,)).fetchone()[0]
+    assert stored == uid
+
+
+def test_assistant_merge_keeps_the_absorbed_turns_tool_call_uids():
+    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+
+    first = {"role": "assistant", "content": "a",
+             "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}],
+             "_tool_call_uids": {"call_1": "1" * UID_LEN}}
+    second = {"role": "assistant", "content": "b",
+              "tool_calls": [{"id": "call_2", "type": "function", "function": {"name": "t", "arguments": "{}"}}],
+              "_tool_call_uids": {"call_2": "2" * UID_LEN}}
+    merged, repairs = _merge_consecutive_assistants([first, second])
+    assert repairs == 1 and merged == [first]
+    assert first["_tool_call_uids"] == {"call_1": "1" * UID_LEN, "call_2": "2" * UID_LEN}
+
+
 def test_the_uid_never_reaches_the_provider_copy():
     from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
-    assert {"message_uid", "_absorbed_message_uids"} <= PERSISTENCE_ONLY_MESSAGE_FIELDS
+    assert {"message_uid", "_absorbed_message_uids", "_tool_call_uids", "_tool_call_uid"} <= PERSISTENCE_ONLY_MESSAGE_FIELDS

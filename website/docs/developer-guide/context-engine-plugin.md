@@ -170,7 +170,19 @@ What the host guarantees:
 - **Engine-authored rows keep the uid the engine sets.** If your `compress()`
   output pre-stamps `message_uid` on a summary carrier, the host writes that
   value; rows without one are minted at insert.
-- **Never on the wire.** `message_uid` and `_absorbed_message_uids` are in
+- **Tool calls get per-occurrence ids too.** Provider tool-call ids repeat
+  (Hermes mints deterministic `call_<12hex>` ids for identical calls, and models
+  reuse ids), so an assistant message carries `_tool_call_uids`, a
+  `{tool_call_id: uid}` map for its `tool_calls`, and each tool-result message
+  carries the matching `_tool_call_uid`. The provider-facing `id` inside
+  `tool_calls` is untouched. Both are minted at the assistant row's first
+  insert, paired onto the result when it is flushed (same batch, or from the
+  live list when the result lands in a later flush) and on restore (from the
+  preceding assistant row), persisted (`messages.tool_call_uids`,
+  `messages.tool_call_uid`), and kept across the same copy and rewrite paths
+  as `message_uid`. A result whose call was never persisted with a uid has none.
+- **Never on the wire.** `message_uid`, `_absorbed_message_uids`,
+  `_tool_call_uids` and `_tool_call_uid` are in
   `PERSISTENCE_ONLY_MESSAGE_FIELDS`: stripped from every outgoing provider
   copy and ignored by the token estimator. Engines that never read them are
   unaffected.

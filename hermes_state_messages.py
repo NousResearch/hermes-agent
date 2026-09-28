@@ -15,8 +15,10 @@ from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
     _newest_checkpoint_carrier, split_user_originated_turn)
 from agent.memory_manager import sanitize_context
-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID
-from agent.message_sanitization import _sanitize_surrogates
+from agent.message_metadata import (
+    ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
+    index_tool_call_uids, resolve_tool_call_uid)
+from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_id
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
@@ -29,8 +31,9 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
-                   display_metadata, display_identity, message_uid, absorbed_message_uids)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   display_metadata, display_identity, message_uid, absorbed_message_uids, tool_call_uids,
+                   tool_call_uid)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -113,6 +116,26 @@ def _uid_list_json(msg: Dict[str, Any], live_key: str, column: str) -> Optional[
     column name second (import payloads); ``None`` when empty."""
     uids = _uid_list(msg.get(live_key) if live_key in msg else msg.get(column))
     return json.dumps(uids) if uids else None
+
+
+def _uid_map(value: Any) -> Dict[str, str]:
+    """Normalize a ``{tool call id: uid}`` map (a live dict, or the JSON text an export/import carries) to
+    non-empty string pairs; anything else is ``{}``."""
+    if isinstance(value, str):
+        value = _json_or(value, {}, "Failed to deserialize a tool-call uid map, falling back to {}")
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items() if isinstance(k, str) and k and isinstance(v, str) and v}
+
+
+def _tool_call_uids_json(msg: Dict[str, Any]) -> Optional[str]:
+    uids = _uid_map(msg.get(TOOL_CALL_UIDS) if TOOL_CALL_UIDS in msg else msg.get("tool_call_uids"))
+    return json.dumps(uids, sort_keys=True) if uids else None
+
+
+def _tool_call_uid_or_none(msg: Dict[str, Any]) -> Optional[str]:
+    uid = msg.get(TOOL_CALL_UID) if TOOL_CALL_UID in msg else msg.get("tool_call_uid")
+    return uid if isinstance(uid, str) and uid else None
 
 
 def _parse_tool_calls(tool_calls: Any) -> Any:
@@ -311,7 +334,30 @@ class SessionMessagesMixin:
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
-            _message_uid_or_none(msg), _uid_list_json(msg, ABSORBED_MESSAGE_UIDS, "absorbed_message_uids"))
+            _message_uid_or_none(msg), _uid_list_json(msg, ABSORBED_MESSAGE_UIDS, "absorbed_message_uids"),
+            _tool_call_uids_json(msg), _tool_call_uid_or_none(msg))
+
+    @staticmethod
+    def _stamp_tool_call_uids(msg: Dict[str, Any], tool_calls: Any, batch_index: Dict[str, str]) -> None:
+        """Per-occurrence tool-call identity at insert: an assistant row gets a uid for every tool call that
+        has none yet (``_tool_call_uids``, keyed by the effective provider id, which stays untouched); a
+        tool-result row that has none is resolved through *batch_index*, the calls the same batch's
+        assistant rows named. A result flushed in a later batch is resolved from the live list by the flush
+        (``tool_call_uid_from_history``) or, on restore, from the preceding assistant row."""
+        role = msg.get("role")
+        if role == "assistant" and tool_calls:
+            uids = _uid_map(msg.get(TOOL_CALL_UIDS) if TOOL_CALL_UIDS in msg else msg.get("tool_call_uids"))
+            for tc in tool_calls:
+                call_id = coalesce_tool_call_id(tc)
+                if call_id and call_id not in uids:
+                    uids[call_id] = uuid.uuid4().hex
+            if uids:
+                msg[TOOL_CALL_UIDS] = uids
+                index_tool_call_uids(batch_index, msg)
+        elif role == "tool" and _tool_call_uid_or_none(msg) is None:
+            uid = resolve_tool_call_uid(batch_index, msg.get("tool_call_id"))
+            if uid:
+                msg[TOOL_CALL_UID] = uid
 
     @staticmethod
     def _stamp_message_uid(msg: Dict[str, Any]) -> str:
@@ -366,6 +412,10 @@ class SessionMessagesMixin:
             msg[MESSAGE_UID] = row[MESSAGE_UID]
         if row["absorbed_message_uids"] and (absorbed := _uid_list(row["absorbed_message_uids"])):
             msg[ABSORBED_MESSAGE_UIDS] = absorbed
+        if row["tool_call_uids"] and (tool_uids := _uid_map(row["tool_call_uids"])):
+            msg[TOOL_CALL_UIDS] = tool_uids
+        if row["tool_call_uid"]:
+            msg[TOOL_CALL_UID] = row["tool_call_uid"]
         if row["api_content"] is not None:
             msg["api_content"] = row["api_content"]
         if row["display_kind"] is not None:
@@ -416,6 +466,7 @@ class SessionMessagesMixin:
         tool_calls = _parse_tool_calls(tool_calls)
         message_timestamp = _coerce_timestamp(timestamp, time.time())
         self._stamp_message_uid(msg)  # a fresh occurrence: mint its durable id
+        self._stamp_tool_call_uids(msg, tool_calls, {})
         params = self._message_row_params(
             session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=True)
         def _do(conn):
@@ -732,14 +783,16 @@ class SessionMessagesMixin:
         are archived again (:meth:`_prune_shadowed_checkpoints`)."""
         now_ts = time.time()
         inserted = tool_calls_total = 0
+        batch_tool_index: Dict[str, str] = {}
         for msg in messages:
             role = msg.get("role", "unknown")
             tool_calls = _parse_tool_calls(msg.get("tool_calls"))
             message_timestamp = _coerce_timestamp(msg.get("timestamp"), now_ts)
             # The durable per-message id: kept when the dict carries one (a copy of an already-stored
             # message), minted and stamped on the dict otherwise. Stamped BEFORE the bind so the row and
-            # the live dict never disagree.
+            # the live dict never disagree. Tool calls get their per-occurrence ids the same way.
             self._stamp_message_uid(msg)
+            self._stamp_tool_call_uids(msg, tool_calls, batch_tool_index)
             cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
                 session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
             # Keep the caller's live row aligned with the durable identity. Rows created without an explicit
@@ -1569,6 +1622,7 @@ class SessionMessagesMixin:
         from hermes_state import _strip_background_review_harness, _strip_stale_tool_call_markers
         messages = []
         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
+        tool_uid_index: Dict[str, str] = {}  # pairing-id variant -> uid, from the assistant rows read so far
         for row in rows:
             content = self._loaded_view_content(row["role"], self._decode_content(row["content"]))
             # Underscore-prefixed like ``_row_id``: transports strip it before the wire; compression's
@@ -1609,6 +1663,15 @@ class SessionMessagesMixin:
                 msg.update(
                     (col, _json_or(row[col], None, f"Failed to deserialize {col}, falling back to None"))
                     for col in ("reasoning_details", "codex_reasoning_items", "codex_message_items") if row[col])
+                if row["tool_call_uids"] and (tool_uids := _uid_map(row["tool_call_uids"])):
+                    msg[TOOL_CALL_UIDS] = tool_uids
+                    index_tool_call_uids(tool_uid_index, msg)
+            elif row["role"] == "tool":
+                # The stored uid, else the one its assistant row named (a result appended by an older build
+                # or a lone append): rows are read in id order, so the call always precedes its result.
+                tool_uid = row["tool_call_uid"] or resolve_tool_call_uid(tool_uid_index, row["tool_call_id"])
+                if tool_uid:
+                    msg[TOOL_CALL_UID] = tool_uid
             if include_ancestors:
                 skip, exact_clone_key = self._dedupe_replayed_user(messages, msg, exact_user_clones)
                 if skip:

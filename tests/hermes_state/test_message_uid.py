@@ -243,6 +243,68 @@ class TestPersistedMergeWitness:
         assert _absorbed(db, "s") == ['["%s", "%s"]' % ("b" * 32, "c" * 32)]
         assert db.get_messages_as_conversation("s")[0]["_absorbed_message_uids"] == ["b" * 32, "c" * 32]
 
+    def test_tool_call_uids_are_minted_on_the_assistant_and_paired_onto_the_results(self, db):
+        db.create_session("s", "cli")
+        calls = [{"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}},
+                 {"id": "call_2", "type": "function", "function": {"name": "t", "arguments": "{}"}}]
+        assistant = {"role": "assistant", "content": "", "tool_calls": calls}
+        first = {"role": "tool", "content": "r1", "tool_call_id": "call_1", "tool_name": "t"}
+        db.append_messages_batch("s", [assistant, first])
+        uids = assistant["_tool_call_uids"]
+        assert set(uids) == {"call_1", "call_2"} and len({*uids.values()}) == 2
+        assert all(UID_RE.match(u) for u in uids.values())
+        assert first["_tool_call_uid"] == uids["call_1"]
+        # The provider-facing entries are untouched: the stored tool_calls JSON carries no uid.
+        stored_calls = db._conn.execute(
+            "SELECT tool_calls FROM messages WHERE session_id = ? AND role = 'assistant'", ("s",)).fetchone()[0]
+        assert "uid" not in stored_calls and [c["id"] for c in calls] == ["call_1", "call_2"]
+        # A result that lands in a LATER batch with no live list to pair it: stored NULL, derived on restore
+        # from the assistant row that named it (rows are read in id order).
+        second = {"role": "tool", "content": "r2", "tool_call_id": "call_2", "tool_name": "t"}
+        db.append_messages_batch("s", [second])
+        assert "_tool_call_uid" not in second
+        restored = db.get_messages_as_conversation("s")
+        assert restored[0]["_tool_call_uids"] == uids
+        assert [m["_tool_call_uid"] for m in restored[1:]] == [uids["call_1"], uids["call_2"]]
+
+    def test_tool_call_uids_survive_compaction_copies_rotation_and_import(self, db, tmp_path):
+        db.create_session("s", "cli")
+        assistant = {"role": "assistant", "content": "",
+                     "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]}
+        result = {"role": "tool", "content": "r", "tool_call_id": "call_1", "tool_name": "t"}
+        db.append_messages_batch("s", [{"role": "user", "content": "q"}, assistant, result,
+                                       {"role": "assistant", "content": "done"}])
+        uid = assistant["_tool_call_uids"]["call_1"]
+        restored = db.get_messages_as_conversation("s")
+        db.archive_and_compact("s", [{"role": "user", "content": "[CONTEXT COMPACTION] s"},
+                                     copy.copy(restored[1]), copy.copy(restored[2]), copy.copy(restored[3])])
+        after = db.get_messages_as_conversation("s")
+        assert after[1]["_tool_call_uids"] == {"call_1": uid} and after[2]["_tool_call_uid"] == uid
+        db.publish_compression_child(
+            parent_session_id="s", child_session_id="child", source="cli",
+            messages=[copy.copy(m) for m in after], require_compression_lease=False)
+        child = db.get_messages_as_conversation("child")
+        assert child[1]["_tool_call_uids"] == {"call_1": uid} and child[2]["_tool_call_uid"] == uid
+        other = SessionDB(db_path=tmp_path / "other.db")
+        try:
+            assert other.import_sessions([db.export_session("child")])["ok"]
+            imported = other.get_messages_as_conversation("child")
+            assert imported[1]["_tool_call_uids"] == {"call_1": uid} and imported[2]["_tool_call_uid"] == uid
+        finally:
+            other.close()
+
+    def test_a_row_rewrite_keeps_the_tool_call_uids(self, db):
+        db.create_session("s", "cli")
+        assistant = {"role": "assistant", "content": "partial",
+                     "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]}
+        db.append_messages_batch("s", [assistant])
+        uids = dict(assistant["_tool_call_uids"])
+        assistant["content"] = "partial, then filled by the sanitizer"
+        db.append_messages_batch("s", [assistant])
+        rows = _rows(db, "s")
+        assert len(rows) == 1 and rows[0]["content"] == "partial, then filled by the sanitizer"
+        assert db.get_messages_as_conversation("s")[0]["_tool_call_uids"] == uids
+
     def test_compaction_copy_and_export_import_keep_the_witness(self, db, tmp_path):
         db.create_session("s", "cli")
         composite = {"role": "user", "content": "a\n\nb", "message_uid": "a" * 32,

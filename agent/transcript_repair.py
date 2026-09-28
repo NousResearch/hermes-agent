@@ -9,15 +9,30 @@ import sqlite3
 from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID
+from agent.message_metadata import (
+    ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS)
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
+
+
+def _json_map(text: Any) -> Dict[str, str]:
+    """A stored ``{tool call id: uid}`` JSON object as a dict of non-empty strings (``{}`` on bad input)."""
+    import json
+
+    try:
+        value = json.loads(text) if isinstance(text, str) else None
+    except (TypeError, ValueError):
+        value = None
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items() if isinstance(k, str) and k and isinstance(v, str) and v}
 
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
 # role, active flag and the ones owned by the display index / timestamp / session linkage. ``message_uid``
 # is identity too: a rewrite changes the message's content, never which logical message the row is.
-_NON_PAYLOAD_COLUMNS = frozenset({"session_id", "role", "timestamp", "active", "display_identity", MESSAGE_UID})
+_NON_PAYLOAD_COLUMNS = frozenset(
+    {"session_id", "role", "timestamp", "active", "display_identity", MESSAGE_UID, "tool_call_uids", "tool_call_uid"})
 _REPAIR_COLUMNS = tuple(c for c in _MESSAGE_WRITE_COLUMNS if c not in _NON_PAYLOAD_COLUMNS)
 # Columns same-process writers update after our flush (reactions / display-kind stamps, api_content
 # backfill, codex reasoning backfill + checkpoint pruning, platform message ids). They are not part of the
@@ -155,6 +170,10 @@ def resolve_and_repair_transcript_batch(
         # carried (a restored dict without one, or a dict stamped before a rolled-back insert).
         if final_row[MESSAGE_UID]:
             msg[MESSAGE_UID] = final_row[MESSAGE_UID]
+        if final_row["tool_call_uids"]:
+            msg[TOOL_CALL_UIDS] = _json_map(final_row["tool_call_uids"])
+        if final_row["tool_call_uid"]:
+            msg[TOOL_CALL_UID] = final_row["tool_call_uid"]
         msg[DB_ROW_SNAPSHOT] = transcript_row_snapshot(final_row)
         if adopt:
             canonical = decode_row_fn(final_row)
@@ -280,6 +299,10 @@ def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: L
             written[MESSAGE_UID] = row[MESSAGE_UID]
         if isinstance(row.get(ABSORBED_MESSAGE_UIDS), list) and row[ABSORBED_MESSAGE_UIDS]:
             written[ABSORBED_MESSAGE_UIDS] = list(row[ABSORBED_MESSAGE_UIDS])
+        if isinstance(row.get(TOOL_CALL_UIDS), dict) and row[TOOL_CALL_UIDS]:
+            written[TOOL_CALL_UIDS] = dict(row[TOOL_CALL_UIDS])
+        if isinstance(row.get(TOOL_CALL_UID), str) and row[TOOL_CALL_UID]:
+            written[TOOL_CALL_UID] = row[TOOL_CALL_UID]
         if isinstance(row.get("timestamp"), (int, float)):
             written["timestamp"] = row["timestamp"]
         if isinstance(row.get(DB_ROW_SNAPSHOT), str):

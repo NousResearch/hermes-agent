@@ -369,9 +369,11 @@ import { isExpectedOauthNavigationAbort } from './oauth-navigation'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import {
+  canShowInteractiveOauthLogin,
   mintGatewayWsTicket as mintOauthGatewayWsTicket,
   requestWithOauthFallback,
-  shouldReplayAfterCookie401
+  retryCookie401WithLogin,
+  withoutInteractiveOauthLogin
 } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
@@ -7629,6 +7631,10 @@ function openOauthLoginWindow(
   { silent = false, background = false, connectionId = '', pendingAuthMode = '', pendingKind = '' } = {}
 ) {
   return new Promise((resolve, reject) => {
+    // Background roster work may silently renew a Cloud session, but must
+    // never turn an expired saved gateway into a visible login window.
+    const hiddenRecovery = background || !canShowInteractiveOauthLogin()
+
     if (!app.isReady()) {
       reject(new Error('Desktop is not ready to start an OAuth login.'))
 
@@ -7711,7 +7717,7 @@ function openOauthLoginWindow(
         // only reveal it as a fallback if the cascade DOESN'T complete quickly
         // (e.g. the portal session lapsed and the gate fell through to the
         // interactive chooser) — see the reveal timer below.
-        show: !silent && !background,
+        show: !silent && !hiddenRecovery,
         webPreferences: {
           contextIsolation: true,
           nodeIntegration: false,
@@ -7743,7 +7749,7 @@ function openOauthLoginWindow(
     // loop-guard tripped, etc.) and the window is now showing an interactive
     // page. Reveal it so the user can complete sign-in manually rather than
     // staring at nothing. Cleared on finish().
-    if (silent && win && !background) {
+    if (silent && win && !hiddenRecovery) {
       revealTimer = setTimeout(() => {
         try {
           if (!settled && win && !win.isDestroyed() && !win.isVisible()) {
@@ -7755,7 +7761,7 @@ function openOauthLoginWindow(
       }, 2500)
     }
 
-    if (background) {
+    if (hiddenRecovery) {
       deadlineTimer = setTimeout(() => finish(new Error('Cloud session recovery requires sign-in.')), 12_000)
     }
 
@@ -7780,7 +7786,7 @@ function openOauthLoginWindow(
     win.loadURL(loginUrl, oauthLoginLoadUrlOptions(loginHeaders)).catch(error => {
       // Callback navigation can abort the original load after setting cookies.
       // Keep the bounded hidden recovery alive long enough to observe them.
-      if (background && isExpectedOauthNavigationAbort(error)) {
+      if (hiddenRecovery && isExpectedOauthNavigationAbort(error)) {
         void checkCookie()
 
         return
@@ -7908,23 +7914,20 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
     })
 
   return attempt().catch(async error => {
-    if (!shouldReplayAfterCookie401(error, options)) {
-      throw error
-    }
-
-    // Stale mirror + dead jar: force one silent re-login, then retry once.
-    remoteSessionCookies.clear(partition, url)
-
-    try {
-      await openOauthLoginWindow(new URL(url).origin, { silent: true })
-    } catch (reloginError) {
-      rememberLog(
-        `Remote session re-login after 401 failed for ${new URL(url).host}: ${reloginError?.message || reloginError}`
-      )
-      throw error
-    }
-
-    return attempt()
+    return retryCookie401WithLogin(error, options, {
+      clearCookies: () => remoteSessionCookies.clear(partition, url),
+      login: async () => {
+        try {
+          await openOauthLoginWindow(new URL(url).origin, { silent: true })
+        } catch (reloginError) {
+          rememberLog(
+            `Remote session re-login after 401 failed for ${new URL(url).host}: ${reloginError?.message || reloginError}`
+          )
+          throw reloginError
+        }
+      },
+      retry: attempt
+    })
   })
 }
 
@@ -16136,7 +16139,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
     }
   }
 
-  return Promise.all(
+  return withoutInteractiveOauthLogin(() => Promise.all(
     registry.connections.map(async connection => {
       let sourceFailureDetail = ''
 
@@ -16262,7 +16265,8 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
           connection,
           profiles: null,
           error: redactSecrets(String(error?.message || error)),
-          needsSignIn: isReauthRequiredError(error)
+          needsSignIn: isReauthRequiredError(error) ||
+            (connection.authMode === 'oauth' && isGatewayAuthRejection(error))
         }
       }
 
@@ -16293,7 +16297,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
         ...(raw.profileMetadata ? { profileMetadata: raw.profileMetadata } : {})
       }
     })
-  )
+  ))
 }
 
 ipcMain.handle('hermes:agents:roster', async () => {

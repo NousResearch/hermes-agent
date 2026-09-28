@@ -123,6 +123,61 @@ function markdownCodeRanges(text: string) {
   return [...fenced, ...inlineCodeRanges(text, fenced)]
 }
 
+/** True when a `[` that nothing has closed precedes the `]` at `index` on the
+ *  same line, so the `](` there really ends a link label. Brackets pair by
+ *  depth, so `[a [b] c](` reads as one label. */
+function hasLabelOpenerBefore(text: string, index: number) {
+  let depth = 0
+
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] !== '\n'; cursor -= 1) {
+    const char = text[cursor]
+
+    if (char === ']') {
+      depth += 1
+    } else if (char === '[') {
+      if (depth === 0) {
+        return true
+      }
+
+      depth -= 1
+    }
+  }
+
+  return false
+}
+
+/** Markdown inline link destinations — the `(dest)` of `[label](dest)`. A
+ *  destination is link syntax the user wrote or pasted, not prose to chip:
+ *  rewriting it into an `@url:` reference leaves the link pointing at a
+ *  reference marker instead of the href, and the rendered link breaks. An
+ *  unclosed `](` still being composed takes the rest of the line, so a link
+ *  typed by hand isn't chipped mid-destination either. */
+function markdownLinkDestinationRanges(text: string) {
+  const ranges: TextRange[] = []
+
+  for (const match of text.matchAll(/\]\(/g)) {
+    const open = (match.index ?? 0) + 1
+
+    if (!hasLabelOpenerBefore(text, match.index ?? 0)) {
+      continue
+    }
+
+    // Parentheses pair inside the destination, so a Wikipedia-style URL keeps
+    // its own `(b)` and the span still ends at the link's closing paren.
+    let depth = 1
+    let cursor = open + 1
+
+    while (cursor < text.length && text[cursor] !== '\n' && depth > 0) {
+      depth += text[cursor] === '(' ? 1 : text[cursor] === ')' ? -1 : 0
+      cursor += 1
+    }
+
+    ranges.push({ end: cursor, start: open + 1 })
+  }
+
+  return ranges
+}
+
 /** A URL at the end of a sentence carries the punctuation that ended it. */
 function splitUrlTail(raw: string) {
   let url = raw.replace(/[,.;:!?]+$/, '')
@@ -143,9 +198,11 @@ const hasHost = (url: string) => /^https?:\/\/[^/\s]/i.test(url)
 export function linkifyUrls(text: string) {
   REF_RE.lastIndex = 0
 
-  // URLs inside an existing `@url:` directive or a Markdown code span are not
-  // prose to chip — the directive is already a reference, and code is verbatim
-  // payload the user pasted (a stack trace, a command, a log line).
+  // URLs inside an existing `@url:` directive, a Markdown code span, or a
+  // Markdown link destination are not prose to chip — the directive is already
+  // a reference, code is verbatim payload the user pasted (a stack trace, a
+  // command, a log line), and a link destination is the href of a link the
+  // user wrote.
   const protectedRanges = Array.from(text.matchAll(REF_RE)).map(match => {
     const start = match.index ?? 0
 
@@ -153,6 +210,7 @@ export function linkifyUrls(text: string) {
   })
 
   protectedRanges.push(...markdownCodeRanges(text))
+  protectedRanges.push(...markdownLinkDestinationRanges(text))
 
   let out = ''
   let cursor = 0
@@ -263,8 +321,13 @@ export function chipTypedUrlOnSpace(event: KeyboardEvent<HTMLDivElement>) {
   }
 
   // A link typed inside a code block or span is verbatim payload, not prose —
-  // chipping it would rewrite code the user is authoring.
+  // chipping it would rewrite code the user is authoring. Same for a URL being
+  // typed into a link destination the user is still composing.
   if (containsIndex(markdownCodeRanges(before), before.length - token.length)) {
+    return false
+  }
+
+  if (containsIndex(markdownLinkDestinationRanges(before), before.length - token.length)) {
     return false
   }
 

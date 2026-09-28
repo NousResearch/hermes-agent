@@ -251,9 +251,9 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
             return None
 
     def _is_entry(i: int, token: str) -> bool:
-        low = token.lower().strip('"')
+        low = token.lower().strip("\"'").replace("\\", "/")
         return (low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m") or (
-            low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe"))
+            low.rsplit("/", 1)[-1] in ("hermes", "hermes.exe")) or low.endswith("hermes_cli/main.py")
 
     entry_idx = next((i for i, token in enumerate(tokens) if _is_entry(i, token)), None)
     if entry_idx is None:

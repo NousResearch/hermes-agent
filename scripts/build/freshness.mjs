@@ -9,13 +9,15 @@ const receiptName = 'hermes-build.json'
 const workspaces = { tui: 'ui-tui', web: 'web', desktop: 'apps/desktop' }
 const generated = new Set(['node_modules', 'dist', 'build', 'release', '.cache', '.git', 'coverage', 'test-results', 'playwright-report'])
 
-// macOS Finder metadata is never a build input, and it can land in ANY hashed tree
-// (source, output or a prepared dir) the moment the checkout is opened in Finder mid-build
-// — .DS_Store, AppleDouble ._* sidecars and .localized. Skip it everywhere so it can't flip
-// a freshness hash and abort `hermes update` (#122632).
-const macMetadata = name => {
+// OS file-manager metadata is never a build input, and it can land in ANY hashed
+// tree (source, output or a prepared dir) the moment the checkout is opened in
+// Finder or Explorer mid-build — .DS_Store, AppleDouble ._* sidecars and
+// .localized on macOS, Thumbs.db and Desktop.ini on Windows. Skip it everywhere
+// so it can't flip a freshness hash and abort `hermes update` (#122632, #122803).
+const osMetadata = name => {
   const base = name.split('/').pop()
-  return base === '.DS_Store' || base === '.localized' || base.startsWith('._')
+  return base === '.DS_Store' || base === '.localized'
+    || base === 'Thumbs.db' || base === 'Desktop.ini' || base.startsWith('._')
 }
 
 // buildTui bundles these source roots (including the Ink source alias), not
@@ -31,7 +33,7 @@ const tuiInputs = [
 function treeHash(root, inputs, skip, contents = () => true) {
   const hash = createHash('sha256')
   function visit(name) {
-    if (macMetadata(name) || skip(name)) return
+    if (osMetadata(name) || skip(name)) return
     const file = join(root, name)
     hash.update(name.replaceAll('\\', '/')).update('\0')
     if (!existsSync(file)) { hash.update('missing\0'); return }

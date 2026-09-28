@@ -614,7 +614,7 @@ class TestFinalResponseDeliveryGuard:
         """A failed first send disables edits: a preview sent after it could never be updated and
         would stay on screen truncated next to the final. Only the complete reply reaches the chat."""
         delivered = []
-        results = iter([SimpleNamespace(success=False, error="timeout")])
+        results = iter([SimpleNamespace(success=False, error="timeout", retryable=True)])
 
         async def send(**kw):
             result = next(results, None) or SimpleNamespace(success=True, message_id=f"m{len(delivered) + 1}")
@@ -639,6 +639,58 @@ class TestFinalResponseDeliveryGuard:
         await asyncio.wait_for(task, timeout=10)
 
         assert delivered == ["preview never landed and more streamed text then the end."]
+
+    @pytest.mark.asyncio
+    async def test_short_reply_timed_out_but_landed_is_not_resent(self):
+        """A first send that times out after the chat already has the text is not sent again."""
+        delivered = []
+
+        async def send(**kw):
+            delivered.append(kw["content"])
+            if len(delivered) == 1:
+                return SimpleNamespace(success=False, error="Request timed out", retryable=False)
+            return SimpleNamespace(success=True, message_id=f"m{len(delivered)}")
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=send)
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""),
+        )
+        consumer.on_delta("Short answer.")
+        consumer.finish()
+        await asyncio.wait_for(consumer.run(), timeout=10)
+        assert delivered == ["Short answer."]
+        assert consumer._delivery_ambiguous is True
+
+    @pytest.mark.asyncio
+    async def test_streamed_reply_timed_out_but_landed_is_not_resent(self):
+        delivered = []
+
+        async def send(**kw):
+            delivered.append(kw["content"])
+            if len(delivered) == 1:
+                return SimpleNamespace(success=False, error="Request timed out", retryable=False)
+            return SimpleNamespace(success=True, message_id=f"m{len(delivered)}")
+
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=send)
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=""),
+        )
+        consumer.on_delta("first part ")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta("second part.")
+        consumer.finish()
+        await asyncio.wait_for(task, timeout=10)
+        assert len(delivered) == 1
+        assert consumer._delivery_ambiguous is True
 
 
 class TestFinalContentDeliveredGuard:

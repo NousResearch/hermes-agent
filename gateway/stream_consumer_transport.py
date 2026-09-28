@@ -457,11 +457,22 @@ class StreamTransportMixin:
                 "declined this destination for this run"
             )
             return False
-        result = await self.adapter.send(
-            chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
-            metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
+        try:
+            result = await self.adapter.send(
+                chat_id=self.chat_id, content=text, reply_to=self._initial_reply_to_id,
+                metadata=self._metadata_for_send(final=finalize, expect_edits=not finalize))
+        except Exception as exc:
+            logger.error("Stream first send error: %s", exc)
+            if self._send_failure_may_have_delivered(exc):
+                self._hold_ambiguous_first_send(text)
+            else:
+                self._edit_supported = False
+            return False
         if not result.success:
-            self._edit_supported = False
+            if self._send_failure_may_have_delivered(result):
+                self._hold_ambiguous_first_send(text)
+            else:
+                self._edit_supported = False
             return False
         self._already_sent = True
         self._last_sent_text = text
@@ -521,6 +532,20 @@ class StreamTransportMixin:
             self._last_sent_text = text
         self._flood_strikes = 0
         return True
+
+    def _hold_ambiguous_first_send(self, text: str) -> None:
+        """A first send failed in a way that may still have landed.
+
+        Do not open a second message. ``_delivery_ambiguous`` is what keeps
+        the gateway from sending that text again.
+        """
+        self._edit_supported = False
+        self._already_sent = True
+        self._delivery_ambiguous = True
+        self._final_response_sent = True
+        self._last_sent_text = text
+        # Sentinel so a later finalize does not call _first_send again.
+        self._message_id = "__no_edit__"
 
     def _enter_fallback_mode(self, prefix: str) -> None:
         """Edits are over for this stream: send only the missing tail at got_done."""

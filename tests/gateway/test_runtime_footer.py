@@ -279,3 +279,78 @@ def test_format_footer_served_model_is_opt_in_and_skips_same_model():
     assert format_runtime_footer(
         model="gpt-5.4", context_tokens=0, context_length=None, cwd="/x",
         served_model=None, fields=["served_model"]) == ""
+
+
+# ---------------------------------------------------------------------------
+# reasoning — opt-in session effort label (#61634 sibling: never present an
+# internal level as a wire level the route does not have).
+# ---------------------------------------------------------------------------
+
+
+def test_format_footer_reasoning_is_opt_in():
+    """The default field set never renders the effort label."""
+    assert "reasoning" not in format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="/x", reasoning="medium")
+    assert format_runtime_footer(
+        model="m", context_tokens=0, context_length=None, cwd="/x",
+        reasoning="medium", fields=["reasoning"]) == "reasoning medium"
+
+
+def test_format_footer_reasoning_skips_blank():
+    """No label (None) or a blank one renders nothing — never a dangling ``reasoning``."""
+    for blank in (None, "", "   "):
+        assert format_runtime_footer(
+            model="m", context_tokens=0, context_length=None, cwd="/x",
+            reasoning=blank, fields=["reasoning"]) == ""
+
+
+def test_format_footer_reasoning_in_field_order():
+    out = format_runtime_footer(
+        model="openai/gpt-5.4", context_tokens=68_000, context_length=100_000,
+        cwd="/var/data", turn_seconds=22.0, reasoning="high",
+        fields=("model", "context_pct", "latency", "reasoning"))
+    assert out == "gpt-5.4 · 68% · 22s · reasoning high"
+
+
+def test_reasoning_label_words_the_three_states_like_the_reasoning_command():
+    """Unset config → the same "medium (default)" the /reasoning status line shows; an explicit
+    disable → "none (disabled)"; otherwise the level itself."""
+    from agent.i18n import t
+
+    from gateway.runtime_footer import reasoning_label
+
+    assert reasoning_label(None) == t("gateway.reasoning.level_default")
+    assert reasoning_label({}) == t("gateway.reasoning.level_default")
+    assert reasoning_label({"enabled": False, "effort": "medium"}) == t("gateway.reasoning.level_disabled")
+    assert reasoning_label({"enabled": True, "effort": "high"}, "openai", "gpt-5.4") == "high"
+    # Absent effort on an enabled config is the documented default, not an empty label.
+    assert reasoning_label({"enabled": True}, "openai", "gpt-5.4") == "medium"
+
+
+def test_reasoning_label_names_the_level_the_route_actually_sends():
+    """Contract: whatever the route clamp resolves, the label says it — a Hermes-internal level
+    (``ultra``) is never shown as a distinct wire level the route lacks (#61634)."""
+    from agent.reasoning_effort import clamp_effort, route_supported_efforts
+
+    from gateway.runtime_footer import reasoning_label
+
+    route = route_supported_efforts("openai-codex", "gpt-6-sol")
+    clamped = clamp_effort("ultra", route)
+    expected = "ultra" if clamped == "ultra" else f"ultra (sends {clamped} on this route)"
+    assert reasoning_label({"enabled": True, "effort": "ultra"}, "openai-codex", "gpt-6-sol") == expected
+
+
+def test_default_build_footer_line_ignores_reasoning():
+    """Byte-stability: a caller passing a label changes nothing while ``fields`` stays default."""
+    common = dict(
+        user_config={"display": {"runtime_footer": {"enabled": True}}},
+        platform_key="discord",
+        model="openai/gpt-5.4",
+        context_tokens=50_247,
+        context_length=1_000_000,
+        cwd="/var/data",
+    )
+    baseline = build_footer_line(**common)
+    assert baseline == "gpt-5.4 · 5% · /var/data"
+    assert build_footer_line(**common, reasoning="high") == baseline
+    assert build_footer_line(**common, reasoning="none (disabled)") == baseline

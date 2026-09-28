@@ -5,7 +5,9 @@ toggled by ``/footer on|off``. Fields: ``model`` (vendor prefix dropped), ``cont
 occupancy), ``latency`` (turn wall-clock, opt-in — NOT in the default set so an unset ``fields``
 renders exactly as before), ``served_model`` (opt-in, ``alias → served``: the deployment a routing
 proxy reported via ``x-litellm-model-id`` / ``x-litellm-model-api-base``, or Hermes' own fallback
-route; skipped when the served model is the requested one), ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the
+route; skipped when the served model is the requested one), ``reasoning`` (opt-in, the session's
+effective reasoning effort worded exactly like ``/reasoning``: ``medium (default)`` /
+``none (disabled)`` / the route-honest level label), ``cwd`` (home-relative). ``gateway/run.py`` appends the footer to the
 final response only (never to tool-progress or streaming partials); when streaming already
 delivered the text, it goes out as a trailing message via ``send_trailing_footer()``."""
 
@@ -73,10 +75,26 @@ def _format_latency(seconds: float) -> str:
     return f"{m}m{sec:02d}s"
 
 
+def reasoning_label(reasoning_config: Optional[dict], provider: Optional[str] = None,
+                    model: Optional[str] = None) -> str:
+    """The session's effective reasoning effort, worded exactly like ``/reasoning``: an unset
+    config reads as "medium (default)", an explicit disable as "none (disabled)", everything else
+    as the route-honest level label (``ultra`` on a route without it renders
+    ``ultra (sends max on this route)``). Callers pass the resolved config; ``""`` never."""
+    from agent.i18n import t
+    from agent.reasoning_effort import effort_display_label
+    if not reasoning_config:
+        return t("gateway.reasoning.level_default")
+    if reasoning_config.get("enabled") is False:
+        return t("gateway.reasoning.level_disabled")
+    return effort_display_label(reasoning_config.get("effort") or "medium", provider, model)
+
+
 def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           context_length: Optional[int], cwd: Optional[str] = None,
                           turn_seconds: Optional[float] = None,
                           requested_model: Optional[str] = None, served_model: Optional[str] = None,
+                          reasoning: Optional[str] = None,
                           fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
     unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
@@ -98,6 +116,8 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
         "context_pct": context_pct,
         # Skipped when the caller did not measure (None) or the value is negative.
         "latency": lambda: _format_latency(turn_seconds) if turn_seconds is not None and turn_seconds >= 0 else "",
+        # Opt-in, like latency: an unset ``fields`` keeps rendering exactly as before.
+        "reasoning": lambda: f"reasoning {reasoning.strip()}" if (reasoning or "").strip() else "",
         "cwd": lambda: _home_relative_cwd(cwd or _env_cwd()),
     }
     return _SEP.join(v for field in fields if (render := renderers.get(field)) and (v := render()))
@@ -106,7 +126,8 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
 def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str | None,
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
                       cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
-                      requested_model: Optional[str] = None, served_model: Optional[str] = None) -> str:
+                      requested_model: Optional[str] = None, served_model: Optional[str] = None,
+                      reasoning: Optional[str] = None) -> str:
     """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
@@ -117,4 +138,5 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
     return format_runtime_footer(model=model, context_tokens=context_tokens,
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
                                  requested_model=requested_model, served_model=served_model,
+                                 reasoning=reasoning,
                                  fields=cfg.get("fields") or _DEFAULT_FIELDS)

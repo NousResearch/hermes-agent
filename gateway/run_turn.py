@@ -1659,9 +1659,32 @@ class GatewayTurnMixin:
                 cwd=_terminal_scope_cwd(""), turn_seconds=_turn_seconds,
                 requested_model=agent_result.get("requested_model"),
                 served_model=agent_result.get("served_model"),
+                reasoning=self._hmwa_footer_reasoning_label(source, agent_result.get("model")),
             )
         except Exception as _footer_err:
             logger.debug("runtime_footer build failed: %s", _footer_err)
+            return ""
+
+    def _hmwa_footer_reasoning_label(self, source, model) -> str:
+        """This session's effective reasoning effort for the footer's ``reasoning`` field: the
+        session ``/reasoning`` override wins, then the per-model override, then the global default
+        (``gateway.run_config_loaders._resolve_session_reasoning_config`` — the same chain the
+        ``/reasoning`` status line renders). Fail-open: ``""`` restores the footer's
+        skip-missing-fields rule, so a resolution error costs one field, never the whole footer."""
+        try:
+            from gateway.run import _load_gateway_config
+            from gateway.runtime_footer import reasoning_label
+            provider = ""
+            with suppress(Exception):
+                provider = str((_load_gateway_config().get("model") or {}).get("provider") or "")
+            return reasoning_label(
+                self._resolve_session_reasoning_config(
+                    source=source, session_key=self._session_key_for_source(source), model=str(model or ""),
+                ),
+                provider, str(model or ""),
+            )
+        except Exception as _label_err:
+            logger.debug("runtime_footer reasoning label failed: %s", _label_err)
             return ""
 
     async def _hmwa_post_turn_hooks(self, hook_ctx, agent_result, response):

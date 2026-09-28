@@ -42,6 +42,9 @@ def profile_lifecycle(command: str, args) -> bool:
         return False
     marker = parked_marker_path(home)
     if command == "restart" and profile_is_parked(home) and not gw.find_gateway_pids():
+        # `stop` parked the profile AND dropped it from the host's served set, so the unserve/serve
+        # path below finds no host serving it and would fall through to a standalone restart.
+        # Unpark like `start` does; a live --force gateway keeps its own restart (pids non-empty).
         command = "start"
     if command == "start":
         if not profile_is_parked(home):

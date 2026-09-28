@@ -5618,6 +5618,8 @@ def _cmd_status(args):
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)
     snapshot = get_gateway_runtime_snapshot(system=system)
+    # The marker records intent, not runtime: a `--force` gateway bypasses parking and stays live
+    # beside it, so only a parked profile with nothing running stops here.
     if print_parked_status() and not snapshot.running:
         return
     from hermes_cli.profiles import get_active_profile_name, profile_is_standalone

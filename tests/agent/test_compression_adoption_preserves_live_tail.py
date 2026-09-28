@@ -157,45 +157,114 @@ def test_adoption_preserves_unpersisted_live_user_tail(tmp_path: Path) -> None:
     )
 
 
+def _keep_protected_tail(messages, **_kw):
+    """Compressor stub that keeps the last two rows verbatim, like a protected tail."""
+    tail = [
+        {
+            key: value
+            for key, value in copy.deepcopy(message).items()
+            if key not in {_DB_PERSISTED_MARKER, "_row_id"}
+        }
+        for message in messages[-2:]
+    ]
+    return [{"role": "user", "content": "[CONTEXT COMPACTION] summary"}, *tail]
+
+
 def test_adopted_snapshot_rows_are_not_recloned_as_foreign_tail(tmp_path: Path) -> None:
     """Rows included in the adopted snapshot must not be cloned after its handoff."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    agent, messages = _seed_drifted_session(db, "ADOPTED_PARENT")
+    agent.context_compressor.compress.side_effect = _keep_protected_tail
 
-    def _keep_protected_tail(messages, **_kw):
-        tail = [
-            {
-                key: value
-                for key, value in copy.deepcopy(message).items()
-                if key not in {_DB_PERSISTED_MARKER, "_row_id"}
-            }
-            for message in messages[-2:]
-        ]
-        return [{"role": "user", "content": "[CONTEXT COMPACTION] summary"}, *tail]
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
 
-    adopted_db = SessionDB(db_path=tmp_path / "adopted.db")
-    adopted_agent, adopted_messages = _seed_drifted_session(adopted_db, "ADOPTED_PARENT")
-    adopted_agent.context_compressor.compress.side_effect = _keep_protected_tail
+    child = _contents(db.get_messages_as_conversation(agent.session_id))
+    assert child.count("LIVE USER INSTRUCTION") == 1
 
-    adopted_agent._compress_context(adopted_messages, "sys", approx_tokens=120_000)
 
-    adopted_child = _contents(adopted_db.get_messages_as_conversation(adopted_agent.session_id))
-    assert adopted_child.count("LIVE USER INSTRUCTION") == 1
-
-    control_db = SessionDB(db_path=tmp_path / "control.db")
-    control_db.create_session("CONTROL_PARENT", source="desktop")
-    control_db.append_message("CONTROL_PARENT", "user", "persisted question")
-    control_db.append_message("CONTROL_PARENT", "assistant", "persisted answer")
-    control_messages = [
-        *control_db.get_messages_as_conversation("CONTROL_PARENT"),
+def test_live_prompt_without_adoption_is_not_recloned(tmp_path: Path) -> None:
+    """Control: with no concurrent writer, adoption never runs and the live prompt lands once."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("CONTROL_PARENT", source="desktop")
+    db.append_message("CONTROL_PARENT", "user", "persisted question")
+    db.append_message("CONTROL_PARENT", "assistant", "persisted answer")
+    messages = [
+        *db.get_messages_as_conversation("CONTROL_PARENT"),
         {"role": "user", "content": "LIVE USER INSTRUCTION"},
     ]
-    control_agent = _build_agent_with_db(control_db, "CONTROL_PARENT")
-    control_agent._persist_user_message_idx = len(control_messages) - 1
-    control_agent.context_compressor.compress.side_effect = _keep_protected_tail
+    agent = _build_agent_with_db(db, "CONTROL_PARENT")
+    agent._persist_user_message_idx = len(messages) - 1
+    agent.context_compressor.compress.side_effect = _keep_protected_tail
 
-    control_agent._compress_context(control_messages, "sys", approx_tokens=120_000)
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
 
-    control_child = _contents(control_db.get_messages_as_conversation(control_agent.session_id))
-    assert control_child.count("LIVE USER INSTRUCTION") == 1
+    child = _contents(db.get_messages_as_conversation(agent.session_id))
+    assert child.count("LIVE USER INSTRUCTION") == 1
+
+
+def test_parent_row_appended_during_compression_is_cloned_once(tmp_path: Path) -> None:
+    """A row appended while the summary runs sits above the adopted snapshot and must reach the child once."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    agent, messages = _seed_drifted_session(db, "LATE_APPEND_PARENT")
+    appended: list = []
+
+    def _append_then_keep_tail(compress_input, **kw):
+        if not appended:
+            db.append_message("LATE_APPEND_PARENT", "user", "LATE PARENT ROW")
+            appended.append(True)
+        return _keep_protected_tail(compress_input, **kw)
+
+    agent.context_compressor.compress.side_effect = _append_then_keep_tail
+
+    agent._compress_context(messages, "sys", approx_tokens=120_000)
+
+    assert appended
+    child = _contents(db.get_messages_as_conversation(agent.session_id))
+    assert child.count("LIVE USER INSTRUCTION") == 1, child
+    assert child.count("LATE PARENT ROW") == 1, child
+
+
+def test_row_committed_after_adopted_snapshot_read_is_cloned_once(tmp_path: Path) -> None:
+    """A row committed between the adopted snapshot read and its return is not in the snapshot.
+
+    The lease watermark must come from the snapshot itself, not from a fresh MAX(id) read that would
+    also cover the new row and drop it from the child.
+    """
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    agent, messages = _seed_drifted_session(db, "SNAPSHOT_WINDOW_PARENT")
+    other_writer = SessionDB(db_path=db_path)
+    original_loader = SessionDB.get_messages_as_conversation
+    committed: list = []
+
+    def _commit_after_snapshot_read(self, session_id, *args, **kwargs):
+        result = original_loader(self, session_id, *args, **kwargs)
+        if kwargs.get("include_row_ids") and session_id == "SNAPSHOT_WINDOW_PARENT" and not committed:
+            other_writer.append_message(session_id, "user", "SNAPSHOT WINDOW ROW")
+            committed.append(True)
+        return result
+
+    compressor_inputs: list = []
+
+    def _record_then_keep_tail(compress_input, **kw):
+        compressor_inputs.append(copy.deepcopy(compress_input))
+        return _keep_protected_tail(compress_input, **kw)
+
+    agent.context_compressor.compress.side_effect = _record_then_keep_tail
+
+    try:
+        with patch.object(SessionDB, "get_messages_as_conversation", _commit_after_snapshot_read):
+            agent._compress_context(messages, "sys", approx_tokens=120_000)
+    finally:
+        other_writer.close()
+
+    assert committed
+    assert len(compressor_inputs) == 1
+    assert "concurrent row 1" in _contents(compressor_inputs[0])
+    assert not [m for m in compressor_inputs[0] if "_row_id" in m], compressor_inputs[0]
+    child = _contents(db.get_messages_as_conversation(agent.session_id))
+    assert child.count("LIVE USER INSTRUCTION") == 1, child
+    assert child.count("SNAPSHOT WINDOW ROW") == 1, child
 
 
 @pytest.mark.parametrize(

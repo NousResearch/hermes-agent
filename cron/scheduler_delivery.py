@@ -1604,11 +1604,17 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
     Thread seeding is deferred here so open-succeeds/deliver-fails never seeds an unseen brief."""
     job = t.job
     origin = t.origin
-    if (
-        t.platform_name == "matrix"
-        and (t.resolved_source is None or t.resolved_source.chat_type not in {"dm", "group"})
-    ):
-        return
+    if t.platform_name == "matrix":
+        from cron.scheduler_delivery_destination import resolve_live_destination
+
+        source = t.resolved_source
+        if source is None or source.chat_type not in {"dm", "group"}:
+            return
+        current = resolve_live_destination(
+            t.transport, t.platform, t.chat_id, t.thread_id, source.to_dict(), t.loop,
+        )
+        if current is None or current.source.chat_type != source.chat_type:
+            return
     seed_kwargs = dict(
         chat_name=origin.get("chat_name"), is_dm=t.is_dm_target, scope_id=origin.get("scope_id"))
     thread_seeded = False

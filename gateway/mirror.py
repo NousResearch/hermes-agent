@@ -99,11 +99,27 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
         from gateway.session import SessionSource, build_session_key
         from hermes_cli.profiles import get_active_profile_name
 
-        config = load_gateway_config()
         source = SessionSource(
             platform=Platform.MATRIX, chat_id=chat_id, thread_id=thread_id,
-            user_id=user_id, chat_type=chat_type,
+            user_id=user_id, chat_type=chat_type, profile=get_active_profile_name(),
         )
+        from gateway.run import _gateway_runner_ref
+
+        runner = _gateway_runner_ref()
+        if runner is not None:
+            adapter = runner._delivery_adapter_for(source)
+            store = getattr(adapter, "_session_store", None)
+            if store is None:
+                return None
+            config = store.config
+            participant_required = (
+                chat_type != "dm" and config.group_sessions_per_user
+                and (not thread_id or config.thread_sessions_per_user)
+            )
+            if participant_required and not user_id:
+                return None
+            return store.peek_session_id(store._generate_session_key(source))
+        config = load_gateway_config()
         key_options = dict(
             group_sessions_per_user=config.group_sessions_per_user,
             thread_sessions_per_user=config.thread_sessions_per_user,

@@ -27,6 +27,16 @@ class MatrixDeliveryMixin:
 
     async def resolve_delivery_target(self, source: SessionSource) -> SessionSource:
         """Resolve the room and reply session shape through this authenticated client."""
+        try:
+            return await asyncio.wait_for(
+                self._resolve_delivery_source(source), timeout=90
+            )
+        except asyncio.TimeoutError as exc:
+            raise ValueError(
+                f"Matrix target '{source.chat_id}': destination resolution timeout (90s)"
+            ) from exc
+
+    async def _resolve_delivery_source(self, source: SessionSource) -> SessionSource:
         from gateway.session_identity import replace_source
 
         room_id = await self._resolve_send_target(source.chat_id)
@@ -82,11 +92,11 @@ class MatrixDeliveryMixin:
                 )
             self._joined_rooms.add(room_id)
             self._invalidate_room_identities(room_id)
-            await self._refresh_dm_cache()
+            await asyncio.wait_for(self._refresh_dm_cache(), timeout=15)
             return room_id
         except asyncio.TimeoutError as exc:
             raise ValueError(
-                f"Matrix target '{chat_id}': alias resolution or join timed out"
+                f"Matrix target '{chat_id}': alias resolution, join or account-data refresh timed out"
             ) from exc
         except Exception as exc:
             raise ValueError(f"Matrix target '{chat_id}': {exc}") from exc

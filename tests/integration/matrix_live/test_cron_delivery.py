@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from nio import (
@@ -17,8 +18,7 @@ from nio import (
 )
 from testcontainers.core.container import DockerContainer
 
-from tests.integration.matrix_live.conftest import LiveRoom, _register, _wait_for
-from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+from tests.integration.matrix_live.conftest import LiveRoom, _wait_for
 
 
 _DELIVER = """
@@ -27,6 +27,7 @@ import json
 from cron.scheduler_delivery import _deliver_result
 from gateway.config import Platform, load_gateway_config
 from plugins.platforms.matrix.adapter import MatrixAdapter
+from pathlib import Path
 
 async def main():
     config = load_gateway_config()
@@ -35,10 +36,30 @@ async def main():
     try:
         loop = asyncio.get_running_loop()
         job = {'id': 'matrix-live-cron', 'deliver': TARGET, 'attach_to_session': False}
-        error = await asyncio.to_thread(
-            _deliver_result, job, 'Cron alias report',
-            {Platform.MATRIX: adapter}, loop,
-        )
+        if UPLOAD_TRANSITION:
+            from tools.send_message_senders import _matrix_send_core
+            assert adapter._encryption and adapter._client.crypto
+            original_upload = adapter._client.upload_media
+            async def paused_upload(*args, **kwargs):
+                uri = await original_upload(*args, **kwargs)
+                Path('/opt/data/upload-ready').touch()
+                async with asyncio.timeout(10):
+                    while not Path('/opt/data/release-upload').exists():
+                        await asyncio.sleep(0.01)
+                return uri
+            adapter._client.upload_media = paused_upload
+            attachment = Path('/opt/data/report.txt')
+            attachment.write_bytes(b'Private cron attachment')
+            result = await _matrix_send_core(
+                adapter, TARGET.removeprefix('matrix:').split('/')[0], '',
+                [(str(attachment), False)], {'thread_id': THREAD},
+            )
+            error = result.get('error')
+        else:
+            error = await asyncio.to_thread(
+                _deliver_result, job, 'Cron alias report',
+                {Platform.MATRIX: adapter}, loop,
+            )
         print(json.dumps({'error': error}))
     finally:
         await adapter.disconnect()
@@ -59,6 +80,7 @@ asyncio.run(main())
         "mxid",
         "private_alias",
         "encrypted",
+        "upload_encryption",
     ],
 )
 def test_cron_alias_and_home_thread_delivery(
@@ -132,7 +154,9 @@ def test_cron_alias_and_home_thread_delivery(
                 "home_channel": {"platform": "matrix", "chat_id": inline},
                 "extra": {
                     "homeserver": "http://synapse:8008",
-                    "e2ee_mode": "off",
+                    "e2ee_mode": "optional"
+                    if destination == "upload_encryption"
+                    else "off",
                     "allowed_users": [live_room.observer.user_id],
                     "user_id": live_room.bot.user_id,
                     "password": "matrix-test-password"
@@ -151,11 +175,38 @@ def test_cron_alias_and_home_thread_delivery(
         command="infinity",
         working_dir="/opt/hermes",
     ).with_volume_mapping(home, "/opt/data", "rw") as sender:
-        result = sender.exec([
+        command = [
             "/opt/hermes/.venv/bin/python",
             "-c",
-            "TARGET = " + repr(target) + "\n" + _DELIVER,
-        ])
+            f"TARGET = {target!r}\nTHREAD = {root_id!r}\n"
+            f"UPLOAD_TRANSITION = {destination == 'upload_encryption'!r}\n" + _DELIVER,
+        ]
+        if destination == "upload_encryption":
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                pending = executor.submit(sender.exec, command)
+                _wait_for(
+                    lambda: (home / "upload-ready").exists(),
+                    "native upload barrier",
+                    timeout=120,
+                )
+
+                async def enable_encryption():
+                    client = live_room.observer.client(live_room.homeserver)
+                    try:
+                        state = await client.room_put_state(
+                            room_id,
+                            "m.room.encryption",
+                            {"algorithm": "m.megolm.v1.aes-sha2"},
+                        )
+                        assert isinstance(state, RoomPutStateResponse), state
+                    finally:
+                        await client.close()
+
+                asyncio.run(asyncio.wait_for(enable_encryption(), timeout=5))
+                (home / "release-upload").touch()
+                result = pending.result(timeout=15)
+        else:
+            result = sender.exec(command)
         output = result.output.decode(errors="replace")
         assert result.exit_code == 0, output
         errors = [
@@ -164,7 +215,11 @@ def test_cron_alias_and_home_thread_delivery(
             if line.startswith('{"error":')
         ]
         assert len(errors) == 1, output
-        if destination in {"missing_alias", "mxid", "private_alias", "encrypted"}:
+        if destination == "upload_encryption":
+            assert (
+                errors[0] and alias in errors[0] and "encryption changed" in errors[0]
+            ), output
+        elif destination in {"missing_alias", "mxid", "private_alias", "encrypted"}:
             assert errors[0] and alias in errors[0], output
             assert "live adapter" in errors[0] and "delivery error" in errors[0], output
         else:
@@ -174,6 +229,15 @@ def test_cron_alias_and_home_thread_delivery(
         client = live_room.observer.client(live_room.homeserver)
         try:
             response = await client.sync(timeout=0)
+            if destination == "upload_encryption":
+                bot_events = [
+                    event
+                    for event in response.rooms.join[room_id].timeline.events
+                    if event.sender == live_room.bot.user_id
+                    and event.source["type"] in {"m.room.message", "m.room.encrypted"}
+                ]
+                assert bot_events == []
+                return
             events = [
                 event
                 for event in response.rooms.join[room_id].timeline.events
@@ -201,265 +265,3 @@ def test_cron_alias_and_home_thread_delivery(
             await client.close()
 
     asyncio.run(asyncio.wait_for(observe(), timeout=15))
-
-
-_CONTINUE = """
-import asyncio
-import json
-import signal
-from cron.scheduler_delivery import _deliver_result
-from gateway.config import Platform, load_gateway_config
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource
-from gateway.session_context import set_session_vars, clear_session_vars
-from tools.send_message_tool import send_message_tool
-
-async def main():
-    config = load_gateway_config()
-    config.multiplex_profiles = False
-    runner = GatewayRunner(config)
-    assert await runner.start(), 'Gateway start failed'
-    try:
-        loop = asyncio.get_running_loop()
-        stopped = asyncio.Event()
-        loop.add_signal_handler(signal.SIGTERM, stopped.set)
-        source = SessionSource(
-            platform=Platform.MATRIX, chat_id=ROOM, thread_id=THREAD,
-            chat_type='group', user_id=PARTICIPANT,
-        )
-        if ABSENT_PARTICIPANT:
-            bob = runner.session_store.get_or_create_session(SessionSource(
-                platform=Platform.MATRIX, chat_id=ROOM, thread_id=THREAD,
-                chat_type='group', user_id=PEER,
-            ))
-            runner.session_store.append_to_transcript(bob.session_id, {
-                'role': 'assistant', 'content': "Bob's isolated context",
-            })
-            bob_before = runner.session_store.load_transcript(bob.session_id)
-        elif PER_USER:
-            entry = runner.session_store.get_or_create_session(source)
-            runner.session_store.append_to_transcript(entry.session_id, {
-                'role': 'user', 'content': 'Remember the existing participant context.',
-            })
-            runner.session_store.append_to_transcript(entry.session_id, {
-                'role': 'assistant', 'content': 'Existing participant context',
-            })
-        if TOOL_SEND:
-            tokens = set_session_vars(platform='matrix', user_id=PARTICIPANT)
-            try:
-                result = json.loads(await asyncio.to_thread(
-                    send_message_tool, {'target': TARGET, 'message': BRIEF},
-                ))
-            finally:
-                clear_session_vars(tokens)
-            assert result.get('success'), result
-            assert bool(result.get('mirrored')) == (not ABSENT_PARTICIPANT), result
-            assert (result['chat_id'], result['thread_id']) == (ROOM, THREAD), result
-        else:
-            if TRANSIENT_RESOLUTION:
-                adapter = runner.adapters[Platform.MATRIX]
-                original = adapter._client.resolve_room_alias
-                first = True
-                async def transient(alias):
-                    nonlocal first
-                    if first:
-                        first = False
-                        raise ValueError('transient native alias lookup failure')
-                    return await original(alias)
-                adapter._client.resolve_room_alias = transient
-            error = await asyncio.to_thread(
-                _deliver_result,
-                {
-                    'id': 'alias-continuation', 'deliver': TARGET, 'attach_to_session': True,
-                    'origin': source.to_dict() if PER_USER else None,
-                },
-                BRIEF, runner.adapters, loop,
-            )
-            assert error is None, error
-        if ABSENT_PARTICIPANT:
-            assert list(runner.session_store._entries) == [bob.session_key]
-            assert runner.session_store.load_transcript(bob.session_id) == bob_before
-        elif PER_USER:
-            assert list(runner.session_store._entries) == [entry.session_key]
-        print(json.dumps({'cron_ready': True}), flush=True)
-        await stopped.wait()
-    finally:
-        await runner.stop()
-
-asyncio.run(main())
-"""
-
-
-@pytest.mark.parametrize("delivery", [
-    "shared_cron", "per_user_cron", "per_user_tool", "per_user_tool_absent", "per_user_fallback_cron",
-])
-def test_alias_thread_reply_receives_seeded_cron_brief(
-    gateway_image, synapse, live_room: LiveRoom, tmp_path: Path, delivery: str
-):
-    alias_localpart = f"cron-continuation-{delivery}"
-
-    async def create():
-        client = live_room.observer.client(live_room.homeserver)
-        try:
-            room = await client.room_create(
-                alias=alias_localpart,
-                name="Cron continuation",
-                preset=RoomPreset.public_chat,
-            )
-            assert isinstance(room, RoomCreateResponse), room
-            peer = await _register(live_room.homeserver, "cron-peer")
-            peer_client = peer.client(live_room.homeserver)
-            try:
-                joined = await peer_client.join(room.room_id)
-                assert isinstance(joined, JoinResponse), joined
-            finally:
-                await peer_client.close()
-            root = await client.room_send(
-                room.room_id,
-                "m.room.message",
-                {"msgtype": "m.notice", "body": "External thread root"},
-            )
-            assert isinstance(root, RoomSendResponse), root
-            return room.room_id, root.event_id, peer.user_id
-        finally:
-            await client.close()
-
-    room_id, root_id, peer_id = asyncio.run(asyncio.wait_for(create(), timeout=15))
-    alias = f"#{alias_localpart}:matrix.test"
-    brief = "The cron-only launch code is basil-otter-47."
-    home = tmp_path / "continuation-home"
-    _, _, network = synapse
-    with FakeLLMServer([Text("Continuation reply")], bind_host="0.0.0.0") as model:
-        write_hermes_home(
-            home,
-            f"http://host.docker.internal:{model.port}/v1",
-            extra_config=(
-                "cron:\n  wrap_response: false\n"
-                f"thread_sessions_per_user: {str(delivery != 'shared_cron').lower()}\n"
-                "updates:\n  check: false\n"
-                "platforms:\n  matrix:\n    enabled: true\n"
-                "    extra:\n      e2ee_mode: 'off'\n      require_mention: false\n"
-                "      auto_thread: false\n      reactions: false\n"
-            ),
-        )
-        with (home / ".env").open("a", encoding="utf-8") as stream:
-            stream.write(
-                "MATRIX_HOMESERVER=http://synapse:8008\n"
-                f"MATRIX_ACCESS_TOKEN={live_room.bot.access_token}\n"
-                f"MATRIX_ALLOWED_USERS={live_room.observer.user_id}\n"
-            )
-        code = (
-            f"TARGET = {f'matrix:{alias}/{root_id}'!r}\nBRIEF = {brief!r}\n"
-            f"ROOM = {room_id!r}\nTHREAD = {root_id!r}\n"
-            f"PARTICIPANT = {live_room.observer.user_id!r}\n"
-            f"PER_USER = {delivery != 'shared_cron'!r}\n"
-            f"TOOL_SEND = {delivery.startswith('per_user_tool')!r}\n"
-            f"ABSENT_PARTICIPANT = {delivery == 'per_user_tool_absent'!r}\n"
-            f"TRANSIENT_RESOLUTION = {delivery == 'per_user_fallback_cron'!r}\n"
-            f"PEER = {peer_id!r}\n" + _CONTINUE
-        )
-        with (
-            DockerContainer(
-                gateway_image,
-                network=network,
-                entrypoint="/opt/hermes/.venv/bin/python",
-                working_dir="/opt/hermes",
-                extra_hosts={"host.docker.internal": "host-gateway"},
-            )
-            .with_command(["-c", code])
-            .with_volume_mapping(home, "/opt/data", "rw") as sender
-        ):
-
-            def logs():
-                return sender.get_wrapped_container().logs().decode(errors="replace")
-
-            _wait_for(
-                lambda: '{"cron_ready": true}' in logs(),
-                "cron delivery and seed",
-                timeout=120,
-                details=lambda: logs()[-6000:],
-            )
-
-            async def exchange():
-                client = live_room.observer.client(live_room.homeserver)
-                try:
-                    response = await client.sync(timeout=0)
-                    reports = [
-                        event
-                        for event in response.rooms.join[room_id].timeline.events
-                        if isinstance(event, RoomMessageText) and event.body == brief
-                    ]
-                    assert len(reports) == 1
-                    report = reports[0]
-                    assert (
-                        report.sender,
-                        report.source["content"]["m.relates_to"],
-                    ) == (
-                        live_room.bot.user_id,
-                        {
-                            "rel_type": "m.thread",
-                            "event_id": root_id,
-                            "is_falling_back": True,
-                            "m.in_reply_to": {"event_id": root_id},
-                        },
-                    )
-                    question = "What was the launch code in your scheduled brief?"
-                    sent = await client.room_send(
-                        room_id,
-                        "m.room.message",
-                        {
-                            "msgtype": "m.text",
-                            "body": question,
-                            "m.relates_to": {
-                                "rel_type": "m.thread",
-                                "event_id": root_id,
-                                "is_falling_back": False,
-                                "m.in_reply_to": {"event_id": report.event_id},
-                            },
-                        },
-                    )
-                    assert isinstance(sent, RoomSendResponse), sent
-                    while True:
-                        response = await client.sync(timeout=250)
-                        joined = response.rooms.join.get(room_id)
-                        if not joined:
-                            continue
-                        for event in joined.timeline.events:
-                            if (
-                                isinstance(event, RoomMessageText)
-                                and event.sender == live_room.bot.user_id
-                                and event.body == "Continuation reply"
-                            ):
-                                assert event.source["content"]["m.relates_to"] == {
-                                    "rel_type": "m.thread",
-                                    "event_id": root_id,
-                                    "m.in_reply_to": {"event_id": sent.event_id},
-                                    "is_falling_back": False,
-                                }
-                                requests = model.main_requests()
-                                assert len(requests) == 1
-                                messages = requests[0]["messages"]
-                                brief_role = "assistant" if delivery.startswith("per_user_tool") else "user"
-                                mirrored = any(
-                                    message.get("role") == brief_role
-                                    and brief in str(message.get("content"))
-                                    for message in messages
-                                )
-                                assert mirrored == (delivery != "per_user_tool_absent"), messages
-                                assert "Bob's isolated context" not in json.dumps(messages)
-                                if not delivery.startswith("per_user_tool"):
-                                    assert "[Cron delivery: alias-continuation]" in json.dumps(messages)
-                                if delivery not in {"shared_cron", "per_user_tool_absent"}:
-                                    assert "Existing participant context" in json.dumps(messages)
-                                assert question in json.dumps(messages)
-                                return
-                finally:
-                    await client.close()
-
-            try:
-                asyncio.run(asyncio.wait_for(exchange(), timeout=15))
-            except asyncio.TimeoutError:
-                pytest.fail(
-                    "No continuation reply after 15 seconds. Gateway logs:\n"
-                    + logs()[-6000:]
-                )

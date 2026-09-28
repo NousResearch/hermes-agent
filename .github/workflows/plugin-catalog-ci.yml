@@ -167,7 +167,9 @@ jobs:
 
             CLONE_DIR=$(realpath "$(mktemp -d -p "$WORKROOT")")
             # Full clone (no --depth 1): the pinned sha may not be the branch tip.
-            if ! timeout 120 git clone "$REPO" "$CLONE_DIR" </dev/null; then
+            # 600s: listed repos reach >1 GB (hermes-jackal-verified 1.43 GB,
+            # hindsight 741 MB); 120s would false-fail a re-pin on a slow runner.
+            if ! timeout 600 git clone "$REPO" "$CLONE_DIR" </dev/null; then
               echo "::error file=$entry::clone failed for $REPO"
               FAILED=1; echo "::endgroup::"; continue
             fi

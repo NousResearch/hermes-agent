@@ -325,8 +325,17 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     mid-session via ``session/load``). The session record keeps the RAW path
     (host workspaces are tracked there on purpose); only the live-env write is
     sanitized, since a host cwd can never be a container workdir.
+
+    The record is keyed under the QUALIFIED task id (routed scope,
+    :func:`_qualify_task_key`) — the same reason container keys and cwd records
+    are qualified (#123989): a multiplexed host serves every profile in one
+    process and header-less API-server clients derive identical raw session
+    ids from identical opening messages, so an unqualified slot would let
+    profile B inherit profile A's registered ``docker_image`` (last writer
+    wins on a shared slot). :func:`resolve_task_overrides` reads the raw
+    spelling as a fallback for callers running outside a routed scope.
     """
-    _task_env_overrides[task_id] = overrides
+    _task_env_overrides[_qualify_task_key(task_id)] = overrides
 
     new_cwd = overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
@@ -345,6 +354,9 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
 
 def clear_task_env_overrides(task_id: str):
     """Drop a task's overrides, cwd record and container alias (rollout cleanup)."""
+    # Pop both spellings: qualified (a routed scope's registration) and raw
+    # (an un-routed one) — clearing must not strand the other spelling.
+    _task_env_overrides.pop(_qualify_task_key(task_id), None)
     _task_env_overrides.pop(task_id, None)
     clear_session_cwd(task_id)
     with _container_alias_lock:
@@ -381,9 +393,12 @@ def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     """True when *task_id* registered image/env_type overrides — the single
     "isolated RL/benchmark rollout" predicate shared by key resolution and
     container creation so the two can't drift."""
-    if not task_id or task_id not in _task_env_overrides:
+    if not task_id:
         return False
-    return bool(set(_task_env_overrides[task_id].keys()) & _ISOLATION_OVERRIDE_KEYS)
+    record = _task_env_overrides.get(_qualify_task_key(task_id)) or _task_env_overrides.get(task_id)
+    if not record:
+        return False
+    return bool(set(record.keys()) & _ISOLATION_OVERRIDE_KEYS)
 
 
 @dataclass(frozen=True)
@@ -522,7 +537,10 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        else ``"default"``, which subagent ids collapse onto to share the parent's container.
     """
     if task_id and _has_isolation_overrides(task_id):
-        return task_id
+        # Return the QUALIFIED key (the spelling the override record is keyed under
+        # and the container will be created under), so the read
+        # (``resolve_task_overrides``'s fallback) and the env cache stay in step.
+        return _qualify_task_key(task_id)
     scope = _session_scope()
     if task_id and scope.session_isolated:
         # Session-isolated backends (docker + container_persistent: false, plugin equivalents)
@@ -560,16 +578,18 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
 def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     """Return the env overrides for *task_id*, raw key first then collapsed.
 
-    ``register_task_env_overrides`` writes under the *raw* task/session id, but
-    a CWD-only override collapses (:func:`_resolve_container_task_id`) to the
-    shared ``"default"`` container. Callers must therefore read the raw id
-    FIRST and only fall back to the collapsed container id, or the originating
-    session's override is silently dropped. Single source of that lookup so
-    the terminal and file layers can't drift apart.
+    ``register_task_env_overrides`` writes under the QUALIFIED task id (routed
+    scope), so the read order is: raw id first (a writer outside any routed
+    scope — CLI, batch runners — keeps the historical raw key), then the
+    qualified spelling, then the collapsed container id — a CWD-only override
+    collapses (:func:`_resolve_container_task_id`) to the shared ``"default"``
+    container. Single source of that lookup so the terminal and file layers
+    can't drift apart.
     """
     raw = task_id or "default"
     return (
         _task_env_overrides.get(raw)
+        or _task_env_overrides.get(_qualify_task_key(raw))
         or _task_env_overrides.get(_resolve_container_task_id(raw))
         or {}
     )

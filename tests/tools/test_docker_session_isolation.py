@@ -227,6 +227,90 @@ class TestRoutedScopeQualification:
         terminal_tool.record_session_cwd("task-1", "/tmp/x")
         assert terminal_tool._session_cwd.get("task-1") == "/tmp/x"
 
+    # ---- env-override records: the sibling the first commit did not reach ----
+
+    def test_override_write_is_qualified_and_leak_is_closed(self, monkeypatch, tmp_path):
+        """The reported blocker: profile B must not resolve profile A's image override (#124057 review)."""
+        _enable_isolation(monkeypatch)
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        raw = "api-9a5f7809eec0aac1"
+        home_a = tmp_path / "profiles" / "research"
+        home_a.mkdir(parents=True)
+        token = set_hermes_home_override(str(home_a))
+        try:
+            terminal_tool.register_task_env_overrides(raw, {"docker_image": "a-research-image:1"})
+            assert terminal_tool.resolve_task_overrides(raw).get("docker_image") == "a-research-image:1"
+        finally:
+            reset_hermes_home_override(token)
+        # A different profile's scope resolves its OWN (empty) slot for the same raw id.
+        home_b = tmp_path / "profiles" / "default"
+        home_b.mkdir(parents=True)
+        token = set_hermes_home_override(str(home_b))
+        try:
+            assert terminal_tool.resolve_task_overrides(raw) == {}
+            assert terminal_tool._resolve_container_task_id(raw).endswith(f":{raw}")
+            # The image-selection path (terminal_tool_lifecycle) consults the same lookup.
+            config = {"env_type": "docker", "docker_image": "config-default-image"}
+            assert terminal_tool._select_image(
+                "docker", terminal_tool.resolve_task_overrides(raw), config
+            ) == "config-default-image"
+            # B registering does not clobber A's record.
+            terminal_tool.register_task_env_overrides(raw, {"docker_image": "b-prod-image:9"})
+            assert terminal_tool.resolve_task_overrides(raw).get("docker_image") == "b-prod-image:9"
+        finally:
+            reset_hermes_home_override(token)
+        token = set_hermes_home_override(str(home_a))
+        try:
+            assert terminal_tool.resolve_task_overrides(raw).get("docker_image") == "a-research-image:1"
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_unrouted_writer_still_readable_raw_first(self, monkeypatch):
+        """CLI / batch-runner writers run with no override bound: the raw spelling stays authoritative."""
+        _enable_isolation(monkeypatch)
+        from hermes_constants import get_hermes_home_override
+        assert get_hermes_home_override() is None
+        terminal_tool.register_task_env_overrides("task_rl_1", {"docker_image": "rollout:1"})
+        try:
+            assert terminal_tool.resolve_task_overrides("task_rl_1").get("docker_image") == "rollout:1"
+            assert terminal_tool._has_isolation_overrides("task_rl_1") is True
+            assert terminal_tool._resolve_container_task_id("task_rl_1") == "task_rl_1"
+        finally:
+            terminal_tool.clear_task_env_overrides("task_rl_1")
+        assert terminal_tool.resolve_task_overrides("task_rl_1") == {}
+        assert terminal_tool._has_isolation_overrides("task_rl_1") is False
+
+    def test_predicate_finds_qualified_registration_across_scopes(self, monkeypatch, tmp_path):
+        """_resolve_container_task_id branch 1 consults the predicate with the RAW id; the qualified record must answer."""
+        _enable_isolation(monkeypatch)
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        home = tmp_path / "profiles" / "research"
+        home.mkdir(parents=True)
+        token = set_hermes_home_override(str(home))
+        try:
+            terminal_tool.register_task_env_overrides(
+                "rollout-7", {"docker_image": "rollout-img:2"})
+            assert terminal_tool._has_isolation_overrides("rollout-7") is True
+            # The isolation branch returns the (qualified) raw key — authoritative where it applies.
+            assert terminal_tool._resolve_container_task_id("rollout-7") == (
+                f"profile:research:rollout-7")
+            # Clearing from the SAME routed scope (the production shape — rollout cleanup) pops the qualified slot.
+            terminal_tool.clear_task_env_overrides("rollout-7")
+            assert terminal_tool._has_isolation_overrides("rollout-7") is False
+        finally:
+            reset_hermes_home_override(token)
+        # An UN-routed clearer (CLI teardown) pops the raw spelling: a stranded raw record is cleared, ...
+        terminal_tool.register_task_env_overrides("task-raw", {"docker_image": "i:2"})
+        terminal_tool.clear_task_env_overrides("task-raw")
+        assert terminal_tool._task_env_overrides.get("task-raw") is None
+        # ... and a CWD-only override keeps collapsing to the shared default container.
+        terminal_tool.register_task_env_overrides("task-9", {"cwd": "/tmp/w"})
+        try:
+            assert terminal_tool.resolve_task_overrides("task-9").get("cwd") == "/tmp/w"
+        finally:
+            terminal_tool.clear_task_env_overrides("task-9")
+        assert terminal_tool.resolve_task_overrides("task-9") == {}
+
 
 class TestSessionScopedMountResolution:
     """_resolve_task_host_cwd: the single owner of the cwd→/workspace mount policy."""

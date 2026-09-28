@@ -27,6 +27,17 @@ export interface KeybindActionMeta {
   defaults: readonly string[]
   /** Display label for CONTRIBUTED actions (built-ins use i18n). */
   label?: string
+  /**
+   * The handler may decline (return `false`) when its context does not
+   * apply, handing the chord to the next action bound to it. Sharing a combo
+   * with a later action is then layering, not a conflict.
+   */
+  passthrough?: true
+  /** `modified`: a combo carrying a non-Shift modifier may fire while an
+   *  editable target (the composer) has focus, beyond the global combo-safety
+   *  policy in `actionAllowedInInput`. Bare/shift-only rebinds never qualify,
+   *  so a text key stays typing-safe (#71627). */
+  editableTargetPolicy?: 'modified'
 }
 
 // Positional switch slots for *named* profiles: ⌘1…⌘9 for profiles 1-9, then
@@ -44,15 +55,19 @@ const PROFILE_SWITCH_ACTIONS: KeybindActionMeta[] = Array.from({ length: PROFILE
   defaults: [comboForSlot(i + 1)]
 }))
 
-// Positional tab-slot jumps — activate the Nth visible tab in the focused
-// zone's tab strip. No default chords: ⌘1…⌘9 belong to profile switching
-// (#92569), and users who want positional tabs can bind chords in the panel.
+// Positional tab-slot jumps — activate the Nth visible tab of the zone under
+// the pointer (else the focused zone, else the workspace's). They share
+// ⌘1…⌘9 with the profile switchers and pass through when no eligible tab
+// strip exists, so the same chord is "tab N" over a strip and "profile N"
+// anywhere else (#92569: the two are separate actions, so rebinding either
+// changes only that one).
 export const TAB_SLOT_COUNT = 9
 
 const TAB_SLOT_ACTIONS: KeybindActionMeta[] = Array.from({ length: TAB_SLOT_COUNT }, (_, i) => ({
   id: `view.tabSlot.${i + 1}`,
   category: 'view' as const,
-  defaults: []
+  defaults: [comboForSlot(i + 1)],
+  passthrough: true
 }))
 
 // Positional jumps — ^1…^9, mirroring profiles' ⌘1…⌘9.
@@ -80,10 +95,17 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // Dictation is intentionally unbound: it is available for users who prefer
   // a keyboard trigger without claiming a chord from text entry by default.
   { id: 'composer.dictate', category: 'composer', defaults: [] },
+  // Reasoning level up/down — one notch through off → minimal → … → xhigh,
+  // clamped at the ends (#71627). Unbound like dictate: the chords a user
+  // picks (Alt+., Ctrl+Alt+↑, Numpad +/- …) are too personal to claim by
+  // default. `editableTargetPolicy` lets a MODIFIED combo fire while the
+  // composer has focus; bare/shift-only rebinds stay typing-safe.
+  { id: 'composer.reasoningUp', category: 'composer', defaults: [], editableTargetPolicy: 'modified' },
+  { id: 'composer.reasoningDown', category: 'composer', defaults: [], editableTargetPolicy: 'modified' },
 
   // ── Profiles ─────────────────────────────────────────────────────────────
-  // Tab-slot actions BEFORE profile switchers so a user rebinding a chord to
-  // a tab slot wins the combo-index race (first action to claim a combo wins).
+  // Tab-slot actions BEFORE profile switchers: they claim ⌘1…⌘9 first and
+  // pass through to the profile switch when no tab strip is eligible.
   ...TAB_SLOT_ACTIONS,
   { id: 'profile.default', category: 'profiles', defaults: ['mod+d'] },
   ...PROFILE_SWITCH_ACTIONS,
@@ -253,6 +275,21 @@ export function allKeybindActions(contributions?: readonly Contribution[]): Keyb
 
 export function keybindAction(id: string): KeybindActionMeta | undefined {
   return ACTION_BY_ID.get(id) ?? allKeybindActions().find(action => action.id === id)
+}
+
+/** True when `combo` carries a modifier beyond Shift (mod, ctrl, or alt). */
+function comboHasNonShiftModifier(combo: string): boolean {
+  const parts = combo.split('+')
+
+  return parts.slice(0, -1).some(part => part !== 'shift')
+}
+
+/** An action's own allowance for firing inside an editable target: the
+ *  `editableTargetPolicy` gate that `actionAllowedInInput` consults. Only a
+ *  combo with a real modifier qualifies — a bare or shift-only rebind stays
+ *  with the input so it can never hijack typing. */
+export function keybindActionAllowedInEditableTarget(id: string, combo: string): boolean {
+  return keybindAction(id)?.editableTargetPolicy === 'modified' && comboHasNonShiftModifier(combo)
 }
 
 /** The contributed handler for an action id (built-ins wire theirs in use-keybinds). */

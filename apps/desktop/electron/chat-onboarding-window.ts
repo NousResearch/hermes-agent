@@ -15,7 +15,6 @@ export function registerChatOnboardingWindow({ enabled, mainWindow }: ChatOnboar
       return
     }
 
-    // The request arrives in renderer CSS pixels; growWindowBounds converts it to DIP with the zoom factor below.
     const bounds = win.getBounds()
 
     win.setBounds(

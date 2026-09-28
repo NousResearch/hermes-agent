@@ -19,6 +19,7 @@
 import { type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import { setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
@@ -1607,6 +1608,10 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
 
   return sessionOwnerByRuntimeId.get(sessionId) ?? durable
 }
+
+// Session-scoped REST reads (detail / messages / timeline) resolve their
+// connection pin through the SAME owner ladder as RPC dispatch (#125372).
+setSessionOwnerResolver(knownOwnerForSession)
 
 /** The profile whose chat is on screen — the rail's scope.
  *

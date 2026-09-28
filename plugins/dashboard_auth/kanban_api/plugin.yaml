@@ -1,6 +1,6 @@
 name: kanban_api
 version: 1.0.0
-description: "Dashboard auth provider — non-interactive shared-bearer-secret for the sanitized kanban REST API (/api/plugins/kanban/v1). The operator provisions HERMES_KANBAN_API_SECRET; an inbound bearer is compared constant-time and the /v1 prefix is registered as token-authable with scope 'kanban'. Fails CLOSED on a weak (< 256-bit) secret; no-op when unset. Knobs (scope, min_secret_chars) live under dashboard.kanban_api_auth in config.yaml."
+description: "Dashboard auth provider — non-interactive shared-bearer-secret for the sanitized kanban REST API (/api/plugins/kanban/v1). The operator provisions HERMES_KANBAN_API_SECRET; an inbound bearer is compared constant-time and the /v1 prefix is registered as token-authable with scope 'kanban'. Fails CLOSED on a short or obviously structured secret (provision it with secrets.token_urlsafe(32)); no-op when unset. Knobs (scope, min_secret_chars) live under dashboard.kanban_api_auth in config.yaml."
 author: NousResearch
 kind: backend
 requires_env:

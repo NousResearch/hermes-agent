@@ -54,8 +54,8 @@ def _settings() -> dict:
 
 
 def register(ctx) -> None:
-    """Register ``KanbanApiSecretProvider`` when a strong secret is set; no-op (records a skip
-    reason) when ``HERMES_KANBAN_API_SECRET`` is unset or fails the entropy gate. On success
+    """Register ``KanbanApiSecretProvider`` when a usable secret is set; no-op (records a skip
+    reason) when ``HERMES_KANBAN_API_SECRET`` is unset or fails ``assess_secret_strength``. On success
     also registers the ``/v1`` prefix as token-authable via the generic seam."""
     global LAST_SKIP_REASON
     LAST_SKIP_REASON = ""

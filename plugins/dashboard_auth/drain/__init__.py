@@ -3,9 +3,9 @@
 Non-interactive token capability of the ``DashboardAuthProvider`` ABC (``verify_token`` +
 the ``token_auth`` middleware seam): ``nous-account-service`` provisions a per-agent unique
 secret (``HERMES_DASHBOARD_DRAIN_SECRET``, env-only — it is a credential); an inbound bearer
-is compared constant-time and vouched for as the ``drain-control`` principal. Fail-CLOSED
-entropy gate at registration (length, distinct chars, Shannon bits); interactive ABC methods
-raise. Knobs ``scope`` / ``min_secret_chars`` live under ``dashboard.drain_auth``.
+is compared constant-time and vouched for as the ``drain-control`` principal. Degenerate
+secrets (short, few distinct chars, repeated block) fail CLOSED at registration; interactive
+ABC methods raise. Knobs ``scope`` / ``min_secret_chars`` live under ``dashboard.drain_auth``.
 """
 from __future__ import annotations
 
@@ -48,8 +48,8 @@ def _settings() -> dict:
 
 
 def register(ctx) -> None:
-    """Register ``DrainSecretProvider`` when a strong secret is set; no-op (records a skip
-    reason) when ``HERMES_DASHBOARD_DRAIN_SECRET`` is unset or fails the entropy gate. On
+    """Register ``DrainSecretProvider`` when a usable secret is set; no-op (records a skip
+    reason) when ``HERMES_DASHBOARD_DRAIN_SECRET`` is unset or fails ``assess_secret_strength``. On
     success also registers the drain route as token-authable via the generic seam."""
     global LAST_SKIP_REASON
     LAST_SKIP_REASON = ""

@@ -3068,7 +3068,7 @@ dashboard:
     session_ttl_seconds: 0    # 0 → plugin default (12h)
   drain_auth:                 # Drain-control service-credential gate (dashboard_auth/drain plugin)
     scope: "drain"            # capability label on the verified principal
-    min_secret_chars: 43      # entropy bar (url-safe-b64 chars; 43 ≈ 256 bits)
+    min_secret_chars: 43      # minimum length (token_urlsafe(32) = 43 chars)
   ws_ping_interval: 20.0      # Non-loopback WebSocket keepalive ping interval (seconds)
   ws_ping_timeout: 20.0       # Non-loopback WebSocket keepalive pong timeout (seconds)
   ws_orphan_reap_grace_s: 20.0 # Grace before a WS-detached session is reaped (seconds)

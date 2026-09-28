@@ -20,14 +20,18 @@ redaction and absolute-path removal.
 ## Authentication
 
 External controllers authenticate with a dedicated service credential.
-Provision a strong shared secret (at least 43 url-safe-base64 characters,
-e.g. `python -c "import secrets; print(secrets.token_urlsafe(32))"`) and
+Generate the shared secret with a cryptographically secure generator —
+`python -c "import secrets; print(secrets.token_urlsafe(32))"` (256 bits, 43
+characters) — and
 export it as `HERMES_KANBAN_API_SECRET` in the Hermes deployment's
 environment. The bundled `kanban_api` dashboard-auth plugin then accepts
 `Authorization: Bearer <secret>` on every endpoint documented here — on any
 bind, including gated (non-loopback) deployments where the rest of the
-dashboard requires a cookie session. A weak or short secret is rejected at
-startup (fail-closed) and the credential stays disabled.
+dashboard requires a cookie session. A short or obviously structured secret
+(fewer than 16 distinct characters, or one block repeated) is rejected at
+startup (fail-closed) and the credential stays disabled. This check only
+catches degenerate values — it cannot tell how a secret was generated, so a
+hand-typed or derived value that passes it is still not a strong secret.
 
 The credential is scoped to this API only: it cannot drive other service
 surfaces (for example gateway drain control), and other service credentials

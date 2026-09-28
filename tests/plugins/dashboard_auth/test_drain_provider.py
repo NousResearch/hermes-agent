@@ -1,7 +1,7 @@
 """Tests for the DrainSecretProvider plugin (non-interactive bearer secret).
 
 Task 2.0b. Loads the bundled drain plugin module directly and exercises:
-  * the entropy gate (assess_secret_strength) — fail-closed on weak secrets,
+  * the secret sanity gate (assess_secret_strength) — fail-closed on degenerate secrets,
   * constant-time verify_token returning a scoped TokenPrincipal,
   * the register(ctx) entry point's env/config resolution, skip reasons, and
     token-route registration.
@@ -38,11 +38,11 @@ def _strong_secret() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Entropy gate
+# Secret sanity gate
 # ---------------------------------------------------------------------------
 
 
-class TestEntropyGate:
+class TestSecretGate:
     def test_strong_secret_passes(self, drain):
         assert assess_secret_strength(_strong_secret()) is None
 
@@ -54,9 +54,13 @@ class TestEntropyGate:
         assert assess_secret_strength("a1B2c3" * 7) is not None
 
     def test_long_but_repeated_rejected(self, drain):
-        # 60 chars, one distinct character → low distinct count + low entropy.
+        # 60 chars, one distinct character.
         assert assess_secret_strength("a" * 60) is not None
 
+    def test_repeated_diverse_block_rejected(self, drain):
+        # Diverse histogram (16 symbols) but trivially predictable: character diversity of
+        # one observed string is not generation entropy, so this must not pass.
+        assert assess_secret_strength("abcdefghijklmnop" * 3) is not None
 
     def test_custom_min_chars_enforced(self, drain):
         s = _strong_secret()  # 43 chars

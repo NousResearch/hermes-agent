@@ -9,7 +9,7 @@ Loads the bundled kanban_api auth plugin module directly and exercises:
     it stay on the cookie gate, and a foreign-scoped service credential (the
     drain secret) is refused.
 
-The shared entropy gate itself is covered by test_drain_provider.py — it
+The shared secret gate itself is covered by test_drain_provider.py — it
 lives in ``plugins.dashboard_auth._shared`` and both plugins use it.
 """
 from __future__ import annotations

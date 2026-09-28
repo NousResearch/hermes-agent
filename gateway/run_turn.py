@@ -3655,6 +3655,31 @@ class GatewayTurnMixin:
             if callable(_mark_turn):
                 _mark_turn(turn_ctx.session_key, turn_ctx.run_generation)
 
+    @staticmethod
+    def _queued_process_heartbeat_is_live(event: Any) -> bool:
+        """Freshness check for a heartbeat that reached us as a QUEUED event (#120395).
+
+        The two guards in ``_handle_message_with_agent`` only run on the turn that
+        admits the heartbeat. A heartbeat queued behind a busy session is drained by
+        ``_run_agent_drain_pending`` / ``_run_agent_queued_followup``, which never pass
+        through those sites — so this is the only re-validation such an event gets.
+
+        Delegates to ``process_heartbeat_still_alive``, the same predicate the other two
+        sites use, so a decision cannot differ by entry path. Every failure is treated
+        as stale: a heartbeat whose provenance cannot be revalidated must not buy a
+        model turn.
+        """
+        try:
+            from gateway.run_heartbeat_acceptance import process_heartbeat_still_alive
+
+            return bool(process_heartbeat_still_alive(event))
+        except Exception:
+            logger.debug(
+                "Busy-path heartbeat freshness check raised — treating as stale",
+                exc_info=True,
+            )
+            return False
+
     async def _run_agent_drain_pending(
         self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str]
     ) -> Tuple[Any, Optional[str]]:
@@ -3671,6 +3696,24 @@ class GatewayTurnMixin:
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
             pending_event = self._promote_queued_event(session_key, adapter, pending_event)
+            # Staleness re-check for a process heartbeat that reached us through the BUSY path.
+            # ``_run_agent_drain_pending`` / ``_run_agent_queued_followup`` are only reached after
+            # the session was busy while the heartbeat was admitted, so the two guards in
+            # ``_handle_message_with_agent`` (``_hmwa_resolve_session``) and pre-``_run_agent``
+            # never see them — they run on the turn that consumed the queue, not on this one
+            # (#120395). Without this check a heartbeat for a process that exited during the
+            # busy window would be promoted here into a fresh "still running" turn, burning a
+            # model call to report a state the user already saw complete.
+            if pending_event is not None and not self._queued_process_heartbeat_is_live(pending_event):
+                logger.debug(
+                    "Discarding stale busy-path background-process heartbeat for session %s — process no longer running",
+                    getattr(pending_event, "_process_heartbeat_session_id", "unknown"),
+                )
+                pending_event = None
+                # Promote the NEXT queued item into the slot we just vacated, so a dead
+                # heartbeat does not stall the FIFO behind it (same invariant as the
+                # ``/queue`` overflow promotion below).
+                pending_event = self._promote_queued_event(session_key, adapter, pending_event)
             if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                 interrupt_message = result.get("interrupt_message")
                 if _is_control_interrupt_message(interrupt_message):

@@ -528,9 +528,12 @@ def setup_telemetry(config: dict):
     _info("Shared metrics contain only bounded counters: activity, session length,",
           "outcomes, error classes, model routes and token totals, built-in tool, command",
           "and catalog names, bucketed setup counts, update results and timing, crashes,",
-          "startup and reply speed, messaging-platform health, and coarse machine facts",
-          "(RAM range, GPU type, version age and channel, updates behind, local model",
-          "server yes/no). Never prompts, files, paths or error text.",
+          "startup and reply speed, messaging-platform health, how Hermes gets used",
+          "(agent accuracy and efficiency, active time per surface, which features and",
+          "settings are used or switched off, provider setup outcomes), and coarse",
+          "machine facts (RAM range, GPU type, version age and channel, updates behind,",
+          "local model server yes/no). Never prompts, files, paths, setting values or",
+          "error text.",
           "Collection is local. Sending them to Nous is a separate opt-in.")
     shared_metrics = _sub_dict(_sub_dict(config, "telemetry"), "shared_metrics")
     current = shared_metrics.get("enabled") is True

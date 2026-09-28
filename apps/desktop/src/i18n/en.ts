@@ -24,6 +24,7 @@ export const en: Translations = {
     collectedNames: 'Built-in tool, command and catalog names',
     collectedMilestones: 'Bucketed setup counts',
     collectedReliability: 'Update results and timing, crashes, startup and reply speed, messaging-platform health',
+    collectedUsage: 'How Hermes gets used: agent accuracy and efficiency (edit matches, loops, recoveries, tokens and tool calls per task, cache breaks), active time per surface and Desktop mode, which app areas, actions and settings are used, closed quickly or switched off, and provider setup outcomes',
     collectedMachine: 'Coarse machine facts: RAM range, GPU type, Hermes version age and release channel, updates behind, whether a local model server is used',
     installId:
       'Sending uploads each daily package to the Nous telemetry service. Packages carry this profile’s install ID: a stable random UUID with no personal information, reset by deleting the shared-metrics directory.',

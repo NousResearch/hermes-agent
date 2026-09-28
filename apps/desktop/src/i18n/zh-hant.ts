@@ -21,6 +21,7 @@ export const zhHant = defineLocale({
     collectedNames: '內建工具、指令和目錄項名稱',
     collectedMilestones: '分組的設定計數',
     collectedReliability: '更新結果與耗時、當機、啟動與回覆速度、訊息平台狀態',
+    collectedUsage: 'Hermes 的使用方式：代理的準確度與效率（編輯是否成功、迴圈、錯誤後的恢復、每個任務的 token 與工具呼叫數、快取中斷），各介面與 Desktop 模式的活躍時間，哪些應用程式區域、操作與設定被使用、很快關閉或被關閉，以及供應商設定的結果',
     collectedMachine: '概略的機器資訊：記憶體範圍、GPU 類型、Hermes 版本新舊與發行通道、落後的更新數、是否使用本機模型伺服器',
     installId:
       '傳送會把每日資料包上傳到 Nous 遙測服務。資料包帶有此設定檔的安裝 ID：一個不含個人資訊的固定隨機 UUID，刪除共享指標目錄即可重設。',

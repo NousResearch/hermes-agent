@@ -21,6 +21,7 @@ export const zh = defineLocale({
     collectedNames: '内置工具、命令和目录项名称',
     collectedMilestones: '分桶的设置计数',
     collectedReliability: '更新结果与耗时、崩溃、启动与回复速度、消息平台状态',
+    collectedUsage: 'Hermes 的使用方式：代理的准确度与效率（编辑是否成功、循环、错误后的恢复、每个任务的 token 与工具调用数、缓存中断），各界面与 Desktop 模式的活跃时间，哪些应用区域、操作与设置被使用、很快关闭或被关闭，以及提供商设置的结果',
     collectedMachine: '概略的机器信息：内存范围、GPU 类型、Hermes 版本新旧与发布通道、落后的更新数、是否使用本地模型服务器',
     installId:
       '发送会把每日数据包上传到 Nous 遥测服务。数据包带有此配置文件的安装 ID：一个不含个人信息的固定随机 UUID，删除共享指标目录即可重置。',

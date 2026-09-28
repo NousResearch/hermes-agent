@@ -15,6 +15,7 @@ export const esOverrides = {
     collectedNames: 'Nombres de herramientas, comandos y elementos del catálogo integrados',
     collectedMilestones: 'Recuentos de configuración agrupados',
     collectedReliability: 'Resultados y duración de actualizaciones, fallos, velocidad de inicio y de respuesta, estado de las plataformas de mensajería',
+    collectedUsage: 'Cómo se usa Hermes: precisión y eficiencia del agente (ediciones acertadas, bucles, recuperaciones, tokens y llamadas a herramientas por tarea, cortes de caché), tiempo activo por superficie y modo de Desktop, qué áreas, acciones y ajustes de la app se usan, se cierran enseguida o se desactivan, y resultados de la configuración de proveedores',
     collectedMachine: 'Datos generales del equipo: rango de RAM, tipo de GPU, antigüedad y canal de la versión de Hermes, actualizaciones pendientes, si se usa un servidor de modelos local',
     installId:
       'Al enviar, cada paquete diario se sube al servicio de telemetría de Nous. Los paquetes llevan el ID de instalación de este perfil: un UUID aleatorio y estable sin información personal, que se restablece al borrar el directorio de métricas compartidas.',

@@ -70,6 +70,7 @@ export interface Translations {
     collectedNames: string
     collectedMilestones: string
     collectedReliability: string
+    collectedUsage: string
     collectedMachine: string
     installId: string
     consentWindow: string

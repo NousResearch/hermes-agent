@@ -52,7 +52,7 @@ def validate_platform_toolsets(
         for name in names:
             if not isinstance(name, str) or not name:
                 continue
-            if is_valid_toolset(name):
+            if is_valid_toolset(name) or (isinstance(name, str) and (name.startswith("mcp-") or name.startswith("mcp:"))):
                 valid_count += 1
                 continue
             suggestion = f"hermes-{platform}"
@@ -88,9 +88,11 @@ def clean_platform_toolsets(
 
     An entry is dropped only when it is a string that ``is_valid_toolset``
     rejects; non-string entries are tolerated exactly like validation tolerates
-    them. A platform whose list loses every entry is removed entirely (an empty
-    list would otherwise trip the zero-valid-toolsets warning), falling back to
-    the default toolsets.
+    them. Dynamic toolset references such as MCP server toolsets (``mcp-<server>``
+    or ``mcp:<server>``) are preserved because they are discovered only after
+    agent startup (#76858). A platform whose list loses every entry is removed
+    entirely (an empty list would otherwise trip the zero-valid-toolsets warning),
+    falling back to the default toolsets.
 
     Args:
         platform_toolsets: The raw ``platform_toolsets`` value from config.
@@ -100,19 +102,29 @@ def clean_platform_toolsets(
     Returns:
         True when at least one entry was removed.
     """
+    def _is_stale(n: object) -> bool:
+        if not isinstance(n, str):
+            return False
+        # Dynamic toolsets (e.g. MCP servers referenced as mcp-<server>)
+        # are registered only after agent startup MCP discovery. Never treat
+        # them as stale during offline migrations (#76858).
+        if n.startswith("mcp-") or n.startswith("mcp:"):
+            return False
+        return not is_valid_toolset(n)
+
     if not isinstance(platform_toolsets, dict):
         return False
     changed = False
     for platform, raw in list(platform_toolsets.items()):
         if isinstance(raw, list):
-            kept = [n for n in raw if not (isinstance(n, str) and not is_valid_toolset(n))]
+            kept = [n for n in raw if not _is_stale(n)]
             if len(kept) != len(raw):
                 changed = True
             if kept:
                 platform_toolsets[platform] = kept
             else:
                 del platform_toolsets[platform]
-        elif isinstance(raw, str) and not is_valid_toolset(raw):
+        elif isinstance(raw, str) and _is_stale(raw):
             del platform_toolsets[platform]
             changed = True
     return changed

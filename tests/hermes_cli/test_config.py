@@ -1357,6 +1357,29 @@ class TestCodexAppServerAutoConfig:
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
 
+    def test_migrate_preserves_mcp_platform_toolsets(self, tmp_path):
+        """Dynamic MCP references in platform_toolsets (e.g. mcp-<server>) must
+        survive migrate_config even though offline migration runs before MCP discovery.
+        Regression for #76858."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(
+                tmp_path,
+                "_config_version: 31\n"
+                "platform_toolsets:\n"
+                "  cli:\n"
+                "    - terminal\n"
+                "    - mcp-github\n"
+                "    - messaging\n"
+                "  slack:\n"
+                "    - mcp-slack\n",
+            )
+
+            migrate_config(interactive=False, quiet=True)
+
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["platform_toolsets"]["cli"] == ["terminal", "mcp-github"]
+            assert raw["platform_toolsets"]["slack"] == ["mcp-slack"]
+
 
 class TestIsProviderEnabled:
     """``is_provider_enabled`` gates ``providers.<name>`` blocks for the

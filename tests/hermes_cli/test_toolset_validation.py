@@ -86,5 +86,25 @@ def test_clean_is_noop_for_non_dict():
     assert clean_platform_toolsets([], _is_valid) is False
 
 
+def test_clean_preserves_dynamic_mcp_toolsets():
+    # Dynamic MCP toolsets (mcp-<server>) must not be dropped by clean_platform_toolsets
+    # during offline migrations when MCP discovery has not run yet (#76858).
+    cfg = {"cli": ["terminal", "mcp-github", "messaging"]}
+    assert clean_platform_toolsets(cfg, _is_valid) is True
+    assert cfg == {"cli": ["terminal", "mcp-github"]}
+
+    # If all entries are MCP toolsets, platform key is preserved
+    mcp_only = {"slack": ["mcp-slack"]}
+    assert clean_platform_toolsets(mcp_only, _is_valid) is False
+    assert mcp_only == {"slack": ["mcp-slack"]}
+
+
+def test_validate_preserves_dynamic_mcp_toolsets():
+    cfg = {"cli": ["mcp-github"]}
+    warnings = validate_platform_toolsets(cfg, _is_valid)
+    assert not any("unknown toolset" in w for w in warnings)
+    assert not any("zero valid toolsets" in w for w in warnings)
+
+
 
 

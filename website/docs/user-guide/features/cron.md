@@ -596,6 +596,28 @@ error. A delivery failure does not count toward the job's `failure_streak`
 (the agent did its job); the next fully successful run returns the status to
 `ok`.
 
+By default this is all-or-nothing: a job that delivers to several targets
+(`deliver: slack,email:me@example.com`) records `delivery_failed` when any one
+target fails, even if the others received the output. To tell those runs apart
+from runs where nothing arrived, opt in to a separate status:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  delivery:
+    partial_ok: true   # default: false
+```
+
+With it on, a run where at least one target received the output and another
+target failed outright records `last_status: delivery_partial` (execution
+delivery outcome `partial`). `last_delivery_error` still names every failed
+target, `hermes cron list` shows it in yellow, `hermes cron doctor` reports
+it as a delivery issue, and a manual `cronjob run` reports `success: true`
+with the failed targets in `error`. A run where every target received the output but with a caveat (an
+attachment dropped, a thread fallback) is not partial and stays
+`delivery_failed`. Jobs run by a restart-safe external worker hand delivery to
+the gateway queue and keep the all-or-nothing status.
+
 ### Bot Chat delivery (`bot-chat`)
 
 `bot-chat` delivers the output **into a profile's canonical "Bot Chat" session as a real message**. Unlike every other target — where the recipient is a human reading a channel — the recipient here is the bot itself: it receives the output as an incoming message, acts on anything that needs action, and responds in its chat. Use it when scheduled output should be *processed*, not just posted.

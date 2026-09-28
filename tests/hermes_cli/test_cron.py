@@ -224,6 +224,23 @@ class TestCronDoctor:
         assert "last run failed" not in out
         assert "unknown error" not in out
 
+    def test_doctor_reports_partial_delivery_once(self, tmp_cron_dir, capsys):
+        """delivery_partial (cron.delivery.partial_ok) says some targets were reached."""
+        create_job(prompt="Daily digest", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["last_status"] = "delivery_partial"
+        jobs[0]["last_error"] = None
+        jobs[0]["last_delivery_error"] = "email timeout"
+        save_jobs(jobs)
+
+        rc = cron_command(Namespace(cron_command="doctor"))
+
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "reached only some of its targets (email timeout)" in out
+        assert "was not delivered" not in out
+        assert "last run failed" not in out
+
     def test_doctor_flags_overdue_next_run(self, tmp_cron_dir, capsys):
         from datetime import datetime, timedelta, timezone
 
@@ -292,6 +309,26 @@ class TestCronListStatusRendering:
         assert "telegram timeout" in last_run_line, (
             "the delivery detail lives in last_delivery_error, not last_error"
         )
+        assert cron_cli.Colors.GREEN not in last_run_line
+
+    def test_delivery_partial_is_yellow_and_names_the_failed_target(
+            self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        monkeypatch.setattr("hermes_cli.colors.should_use_color", lambda: True)
+        create_job(prompt="Daily digest", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["last_run_at"] = "2026-09-01T09:00:00+00:00"
+        jobs[0]["last_status"] = "delivery_partial"
+        jobs[0]["last_error"] = None
+        jobs[0]["last_delivery_error"] = "email timeout"
+        save_jobs(jobs)
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        last_run_line = next(l for l in out.splitlines() if "Last run:" in l)
+        assert "reached only some targets (email timeout)" in last_run_line
+        assert cron_cli.Colors.YELLOW in last_run_line
         assert cron_cli.Colors.GREEN not in last_run_line
 
     def test_ok_run_still_green(self, tmp_cron_dir, capsys, monkeypatch):
@@ -562,6 +599,18 @@ class TestSlashCronListLastStatus:
 
         out = self._run_list(tmp_cron_dir, capsys)
         assert "Last run: 2026-09-01T07:00:00+00:00 (delivery_failed: telegram: 502 Bad Gateway)" in out
+
+    def test_delivery_partial_names_the_delivery_error(self, tmp_cron_dir, capsys):
+        create_job(prompt="Nightly brief", schedule="every 1h", deliver="telegram:1")
+        jobs = load_jobs()
+        jobs[0]["last_run_at"] = "2026-09-01T07:00:00+00:00"
+        jobs[0]["last_status"] = "delivery_partial"
+        jobs[0]["last_error"] = None
+        jobs[0]["last_delivery_error"] = "email: timeout"
+        save_jobs(jobs)
+
+        out = self._run_list(tmp_cron_dir, capsys)
+        assert "Last run: 2026-09-01T07:00:00+00:00 (delivery_partial: email: timeout)" in out
 
 
 

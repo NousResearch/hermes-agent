@@ -1726,8 +1726,8 @@ class CLICommandsMixin:
                 status = job.get("last_status") or "?"
                 # delivery_failed: the run succeeded but delivery didn't — the reason lives
                 # in last_delivery_error (last_error is None).
-                if status == "delivery_failed" and job.get("last_delivery_error"):
-                    status = f"delivery_failed: {job['last_delivery_error']}"
+                if status in ("delivery_failed", "delivery_partial") and job.get("last_delivery_error"):
+                    status = f"{status}: {job['last_delivery_error']}"
                 elif status == "error" and job.get("last_error"):
                     status = f"error: {job['last_error']}"
                 print(f"  Last run: {job['last_run_at']} ({status})")

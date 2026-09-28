@@ -18,6 +18,7 @@ test('exact rail targets, sequential newer pages and explicit live-tail return',
   const mock = await startMockServer()
   writeMockProviderConfig(sandbox.hermesHome, mock.url)
   writeEnvFile(sandbox.hermesHome, 'e2e-mock-key', mock.url)
+  const anchorChecks: Array<{ key: string; offset: number; error: number }> = []
   let app: Awaited<ReturnType<typeof launchDesktop>>['app'] | undefined
   try {
     const root = path.resolve(import.meta.dirname, '../../..')
@@ -77,39 +78,41 @@ with SessionDB(db_path=Path(sys.argv[1]) / 'state.db') as db:
       })).toBeLessThanOrEqual(2)
       await expect(rail.getByRole('button', { name, exact: true })).toHaveAttribute('aria-current', 'location')
     }
-    const anchorChecks: Array<{ key: string; offset: number; error: number }> = []
+    const settleFrames = () => page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
     const pageWithAnchor = async (button: ReturnType<typeof viewport.getByRole>) => {
-      // Playwright scrolls a button into view before clicking it. Capture only
-      // after that explicit user movement, not from the previous reading spot.
+      // Capture after Playwright's explicit movement to the page control. Read
+      // only visible groups, so the assertion does not force skipped layout.
       await button.scrollIntoViewIfNeeded()
-      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+      await settleFrames()
       const anchor = await viewport.evaluate(element => {
         const bounds = element.getBoundingClientRect()
-        const seen = new Map<string, number>()
-        const candidates: Array<{ key: string; occurrence: number; offset: number }> = []
-        for (const node of element.querySelectorAll<HTMLElement>('[data-history-anchor]')) {
-          const key = node.dataset.historyAnchor!
-          const occurrence = seen.get(key) ?? 0
-          seen.set(key, occurrence + 1)
-          if (node.dataset.slot === 'aui_message-group') continue
-          const box = node.getBoundingClientRect()
-          if (box.height > 0 && box.bottom > bounds.top && box.top < bounds.bottom) {
-            candidates.push({ key, occurrence, offset: box.top - bounds.top })
+        const candidates: Array<{ key: string; offset: number }> = []
+        for (const group of element.querySelectorAll<HTMLElement>('[data-slot="aui_message-group"]')) {
+          const outer = group.getBoundingClientRect()
+          if (outer.bottom <= bounds.top || outer.top >= bounds.bottom) continue
+          for (const node of group.querySelectorAll<HTMLElement>('[data-history-anchor^="text-"]')) {
+            const box = node.getBoundingClientRect()
+            if (box.height > 0 && box.bottom > bounds.top && box.top < bounds.bottom) {
+              candidates.push({ key: node.dataset.historyAnchor!, offset: box.top - bounds.top })
+            }
           }
         }
         return candidates.sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))[0] ?? null
       })
-      expect(anchor, 'page changes must preserve a concrete visible transcript part').not.toBeNull()
-      if (!anchor) throw new Error('No visible history anchor before paging')
+      expect(anchor, 'page changes must preserve a concrete visible text part').not.toBeNull()
+      if (!anchor) throw new Error('No visible history text before paging')
+      console.log('PAGING_ANCHOR', JSON.stringify(anchor))
       const before = await viewport.textContent()
       await button.click()
       await expect.poll(() => viewport.textContent()).not.toBe(before)
       const error = () => viewport.evaluate((element, saved) => {
-        const node = element.querySelectorAll<HTMLElement>(`[data-history-anchor="${CSS.escape(saved.key)}"]`)[saved.occurrence]
+        const node = element.querySelector<HTMLElement>(`[data-history-anchor="${CSS.escape(saved.key)}"]`)
         if (!node || !node.getBoundingClientRect().height) return Number.MAX_SAFE_INTEGER
         return Math.abs(node.getBoundingClientRect().top - element.getBoundingClientRect().top - saved.offset)
       }, anchor)
       await expect.poll(error).toBeLessThanOrEqual(2)
+      await settleFrames()
+      expect(await error()).toBeLessThanOrEqual(2)
       anchorChecks.push({ key: anchor.key, offset: anchor.offset, error: await error() })
       expect(await viewport.locator('[data-message-id^="history-"]').count()).toBeGreaterThan(0)
       expect(await viewport.locator('[data-message-id]').count()).toBeLessThanOrEqual(360)
@@ -139,9 +142,9 @@ with SessionDB(db_path=Path(sys.argv[1]) / 'state.db') as db:
     await page.getByRole('button', { name: 'Jump to latest', exact: true }).click()
     await expect(viewport.locator('[data-message-id^="history-"]')).toHaveCount(0)
     await expect(viewport).toContainText('NAV prompt 39')
-    await testInfo.attach('history-anchor-checks.json', { body: JSON.stringify(anchorChecks, null, 2), contentType: 'application/json' })
     await page.screenshot({ path: testInfo.outputPath('returned-live-tail.png') })
   } finally {
+    await testInfo.attach('history-anchor-checks.json', { body: JSON.stringify(anchorChecks, null, 2), contentType: 'application/json' })
     await app?.close().catch(() => undefined)
     await mock.close()
     sandbox.cleanup()

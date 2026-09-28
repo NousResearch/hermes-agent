@@ -129,6 +129,57 @@ def test_git_unpack_requires_a_windows_host(tmp_path, monkeypatch):
     assert not calls, "the guard must refuse before any execution"
 
 
+def test_git_unpack_neutralizes_the_staged_mtab_link(tmp_path, monkeypatch):
+    """The SFX restores the archive's `etc/mtab -> /proc/mounts` link as a
+    WSL reparse point on some Windows hosts: CPython sees a regular file
+    (is_symlink() is False) that open() rejects with EINVAL, so
+    tree_digest() dies on the published entry and the install never
+    stamps. Whatever the extractor staged there must end up an empty
+    regular file a digest can read."""
+    import subprocess
+    from pathlib import Path
+    import pm.packages
+    from pm.packages import Git
+    from pm.store import tree_digest
+
+    def run_as_sfx(argv, **kwargs):
+        staged = Path(argv[1][2:])  # the -o<path> argument
+        (staged / "etc").mkdir(parents=True)
+        (staged / "etc" / "mtab").symlink_to("/proc/mounts")
+        (staged / "cmd").mkdir()
+        (staged / "cmd" / "git.exe").write_bytes(b"MZ")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
+    monkeypatch.setattr(subprocess, "run", run_as_sfx)
+    staged = tmp_path / "scratch" / "tree"
+    Git().unpack(_portable_git(tmp_path), staged, "win32-x64")
+    mtab = staged / "etc" / "mtab"
+    assert not mtab.is_symlink()
+    assert mtab.read_text() == ""
+    tree_digest(staged)  # must not raise
+
+
+def test_git_unpack_leaves_a_tree_without_mtab_untouched(tmp_path, monkeypatch):
+    """A post-install tree that never carried etc/mtab (MinGit's shape)
+    must not gain one: the fix replaces, it does not create."""
+    import subprocess
+    from pathlib import Path
+    import pm.packages
+    from pm.packages import Git
+
+    def run_as_sfx(argv, **kwargs):
+        staged = Path(argv[1][2:])
+        (staged / "cmd").mkdir()
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(pm.packages, "_HOST_IS_WINDOWS", True)
+    monkeypatch.setattr(subprocess, "run", run_as_sfx)
+    staged = tmp_path / "scratch" / "tree"
+    Git().unpack(_portable_git(tmp_path), staged, "win32-x64")
+    assert not (staged / "etc").exists()
+
+
 def test_target_uses_shared_native_arch(monkeypatch):
     from hermes_platform.host import facts
     from pm import store

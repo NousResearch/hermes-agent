@@ -697,6 +697,27 @@ class Git(BinaryPackage):
                 "nothing under -y; usual causes: disk full, path-length limit, "
                 "antivirus lock)",
             )
+        # The extractor restores the archive's POSIX `etc/mtab -> /proc/mounts`
+        # link as a WSL reparse point (IO_REPARSE_TAG_LX_SYMLINK): CPython
+        # reports a regular file (is_symlink() is False) that open() rejects
+        # with EINVAL, so tree_digest() dies on the published entry and the
+        # install never stamps. MinGit does not ship the file and MSYS2
+        # emulates mount tables in msys-2.0.dll — dead weight. Replace it
+        # with an empty regular file; probe with lstat, since exists() and
+        # open() both follow the reparse point and raise.
+        mtab = staged / "etc" / "mtab"
+        try:
+            mtab.lstat()
+        except OSError:
+            pass
+        else:
+            try:
+                mtab.unlink()
+                mtab.write_text("", encoding="utf-8")
+            except OSError as e:
+                raise InstallError(
+                    self.name, f"could not replace the staged etc/mtab link: {e}"
+                ) from e
 
     def env(self, entry: Path, target: str) -> dict:
         return {"PATH": [str(entry / "cmd"), str(entry / "usr" / "bin")]}

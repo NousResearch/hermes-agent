@@ -311,6 +311,34 @@ async def test_threading_modes(monkeypatch):
     assert "replyToId" not in calls[-1][1]
 
 
+@pytest.mark.parametrize("line, expected", [
+    ("reply_to_mode: off", "off"),      # YAML 1.1: bare off loads as False
+    ('reply_to_mode: "off"', "off"),
+    ("reply_to_mode: all", "all"),
+    ("enabled: true", "first"),
+])
+def test_reply_to_mode_from_real_yaml(monkeypatch, line, expected):
+    import hermes_yaml
+
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
+    cfg = PlatformConfig.from_dict({"enabled": True, **hermes_yaml.safe_load(line)})
+    assert PhotonAdapter(cfg)._reply_to_mode == expected
+
+
+@pytest.mark.asyncio
+async def test_plain_fallback_resend_stays_in_the_thread(monkeypatch):
+    adapter = _make_adapter(monkeypatch)
+    _capture_handled(adapter, monkeypatch)
+    calls = _capture_sidecar(adapter)
+    await adapter._dispatch_inbound(_reply_event({"type": "text", "text": "hi"}, message_id="in-9"))
+
+    await adapter._send_plain_fallback(DM, "plain retry", reply_to="in-9", metadata=None)
+
+    assert calls[-1][0] == "/send"
+    assert calls[-1][1]["replyToId"] == "in-9"
+
+
 def test_threading_mode_comes_from_platform_reply_to_mode(monkeypatch):
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")

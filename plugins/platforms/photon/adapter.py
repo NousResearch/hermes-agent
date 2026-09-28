@@ -608,7 +608,9 @@ class PhotonAdapter(BasePlatformAdapter):
         # Honours the shared per-platform ``reply_to_mode``: "off" never threads, "all" always
         # quote-replies the triggering message, and the default "first" threads only when the user
         # themselves replied in a thread, so ordinary chats stay unthreaded.
-        self._reply_to_mode: str = getattr(config, "reply_to_mode", "first") or "first"
+        # YAML 1.1 parses a bare ``off`` as False, so False means "off", not unset (as in discord).
+        raw_mode = getattr(config, "reply_to_mode", None)
+        self._reply_to_mode: str = "off" if raw_mode is False else (str(raw_mode).strip().lower() if raw_mode else "first")
         self._recent_richlinks_by_chat: Dict[str, float] = {}  # coalesce preview-art attachments
         self._typing_last_sent: Dict[str, float] = {}
         self._pending_fffc: Dict[str, tuple[float, Any]] = {}  # chat_key → (timestamp, asyncio.Task)
@@ -1471,7 +1473,8 @@ class PhotonAdapter(BasePlatformAdapter):
         """No Markdown banner (replies are markdown or already-stripped plain text); bypass
         richlink() so a rich-link outage doesn't strand a sendable URL."""
         return await self._sidecar_send(
-            chat_id, self.format_message(content)[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
+            chat_id, self.format_message(content)[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False,
+            reply_to=self._thread_anchor(reply_to))
 
     async def _post_send(self, path: str, body: Dict[str, Any], *, structured: bool = False,
                          sent_text: Optional[str] = None) -> SendResult:

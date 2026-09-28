@@ -132,8 +132,8 @@ Threaded answers use the shared `reply_to_mode` in `config.yaml`:
 ```yaml
 platforms:
   photon:
-    reply_to_mode: first   # default: answer inside the thread only when the user replied in one
-                           # all: always quote-reply the triggering message; off: never thread
+    reply_to_mode: "first"   # default: answer inside the thread only when the user replied in one
+                             # "all": always quote-reply the triggering message; "off": never thread
 ```
 
 ## Attachments & limitations

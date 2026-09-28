@@ -164,9 +164,8 @@ def _failure_streak_nudge(job: dict) -> str:
         return ""
     job_ref = job.get("name") or job.get("id") or "this job"
     return (
-        f"\nThis job has failed {streak} runs in a row — worth a review. "
-        f"Fix its prompt/config, or pause it with `hermes cron pause {job_ref}` "
-        "(resume/remove also available) to stop the noise."
+        f"\n{streak} consecutive failures — check its prompt/config, "
+        f"or `hermes cron pause {job_ref}` to stop the alerts."
     )
 
 

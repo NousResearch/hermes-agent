@@ -219,10 +219,37 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
+    """Skill dirs under ``root``, descending symlinked skill directories.
+
+    Delegates to ``iter_skill_index_files`` — the ``os.walk(followlinks=True)`` walker the prompt
+    index, ``skills_list`` and ``skill_view`` all use. ``Path.rglob`` does NOT descend symlinked
+    directories, so a profile whose skills are deployed by stow/ansible (each ``skills/<name>`` a
+    link to the tracked copy) was readable through skill_view while every skill_manage write
+    answered "not found in active profile".
+    """
+    from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    for skill_md in iter_skill_index_files(root, "SKILL.md"):
         if not is_excluded_skill_path(skill_md):
             yield skill_md.parent
+
+
+def _exposed_as(skill_dir: Path, name: str, local_root: Path, resolved_root: Path) -> bool:
+    """True when ``skill_dir`` is reachable as ``<local root>/<name>``.
+
+    Two views, because either side of the comparison may be the linked one: the LEXICAL path
+    (``<root>/category/skill`` exactly as the caller typed it — a symlinked skill dir resolves out
+    of the root, so only the unresolved path skill_view joins onto the search dir can match), and
+    the RESOLVED one (a root reached through a symlinked path segment).
+    """
+    try:
+        if skill_dir.relative_to(local_root).as_posix() == name:
+            return True
+    except (OSError, ValueError):
+        pass
+    try:
+        return skill_dir.resolve().relative_to(resolved_root).as_posix() == name
+    except (OSError, ValueError):
+        return False
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -232,26 +259,25 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     categorized relative path (``mlops/axolotl``) — the two forms skill_view resolves. The
     categorized form matches RELATIVE to the local root only (relative_to raises for external dirs)."""
     from agent.skill_utils import get_all_skills_dirs
-    local_root = None
+    local_views = None  # (lexical root, resolved root) — set only for the categorized form
     if "/" in name or "\\" in name:
+        local_root = _skills_dir()
         try:
-            local_root = _skills_dir().resolve()
+            resolved_root = local_root.resolve()
         except OSError:
             logger.debug(
                 "skills dir resolve failed; categorized lookups fall back to the unresolved path",
                 exc_info=True)
-            local_root = _skills_dir()
+            resolved_root = local_root
+        local_views = (local_root, resolved_root)
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
         for skill_dir in _iter_skill_dirs(skills_dir):
             if skill_dir.name == name:
                 return {"path": skill_dir}
-            if local_root is not None:
-                resolved = skill_dir.resolve()
-                if (resolved.is_relative_to(local_root)
-                        and resolved.relative_to(local_root).as_posix() == name):  # POSIX form
-                    return {"path": skill_dir}
+            if local_views is not None and _exposed_as(skill_dir, name, *local_views):
+                return {"path": skill_dir}
     return None
 
 

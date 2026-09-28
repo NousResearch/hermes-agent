@@ -1260,3 +1260,123 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+# ---------------------------------------------------------------------------
+# Symlinked skill dirs (stow / ansible deploy) — resolution parity with skill_view
+# ---------------------------------------------------------------------------
+
+
+def _temp_hermes_home(tmp_path, monkeypatch) -> Path:
+    """Real imports against a temp HERMES_HOME (no SKILLS_DIR / get_all_skills_dirs patching)."""
+    home = tmp_path / "home"
+    (home / "skills").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+
+
+def _symlink_dir_or_skip(target: Path, link: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError as exc:  # Windows without symlink privilege
+        pytest.skip(f"Symlinks not supported here: {exc}")
+
+
+def _stage_skill(skill_dir: Path, name: str) -> Path:
+    """A minimal valid skill package at ``skill_dir`` (the tracked copy of a stowed skill)."""
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Use when testing {name}.\n---\n\nRule A.\n",
+        encoding="utf-8")
+    return skill_dir
+
+
+class TestSymlinkedSkillDirs:
+    """A profile deployed by stow/ansible holds ``skills/<name>`` as a symlink to the tracked copy
+    outside the profile. ``skill_view`` and the prompt index follow the link
+    (``os.walk(followlinks=True)``); ``skill_manage`` walked with ``Path.rglob``, which does not
+    descend symlinked directories, so every write answered "Skill '<name>' not found in active
+    profile" for a skill the model had just read (live incident: accountant profile, 2026-09-28)."""
+
+    def test_patch_lands_in_the_symlink_target(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+        home = _temp_hermes_home(tmp_path, monkeypatch)
+        stowed = _stage_skill(tmp_path / "cloudlab" / "skills" / "ledger-bookkeeping",
+                              "ledger-bookkeeping")
+        link = home / "skills" / "ledger-bookkeeping"
+        _symlink_dir_or_skip(stowed, link)
+
+        assert json.loads(skill_view("ledger-bookkeeping"))["success"] is True  # readable...
+
+        result = json.loads(skill_manage(
+            action="patch", name="ledger-bookkeeping", old_string="Rule A.", new_string="Rule B."))
+
+        assert result["success"] is True, result  # ...and now writable
+        assert "Rule B." in (stowed / "SKILL.md").read_text(encoding="utf-8")
+        assert link.is_symlink()  # the deployment link survives the write
+        assert "Rule B." in (link / "SKILL.md").read_text(encoding="utf-8")
+
+    def test_categorized_path_resolves_through_a_symlinked_skill_dir(self, tmp_path, monkeypatch):
+        home = _temp_hermes_home(tmp_path, monkeypatch)
+        stowed = _stage_skill(tmp_path / "cloudlab" / "skills" / "rhel-patch-management",
+                              "rhel-patch-management")
+        (home / "skills" / "devops").mkdir()
+        link = home / "skills" / "devops" / "rhel-patch-management"
+        _symlink_dir_or_skip(stowed, link)
+
+        found = _find_skill("devops/rhel-patch-management")
+
+        assert found is not None
+        assert found["path"] == link  # the exposed path, not the resolved stow target
+
+    def test_delete_of_a_symlinked_skill_refuses_with_the_real_reason(self, tmp_path, monkeypatch):
+        """The refusal must name the symlink. "Not found in active profile" reads to the model as
+        "this skill does not exist" — exactly how the live incident ended."""
+        home = _temp_hermes_home(tmp_path, monkeypatch)
+        stowed = _stage_skill(tmp_path / "cloudlab" / "skills" / "ledger-bookkeeping",
+                              "ledger-bookkeeping")
+        link = home / "skills" / "ledger-bookkeeping"
+        _symlink_dir_or_skip(stowed, link)
+
+        result = json.loads(skill_manage(action="delete", name="ledger-bookkeeping", absorbed_into=""))
+
+        assert result["success"] is False
+        assert "symlink" in result["error"].lower()
+        assert "not found" not in result["error"].lower()
+        assert link.is_symlink() and (stowed / "SKILL.md").exists()  # nothing was deleted
+
+    def test_find_skill_and_skill_view_agree_on_the_resolvable_names(self, tmp_path, monkeypatch):
+        """Parity contract: for one layout the names skill_manage resolves are exactly the names
+        skill_view loads — symlinked or real, top-level or categorized."""
+        from tools.skills_tool import skill_view
+        skills = _temp_hermes_home(tmp_path, monkeypatch) / "skills"
+        _stage_skill(skills / "pdf", "pdf")
+        _stage_skill(skills / "pdf" / "references", "decoy")  # support dir, not a skill of its own
+        _stage_skill(skills / "autonomous-ai-agents" / "hermes-agent", "hermes-agent")
+        _stage_skill(skills / ".archive" / "old-skill", "old-skill")  # excluded from the index
+        _symlink_dir_or_skip(_stage_skill(tmp_path / "cloudlab" / "skills" / "ledger-bookkeeping",
+                                         "ledger-bookkeeping"),
+                             skills / "ledger-bookkeeping")
+        (skills / "devops").mkdir()
+        _symlink_dir_or_skip(_stage_skill(tmp_path / "cloudlab" / "skills" / "rhel-patch-management",
+                                         "rhel-patch-management"),
+                             skills / "devops" / "rhel-patch-management")
+
+        names = ["pdf", "references", "decoy", "old-skill",
+                 "hermes-agent", "autonomous-ai-agents/hermes-agent",
+                 "ledger-bookkeeping", "rhel-patch-management", "devops/rhel-patch-management"]
+
+        resolvable = set()
+        for name in names:
+            found = _find_skill(name) is not None
+            loaded = bool(json.loads(skill_view(name)).get("success"))
+            assert found == loaded, f"{name}: _find_skill={found} skill_view={loaded}"
+            if found:
+                resolvable.add(name)
+        # Not vacuous: the negative cases (support dir, excluded dir) must have failed too.
+        assert resolvable == {
+            "pdf", "hermes-agent", "autonomous-ai-agents/hermes-agent", "ledger-bookkeeping",
+            "rhel-patch-management", "devops/rhel-patch-management"}
+        # A supporting dir is not a skill package for skill_manage even addressed as a categorized
+        # path: the write would land in another skill's references/.
+        assert _find_skill("pdf/references") is None

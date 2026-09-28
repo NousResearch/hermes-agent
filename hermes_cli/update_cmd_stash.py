@@ -269,6 +269,77 @@ def _git_untracked_paths(git_cmd: list[str], cwd: Path) -> set[str] | None:
     return paths
 
 
+def _stashed_untracked_collisions(
+    git_cmd: list[str], cwd: Path, stash_ref: str,
+) -> tuple[str, ...] | None:
+    """Stashed-untracked paths now owned by HEAD, or None when ownership is unverifiable.
+
+    A normal stash has two parents (HEAD and index); --include-untracked adds a third parent
+    holding the untracked tree. Read the exact stash commit parent inventory successfully before
+    treating a missing third parent as tracked-only; a failed metadata query is not absence.
+    """
+    from hermes_cli.update_cmd_git import _git_run
+
+    resolved = _git_run(git_cmd, ["rev-parse", "--verify", f"{stash_ref}^{{commit}}"], cwd)
+    if resolved.returncode != 0:
+        return None
+    stash_commit = resolved.stdout.strip()
+    if not stash_commit:
+        return None
+
+    inventory = _git_run(git_cmd, ["rev-list", "--parents", "-n", "1", stash_commit], cwd)
+    if inventory.returncode != 0:
+        return None
+    fields = inventory.stdout.strip().split()
+    if not fields or fields[0] != stash_commit:
+        return None
+    if len(fields) == 3:
+        return ()  # commit + HEAD parent + index parent: genuinely tracked-only stash
+    if len(fields) != 4:
+        return None  # malformed/non-standard parent inventory: do not guess
+
+    untracked_parent = fields[3]
+    stashed = _git_paths_z(
+        git_cmd, ["ls-tree", "-r", "--name-only", "-z", untracked_parent], cwd
+    )
+    tracked = _git_paths_z(git_cmd, ["ls-files", "-z"], cwd)
+    if stashed is None or tracked is None:
+        return None
+
+    ignorecase_probe = _git_run(
+        git_cmd, ["config", "--bool", "--get", "core.ignorecase"], cwd
+    )
+    if ignorecase_probe.returncode == 0:
+        value = ignorecase_probe.stdout.strip().lower()
+        if value not in {"true", "false"}:
+            return None
+        ignore_case = value == "true"
+    elif ignorecase_probe.returncode == 1:
+        ignore_case = False  # unset: Git's default is case-sensitive
+    else:
+        return None
+
+    def owned_key(path: str) -> str:
+        return path.casefold() if ignore_case else path
+
+    tracked_keys = {owned_key(path) for path in tracked}
+    tracked_ancestors: set[str] = set()
+    for path in tracked_keys:
+        parts = path.split("/")
+        tracked_ancestors.update("/".join(parts[:i]) for i in range(1, len(parts)))
+
+    collisions = []
+    for path in stashed:
+        key = owned_key(path)
+        parts = key.split("/")
+        tracked_parent = any(
+            "/".join(parts[:i]) in tracked_keys for i in range(1, len(parts))
+        )
+        if key in tracked_keys or key in tracked_ancestors or tracked_parent:
+            collisions.append(path)
+    return tuple(sorted(collisions))
+
+
 def _restored_python_paths(git_cmd: list[str], cwd: Path) -> tuple[str, ...] | None:
     """Restored ``.py`` paths changed from ``HEAD``; deliberately Python-only (entry scripts stay outside the health check)."""
     from hermes_cli.update_cmd import _git_untracked_paths
@@ -406,6 +477,29 @@ def _restore_stashed_changes(
         print(f"  Restore manually with: git stash apply {stash_ref}")
         _record_stash_disposition("parked", stash_ref, "untracked baseline unknown")
         return False
+    collisions = _stashed_untracked_collisions(git_cmd, cwd, stash_ref)
+    if collisions is None:
+        print("  The stash was not restored because Hermes could not verify untracked-file ownership.")
+        print(f"  Your local changes remain preserved in stash: {stash_ref}")
+        print(f"  Restore manually with: git stash apply {stash_ref}")
+        _record_stash_disposition("parked", stash_ref, "untracked collision check failed")
+        return False
+    if collisions:
+        print()
+        print("⚠ Updated Hermes now owns path(s) that were untracked local files before the update.")
+        for path in collisions[:10]:
+            print(f"    {path}")
+        if len(collisions) > 10:
+            print(f"    ... and {len(collisions) - 10} more")
+        print("  No part of the stash was applied; the updated checkout was left unchanged.")
+        print(f"  Stash ref: {stash_ref}")
+        print(f"  Recover a file with: git show {stash_ref}^3:<path> > <path>.mine")
+        _record_stash_disposition(
+            "parked", stash_ref,
+            f"preflight collision with updated paths: {', '.join(collisions[:10])}",
+        )
+        return False
+
     clean_import_failures = _critical_module_import_failures(cwd, report_runtime_errors=True)
     replaced = _apply_stash(git_cmd, cwd, stash_ref)
     if replaced is None:

@@ -601,35 +601,30 @@ def _repo_with_stash(tmp_path, local_source):
 
 @pytest.mark.parametrize("local_source", ["X = 2\n", "X = (\n"], ids=["healthy", "breaks-hermes"])
 def test_untracked_file_replaced_by_the_update_keeps_the_stash(tmp_path, local_source):
-    """#124641: the update adds a file where the user had an untracked file of the same name.
-    ``stash apply`` refuses it ("already exists, no checkout"); the stash is the only copy of the
-    user's version, so it is never dropped. The restored tree still gets the health check: a restore
-    that breaks Hermes resets the tree and exits 1."""
+    """#124641/#124697: a collision is parked before apply, so tracked stash edits cannot
+    partially mutate the updated checkout."""
     git, stash_ref = _repo_with_stash(tmp_path, local_source)
-    # The pull adds its own notes.md.
     (tmp_path / "notes.md").write_text("upstream notes\n", encoding="utf-8")
     git("add", "-A")
     git("commit", "-qm", "upstream adds notes.md")
 
     probe = _ReceiptProbe()
     with _active_receipt(probe):
-        if local_source == "X = 2\n":
-            restored = hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False)
-            assert restored is False
-        else:
-            with pytest.raises(SystemExit) as exc:
-                hermes_main._restore_stashed_changes(["git"], tmp_path, stash_ref, prompt_user=False)
-            assert exc.value.code == 1
+        restored = hermes_main._restore_stashed_changes(
+            ["git"], tmp_path, stash_ref, prompt_user=False
+        )
 
-    healthy = local_source == "X = 2\n"
-    assert (tmp_path / "mod.py").read_text(encoding="utf-8") == (local_source if healthy else "X = 1\n")
+    assert restored is False
+    assert (tmp_path / "mod.py").read_text(encoding="utf-8") == "X = 1\n"
     assert (tmp_path / "notes.md").read_text(encoding="utf-8") == "upstream notes\n"
+    assert git("show", f"{stash_ref}:mod.py").stdout == local_source
     assert git("show", f"{stash_ref}^3:notes.md").stdout == "my private notes\n"
-    assert git("stash", "list").stdout.strip(), "the stash is the only copy of the user's notes.md"
-    if healthy:
-        disposition = [s for s in probe.steps if s["name"] == "local_changes_stash"]
-        assert len(disposition) == 1 and disposition[0]["ok"] is False
-        assert "parked" in disposition[0]["detail"] and "notes.md" in disposition[0]["detail"]
+    assert git("stash", "list").stdout.strip(), "the complete stash must remain recoverable"
+    assert not git("status", "--porcelain").stdout
+
+    disposition = [s for s in probe.steps if s["name"] == "local_changes_stash"]
+    assert len(disposition) == 1 and disposition[0]["ok"] is False
+    assert "parked" in disposition[0]["detail"] and "notes.md" in disposition[0]["detail"]
 
 
 def test_untracked_file_the_update_does_not_track_is_never_reported_replaced(tmp_path, capsys):
@@ -643,3 +638,186 @@ def test_untracked_file_the_update_does_not_track_is_never_reported_replaced(tmp
 
     assert (tmp_path / "mod.py").read_text(encoding="utf-8") == "X = 2\n"
     assert "The update added" not in capsys.readouterr().out
+
+
+def test_collision_preflight_allows_genuine_tracked_only_stash(tmp_path):
+    """A successfully read two-parent stash is not mistaken for an ownership-read failure."""
+    git(tmp_path, "init", "-q", "-b", "main")
+    source = tmp_path / "mod.py"
+    source.write_text("X = 1\n", encoding="utf-8")
+    git(tmp_path, "add", "mod.py")
+    git(tmp_path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "base")
+    source.write_text("X = 2\n", encoding="utf-8")
+    git(tmp_path, "stash", "push", "-m", "tracked-only")
+    stash_ref = git(tmp_path, "rev-parse", "refs/stash").strip()
+
+    assert hermes_main._restore_stashed_changes(
+        ["git"], tmp_path, stash_ref, prompt_user=False
+    ) is True
+    assert source.read_text(encoding="utf-8") == "X = 2\n"
+    assert not git(tmp_path, "stash", "list")
+
+
+@pytest.mark.parametrize(
+    ("local_rel", "upstream_rel"),
+    [("node", "node/child.txt"), ("node/child.txt", "node")],
+    ids=["file-to-directory", "directory-to-file"],
+)
+def test_collision_preflight_catches_file_directory_shape_changes(
+    tmp_path, local_rel, upstream_rel
+):
+    git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "base.txt").write_text("base\n", encoding="utf-8")
+    git(tmp_path, "add", "base.txt")
+    git(tmp_path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "base")
+
+    local_path = tmp_path / local_rel
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_text("PRIVATE\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref and not local_path.exists()
+
+    upstream_path = tmp_path / upstream_rel
+    if upstream_path.is_dir():
+        upstream_path.rmdir()
+    upstream_path.parent.mkdir(parents=True, exist_ok=True)
+    upstream_path.write_text("UPSTREAM\n", encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "upstream shape change")
+
+    assert hermes_main._restore_stashed_changes(
+        ["git"], tmp_path, stash_ref, prompt_user=False
+    ) is False
+    assert upstream_path.read_text(encoding="utf-8") == "UPSTREAM\n"
+    assert git(tmp_path, "show", f"{stash_ref}^3:{local_rel}") == "PRIVATE"
+    assert git(tmp_path, "stash", "list")
+    assert not git(tmp_path, "status", "--porcelain")
+
+
+def test_collision_preflight_honors_case_insensitive_index(tmp_path):
+    """A case-insensitive checkout treats config.py and Config.py as the same owned path."""
+    git(tmp_path, "init", "-q", "-b", "main")
+    git(tmp_path, "config", "core.ignorecase", "true")
+    (tmp_path / "base.txt").write_text("base\n", encoding="utf-8")
+    git(tmp_path, "add", "base.txt")
+    git(tmp_path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "base")
+
+    local = tmp_path / "config.py"
+    local.write_text("PRIVATE = 1\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref and not local.exists()
+
+    upstream = tmp_path / "Config.py"
+    upstream.write_text("UPSTREAM = 1\n", encoding="utf-8")
+    git(tmp_path, "add", "Config.py")
+    git(tmp_path, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "upstream case collision")
+
+    assert hermes_main._restore_stashed_changes(
+        ["git"], tmp_path, stash_ref, prompt_user=False
+    ) is False
+    assert upstream.read_text(encoding="utf-8") == "UPSTREAM = 1\n"
+    assert git(tmp_path, "show", f"{stash_ref}^3:config.py") == "PRIVATE = 1"
+    assert git(tmp_path, "stash", "list")
+    assert not git(tmp_path, "status", "--porcelain")
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "stash-commit",
+        "parent-inventory",
+        "parent-inventory-signal",
+        "parent-inventory-malformed",
+        "untracked-tree",
+        "updated-index",
+        "ignorecase-config",
+    ],
+)
+def test_collision_preflight_parks_when_ownership_metadata_is_unverifiable(
+    tmp_path, monkeypatch, fault
+):
+    """Every ownership-read failure parks before apply/drop; only proven absence is safe."""
+    import hermes_cli.update_cmd_git as git_mod
+    import hermes_cli.update_cmd_stash as stash_mod
+
+    def real_git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+
+    real_git("init", "-q", "-b", "main")
+    real_git("config", "user.email", "fixture@example.invalid")
+    real_git("config", "user.name", "Fixture")
+    (tmp_path / "base.txt").write_text("base\n", encoding="utf-8")
+    real_git("add", "base.txt")
+    real_git("commit", "-qm", "base")
+    (tmp_path / "collision.txt").write_text("PRIVATE\n", encoding="utf-8")
+    stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
+    assert stash_ref
+    (tmp_path / "collision.txt").write_text("UPSTREAM\n", encoding="utf-8")
+    real_git("add", "collision.txt")
+    real_git("commit", "-qm", "upstream collision")
+
+    original_git_run = git_mod._git_run
+    original_quiet = stash_mod._git_quiet
+    seen = []
+    injected = {"done": False}
+
+    def fault_git_run(git_cmd, args, cwd=None, *, check=False):
+        seen.append(tuple(args))
+        if not injected["done"] and fault == "stash-commit" and (
+            args[:2] == ["rev-parse", "--verify"] and str(args[-1]).endswith("^{commit}")
+        ):
+            injected["done"] = True
+            return subprocess.CompletedProcess(git_cmd + args, 128, stdout="", stderr="injected")
+        if not injected["done"] and fault == "parent-inventory" and args[:1] == ["rev-list"]:
+            injected["done"] = True
+            return subprocess.CompletedProcess(git_cmd + args, 128, stdout="", stderr="injected")
+        if not injected["done"] and fault == "parent-inventory-signal" and args[:1] == ["rev-list"]:
+            injected["done"] = True
+            return subprocess.CompletedProcess(git_cmd + args, -15, stdout="", stderr="terminated")
+        if not injected["done"] and fault == "parent-inventory-malformed" and args[:1] == ["rev-list"]:
+            injected["done"] = True
+            return subprocess.CompletedProcess(git_cmd + args, 0, stdout="malformed\n", stderr="")
+        if not injected["done"] and fault == "ignorecase-config" and args == [
+            "config", "--bool", "--get", "core.ignorecase"
+        ]:
+            injected["done"] = True
+            return subprocess.CompletedProcess(git_cmd + args, 128, stdout="", stderr="injected")
+        return original_git_run(git_cmd, args, cwd, check=check)
+
+    def fault_quiet(git_cmd, args, cwd, **kwargs):
+        if not injected["done"] and fault == "untracked-tree" and args[:1] == ["ls-tree"]:
+            injected["done"] = True
+            return subprocess.CompletedProcess(git_cmd + args, 128, stdout="", stderr="injected")
+        if not injected["done"] and fault == "updated-index" and args == ["ls-files", "-z"]:
+            injected["done"] = True
+            return subprocess.CompletedProcess(git_cmd + args, 128, stdout="", stderr="injected")
+        return original_quiet(git_cmd, args, cwd, **kwargs)
+
+    monkeypatch.setattr(git_mod, "_git_run", fault_git_run)
+    monkeypatch.setattr(stash_mod, "_git_quiet", fault_quiet)
+
+    probe = _ReceiptProbe()
+    with _active_receipt(probe):
+        restored = hermes_main._restore_stashed_changes(
+            ["git"], tmp_path, stash_ref, prompt_user=False
+        )
+
+    assert injected["done"], f"fault {fault!r} was not exercised"
+    assert restored is False
+    assert not any(args[:2] == ("stash", "apply") for args in seen)
+    assert not any(args[:2] == ("stash", "drop") for args in seen)
+    assert (tmp_path / "collision.txt").read_text(encoding="utf-8") == "UPSTREAM\n"
+    assert stash_ref in real_git("stash", "list", "--format=%H").stdout
+    assert real_git("show", f"{stash_ref}^3:collision.txt").stdout == "PRIVATE\n"
+    assert real_git("status", "--porcelain").stdout == ""
+
+    disposition = [s for s in probe.steps if s["name"] == "local_changes_stash"]
+    assert len(disposition) == 1 and disposition[0]["ok"] is False
+    assert "untracked collision check failed" in disposition[0]["detail"]

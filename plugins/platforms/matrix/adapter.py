@@ -2199,7 +2199,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 reply_to_author_authorized = False
         if reply_to and (
             not reply_to_text or _is_bare_media_filename("m.image", reply_to_text)
-            or (parent is not None and parent.state_error)
+            or parent is not None
         ) and self._is_sender_authorized(
             sender, chat_type=chat_type, chat_id=room_id
         ) is not False:
@@ -2221,7 +2221,9 @@ class MatrixAdapter(BasePlatformAdapter):
             cached = self._event_context_cache.history_entry(room_id, reply_to)
             checked = parent or cached
             parent = self._event_context_cache.recheck(room_id, checked) if checked is not None else None
-            if parent is not None and (parent.redacted or parent.state_error or parent != checked):
+            if parent is not None and parent != checked:
+                parent = await self._event_context_cache.refresh(self._client, room_id, parent)
+            if parent is not None:
                 reply_to_text = None if parent.redacted or parent.state_error else parent.text
                 reply_media_path, reply_media_type = parent.media_path, parent.media_type
         return MatrixReplyContext(

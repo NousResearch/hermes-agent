@@ -27,6 +27,8 @@ async def fetch_room_entries(
     if client is None or limit <= 0:
         return []
 
+    cached = cache.snapshot(room_id)
+
     path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/context/{quote(event_id, safe='')}"
     messages_path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/messages"
     try:
@@ -61,6 +63,7 @@ async def fetch_room_entries(
     for raw in reversed(earlier[:limit]):
         if not isinstance(raw, dict) or not isinstance(raw.get("event_id"), str):
             continue
+        before = cached.get(raw["event_id"])
         parsed = await history_entry(client, raw, cache, room_id)
         if parsed is None:
             continue
@@ -68,7 +71,7 @@ async def fetch_room_entries(
         relation = MatrixRelation.from_content(content.get("m.relates_to"))
         if relation.thread_root or relation.is_edit:
             continue
-        stored = cache.store(room_id, raw["event_id"], entry)
+        stored = cache.store_resolved(room_id, raw["event_id"], entry, before)
         if stored is not None:
             entries.append(stored)
             entry_ids.append(raw["event_id"])
@@ -309,6 +312,10 @@ async def format_history_context(
     reactions_unavailable = False
     names = [
         await adapter._get_display_name(chat_id, entry.sender) if entry.sender else "unknown"
+        for entry in entries
+    ]
+    entries = [
+        await adapter._event_context_cache.refresh(adapter._client, chat_id, entry)
         for entry in entries
     ]
     for entry, name in zip(entries, names):

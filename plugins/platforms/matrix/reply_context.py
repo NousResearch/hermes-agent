@@ -133,6 +133,9 @@ class MatrixEventContextCache:
     def history_entry(self, room_id: str, event_id: str) -> MatrixEventContext | None:
         return self._entries.get((room_id, event_id))
 
+    def snapshot(self, room_id: str) -> dict[str, MatrixEventContext]:
+        return {event_id: entry for (room, event_id), entry in self._entries.items() if room == room_id}
+
     def store(self, room_id: str, event_id: str, entry: MatrixEventContext) -> MatrixEventContext | None:
         if not event_id:
             return None
@@ -144,7 +147,11 @@ class MatrixEventContextCache:
                 self._entries[key] = prior
             return prior
         entry = replace(entry, event_id=event_id)
-        entry = self.recheck(room_id, entry)
+        if entry.redacted:
+            for dependent_key, dependent in list(self._entries.items()):
+                if dependent_key[0] == room_id and dependent.replacement_id == event_id:
+                    self._entries[dependent_key] = self._unavailable(dependent, "replacement was redacted")
+        entry = self._check_dependencies(room_id, entry)
         self._entries[key] = entry
         self._entries.move_to_end(key)
         while len(self._entries) > self.max_entries:
@@ -157,24 +164,45 @@ class MatrixEventContextCache:
         entry = self._entries.get((room_id, event_id))
         return entry is not None and entry.redacted
 
+    def store_resolved(
+        self, room_id: str, event_id: str, entry: MatrixEventContext, before: MatrixEventContext | None,
+    ) -> MatrixEventContext | None:
+        current = self.history_entry(room_id, event_id)
+        if current is before or entry.redacted:
+            return self.store(room_id, event_id, entry)
+        if current is not None and not current.sender and entry.sender:
+            return self.store(room_id, event_id, replace(current, sender=entry.sender))
+        return current
+
     def invalidate(self, room_id: str, event_id: str) -> None:
         entry = self.history_entry(room_id, event_id)
-        if entry is None or entry.redacted or entry.state_error == "replacement was redacted":
+        if entry is not None and entry.redacted:
             return
-        self._entries.pop((room_id, event_id))
+        self.store(room_id, event_id, self._unavailable(
+            entry or MatrixEventContext("", ""), entry.state_error if entry and entry.state_error else "event content changed",
+        ))
+
+    @staticmethod
+    def _unavailable(entry: MatrixEventContext, error: str) -> MatrixEventContext:
+        return MatrixEventContext(
+            entry.sender, "[event content unavailable]", event_id=entry.event_id,
+            state_error=error, replacement_id=entry.replacement_id,
+        )
 
     def recheck(self, room_id: str, entry: MatrixEventContext) -> MatrixEventContext:
         current = self.history_entry(room_id, entry.event_id) if entry.event_id else None
         if current is not None and current.redacted:
             return current
+        if current is not None:
+            entry = replace(
+                current, reactions=entry.reactions, reactions_truncated=entry.reactions_truncated,
+                reaction_keys_missing=entry.reaction_keys_missing, reactions_unavailable=entry.reactions_unavailable,
+            )
+        return self._check_dependencies(room_id, entry)
+
+    def _check_dependencies(self, room_id: str, entry: MatrixEventContext) -> MatrixEventContext:
         if entry.replacement_id and self.is_redacted(room_id, entry.replacement_id):
-            if current is not None and current.replacement_id != entry.replacement_id:
-                entry = current
-            else:
-                entry = MatrixEventContext(
-                    entry.sender, "[event content unavailable]", event_id=entry.event_id,
-                    state_error="replacement was redacted", replacement_id=entry.replacement_id,
-                )
+            return self._unavailable(entry, "replacement was redacted")
         return replace(entry, reactions=tuple(
             reaction for reaction in entry.reactions if not self.is_redacted(room_id, reaction.event_id)
         ))
@@ -204,21 +232,24 @@ class MatrixEventContextCache:
         ))
 
     def redact(self, room_id: str, event_id: str) -> None:
-        for key, entry in list(self._entries.items()):
-            if key[0] == room_id and entry.replacement_id == event_id:
-                self._entries[key] = MatrixEventContext(
-                    entry.sender, "[event content unavailable]", event_id=entry.event_id,
-                    state_error="replacement was redacted", replacement_id=event_id,
-                )
         prior = self._entries.get((room_id, event_id))
         sender = prior.sender if prior is not None else ""
         self.store(room_id, event_id, MatrixEventContext(sender, "", redacted=True))
+
+    async def refresh(
+        self, client: Any, room_id: str, entry: MatrixEventContext,
+    ) -> MatrixEventContext:
+        current = self.recheck(room_id, entry)
+        if current.event_id and current.state_error:
+            await self.resolve(client, room_id, current.event_id)
+        return self.recheck(room_id, entry)
 
     async def resolve(
         self, client: Any, room_id: str, event_id: str,
         image_loader: Callable[[dict, str], Awaitable[tuple[str, str] | None]] | None = None,
     ) -> MatrixEventContext | None:
         key = room_id, event_id
+        before = self.history_entry(room_id, event_id)
         cached = None
         if key in self._entries:
             self._entries.move_to_end(key)
@@ -226,7 +257,10 @@ class MatrixEventContextCache:
             if entry.redacted:
                 return None
             if entry.media_path and not Path(entry.media_path).is_file():
-                self._entries.pop(key)
+                entry = replace(entry, media_path=None, media_type=None)
+                self._entries[key] = entry
+                before = entry
+                cached = entry
             else:
                 cached = entry
                 if not entry.state_error and (not entry.is_image or entry.media_path or image_loader is None):
@@ -251,7 +285,7 @@ class MatrixEventContextCache:
                 return None
             if state.content is None:
                 return current_cached()
-            if state.error and cached is not None and cached.state_error == "replacement was redacted":
+            if state.error and cached is not None and cached.state_error:
                 return current_cached()
             content = state.content
         except Exception as exc:
@@ -282,5 +316,5 @@ class MatrixEventContextCache:
             state_error=state.error["error"] if state.error else None,
             replacement_id=state.replacement_id,
         )
-        stored = self.store(room_id, event_id, entry)
+        stored = self.store_resolved(room_id, event_id, entry, before)
         return stored if stored is not None and not stored.redacted else None

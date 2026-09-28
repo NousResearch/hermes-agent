@@ -91,6 +91,8 @@ async def effective_event(
     event: Any = raw
     if raw.get("type") == "m.room.encrypted":
         event, error = await _decrypt(client, raw)
+        if is_redacted is not None and is_redacted(raw.get("event_id")):
+            return MatrixEffectiveEvent({}, original_content, redacted=True)
         if error is not None:
             return MatrixEffectiveEvent(None, original_content, error=error)
     content = event_content(event)
@@ -125,6 +127,8 @@ async def effective_event(
 
     if replacement.get("type") == "m.room.encrypted":
         _, error = await _decrypt(client, replacement)
+        if is_redacted is not None and is_redacted(raw.get("event_id")):
+            return MatrixEffectiveEvent({}, original_content, redacted=True)
         if is_redacted is not None and is_redacted(replacement_id):
             return unavailable
         if error is not None:
@@ -133,6 +137,8 @@ async def effective_event(
             # Mautrix's typed edit serializer synthesises m.new_content even when the payload omitted it.
             revised_content = await _encrypted_replacement_content(client, replacement)
         except Exception:
+            if is_redacted is not None and is_redacted(raw.get("event_id")):
+                return MatrixEffectiveEvent({}, original_content, redacted=True)
             if is_redacted is not None and is_redacted(replacement_id):
                 return unavailable
             return MatrixEffectiveEvent(content, original_content, error={
@@ -141,6 +147,8 @@ async def effective_event(
             })
     else:
         revised_content = event_content(replacement).get("m.new_content")
+    if is_redacted is not None and is_redacted(raw.get("event_id")):
+        return MatrixEffectiveEvent({}, original_content, redacted=True)
     if is_redacted is not None and is_redacted(replacement_id):
         return unavailable
     if not isinstance(revised_content, dict):

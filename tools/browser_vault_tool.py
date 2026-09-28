@@ -11,8 +11,8 @@ tools):
 - ``browser_vault_fill``  → server-side fill of the CURRENT page from a vault
   handle: the password field for logins, card fields for payment items (after
   the user confirms), address fields for address items. The secret is
-  resolved locally, the page origin must EXACTLY match the item's bound
-  origin (pre-checked AND re-asserted synchronously inside the fill script),
+  resolved locally, the page must match the provider's website policy
+  (exact-origin by default), and the selected origin is re-asserted inside the fill script,
   the field is chosen by the ported login-control classifier, injection runs
   exclusively over the supervisor CDP WebSocket (never argv), and the tool
   result reports only ``{filled_fields, kind, origin, success}`` — the
@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import secrets
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +188,8 @@ _TAB_PROBES = {
 }
 
 
-def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
+def _focus_bound_origin(task_id: str, origin: str, kind: str, *,
+                        origin_match: Optional[Callable[[str], bool]] = None) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
     login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
@@ -198,8 +199,12 @@ def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
         supervisor = None
     if supervisor is None:
         return None
-    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind))
-    return (origin or focused.get("url")) if focused.get("ok") else None
+    focused = supervisor.focus_page(origin, accept=_TAB_PROBES.get(kind), origin_match=origin_match)
+    if not focused.get("ok"):
+        return None
+    from agent.vault_store import normalize_origin
+
+    return normalize_origin(focused["url"])
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +425,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     except UnlockRequired:
         return json.dumps({"success": False, "error_type": "unlock_required",
                            "error": f"{backend.display_name} locked again; call browser_vault_unlock."})
-    if meta is None:
+    if backend is None or meta is None:
         return json.dumps(
             {
                 "success": False,
@@ -440,29 +445,36 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
-    # Manager items can bind several websites (e.g. amazon.co.uk + www.amazon.co.uk);
-    # every saved origin is a valid fill target. Matching stays exact-origin —
-    # nothing wildcard/parent-domain is ever inferred.
-    allowed = list(meta.allowed_origins) or ([str(meta.origin)] if meta.origin else [])
-    page_origin = None
-    for candidate in allowed:
-        page_origin = _focus_bound_origin(effective_task_id, candidate, meta.kind)
-        if page_origin:
-            break
+    # Login providers own site matching; payment/address scope stays exact.
+    # The same policy selects a tab and checks it before resolving a password.
+    allowed = tuple(meta.allowed_origins) or ((str(meta.origin),) if meta.origin else ())
+
+    def matches_origin(origin: str) -> bool:
+        if not origin or not allowed:
+            return False
+        if meta.kind != "login":
+            return origin in allowed
+        try:
+            return backend.matches_origin(meta, origin) is True
+        except Exception:
+            # A plugin exception may contain credentials. Deny without logging it.
+            return False
+
+    page_origin = _focus_bound_origin(effective_task_id, "", meta.kind, origin_match=matches_origin)
     page_origin = page_origin or _current_page_origin(effective_task_id)
     if not page_origin:
         return json.dumps(
             {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
         )
-    if page_origin not in allowed:
+    if not matches_origin(page_origin):
         return json.dumps(
             {
                 "success": False,
                 "error_type": "origin_mismatch",
                 "error": (
                     f"Refused: current page origin ({page_origin}) does not match "
-                    f"the vault item's bound origin(s) ({', '.join(allowed)}). Vault fills "
-                    "only run on the exact origin(s) the credential was saved for."
+                    "the vault item's website policy. The credential provider "
+                    "does not authorize this destination."
                 ),
             }
         )
@@ -614,8 +626,9 @@ BROWSER_VAULT_FILL_SCHEMA = {
         "the password field (type the identifier/username yourself first with the browser's input tool); a "
         "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
         "fills the address fields. Values are resolved server-side and never appear in the conversation. "
-        "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
-        "fill time). If a password manager is locked the user is prompted to unlock first. Never retry a "
+        "Login destinations must match the provider's website policy (exact-origin by default); cards and "
+        "addresses require exact origins. The selected origin is re-checked at fill time. "
+        "If a password manager is locked the user is prompted to unlock first. Never retry a "
         "payment_declined result."
     ),
     "parameters": {

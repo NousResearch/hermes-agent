@@ -101,10 +101,36 @@ privately. `browser_vault_unlock` accepts an enabled backend's name and rejects
 unknown, disabled, or non-unlockable sources before prompting. Headless sessions
 without a prompt callback retain the existing `unlock_unavailable` outcome.
 
-This registration API does not change destination matching: list every permitted
-website in `VaultItemMeta.allowed_origins`; password fills require an exact origin
-match. Providers must raise credential-free errors as well as avoid logging secrets;
-registration does not add general runtime exception sanitization.
+### Optional password destination policy
+
+`LoginBackend.matches_origin(self, meta: VaultItemMeta, origin: str) -> bool` is an
+optional metadata-only hook. `origin` is a normalized `scheme://host[:port]`, not a
+URL with a path. The default accepts exact entries in `meta.allowed_origins`, falling
+back to `meta.origin` when that tuple is empty. No saved origins means no fill,
+even if an override would accept the destination.
+
+A trusted plugin may override this method to implement its password manager's
+website-matching rules. Keep domain/public-suffix logic and any dependencies in the
+plugin, not core. Document scheme, port, subdomain and private-suffix boundaries;
+never infer a match with a bare string suffix test. The hook must not retrieve
+secrets, prompt, log credentials or rely on caller-thread profile context: native
+tab selection can call it on the supervisor thread. Use only the supplied metadata
+and configuration already bound to the backend instance. Keep the predicate fast
+and deterministic; it may run several times per fill.
+
+Hermes calls the policy during native tab selection and again before password
+retrieval. Only literal `True` authorizes; exceptions and other return values deny
+without exposing the exception. Cards and addresses remain exact-origin and never
+call this hook. `browser_vault_enter_code` retains its existing routing; this hook
+is for password fills, not an OTP authorization contract.
+
+The fill script still pins the **actual selected origin** and the inspected field
+nonce. Navigation to another origin is refused even when that other origin would
+also pass the plugin's policy. A broader website policy is not a wildcard injection
+target and does not remove the native CDP-only secret transport requirement.
+
+Providers must still raise credential-free errors and avoid logging secrets in
+other methods: this hook does not add general runtime exception sanitization.
 
 ## Verification
 

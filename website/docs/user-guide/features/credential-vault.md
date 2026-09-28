@@ -62,7 +62,7 @@ CLI through its non-interactive channel (`op signin` on stdin, `bw unlock
 memory. The agent never sees the master password, the token, or any login.
 A manager item that lists several websites (say `amazon.co.uk`,
 `www.amazon.co.uk` and `eu.account.amazon.com`) fills on each of those exact
-origins; nothing is inferred beyond the URLs saved on the item.
+origins; these built-in backends infer nothing beyond the URLs saved on the item.
 
 Prefer not to use a detected manager? `hermes vault sources --disable bitwarden`,
 or the switch in **Settings → Passwords & Logins**.
@@ -99,6 +99,13 @@ or authenticating the backend. Names and overlapping handle prefixes are reserve
 per profile. See the [login-backend plugin guide](/developer-guide/login-backend-plugin/)
 for the full contract.
 
+Password destinations are exact-origin by default. A trusted plugin can override
+`matches_origin(meta, origin)` to follow its manager's documented website-matching
+policy, such as explicitly supported related subdomains. This policy is used for
+tab selection and checked before password retrieval; errors or non-boolean results
+deny the fill. Review the plugin's policy before enabling it. Cards and addresses
+remain exact-origin, and this hook does not change one-time-code routing.
+
 Items live encrypted under `~/.hermes/vault/` (Fernet key + vault file, both
 `0600`), scoped to the profile. Labels, site origins and login identifiers are
 visible metadata; passwords and card values never leave the vault except into
@@ -126,9 +133,11 @@ vault:
 
 **Does:** the password never enters the model's context through Hermes: not in
 tool results, logs, the session database, or the CLI arguments of any process.
-Fills happen over the supervised browser session's direct CDP socket and are
-refused unless the page origin exactly matches the saved origin, checked again
-inside the page immediately before the write.
+Fills happen over the supervised browser session's direct CDP socket. Password
+fills require the backend's website policy to authorize the page (exact-origin
+unless a plugin overrides it). The actual selected origin and inspected fields
+remain bound at write time: navigating to another allowed subdomain still refuses
+the fill. Cards and addresses always require exact-origin matching.
 
 **Does not:** protect against the page itself. Once a password is typed into a
 site, that site (and any script it runs) has it, exactly as when you type it

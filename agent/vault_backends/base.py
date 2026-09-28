@@ -49,6 +49,15 @@ class LoginBackend(ABC):
     def is_unlocked(self) -> bool:
         return True
 
+    def matches_origin(self, meta: VaultItemMeta, origin: str) -> bool:
+        """Match a normalized password-fill destination using metadata only.
+
+        The default accepts exact saved origins. Overrides may run on the
+        supervisor thread; only literal True authorizes a destination. The fill
+        engine still pins the selected origin and inspected fields at write time.
+        """
+        return bool(origin) and origin in (meta.allowed_origins or ((meta.origin,) if meta.origin else ()))
+
     @abstractmethod
     def list_items(self) -> List[VaultItemMeta]:
         """Metadata only. Locked external backends return [] (the agent sees a lock hint instead)."""

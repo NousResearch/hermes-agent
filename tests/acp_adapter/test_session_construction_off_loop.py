@@ -140,3 +140,53 @@ def test_import_memory_provider_module_imports_without_constructing(tmp_path, mo
     assert sys.modules.get("_warm_native_marker") is True
     assert "_warmprov_registered" not in sys.modules
     assert memory_plugins.import_memory_provider_module("no-such-provider") is False
+
+
+@pytest.mark.asyncio
+async def test_new_session_returns_model_catalog_when_agent_build_fails(monkeypatch):
+    """Regression for #119185: a throttled (429) default provider fails the agent
+    build; the model catalog is config/inventory-derived and independent of it, so
+    session/new must still return the real picker (session_id="", the fork
+    precedent) instead of an internal error that collapses the picker."""
+    def raising_factory():
+        raise RuntimeError("provider rate-limited (429)")
+
+    server = HermesACPAgent(session_manager=SessionManager(agent_factory=raising_factory))
+
+    from acp.schema import ModelInfo, SessionModelState
+
+    def fake_state():
+        return SessionModelState(
+            available_models=[ModelInfo(model_id="healthy:model", name="healthy")],
+            current_model_id="healthy:model")
+
+    monkeypatch.setattr(server, "_model_state_without_agent", fake_state)
+    resp = await server.new_session(cwd="/tmp")
+    assert resp.session_id == ""
+    assert resp.models is not None and resp.models.available_models
+
+
+@pytest.mark.asyncio
+async def test_model_state_without_agent_builds_inventory_picker(monkeypatch):
+    """The fallback reads the shared inventory (no agent); an inventory failure
+    returns None, never raises."""
+    import acp_adapter.server as server_mod
+
+    from acp.schema import ModelInfo, SessionModelState
+
+    server = HermesACPAgent(session_manager=SessionManager(agent_factory=lambda: None))
+
+    def fake_picker(model, provider, base_url):
+        assert model == "" and base_url == ""
+        return SessionModelState(available_models=[ModelInfo(model_id="p:m", name="m")],
+                                 current_model_id="p:m")
+
+    monkeypatch.setattr(server_mod, "build_model_state", fake_picker)
+    picker = server._model_state_without_agent()
+    assert picker is not None and picker.available_models
+
+    def boom(model, provider, base_url):
+        raise RuntimeError("inventory failure")
+
+    monkeypatch.setattr(server_mod, "build_model_state", boom)
+    assert server._model_state_without_agent() is None

@@ -3614,6 +3614,117 @@ class TestRunConversation:
         assert quote_row["content"] == hidden_quote
         assert UNDELIVERED_INTERIM_MARKER not in json.dumps(second_request)
 
+    def test_marker_does_not_depend_on_interim_emission_dedup(self, agent):
+        """A tool-call row that repeats the previous ``incomplete`` row's text is only
+        deduplicated for emission; its undelivered text is still marked."""
+        import agent.turn_tool_round as turn_tool_round
+        from agent.turn_tool_round import UNDELIVERED_INTERIM_MARKER
+
+        self._setup_agent(agent)
+        agent.platform = "gateway"
+        agent.interim_assistant_callback = None
+        agent.stream_delta_callback = None
+        text = "Unit price = $128 and total price = $519 for four items."
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(
+                content=text,
+                finish_reason="tool_calls",
+                tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+            ),
+            _mock_response(content="When do you need them by?", finish_reason="stop"),
+        ]
+        stage = turn_tool_round.stage_tool_call_message
+        dedup_flags = []
+
+        def _stage_as_duplicate(*args, **kwargs):
+            # Same result as a round whose previous row is an ``incomplete`` row with
+            # identical visible text.
+            assistant_msg, _ = stage(*args, **kwargs)
+            dedup_flags.append(True)
+            return assistant_msg, True
+
+        with (
+            patch.object(turn_tool_round, "stage_tool_call_message", _stage_as_duplicate),
+            patch.object(agent, "_emit_interim_assistant_message") as emit,
+            patch("model_tools.handle_function_call", return_value="checked"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("how much for 4 items?")
+
+        assert dedup_flags == [True]
+        emit.assert_not_called()
+        assert agent.client.chat.completions.create.call_count == 2
+        assert result["final_response"] == "When do you need them by?"
+        second_request = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        (row,) = self._tool_call_rows(second_request)
+        assert row["content"] == f"{text}\n\n{UNDELIVERED_INTERIM_MARKER}"
+
+    @pytest.mark.parametrize(
+        ("streamed", "marked"),
+        [
+            ("", True),
+            ("Unit price = $128 and total", True),
+            ("Unit price = $128 and total price = $519 for four items.", False),
+        ],
+        ids=["not-streamed", "partly-streamed", "fully-streamed"],
+    )
+    def test_marker_follows_the_full_stream_check(self, agent, streamed, marked):
+        from agent.turn_tool_round import UNDELIVERED_INTERIM_MARKER, mark_undelivered_interim
+
+        agent.interim_assistant_callback = None
+        agent._current_streamed_assistant_text = streamed
+        text = "Unit price = $128 and total price = $519 for four items."
+        assistant_message = _mock_assistant_msg(
+            content=text, tool_calls=[_mock_tool_call(call_id="c1")]
+        )
+        assistant_msg = agent._build_assistant_message(assistant_message, "tool_calls")
+
+        assert mark_undelivered_interim(
+            agent, assistant_message=assistant_message, assistant_msg=assistant_msg
+        ) is marked
+        assert assistant_msg["content"] == text
+        if marked:
+            assert assistant_msg["api_content"] == f"{text}\n\n{UNDELIVERED_INTERIM_MARKER}"
+        else:
+            assert "api_content" not in assistant_msg
+
+    def test_marker_leaves_content_and_reasoning_unchanged(self, agent):
+        from agent.turn_tool_round import UNDELIVERED_INTERIM_MARKER
+
+        self._setup_agent(agent)
+        agent.platform = "gateway"
+        agent.interim_assistant_callback = None
+        text = "Unit price = $128\nTotal for 4 items = $519"
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(
+                content=text,
+                finish_reason="tool_calls",
+                tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
+                reasoning="Work out the total first.",
+                reasoning_content="Work out the total first.",
+            ),
+            _mock_response(content="When do you need them by?", finish_reason="stop"),
+        ]
+
+        with (
+            patch("model_tools.handle_function_call", return_value="checked"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("how much for 4 items?")
+
+        (stored,) = self._tool_call_rows(result["messages"])
+        assert stored["content"] == text
+        assert stored["reasoning"] == "Work out the total first."
+        assert stored["reasoning_content"] == "Work out the total first."
+        assert stored["api_content"] == f"{text}\n\n{UNDELIVERED_INTERIM_MARKER}"
+        second_request = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        (sent,) = self._tool_call_rows(second_request)
+        assert sent["content"] == f"{text}\n\n{UNDELIVERED_INTERIM_MARKER}"
+
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)
 

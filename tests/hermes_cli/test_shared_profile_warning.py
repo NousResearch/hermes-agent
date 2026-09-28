@@ -74,7 +74,7 @@ def test_warning_tracks_live_other_install_in_same_home(homes, tmp_path):
 
 @contextmanager
 def running_cli(home: Path, install: Path):
-    """Run the real CLI constructor and entrypoint; stop at terminal interaction."""
+    """Run the real CLI entrypoint (the gateway chat client); stop at terminal interaction."""
     env = dict(os.environ, HERMES_HOME=str(home), HOME=str(home.parent), USERPROFILE=str(home.parent))
     for key in ("HERMES_SPAWN", "HERMES_PARENT_PID", "HERMES_PARENT_START_MARKER"):
         env.pop(key, None)
@@ -85,14 +85,16 @@ import hermes_constants
 # Model two installed runtime roots without copying the source tree.
 hermes_constants.PROJECT_ROOT = Path(sys.argv[1])
 import cli
+import hermes_cli.gateway_chat as gateway_chat
 
-def terminal_boundary(self):
+async def terminal_boundary(args, emitter=None):
     print('cli-ready', flush=True)
     sys.stdin.readline()
+    return 0
 
-cli.HermesCLI.run = terminal_boundary
-cli.main(model='test-model', provider='openai', api_key='test-only',
-         base_url='http://127.0.0.1:1/v1', toolsets='none', ignore_rules=True)
+gateway_chat.run_gateway_chat = terminal_boundary
+cli.main(query='probe', model='test-model', provider='openai', api_key='test-only',
+         base_url='http://127.0.0.1:1/v1', toolsets='none')
 """
     output = {}
     child = subprocess.Popen(

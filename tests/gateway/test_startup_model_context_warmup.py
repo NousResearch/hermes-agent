@@ -15,7 +15,7 @@ import gateway.run as gateway_run
 def _quiet_tool_side(monkeypatch, tool_count):
     import model_tools
 
-    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda quiet_mode=False: ["t"] * tool_count)
+    monkeypatch.setattr(model_tools, "get_tool_definitions", lambda quiet_mode=False, **_kw: ["t"] * tool_count)
     monkeypatch.setattr(
         "hermes_cli.config.load_config_readonly", lambda: {"agent": {"environment_probe": False}})
 

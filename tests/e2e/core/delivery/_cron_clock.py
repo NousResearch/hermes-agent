@@ -14,8 +14,14 @@ What is virtual and what stays real:
 * Fakes: the agent (``cron.scheduler.run_job``, the one function that would build an AIAgent)
   and the platform wire (``tools.send_message_tool._send_to_platform``). Both append JSONL
   records. Everything between — the real ``InProcessCronScheduler.start`` ticker loop,
-  ``tick()``, due scan, pending slots, fire claims, heartbeat, executions ledger, delivery
-  routing, ``mark_job_run`` — is production code.
+  ``tick()``, due scan, pending slots, fire claims, heartbeat, executions ledger, the durable
+  delivery queue (``cron/deliveries.db``) and its drain, delivery routing, ``mark_job_run`` — is
+  production code.
+* An agent run books its send into the durable queue (ledger ``delivery_outcome='queued'``) and
+  the gateway's housekeeping thread drains it (``gateway/run.py::
+  _drain_restart_safe_cron_deliveries`` -> ``cron.scheduler.drain_delivery_queue``). The soak has
+  no gateway process, so the driver performs that drain (``drain_deliveries``) once the ticker is
+  quiescent; ``delivery_status`` reads the queue's terminal verdict for a queued execution.
 
 ``SchedulerHost`` runs the real ticker loop in a thread with a stepping ``stop_event``; running
 this file as a script runs the same loop in a separate OS process (``ChildHost``), stepped via
@@ -248,6 +254,18 @@ def install(clock: VirtualClock, control: Control, setattr_fn=setattr) -> None:
     setattr_fn(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", HEARTBEAT_REAL_SECONDS)
     setattr_fn(scheduler, "run_job", FakeAgent(clock, control))
     setattr_fn(send_message_tool, "_send_to_platform", FakeSink(clock, control))
+    # The drain sends from the housekeeping (here: driver) thread, not the run's worker thread,
+    # so the sink learns WHICH execution it is sending from the queued job, not from the text.
+    real_deliver_result = scheduler._deliver_result
+
+    def deliver_result(job, content, *args, **kwargs):
+        token = _CURRENT_EXECUTION.set(job.get("execution_id") or _CURRENT_EXECUTION.get())
+        try:
+            return real_deliver_result(job, content, *args, **kwargs)
+        finally:
+            _CURRENT_EXECUTION.reset(token)
+
+    setattr_fn(scheduler, "_deliver_result", deliver_result)
     # Durability is not under test (SIGKILL keeps the page cache); per-write fsync of
     # jobs.json/markers dominates wall time at virtual cadence. Atomic renames stay real.
     setattr_fn(os, "fsync", lambda _fd: None)
@@ -589,7 +607,46 @@ def _replica_main(control: Control) -> None:
         _atomic_write(control.replica / f"res-{rnd}.json", json.dumps({"won": won}))
 
 
-# --- ledger / store readers ------------------------------------------------------------------
+# --- gateway drain / ledger / store readers ---------------------------------------------------
+
+def drain_deliveries() -> int:
+    """The live gateway's housekeeping drain of the durable delivery queue. No live adapters
+    exist in the soak, so every send takes the standalone wire (``FakeSink``). Returns how many
+    queued sends were performed."""
+    import cron.scheduler as scheduler
+
+    total = 0
+    while True:
+        n = scheduler.drain_delivery_queue({}, None)
+        if not n:
+            return total
+        total += n
+
+
+def delivery_status(home: Path) -> Dict[str, str]:
+    """execution id -> durable queue status (``pending``/``delivering``/``delivered``/``failed``/
+    ``unknown``/``suppressed``), including tombstoned rows."""
+    path = Path(home) / "cron" / "deliveries.db"
+    if not path.exists():
+        return {}
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)
+    try:
+        out = {r[0]: r[1] for r in conn.execute(
+            "SELECT execution_id, terminal_status FROM delivery_tombstones")}
+        out.update({r[0]: r[1] for r in conn.execute("SELECT execution_id, status FROM deliveries")})
+        return out
+    finally:
+        conn.close()
+
+
+def effective_outcome(row: dict, deliveries: Dict[str, str]) -> Optional[str]:
+    """The ledger's delivery outcome, resolved through the durable queue when the run only
+    booked the handoff (``queued``): the queue's verdict is the delivery's truth."""
+    outcome = row["delivery_outcome"]
+    if outcome != "queued":
+        return outcome
+    return deliveries.get(row["id"], "queued")
+
 
 def ledger_rows(home: Path, where: str = "") -> List[dict]:
     path = Path(home) / "cron" / "executions.db"

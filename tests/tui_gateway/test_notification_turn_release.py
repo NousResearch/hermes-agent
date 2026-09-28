@@ -109,8 +109,7 @@ def test_the_poller_thread_survives_a_dispatch_that_raises(monkeypatch):
     events: queue.Queue = queue.Queue()
     events.put({"type": "completion", "session_id": "proc_a"})
     monkeypatch.setattr("tools.process_registry.process_registry", SimpleNamespace(completion_queue=events))
-    for name in ("_poll_bot_live_delivery_guarded", "_maybe_fire_tui_loop_tick",
-                 "_maybe_fire_tui_heartbeat_tick", "_notif_poll_kanban"):
+    for name in ("_maybe_fire_tui_loop_tick", "_maybe_fire_tui_heartbeat_tick", "_notif_poll_kanban"):
         monkeypatch.setattr(server, name, lambda *a, **k: None)
     stop = threading.Event()
     handled: list = []

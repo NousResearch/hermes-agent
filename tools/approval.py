@@ -322,7 +322,10 @@ def is_current_session_yolo_enabled() -> bool:
 def _yolo_active() -> bool:
     """CLI ``--yolo`` (process-scoped, frozen at import) or gateway ``/yolo``
     (session-scoped). Hardline / deny-rule floors run BEFORE this everywhere."""
-    return _YOLO_MODE_FROZEN or is_current_session_yolo_enabled()
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+        return True
+    from gateway.session_finite import unattended_turn
+    return unattended_turn()
 
 
 def _permanent_set() -> set:

@@ -3,12 +3,14 @@
 Follows the driver contract in ``_drive_cli``. ``hermes cron create`` writes the
 job (``--deliver local``: no platform; ``--workdir``: cron's documented
 per-job cwd/context channel, see ``hermes cron create --help``), then
-``hermes cron run <id>`` executes it. With no gateway owning the store the CLI
-runs the job synchronously through ``cron.scheduler.run_job`` — the same agent
-build the ticker uses (``hermes_cli/cron.py::_job_action`` forces the
-synchronous path) — and prints ``Ran now: succeeded.``. The job's saved output
-file (``cron/output/<id>/<ts>.md``, ``## Response`` section) is what cron
-delivers locally, so that is ``final_text``.
+``hermes cron run <id>`` executes it: the CLI waits synchronously
+(``hermes_cli/cron.py::_job_action`` forces the synchronous path) while the turn
+runs in the profile's gateway daemon (``cron.scheduler_authority.run_canonical_job``
+→ ``connect_gateway``, which spawns the daemon when none owns the profile) — the
+same agent build the ticker uses — and prints ``Ran now: succeeded.``. The job's
+saved output file (``cron/output/<id>/<ts>.md``, ``## Response`` section) is what
+cron delivers locally, so that is ``final_text``. The daemon outlives the CLI, so
+the surface's shutdown ends with ``hermes gateway stop``.
 
 Both CLI calls run from the fake HOME, not the project: a scheduled job's
 process cwd is whatever the ticker had, so the workdir is the only channel
@@ -20,7 +22,13 @@ from __future__ import annotations
 import re
 import subprocess
 
-from tests.e2e.core.parity._helpers import TURN_TIMEOUT, DriveResult, ParityHome, hermes_argv
+from tests.e2e.core.parity._helpers import (
+    TURN_TIMEOUT,
+    DriveResult,
+    ParityHome,
+    hermes_argv,
+    stop_profile_gateway,
+)
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 # cron/scheduler.py::_resolve_cron_enabled_toolsets -> _get_platform_tools(cfg, "cron") default.
@@ -45,6 +53,7 @@ def drive_cron(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveResult:
     job_id = match.group(1)
 
     ran = _cron(ph, "run", job_id)
+    gateway_stopped = stop_profile_gateway(ph)
     assert ran.returncode == 0, f"hermes cron run exited {ran.returncode}: {ran.stderr[-2000:]}"
     # Anything but a synchronous verdict means the run was handed to a ticker/background
     # worker this driver cannot observe — a harness problem, not a parity result.
@@ -60,9 +69,14 @@ def drive_cron(ph: ParityHome, srv: FakeLLMServer, prompt: str) -> DriveResult:
         final_text=final_text,
         toolset=CRON_TOOLSET,
         cwd_channel="job workdir",
-        graceful_exit=True,  # both CLI invocations exited on their own (subprocess.run, no signal)
+        # Both CLI invocations exited on their own (subprocess.run, no signal); the daemon took
+        # the operator stop.
+        graceful_exit=gateway_stopped,
         extra={
             "job_id": job_id,
+            "gateway_stopped": gateway_stopped,
+            "exit_code": ran.returncode,
+            "stderr_tail": ran.stderr[-2000:],
             "run_stdout": ran.stdout.strip()[-500:],
             "run_succeeded": "Ran now: succeeded." in ran.stdout,
             "output_file": str(outputs[-1]) if outputs else None,

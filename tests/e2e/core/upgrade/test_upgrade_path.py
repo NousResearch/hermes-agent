@@ -142,6 +142,9 @@ for name in tops + ["hermes_cli.main", "run_agent", "hermes_state"] + added:
     try:
         mod = importlib.import_module(name)
     except BaseException as exc:
+        missing = (getattr(exc, "name", None) or "").split(".")[0]
+        if name in added and isinstance(exc, ModuleNotFoundError) and missing and missing not in tops:
+            continue  # an optional extra's SDK (e.g. acp); a stale finder misses the module itself
         bad.append(f"{name}: {type(exc).__name__}: {exc}")
         continue
     where = Path(getattr(mod, "__file__", None) or str(list(getattr(mod, "__path__", [""]))[0])).resolve()

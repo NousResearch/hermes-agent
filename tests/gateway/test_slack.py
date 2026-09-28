@@ -3124,7 +3124,8 @@ class TestAssistantThreadLifecycle:
 
         msg_event = assistant_adapter.handle_message.await_args.args[0]
         assert msg_event.source.scope_id == "T_OTHER"
-        assert msg_event.metadata["slack_team_id"] == "T_OTHER"
+        # Native admission rejects adapter-set metadata (reserved for gateway routing keys).
+        assert msg_event.metadata == {}
         assert msg_event.source.thread_id == "171.111"
         assert msg_event.text.startswith(
             "[Slack app context: user is viewing channel C_ACTIVE]"
@@ -3175,7 +3176,7 @@ class TestAssistantThreadLifecycle:
             title="Please summarize this incident thread",
         )
         msg_event = assistant_adapter.handle_message.call_args[0][0]
-        assert msg_event.metadata["slack_team_id"] == "T_TEAM"
+        assert msg_event.source.scope_id == "T_TEAM"
 
 
 # ---------------------------------------------------------------------------

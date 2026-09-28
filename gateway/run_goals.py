@@ -142,6 +142,10 @@ class GatewayGoalsMixin:
         adapter = self._delivery_adapter_for(source)
         if adapter is None or not adapter._message_handler:
             return
+        if getattr(self, 'session_authority', None) is not None:
+            from gateway.run_heartbeat_acceptance import admit_heartbeat
+            await admit_heartbeat(self, adapter, source, session_id, quick_key)
+            return
         if (
             self._is_session_running(quick_key)
             or quick_key in adapter._active_sessions

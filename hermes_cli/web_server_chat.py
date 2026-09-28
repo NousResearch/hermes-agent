@@ -248,10 +248,12 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             # Server-minted {user_id, provider} stamped onto the WS object is the
             # sole identity authority downstream (gateway transport / controller
             # registration); a client can never supply it through RPC params.
-            # Only the two identity fields are carried — bookkeeping such as
+            # Only identity fields are carried — bookkeeping such as
             # ``minted_at`` is not part of the identity contract.
             ws._hermes_auth_identity = {
                 "user_id": info.get("user_id"), "provider": info.get("provider")}
+            if info.get("issuer"):
+                ws._hermes_auth_identity["issuer"] = info["issuer"]
 
         internal = ws.query_params.get("internal", "")
         if internal:

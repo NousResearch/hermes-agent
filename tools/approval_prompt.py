@@ -296,6 +296,10 @@ def request_elicitation_consent(message: str, description: str, *,
     except Exception as exc:  # pragma: no cover -- defensive
         logger.warning("Elicitation consent: session lookup failed: %s", exc)
         return "decline"
+    # A finite gateway turn (``chat -q`` / ``-z`` over the daemon) has no one to answer: parking the prompt
+    # would detach the viewer mid-turn instead of failing closed like the in-process ``-q`` input() path.
+    if _ctx._is_single_query_approval_context():
+        return "decline"
 
     # api_server is an unattended *platform* for the dangerous-command gate, but a live ``/v1/runs`` run
     # registers an approval notify callback and answers via ``POST /v1/runs/{id}/approval``

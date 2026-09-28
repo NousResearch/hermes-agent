@@ -343,20 +343,8 @@ def _sidebar_profile_cache_clear():
         _SIDEBAR_PROFILE_CACHE.clear()
 
 
-def _sidebar_profile_cache_drop(key) -> None:
-    with _SIDEBAR_PROFILE_CACHE_LOCK:
-        _SIDEBAR_PROFILE_CACHE.pop(key, None)
-
-
 def _profile_state_db(home) -> Path:
     return Path(home) / "state.db"
-
-
-def _profile_heal_exhausted(home) -> bool:
-    """True when the one-shot writable heal already gave up on this store."""
-    from hermes_cli.web_server_sessions import _session_db_heal_exhausted
-
-    return str(_profile_state_db(home)) in _session_db_heal_exhausted
 
 
 def _slice_has_rows(slices: Dict[str, Any]) -> bool:
@@ -579,17 +567,6 @@ def get_profiles_sessions_sidebar(
                 lambda db: _build_slices(db, profile_cache_key, recents_subagents))
             if slices is None:
                 continue
-        # Heal already gave up and this read found no rows. That is not "no
-        # sessions" — the probe-less open can miss the schema the list needs.
-        # Drop the cached empty page so the next poll does not reuse the lie.
-        if _profile_heal_exhausted(home) and not _slice_has_rows(slices):
-            _sidebar_profile_cache_drop(profile_cache_key)
-            if not any(err.get("profile") == name for err in errors):
-                errors.append({
-                    "profile": name,
-                    "error": "schema heal exhausted; session list unavailable",
-                })
-            continue
         if _slice_has_rows(slices):
             contributed.add(name)
         # A full window means more rows remain on disk — all "load more" needs, at no cost

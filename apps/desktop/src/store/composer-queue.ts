@@ -1,6 +1,21 @@
 import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { $connection } from './session'
+import { knownOwnerForSession } from './session-states'
+
+/** Local owner routes use canonical admission; remote legacy queues stay local. */
+export function serverOwnsComposerQueue(sessionId: string | null | undefined): boolean {
+  const owner = knownOwnerForSession(sessionId)
+
+  if (owner && typeof owner === 'object' && owner.mode) { return owner.mode === 'local' }
+  const connection = $connection.get()
+
+  if (owner && typeof owner === 'object' && owner.connectionId !== connection?.connectionId) { return false }
+
+  return Boolean(connection?.wsUrl && new URL(connection.wsUrl).searchParams.has('native_dial'))
+}
+
 import { type ComposerAttachment, revokeAttachmentPreviewUrls, revokeDiscardedAttachmentPreviews } from './composer'
 
 export interface RemoveQueuedPromptOptions {
@@ -13,6 +28,7 @@ export interface RemoveQueuedPromptOptions {
 
 export interface QueuedPromptEntry {
   id: string
+  serverStatus?: string
   text: string
   /** What the queue panel and the sent bubble show, when it differs from the
    *  text the agent receives. A queued `/skill` invocation carries the whole
@@ -34,10 +50,10 @@ export interface QueuedPromptEntry {
 /** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
  *  not a slash command — the same gate `steerDraft` applies to the live draft
  *  (attachments can't ride a redirect; slash commands execute, not steer). */
-export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>): boolean => {
+export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text' | 'serverStatus'>): boolean => {
   const text = entry.text.trim()
 
-  return Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
+  return !entry.serverStatus && Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>
@@ -104,7 +120,7 @@ const setParked = (sid: string, parked: boolean) => {
   $parkedQueueSessions.set(next)
 }
 
-const writeSession = (sid: string, queue: QueuedPromptEntry[]) => {
+export const writeSessionQueue = (sid: string, queue: QueuedPromptEntry[]) => {
   // Merge over the LIVE persisted map, not the in-memory atom: another window
   // may have written its own sessions' queues between our last sync and now,
   // and writing our whole snapshot back would clobber those entries (#46732).
@@ -163,7 +179,7 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }
+  payload: { id?: string; text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -172,7 +188,7 @@ export const enqueueQueuedPrompt = (
   }
 
   const entry: QueuedPromptEntry = {
-    id: nextId(),
+    id: payload.id ?? nextId(),
     text: payload.text,
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
     ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
@@ -180,7 +196,7 @@ export const enqueueQueuedPrompt = (
     queuedAt: Date.now()
   }
 
-  writeSession(
+  writeSessionQueue(
     sid,
     // Queueing a fresh prompt is fresh intent to keep the conversation
     // moving — lift the persisted drain-failure budget off the entries
@@ -209,7 +225,7 @@ export const dequeueQueuedPrompt = (key: string | null | undefined): null | Queu
   }
 
   // Caller takes ownership of head.attachments (including any blob: previews).
-  writeSession(sid, rest)
+  writeSessionQueue(sid, rest)
 
   return head
 }
@@ -227,13 +243,14 @@ export const removeQueuedPrompt = (
 
   const queue = queueFor(sid)
   const removed = queue.find(e => e.id === id)
-  const next = queue.filter(e => e.id !== id)
+  // Server-owned (admitted) rows retire through the gateway, never locally.
+  const next = queue.filter(e => e.id !== id || e.serverStatus)
 
   if (!removed || next.length === queue.length) {
     return false
   }
 
-  writeSession(sid, next)
+  writeSessionQueue(sid, next)
 
   if (!options?.retainPreviewUrls) {
     revokeAttachmentPreviewUrls(removed.attachments)
@@ -259,7 +276,7 @@ export const noteQueuedPromptDrainFailure = (key: string | null | undefined, id:
     return
   }
 
-  writeSession(
+  writeSessionQueue(
     sid,
     queue.map(e => (e.id === id ? { ...e, drainFailures: (e.drainFailures ?? 0) + 1 } : e))
   )
@@ -282,7 +299,7 @@ export const clearQueuedPromptDrainFailures = (key: string | null | undefined, i
     return
   }
 
-  writeSession(
+  writeSessionQueue(
     sid,
     queue.map(e => (e.id === id ? { ...e, drainFailures: undefined } : e))
   )
@@ -303,7 +320,7 @@ export const promoteQueuedPrompt = (key: string | null | undefined, id: string):
   }
 
   const entry = queue[index]!
-  writeSession(sid, [entry, ...queue.slice(0, index), ...queue.slice(index + 1)])
+  writeSessionQueue(sid, [entry, ...queue.slice(0, index), ...queue.slice(index + 1)])
 
   return true
 }
@@ -351,7 +368,7 @@ export const updateQueuedPrompt = (
     return false
   }
 
-  writeSession(sid, next)
+  writeSessionQueue(sid, next)
 
   return true
 }
@@ -370,7 +387,7 @@ export const clearQueuedPrompts = (key: string | null | undefined) => {
     revokeAttachmentPreviewUrls(entry.attachments)
   }
 
-  writeSession(sid, [])
+  writeSessionQueue(sid, [])
 }
 
 /**
@@ -394,7 +411,7 @@ export const migrateQueuedPrompts = (fromKey: string | null | undefined, toKey: 
     return false
   }
 
-  // Merge over the live persisted map (see writeSession) so the migration can't
+  // Merge over the live persisted map (see writeSessionQueue) so the migration can't
   // clobber entries another window queued meanwhile — including into `to`.
   const live = load()
   const next: QueueState = { ...live }

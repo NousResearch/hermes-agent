@@ -32,8 +32,8 @@ def _job(**overrides):
         "enabled": True,
         "state": "scheduled",
         "schedule": {"kind": "interval", "minutes": 5, "display": "every 5m"},
-        "deliver": "local",
-        "model": None,
+        "deliver": "slack:alerts",
+        "model": "test-model",
         "provider": None,
         "provider_snapshot": "openrouter",
         "base_url": None,
@@ -42,22 +42,28 @@ def _job(**overrides):
     return job
 
 
-def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
+def _tick_failing(job, tmp_path, deliveries, error="boom unrelated", *, settle=False):
     """Run one run_one_job tick whose agent raises ``error`` (the failure
     path that composes the per-run failure ping). Mirrors the preflight alert-once
-    harness so the incident gating is exercised through the real scheduler."""
-    fake_db = MagicMock()
+    harness so the incident gating is exercised through the real scheduler.
+    ``settle=True`` emulates the durable queue's drain, which marks the incident
+    alerted once the ping has left the process (``drain_delivery_queue.send``)."""
 
-    def fake_deliver(jb, content, adapters=None, loop=None, **kwargs):
+    (tmp_path / "config.yaml").write_text(
+        "platforms:\n  slack:\n    enabled: true\n    token: xoxb-test\n"
+    )
+
+    def fake_deliver(execution_id, jb, content, **kwargs):
         deliveries.append(content)
-        return None
+        if settle and kwargs.get("for_failure"):
+            sched._mark_incident_alerted(jb.get("_failure_incident_id"))
+        return {"status": "pending"}
 
     with cron_jobs.use_cron_store(tmp_path), \
          patch("cron.scheduler._hermes_home", tmp_path), \
          patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state_registry.acquire", return_value=fake_db), \
          patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                return_value={
@@ -66,12 +72,13 @@ def _tick_failing(job, tmp_path, deliveries, error="boom unrelated"):
                    "provider": "openrouter",
                    "api_mode": "chat_completions",
                }), \
-         patch.object(sched, "_deliver_result", side_effect=fake_deliver), \
+         patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \
          patch("run_agent.AIAgent") as mock_agent_cls:
         mock_agent = MagicMock()
         mock_agent.run_conversation.side_effect = RuntimeError(error)
         mock_agent_cls.return_value = mock_agent
         sched.run_one_job(dict(job))
+        assert mock_agent.run_conversation.called
     return mock_agent_cls.called
 
 
@@ -224,20 +231,18 @@ def test_missing_db_no_crash(monkeypatch, tmp_path):
 # ── Scheduler gating ───────────────────────────────────────────────────────
 
 
-def test_repeat_failure_alerts_once_then_reminds_after_cooldown(monkeypatch, tmp_path):
+def test_repeat_failure_alerts_once_then_reminds_after_cooldown(monkeypatch, tmp_path, cron_owner):
     """Same job + same error: the first failing run delivers, the repeat is withheld (but still
     recorded as a run), one reminder goes out once ``cron.failure_repeat_alert_hours`` has
     elapsed, and a green run re-arms the signature so the same error alerts again."""
     inc = _point_db(monkeypatch, tmp_path)
     deliveries = []
     # A real (non-local) lane: the ping leaves the process, so the incident is marked alerted.
-    job = _job(deliver="telegram:123")
-    (tmp_path / "config.yaml").write_text("cron:\n  preflight: false\n", encoding="utf-8")
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    job = _job()
     with cron_jobs.use_cron_store(tmp_path):
         cron_jobs.save_jobs([job])
-        _tick_failing(job, tmp_path, deliveries, error="repeat boom")
-        _tick_failing(job, tmp_path, deliveries, error="repeat boom")
+        _tick_failing(job, tmp_path, deliveries, error="repeat boom", settle=True)
+        _tick_failing(job, tmp_path, deliveries, error="repeat boom", settle=True)
         assert len(deliveries) == 1, "an alerted signature must not re-ping on every run"
         rows = inc.list_incidents()
         assert len(rows) == 1 and rows[0]["state"] == "alerted" and rows[0]["alerted_at"]
@@ -248,18 +253,18 @@ def test_repeat_failure_alerts_once_then_reminds_after_cooldown(monkeypatch, tmp
         stale = (_hermes_now() - timedelta(hours=7)).isoformat()
         with inc._transaction() as conn:
             conn.execute("UPDATE cron_incidents SET alerted_at=?", (stale,))
-        _tick_failing(job, tmp_path, deliveries, error="repeat boom")
-        _tick_failing(job, tmp_path, deliveries, error="repeat boom")
+        _tick_failing(job, tmp_path, deliveries, error="repeat boom", settle=True)
+        _tick_failing(job, tmp_path, deliveries, error="repeat boom", settle=True)
         assert len(deliveries) == 2, "one reminder after the cooldown, not one per run"
 
         # Recovery re-arms: the same error after a green run alerts immediately.
         sched._resolve_incidents_for_recovered_job(job)
-        _tick_failing(job, tmp_path, deliveries, error="repeat boom")
+        _tick_failing(job, tmp_path, deliveries, error="repeat boom", settle=True)
         assert len(deliveries) == 3
         assert inc.count_incidents() == 1
 
 
-def test_ack_suppresses_alert_until_signature_changes(monkeypatch, tmp_path):
+def test_ack_suppresses_alert_until_signature_changes(monkeypatch, tmp_path, cron_owner):
     inc = _point_db(monkeypatch, tmp_path)
     deliveries = []
     job = _job()

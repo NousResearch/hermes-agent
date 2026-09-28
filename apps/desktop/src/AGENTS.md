@@ -3,35 +3,33 @@
 Applies on top of `apps/desktop/AGENTS.md` (the judgment guide) and the root `AGENTS.md`.
 Root TypeScript style rules apply.
 
-## The desktop is its own chat surface on a `hermes serve` backend
+## Desktop local execution belongs to the canonical gateway
 
-Electron + React + nanostores (`@assistant-ui/react`) talking to a `tui_gateway` backend over
-JSON-RPC (`requestGateway(method, params)`); transport lives in the framework-agnostic `apps/shared`
-(`@hermes/shared`: `JsonRpcGatewayClient` + WS URL helpers), which the web dashboard also consumes.
-The desktop has **no build/runtime dependency on the dashboard frontend**: it spawns a headless
-`hermes serve` (`headless_backend=True` → `cmd_dashboard` skips `_build_web_ui` and exports
-`HERMES_SERVE_HEADLESS=1` so `mount_spa()` disables the SPA even if a stray `web_dist/` exists).
-`dashboard` and `serve` share `cmd_dashboard`/`start_server` but neither launches the other. It does
-NOT embed `hermes --tui` — own composer, transcript, slash pipeline.
+Electron + React + nanostores (`@assistant-ui/react`) talks JSON-RPC over the existing
+`@hermes/shared` client. Normal local primary and pooled launches invoke
+`hermes gateway ensure --json`, consume its credential-free endpoint, and authenticate
+WebSockets with fresh private control tickets. The app never acquires the gateway PID as
+an owned child. Closing, switching or evicting a Desktop connection disconnects the viewer;
+only explicit gateway lifecycle commands stop the owner.
 
-**One backward-compat fallback:** `serve` is newer, so the spawn (`electron/backend-command.ts` +
-`createBackendServeSupportResolver()` in `electron/backend-serve-support.ts`) checks whether the runtime registers `serve`
-and ONLY when it does not (older managed install / PATH `hermes` not yet updated) rewrites argv to
-legacy `dashboard --no-open`. Without it a new app against an un-upgraded runtime crashes on an
-unknown subcommand and bricks every mid-upgrade user. Keep it narrow and tested.
+Native tickets cross the private preload IPC transiently, are removed from the URL before
+WebSocket construction, and are offered as subprotocols. Electron removes Origin only for
+an unexpired one-use dial bound to the requesting window. No public dashboard token is
+scraped or added to the public connection descriptor. SSH/URL intent retains its existing
+remote resolution and exposure lifecycle; a remote failure must never start a local owner.
 
-Lifecycle: `serve` dies with the app by design; the messaging gateway survives it (spawned detached
-via `/api/gateway/*`). Never re-parent the gateway under the backend — `gateway/AGENTS.md`.
+The gateway `gateway ensure` attaches to is **one multiplexing owner per home**: `HERMES_DESKTOP=1`
+is not how the app finds it, and no per-profile `hermes serve --port 0` child is spawned. One
+gateway process serves sessions from several homes (`tui_gateway/AGENTS.md` § Profile scope); a
+served secondary answers through the multiplexer's control socket (`GatewayEndpoint.multiplex_home`).
+Remote connections (SSH, URL+token, Cloud) likewise reach a backend that may serve several profiles
+from one process. Every lifecycle/status/settings REST call carries `?profile=` (or the `profile`
+param) and every new-session tile records an owner route; a backend-side scope fix is probed twice —
+with the profile as the gateway's own launch home and as a secondary served by one process.
 
-The backend the app spawns is a **pooled `hermes serve --port 0` per (connection, profile)**: its
-launch home is that profile, `HERMES_DESKTOP=1` is set, and its in-process cron ticker stands down
-for homes a running gateway already serves. One process may still host sessions from several homes
-(`tui_gateway/AGENTS.md` § Profile scope); the first non-launch home flips `set_multiplex_active`.
-Remote connections (SSH, URL+token, Cloud) reach a backend with no desktop env var that may serve
-several profiles from one process. Every lifecycle/status/settings REST call against a pooled
-backend carries `?profile=` (or the `profile` param) and every new-session tile records an owner
-route; a backend-side scope fix is probed twice — with the profile as the launch home of a pooled
-backend (env-bound) and as a secondary served by one process (override-bound).
+This migration requires the runtime's canonical GUI creation policy and a private HTTP
+API credential path. Do not bypass missing runtime capabilities by relabeling GUI sessions
+as CLI, dropping launch options, or falling back to an independent local serve owner.
 
 ## Slash commands: curated client-side, dispatched to the backend
 

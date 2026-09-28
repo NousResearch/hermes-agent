@@ -114,38 +114,31 @@ def test_session_read_handlers_run_sessiondb_work_off_event_loop(monkeypatch, ca
     assert all(thread_id != loop_thread for thread_id in db_threads)
 
 
-def test_session_rename_runs_writer_open_and_update_off_event_loop(monkeypatch):
-    loop_thread = threading.get_ident()
-    db_threads: list[int] = []
+def test_session_rename_routes_through_authority_without_second_writer(monkeypatch):
+    """Main's rename fix offloaded the ad-hoc ``_with_db`` writer; on the unified runtime the
+    PATCH route never opens a SessionDB at all — the owning session authority applies the
+    ``sidebar`` mutation, so a second writer (on or off the loop) would be the regression."""
+    seen = {}
 
-    class _DB:
-        def set_session_title(self, sid, title):
-            db_threads.append(threading.get_ident())
-            assert (sid, title) == ("sess-1", "renamed")
+    def _open_db(*_args, **_kwargs):
+        raise AssertionError("rename must not open its own SessionDB writer")
 
-        def get_session_title(self, sid):
-            db_threads.append(threading.get_ident())
-            assert sid == "sess-1"
-            return "renamed"
-
-        def close(self):
-            db_threads.append(threading.get_ident())
-
-    def _open_db(profile=None, *, read_only):
-        db_threads.append(threading.get_ident())
-        assert profile is None
-        assert read_only is False
-        return _DB()
+    async def _mutate(request, profile, session_id, *, request_id, expected_revision, operation,
+                      payload, expected_generation=None):
+        seen.update(profile=profile, session_id=session_id, request_id=request_id,
+                    expected_revision=expected_revision, operation=operation, payload=payload,
+                    expected_generation=expected_generation)
+        return {"ok": True, "title": payload.get("title")}
 
     monkeypatch.setattr(_web_server_sessions, "_open_session_db_for_profile", _open_db)
-    monkeypatch.setattr(_rt_sessions, "_resolve_session_id", lambda db, sid: sid)
+    monkeypatch.setattr(_web_server_sessions, "_mutate_session_request", _mutate)
 
-    result = asyncio.run(
-        _rt_sessions.rename_session_endpoint(
-            "sess-1", _web_models.SessionRename(title="renamed")
-        )
-    )
+    body = _web_models.SessionRename(title="renamed", pinned=True, request_id="req-1",
+                                     expected_revision=3, expected_generation=1)
+    result = asyncio.run(_rt_sessions.rename_session_endpoint("sess-1", body, request=object()))
 
     assert result == {"ok": True, "title": "renamed"}
-    assert db_threads
-    assert all(thread_id != loop_thread for thread_id in db_threads)
+    assert seen == {
+        "profile": None, "session_id": "sess-1", "request_id": "req-1", "expected_revision": 3,
+        "expected_generation": 1, "operation": "sidebar", "payload": {"title": "renamed", "pinned": True},
+    }

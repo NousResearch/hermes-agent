@@ -65,12 +65,6 @@ method("config.get", params=ConfigGetParams, result=ConfigGetResult,
 # ── config.set ────────────────────────────────────────────────────────────────────────────────
 
 
-class ConfigSetScope(WireEnum):
-    session = "session"
-    global_ = "global"
-    once = "once"
-
-
 class ConfigSetParams(ProfileParams):
     """``key`` picks the setter (``_CONFIG_SETTERS``, ``details_mode.<section>``, display toggles);
     ``value`` is the raw word/string the setter normalises (falsy non-strings are reported back in

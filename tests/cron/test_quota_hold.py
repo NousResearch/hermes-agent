@@ -123,20 +123,24 @@ def _tick(job, home, deliveries, resolve):
          patch("hermes_state_registry.acquire", return_value=MagicMock()), \
          patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
-         patch.object(sched, "_deliver_result",
-                      side_effect=lambda jb, content, **kw: deliveries.append(content)), \
+         patch("cron.delivery_queue.enqueue",
+               side_effect=lambda execution_id, jb, content, **kw: (
+                   deliveries.append(content), {"status": "pending"})[1]), \
          patch("run_agent.AIAgent") as agent_cls:
         agent_cls.return_value.run_conversation.side_effect = RuntimeError("model said no")
         sched.run_one_job(dict(job))
 
 
-def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_reach(tmp_cron_home):
+def test_quota_hold_parks_past_window_survives_stale_rearm_and_clears_on_model_reach(tmp_cron_home, cron_owner):
     """A 30-minute job whose provider resolve raises the Codex quota AuthError ('retry after
     123518s') is parked by the real scheduler tick: preflight lets the rate-limited AuthError
     through (it is not a missing credential), the one delivered alert carries the hold notice,
     and the job does not fire again inside the window (not even after the stale-error re-arm's
     cadence+grace). The marker clears once a run reaches the model."""
-    job = create_job("portfolio triage", "every 30m", deliver="local")
+    # A real (non-local) lane: the alert rides the durable delivery queue, whose enqueue is the seam.
+    (tmp_cron_home / "config.yaml").write_text(
+        "platforms:\n  slack:\n    enabled: true\n    token: xoxb-test\n", encoding="utf-8")
+    job = create_job("portfolio triage", "every 30m", deliver="slack:alerts")
     job_id = job["id"]
     now = datetime.now(timezone.utc)
     deliveries: list = []

@@ -31,7 +31,10 @@ test('quitPromptFor stays out of the way when nothing is running', () => {
 })
 
 test('quitPromptFor stays out of the way during an update handoff', () => {
-  assert.equal(quitPromptFor({ count: 2, titles: ['Fix login'] }, true), null)
+  const work = mergeActiveWork([normalizeActiveWork({ count: 2, titles: ['Fix login'] })])
+
+  assert.ok(quitPromptFor(work, false))
+  assert.equal(quitPromptFor(work, true), null)
 })
 
 test('quitPromptFor names the running chats', () => {
@@ -51,11 +54,12 @@ test('quitPromptFor summarizes past the list cap and counts untitled work', () =
   assert.ok(prompt.detail.includes('• 5 more'))
 })
 
-// #79579: only a backend the app owns (spawned locally, or started over SSH)
-// dies with it. A remote URL or Hermes Cloud backend keeps the turn running
+// #79579: only a backend the app owns (started over SSH) dies with it. The
+// local profile gateway is attached (`hermes gateway ensure`), and a remote URL
+// or Hermes Cloud backend is supervised elsewhere: all keep the turn running
 // after the app quits, so the prompt must not claim the work is lost.
-test('backendOwnedByApp: a local primary is owned even before its child attaches', () => {
-  assert.equal(backendOwnedByApp({ ownedBackendCount: 0, primaryRouteKind: null }), true)
+test('backendOwnedByApp: the local gateway is attached, not owned', () => {
+  assert.equal(backendOwnedByApp({ ownedBackendCount: 0, primaryRouteKind: null }), false)
 })
 
 test('backendOwnedByApp: an SSH primary is owned (the app starts and stops that server)', () => {
@@ -72,8 +76,8 @@ test('backendOwnedByApp: a remote primary alongside a spawned backend stays owne
   assert.equal(backendOwnedByApp({ ownedBackendCount: 1, primaryRouteKind: 'remote' }), true)
 })
 
-test('quitPromptFor warns about lost work when the app owns the backend (local)', () => {
-  const owned = backendOwnedByApp({ ownedBackendCount: 1, primaryRouteKind: null })
+test('quitPromptFor warns about lost work when the app owns the backend (SSH)', () => {
+  const owned = backendOwnedByApp({ ownedBackendCount: 1, primaryRouteKind: 'ssh' })
   const prompt = quitPromptFor({ count: 1, titles: ['Fix login'] }, false, owned)
 
   assert.ok(prompt)
@@ -81,8 +85,8 @@ test('quitPromptFor warns about lost work when the app owns the backend (local)'
   assert.deepEqual(prompt.buttons, ['Keep Running', 'Quit Anyway'])
 })
 
-for (const primaryRouteKind of ['remote', 'cloud'] as const) {
-  test(`quitPromptFor says the agent keeps running on a ${primaryRouteKind} backend`, () => {
+for (const primaryRouteKind of [null, 'remote', 'cloud'] as const) {
+  test(`quitPromptFor says the agent keeps running on a ${primaryRouteKind ?? 'local gateway'} backend`, () => {
     const owned = backendOwnedByApp({ ownedBackendCount: 0, primaryRouteKind })
     const prompt = quitPromptFor({ count: 1, titles: ['Fix login'] }, false, owned)
 

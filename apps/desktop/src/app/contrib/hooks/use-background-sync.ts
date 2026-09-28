@@ -445,7 +445,24 @@ export async function reconcileActiveTranscript({
   const storedSessionId = selectedStoredSessionIdRef.current
   const runtimeSessionId = activeSessionIdRef.current
 
-  if (!storedSessionId || !runtimeSessionId || busyRef.current || tileRuntimeOwnsLiveState(runtimeSessionId)) {
+  // The two refs move separately on a switch (resumeSession names the new
+  // stored id before the active runtime changes). A runtime already hosting a
+  // different stored session is mid-switch: writing under the selected id
+  // would re-key it, and its next session.info would read as a compression
+  // rotation that drags the route back.
+  const hostsOtherSession = () => {
+    const hosted = runtimeSessionId ? $sessionStates.get()[runtimeSessionId]?.storedSessionId : null
+
+    return Boolean(hosted && hosted !== storedSessionId)
+  }
+
+  if (
+    !storedSessionId ||
+    !runtimeSessionId ||
+    busyRef.current ||
+    tileRuntimeOwnsLiveState(runtimeSessionId) ||
+    hostsOtherSession()
+  ) {
     return
   }
 
@@ -494,7 +511,8 @@ export async function reconcileActiveTranscript({
       tileRuntimeOwnsLiveState(runtimeSessionId) ||
       transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
       selectedStoredSessionIdRef.current !== storedSessionId ||
-      activeSessionIdRef.current !== runtimeSessionId
+      activeSessionIdRef.current !== runtimeSessionId ||
+      hostsOtherSession()
 
     const current = $sessionStates.get()[runtimeSessionId]
 

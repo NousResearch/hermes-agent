@@ -93,6 +93,9 @@ class Home:
             "CODEX_HOME": str(self.home / ".codex"),
             # Child HOME is the fixture home, so its state.db is tmp_path's (guard's documented escape).
             "HERMES_STATE_DB_GUARD_BYPASS": "1",
+            # A turn boots the gateway, whose startup pre-installs tirith through PM (a GitHub
+            # download); like every gateway harness, the hermetic run opts out of lazy installs.
+            "HERMES_DISABLE_LAZY_INSTALLS": "1",
             **self.sentinel.proxy_env()})
         env.update(extra or {})
         return env

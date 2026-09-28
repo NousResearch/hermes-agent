@@ -1995,6 +1995,11 @@ class TestApprovalPromptRedaction:
     allowlist keys off pattern_key, not the command text.
     """
 
+    @pytest.fixture(autouse=True)
+    def _redaction_on(self, monkeypatch):
+        # The switch is a launch snapshot; an earlier file in the same process may have imported it off.
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+
     SECRET_CMD = (
         'curl -H "Authorization: Bearer sk-proj-abc123xyz4567890abcdef" '
         "https://api.openai.com/v1/models"

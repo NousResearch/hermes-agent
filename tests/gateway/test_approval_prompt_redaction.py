@@ -60,6 +60,45 @@ class TestRedactApprovalCommand:
         assert _FAKE_GHP not in out
 
 
+class TestApprovalCommandWiring:
+    """The chat-platform approval notify (TurnRunner._approval_notify_sync) must send the REDACTED
+    command on both the card and the text fallback, without mutating the approval payload."""
+
+    def test_chat_platform_path_redacts_before_send(self):
+        import asyncio
+        from types import SimpleNamespace
+        from gateway.run_turn_runner import TurnRunner
+
+        async def exercise():
+            for card_success in (True, False):
+                sent = []
+
+                class Adapter:
+                    def pause_typing_for_chat(self, chat_id):
+                        pass
+
+                    async def send_exec_approval(self, **kwargs):
+                        sent.append(kwargs['command'])
+                        return SimpleNamespace(success=card_success, error=None)
+
+                    async def send(self, chat_id, text, **kwargs):
+                        sent.append(text)
+                        return SimpleNamespace(success=True)
+
+                ctx = SimpleNamespace(_status_adapter=Adapter(), _status_chat_id='fixture',
+                    _status_thread_metadata=None, session_key='redaction-fixture',
+                    _loop_for_step=asyncio.get_running_loop(), stream_consumer_holder=[None])
+                turn = TurnRunner(SimpleNamespace(), ctx)
+                raw = 'curl -H "Authorization: token ' + _FAKE_GHP + '" https://example.test'
+                approval = {'command': raw, 'description': 'fixture'}
+                await asyncio.to_thread(turn._approval_notify_sync, approval)
+                assert len(sent) == (1 if card_success else 2)
+                assert all(_FAKE_GHP not in text and 'curl' in text for text in sent)
+                assert approval['command'] == raw
+
+        asyncio.run(exercise())
+
+
 class TestApprovalTextFallbackContract:
     def test_smart_deny_only_advertises_one_operation(self):
         from gateway.run import _format_exec_approval_fallback

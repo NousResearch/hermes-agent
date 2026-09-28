@@ -316,6 +316,7 @@ describe('connection-aware plugin host APIs', () => {
 
     vi.mocked(hermesApi)
       .mockResolvedValueOnce({ sessions: [{ id: 'bot-chat', profile: 'backend-worker', title: 'Bot Chat' }] })
+      .mockResolvedValueOnce({ exists: true, runtime_revision: 31, runtime_generation: 5 })
       .mockResolvedValueOnce({ ok: true, hidden: true })
 
     await expect(host.listPersistedSessions(route, { profile: 'backend-worker', limit: 200 })).resolves.toMatchObject({
@@ -333,14 +334,28 @@ describe('connection-aware plugin host APIs', () => {
       })
     )
     expect(hermesApi).toHaveBeenNthCalledWith(2, {
+      connectionId: 'source-a', path: '/api/sessions/bot-chat/mutation-snapshot?profile=backend-worker'
+    })
+    expect(hermesApi).toHaveBeenNthCalledWith(3, {
       connectionId: 'source-a',
       path: '/api/sessions/bot-chat',
       method: 'PATCH',
-      body: { hidden: true, profile: 'backend-worker' }
+      body: { hidden: true, profile: 'backend-worker', expected_revision: 31,
+        expected_generation: 5, request_id: expect.any(String) }
     })
     expect(vi.mocked(hermesApi).mock.calls.every(([request]) => !('profile' in request))).toBe(true)
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
     expect(requestGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('keeps an unrouted persisted-session edit on the window primary instead of pinning it to this device', async () => {
+    vi.mocked(hermesApi)
+      .mockResolvedValueOnce({ exists: true, runtime_revision: 2, runtime_generation: 1 })
+      .mockResolvedValueOnce({ ok: true, hidden: true })
+
+    await host.setPersistedSessionHidden(null, { sessionId: 'remote-chat', profile: 'default', hidden: true })
+
+    expect(vi.mocked(hermesApi).mock.calls.map(([request]) => request.connectionId)).toEqual([null, null])
   })
 
   it('forwards an explicit timeout so long-running methods outlive the generic deadline', async () => {
@@ -604,11 +619,7 @@ describe('profile-aware plugin session opens', () => {
 
     await host.openSession('remote-chat', { route })
 
-    expect(openGatewayForAgent).toHaveBeenCalledWith(
-      'source-a',
-      'default',
-      expect.objectContaining({ spawnPriority: 'foreground' })
-    )
+    expect(openGatewayForAgent).toHaveBeenCalledWith('source-a', 'default')
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('remote-worker')
@@ -1125,10 +1136,7 @@ describe('profile-aware plugin session opens', () => {
     await host.openSession('bot-chat', { profile: 'worker' })
 
     expect(ensureGatewayProfile).not.toHaveBeenCalled()
-    expect(openGatewayForProfile).toHaveBeenCalledWith(
-      'worker',
-      expect.objectContaining({ spawnPriority: 'foreground' })
-    )
+    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
     expect(setShowAllProfiles).toHaveBeenCalledWith(true)
     expect($activeGatewayProfile.get()).toBe('default')
   })

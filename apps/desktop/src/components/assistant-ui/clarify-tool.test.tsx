@@ -189,6 +189,28 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     expect(screen.queryByRole('status', { name: /loading question/i })).toBeNull()
     expect(screen.getByRole('button', { name: /Continue/ }).hasAttribute('disabled')).toBe(true)
   })
+
+  it('a batch tool call answered one card at a time by the shared gateway gets a live single card', () => {
+    // `gateway/run_turn_runner.py::_clarify_batch_sync` sends one single-question request per
+    // entry; the batch preview built from the tool args must not shadow it as a disabled form.
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
+    setClarifyRequest({
+      choices: ['staging', 'production'],
+      multiSelect: false,
+      question: 'Which deployment target?',
+      requestId: 'request-1',
+      sessionId: 'session-1'
+    })
+    const props = liveClarifyProps()
+    const args = { questions: [{ question: 'Which deployment target?', choices: ['staging', 'production'] }] }
+    renderClarify(<ClarifyTool {...props} args={args} argsText={JSON.stringify(args)} />)
+
+    const staging = screen.getByRole('button', { name: /staging/ })
+
+    expect(staging.hasAttribute('disabled')).toBe(false)
+    expect(screen.queryByRole('button', { name: /Confirm and continue/ })).toBeNull()
+  })
 })
 
 describe('ClarifyTool choice selection', () => {

@@ -125,10 +125,21 @@ def _identify(home: Path) -> Optional[dict]:
 
 def _served_from_identity(identity: dict) -> tuple[str, ...]:
     """Served set from a live ``identify``. A STANDALONE gateway publishes no ``served_profiles``;
-    it serves its own profile and nothing else, which is not the same as "unknown"."""
+    it serves its own profile and nothing else, which is not the same as "unknown".
+
+    The unified runtime publishes each served profile as ``{"profile_id", "home"}`` (what
+    ``hermes_cli.gateway_runtime`` matches homes against); older gateways published bare names.
+    Both spell the same roster, so a dict entry is reduced to its profile name here."""
     served = identity.get("served_profiles")
     if isinstance(served, list) and served:
-        return tuple(str(p) for p in served)
+        names = []
+        for entry in served:
+            if isinstance(entry, dict):
+                home = entry.get("home") or entry.get("profile_id")
+                names.append(profile_name_for_home(str(home)) if home else "default")
+            else:
+                names.append(str(entry))
+        return tuple(names)
     return (str(identity.get("profile") or "default"),)
 
 

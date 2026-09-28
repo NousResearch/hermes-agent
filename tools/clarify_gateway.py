@@ -79,6 +79,7 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
             touch_activity_if_due(activity_state, "waiting for user clarify response")
     with _lock:
         _entries.pop(clarify_id, None)  # regardless of outcome
+        entry.event.set()  # Timeout also retires shared projections of this waiter.
         ids = _session_index.get(entry.session_key) or []
         if clarify_id in ids:
             ids.remove(clarify_id)

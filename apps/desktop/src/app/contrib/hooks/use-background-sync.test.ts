@@ -694,10 +694,6 @@ describe('active transcript refresh', () => {
 })
 
 describe('reconcileActiveTranscript', () => {
-  // A drop mid-send on a flaky link leaves the optimistic `user-*` row as the
-  // only copy of the message: the server never acked it, so server truth does
-  // not contain it. A background refresh landing in that window replaced the
-  // transcript outright and the message vanished, forcing the user to retype.
   it('keeps an un-acked optimistic user row when the refresh lands mid-send', async () => {
     const fixture = makeRefresh()
     const optimisticId = 'user-1758100000000-ab12cd'
@@ -1201,7 +1197,12 @@ describe('an empty persisted page over a populated runtime', () => {
     expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
   })
 
-  it('active pane: a runtime bound to another stored session does not veto the requested page', async () => {
+  // Branch → Enter: resumeSession names the branch as selected before the
+  // active runtime leaves the parent. A reconcile in that gap paired the
+  // parent's runtime with the branch's stored id and re-keyed the runtime; the
+  // parent's next session.info then read as a branch → parent compression
+  // rotation and the route-follow effect dragged the view back onto the parent.
+  it('active pane: a runtime bound to another stored session is mid-switch and is not reconciled', async () => {
     const fixture = makeRefresh()
 
     publishSessionState(
@@ -1210,11 +1211,13 @@ describe('an empty persisted page over a populated runtime', () => {
         { id: 'other-user', parts: [{ text: 'elsewhere', type: 'text' }], role: 'user' }
       ])
     )
+    vi.mocked(getLatestSessionMessages).mockClear()
     vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage() as never)
 
     await fixture.refresh()
 
-    expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(fixture.updateSessionState).not.toHaveBeenCalled()
   })
 
   it('tile: keeps the transcript and records no signature for the ignored page', async () => {

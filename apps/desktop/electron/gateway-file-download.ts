@@ -2,8 +2,10 @@
 // main process. Extracted from main.ts so the streaming, data-URL decoding, and
 // filename derivation are unit-testable without spinning up Electron.
 //
-// The token / OAuth transports delegate to the shared finalizer here. It
-// waits for the save dialog before `pumpStreamToFile` streams the
+// The token / OAuth transports (gateway-file-download-transport.ts) and the
+// native gateway-descriptor transport (gateway-download-transport.ts) delegate
+// to the shared finalizer here. It waits for the save dialog before
+// `pumpStreamToFile` streams the
 // response into a sibling temp file with backpressure and renames it onto the
 // user-selected destination only once the body has landed in full — so a large
 // download never has to be buffered whole in the native process, and a failed

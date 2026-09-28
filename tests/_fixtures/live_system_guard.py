@@ -265,6 +265,37 @@ def _live_system_guard(request, monkeypatch):
 
     from tests.git_safety import blocked_git_mutation
 
+    def _sandboxed_gateway_child(cmd_str: str, env) -> bool:
+        """The disposable-daemon fixtures (``tests/gateway/fixtures/*``, the socket-path-length
+        probes) launch the bare ``python -m gateway.run`` module entry with an explicit ``env``
+        that re-homes BOTH ``HERMES_HOME`` and ``HOME`` away from the developer's account. Such a
+        child resolves no developer unit or config, holds no live port, and is reaped by its
+        test: the orphan class the guard exists for is the ``hermes gateway run|start|restart``
+        CLI spawn against the real home, which the fixtures never use."""
+        if not isinstance(env, dict):
+            return False
+        try:
+            tokens = _shlex.split(cmd_str)
+        except ValueError:
+            tokens = cmd_str.split()
+        if "-m" not in tokens or tokens[tokens.index("-m") + 1:][:1] != ["gateway.run"]:
+            return False
+        hermes_home, home = env.get("HERMES_HOME"), env.get("HOME")
+        if not hermes_home or not home:
+            return False
+        # The developer's account home from the passwd db: tests re-point ``Path.home`` at their
+        # tmp user dir, which would make a sandboxed child look like it runs against the real one.
+        try:
+            import pwd
+            real_home = Path(pwd.getpwuid(_os.getuid()).pw_dir).resolve()
+        except (ImportError, KeyError):
+            real_home = Path.home().resolve()
+        try:
+            return (Path(home).resolve() != real_home
+                    and not Path(hermes_home).resolve().is_relative_to(real_home))
+        except Exception:
+            return False
+
     def _check_subprocess_cmd(name, cmd, kwargs=None):
         git_verb = blocked_git_mutation(cmd, kwargs, _LIVE_GUARD_PROTECTED_GIT_ROOTS)
         if git_verb is not None:
@@ -342,6 +373,7 @@ def _live_system_guard(request, monkeypatch):
             not lookalike_ok
             and not in_container
             and gateway_spawn_intent_subcommand(cmd_str) in ("run", "start", "restart")
+            and not _sandboxed_gateway_child(cmd_str, (kwargs or {}).get("env"))
         ):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "

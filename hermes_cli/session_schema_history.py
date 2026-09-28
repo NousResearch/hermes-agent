@@ -206,6 +206,12 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
         ('27 2026-09-19T00:10Z 922a0c3c87', (('+', 'transport_profile', 'profile_name'),)),
         ('28 2026-09-25T23:25Z 2941aadffa', (('+', 'compression_overload_streak', 'compression_recovery_deadline'),)),
         ('29 2026-09-27T00:29Z d75f29934b', (('+', 'created_source', 'source'),)),
+        # Runtime-authority columns (unified gateway runtime, PR #106742): appended after main's
+        # 27-29 because they ship after them on main.
+        ('30 2026-09-08T18:45Z 0695b12b4c', (
+            ('+', 'runtime_revision', 'id'),
+            ('+', 'runtime_generation', 'runtime_revision'),
+        )),
         ),
     ),
     "messages": _TableHistory(

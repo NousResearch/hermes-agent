@@ -64,7 +64,7 @@ test('ordinary cron pins an unowned named target under a custom root', async () 
   await composer.fill('initialize default Desktop owner')
   await page.keyboard.press('Enter')
   await expect(page.getByText(MOCK_REPLY).filter({ visible: true }).first()).toBeVisible({ timeout: 60_000 })
-  const discovery = 'from pathlib import Path; import json,os; from tools.bot_live_delivery import find_canonical_owner; h=Path(os.environ["HERMES_HOME"]); print(json.dumps({"default":find_canonical_owner(h),"alpha":find_canonical_owner(h/"profiles"/"alpha")}))'
+  const discovery = 'from pathlib import Path; import json,os; from tools.bot_live_delivery import find_canonical_live_owner; h=Path(os.environ["HERMES_HOME"]); print(json.dumps({"default":find_canonical_live_owner(h),"alpha":find_canonical_live_owner(h/"profiles"/"alpha")}))'
   const before = probe(discovery)
   expect(before.default.surface).toBe('desktop')
   expect(before.alpha).toBeNull()

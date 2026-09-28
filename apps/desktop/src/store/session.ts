@@ -1149,6 +1149,7 @@ export const $awaitingResponse = atom(false)
 // Null whenever the active route has a healthy (or in-flight) resume.
 export const $resumeFailedSessionId = atom<string | null>(null)
 export interface SessionResumeRequest {
+  authoritativeSnapshot?: boolean
   ownerRoute?: SessionOwnerRoute
   sequence: number
   sessionId: string
@@ -1583,7 +1584,11 @@ export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($message
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
 
-export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwnerRoute) => {
+export const requestSessionResume = (
+  sessionId: string,
+  ownerRoute?: SessionOwnerRoute,
+  options?: { authoritativeSnapshot?: boolean }
+) => {
   const id = sessionId.trim()
 
   if (!id) {
@@ -1605,6 +1610,7 @@ export const requestSessionResume = (sessionId: string, ownerRoute?: SessionOwne
   }
 
   $sessionResumeRequest.set({
+    ...(options?.authoritativeSnapshot ? { authoritativeSnapshot: true } : {}),
     ...(ownerRoute ? { ownerRoute: { ...ownerRoute } } : {}),
     sequence: ++sessionResumeRequestSequence,
     sessionId: id

@@ -18,8 +18,11 @@ const SID = 'race119569-runtime'
 const STORED = 'race119569-stored'
 const noop = async () => undefined
 
-const requestGateway = async <T,>(method: string): Promise<T> =>
-  (method === 'prompt.submit' ? { status: 'started' } : { status: 'redirected' }) as T
+// The canonical admission receipt echoes the client's submission id.
+const requestGateway = async <T,>(method: string, params?: Record<string, unknown>): Promise<T> =>
+  (method === 'prompt.submit'
+    ? { admission_id: params?.submission_id, session_id: SID, status: 'started' }
+    : { status: 'redirected' }) as T
 
 function mount() {
   const queryClient = new QueryClient()

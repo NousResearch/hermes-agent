@@ -169,7 +169,7 @@ def test_user_platform_plugin_secrets_belong_to_their_own_profile(child_env, mon
     token = set_hermes_home_override(a)
     try:
         assert "CHATX_WEBHOOK_KEY" not in local.hermes_subprocess_env(inherit_credentials=True)
-        # Removing the plugin releases its names, and a symlinked alias of the home shares one entry.
+        # Removing the plugin releases its names.
         manifest.unlink()
         assert "CHATX_WEBHOOK_KEY" in local.hermes_subprocess_env(inherit_credentials=True)
     finally:
@@ -227,6 +227,30 @@ def test_unreadable_platform_manifest_fails_closed(tmp_path):
     finally:
         locked[0].chmod(0o755)
         (locked[1] / "plugin.yaml").chmod(0o644)
+    # An unlistable platforms root is skipped the same way.
+    other = tmp_path / "other"
+    _user_platform_plugin(other, "chaty", "CHATY_SIGNING_SECRET")
+    (other / "plugins" / "platforms").chmod(0o300)
+    try:
+        assert platform_manifest_secret_envs(other, strict=True) == frozenset()
+    finally:
+        (other / "plugins" / "platforms").chmod(0o755)
+
+
+def test_manifest_scan_follows_plugin_discovery_and_sees_mtime_preserving_edits(tmp_path):
+    """A __dunder__ dir is never a plugin, so it declares nothing; a rewrite that keeps the
+    manifest's size and mtime (cp -p, rsync -t) still changes the stamp."""
+    from hermes_cli.config import platform_manifest_secret_envs, platform_manifest_stamp
+    _user_platform_plugin(tmp_path, "__cache__", "CACHED_SIGNING_SECRET")
+    _user_platform_plugin(tmp_path, "chatx", "CHATX_SIGNING_SECRET")
+    assert platform_manifest_secret_envs(tmp_path) == {"CHATX_SIGNING_SECRET"}
+    manifest = tmp_path / "plugins" / "platforms" / "chatx" / "plugin.yaml"
+    before, st = platform_manifest_stamp(tmp_path), manifest.stat()
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace("CHATX_SIGNING", "CHATX_SIGNINGX"),
+                        encoding="utf-8")
+    os.utime(manifest, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert manifest.stat().st_mtime_ns == st.st_mtime_ns
+    assert platform_manifest_stamp(tmp_path) != before
 
 
 def test_unreadable_bundled_manifest_fails_the_policy_instead_of_dropping_it(monkeypatch):

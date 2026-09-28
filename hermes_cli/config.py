@@ -3987,8 +3987,9 @@ PlatformManifestSource = Literal["all", "bundled", "user"]
 
 
 def _is_plugin_dir_name(name: str) -> bool:
-    # Same rule as plugins_discovery.scan_directory: dot dirs and __pycache__-style dunders aren't plugins.
-    return not name.startswith(".") and not (name.startswith("__") and name.endswith("__"))
+    # Same rule as plugins_discovery.scan_directory: __pycache__-style dunders aren't plugins; a dot
+    # dir can be, so its secrets are declared too.
+    return not (name.startswith("__") and name.endswith("__"))
 
 
 def _platform_manifest_paths(home: Optional[Path] = None, source: PlatformManifestSource = "all"):
@@ -4024,11 +4025,13 @@ def _platform_manifest_paths(home: Optional[Path] = None, source: PlatformManife
                 path = Path(entry.path) / file_name
                 try:
                     st = os.stat(path)
-                except FileNotFoundError:
-                    continue
-                except OSError as exc:  # the dir itself is not searchable
+                except PermissionError as exc:  # the dir itself is not searchable
                     yield entry.name, None, require_kind, exc
                     break
+                except OSError:  # missing, a symlink loop: discovery's exists() is False too
+                    continue
+                if not stat.S_ISREG(st.st_mode):
+                    continue
                 yield entry.name, path, require_kind, st
                 break
 

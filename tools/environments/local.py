@@ -337,7 +337,7 @@ def _scrub_credentials(env: dict, *, inherit_credentials: bool) -> dict:
     # itself is case-insensitive, so a lowercase-stored ``gh_token`` IS GH_TOKEN.
     home_secrets = _home_adapter_secret_env()  # one manifest stamp per scrub
     strip_folded = _ALWAYS_STRIP_FOLDED | {k.upper() for k in _plugin_terminal_env_strip_keys()} | home_secrets
-    registered = _registry_adapter_secret_env() | home_secrets
+    registered = _registry_adapter_secret_env()  # home_secrets already strip above
     for key in list(env):
         if (key.upper() in strip_folded
                 or (not inherit_credentials and _is_provider_env_blocklisted(key, registered))

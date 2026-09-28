@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import signal
 import subprocess
@@ -33,20 +32,6 @@ class TestSnapshotShutdownContext:
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         assert "takeover_marker" in ctx
         assert ctx["takeover_marker_for_self"] is True
-
-# ---------------------------------------------------------------------------
-# format_context_for_log / context_as_json
-# ---------------------------------------------------------------------------
-
-class TestFormatters:
-
-    def test_context_as_json_handles_unserialisable_values(self):
-        ctx = {"signal": "SIGTERM", "weird": object()}
-        payload = sf.context_as_json(ctx)
-        # default=str means objects get repr'd, JSON stays valid
-        decoded = json.loads(payload)
-        assert decoded["signal"] == "SIGTERM"
-        assert "weird" in decoded
 
 # ---------------------------------------------------------------------------
 # persisted snapshots must never include process argv (#112459)
@@ -80,7 +65,7 @@ class TestArgvFreePersistence:
         ctx = sf.snapshot_shutdown_context(signal.SIGTERM)
         ctx["parent"] = summary
         line = sf.format_context_for_log(ctx)
-        assert _ARGV_CANARY not in line and _ARGV_CANARY not in sf.context_as_json(ctx)
+        assert _ARGV_CANARY not in line
         assert f"parent_pid={child_with_secret_argv.pid}" in line
 
 # ---------------------------------------------------------------------------

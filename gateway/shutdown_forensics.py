@@ -8,7 +8,6 @@ subprocess. Anything that waits belongs in the async helper, never in the probe.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import signal
@@ -187,14 +186,6 @@ def format_context_for_log(ctx: Dict[str, Any]) -> str:
         f"parent_pid={parent.get('pid') or '?'} parent_name={parent.get('name') or '?'} "
         f"loadavg_1m={load_str}{extras_str}"
     )
-
-
-def context_as_json(ctx: Dict[str, Any]) -> str:
-    """JSON-serialise a context dict for structured ingestion.  Never raises."""
-    try:
-        return json.dumps(ctx, default=str, sort_keys=True)
-    except (TypeError, ValueError):
-        return "{}"
 
 
 def check_systemd_timing_alignment(

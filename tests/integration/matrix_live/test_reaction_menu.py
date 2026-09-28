@@ -15,13 +15,18 @@ from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom, _regis
 
 @pytest.fixture
 def gateway_script():
-    return [ToolCall("present_menu", {
+    arguments = {
         "prompt": "Choose the next route", "context_id": "live-route",
         "options": [
             {"emoji": "✅", "label": "First route", "payload": "Take the first route"},
             {"emoji": "❌", "label": "Second route", "payload": "Take the second route"},
         ],
-    }), Text("Menu ready"), Text("Selected the first route")]
+    }
+    return [
+        ToolCall("tool_search", {"queries": ["Matrix reaction menu choices"]}),
+        ToolCall("tool_call", {"calls": [{"name": "present_menu", "arguments": arguments}]}),
+        Text("Menu ready"), Text("Selected the first route"),
+    ]
 
 
 @pytest.fixture
@@ -62,7 +67,12 @@ def test_requester_selects_once_in_original_thread(gateway: LiveGateway, live_ro
                 joined = response.rooms.join.get(room)
                 if joined:
                     events.extend(event.source for event in joined.timeline.events)
-            pytest.fail(f"No {description} within 15 seconds:\n" + gateway.container.get_wrapped_container().logs().decode(errors="replace")[-6000:])
+            pytest.fail(
+                f"No {description} within 15 seconds:\n"
+                + json.dumps({"events": events, "model_requests": gateway.model.requests}, default=str)
+                + "\n"
+                + gateway.container.get_wrapped_container().logs().decode(errors="replace")[-6000:]
+            )
 
         def messages(body):
             return [event for event in events if event.get("sender") == live_room.bot.user_id
@@ -75,7 +85,10 @@ def test_requester_selects_once_in_original_thread(gateway: LiveGateway, live_ro
             root = await send(bot, {"msgtype": "m.text", "body": "Menu thread root"})
             relation = {"rel_type": "m.thread", "event_id": root, "is_falling_back": True,
                         "m.in_reply_to": {"event_id": root}}
-            await send(alice, {"msgtype": "m.text", "body": "Offer a route [in:menu]", "m.relates_to": relation})
+            await send(alice, {
+                "msgtype": "m.text", "body": "@hermes:matrix.test Offer a route [in:menu]",
+                "m.mentions": {"user_ids": [live_room.bot.user_id]}, "m.relates_to": relation,
+            })
 
             def menu_messages():
                 return [event for event in events if event.get("sender") == live_room.bot.user_id
@@ -97,9 +110,11 @@ def test_requester_selects_once_in_original_thread(gateway: LiveGateway, live_ro
             reaction = {"m.relates_to": {"rel_type": "m.annotation", "event_id": target, "key": "✅"}}
             await send(bob, reaction, "m.reaction")
             await receive(lambda: messages("Only the user who requested this action can use these controls."), "wrong-actor refusal")
-            assert len(gateway.model.main_requests()) == 2
+            assert len(gateway.model.main_requests()) == 3
             await send(alice, reaction, "m.reaction")
-            await send(alice, reaction, "m.reaction")
+            await send(alice, {"m.relates_to": {
+                "rel_type": "m.annotation", "event_id": target, "key": "❌",
+            }}, "m.reaction")
             await receive(lambda: messages("Selected the first route"), "one choice follow-up")
             replies = messages("Selected the first route")
             assert len(replies) == 1
@@ -110,8 +125,12 @@ def test_requester_selects_once_in_original_thread(gateway: LiveGateway, live_ro
             await receive(lambda: any(event.get("sender") == live_room.bot.user_id
                                       and "Status" in event.get("content", {}).get("body", "") for event in events), "post-choice control barrier")
             requests = gateway.model.main_requests()
-            assert len(requests) == 3
-            previous, followup = requests[1]["messages"], requests[2]["messages"]
+            assert len(requests) == 4
+            search = [message for message in requests[1]["messages"] if message["role"] == "tool"]
+            assert "present_menu" in json.loads(search[-1]["content"])["tools"]
+            menu_result = [message for message in requests[2]["messages"] if message["role"] == "tool"]
+            assert json.loads(menu_result[-1]["content"])["status"] == "menu_presented"
+            previous, followup = requests[2]["messages"], requests[3]["messages"]
             assert followup[:len(previous)] == previous
             assert followup[-1]["role"] == "user"
             assert "[menu-choice]" in followup[-1]["content"]

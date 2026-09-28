@@ -145,6 +145,8 @@ def normalize_model_response(
         api_call_count=api_call_count, api_duration=api_duration, api_start_time=api_start_time,
         api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
     )
+    from hermes_cli.observability.shared_metrics_harness import record_reply_content
+    record_reply_content(agent, response, assistant_message)
 
     content = assistant_message.content
     if content and not agent.quiet_mode:

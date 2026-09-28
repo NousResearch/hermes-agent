@@ -1072,6 +1072,9 @@ def _commit_tool_result(
     pre-persist content for UI previews) or ``None`` when the flush failed (stop the batch).
     """
     function_name, function_args, tool_call_id, effective_task_id = ref.name, ref.args, ref.call_id, ref.task_id
+    from hermes_cli.observability.shared_metrics_harness import observe_tool_outcome
+
+    observe_tool_outcome(agent, function_name, is_error)
     if observed:
         if not blocked:
             function_result = agent._append_guardrail_observation(

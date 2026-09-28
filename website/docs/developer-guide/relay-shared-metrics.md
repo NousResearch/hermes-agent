@@ -334,6 +334,22 @@ whose provider is unknown reads `custom`.
 | `hermes.model_friction.count` | provider, model, signal (`retry`, `undo`, `interrupt`, `quick_abandon`, `switch_away`) | Which models users fight with. Attributed to the model that produced the turn: `/retry` and `/undo` where they execute, a user interrupt of an interactive turn, a session that ends within 60 seconds of a failed turn, and `/model` switching away from the model. |
 | `hermes.context_peak.count` | provider, model, peak fill bucket, window bucket (`lt_32k` … `gte_1m`), limit hit (`yes`/`no`) | How close sessions get to each model's context window, and how often they overflow it. One row per closed conversation: the session ids a compression rotation continues it under report once, with the fullest segment; `limit_hit` means a primary call was rejected as too large (context overflow or HTTP 413), the rejections Hermes answers with a forced compression. |
 
+<!-- ---- v5 harness ---- -->
+#### Agent-harness accuracy
+
+These tune the agent loop itself. Hermes' own background review and curator
+loops never count; command text, file paths, tool arguments and reply text never
+leave — only the closed values below.
+
+| Metric | Dimensions | Question it answers |
+|---|---|---|
+| `hermes.file_edit.count` | tool (`patch`, `write_file`), mode (`replace`, `v4a`, `whole_file`), outcome (`applied`, `already_applied`, `no_match`, `ambiguous`, `failed`), match strategy (the patch tool's fuzzy-match chain: `exact`, `line_trimmed`, `whitespace_normalized`, `indentation_flexible`, `escape_normalized`, `trimmed_boundary`, `unicode_normalized`, `block_anchor`, `context_aware`; `none` when nothing was matched) | Which fuzzy-match strategies earn their keep, and how often edits miss or are ambiguous. One row per edit tool call; a multi-hunk V4A patch reports the loosest strategy any hunk needed. |
+| `hermes.loop_guard.count` | provider, model, signal (`repeated_tool_call`, `loop_detected`, `iteration_cap`), detector (`exact_failure`, `idempotent_no_progress`, `same_tool_failure`, `identical_call_streak`, `identical_cycle`, `web_search_cap`, `subagent_cap`, `iteration_budget`) | How often each stuck-loop guard fires, per model. `repeated_tool_call` is a warning the call still ran with, `loop_detected` a block or halt, `iteration_cap` a turn that spent its iteration budget. At most once per turn per signal and detector. |
+| `hermes.tool_recovery.count` | provider, model, tool (built-in name, else `mcp` / `plugin`), next tool (`same`, `different`, `none`), next outcome (`success`, `error`, `no_tool_call`, `gave_up`) | Whether models recover after a failed tool call. One row per failed call, resolved against the model's next round: its next call to the same tool, else its first call; `no_tool_call` when it answered in text instead, `gave_up` when the turn ended without its reply (halted, budget spent, interrupted, errored). |
+| `hermes.terminal.outcome.count` | backend (the terminal backends), command kind (`git`, `package_manager`, `build`, `test_runner`, `python`, `node`, `shell_builtin`, `shell`, `file_ops`, `network`, `container`, `other`), outcome (`ok`, `nonzero`, `timeout`, `killed`) | Which kinds of commands fail or time out, per backend. The kind comes from a fixed table of the first program word (after env assignments and `sudo`-style wrappers). One row per foreground command that reached an exit status; `timeout` / `killed` come from Hermes' own deadline and interrupt flags, so a command's own `exit 124` is `nonzero`. `hermes.execution_backend.count` counts the same calls by whether the backend served them — disjoint dimensions, not a second count of outcomes. |
+| `hermes.model_reply_issue.count` | provider, model, issue (`none`, `empty`, `reasoning_only`, `refusal`, `truncated_length`) | Which models return unusable replies. One row per primary model response (usable ones as `none`, the rate denominator). `refusal` and `truncated_length` come only from the structured finish reason (`content_filter`, `length`); `empty` is a valid response with no visible text, tool call or reasoning. |
+<!-- ---- end v5 harness ---- -->
+
 Local state is written under:
 
 ```text

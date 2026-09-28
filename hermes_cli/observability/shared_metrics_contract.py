@@ -334,6 +334,45 @@ def version_age_bucket(age_ms: Any) -> str:
     return "unknown" if value is None else _bucket(value, _VERSION_AGE_THRESHOLDS, "gte_90d")
 # ---- end v4 reliability ----
 
+# ---- v5 harness ----
+FILE_EDIT_MARK = "hermes.file_edit"
+LOOP_GUARD_MARK = "hermes.loop_guard"
+TOOL_RECOVERY_MARK = "hermes.tool_recovery"
+TERMINAL_OUTCOME_MARK = "hermes.terminal.outcome"
+MODEL_REPLY_ISSUE_MARK = "hermes.model_reply_issue"
+FILE_EDIT_METRIC = "hermes.file_edit.count"
+LOOP_GUARD_METRIC = "hermes.loop_guard.count"
+TOOL_RECOVERY_METRIC = "hermes.tool_recovery.count"
+TERMINAL_OUTCOME_METRIC = "hermes.terminal.outcome.count"
+MODEL_REPLY_ISSUE_METRIC = "hermes.model_reply_issue.count"
+FILE_EDIT_TOOLS = frozenset({"patch", "write_file"})
+FILE_EDIT_MODES = frozenset({"replace", "v4a", "whole_file"})
+FILE_EDIT_OUTCOMES = frozenset({"already_applied", "ambiguous", "applied", "failed", "no_match"})
+
+
+def _fuzzy_match_strategies() -> frozenset[str]:
+    # The patch tool's own strategy chain, so a new strategy is a new bucket, never "none".
+    from tools.fuzzy_match import STRATEGIES
+
+    return frozenset(name for name, _fn in STRATEGIES)
+
+
+FILE_EDIT_STRATEGIES = _fuzzy_match_strategies() | {"none"}
+LOOP_GUARD_SIGNALS = frozenset({"iteration_cap", "loop_detected", "repeated_tool_call"})
+LOOP_GUARD_DETECTORS = frozenset({
+    "exact_failure", "idempotent_no_progress", "identical_call_streak", "identical_cycle", "iteration_budget",
+    "same_tool_failure", "subagent_cap", "web_search_cap",
+})
+TOOL_RECOVERY_OUTCOMES = frozenset({"error", "gave_up", "no_tool_call", "success"})
+TOOL_RECOVERY_NEXT_TOOLS = frozenset({"different", "none", "same"})
+TERMINAL_COMMAND_KINDS = frozenset({
+    "build", "container", "file_ops", "git", "network", "node", "other", "package_manager", "python",
+    "shell", "shell_builtin", "test_runner",
+})
+TERMINAL_OUTCOMES = frozenset({"killed", "nonzero", "ok", "timeout"})
+MODEL_REPLY_ISSUES = frozenset({"empty", "none", "reasoning_only", "refusal", "truncated_length"})
+# ---- end v5 harness ----
+
 _ARCHITECTURE_ALIASES = {
     "amd64": "x86_64", "x64": "x86_64", "x86_64": "x86_64",
     "aarch64": "arm64", "arm64": "arm64",
@@ -526,6 +565,20 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "crash_class": CRASH_CLASSES, "exit_kind": PROCESS_EXIT_KINDS, "process_kind": PROCESS_KINDS,
     },
     # ---- end v4 reliability ----
+    # ---- v5 harness ----
+    FILE_EDIT_METRIC: {
+        "match_strategy": FILE_EDIT_STRATEGIES, "mode": FILE_EDIT_MODES, "outcome": FILE_EDIT_OUTCOMES,
+        "tool": FILE_EDIT_TOOLS,
+    },
+    LOOP_GUARD_METRIC: {"detector": LOOP_GUARD_DETECTORS, "signal": LOOP_GUARD_SIGNALS},
+    TOOL_RECOVERY_METRIC: {
+        "next_outcome": TOOL_RECOVERY_OUTCOMES, "next_tool": TOOL_RECOVERY_NEXT_TOOLS, "tool": TOOL_NAMES,
+    },
+    TERMINAL_OUTCOME_METRIC: {
+        "backend": TERMINAL_BACKENDS, "command_kind": TERMINAL_COMMAND_KINDS, "outcome": TERMINAL_OUTCOMES,
+    },
+    MODEL_REPLY_ISSUE_METRIC: {"issue": MODEL_REPLY_ISSUES},
+    # ---- end v5 harness ----
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -543,6 +596,11 @@ _IDENTIFIER_FIELDS: dict[str, dict[str, int]] = {
     MODEL_FRICTION_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
     CONTEXT_PEAK_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
     # ---- end v4 model ----
+    # ---- v5 harness ----
+    LOOP_GUARD_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    TOOL_RECOVERY_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    MODEL_REPLY_ISSUE_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    # ---- end v5 harness ----
 }
 # metric -> closed dimension field set
 _METRIC_FIELDS: dict[str, frozenset[str]] = {
@@ -594,6 +652,11 @@ _DECISION_MARK_METRICS = {
     UPDATE_RUN_MARK: UPDATE_RUN_METRIC, UPDATE_STAGE_MARK: UPDATE_STAGE_METRIC,
     PROCESS_EXIT_MARK: PROCESS_EXIT_METRIC,
     # ---- end v4 reliability ----
+    # ---- v5 harness ----
+    FILE_EDIT_MARK: FILE_EDIT_METRIC, LOOP_GUARD_MARK: LOOP_GUARD_METRIC,
+    TOOL_RECOVERY_MARK: TOOL_RECOVERY_METRIC, TERMINAL_OUTCOME_MARK: TERMINAL_OUTCOME_METRIC,
+    MODEL_REPLY_ISSUE_MARK: MODEL_REPLY_ISSUE_METRIC,
+    # ---- end v5 harness ----
 }
 
 

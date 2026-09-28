@@ -195,6 +195,21 @@
           },
           {
             "$ref": "#/$defs/process_exit_counter"
+          },
+          {
+            "$ref": "#/$defs/file_edit_counter"
+          },
+          {
+            "$ref": "#/$defs/loop_guard_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_recovery_counter"
+          },
+          {
+            "$ref": "#/$defs/terminal_outcome_counter"
+          },
+          {
+            "$ref": "#/$defs/model_reply_issue_counter"
           }
         ]
       }
@@ -2471,6 +2486,326 @@
               ]
             }
           }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "file_edit_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.file_edit.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "match_strategy",
+            "mode",
+            "outcome",
+            "tool"
+          ],
+          "properties": {
+            "match_strategy": {
+              "enum": [
+                "block_anchor",
+                "context_aware",
+                "escape_normalized",
+                "exact",
+                "indentation_flexible",
+                "line_trimmed",
+                "none",
+                "trimmed_boundary",
+                "unicode_normalized",
+                "whitespace_normalized"
+              ]
+            },
+            "mode": {
+              "enum": [
+                "replace",
+                "v4a",
+                "whole_file"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "already_applied",
+                "ambiguous",
+                "applied",
+                "failed",
+                "no_match"
+              ]
+            },
+            "tool": {
+              "enum": [
+                "patch",
+                "write_file"
+              ]
+            }
+          },
+          "description": "One per patch/write_file tool call; match_strategy is the fuzzy-match strategy that landed an applied patch (the loosest one for a multi-hunk V4A patch), none otherwise."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "loop_guard_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.loop_guard.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "detector",
+            "model",
+            "provider",
+            "signal"
+          ],
+          "properties": {
+            "detector": {
+              "enum": [
+                "exact_failure",
+                "idempotent_no_progress",
+                "identical_call_streak",
+                "identical_cycle",
+                "iteration_budget",
+                "same_tool_failure",
+                "subagent_cap",
+                "web_search_cap"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "signal": {
+              "enum": [
+                "iteration_cap",
+                "loop_detected",
+                "repeated_tool_call"
+              ]
+            }
+          },
+          "description": "At most once per turn per (signal, detector): repeated_tool_call = a warning the call still ran with, loop_detected = the harness blocked or halted, iteration_cap = the turn spent its iteration budget."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tool_recovery_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_recovery.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "next_outcome",
+            "next_tool",
+            "provider",
+            "tool"
+          ],
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "next_outcome": {
+              "enum": [
+                "error",
+                "gave_up",
+                "no_tool_call",
+                "success"
+              ]
+            },
+            "next_tool": {
+              "enum": [
+                "different",
+                "none",
+                "same"
+              ]
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "tool": {
+              "$ref": "#/$defs/vocabulary_identifier"
+            }
+          },
+          "description": "One per failed tool call: what the model's next tool call did (the next call to the same tool, else its first call), or no_tool_call / gave_up when the turn ended without one."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "terminal_outcome_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.terminal.outcome.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backend",
+            "command_kind",
+            "outcome"
+          ],
+          "properties": {
+            "backend": {
+              "enum": [
+                "daytona",
+                "docker",
+                "local",
+                "managed_modal",
+                "modal",
+                "other",
+                "singularity",
+                "ssh",
+                "vercel_sandbox"
+              ]
+            },
+            "command_kind": {
+              "enum": [
+                "build",
+                "container",
+                "file_ops",
+                "git",
+                "network",
+                "node",
+                "other",
+                "package_manager",
+                "python",
+                "shell",
+                "shell_builtin",
+                "test_runner"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "killed",
+                "nonzero",
+                "ok",
+                "timeout"
+              ]
+            }
+          },
+          "description": "One per foreground terminal command that reached an exit status; command_kind comes from a fixed table of first program words, never the command text."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "model_reply_issue_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.model_reply_issue.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "issue",
+            "model",
+            "provider"
+          ],
+          "properties": {
+            "issue": {
+              "enum": [
+                "empty",
+                "none",
+                "reasoning_only",
+                "refusal",
+                "truncated_length"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            }
+          },
+          "description": "One per primary model response; issue=none when the response is usable, so issue rates have a denominator."
         },
         "value": {
           "type": "integer",

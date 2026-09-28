@@ -64,11 +64,18 @@ _DIFF_FG = {
     "dim": ("banner_dim", (150, 150, 150)), "file": ("session_label", (180, 160, 255)),
     "hunk": ("session_border", (120, 120, 140)),
 }
-# Background diff colors (white text on a dark tint of the skin's ui_error/ui_ok):
-# key -> (skin key, default hex, dominant channel index, dark-terminal fallback).
+# Background diff colors: key -> (skin keys in priority order, default hex, dominant
+# channel index, word-foreground skin key, dark-terminal fallback). A skin that sets the
+# dedicated `diff_removed`/`diff_added` line colors plus their `..._word` foregrounds —
+# the same keys the TUI and the desktop app read — gets its exact diff palette; a skin
+# that doesn't keeps the dark tint derived from `ui_error`/`ui_ok`, as before.
 _DIFF_BG = {
-    "minus": ("ui_error", "#ef5350", 0, "\033[38;2;255;255;255;48;2;120;20;20m"),
-    "plus": ("ui_ok", "#4caf50", 1, "\033[38;2;255;255;255;48;2;20;90;20m"),
+    "minus": (
+        ("diff_removed", "ui_error"), "#ef5350", 0, "diff_removed_word",
+        "\033[38;2;255;255;255;48;2;120;20;20m"),
+    "plus": (
+        ("diff_added", "ui_ok"), "#4caf50", 1, "diff_added_word",
+        "\033[38;2;255;255;255;48;2;20;90;20m"),
 }
 
 
@@ -86,16 +93,29 @@ def _diff_ansi() -> dict[str, str]:
     global _diff_colors_cached
     if _diff_colors_cached is not None:
         return _diff_colors_cached
-    colors = {k: _fg(*rgb) for k, (_, rgb) in _DIFF_FG.items()} | {k: v[3] for k, v in _DIFF_BG.items()}
+    colors = (
+        {k: _fg(*rgb) for k, (_, rgb) in _DIFF_FG.items()}
+        | {k: v[4] for k, v in _DIFF_BG.items()}
+    )
     try:
         skin = _get_skin()
         for key, (skin_key, fallback) in _DIFF_FG.items():
             h = skin.get_color(skin_key, "")
             colors[key] = _fg(*(_hex_rgb(h) if h and len(h) == 7 and h[0] == "#" else fallback))
-        bg_hex = {key: skin.get_color(skin_key, default) for key, (skin_key, default, _, _) in _DIFF_BG.items()}
-        for key, (_, _, dominant, _) in _DIFF_BG.items():
-            h = bg_hex[key]
-            if h and len(h) == 7:
+        for key, (skin_keys, default, dominant, word_key, _) in _DIFF_BG.items():
+            # First dedicated/shared key the skin actually sets wins (diff_* beats ui_*).
+            h = next((v for v in (skin.get_color(sk, "") for sk in skin_keys)
+                      if v and len(v) == 7 and v[0] == "#"), default)
+            if not (h and len(h) == 7 and h[0] == "#"):
+                continue
+            word = skin.get_color(word_key, "")
+            if word and len(word) == 7 and word[0] == "#":
+                # Both the line background and its word foreground are set: paint them
+                # verbatim, exactly like the TUI's light green / light red diff.
+                r, g, b = _hex_rgb(h)
+                wr, wg, wb = _hex_rgb(word)
+                colors[key] = f"\033[38;2;{wr};{wg};{wb};48;2;{r};{g};{b}m"
+            else:
                 colors[key] = _tinted_bg(_hex_rgb(h), dominant)
     except Exception:
         pass

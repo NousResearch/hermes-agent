@@ -37,7 +37,8 @@ import {
   markBrowserTabPopped,
   newBrowserTab,
   popOutBrowserTab,
-  type PreviewTarget
+  type PreviewTarget,
+  setPreviewTabCloser
 } from '@/store/preview'
 import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { canOpenBrowserWindow } from '@/store/windows'
@@ -178,6 +179,16 @@ function PreviewTabLead({ tabId }: { tabId: string }) {
 
 const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PREFIX}:${tabId}`
 
+/** What closing a tab means, wherever it is closed from: the tab's ✕, the
+ *  body's own Close, or the Browser hotkey/palette toggle. The pane's page
+ *  record and console buffer are keyed by a random id, so dropping the tab
+ *  without dropping them leaks both for the life of the window. */
+export function closePreviewTab(tabId: string) {
+  forgetBrowserPage(tabId)
+  forgetPreviewConsole(tabId)
+  closeRightRailTab(tabId)
+}
+
 /** The pane a NEW preview tile should stack into: another preview tile already
  *  in the tree, else another open tab adopted earlier in the same pass (a
  *  reload restores every tab at once, before any of them is in the tree).
@@ -199,6 +210,7 @@ function existingPreviewAnchor(tabId: string): string | undefined {
  *  and the tree's active pane agreeing, and front a tile when its tab is
  *  selected. Call once from the root. */
 export function watchPreviewTiles(): void {
+  setPreviewTabCloser(closePreviewTab)
   watchPreviewTileMirror()
 
   window.hermesDesktop?.onBrowserPopoutClosed?.(tabId => {
@@ -290,9 +302,5 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   },
   // The body's own Close (an error state's way out) is the tab's ✕, verbatim.
   render: tabId => <PreviewTilePane onClose={() => closeTabPane(previewPaneId(tabId))} tabId={tabId} />,
-  close: tabId => {
-    forgetBrowserPage(tabId)
-    forgetPreviewConsole(tabId)
-    closeRightRailTab(tabId)
-  }
+  close: tabId => closePreviewTab(tabId)
 })

@@ -8,6 +8,19 @@ import { clearExplicitPreviewOpen, noteExplicitPreviewOpen } from './preview-exp
 import { normalizeProfileKey } from './profile'
 import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
 
+/** Closing a tab also drops its page record and console buffer, which live
+ *  outside this store. The pane registers the real closer; until it does, a
+ *  close is just the tab. */
+let closePreviewTabImpl = (tabId: string) => closeRightRailTab(tabId)
+
+export function setPreviewTabCloser(closer: (tabId: string) => void) {
+  closePreviewTabImpl = closer
+}
+
+function closePreviewTab(tabId: string) {
+  closePreviewTabImpl(tabId)
+}
+
 /**
  * PREVIEW RAIL — one list of tabs, one way in.
  *
@@ -622,16 +635,19 @@ export function openBrowserTab() {
 }
 
 /** The hotkey/palette entry point: front the Browser if it isn't the active
- *  tab, close it (page and all — a real tab close, not a hide) if it
- *  already is. `openBrowserTab` itself stays open-only (chat links and
- *  other callers must never toggle a page closed under them) — this wraps
- *  it for the one caller that means "collapse". */
+ *  docked tab, close it (page and all — a real tab close, not a hide) if it
+ *  already is. A tab popped into its own window stays in `$previewTabs` with
+ *  its id still active, so the close decision reads `$dockedPreviewTabs`: a
+ *  popped tab is not docked, and closing it here would drop the tab while the
+ *  window survives with nothing in it. `openBrowserTab` itself stays
+ *  open-only (chat links and other callers must never toggle a page closed
+ *  under them) — this wraps it for the one caller that means "collapse". */
 export function toggleBrowserTab() {
-  const tabs = $previewTabs.get()
-  const active = tabs.find(tab => tab.id === $rightRailActiveTabId.get())
+  const active = $dockedPreviewTabs.get().find(tab => tab.id === $rightRailActiveTabId.get())
 
   if (active && isBrowserTab(active)) {
-    closeRightRailTab(active.id)
+    closePreviewTab(active.id)
+
     return
   }
 

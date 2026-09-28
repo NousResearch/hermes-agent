@@ -34,6 +34,8 @@ STALE_AFTER_S = 3600
 _NOT_A_PROVIDER = frozenset({"aux-config", "cancel", "reasoning", "remove-custom"})
 _AUTH_ERROR_TYPES = frozenset({"AuthError", "SignInCopyError"})
 _OAUTH_SESSION_KEY = "_metrics_setup_flow"
+# Tokens other tools read too (gh, the Hugging Face Hub): saving one is not connecting that provider.
+_SHARED_TOKENS = frozenset({"GH_TOKEN", "GITHUB_TOKEN", "HF_TOKEN"})
 # OAuth session status (+ reason) at its end -> (event, failure_class).
 _OAUTH_ENDINGS = {
     "approved": ("completed", "none"),
@@ -252,20 +254,31 @@ def record_provider_setup_done(surface: str, provider: Any, *, hermes_home: Any 
 
 
 def provider_for_api_key_env(env_var: Any) -> str | None:
-    """The shipped provider whose API key lives in ``env_var``; None for any other variable."""
+    """The shipped provider whose own API key lives in ``env_var``; None for any other variable. A bare
+    key save cannot tell connecting a provider from configuring a tool, so ecosystem tokens and keys a
+    tool's settings panel (TTS, STT, image...) also asks for are None too."""
     from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.tools_config import TOOL_CATEGORIES
 
     if env_var == "OPENROUTER_API_KEY":  # the aggregator is not a registry entry
         return "openrouter"
+    if env_var in _SHARED_TOKENS or any(
+        env_var == entry.get("key") for category in TOOL_CATEGORIES.values()
+        for row in category.get("providers", ()) for entry in row.get("env_vars") or ()
+    ):
+        return None
     return next((slug for slug, pconfig in PROVIDER_REGISTRY.items()
                  if env_var in (getattr(pconfig, "api_key_env_vars", None) or ())), None)
 
 
-def record_api_key_saved(env_var: Any, surface: str) -> None:
-    """Count a provider API key saved from a settings form (other variables are not setups)."""
+def record_api_key_saved(env_var: Any, value: Any, previous: Any, surface: str) -> None:
+    """Count a provider API key saved from a settings form: only a new or changed non-empty value (a
+    clear or a same-value re-save connects nothing; other variables are not setups)."""
     try:
         from .relay_shared_metrics import enabled
 
+        if not isinstance(value, str) or not value.strip() or value == previous:
+            return
         if enabled() and (provider := provider_for_api_key_env(env_var)):
             record_provider_setup_done(surface, provider, background=True)
     except Exception:

@@ -135,6 +135,49 @@ Contract:
 - **Ordering / cache stability.** The hook runs **before** prompt cache-control and every request sanitizer, so (a) a replacement still passes the same validation as any request, and (b) the no-op default leaves the request byte-identical — prompt-cache behaviour is unchanged for non-implementing engines. An engine that replaces the list changes only its own cache prefix. Evaluated per provider request (re-runs on retries).
 - **`on_turn_complete()`** is post-turn observation only; treat `messages` as read-only. **Coverage is best-effort:** it fires from the standard turn-finalization seam. Some abnormal early-return paths in the loop (e.g. a content-policy block or a provider terminal failure) persist and return without routing through finalization, so they do not currently emit this hook — treat it as a best-effort observation for completed turns, not a guaranteed callback for every early exit. Unifying all terminal paths behind one finalization seam is a separate follow-up.
 
+### Stable message identity: `message_uid`
+
+Every message the host has persisted carries `message_uid`: a 32-hex id
+(`uuid4().hex`) minted once, at the row's first insert, and stored in
+`messages.message_uid`. It is the key to use when an engine keeps its own
+per-message state (a verbatim store, a summary DAG, per-message embeddings)
+and needs to recognise a message it has already seen. The physical row id
+(`_row_id`) is not that key: it is re-issued by every copy and only present on
+some restore paths.
+
+What the host guarantees:
+
+- **Present on every engine surface** once a row exists: the `compress()`
+  input list, `on_turn_complete()` clones, `post_llm_call`'s
+  `conversation_history`, `on_session_end()` messages, and every restored
+  history (CLI, TUI, ACP, gateway, compression's durable-snapshot adoption). It
+  is restored unconditionally, unlike `_row_id`.
+- **Kept across every host copy of the same logical message:** in-place
+  compaction generations and their concurrent-tail clones, rotation-child
+  handoff copies and foreign-tail clones, `replace_messages` re-issues,
+  rewind, export/import.
+- **Kept across content rewrites of the same row:** the persist override, the
+  sanitizer's row-addressed rewrite, the interrupted-stream fill. Treat
+  `(message_uid, content)` as a *version* of the message; never fail closed on
+  a content change under a known uid.
+- **Merges keep the first constituent's uid.** When alternation repair merges
+  consecutive user turns, the survivor keeps its own uid and records the
+  absorbed rows' uids in `_absorbed_message_uids` (live-only, in absorption
+  order), so an engine can see that `A\n\nB` is the host's fold of `A` and `B`
+  rather than a new message.
+- **Engine-authored rows keep the uid the engine sets.** If your `compress()`
+  output pre-stamps `message_uid` on a summary carrier, the host writes that
+  value; rows without one are minted at insert.
+- **Never on the wire.** `message_uid` and `_absorbed_message_uids` are in
+  `PERSISTENCE_ONLY_MESSAGE_FIELDS`: stripped from every outgoing provider
+  copy and ignored by the token estimator. Engines that never read them are
+  unaffected.
+- **Absent only before the row exists.** The current turn's user message has
+  no uid during a preflight `compress()` that runs before the turn-start
+  flush; the same dict object receives it at that flush. Stores upgraded from
+  an older schema backfill a uid onto every existing row once (schema v31);
+  rows written afterwards by an older build stay `NULL` until re-inserted.
+
 ### When to use these hooks — and when NOT to
 
 - **Implement `select_context()` only when your engine must *replace* the

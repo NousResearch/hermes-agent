@@ -207,7 +207,7 @@ later.
 
 Abridged — the full schema also includes `effect_disposition`,
 `platform_message_id`, `observed`, `active`, `compacted`, `api_content`,
-`display_kind`, and `display_metadata`:
+`display_kind`, `display_metadata`, and `message_uid`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS messages (
@@ -242,6 +242,7 @@ Notes:
 - A reasoning-only clean stop (empty `content`, `finish_reason=stop`, reasoning present) is answered with the reasoning text, but the assistant row is never written with that text as `content`: `content` stays empty, the text lives in `reasoning`/`reasoning_content`, and `api_content` carries it so the next request replays the answer byte-identically. History surfaces therefore show it as reasoning, not as a reply.
 - `api_content` is a byte-fidelity sidecar: the exact content string sent to the API for this message when it differs from `content` (ephemeral memory/plugin injections, persist overrides). It preserves the wire bytes for prompt-cache-stable replay — stored as sent, except lone surrogates, which sqlite3 cannot bind and which the conversation loop scrubs from every outgoing payload anyway. `NULL` means `content` was sent verbatim.
 - Timestamps are Unix epoch floats (`time.time()`)
+- `message_uid` is the durable per-message id (32 hex, `uuid4().hex`): minted once at a row's first insert and copied by every clone (in-place compaction generations, rotation children, concurrent-tail clones, `replace_messages` re-issues, export/import), so one logical message keeps one uid while its physical `id` changes. Row-addressed rewrites leave it alone. It is restored on every projection (`get_messages_as_conversation` sets it unconditionally; `_row_id` stays opt-in) and stripped from provider requests. Context engines key their own per-message state on it — see [Context Engine Plugins](./context-engine-plugin.md#stable-message-identity-message_uid).
 
 ### FTS5 Full-Text Search
 
@@ -264,7 +265,7 @@ indexed columns — see `SCHEMA_SQL` in `hermes_state_common.py` for the exact S
 
 ## Schema Version and Migrations
 
-Current schema version: **23**
+Current schema version: **31**
 
 The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 
@@ -288,6 +289,7 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 23 | FTS storage redesign — external-content FTS tables replacing the v11 inline-mode copies (opt-in transition for existing DBs) |
 | 29 | Cron sessions leave the trigram (substring/CJK) index; `messages_fts_trigram_src` view + triggers filter on `sessions.source`, one-time rebuild purges historical rows |
 | 30 | Delegate-child (subagent) sessions leave the trigram index too — `source='subagent'` or the `$._delegate_from` marker (`FTS_TRIGRAM_SESSION_SQL`). Rows stay in `messages` and the standard `messages_fts` word index, so `session_search` still finds them; only the ~2.6× trigram shadow tables shrink. Same one-time rebuild as v29 |
+| 31 | `messages.message_uid` (declarative column add) plus a one-time backfill of a fresh uid onto every row that predates the column, so a v31 store hands every row to consumers with an id |
 
 Versions not listed above were declarative column additions handled by `_reconcile_columns()` (version bump only, no data migration).
 

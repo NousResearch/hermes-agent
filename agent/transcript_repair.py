@@ -9,14 +9,15 @@ import sqlite3
 from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
-from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT
+from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
 
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
-# role, active flag and the ones owned by the display index / timestamp / session linkage.
-_NON_PAYLOAD_COLUMNS = frozenset({"session_id", "role", "timestamp", "active", "display_identity"})
+# role, active flag and the ones owned by the display index / timestamp / session linkage. ``message_uid``
+# is identity too: a rewrite changes the message's content, never which logical message the row is.
+_NON_PAYLOAD_COLUMNS = frozenset({"session_id", "role", "timestamp", "active", "display_identity", MESSAGE_UID})
 _REPAIR_COLUMNS = tuple(c for c in _MESSAGE_WRITE_COLUMNS if c not in _NON_PAYLOAD_COLUMNS)
 # Columns same-process writers update after our flush (reactions / display-kind stamps, api_content
 # backfill, codex reasoning backfill + checkpoint pruning, platform message ids). They are not part of the
@@ -150,6 +151,10 @@ def resolve_and_repair_transcript_batch(
             "SELECT * FROM messages WHERE id = ? AND session_id = ?", (target_id, session_id)
         ).fetchone() if wrote else target_row
         msg["timestamp"] = final_row["timestamp"]
+        # A row-addressed rewrite keeps the row's identity: the stored uid wins over whatever the live dict
+        # carried (a restored dict without one, or a dict stamped before a rolled-back insert).
+        if final_row[MESSAGE_UID]:
+            msg[MESSAGE_UID] = final_row[MESSAGE_UID]
         msg[DB_ROW_SNAPSHOT] = transcript_row_snapshot(final_row)
         if adopt:
             canonical = decode_row_fn(final_row)
@@ -271,6 +276,8 @@ def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: L
         written[_DB_PERSISTED_MARKER] = True
         if isinstance(row.get("_row_id"), int):
             written["_row_id"] = row["_row_id"]
+        if isinstance(row.get(MESSAGE_UID), str) and row[MESSAGE_UID]:
+            written[MESSAGE_UID] = row[MESSAGE_UID]
         if isinstance(row.get("timestamp"), (int, float)):
             written["timestamp"] = row["timestamp"]
         if isinstance(row.get(DB_ROW_SNAPSHOT), str):

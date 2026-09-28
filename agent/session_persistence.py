@@ -23,7 +23,7 @@ from agent.memory_manager import sanitize_context
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
-from agent.message_metadata import DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, REPAIR_BOOKKEEPING_FIELDS
+from agent.message_metadata import DB_ROW_SNAPSHOT, MERGED_TURN_PREFIX, MESSAGE_UID, REPAIR_BOOKKEEPING_FIELDS
 from agent.transcript_repair import sync_flushed_message_markers
 
 
@@ -236,6 +236,8 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
+    if isinstance(msg.get(MESSAGE_UID), str) and msg[MESSAGE_UID]:
+        row[MESSAGE_UID] = msg[MESSAGE_UID]
     if isinstance(msg.get(DB_ROW_SNAPSHOT), str):
         row[DB_ROW_SNAPSHOT] = msg[DB_ROW_SNAPSHOT]
     return row

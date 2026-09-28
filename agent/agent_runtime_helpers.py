@@ -19,6 +19,7 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
 )
+from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
@@ -452,8 +453,11 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
 def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any]) -> None:
     """Record durable ids a merge folded into *survivor* and then dropped from the list.
 
-    No-op when the dropped dict names no row. An empty incoming turn still merges,
-    and stamping an empty list would change a message that absorbed nothing.
+    Both the physical ``_row_id`` (``_absorbed_row_ids``, consumed by the in-place archive) and the durable
+    ``message_uid`` (``_absorbed_message_uids``, the merge witness context engines read) are recorded; the
+    survivor keeps its own uid, so a composite is "first constituent + absorbed". No-op when the dropped
+    dict names no row and no uid. An empty incoming turn still merges, and stamping an empty list would
+    change a message that absorbed nothing.
     """
     ids = []
     row_id = dropped.get("_row_id")
@@ -462,12 +466,23 @@ def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any]) ->
     for older in dropped.get("_absorbed_row_ids") or ():
         if isinstance(older, int) and not isinstance(older, bool) and older > 0 and older not in ids:
             ids.append(older)
-    if not ids:
-        return
-    absorbed = survivor.setdefault("_absorbed_row_ids", [])
-    for row_id in ids:
-        if row_id not in absorbed:
-            absorbed.append(row_id)
+    if ids:
+        absorbed = survivor.setdefault("_absorbed_row_ids", [])
+        for row_id in ids:
+            if row_id not in absorbed:
+                absorbed.append(row_id)
+    uids = []
+    uid = dropped.get(MESSAGE_UID)
+    if isinstance(uid, str) and uid:
+        uids.append(uid)
+    for older in dropped.get(ABSORBED_MESSAGE_UIDS) or ():
+        if isinstance(older, str) and older and older not in uids:
+            uids.append(older)
+    if uids:
+        absorbed_uids = survivor.setdefault(ABSORBED_MESSAGE_UIDS, [])
+        for uid in uids:
+            if uid not in absorbed_uids:
+                absorbed_uids.append(uid)
 
 
 def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int]:

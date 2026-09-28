@@ -272,6 +272,21 @@ def _get_provider(stt_config: dict) -> str:
 
 
 # ---- Provider: local (faster-whisper) -----------------------------------
+def is_local_model_loaded(model_name: Optional[str] = None) -> bool:
+    """Whether the cached local whisper model is ready for ``model_name``.
+
+    Returns ``True`` only when a model is currently held in memory AND (if
+    ``model_name`` is given) it matches the model that was actually loaded.
+    If the configured model differs from what's cached, the next transcription
+    will cold-reload, so callers should treat this as "not warm". Lets callers
+    (e.g. the CLI voice status banner) distinguish a genuine cold load from a
+    warm, cached transcription without reaching into privates.
+    """
+    if _local_model is None:
+        return False
+    return model_name is None or _local_model_name == model_name
+
+
 def _unload_local_model() -> None:
     """Release the cached local whisper model. Thread-safe via the model lock."""
     global _local_model, _local_model_name

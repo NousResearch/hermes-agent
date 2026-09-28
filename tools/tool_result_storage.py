@@ -39,6 +39,7 @@ _TERMINAL_ENVELOPE_KEYS = frozenset({
     "verification_evidence", "approval", "exit_code_meaning", "hint",
     "sudo_auth_failed", "sudo_cache_cleared", "traceback", "session_id",
     "pid", "notify_on_complete", "note", "reason", "retry_hint",
+    "promoted_from_foreground",
 })
 _TERMINAL_METADATA_TAG = "<terminal-result-metadata>"
 _TERMINAL_METADATA_CLOSING_TAG = "</terminal-result-metadata>"
@@ -245,9 +246,11 @@ def _terminal_result_text(content: str) -> str:
     when the result was too big to inline (#126444).
 
     Recognized by SHAPE, not by tool name: keys are a subset of the terminal envelope
-    family with a non-empty string ``output`` and an ``exit_code`` member. That keeps
-    opaque JSON from any other tool verbatim, and covers the aggregate path
-    (``enforce_turn_budget`` persists under ``_BUDGET_TOOL_NAME``).
+    family with a non-empty string ``output`` and an ``exit_code`` member. Foreign JSON
+    whose keys are a subset of the family is rewritten (metadata hoisted out of the text,
+    ``output`` inlined verbatim); anything outside the family is kept verbatim. The
+    subset shape also covers the aggregate path (``enforce_turn_budget`` persists under
+    ``_BUDGET_TOOL_NAME``).
 
     Unlike the MCP envelope, the metadata block goes BEFORE the text: ``generate_preview``
     is a head truncation, so metadata appended after the output would be cut again.

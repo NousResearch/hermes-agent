@@ -669,6 +669,27 @@ class TestTerminalEnvelopePreview:
         # text, head truncation would cut it again.
         assert result.index('"exit_code": 2') < result.index("compiler noise line")
 
+    def test_promoted_foreground_envelope_surfaces_session_in_preview(self):
+        """A promoted spawn result (tools/terminal_tool.py _with_promoted_note) re-serializes
+        the envelope with a ``promoted_from_foreground`` member; the promoted wrapper can
+        carry large foreground output, so session_id/pid must still ride the preview."""
+        output = "promoted poll output line\n" * 4_000
+        envelope = json.dumps({
+            "output": output, "exit_code": 0,
+            "session_id": "sess_123", "pid": 4242,
+            "promoted_from_foreground": "requested 1800s, cap 1800s",
+        }, ensure_ascii=False)
+
+        result = maybe_persist_tool_result(
+            content=envelope, tool_name="terminal", tool_use_id="tc_term_promoted",
+            env=None, threshold=30_000)
+
+        assert PERSISTED_OUTPUT_TAG in result
+        assert '"promoted_from_foreground"' in result
+        assert '"session_id": "sess_123"' in result
+        assert '"pid": 4242' in result
+        assert result.index('"promoted_from_foreground"') < result.index("promoted poll output line")
+
     def test_error_surfaces_and_spill_keeps_metadata_then_output(self):
         output = "x" * 40_000 + "\nthe real failure tail\n"
         envelope = json.dumps(

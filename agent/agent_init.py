@@ -827,6 +827,98 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> Dict
     return client_kwargs
 
 
+def _promote_free_first_entry(agent, fallback_model, _provider_timeout) -> Optional[Dict[str, Any]]:
+    """Free-first routing for default-configured agents (#125289).
+
+    A ``free: true`` entry at the head of ``fallback_providers`` declares a free-tier
+    ladder: everyday requests should spend free quota before the configured (paid) primary
+    is touched, with the primary demoted to the LAST rung. This pre-pass tries the
+    free-flagged head entries BEFORE the configured primary and, when one resolves,
+    promotes it to primary on the spot. The runtime ladder becomes: remaining chain
+    entries (config order) → configured primary (appended as tail). Because
+    ``_snapshot_primary_runtime`` runs after client binding, per-turn restore keeps
+    retrying the free route first — a 429'd free model falls through the ladder for that
+    turn only, and the next turn starts on free quota again.
+
+    Skipped whenever the agent's route was pinned away from the config default (session
+    ``/model`` override, ``-m``/``--provider`` CLI flags, delegated-child or cron pins):
+    an explicitly chosen route must never be silently replaced by a free model. MoA
+    presets are not free-tier ladder rungs and are skipped. Returns client kwargs for the
+    promoted entry, or None when no promotion happened (caller proceeds with the normal
+    primary-then-chain resolution).
+    """
+    from hermes_cli.fallback_config import entry_identity, entry_is_free, resolve_entry_api_key
+    _entries = _fallback_entries(fallback_model)
+    _free_head = [_fb for _fb in _entries if entry_is_free(_fb) and str(_fb["provider"]).lower() != "moa"]
+    if not _free_head or getattr(agent, "quiet_mode", False):
+        return None
+    _cfg_model, _cfg_provider = "", ""
+    _route_pinned = False
+    with suppress(Exception):
+        from hermes_cli.config import load_config_readonly, split_model_config_default
+        _cfg_model_section = (load_config_readonly() or {}).get("model") or {}
+        _cfg_model, _cfg_provider = split_model_config_default(_cfg_model_section.get("default"))
+        _cfg_provider = (_cfg_provider or str(_cfg_model_section.get("provider") or "").strip()).lower()
+        # ``auto``/"empty" on either side means "no explicit provider chosen" — not a pin.
+        _agent_provider = (agent.provider or "").strip().lower()
+        _effective_cfg_provider = _cfg_provider if _cfg_provider not in {"", "auto"} else ""
+        _agent_provider = _agent_provider if _agent_provider not in {"", "auto"} else ""
+        _route_pinned = bool(
+            (_agent_provider and _effective_cfg_provider and _agent_provider != _effective_cfg_provider)
+            or (agent.model and _cfg_model and agent.model != _cfg_model)
+        )
+    if _route_pinned:
+        logger.debug(
+            "Free-first promotion skipped: agent route pinned away from config default "
+            "(provider=%r model=%r)", agent.provider, agent.model)
+        return None
+    from agent.auxiliary_client import resolve_provider_client
+    for _fb in _free_head:
+        _fb_provider = str(_fb["provider"])
+        try:
+            _fb_explicit_key = resolve_entry_api_key(_fb)
+            _fb_client, _fb_model = resolve_provider_client(
+                _fb["provider"], model=_fb["model"], raw_codex=True,
+                explicit_base_url=_fb.get("base_url") or "", explicit_api_key=_fb_explicit_key,
+            )
+        except Exception as _fb_exc:
+            logger.debug("Free-first entry %s failed: %s", _fb_provider, _fb_exc)
+            continue
+        if _fb_client is None:
+            logger.debug("Free-first entry %s resolved no usable credentials", _fb_provider)
+            continue
+        # Promote: bind the free route as primary; rebuild the ladder without the free
+        # head and with the configured primary appended as the last rung.
+        _free_ids = {entry_identity(_e) for _e in _free_head}
+        _ladder = [_e for _e in _entries if entry_identity(_e) not in _free_ids]
+        _tail_provider = (agent.provider or "").strip() or _cfg_provider or "auto"
+        _tail_model = (agent.model or "").strip() or _cfg_model
+        _tail_base = (agent.base_url or "").strip()
+        _primary_id = entry_identity(
+            {"provider": _tail_provider, "model": _tail_model, "base_url": _tail_base})
+        if (_tail_model and _primary_id not in _free_ids
+                and _primary_id not in {entry_identity(_e) for _e in _ladder}):
+            _tail = {"provider": _tail_provider, "model": _tail_model}
+            if _tail_base:
+                _tail["base_url"] = _tail_base
+            _ladder.append(_tail)
+        agent._fallback_chain = _ladder
+        agent._fallback_index = 0
+        agent._fallback_activated = False
+        agent._fallback_model = _ladder[0] if _ladder else None
+        agent._free_first_promoted = True
+        agent.provider = _fb["provider"]
+        agent.model = _fb_model or _fb["model"]
+        if not agent.quiet_mode:
+            _labels = [f"{_e['model']} ({_e['provider']})" for _e in _ladder]
+            print(
+                f"🆓 Free-first routing: primary {agent.model} ({agent.provider}); "
+                f"ladder: {' → '.join(_labels) or '(none)'}"
+            )
+        return _client_kwargs_from_routed(_fb_client, _provider_timeout)
+    return None
+
+
 def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[Dict[str, Any]]:
     """OpenAI-client kwargs via the centralized provider router (no explicit creds).
 
@@ -835,6 +927,11 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     already bound and there is no OpenAI client to construct.
     """
     from agent.auxiliary_client import resolve_provider_client
+    # Free-tier ladder (#125289): a free-flagged chain head that resolves is promoted to
+    # primary before the configured default is ever consulted.
+    _free_first = _promote_free_first_entry(agent, fallback_model, _provider_timeout)
+    if _free_first is not None:
+        return _free_first
     _routed_client, _ = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
@@ -1089,12 +1186,19 @@ def _init_fallback_chain(agent, fallback_model):
     sync_credential_pool_entry_id(agent)
 
     # Ordered backups tried when the primary is exhausted (legacy single-dict or list).
-    agent._fallback_chain = _fallback_entries(fallback_model)
+    # A free-first promotion (#125289) already installed the re-ordered ladder in
+    # ``_routed_client_kwargs`` (remaining chain entries + configured primary as tail);
+    # rebuilding from the raw config here would destroy it and resurrect the free head
+    # as a fallback-only rung, so keep the promoted ladder instead.
+    if getattr(agent, "_free_first_promoted", False):
+        chain = agent._fallback_chain
+    else:
+        agent._fallback_chain = _fallback_entries(fallback_model)
+        chain = agent._fallback_chain
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
-    chain = agent._fallback_chain
     if chain and not agent.quiet_mode:
         labels = [f"{f['model']} ({f['provider']})" for f in chain]
         if len(chain) == 1:

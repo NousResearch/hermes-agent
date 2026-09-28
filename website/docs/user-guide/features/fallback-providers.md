@@ -193,6 +193,24 @@ fallback_providers:
     model: gpt-5.4
 ```
 
+**Free-first cost ladder (#125289):** flag head entries `free: true` and everyday requests spend free quota first, with your configured primary demoted to the last rung:
+```yaml
+model:
+  provider: qwen
+  default: qwen/qwen3.7-flash
+
+fallback_providers:
+  - provider: gemini            # free tier tried BEFORE the paid primary
+    model: gemini-3.8-flash
+    free: true
+  - provider: openrouter
+    model: meta-llama/llama-4-9b:free
+    free: true
+  - provider: anthropic         # paid, in chain order
+    model: claude-sonnet-4-6
+```
+A 429'd free model falls through for that turn only; the next turn retries free quota first. Pinned routes (session `/model` overrides, `-m`/`--provider` flags) are never re-routed to a free model. `!new` prints the full order as `◆ Ladder: ... [free] → ... → <primary> [primary]`.
+
 ### Where Fallback Works
 
 | Context | Fallback Supported |

@@ -2378,6 +2378,19 @@ class GatewayTurnMixin:
             agg = normalize_moa_config(load_config().get("moa"))["presets"].get(resolved.model, {}).get("aggregator") or {}
             if agg:
                 lines.append(f"◆ Acting model (billed for the run): {agg.get('provider')}:{agg.get('model')}")
+        # Full routing ladder for everyday requests (#125289): free-flagged chain heads are
+        # tried before the configured primary; the primary is the final fallback rung.
+        with suppress(Exception):
+            from hermes_cli.config import load_config
+            from hermes_cli.fallback_config import entry_is_free, get_fallback_chain
+            _chain = get_fallback_chain(load_config())
+            if _chain:
+                _labels = []
+                for _e in _chain:
+                    _mark = " [free]" if entry_is_free(_e) else ""
+                    _labels.append(f"{_e['model']} ({_e['provider']}){_mark}")
+                _labels.append(f"{resolved.model} ({resolved.provider or 'openrouter'}) [primary]")
+                lines.append("◆ Ladder: " + " → ".join(_labels))
         base_url = resolved.base_url
         if base_url and base_url_hostname(base_url) in ("localhost", "127.0.0.1", "0.0.0.0"):
             lines.append(f"◆ Endpoint: {base_url}")

@@ -215,6 +215,24 @@ Hermes supports a configured fallback provider chain — a list of `(provider, m
 
 Unpinned cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or legacy `fallback_model`) from `config.yaml` and passes it to `AIAgent(fallback_model=...)`, matching the gateway's `_load_fallback_model()` pattern. A job with its own `provider` / `model` / `base_url` gets no chain, the same rule as a pinned delegation child. See [Cron Internals](./cron-internals.md).
 
+### Free-first ladder (#125289)
+
+A `free: true` entry at the head of `fallback_providers` declares a free-tier **ladder** instead of a fallback-only chain: everyday (default-configured) agents promote the first resolvable free entry to primary and demote the configured primary to the **last** rung:
+
+```yaml
+model:
+  primary: qwen/qwen3.7-flash
+  fallback_providers:
+    - { provider: gemini, model: gemini-3.8-flash, free: true }
+    - { provider: openrouter, model: <free-model>, free: true }
+    - { provider: anthropic, model: claude-sonnet-4-6 }
+```
+
+- At agent init, `_promote_free_first_entry()` (`agent/agent_init.py`) tries the free-flagged head entries **before** the configured primary; the first that resolves is promoted, and the runtime ladder becomes: remaining chain entries → configured primary.
+- The per-turn restore snapshot (`_snapshot_primary_runtime`) is taken after client binding, so a 429'd free model falls through the ladder for that turn only; the next turn retries free quota first.
+- Promotion is skipped for pinned routes (session `/model` overrides, `-m`/`--provider` CLI flags, delegated-child or cron pins — `auto`/unset counts as unpinned) and for `quiet_mode` agents; MoA preset entries are never treated as free rungs.
+- The `!new` session-info block prints the full order: `◆ Ladder: <free> [free] → ... → <primary> [primary]`.
+
 ### Test coverage
 
 Fallback behavior is exercised across several suites:

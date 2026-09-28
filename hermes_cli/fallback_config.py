@@ -92,12 +92,33 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
     return entries
 
 
-def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
+def entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
+    """Stable route identity (provider, model, base_url) used to dedup chain entries and to
+    exclude an already-promoted free entry from the runtime fallback ladder."""
     return (
         str(entry.get("provider") or "").strip().lower(),
         str(entry.get("model") or "").strip().lower(),
         _normalized_base_url(entry.get("base_url")).lower(),
     )
+
+
+# Pre-rename alias for any external importer of the private name.
+_entry_identity = entry_identity
+
+
+def entry_is_free(entry: dict[str, Any] | None) -> bool:
+    """True when a fallback entry is flagged ``free: true`` (free-tier ladder, #125289).
+
+    Accepts YAML booleans (``free: true``) and the common string spellings; a present but
+    falsy value (``"false"``, ``"0"``, ``"off"``) is honored as NOT free so an explicit
+    opt-out never silently promotes a paid entry.
+    """
+    if not isinstance(entry, dict):
+        return False
+    raw = entry.get("free")
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(raw)
 
 
 def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:

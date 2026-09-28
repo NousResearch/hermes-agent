@@ -393,6 +393,29 @@ model:
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
 
 # =============================================================================
+# Fallback Chain / Free-First Ladder
+# =============================================================================
+# Top-level fallback_providers: ordered chain tried when the primary model
+# fails (429, 5xx, auth). Entries: provider, model, optional base_url /
+# api_key / key_env / api_mode. A "free: true" entry at the head of the list
+# declares a cost ladder (#125289): everyday requests promote the first
+# resolvable free entry to primary and demote the configured primary to the
+# LAST rung, so free-tier quota absorbs cheap traffic before paid models are
+# touched. A 429'd free model falls through for that turn only; the next turn
+# retries free quota first. Pinned routes (/model overrides, --model /
+# --provider flags) are never re-routed to a free model.
+#
+# fallback_providers:
+#   - provider: "gemini"                  # free tier tried BEFORE the primary
+#     model: "gemini-3.8-flash"
+#     free: true
+#   - provider: "openrouter"
+#     model: "meta-llama/llama-4-9b:free"
+#     free: true
+#   - provider: "anthropic"               # paid, in chain order
+#     model: "claude-sonnet-4-6"
+
+# =============================================================================
 # Kanban Review Dispatch
 # =============================================================================
 # First-class review tasks are dispatched automatically by default. The worker

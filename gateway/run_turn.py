@@ -1943,8 +1943,12 @@ class GatewayTurnMixin:
         _streaming_tts_done = adapter is not None and bool(
             getattr(adapter, "_streaming_tts_turn_completed", lambda *_a, **_k: False)(session_key, run_generation)
         )
-        if not _streaming_tts_done and self._should_send_voice_reply(
-            event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
+        if (
+            not getattr(event, "_handoff_delivery", False)
+            and not _streaming_tts_done
+            and self._should_send_voice_reply(
+                event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
+            )
         ):
             await self._send_voice_reply(event, response)
 

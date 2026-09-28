@@ -9,6 +9,7 @@ queued lane's own send was refused.
 """
 
 import pytest
+from unittest.mock import AsyncMock
 
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
@@ -123,3 +124,25 @@ async def test_refused_queued_send_leaves_the_completion_send_as_the_fallback(mo
     assert not result.get("already_sent")
 
     assert await _completion_seam(adapter, result, final) == final
+
+
+@pytest.mark.asyncio
+async def test_handoff_completion_never_auto_sends_voice_before_final_text():
+    adapter = _DocCaptureAdapter()
+    runner = _make_runner(adapter)
+    runner._should_send_voice_reply = lambda *_args, **_kwargs: True
+    runner._send_voice_reply = AsyncMock()
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001", chat_type="group")
+    event = MessageEvent(text="handoff", message_type=MessageType.TEXT, source=source, message_id="1")
+    event._handoff_delivery = True
+
+    class _Entry:
+        session_id = "handoff"
+
+    result = await runner._hmwa_deliver_turn_response(
+        event, source, _Entry(), _SESSION_KEY, None,
+        {"final_response": "```text\nbody\n```"}, [], "```text\nbody\n```", None, False,
+    )
+
+    assert result == "```text\nbody\n```"
+    runner._send_voice_reply.assert_not_awaited()

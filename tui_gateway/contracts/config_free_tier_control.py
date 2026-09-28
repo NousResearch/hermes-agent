@@ -231,6 +231,7 @@ class ModelPricing(Result):
     cache: str | None = None
     free: bool
     discount_percent: int | None = None
+    source: str | None = None
     was_input: str | None = None
     was_output: str | None = None
 
@@ -241,6 +242,7 @@ class ModelCapabilities(Result):
     fast: bool
     reasoning: bool
     can_disable_reasoning: bool | None = None
+    context_window: int | None = None
 
 
 class ModelOptionProvider(OpenModel):

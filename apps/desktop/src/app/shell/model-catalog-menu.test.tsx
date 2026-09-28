@@ -99,6 +99,32 @@ describe('the current row effort', () => {
   })
 })
 
+describe('context window and price on a model row', () => {
+  it('shows the catalog context and $/Mtok price, and nothing for a row without them', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          capabilities: { 'gemini-3.1-pro': { context_window: 1_048_576, fast: false, reasoning: true } },
+          models: ['gemini-3.1-pro', 'gemini-2.5-flash'],
+          name: 'Google',
+          pricing: { 'gemini-3.1-pro': { free: false, input: '$2.00', output: '$12.00' } },
+          slug: 'google'
+        }
+      ]
+    })
+    renderMenu()
+
+    const priced = (await screen.findByText(/Gemini 3\.1 Pro/i)).closest('[role="menuitem"]')!
+
+    expect(priced.textContent).toContain('1M')
+    expect(priced.textContent).toContain('$2.00 / $12.00')
+
+    const bare = (await screen.findByText(/Gemini 2\.5 Flash/i)).closest('[role="menuitem"]')!
+
+    expect(bare.textContent).not.toMatch(/\$|free|undefined|null/)
+  })
+})
+
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
 function renderMenu(current: Partial<ModelMenuController['current']> = {}) {

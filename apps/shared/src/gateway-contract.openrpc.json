@@ -18048,6 +18048,18 @@
             ],
             "default": null,
             "title": "Can Disable Reasoning"
+          },
+          "context_window": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context Window"
           }
         },
         "required": [
@@ -18477,6 +18489,18 @@
             ],
             "default": null,
             "title": "Discount Percent"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
           },
           "was_input": {
             "anyOf": [

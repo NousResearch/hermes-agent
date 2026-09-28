@@ -314,11 +314,139 @@ def _reasoning_catalog_reader(slug: str):
     return read
 
 
+# Aggregators relist other vendors' models, so a cross-vendor id match prefers a first-party vendor
+# carrying cost data: `deepseek-v4-pro` must resolve to `deepseek`, not to an aggregator reselling it.
+_AGGREGATOR_VENDORS = frozenset({
+    "openrouter", "vercel", "novita-ai", "huggingface", "opencode", "opencode-go", "kilo",
+    "groq", "togetherai", "fireworks-ai",
+})
+_XVENDOR_INDEX_CACHE: dict[int, dict[str, str]] = {}
+
+
+def _cross_vendor_index(registry: dict) -> dict[str, str]:
+    """``lowercased model id -> models.dev vendor``, built once per registry object.
+
+    Ranked so the answer is stable and sensible: first-party before aggregator, priced before
+    unpriced, then sorted vendor id as the tie-break.
+    """
+    cached = _XVENDOR_INDEX_CACHE.get(id(registry))
+    if cached is not None:
+        return cached
+    try:
+        from agent.models_dev import PROVIDER_TO_MODELS_DEV
+        first_party = set(PROVIDER_TO_MODELS_DEV.values())
+    except Exception:
+        first_party = set()
+
+    # Pass 1: every vendor publishing each id, with the price and context it quotes.
+    by_id: dict[str, list[tuple[str, tuple, object]]] = {}
+    for vendor in sorted(registry):
+        models = (registry.get(vendor) or {}).get("models")
+        if not isinstance(models, dict):
+            continue
+        for mid, entry in models.items():
+            key = str(mid).strip().lower()
+            if not key:
+                continue
+            cost = (entry or {}).get("cost") or {}
+            ctx = ((entry or {}).get("limit") or {}).get("context")
+            by_id.setdefault(key, []).append(
+                (vendor, (cost.get("input"), cost.get("output")), ctx))
+
+    # Pass 2: the MODAL price is the vendor's list price — dozens of resellers republish a model,
+    # and the ones that agree are quoting the list while discounters and markups scatter either
+    # side (glm-5.3-flash: $0.15/$0.50 from 8 vendors incl. zai; 302ai undercuts at $0.075/$0.25).
+    # The modal context then settles the rest, since re-hosts trim the window they expose
+    # (github-copilot serves gemini-3.8-flash at 1,000,000 against Google's own 1,048,576).
+    # Needs no curated publisher list and self-corrects as the registry grows.
+    def _modal(entries: list, pick) -> list:
+        groups: dict = {}
+        for e in entries:
+            groups.setdefault(pick(e), []).append(e)
+        return sorted(groups.items(), key=lambda kv: (-len(kv[1]), str(kv[0])))[0][1]
+
+    index: dict[str, str] = {}
+    for key, entries in by_id.items():
+        priced = [e for e in entries if e[1][0] or e[1][1]]
+        pool = _modal(priced or entries, lambda e: e[1])
+        pool = _modal(pool, lambda e: e[2])
+        index[key] = sorted(
+            (e[0] for e in pool),
+            key=lambda v: (v in _AGGREGATOR_VENDORS, v not in first_party, v))[0]
+    _XVENDOR_INDEX_CACHE.clear()  # one registry is in flight at a time; keep this bounded
+    _XVENDOR_INDEX_CACHE[id(registry)] = index
+    return index
+
+
+def _catalog_model_info(slug: str, model_id: str, *, metadata_config: dict | None = None):
+    """models.dev ``ModelInfo`` for a picker row's (provider slug, model id), or ``None``.
+
+    Resolution order — and never a bare ``"openrouter"`` guess, which is what made every
+    direct-provider row (xiaomi, deepseek, zai) resolve to nothing:
+      1. the provider's own models.dev id (``_models_dev_id`` already honours a configured
+         ``providers.<slug>.catalog_provider`` alias);
+      2. the vendor prefix of a slash-style id (``xiaomi/mimo-v2.5``);
+      3. a cross-vendor scan by model id — the only handle for resellers such as ``apikey-fan*``,
+         which are absent from models.dev and put several vendors behind one endpoint.
+
+    Reads the resident registry only (``allow_network=False``): a picker open must never do I/O.
+    """
+    try:
+        from agent.models_dev import _models_dev_id, fetch_models_dev, get_model_info
+    except Exception:
+        return None
+
+    keys = [model_id]
+    if "/" in model_id:
+        keys.append(model_id.split("/", 1)[1])
+
+    candidates: list[tuple[str, str]] = []
+    try:
+        mdev_id = _models_dev_id(slug, config=metadata_config)
+    except Exception:
+        mdev_id = None
+    if mdev_id:
+        candidates += [(mdev_id, k) for k in keys]
+    if "/" in model_id:
+        candidates.append((model_id.split("/", 1)[0], keys[-1]))
+    try:
+        registry = fetch_models_dev(allow_network=False) or {}
+    except Exception:
+        registry = {}
+    if registry:
+        index = _cross_vendor_index(registry)
+        candidates += [(v, k) for k in keys if (v := index.get(k.strip().lower()))]
+
+    def _published(vendor: str, key: str) -> bool:
+        """The vendor really lists this id. ``get_model_info`` answers for an UNKNOWN model too,
+        from ``_UNKNOWN_MODEL_BASE`` (a synthesized 200K window) — displaying that as the model's
+        context would be inventing a number, so a row stays blank unless the catalog has it."""
+        models = (registry.get(vendor) or {}).get("models")
+        if not isinstance(models, dict):
+            return False
+        if key in models:
+            return True
+        lowered = key.strip().lower()
+        return any(str(m).strip().lower() == lowered for m in models)
+
+    seen: set[tuple[str, str]] = set()
+    for vendor, key in candidates:
+        if not vendor or (vendor, key) in seen or not _published(vendor, key):
+            continue
+        seen.add((vendor, key))
+        try:
+            info = get_model_info(vendor, key, config=metadata_config)
+        except Exception:
+            info = None
+        if info is not None:
+            return info
+    return None
+
+
 def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None) -> None:
-    """Attach ``{model: {fast, reasoning, ...}}`` per row. ``reasoning`` defaults True when the catalog is
-    silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
-    serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
-    is deliberately NOT forwarded — it under-reports levels that work."""
+    """Attach ``{model: {fast, reasoning, context_window, ...}}`` per row.
+    Also fills catalog price + context for non-Nous providers (apikey.fan etc.) from models.dev.
+    """
     from hermes_cli.models import model_supports_fast_mode
 
     try:
@@ -326,12 +454,42 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     except Exception:
         get_model_capabilities = None  # type: ignore[assignment]
 
+    def _catalog_context_window(slug: str, model_id: str) -> int:
+        info = _catalog_model_info(slug, model_id, metadata_config=metadata_config)
+        ctx = getattr(info, "context_window", None) if info is not None else None
+        try:
+            return int(ctx) if ctx else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def _fill_catalog_pricing(row: dict, slug: str, models: list[str]) -> None:
+        pricing = row.setdefault("pricing", {})
+        for m in models:
+            if m in pricing:  # a provider-reported price always wins over the catalog
+                continue
+            info = _catalog_model_info(slug, m, metadata_config=metadata_config)
+            if info is None:
+                continue
+            # ModelInfo carries cost_input/cost_output (USD per 1M tokens); it has no `pricing`
+            # attribute — reading one silently yielded 0/0 and filled nothing.
+            inp = getattr(info, "cost_input", 0) or 0
+            out = getattr(info, "cost_output", 0) or 0
+            if not (inp or out):
+                # A catalog zero is ambiguous: subscription endpoints (alibaba-token-plan,
+                # xiaomi-token-plan-sgp) report 0 for "included in plan", not "free". Stay silent.
+                continue
+            pricing[m] = {
+                "input": f"{inp}", "output": f"{out}", "free": False,
+                "source": "catalog", "catalog_provider": getattr(info, "provider_id", ""),
+            }
+
     for row in rows:
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
+        models = row.get("models") or []
 
-        for model in row.get("models") or []:
+        for model in models:
             reasoning = True
             if get_model_capabilities is not None and slug:
                 try:
@@ -341,7 +499,11 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                 except Exception:
                     reasoning = True
 
-            entry: dict[str, Any] = {"fast": bool(model_supports_fast_mode(model)), "reasoning": reasoning}
+            entry: dict[str, Any] = {
+                "fast": bool(model_supports_fast_mode(model)),
+                "reasoning": reasoning,
+                "context_window": _catalog_context_window(slug, model),
+            }
 
             if reasoning and read_reasoning_catalog is not None:
                 try:
@@ -349,8 +511,6 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                 except Exception:
                     detail = None
                 if detail and not detail.get("supports_reasoning"):
-                    # Aggregator catalog beats models.dev for a route it serves: no reasoning param
-                    # means no reasoning controls, so no disable to describe either.
                     entry["reasoning"] = False
                 elif detail:
                     entry["can_disable_reasoning"] = not detail.get("mandatory")
@@ -358,6 +518,9 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
             caps[model] = entry
 
         row["capabilities"] = caps
+        # Fill catalog price per model, not per row: a provider with partial live pricing still
+        # gets the catalog value for the models its endpoint did not price. Live entries are kept.
+        _fill_catalog_pricing(row, slug, models)
 
 
 # Newest N models per lab an aggregator row features by default (older tail behind search/show-all);

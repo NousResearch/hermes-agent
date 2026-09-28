@@ -442,7 +442,14 @@ seed_one() {
     fi
 }
 seed_one ".env" ".env.example"
-seed_one "config.yaml" "cli-config.yaml.example"
+seed_one "config.yaml" "deploy/railway/config.yaml"
+as_hermes /opt/hermes/.venv/bin/python -m deploy.railway.bootstrap
+as_hermes mkdir -p "$HERMES_HOME/workspace" "$HERMES_HOME/responsibilities" "$HERMES_HOME/connections"
+# PM owns the browser harness; prepare it before gateway discovery on a fresh volume.
+(
+    cd "$INSTALL_DIR"
+    as_hermes /opt/hermes/.venv/bin/python -c 'from tools.browser_use_cli import install_cli; ok, detail = install_cli(); print(detail); raise SystemExit(0 if ok else 1)'
+)
 seed_one "SOUL.md" "docker/SOUL.md"
 
 # --- Ensure a gateway api_server key exists (loopback control plane) ---

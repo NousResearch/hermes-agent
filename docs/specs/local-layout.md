@@ -1,6 +1,6 @@
 # Local employee layout
 
-Status: layout agreed; runtime implementation pending.
+Status: implemented in the codebase; see [implementation map and validation limits](implementation.md).
 
 ## Ownership
 

@@ -1,7 +1,7 @@
 # Railway deployment and service selection
 
-Status: service selections agreed; topology proposed; integration validation
-pending. No deployment made. See [the master specification](employee.md).
+Status: deployment files and local protocol checks implemented; live validation
+pending. No deployment made. See [deployment instructions](../../deploy/railway/README.md). See [the master specification](employee.md).
 
 ## Selected direction
 

@@ -1,6 +1,6 @@
 # Conversation framing
 
-Status: behavior agreed; runtime implementation pending.
+Status: implemented in the codebase; see [implementation map and validation limits](implementation.md).
 
 ## Decision
 
@@ -56,3 +56,14 @@ conversation, a reply to an externally delivered report receives that report's
 context, and failed/duplicate deliveries do not appear as new successes. Cover
 DM and group flows, session restoration, profile isolation and byte-stable
 historical context. Verify the actual model request, not merely stored rows.
+
+## Delivery-context bounds
+
+Confirmed-delivery notes retain up to seven days and 100 recent entries per
+destination. Each note is a labelled excerpt of at most 2,000 characters; the
+full message remains at its delivery destination. A turn receives at most ten
+notes within an 8,000-character block, with a notice when more remain queued.
+Only included notes are acknowledged after durable transcript persistence.
+Shared-group consumption is tracked per native logical participant conversation,
+so one participant cannot consume another's context and session resets do not
+replay already-consumed reports.

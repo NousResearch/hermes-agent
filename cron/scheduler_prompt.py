@@ -257,7 +257,8 @@ def _build_job_prompt(
     omitted, the script (if any) runs inline as before. extra_prompt: Optional per-run context (from
     ``cronjob(action='run')``, 57331 — salvaged from #57342 by @liuhao1024).
     """
-    user_prompt = str(job.get("prompt") or "")
+    from responsibilities.run_context import build_run_prompt
+    user_prompt = build_run_prompt(job) if job.get("responsibility") else str(job.get("prompt") or "")
     if extra_prompt:
         user_prompt = f"{user_prompt}\n\n## Run Context\n{extra_prompt}"
     prompt = user_prompt
@@ -296,7 +297,7 @@ def _build_job_prompt(
         prompt = f"{notepad_section}{prompt}"
         has_injected_data = True
 
-    prompt = _CRON_HINT + prompt
+    prompt = ("" if job.get("responsibility") else _CRON_HINT) + prompt
     skill_names = _job_skill_names(job)
     if not skill_names:
         return _scan_assembled_cron_prompt(

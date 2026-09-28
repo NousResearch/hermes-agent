@@ -49,3 +49,6 @@ is removed or upstream satisfies it. Use this shape:
 - [Scoped agent guidance](divergences/scoped-agent-guidance.md) — route agent guidance instead of growing one root file.
 
 - [Employee runtime defaults](divergences/employee-runtime-defaults.md) — preserve native defaults and explicit local transcription.
+
+- [Employee runtime](divergences/employee-runtime.md) — preserve employee behavior on native runtime owners.
+- [Codex review](divergences/codex-review.md) — run read-only implementation review before landing.

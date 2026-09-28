@@ -194,7 +194,7 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     role = msg.get("role", "unknown")
     content = msg.get("content")
     # api_content sidecar: exact bytes sent to the API when they differ from clean content (replay parity).
-    api_content = msg.get("api_content") if isinstance(msg.get("api_content"), str) else None
+    api_content = msg.get("api_content") if isinstance(msg.get("api_content"), (str, list)) else None
     timestamp = msg.get("timestamp")
     if is_current_turn_user and role == "user":
         content, api_content = durable_user_row_content(agent, msg, content, api_content)
@@ -426,11 +426,13 @@ class SessionPersistenceMixin:
             # the reason to record.
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
-            self._flush_messages_to_session_db(messages, conversation_history)
+            persisted = self._flush_messages_to_session_db(messages, conversation_history)
             # Drain async token-accounting deltas at every persist point; cheap no-op when nothing queued.
             if self._session_db is not None:
                 self._session_db.flush_token_counts()
-            note_turn_persisted(self)
+            if persisted:
+                note_turn_persisted(self)
+            return persisted
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Pop empty-response retry scaffolding from the tail. The

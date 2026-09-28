@@ -1,7 +1,7 @@
 # Employee behavior on native Hermes
 
-Status: implementation started. Native runtime defaults are implemented; the
-remaining work packages and live deployment checks are pending.
+Status: codebase implemented; [implementation map](implementation.md)
+records runtime owners. Live deployment acceptance requires the future server.
 This is the entry point for the specification. Linked documents own detailed
 contracts; they must remain consistent with the decisions summarized here.
 Implementation proposals and unverified integration requirements are labelled.
@@ -75,7 +75,8 @@ make hosting convenient.
 
 ## Implementation sequence
 
-These are implementation work packages, not claims that code already exists.
+These are the implementation work packages and their acceptance criteria.
+See the implementation map for current code and local evidence.
 Read the applicable area guides before editing each owner.
 
 | Step | Change and likely native owners | Completion evidence |
@@ -110,7 +111,7 @@ including colliding display names. Verify profile isolation without claiming
 that ordinary host filesystem access is sandboxed. Test actual model requests
 and native tool/cron/gateway paths, not only mocked functions or source strings.
 Python checks use `scripts/run_tests.sh`; UI behavior belongs in the owning TS
-suite. No runtime suite is required for this documentation-only pass.
+suite. Run focused runtime checks through the native test runner.
 
 ## Remaining engineering checks
 
@@ -119,8 +120,9 @@ These do not reopen agreed product choices:
 - Codex compatibility and entitlement for Hindsight Luna and image generation;
   ownership of refresh credentials, concurrency and rate-limit recovery.
 - Durable Browser Use cloud profile provisioning/reuse, including the current
-  native provider version. Cloud is selected; exact profile setup is not yet proven.
-- Hindsight pinned-image defaults, bank reconciliation and exact config parity.
+  native provider version. Local protocol tests pass; persistence on the actual cloud account remains a deployment check.
+- Hindsight live retain/recall/reflect on the actual Codex and OpenRouter accounts.
+  Pinned-image startup with pgvector and source-policy parity are checked locally.
 - Railway service startup, volume paths/ownership, database backup/restore,
   authenticated dashboard access and public webhook routing.
 - One authoritative source for each secret so Railway variables cannot silently

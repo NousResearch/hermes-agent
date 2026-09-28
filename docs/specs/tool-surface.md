@@ -1,6 +1,6 @@
 # Employee tool surface
 
-Status: tool decisions agreed; implementation pending.
+Status: implemented in the codebase; see [implementation map and validation limits](implementation.md).
 
 This document defines the model-visible tool surface of this Hermes fork.
 Implementation follows [the master specification](employee.md); this document

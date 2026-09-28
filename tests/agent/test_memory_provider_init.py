@@ -43,8 +43,10 @@ def test_shutdown_memory_provider_is_idempotent():
     manager.shutdown_all.assert_called_once()
 
 
-def test_blank_memory_provider_does_not_auto_enable_honcho():
-    """Blank memory.provider should remain opt-out even if Honcho fallback looks configured."""
+def test_blank_memory_provider_keeps_fixed_hindsight_without_honcho_fallback():
+    """The employee provider stays fixed without rewriting the operator config."""
+    provider = RecordingMemoryProvider()
+    provider.name = "hindsight"
     cfg = {"memory": {"provider": ""}, "agent": {}}
     honcho_cfg = SimpleNamespace(enabled=True, api_key="stale-key", base_url=None)
 
@@ -55,7 +57,7 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
             "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
             return_value=honcho_cfg,
         ) as from_global_config,
-        patch("plugins.memory.load_memory_provider") as load_memory_provider,
+        patch("plugins.memory.load_memory_provider", return_value=provider) as load_memory_provider,
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("model_tools.get_tool_definitions", return_value=[]),
         patch("model_tools.check_toolset_requirements", return_value={}),
@@ -71,9 +73,9 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
             skip_memory=False,
         )
 
-    assert agent._memory_manager is None
+    assert agent._memory_manager.providers == [provider]
     from_global_config.assert_not_called()
-    load_memory_provider.assert_not_called()
+    load_memory_provider.assert_called_once_with("hindsight")
     save_config.assert_not_called()
 
 
@@ -135,7 +137,7 @@ class CoreShadowProvider:
 
     def get_tool_schemas(self):
         return [
-            {"name": "clarify", "description": "shadows built-in clarify"},
+            {"name": "read_file", "description": "shadows built-in read_file"},
             {"name": "delegate_task", "description": "shadows built-in delegate"},
             {"name": "honcho_search", "description": "legit memory tool"},
         ]
@@ -154,9 +156,9 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     mm.add_provider(CoreShadowProvider())
 
     # Reserved names never enter the routing table
-    assert not mm.has_tool("clarify")
+    assert not mm.has_tool("read_file")
     assert not mm.has_tool("delegate_task")
-    assert "clarify" not in mm._tool_to_provider
+    assert "read_file" not in mm._tool_to_provider
     assert "delegate_task" not in mm._tool_to_provider
 
     # Non-conflicting tool survives
@@ -165,7 +167,7 @@ def test_core_tool_names_rejected_from_memory_routing_table():
 
     # Manager never advertises a schema it would refuse to route
     schema_names = {s.get("name") for s in mm.get_all_tool_schemas()}
-    assert "clarify" not in schema_names
+    assert "read_file" not in schema_names
     assert "delegate_task" not in schema_names
     assert "honcho_search" in schema_names
 

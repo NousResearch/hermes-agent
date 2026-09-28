@@ -584,7 +584,7 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
 # Top-level bool-ish keys read verbatim (no nested ``gateway.`` fallback) with their defaults.
 _TOPLEVEL_BOOL_DEFAULTS = {
     "write_sessions_json": True, "always_log_local": True, "filter_silence_narration": True,
-    "group_sessions_per_user": True, "thread_sessions_per_user": False,
+    "group_sessions_per_user": False, "thread_sessions_per_user": False,
 }
 
 
@@ -606,7 +606,7 @@ class GatewayConfig:
     filter_silence_narration: bool = True
     stt_enabled: bool = True  # Auto-transcribe inbound voice messages
     stt_echo_transcripts: bool = False  # Echo raw STT transcripts back to the user
-    group_sessions_per_user: bool = True  # Isolate group sessions per participant when user IDs exist
+    group_sessions_per_user: bool = False  # Isolate group sessions per participant when user IDs exist
     thread_sessions_per_user: bool = False  # False = threads shared across participants
     max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active sessions
     # The default profile's gateway serves every profile on the host (profiles stamped into session

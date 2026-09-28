@@ -24,6 +24,7 @@ KIND_JSON = "json"
 
 # Storage backends understood by web_server (see its read/write dispatch).
 STORAGE_FLAT_JSON = "flat_json"
+STORAGE_CONFIG_YAML = "config_yaml"  # Top-level config.yaml section named for the provider.
 STORAGE_HONCHO_HOST_BLOCK = "honcho_host_block"
 
 

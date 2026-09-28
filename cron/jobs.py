@@ -769,7 +769,7 @@ def _interval_schedule(minutes: int) -> Dict[str, Any]:
     return {"kind": "interval", "minutes": minutes, "display": f"every {minutes}m"}
 
 
-def parse_schedule(schedule: str) -> Dict[str, Any]:
+def parse_schedule(schedule: str, *, bare_duration_is_once: bool = False) -> Dict[str, Any]:
     """Parse a schedule string into ``{"kind": "once"|"interval"|"cron", ...}`` with ``run_at`` /
     ``minutes`` / ``expr``. "30m" and "every 30m" are recurring intervals; "every monday 9am" and
     "0 9 * * *" are cron; an ISO timestamp is once."""
@@ -833,7 +833,10 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         run_at = (now.astimezone(timezone.utc) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
         return {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"}
     with contextlib.suppress(ValueError):
-        return _interval_schedule(parse_duration(schedule))
+        minutes = parse_duration(schedule)
+        if bare_duration_is_once:
+            return parse_schedule(f"in {schedule}")
+        return _interval_schedule(minutes)
 
     raise ValueError(
         f"Invalid schedule '{original}'. Use:\n"
@@ -1199,7 +1202,8 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         # the wall-clock hour stays correct every calendar day, including DST
         # boundaries (morning-routine 09:00 America/Toronto).
         # Fall back to the base's own zone only when nothing is configured.
-        zone = get_timezone() or base_time.tzinfo
+        from zoneinfo import ZoneInfo
+        zone = ZoneInfo(schedule["timezone"]) if schedule.get("timezone") else (get_timezone() or base_time.tzinfo)
         base_wall = base_time.astimezone(zone).replace(tzinfo=None)
         it = croniter(expr, base_wall)
         # Strictly-after guard for the DST fall-back hour (qwen-code#11723 class):
@@ -1803,6 +1807,9 @@ def create_job(
     paused_reason: Optional[str] = None,
     pinned: bool = False,
     interpreter: Optional[str] = None,
+    responsibility: Optional[Dict[str, Any]] = None,
+    schedule_timezone: Optional[str] = None,
+    replace_job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1812,6 +1819,8 @@ def create_job(
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
     incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    responsibility: declaration ownership, persisted atomically with the initial schedule.
+    schedule_timezone: optional IANA schedule zone.
     interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
     (a venv can be rebuilt or moved after creation)."""
     if not isinstance(paused, bool):
@@ -1821,6 +1830,10 @@ def create_job(
     if paused_reason is not None and not paused:
         raise ValueError("paused_reason requires paused=True.")
     parsed_schedule = parse_schedule(schedule)
+    if schedule_timezone:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(schedule_timezone)
+        parsed_schedule["timezone"] = schedule_timezone
     # Normalize repeat: treat 0 or negative values as None (infinite). String forms
     # ('forever'/'once'/numeric) coerce via normalize_repeat_value — the shared chokepoint with update paths
     # (#66824/#64520/#7142/#71987/#95706).
@@ -1897,6 +1910,7 @@ def create_job(
     # config (attach/reasoning) or to ``deliver`` (failure_deliver), byte-identical to pre-feature
     # jobs.
     for key, value in (
+        ("responsibility", responsibility),
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
     ):
@@ -1904,7 +1918,11 @@ def create_job(
             job[key] = value
 
     with _jobs_lock():
-        save_jobs(load_jobs() + [job])
+        # A replacement owns a new execution identity; late completion of the
+        # retired job must never consume the new declaration's occurrence.
+        removed = {replace_job_id} if replace_job_id else set()
+        save_jobs([row for row in load_jobs() if row["id"] not in removed] + [job],
+                  removed_ids=removed)
     return job
 
 
@@ -2081,6 +2099,12 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         raise ValueError(f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}")
 
     def apply(jobs, i, job):
+        declaration_fields = {"schedule", "prompt", "script", "workdir", "deliver", "repeat", "name",
+                              "responsibility", "attach_to_session", "skills", "skill", "model", "provider",
+                              "no_agent", "monitor_script", "monitor_url", "context_from", "interpreter"}
+        if job.get("responsibility") and declaration_fields.intersection(updates):
+            owner = job["responsibility"]
+            raise ValueError(f"This job is file-owned. Edit responsibilities/{owner['name']}/schedules/{owner['trigger']}.yaml instead.")
         _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
         _apply_pin_update(job, updates)
@@ -2464,13 +2488,14 @@ def mark_job_run(
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry
 
-        if not success and model_unreachable and not is_terminal_job(job):
+        if not success and model_unreachable and not job.get("responsibility") and not is_terminal_job(job):
             plan_retry(job)
         else:
             # Any run that reached the model (either outcome) resets the re-run ladder.
             clear_state(job)
         if not success and quota_hold_seconds and not is_terminal_job(job):
-            quota_hold.plan_hold(job, quota_hold_seconds, recover_consumed_fire=recover_consumed_fire)
+            quota_hold.plan_hold(job, quota_hold_seconds,
+                                 recover_consumed_fire=recover_consumed_fire and not job.get("responsibility"))
         else:
             quota_hold.clear_state(job)
         save_jobs(jobs)
@@ -2583,9 +2608,13 @@ def claim_dispatch(job_id: str) -> bool:
                 return False
             # A prior tick claimed the dispatch then died — a genuinely wedged claim. Remove it so
             # it stops appearing due, leaving an operator-visible diagnostic.
-            jobs.pop(i)
-            # See #73973.
-            save_jobs(jobs, removed_ids={job_id})
+            if job.get("responsibility"):
+                _complete_job_record(job)
+                save_jobs(jobs)
+            else:
+                jobs.pop(i)
+                # See #73973.
+                save_jobs(jobs, removed_ids={job_id})
             _write_wedged_oneshot_diagnostic(job)
             logger.info(
                 "Job '%s': dispatch limit reached (%d/%d) — removing", label, completed, times)
@@ -2815,7 +2844,8 @@ def _sweep_completed_oneshots(
     removed = False
     for rj in list(raw_jobs):
         try:
-            if rj.get("state") != "completed":
+            # A file-owned completion is the tombstone preventing relative one-shots from rearming.
+            if rj.get("responsibility") or rj.get("state") != "completed":
                 continue
             schedule = rj.get("schedule")
             if (schedule.get("kind") if isinstance(schedule, dict) else None) != "once":
@@ -2876,8 +2906,12 @@ class _DueScan:
         """Drop the raw record for *job_id* as an intentional removal."""
         rj = self.find(job_id)
         if rj is not None:
-            self.raw_jobs.remove(rj)
-            self.removed.add(str(job_id))
+            if rj.get("responsibility"):
+                # The declaration remains on disk; retain its consumed dispatch identity.
+                _complete_job_record(rj)
+            else:
+                self.raw_jobs.remove(rj)
+                self.removed.add(str(job_id))
             self.needs_save = True
 
 
@@ -2981,6 +3015,7 @@ def _repair_timezone_shifted_cron(d: _DueJob) -> bool:
     now = d.scan.now
     if not (
         _instant_at_or_before(d.next_run_dt, now)
+        and not d.job.get("schedule", {}).get("timezone")
         and _timezone_offset_mismatch(d.raw_next_run_dt, now)
         and _stored_wall_clock_is_future(d.raw_next_run_dt, now)
     ):

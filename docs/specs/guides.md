@@ -1,6 +1,6 @@
 # Guides and skills removal
 
-Status: preservation policy agreed; implementation pending.
+Status: implemented in the codebase; see [implementation map and validation limits](implementation.md).
 
 ## Decision
 

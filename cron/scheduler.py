@@ -148,6 +148,10 @@ def _failure_streak_nudge(job: dict) -> str:
     schedule_kind = (job.get("schedule") or {}).get("kind")
     if schedule_kind not in {"cron", "interval"}:
         return ""
+    if job.get("responsibility") and int(job.get("failure_streak") or 0) + 1 >= 3:
+        owner = job["responsibility"]
+        return ("\nThis responsibility schedule stops after three consecutive failures. "
+                f"Correct and edit responsibilities/{owner['name']}/schedules/{owner['trigger']}.yaml to re-arm it.")
     try:
         cfg = load_config() or {}
         threshold = int(

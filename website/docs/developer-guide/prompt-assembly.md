@@ -6,6 +6,25 @@ description: "How Hermes builds the system prompt, preserves cache stability, an
 
 # Prompt Assembly
 
+## Employee fork behavior
+
+This fork uses `agent/employee_prompt.py` and the bundled `guides/` for employee
+instructions. The native cached-prefix lifecycle remains unchanged. Shared
+`MEMORY.md`, guide entry points, and responsibility/service listings freeze with
+the conversation. Skills and the native SOUL persona are omitted from this surface;
+`employee.name` and `employee.instructions` supply administrator customization.
+
+`agent/people.py` resolves recorded sender identities within the active profile.
+Personal memory appears after the current user's original content, before Hindsight
+recall and plugin context. `agent/turn_context.py` stores the exact augmented request
+in the `api_content` sidecar, including multimodal parts. Historical sidecars replay
+unchanged; the human transcript retains its original content. Confirmed outbound
+messages enter only the destination's next foreground turn, never a delegated or
+review fork. Background reviews freeze participant labels when their work starts.
+
+The sections below describe upstream assembly; employee-specific substitutions
+are mapped in `docs/specs/implementation.md`.
+
 Hermes deliberately separates:
 
 - **cached system prompt state**

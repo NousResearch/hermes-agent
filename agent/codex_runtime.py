@@ -670,7 +670,9 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
     _ensure_codex_session(agent, messages)
     try:
         _start_codex_thread(agent)
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        current_user = next((message for message in reversed(messages) if message.get("role") == "user"), {})
+        wire_input = current_user.get("api_content")
+        turn = agent._codex_session.run_turn(user_input=user_message if wire_input is None else wire_input)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)

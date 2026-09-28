@@ -97,8 +97,11 @@ constant clarification.
 
 Keep `main` deployable and the codebase secure. Run the applicable checks
 and review the complete change set. Triage every finding and fix valid ones
-at the root cause; after fixes, rerun affected checks and review. Review is
-the final validation step before committing and pushing.
+at the root cause; after fixes, rerun affected checks and review.
+Run `./.codex/scripts/codex-review.sh` with the complete change staged; triage
+findings, fix valid ones, rerun affected checks and repeat review before committing
+and pushing. See [Codex Review](docs/workflows/codex-review.md). Review-only agents
+follow [Reviewing](docs/workflows/reviewing.md) and must not launch another reviewer.
 
 ## Landing Changes
 

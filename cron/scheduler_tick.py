@@ -59,6 +59,12 @@ def _tick_admitted(
         except Exception as _wt_exc:
             _sched.logger.debug("Worktree maintenance dispatch failed: %s", _wt_exc)
 
+        from responsibilities.schedules import reconcile
+        from responsibilities.common import ResponsibilityFilesystemError
+        try:
+            reconcile()
+        except (ResponsibilityFilesystemError, OSError):
+            _sched.logger.exception("Responsibility scan failed; preserving jobs and continuing native cron")
         due_jobs = _sched.get_due_jobs()
         _sched._sweep_stale_inflight_for_tick(due_jobs)
 

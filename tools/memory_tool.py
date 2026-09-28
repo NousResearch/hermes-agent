@@ -12,7 +12,6 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
-from utils import is_truthy_value
 from tools.registry import no_cache_check_fn
 
 # fcntl is Unix-only; Windows uses msvcrt. MemoryStore reads both lazily from
@@ -51,9 +50,8 @@ def load_on_disk_store() -> "MemoryStore":
     try:
         from hermes_cli.config import load_config
         config = load_config() or {}
-        mem_cfg = get_builtin_memory_config(config)
         memory_enabled, user_profile_enabled = get_builtin_memory_store_flags(config)
-        store = MemoryStore(int(mem_cfg.get("memory_char_limit", 2200)), int(mem_cfg.get("user_char_limit", 1375)),
+        store = MemoryStore(2200, 1375,
                             memory_enabled=memory_enabled, user_profile_enabled=user_profile_enabled)
     except Exception:
         store = MemoryStore()  # config optional — fall back to defaults rather than break /memory
@@ -95,6 +93,8 @@ def _gate_or_stage(store: "MemoryStore", summary: str, detail: str, payload: Dic
         return tool_error(decision.message, success=False)
     if (unmatched := _pin_matched_entries(store, payload)) is not None:
         return unmatched
+    if payload.get("target") == "user" and store._user_path is not None:
+        payload["person"] = store._user_path.stem
     record = wa.stage_write(wa.MEMORY, payload, summary=f"{summary}: {detail[:120]}", origin=wa.current_origin())
     return json.dumps({"success": True, "staged": True, "pending_id": record["id"], "message": decision.message},
                       ensure_ascii=False)
@@ -163,45 +163,9 @@ def destructive_ops(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [op for op in ops if (op or {}).get("action") in _BG_DELETE_ACTIONS]
 
 
-def _background_delete_gate(store, action, operations, target="memory", content=None,
-                            old_text=None) -> Optional[str]:
-    """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
-    stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
-    single or inside a batch — are never applied unattended. The op is staged in the pending
-    store instead of merely denied: the fork's own review summary is never published back, so
-    a plain denial would drop the consolidation request with no surfacing path at all. A
-    staging failure fails closed to a plain denial."""
-    from tools.skill_provenance import is_unattended_review
-
-    if not is_unattended_review():
-        return None
-    payload = ({"action": "batch", "target": target, "operations": operations}
-               if operations is not None else
-               {"action": action, "target": target, "content": content, "old_text": old_text})
-    if not destructive_ops(payload):
-        return None
-    detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
-              else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
-    try:
-        if (unmatched := _pin_matched_entries(store, payload)) is not None:
-            return unmatched
-        from tools import write_approval as wa
-        record = wa.stage_write(
-            wa.MEMORY, payload,
-            summary=(f"background review consolidation ({'batch' if operations is not None else action} "
-                     f"on {target}): {detail}")[:200],
-            origin=wa.current_origin())
-        return json.dumps({
-            "success": True, "staged": True, "proposal_staged": True, "pending_id": record["id"],
-            "message": ("Background review may not delete memory entries unattended. The proposed "
-                        f"{'batch' if operations is not None else action} was staged for your approval — "
-                        "review it with /memory pending (approve to apply, discard to drop)."),
-        }, ensure_ascii=False)
-    except Exception:
-        logger.warning("Failed to stage background-review consolidation; denying", exc_info=True)
-        return tool_error(
-            "Background review may not delete memory entries ('replace'/'remove', including in a "
-            "batch); 'add' is still available.", success=False)
+def _background_delete_gate(store, action, operations, target="memory", content=None, old_text=None):
+    # Employee reviews consolidate authored knowledge through the same atomic store.
+    return None
 
 
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,
@@ -257,8 +221,7 @@ def get_builtin_memory_config(config: Optional[Dict[str, Any]] = None) -> Dict[s
 
 def get_builtin_memory_store_flags(config: Optional[Dict[str, Any]] = None) -> Tuple[bool, bool]:
     """Return ``(memory_enabled, user_profile_enabled)`` from resolved config."""
-    section = get_builtin_memory_config(config)
-    return tuple(is_truthy_value(section.get(k), default=True) for k in ("memory_enabled", "user_profile_enabled"))
+    return True, True
 
 
 @no_cache_check_fn
@@ -288,6 +251,9 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     staged before pinning has no verifiable target, so it is refused rather than replayed by
     old_text (which could hit a newer entry the approver never saw)."""
     action, target = payload.get("action"), payload.get("target", "memory")
+    if target == "user" and payload.get("person"):
+        from agent.people import store_for_person
+        store = store_for_person(payload["person"])
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return target_error
@@ -336,22 +302,26 @@ MEMORY_SCHEMA = {
                 "enum": ["add", "replace", "remove"],
                 "description": "The action to perform (single-op shape). Omit when using 'operations'."
             },
-            "target": {
-                "type": "string",
-                "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
-            },
+            "target": {'default': 'user',
+ 'description': "Memory scope: 'user' (default) for an individual's profile; 'memory' for "
+                'shared workspace knowledge.',
+ 'enum': ['memory', 'user'],
+ 'type': 'string'},
+            "user": {'description': 'Whose profile to write. Pass the complete sender label exactly as shown '
+                "between brackets. Required for target='user' in shared conversations; "
+                "ignored for target='memory'.",
+ 'type': 'string'},
             "content": {
                 "type": "string",
-                "description": "The entry content. Required for 'add' and 'replace'. For 'replace' it is the COMPLETE new entry text: the whole matched entry is overwritten, so include everything you want to keep. Alias: 'new_text' is also accepted (same full-entry meaning)."
+                "description": "The entry content. Required for 'add' and 'replace' (single-op shape). Alias: 'new_text' is also accepted (mirrors old_text)."
             },
             "old_text": {
                 "type": "string",
-                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring IDENTIFYING the existing entry to modify -- it locates the entry, it is not spliced out. Omit only for 'add'."
+                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring identifying the existing entry to modify. Omit only for 'add'."
             },
             "new_text": {
                 "type": "string",
-                "description": "Alias for 'content' (single-op shape): the COMPLETE new entry for 'replace', not a patch of old_text. If both are set, 'content' wins."
+                "description": "Alias for 'content' (single-op shape). Provided so the replace/remove old_text/new_text pairing works; if both are set, 'content' wins."
             },
             "operations": {
                 "type": "array",
@@ -364,7 +334,7 @@ MEMORY_SCHEMA = {
                     "type": "object",
                     "properties": {
                         "action": {"type": "string", "enum": ["add", "replace", "remove"]},
-                        "content": {"type": "string", "description": "Entry content for add/replace. For replace, the COMPLETE new entry (whole entry is overwritten). Alias: 'new_text'."},
+                        "content": {"type": "string", "description": "Entry content for add/replace. Alias: 'new_text'."},
                         "new_text": {"type": "string", "description": "Alias for 'content' in a batch op."},
                         "old_text": {"type": "string", "description": "Substring identifying the entry for replace/remove."},
                     },
@@ -372,7 +342,7 @@ MEMORY_SCHEMA = {
                 },
             },
         },
-        "required": ["target"],
+        "required": [],
     },
 }
 

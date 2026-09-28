@@ -80,35 +80,37 @@ def _agent_stale_thinking_on_wire(agent: Any) -> bool:
 
 
 def compose_multimodal_context_part(
-    ext_prefetch_cache: str, plugin_user_context: str,
+    ext_prefetch_cache: str, plugin_user_context: str, personal_context: str = "",
 ) -> Optional[str]:
     """The ephemeral context of one turn (memory prefetch + ``pre_llm_call``) as one text
     block; ``None`` when nothing is injected. The string sidecar appends it to ``content``;
     a multimodal (list) turn carries it as a durable text part (#71998)."""
     fenced = build_memory_context_block(ext_prefetch_cache) if ext_prefetch_cache else ""
-    injections = [part for part in (fenced, plugin_user_context) if part]
+    injections = [part for part in (personal_context, fenced, plugin_user_context) if part]
     return "\n\n".join(injections) if injections else None
 
 
 def compose_user_api_content(
-    content: Any, ext_prefetch_cache: str, plugin_user_context: str
-) -> Optional[str]:
-    """Compose the API-bound content of the current turn's string user message.
+    content: Any, ext_prefetch_cache: str, plugin_user_context: str, personal_context: str = ""
+) -> Any:
+    """Compose the API-bound content without changing the clean user message.
 
     Single source for the ``api_content`` sidecar and the wire bytes so they never drift
     (what turn N sends is what turn N+1 replays). ``None`` when nothing is injected or the
-    content is not a string (list content takes the text-part path)."""
-    if not isinstance(content, str):
+    content has no supported representation. List content receives an API-only text part."""
+    injection = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context, personal_context)
+    if injection is None:
         return None
-    injection = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context)
-    return None if injection is None else content + "\n\n" + injection
+    if isinstance(content, list):
+        return [*content, {"type": "text", "text": injection}]
+    return content + "\n\n" + injection if isinstance(content, str) else None
 
 
 def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:
     """Pop the ``api_content`` sidecar and substitute it into ``content`` (keeps the
     prompt-cache prefix byte-stable). Returns the popped sidecar, or ``None``."""
     sidecar = api_msg.pop("api_content", None)
-    if isinstance(sidecar, str) and sidecar and api_msg.get("role") in ("user", "assistant"):
+    if isinstance(sidecar, (str, list)) and sidecar and api_msg.get("role") in ("user", "assistant"):
         api_msg["content"] = sidecar
     return sidecar
 
@@ -119,10 +121,10 @@ def drop_stale_api_content(msg: Dict[str, Any]) -> None:
     msg.pop("api_content", None)
 
 
-def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Optional[str]:
-    """Extract the ``api_content`` sidecar; ``None`` when absent/non-string."""
+def extract_api_content_sidecar(msg: Mapping[str, Any]) -> Any:
+    """Extract the string or multimodal API sidecar."""
     v = msg.get("api_content")
-    return v if isinstance(v, str) else None
+    return v if isinstance(v, (str, list)) else None
 
 
 def _pop_turn_note(agent: Any, attr: str) -> str:
@@ -469,7 +471,7 @@ class TurnContext:
     preflight_compression_blocked: bool = False  # immediate retry proved ineffective
 
 
-def _persist_under_lock(agent: Any, fn, failure_msg: str, pending_cli_message: Any) -> None:
+def _persist_under_lock(agent: Any, fn, failure_msg: str, pending_cli_message: Any):
     """Run ``fn`` under the session persist lock (when the agent has one), log-and-swallow
     failures, then drop staged CLI input — unless it is an unmarked handoff kept for a
     close retry (once ``_db_persisted`` the close path must not treat it as pre-worker
@@ -477,12 +479,12 @@ def _persist_under_lock(agent: Any, fn, failure_msg: str, pending_cli_message: A
     try:
         lock = getattr(agent, "_session_persist_lock", None)
         if lock is None:
-            fn()
-        else:
-            with lock:
-                fn()
+            return fn()
+        with lock:
+            return fn()
     except Exception:
         logger.warning(failure_msg, agent.session_id or "none", exc_info=True)
+        return False
     finally:
         if not isinstance(pending_cli_message, dict) or pending_cli_message.get("_db_persisted"):
             agent._pending_cli_user_message = None
@@ -893,11 +895,11 @@ def _stamp_api_content_sidecar(
     API copy, so stamp the exact sent bytes on the live dict for replay."""
     _turn_user_msg = messages[current_turn_user_idx]
     live_content = _turn_user_msg.get("content")
-    from agent.session_persistence import _persist_lock, durable_user_row_content
+    from agent.session_persistence import _persist_lock, _durable_content, durable_user_row_content
     # Match the row the flush wrote (persist override = clean transcript), not the live bytes.
     durable_content, _api_content = durable_user_row_content(
         agent, _turn_user_msg, live_content,
-        compose_user_api_content(live_content or "", ext_prefetch_cache, plugin_user_context),
+        compose_user_api_content(live_content or "", ext_prefetch_cache, plugin_user_context, getattr(agent, "_personal_context", "")),
     )
     if _api_content is None or _api_content == durable_content:
         return
@@ -921,6 +923,8 @@ def _stamp_api_content_sidecar(
         _db = getattr(agent, "_session_db", None)
         if _db is None or not (isinstance(_row_id, int) or _in_place_compacted):
             return
+        if isinstance(durable_content, list) and not _in_place_compacted:
+            durable_content = _durable_content(durable_content)
         try:
             if isinstance(_row_id, int):
                 _db.set_message_api_content(agent.session_id, _row_id, durable_content, _api_content)
@@ -932,38 +936,6 @@ def _stamp_api_content_sidecar(
             logger.warning("api_content backfill failed for session=%s", agent.session_id or "none", exc_info=True)
 
 
-def _append_multimodal_context(
-    agent: Any, turn_user_msg: Dict[str, Any], ext_prefetch_cache: str, plugin_user_context: str,
-    *, preflight_compressed: bool,
-) -> None:
-    """Multimodal (list) content takes no string sidecar: the turn's context becomes a durable
-    text part on the current turn's live list (the gateway must-deliver-note channel, #71998),
-    so wire, persisted row, compaction and replay all carry the same parts. Runs once per turn,
-    before the first request; historical rows are never touched.
-
-    A user row another writer materialized BEFORE the prologue (in-place preflight compaction,
-    a close/early flush that raced it) is updated in place: the crash persist marker-skips that
-    message, so without this a resumed session replays a view the model never saw. Same
-    ``_row_id``-under-lock protocol as the string sidecar backfill; the row keeps its writer's
-    shape (compaction inserted the raw parts, a flush the text projection)."""
-    _mm_ctx = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context)
-    if not append_notes_to_multimodal_content(turn_user_msg.get("content"), _mm_ctx):
-        return
-    from agent.session_persistence import _durable_content, _persist_lock
-
-    with _persist_lock(agent):
-        _row_id = turn_user_msg.get("_row_id")
-        _db = getattr(agent, "_session_db", None)
-        if _db is None or not isinstance(_row_id, int):
-            return
-        _in_place_compacted = preflight_compressed and bool(getattr(agent, "_last_compaction_in_place", False))
-        content = turn_user_msg["content"] if _in_place_compacted else _durable_content(turn_user_msg["content"])
-        try:
-            _db.set_user_message_content(agent.session_id, _row_id, content)
-        except Exception:
-            logger.warning("multimodal context backfill failed for session=%s", agent.session_id or "none", exc_info=True)
-
-
 def _persist_turn_start(
     agent: Any, messages: List[Any], conversation_history: Optional[List[Any]],
     pending_cli_message: Any,
@@ -971,11 +943,11 @@ def _persist_turn_start(
     """Crash-resilience: persist the inbound user turn once, with final api_content,
     before the first LLM call. Same critical section as CLI close persistence; retries
     the row create if the pre-compression attempt failed transiently."""
-    def _ensure_and_persist() -> None:
+    def _ensure_and_persist():
         agent._ensure_db_session()
-        agent._persist_session(messages, conversation_history)
+        return agent._persist_session(messages, conversation_history)
 
-    _persist_under_lock(
+    return _persist_under_lock(
         agent, _ensure_and_persist,
         "Early turn-start session persistence failed for session=%s", pending_cli_message,
     )
@@ -1005,12 +977,13 @@ def build_turn_context(
     # Reset first: a cached gateway agent must never carry the previous turn's bot author into a human turn.
     turn_author = parse_turn_author(turn_author)
     agent._turn_author = turn_author
-
     # Recover a rotated session before binding log/turn ids or copying client history so
     # everything in this turn belongs to the canonical child.
     recovered_history = recover_rotated_compression_session(agent)
     if recovered_history is not None:
         conversation_history = recovered_history
+    from agent.people import bind_turn
+    bind_turn(agent, turn_author)
 
     # Tag log records on this thread with the session ID for ``hermes logs``; bind the
     # skill write-origin ContextVar; restore the primary runtime after a fallback turn.
@@ -1134,26 +1107,26 @@ def build_turn_context(
 
     _bind_interrupt_scope(agent, ra)
     ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
+    from agent.outbound_context import pending, acknowledge_persisted
+    delivery_ids, delivery_context = pending(str(getattr(agent, "session_id", "") or ""), agent=agent)
+    plugin_user_context = "\n\n".join(p for p in (delivery_context, plugin_user_context) if p)
+
 
     # Title the session now: titling depends only on the user's ask (before any injected
     # context lands on list content), so it runs concurrently with the turn. Daemon thread,
     # no-op once titled; it ensures the session row itself.
     _maybe_title_session_at_turn_start(agent, messages)
 
-    # Sidecar skipped for codex_app_server/MoA; list content carries its context as a part in every mode.
+    # Persist base context for every provider; MoA's per-call aggregation remains API-only.
     if 0 <= current_turn_user_idx < len(messages) and messages[current_turn_user_idx].get("role") == "user":
-        if isinstance(messages[current_turn_user_idx].get("content"), list):
-            _append_multimodal_context(
-                agent, messages[current_turn_user_idx], ext_prefetch_cache, plugin_user_context,
-                preflight_compressed=compaction.compressed,
-            )
-        elif not moa_active and getattr(agent, "api_mode", None) != "codex_app_server":
-            _stamp_api_content_sidecar(
-                agent, messages, current_turn_user_idx, ext_prefetch_cache,
-                plugin_user_context, preflight_compressed=compaction.compressed,
-            )
+        _stamp_api_content_sidecar(
+            agent, messages, current_turn_user_idx, ext_prefetch_cache,
+            plugin_user_context, preflight_compressed=compaction.compressed,
+        )
 
-    _persist_turn_start(agent, messages, conversation_history, pending_cli_message)
+    persisted = _persist_turn_start(agent, messages, conversation_history, pending_cli_message)
+    if delivery_ids and persisted and 0 <= current_turn_user_idx < len(messages):
+        acknowledge_persisted(agent, messages[current_turn_user_idx], delivery_ids)
 
     return TurnContext(
         user_message=user_message, original_user_message=original_user_message, messages=messages,
@@ -1235,19 +1208,19 @@ def build_api_messages(
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
         # at API time only; `messages` is untouched beyond the api_content stamp.
         if msg is current_turn_message and msg.get("role") == "user":
-            if isinstance(_api_content, str) and _api_content:
+            if isinstance(_api_content, (str, list)) and _api_content:
                 # Reuse the prologue's stamp so sidecar and wire cannot drift
                 # and every pass this turn sends identical bytes.
                 api_msg["content"] = _api_content
             else:
                 # Callers that bypass the prologue stamping: compose live.
                 _composed = compose_user_api_content(
-                    api_msg.get("content", ""), ext_prefetch_cache, plugin_user_context
+                    api_msg.get("content", ""), ext_prefetch_cache, plugin_user_context, getattr(agent, "_personal_context", "")
                 )
                 if _composed is not None:
                     api_msg["content"] = _composed
         elif (
-            isinstance(_api_content, str) and _api_content
+            isinstance(_api_content, (str, list)) and _api_content
             and msg.get("role") in ("user", "assistant")
         ):
             # Historical row: replay the exact bytes sent live so the prompt-cache

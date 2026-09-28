@@ -2,7 +2,7 @@
 
 import importlib
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import gateway.mirror as mirror_mod
 from gateway.mirror import (
@@ -78,88 +78,28 @@ class TestFindSessionId:
 
 
 class TestMirrorToSession:
+    def test_unknown_destination_is_queued_without_mutating_transcripts(self, tmp_path, monkeypatch):
+        from agent.outbound_context import connection, destination_key
+        from hermes_state import SessionDB
+        monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+        db = SessionDB(db_path=tmp_path / 'state.db')
+        try:
+            db.create_session('existing', source='telegram')
+            assert mirror_to_session('telegram', '-1001', 'Hello group!', user_id='alice')
+            with connection() as queue:
+                target, recipient, content = queue.execute('SELECT session,recipient,content FROM deliveries').fetchone()
+            assert target == destination_key('telegram', '-1001') and recipient == 'alice'
+            assert json.loads(content)['message'] == 'Hello group!'
+            assert db.get_messages('existing') == []
+            assert not (tmp_path / 'sessions/sessions.json').exists()
+        finally:
+            db.close()
 
-
-    def test_successful_mirror_uses_user_id_for_group_session(self, tmp_path):
-        sessions_dir, index_file = _setup_sessions(tmp_path, {
-            "alice": {
-                "session_id": "sess_alice",
-                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id": "alice"},
-                "updated_at": "2026-01-01T00:00:00",
-            },
-            "bob": {
-                "session_id": "sess_bob",
-                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id": "bob"},
-                "updated_at": "2026-02-01T00:00:00",
-            },
-        })
-
-        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
-             patch("gateway.mirror._append_to_sqlite") as mock_sqlite:
-            result = mirror_to_session(
-                "telegram",
-                "-1001",
-                "Hello group!",
-                source_label="cli",
-                user_id="alice",
-            )
-
-        assert result is True
-        mock_sqlite.assert_called_once()
-        assert mock_sqlite.call_args[0][0] == "sess_alice"
-
-    def test_no_matching_session(self, tmp_path):
-        sessions_dir, index_file = _setup_sessions(tmp_path, {})
-
-        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
-            result = mirror_to_session("telegram", "99999", "Hello!")
-
-        assert result is False
-
-
-    def test_failed_sqlite_write_reports_false(self, tmp_path):
-        """A mirror whose transcript write raises must not report success (#10130)."""
-        sessions_dir, index_file = _setup_sessions(tmp_path, {
-            "dm": {
-                "session_id": "sess_dm",
-                "origin": {"platform": "telegram", "chat_id": "123"},
-                "updated_at": "2026-01-01T00:00:00",
-            },
-        })
-        broken_db = MagicMock()
-        broken_db.find_session_by_origin.return_value = None  # resolve via sessions.json
-        broken_db.append_message.side_effect = OSError("disk full")
-
-        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
-             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
-             patch("hermes_state_registry.acquire", return_value=broken_db), \
-             patch("hermes_state_registry.release_or_close"):
-            result = mirror_to_session("telegram", "123", "Hello!")
-
-        assert result is False
-        broken_db.append_message.assert_called_once()
-
-
-class TestAppendToSqlite:
-    def test_connection_is_released_after_use(self, tmp_path):
-        """Verify _append_to_sqlite returns the shared SessionDB reference."""
-        from gateway.mirror import _append_to_sqlite
-        mock_db = MagicMock()
-        released = []
-
-        with patch("hermes_state_registry.acquire", return_value=mock_db), \
-             patch(
-                 "hermes_state_registry.release_or_close",
-                 side_effect=lambda db: released.append(db),
-             ):
-            _append_to_sqlite("sess_1", {"role": "assistant", "content": "hello"})
-
-        mock_db.append_message.assert_called_once()
-        assert released == [mock_db], (
-            "the shared handle must be released exactly once after use"
-        )
+    def test_queue_write_failure_reports_false(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+        (tmp_path / 'outbound-context.db').mkdir()
+        assert not mirror_to_session('telegram', '123', 'Hello!')
+        assert 'Mirror failed' in caplog.text
 
 
 class TestSessionsIndexProfileScoping:

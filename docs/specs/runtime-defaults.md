@@ -8,8 +8,8 @@ Implemented: native Telegram streaming default off (other agreed display default
 already native), medium reasoning, compression at 0.85 with three tail user
 messages, approvals off, quiet restart/transcript notices and local STT selection.
 Explicit operator values remain supported. No custom Telegram renderer or config
-loader was added. Shared conversation defaults, product-rule enforcement and deployment
-provisioning remain pending.
+loader was added. Shared conversation defaults and product rules are implemented; deployment
+files are prepared. Live server validation remains pending.
 
 Use the employee runtime configuration as the comparison baseline, adapting it
 to native Hermes settings and the separately agreed providers. Do not copy the

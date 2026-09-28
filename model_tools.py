@@ -506,7 +506,8 @@ _TOOL_SEARCH_LISTING_FORMS = {
 def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_toolsets: Optional[List[str]] = None,
                               quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
-    tools_to_include = _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode)
+    from agent.employee_policy import select_tools
+    tools_to_include = select_tools(_select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode))
     # Selection is per schema, not per process/profile. Kanban's local checks
     # are uncached; the outer definitions cache already keys on this selection.
     from tools.kanban_toolset_context import scoped_kanban_toolset_selection

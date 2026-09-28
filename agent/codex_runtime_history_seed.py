@@ -34,7 +34,8 @@ def _text_of(content: Any) -> str:
 
 def _render_row(msg: Dict[str, Any]) -> str:
     role = msg.get("role")
-    text = _text_of(msg.get("content")).strip()
+    content = msg.get("api_content") if role == "user" else None
+    text = _text_of(msg.get("content") if content is None else content).strip()
     if role == "user":
         return f"[USER]\n{text}" if text else ""
     if role == "assistant":

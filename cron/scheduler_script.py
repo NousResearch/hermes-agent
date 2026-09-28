@@ -322,7 +322,7 @@ def _windows_cron_bootstrap_argv(
 
 def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str]]:
     """Validate a job script path; ``(path, None)`` or ``(None, error)``. Scripts MUST resolve
-    inside HERMES_HOME/scripts/ (relative, absolute and ``~`` paths are all validated — path
+    inside the profile scripts/ or a responsibility package scripts/ (all paths validated — path
     traversal / absolute-path injection); contract of lifecycle_guard._expand_candidate_path."""
     scripts_dir = _sched._get_hermes_home() / "scripts"
     _ensure_cron_dir(scripts_dir)
@@ -349,6 +349,18 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     try:
         path.relative_to(scripts_dir_resolved)
     except ValueError:
+        from responsibilities.files import package_path
+        from responsibilities.common import ResponsibilityFilesystemError
+        try:
+            target = package_path(str(raw)) if raw.is_absolute() else None
+        except ResponsibilityFilesystemError:
+            target = None
+        if target is not None:
+            package, parts = target
+            if len(parts) >= 2 and parts[0] == "scripts" and (package / "RESPONSIBILITY.md").is_file():
+                if path.is_file():
+                    return path, None
+                return None, f"Script not found: {path}"
         return None, (
             f"Blocked: script path resolves outside the scripts directory "
             f"({scripts_dir_resolved}): {script_path!r}"
@@ -483,9 +495,11 @@ def _run_job_script(
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir
         # parent (back-compat). NEVER mutate the Python process cwd — that would leak into concurrent
         # gateway sessions (#69396).
+        from responsibilities.common import get_responsibilities_root
+        script_cwd = str(path.parent) if path.is_relative_to(get_responsibilities_root().resolve()) else workdir or str(path.parent)
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            cwd=workdir or str(path.parent), env=env, **popen_kwargs)
+            cwd=script_cwd, env=env, **popen_kwargs)
         deadline = time.monotonic() + script_timeout
         while True:
             # Tree-kill on cancel AND timeout: killpg misses setsid grandchildren (watchdogs,

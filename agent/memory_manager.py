@@ -6,14 +6,12 @@ registered at a time (tool-schema bloat, conflicting backends).
 
 from __future__ import annotations
 
-import contextvars
 import inspect
 import json
 import logging
 import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
-from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
@@ -325,9 +323,9 @@ def build_memory_context_block(raw_context: str) -> str:
     clean = _drop_repeated_recall_lines(sanitized)
     return (
         "<memory-context>\n"
-        "[System note: The following is recalled memory context, "
-        "NOT new user input. Treat as authoritative reference data — "
-        "this is the agent's persistent memory and should inform all responses.]\n\n"
+        "[System note: Surfaced automatically from your background memory, NOT new user input. "
+        "Supplementary context, not a source of truth — verify against live sources. "
+        "For more, ask with recall.]\n\n"
         f"{clean}\n"
         "</memory-context>"
     )

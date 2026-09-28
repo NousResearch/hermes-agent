@@ -277,9 +277,8 @@ class TestPrologueStamping:
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
         assert agent.api_content_at_persist is None
 
-    def test_no_stamp_for_codex_app_server(self):
-        """codex_app_server turns bypass the api_messages build, so the
-        injected bytes are never sent — stamping would persist a lie."""
+    def test_stamps_context_for_codex_app_server(self):
+        """The app-server consumes the same sidecar as the standard transport."""
         agent = _FakeAgent()
         agent.api_mode = "codex_app_server"
         with patch(
@@ -287,15 +286,11 @@ class TestPrologueStamping:
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
             ctx = _build(agent)
-        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
+        assert ctx.messages[ctx.current_turn_user_idx]["api_content"] == "hello\n\nPLUGIN-CTX"
 
-    def test_appends_context_part_for_multimodal_turn(self):
-        """#71998: pre_llm_call context must reach an image-only (multimodal)
-        turn as a durable text part, not silently drop.
-
-        The string api_content sidecar can't ride on list content, so the
-        context is appended to the content list (the gateway must-deliver-note
-        channel) — durable, so wire == persisted == replay."""
+    @pytest.mark.parametrize("moa_active", [False, True])
+    def test_appends_context_part_for_multimodal_turn(self, moa_active):
+        """Multimodal context persists in the sidecar while original parts stay unchanged."""
         agent = _FakeAgent()
         blocks = [{"type": "image_url", "image_url": {"url": "data:img"}}]
         with patch(
@@ -304,16 +299,15 @@ class TestPrologueStamping:
         ):
             ctx = _build(
                 agent,
-                user_message=blocks,
+                user_message=blocks, moa_active=moa_active,
                 summarize_user_message_for_log=lambda _m: "[image]",
             )
         content = ctx.messages[ctx.current_turn_user_idx]["content"]
         assert isinstance(content, list)
         # Original image part preserved; plugin context appended as a text part.
         assert content[0] == {"type": "image_url", "image_url": {"url": "data:img"}}
-        assert content[-1] == {"type": "text", "text": "PLUGIN-CTX"}
-        # Multimodal turns carry the context durably, not via the string sidecar.
-        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
+        assert content == blocks
+        assert ctx.messages[ctx.current_turn_user_idx]["api_content"] == [*blocks, {"type": "text", "text": "PLUGIN-CTX"}]
 
 
 # ---------------------------------------------------------------------------
@@ -597,14 +591,15 @@ class TestWireInvariant:
         assert sent == [*turn, {"type": "text", "text": "PLUGIN-CTX"}]
 
         history = db.get_messages_as_conversation(sid)
-        assert "PLUGIN-CTX" in history[0]["content"]  # persisted with the turn, not dropped
+        assert "PLUGIN-CTX" not in history[0]["content"]
+        assert history[0]["api_content"] == sent
 
         handler.captured_requests = []
         agent2 = make_agent()
         with patch.object(AIAgent, "_model_supports_vision", return_value=True):
             agent2.run_conversation("second question", conversation_history=history, task_id="t2")
         replayed = _user_messages(_chat_requests(handler)[0])[0]["content"]
-        assert replayed == history[0]["content"]
+        assert replayed == sent
 
 
 # ---------------------------------------------------------------------------
@@ -614,17 +609,15 @@ class TestWireInvariant:
 
 
 class TestPrologueMoaAndInPlaceBackfill:
-    def test_no_stamp_for_moa_turns(self):
-        """MoA appends per-call aggregated context to the API copy AFTER the
-        composition — a stamped sidecar would persist bytes that never match
-        the wire."""
+    def test_moa_stamps_base_context_before_per_call_aggregation(self):
+        """Durable base context is independent of per-call MoA aggregation."""
         agent = _FakeAgent()
         with patch(
             "hermes_cli.plugins.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
             ctx = _build(agent, moa_active=True)
-        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
+        assert "PLUGIN-CTX" in ctx.messages[ctx.current_turn_user_idx]["api_content"]
 
     def test_inplace_compaction_backfills_sidecar_into_db(self):
         """In-place preflight compaction inserts the current-turn user row
@@ -1054,10 +1047,13 @@ class TestSessionRowExistsBeforePreflightCompaction:
                 )
             assert agent._last_compaction_in_place is True
             live = ctx.messages[ctx.current_turn_user_idx]["content"]
-            assert live == [*turn, {"type": "text", "text": "PLUGIN-CTX"}]
+            assert live == turn
+            sidecar = ctx.messages[ctx.current_turn_user_idx]["api_content"]
+            assert sidecar == [*turn, {"type": "text", "text": "PLUGIN-CTX"}]
             # Reload: the durable row carries the same parts the model saw.
             reloaded = [m for m in db.get_messages_as_conversation(sid) if m["role"] == "user"]
             assert reloaded[-1]["content"] == live
+            assert reloaded[-1]["api_content"] == sidecar
         finally:
             db.close()
 
@@ -1106,3 +1102,17 @@ class TestStaleConfirmationRedactionDropsSidecar:
         )
         assert cleaned[0]["content"] != "confirm forced restart"
         assert "api_content" not in cleaned[0]
+
+
+def test_multimodal_sidecar_budget_matches_the_wire_without_counting_base64():
+    from agent.model_metadata import _wire_message_shadow, _count_image_tokens
+    from agent.context_compressor import _estimate_msg_budget_tokens
+    content = [{'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + 'A' * 10000}},
+               {'type': 'text', 'text': 'remember this ' * 1000}]
+    stored = {'role': 'user', 'content': 'clean transcript', 'api_content': content}
+    wire = {'role': 'user', 'content': content}
+    assert _wire_message_shadow(stored) == _wire_message_shadow(wire)
+    assert 'A' * 10000 not in str(_wire_message_shadow(stored))
+    assert _count_image_tokens(stored, 1000) == _count_image_tokens(wire, 1000) == 1000
+    assert _estimate_msg_budget_tokens(stored) == _estimate_msg_budget_tokens(wire)
+    assert _estimate_msg_budget_tokens(stored) > _estimate_msg_budget_tokens({'role': 'user', 'content': 'clean transcript'})

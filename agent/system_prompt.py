@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
     ASYNC_HANDOFF_GUIDANCE, DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
+    KANBAN_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
@@ -518,7 +518,7 @@ def _memory_parts(agent: Any) -> List[str]:
     tools the toolset config gated off)."""
     parts: List[str] = []
     if agent._memory_store:
-        for enabled, kind in ((agent._memory_enabled, "memory"), (agent._user_profile_enabled, "user")):
+        for enabled, kind in ((agent._memory_enabled, "memory"),):
             block = agent._memory_store.format_for_system_prompt(kind) if enabled else None
             if block:
                 parts.append(block)
@@ -719,7 +719,7 @@ def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -
         return []
     launch_artifact = getattr(agent, "_context_cwd_is_launch_artifact", False)
     return [_pb.build_context_files_prompt(
-        cwd=None if launch_artifact else resolve_context_cwd(), skip_soul=soul_loaded, context_length=ctx_len,
+        cwd=None if launch_artifact else resolve_context_cwd(), skip_soul=True, context_length=ctx_len,
         allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent))]
 
 
@@ -740,21 +740,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _cc_len = getattr(getattr(agent, "context_compressor", None), "context_length", None)
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
     # ── Stable tier ────────────────────────────────────────────────
-    stable_parts, _soul_loaded = _identity_parts(agent, _ctx_len)
-    # The skill_view() pointer dangles without skill tools OR without the
-    # hermes-agent skill installed, so the variant is chosen after the skills
-    # index is built; this slot holds its position.
-    _help_guidance_slot = len(stable_parts)
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
-    stable_parts.extend(_guidance_parts(agent))
-    skills_prompt = _skills_prompt(agent)
-    # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
-    # in the rendered index (pure string check — inherits the index's stability).
-    if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
-        stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
-    stable_parts.extend(_alibaba_identity_part(agent))
-    # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
-    stable_parts.extend(_auto_load_parts(agent))
+    from agent.employee_prompt import prompt_parts
+    stable_parts = prompt_parts(agent)
+    _soul_loaded = False
+    skills_prompt = ""
     # Coding posture: the operating brief stays in the stable prefix. The
     # environment block contains the current cwd/backend and belongs after
     # project context, not ahead of a large shared AGENTS.md block.

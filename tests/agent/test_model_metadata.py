@@ -137,11 +137,11 @@ class TestEstimateMessagesTokensRough:
         # substituted (which would undercount the real request).
         assert result >= (len(big_sidecar) // 4) * 0.9
 
-    def test_non_string_api_content_does_not_displace_content(self):
+    def test_invalid_api_content_does_not_displace_content(self):
         """Only a sidecar shape the wire actually substitutes may displace content.
 
         ``substitute_api_content()`` overwrites ``content`` only for a
-        non-empty STRING sidecar on a user/assistant row; every other shape
+        non-empty string or list sidecar on a user/assistant row; every other shape
         is popped and discarded, leaving the clean ``content`` on the wire.
         The shadow must mirror that guard — substituting unconditionally
         would drop the real content from the estimate and UNDERcount, which
@@ -151,7 +151,7 @@ class TestEstimateMessagesTokensRough:
         body = "clean stored content " * 2000
         baseline = estimate_messages_tokens_rough([{"role": "user", "content": body}])
 
-        for bad_sidecar in (None, "", 42, ["not", "a", "string"]):
+        for bad_sidecar in (None, "", [], 42, {"not": "a valid sidecar"}):
             msg = {"role": "user", "content": body, "api_content": bad_sidecar}
             assert estimate_messages_tokens_rough([msg]) >= baseline, bad_sidecar
 

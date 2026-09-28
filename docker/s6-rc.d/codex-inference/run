@@ -1,0 +1,7 @@
+#!/command/with-contenv sh
+set -eu
+# The private service has no external credentials until the server's native login.
+[ -n "${HINDSIGHT_INFERENCE_KEY:-}" ] || exit 0
+export HOME=/opt/data
+cd /opt/hermes
+exec s6-setuidgid hermes /opt/hermes/.venv/bin/python -m deploy.railway.codex_inference

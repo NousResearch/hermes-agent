@@ -53,7 +53,7 @@ def test_live_catalog_policy_reaches_picker_setup_and_disk_cache(catalog, monkey
     from hermes_cli import model_setup_flows as flows, models
 
     profile, state = catalog
-    profile.authoritative_model_catalog = authoritative
+    profile.live_catalog_mode = "authoritative" if authoritative else "union"
     profile.public_model_catalog = public
     monkeypatch.setattr(models, "_api_key_credentials", lambda *_: (api_key, profile.base_url))
     monkeypatch.setattr(flows, "_models_dev_merged", lambda *_: [])
@@ -81,7 +81,7 @@ def test_authoritative_catalog_survives_static_sources_and_refresh(
     from hermes_cli import model_setup_flows as flows, models
 
     profile, state = catalog
-    profile.authoritative_model_catalog = True
+    profile.live_catalog_mode = "authoritative"
     profile.public_model_catalog = True
     curated = [f"static/model-{i}" for i in range(8)]
     monkeypatch.setitem(models._PROVIDER_MODELS, profile.name, curated)

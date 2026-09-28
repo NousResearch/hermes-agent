@@ -890,7 +890,7 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
         return special(pconfig, curated, api_key_for_probe, effective_base)
     from providers import get_provider_profile
     profile = get_provider_profile(provider_id)
-    if profile is not None and getattr(profile, "authoritative_model_catalog", False):
+    if profile is not None and getattr(profile, "live_catalog_mode", "union") == "authoritative":
         model_list = probe_profile_catalog(provider_id, profile, api_key_for_probe, effective_base)
         if model_list is not None:
             _report_live_models(model_list, f"{pconfig.name} catalog")

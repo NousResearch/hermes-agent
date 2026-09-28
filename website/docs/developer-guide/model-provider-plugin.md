@@ -117,7 +117,8 @@ Full definition in `providers/base.py`. The most useful ones:
 
 ## Authoritative and public model catalogs
 
-Set `authoritative_model_catalog=True` when `fetch_models()` is the complete source
+The default `live_catalog_mode="union"` retains curated-first merging.
+Set `live_catalog_mode="authoritative"` when `fetch_models()` is the complete source
 of selectable models. Successful lists preserve the provider's order and replace
 curated/models.dev rows; `[]` means a successfully empty catalog, including through
 disk caching and GUI reads. Return `None` (or raise) on failure to retain offline

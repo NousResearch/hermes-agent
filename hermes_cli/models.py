@@ -1547,7 +1547,7 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     ``_LIVE_FIRST_PICKER_PROVIDERS`` (OpenCode Zen/Go, authoritative live API) live-first so stale
     curated entries stop polluting the top. Plugin providers without a static entry use the
     profile's ``fallback_models`` as the curated list (Fireworks lists an image model first).
-    Profiles opting into ``authoritative_model_catalog`` instead replace the curated list.
+    Profiles opting into ``live_catalog_mode="authoritative"`` instead replace the curated list.
     """
     from providers import get_provider_profile
 
@@ -1590,7 +1590,7 @@ def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -
     first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
     picker will later show. Authoritative profiles keep successful lists (even empty) in order;
     others merge curated-first. None always falls back; legacy empty lists do too."""
-    if live is not None and getattr(profile, "authoritative_model_catalog", False):
+    if live is not None and getattr(profile, "live_catalog_mode", "union") == "authoritative":
         rows = AuthoritativeModelCatalog(live)
     elif not live:
         rows = CuratedFallbackModels(profile.fallback_models) if profile.fallback_models else None
@@ -1672,7 +1672,7 @@ def _relay_model_catalog(normalized: str, relay: str) -> Optional[list[str]]:
         if profile is None or getattr(profile, "auth_type", "") != "api_key":
             return None
         api_key, _ = _api_key_credentials(normalized)
-        if getattr(profile, "authoritative_model_catalog", False):
+        if getattr(profile, "live_catalog_mode", "union") == "authoritative":
             return probe_profile_catalog(normalized, profile, api_key, relay)
         live = profile.fetch_models(api_key=api_key, base_url=relay)
         return [str(m) for m in (live or []) if m] or None

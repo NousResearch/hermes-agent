@@ -583,10 +583,12 @@ terminal:
 # lsp:
 #   enabled: true
 #   # Language servers only load code a project ships (its .venv interpreter,
-#   # node_modules TypeScript, svelte.config.js, Rust build scripts/proc-macros)
+#   # node_modules TypeScript, svelte.config.js, cargo/Gradle/mix build files)
 #   # in the git worktree Hermes was launched in, or under a directory listed
-#   # here. Other checkouts, such as a repository the agent cloned, get
-#   # Hermes-side tools instead. Gateway and desktop sessions usually need this.
+#   # here. In other checkouts, such as a repository the agent cloned, only
+#   # servers that run no project code start (pinned to Hermes-side tools) and
+#   # the npx tsc / rustfmt lint fallbacks are skipped. Gateway and desktop
+#   # sessions usually need this.
 #   trusted_workspaces:
 #     - ~/code/my-app
 

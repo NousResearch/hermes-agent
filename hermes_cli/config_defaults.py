@@ -2402,9 +2402,10 @@ DEFAULT_CONFIG = {
         "exclude_roots": [],
         # Directories (~ expanded; everything under an entry counts) whose projects a language
         # server may load code from: the project's own .venv/venv interpreter, node_modules
-        # TypeScript SDK, svelte.config.js, Rust build scripts and proc-macros. The git worktree
-        # Hermes was launched in is always trusted; any other checkout (a clone the agent made,
-        # a gateway/desktop session's repo) gets Hermes-side tools instead until listed here.
+        # TypeScript SDK, svelte.config.js, build files (cargo, Gradle, mix, ...). The git worktree
+        # Hermes was launched in is always trusted; in any other checkout (a clone the agent made,
+        # a gateway/desktop session's repo) only servers that run no project code start, pinned
+        # to Hermes-side tools, and the npx tsc / rustfmt lint fallbacks are skipped.
         "trusted_workspaces": [],
         # Missing server binaries: auto = install via npm/go/pip into <HERMES_HOME>/lsp/bin/ on
         # first use; manual = only binaries on PATH; off = alias for manual.

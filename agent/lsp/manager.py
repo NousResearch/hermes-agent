@@ -22,7 +22,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.lsp import eventlog
 from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_key as _diag_key
-from agent.lsp.servers import SERVERS, ServerContext, ServerDef, custom_servers, find_server_for_file, language_id_for
+from agent.lsp.servers import (
+    SERVERS, UNTRUSTED_SAFE_SERVERS, ServerContext, ServerDef, custom_servers, find_server_for_file, language_id_for,
+)
 from agent.lsp.workspace import clear_cache, is_trusted_workspace, resolve_workspace_for_file
 
 logger = logging.getLogger("agent.lsp.manager")
@@ -56,7 +58,7 @@ def _parse_exclude_roots(value: Any) -> Optional[List[str]]:
     return [os.path.expanduser(p) for p in value if p]
 
 
-def _parse_trusted_workspaces(value: Any) -> List[str]:
+def parse_trusted_workspaces(value: Any) -> List[str]:
     """Normalise ``lsp.trusted_workspaces``; a malformed value trusts nothing extra (WARNING)."""
     if value is None:
         return []
@@ -163,7 +165,8 @@ class LSPService:
         # bare string here means "exclude that workspace", and excluding nothing would re-pay the stall it
         # was meant to avoid.
         self._exclude_roots: Optional[List[str]] = _parse_exclude_roots(exclude_roots)
-        self._trusted_workspaces: List[str] = _parse_trusted_workspaces(trusted_workspaces)
+        self._trusted_workspaces: List[str] = parse_trusted_workspaces(trusted_workspaces)
+        self._untrusted_skipped: set = set()  # (server_id, root) pairs denied by workspace trust
 
         self._loop = _BackgroundLoop()
         if self._enabled:
@@ -265,9 +268,21 @@ class LSPService:
         if self._root_excluded(key[1]):
             eventlog.log_root_excluded(srv.server_id, key[1], file_path, invalid=self._exclude_roots is None)
             return False
+        if self._untrusted_denied(srv, key[1], file_path):
+            return False
         if self._is_broken(key):
             eventlog.log_skipped_broken(srv.server_id, key[1], file_path, retry_in=self._broken_retry_in(key))
             return False
+        return True
+
+    def _untrusted_denied(self, srv: ServerDef, root: str, file_path: str) -> bool:
+        """True iff ``srv`` may run project code and ``root`` is not a trusted workspace (deny by default:
+        only ``UNTRUSTED_SAFE_SERVERS`` start in a checkout the operator has not trusted)."""
+        if srv.server_id in UNTRUSTED_SAFE_SERVERS or is_trusted_workspace(root, self._trusted_workspaces):
+            return False
+        with self._state_lock:
+            self._untrusted_skipped.add((srv.server_id, root))
+        eventlog.log_untrusted_skipped(srv.server_id, root, file_path)
         return True
 
     def _root_excluded(self, root: str) -> bool:
@@ -438,12 +453,14 @@ class LSPService:
                 for c in self._clients.values()
             ]
             broken = [key for key, deadline in self._broken.items() if time.monotonic() < deadline]
+            untrusted = sorted(self._untrusted_skipped)
         return {
             "enabled": self._enabled, "wait_mode": self._wait_mode, "wait_timeout": self._wait_timeout,
             "install_strategy": self._install_strategy, "clients": clients, "broken": broken,
             "disabled_servers": sorted(self._disabled_servers),
             "broken_retry_seconds": self._broken_retry, "warmup_timeout": self._warmup_timeout,
             "exclude_roots": list(self._exclude_roots) if self._exclude_roots is not None else "INVALID",
+            "trusted_workspaces": list(self._trusted_workspaces), "untrusted_skipped": untrusted,
         }
 
     # ---- async internals ----
@@ -511,6 +528,8 @@ class LSPService:
         root = srv.resolve_root(file_path, ws_root)
         if root is None:
             eventlog.log_disabled(srv.server_id, file_path, "exclude marker hit (server gated off)")
+            return None
+        if self._untrusted_denied(srv, root, file_path):
             return None
         if self._is_broken((srv.server_id, root)):
             return None

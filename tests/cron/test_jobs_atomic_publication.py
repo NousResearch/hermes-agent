@@ -86,6 +86,7 @@ def test_symlinked_store_stages_and_renames_beside_resolved_target(tmp_path, mon
     monkeypatch.setattr(jobs, "JOBS_FILE", link)
     monkeypatch.setattr(jobs, "OUTPUT_DIR", link_dir / "output")
 
+    assert jobs._jobs_lock_file() == target_dir / ".jobs.lock"
     jobs.save_jobs([{"id": "kept"}])
     assert link.is_symlink()
     assert [item["id"] for item in jobs.load_jobs()] == ["kept"]

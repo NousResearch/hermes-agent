@@ -233,8 +233,8 @@ def _job_running_in_this_process(job_id: str) -> bool:
 
 
 def _jobs_lock_file() -> Path:
-    """Return the advisory lock path for the current cron directory."""
-    return _current_cron_store().cron_dir / ".jobs.lock"
+    """Lock beside the resolved store so symlink aliases share one writer fence."""
+    return Path(os.path.realpath(_current_cron_store().jobs_file)).parent / ".jobs.lock"
 
 
 def _acquire_flock(lock_fd, timeout: float) -> Optional[bool]:

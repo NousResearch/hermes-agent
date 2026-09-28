@@ -135,7 +135,12 @@ class TestSendMatrix:
         sent = MagicMock()
         sent.__aenter__ = AsyncMock(return_value=resp)
         sent.__aexit__ = AsyncMock(return_value=False)
-        session.request = MagicMock(side_effect=[state, sent])
+        membership = MagicMock()
+        membership.__aenter__ = AsyncMock(return_value=_make_aiohttp_resp(
+            200, json_data={"joined": {"@bot:example.com": {}, "@alice:example.com": {}, "@bob:example.com": {}}},
+        ))
+        membership.__aexit__ = AsyncMock(return_value=False)
+        session.request = MagicMock(side_effect=[state, membership, sent, membership])
 
         with patch("aiohttp.ClientSession", return_value=session_ctx) as client_session, \
              patch.dict(os.environ, {"MATRIX_HOMESERVER": "", "MATRIX_ACCESS_TOKEN": ""}, clear=False):
@@ -147,9 +152,11 @@ class TestSendMatrix:
             "platform": "matrix",
             "chat_id": "!room:example.com",
             "message_id": "$abc123",
+            "thread_id": None,
+            "chat_type": "group",
         }
-        assert [call.args[0] for call in session.request.call_args_list] == ["GET", "PUT"]
-        call_kwargs = session.request.call_args
+        assert [call.args[0] for call in session.request.call_args_list] == ["GET", "GET", "PUT", "GET"]
+        call_kwargs = session.request.call_args_list[2]
         url = call_kwargs[0][1]
         assert url.startswith("https://matrix.example.com/_matrix/client/v3/rooms/%21room%3Aexample.com/send/m.room.message/")
         assert client_session.call_args.kwargs["headers"] == {"Authorization": "Bearer syt_tok"}

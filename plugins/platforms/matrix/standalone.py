@@ -102,6 +102,9 @@ class _HTTPDelivery:
                 f"rooms/{quote(room_id, safe='')}/send/m.room.message/{txn_id}",
                 json=_text_payload(chunk, thread_id),
             )
+        current_chat_type = await self.chat_type(room_id)
+        if current_chat_type != chat_type:
+            chat_type = "unknown"
         return {
             "success": True,
             "platform": "matrix",

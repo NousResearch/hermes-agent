@@ -540,7 +540,7 @@ async def _send_live_adapter_media(adapter, chat_id, message, media_files, *, th
     return {"success": True, "message_id": last_result.message_id, "media_delivered": True}
 
 
-async def _dispatch_on_gateway_loop(runner, make_coro, log_message):
+async def _dispatch_on_gateway_loop(runner, make_coro, log_message, *, cancel_on_caller_cancel=False):
     """Await ``make_coro()`` on the gateway's loop: adapter.send() uses queues/tasks bound to it,
     so awaiting from another loop (the tool worker thread) deadlocks."""
     gateway_loop = getattr(runner, "_gateway_loop", None)
@@ -552,6 +552,8 @@ async def _dispatch_on_gateway_loop(runner, make_coro, log_message):
     fut = safe_schedule_threadsafe(make_coro(), gateway_loop, logger=logger, log_message=log_message)
     if fut is None:
         return {"error": "Gateway loop unavailable for send dispatch"}
+    if cancel_on_caller_cancel:
+        return await asyncio.wrap_future(fut)
     # shield: a cancelled caller must not cancel the enqueued send (a retry would duplicate it).
     # No timeout: the adapter and outer _run_async bound the wait.
     return await asyncio.shield(asyncio.wrap_future(fut))

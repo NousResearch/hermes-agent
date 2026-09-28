@@ -485,3 +485,200 @@ def test_fallback_uses_confirmed_canonical_destination_and_participant(
                 if outcome in {"confirmed", "origin_only"}
                 else []
             )
+
+
+@pytest.mark.parametrize("sender", ["tool", "cron", "fallback", "http"])
+@pytest.mark.parametrize(
+    "transition, alice_exists", [(False, True), (True, True), (True, False)]
+)
+def test_continuation_uses_live_store_policy_and_current_membership(
+    destinations, monkeypatch, sender, transition, alice_exists
+):
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.send_message_senders import _matrix_send_core
+    from tools.send_message_tool import send_message_tool
+
+    runner, owners = destinations
+    store = owners["default"][1]._session_store
+    store.config.thread_sessions_per_user = True
+    config_path = owners["default"][0] / "config.yaml"
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+    saved_config["thread_sessions_per_user"] = True
+    config_path.write_text(json.dumps(saved_config), encoding="utf-8")
+    runner.session_store = store
+    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+    monkeypatch.setattr("model_tools._run_async", asyncio.run)
+    for home, adapter, _ in owners.values():
+        adapter.set_session_store(store)
+
+    async def fallback(
+        platform, pconfig, chat_id, message, *, thread_id=None, **kwargs
+    ):
+        if sender == "tool":
+            from tools.send_message_senders import _send_matrix_via_adapter
+
+            return await _send_matrix_via_adapter(
+                pconfig, chat_id, message, thread_id=thread_id
+            )
+        from hermes_cli.profiles import get_active_profile_name
+
+        if sender == "http":
+            from plugins.platforms.matrix.standalone import standalone_send
+
+            return await standalone_send(
+                PlatformConfig(
+                    token="token",
+                    extra={"homeserver": "http://matrix.test", "e2ee_mode": "off"},
+                ),
+                chat_id,
+                message,
+                thread_id=thread_id,
+            )
+        adapter = runner._authorization_adapter(platform, get_active_profile_name())
+        return await _matrix_send_core(
+            adapter, chat_id, message, [], {"thread_id": thread_id}
+        )
+
+    if sender in {"tool", "fallback", "http"}:
+        monkeypatch.setattr("tools.send_message_tool._send_to_platform", fallback)
+    for index, profile in enumerate(("default", "secondary", "default")):
+        home, adapter, room = owners[profile]
+        members = {adapter._user_id, "@alice:remote.test"}
+        if not transition:
+            members.add("@bob:remote.test")
+        adapter._get_room_members.return_value = members
+        adapter._invalidate_room_identities(room)
+        source = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id=room,
+            thread_id="$existing",
+            chat_type="dm" if transition else "group",
+            user_id="@alice:remote.test",
+            profile=profile,
+        )
+        with _profile_runtime_scope(home, {}):
+            alice = store.get_or_create_session(source) if alice_exists else None
+            bob = store.get_or_create_session(
+                SessionSource(
+                    platform=Platform.MATRIX,
+                    chat_id=room,
+                    thread_id="$existing",
+                    chat_type="group",
+                    user_id="@bob:remote.test",
+                    profile=profile,
+                )
+            )
+            store.append_to_transcript(
+                bob.session_id,
+                {"role": "user", "content": f"Bob's private turn {index}"},
+            )
+            store._db.update_system_prompt(bob.session_id, "Bob's cached prefix")
+            bob_before = deepcopy(store.load_transcript(bob.session_id))
+            before = []
+            if alice is not None:
+                store.append_to_transcript(
+                    alice.session_id,
+                    {
+                        "role": "user" if sender == "tool" else "assistant",
+                        "content": f"Prior request {index}",
+                    },
+                )
+                store._db.update_system_prompt(
+                    alice.session_id, "Cached participant prefix"
+                )
+                before = deepcopy(store.load_transcript(alice.session_id))
+            keys = list(store._entries)
+
+            async def send_event(*args):
+                if transition:
+                    members.add("@bob:remote.test")
+                    await adapter._on_room_state(
+                        SimpleNamespace(room_id=room, sender="@bob:remote.test")
+                    )
+                return "$sent"
+
+            adapter._client.send_message_event.side_effect = send_event
+            if sender in {"fallback", "http"}:
+                adapter._client.resolve_room_alias.side_effect = [
+                    ValueError("transient lookup"),
+                    SimpleNamespace(room_id=room, servers=[]),
+                ]
+
+            async def request(self, method, path, **kwargs):
+                if path.startswith("directory/") or path.startswith("join/"):
+                    return {"room_id": room, "servers": []}
+                if path.endswith("m.room.encryption"):
+                    from plugins.platforms.matrix.standalone import _MatrixAPIError
+
+                    raise _MatrixAPIError(404, {"errcode": "M_NOT_FOUND"})
+                if path.endswith("joined_members"):
+                    return {"joined": {member: {} for member in members}}
+                if path == "account/whoami":
+                    return {"user_id": adapter._user_id}
+                if "/send/" in path:
+                    return {"event_id": await send_event()}
+                raise AssertionError(path)
+
+            monkeypatch.setattr(
+                "plugins.platforms.matrix.standalone._HTTPDelivery.request", request
+            )
+            brief = f"Brief {index}"
+            if sender == "tool":
+                tokens = set_session_vars(
+                    platform="matrix", user_id="@alice:remote.test"
+                )
+                try:
+                    result = json.loads(
+                        send_message_tool({
+                            "target": "matrix:#scheduled:remote.test/$existing",
+                            "message": brief,
+                        })
+                    )
+                finally:
+                    clear_session_vars(tokens)
+                assert result.get("success"), result
+                assert (result["chat_id"], result["thread_id"]) == (room, "$existing")
+                assert bool(result.get("mirrored")) == (not transition)
+            else:
+                error = _deliver_result(
+                    {
+                        "id": "ownership",
+                        "deliver": "matrix:#scheduled:remote.test/$existing",
+                        "attach_to_session": True,
+                        "origin": source.to_dict(),
+                    },
+                    brief,
+                    runner.adapters,
+                    SimpleNamespace(is_running=lambda: True),
+                )
+                assert error is None, error
+            expected = [(turn["role"], turn["content"]) for turn in before]
+            if not transition:
+                expected.append((
+                    "assistant" if sender == "tool" else "user",
+                    brief
+                    if sender == "tool"
+                    else f"[Cron delivery: ownership]\n{brief}",
+                ))
+            if alice is not None:
+                assert [
+                    (turn["role"], turn["content"])
+                    for turn in store.load_transcript(alice.session_id)
+                ] == expected
+                assert (
+                    store._db.get_session(alice.session_id)["system_prompt"]
+                    == "Cached participant prefix"
+                )
+            assert list(store._entries) == keys
+            assert store.load_transcript(bob.session_id) == bob_before
+            assert (
+                store._db.get_session(bob.session_id)["system_prompt"]
+                == "Bob's cached prefix"
+            )
+            reply = asyncio.run(adapter.resolve_delivery_target(source))
+            assert (reply.chat_id, reply.thread_id, reply.user_id, reply.chat_type) == (
+                room,
+                "$existing",
+                source.user_id,
+                "group",
+            )

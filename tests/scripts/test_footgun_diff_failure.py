@@ -80,6 +80,38 @@ def test_legitimately_empty_range_stays_clean_but_distinguishable():
 
 
 # ---------------------------------------------------------------------------
+# main() level — the empty-input receipt and the non-empty success path
+# ---------------------------------------------------------------------------
+
+
+def test_nothing_staged_stays_clean_but_distinguishable(linter, monkeypatch, capsys):
+    # "Nothing staged" is the same class of input as an empty --diff range:
+    # a legitimate empty input, not a failed computation, so it must stay
+    # exit 0 with a distinguishable success line rather than exit 2 (which
+    # the docstring reserves for "--diff <ref> could not be computed").
+    monkeypatch.setattr(linter, "get_staged_files", lambda: [])
+    assert linter.main([]) == 0
+    captured = capsys.readouterr()
+    assert "nothing staged (0 files scanned)" in captured.out
+    assert "Pass --all" in captured.out
+
+
+def test_nonempty_diff_range_still_reports_hits(linter, monkeypatch, capsys):
+    # The empty-range early return must not swallow the success path: a
+    # non-empty diff that contains a real hit still reports it and exits 1.
+    hit = REPO_ROOT / "_tmp_footgun_hit_125997.py"
+    hit.write_text("with open('a.txt', 'r') as fh:\n    pass\n", encoding="utf-8")
+    try:
+        monkeypatch.setattr(linter, "get_diff_files", lambda ref: [hit])
+        assert linter.main(["--diff", "base"]) == 1
+    finally:
+        hit.unlink(missing_ok=True)
+    captured = capsys.readouterr()
+    assert "open() without encoding=" in captured.out
+    assert "1 Windows footgun(s) found" in captured.err
+
+
+# ---------------------------------------------------------------------------
 # get_diff_files level — stubbed git failures
 # ---------------------------------------------------------------------------
 

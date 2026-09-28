@@ -961,10 +961,14 @@ def main(argv: list[str]) -> int:
         # Default: staged changes
         roots = get_staged_files()
         if not roots:
+            # Same footing as the empty --diff range: a legitimate empty
+            # input is a clean scan with a distinguishable message, NOT a
+            # failed computation (exit 2 stays "the range could not be
+            # computed"). The recommended pre-PR invocation runs after the
+            # work is committed, so "nothing staged" is the common case.
             print(
-                "No staged files to scan. Pass --all for a full-repo scan, "
-                "--diff <ref> for a range diff, or paths explicitly.",
-                file=sys.stderr,
+                "✓ No Windows footguns found — nothing staged (0 files scanned). "
+                "Pass --all, --diff <ref>, or paths explicitly."
             )
             return 0
 

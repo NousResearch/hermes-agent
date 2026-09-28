@@ -106,3 +106,37 @@ async def test_distinct_status_keys_do_not_collide(adapter):
     assert adapter._status_message_ids[("chat-1", "model-switch")] == "200"
 
 
+@pytest.mark.asyncio
+async def test_deleting_status_message_invalidates_cached_id(adapter):
+    """A deleted status bubble must never be edited on the next update."""
+    adapter._bot.delete_message = AsyncMock(return_value=True)
+    adapter._status_message_ids[("-100123", "lifecycle")] = "100"
+    adapter._status_message_ids[("-100123", "other")] = "200"
+    adapter._status_message_ids[("chat-2", "lifecycle")] = "100"
+
+    deleted = await adapter.delete_message("  -100123  ", "100")
+
+    assert deleted is True
+    assert ("-100123", "lifecycle") not in adapter._status_message_ids
+    assert adapter._status_message_ids[("-100123", "other")] == "200"
+    assert adapter._status_message_ids[("chat-2", "lifecycle")] == "100"
+
+    adapter.send.return_value = SendResult(success=True, message_id="300")
+    result = await adapter.send_or_update_status(-100123, "lifecycle", "fresh status")
+
+    assert result.success is True
+    adapter.send.assert_awaited_once()
+    adapter.edit_message.assert_not_awaited()
+    assert adapter._status_message_ids[("-100123", "lifecycle")] == "300"
+
+
+@pytest.mark.asyncio
+async def test_failed_delete_keeps_cached_status_id(adapter):
+    """If Telegram refuses the delete, the bubble still exists: keep the id."""
+    adapter._bot.delete_message = AsyncMock(side_effect=RuntimeError("boom"))
+    adapter._status_message_ids[("-100123", "lifecycle")] = "100"
+
+    deleted = await adapter.delete_message("-100123", "100")
+
+    assert deleted is False
+    assert adapter._status_message_ids[("-100123", "lifecycle")] == "100"

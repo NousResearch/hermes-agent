@@ -93,3 +93,25 @@ def test_every_gateway_row_is_contract_valid_and_disabled_config_records_nothing
     monkeypatch.setattr(rsm, "enabled", lambda: False)
     smg.record_platform_disconnect(Adapter())
     assert len(marks()) == 3
+
+
+def test_every_gateway_adapter_platform_is_named_and_accepted_by_contract_and_schema():
+    jsonschema = pytest.importorskip("jsonschema")
+    from pathlib import Path
+
+    from gateway.config import Platform
+
+    schema = json.loads((Path(contract.__file__).parent / "schemas/hermes.shared_metrics.v3.schema.json").read_text())
+    rows = {
+        "platform_health_counter": ("hermes.platform.health", {"error_class": "network", "event": "disconnect"}),
+        "platform_delivery_counter": ("hermes.platform.delivery", {"failure_class": "none", "outcome": "sent"}),
+        "reply_latency_counter": ("hermes.gateway.reply_latency", {"first_response_bucket": "lt_2s"}),
+    }
+    for member in Platform:  # relay and msgraph_webhook are gateway adapters with no setup-wizard entry
+        name = contract.adapter_platform(member)
+        assert name == member.value
+        for definition, (metric, dims) in rows.items():
+            dims = {**dims, "platform": name}
+            assert contract.counter_dimensions_are_valid(metric, dims)
+            jsonschema.validate({"name": metric, "type": "counter", "dimensions": dims, "value": 1},
+                                {"$defs": schema["$defs"], "$ref": f"#/$defs/{definition}"})

@@ -250,8 +250,23 @@ CRON_RUN_MARK = CRON_RUN_METRIC = "hermes.cron.run"
 # plugin-catalog install (shared_metrics_catalog.platform_metric_name); every other one is ``plugin``.
 _PLATFORM_CATALOGS = ("bundled_platform_names", "catalog_platform_names")
 GATEWAY_PLATFORMS = _CatalogValues(*_PLATFORM_CATALOGS, extra=_CORE_GATEWAY_PLATFORMS)
-# The API server is an adapter the gateway connects and delivers through, but not a messaging surface.
-ADAPTER_PLATFORMS = _CatalogValues(*_PLATFORM_CATALOGS, extra=_CORE_GATEWAY_PLATFORMS | {"api_server"})
+
+
+def _gateway_adapter_platforms() -> frozenset[str]:
+    """The gateway's own adapter vocabulary: ``Platform``'s declared members (relay, msgraph_webhook
+    and api_server are adapters but not setup-wizard platforms; plugin pseudo-members are not
+    declared). Loaded on first use: gateway.config is too heavy for this module's import."""
+    from gateway.config import Platform
+
+    return frozenset(member.value for member in Platform)
+
+
+class _AdapterPlatforms(_CatalogValues):
+    def values(self) -> frozenset[str]:
+        return super().values() | _gateway_adapter_platforms()
+
+
+ADAPTER_PLATFORMS = _AdapterPlatforms(*_PLATFORM_CATALOGS, extra=_CORE_GATEWAY_PLATFORMS | {"api_server"})
 PLATFORM_HEALTH_EVENTS = frozenset({"connect_ok", "connect_failed", "reconnect", "disconnect"})
 PLATFORM_ERROR_CLASSES = frozenset({"none", "auth", "network", "rate_limited", "config", "other"})
 DELIVERY_OUTCOMES = frozenset({"sent", "failed"})
@@ -885,7 +900,7 @@ def adapter_platform(value: Any) -> str:
     """Public name of a gateway adapter's platform (Platform enum or its value)."""
     from .shared_metrics_catalog import platform_metric_name
 
-    return platform_metric_name(value, _CORE_GATEWAY_PLATFORMS | {"api_server"})
+    return platform_metric_name(value, _CORE_GATEWAY_PLATFORMS | _gateway_adapter_platforms())
 
 
 _SURFACE_ENTRYPOINTS = {

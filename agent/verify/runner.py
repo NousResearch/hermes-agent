@@ -126,6 +126,7 @@ def _poll_readiness(url: str, timeout: float, interval: float = 1.0) -> tuple[bo
 
 
 def _port_accepts(port: int) -> bool:
+    # Only 127.0.0.1: readiness polls that address, so nothing else can pass for the app.
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.5):
             return True
@@ -180,7 +181,7 @@ def _run_start_phase(
     if _port_accepts(port):
         # Something already serves the port: its answer would pass for the app's.
         return ReadinessResult(url, False, None, time.monotonic() - started,
-                               f"port {port} already in use by another process; start command not run")
+                               f"port {port} already accepts connections on 127.0.0.1; start command not run")
     # start_new_session: own process group for clean teardown.
     proc = subprocess.Popen(recipe.start, cwd=str(root), start_new_session=True, **_SUBPROCESS_KW)
     output = ""

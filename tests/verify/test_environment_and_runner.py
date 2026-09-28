@@ -255,7 +255,6 @@ class TestReadiness:
     def test_port_already_in_use_is_not_readiness(self, tmp_path):
         """A server that was already on the port is not the app: its answer must not
         count as ready, and the start command must not run against the taken port."""
-        port = _free_port()
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
@@ -265,7 +264,8 @@ class TestReadiness:
             def log_message(self, *a):
                 pass
 
-        server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -274,7 +274,7 @@ class TestReadiness:
             result = run_verify(tmp_path, recipe, phases=("start",), ready_timeout=10)
             assert not result.readiness.ready
             assert not result.ok
-            assert "already in use" in (result.readiness.error or "")
+            assert "already accepts connections" in (result.readiness.error or "")
             assert not (tmp_path / "started").exists(), "the start command must not run"
         finally:
             server.shutdown()

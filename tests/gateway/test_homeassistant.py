@@ -107,6 +107,23 @@ class TestAdapterInit:
         assert adapter._hass_token == "config-token"
         assert adapter._hass_url == "http://192.168.1.50:8123"
 
+    def test_notify_service_from_config_and_env(self, monkeypatch):
+        monkeypatch.setenv("HASS_NOTIFY_SERVICE", "mobile_app_pixel")
+        adapter = HomeAssistantAdapter(PlatformConfig(enabled=True, token="t"))
+        assert adapter._notify_service == "mobile_app_pixel"
+
+        adapter = HomeAssistantAdapter(PlatformConfig(
+            enabled=True, token="t", extra={"notify_service": "notify.mobile_app_iphone"}
+        ))
+        assert adapter._notify_service == "mobile_app_iphone"
+
+    def test_invalid_notify_service_falls_back_to_persistent_notification(self, caplog):
+        adapter = HomeAssistantAdapter(PlatformConfig(
+            enabled=True, token="t", extra={"notify_service": "notify.mobile/app"}
+        ))
+        assert adapter._notify_service == ""
+        assert "Ignoring invalid Home Assistant notify service" in caplog.text
+
 
     def test_watch_filters_parsed(self):
         config = PlatformConfig(
@@ -215,6 +232,7 @@ class TestConfigIntegration:
     def test_env_override_creates_ha_platform(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "env-token")
         monkeypatch.setenv("HASS_URL", "http://10.0.0.5:8123")
+        monkeypatch.setenv("HASS_NOTIFY_SERVICE", "notify.mobile_app_iphone")
         # Clear other platform tokens
         for v in ["TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN", "SLACK_BOT_TOKEN"]:
             monkeypatch.delenv(v, raising=False)
@@ -227,6 +245,7 @@ class TestConfigIntegration:
         assert ha.enabled is True
         assert ha.token == "env-token"
         assert ha.extra["url"] == "http://10.0.0.5:8123"
+        assert ha.extra["notify_service"] == "notify.mobile_app_iphone"
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +296,61 @@ class TestSendViaRestApi:
         assert call_args[1]["json"]["title"] == "Hermes Agent"
         assert call_args[1]["json"]["message"] == "Test notification"
         assert "Bearer tok" in call_args[1]["headers"]["Authorization"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("service", ["mobile_app_phone", "notify.mobile_app_phone", "", "notify.mobile/app"])
+    async def test_notify_delivery_with_and_without_live_adapter(self, monkeypatch, service):
+        """Config reaches both HTTP send paths, including cron without a live gateway (#23643)."""
+        from types import SimpleNamespace
+
+        from aiohttp import web
+        import yaml
+
+        from gateway.config import load_gateway_config
+        from gateway.platform_registry import PlatformEntry, PlatformRegistry
+        from hermes_constants import get_hermes_home
+        from plugins.platforms.homeassistant.adapter import register
+        from tools import send_message_tool
+
+        calls = []
+
+        async def receive(request):
+            calls.append((request.path, request.headers["Authorization"], await request.json()))
+            return web.json_response([])
+
+        app = web.Application()
+        app.router.add_post("/api/services/{domain}/{service}", receive)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            await web.TCPSite(runner, "127.0.0.1", 0).start()
+            url = f"http://127.0.0.1:{runner.addresses[0][1]}"
+            (get_hermes_home() / "config.yaml").write_text(yaml.safe_dump({
+                "platforms": {"homeassistant": {
+                    "enabled": True, "token": "example-token",
+                    "extra": {"url": url, "notify_service": service},
+                }},
+            }), encoding="utf-8")
+            pconfig = load_gateway_config().platforms[Platform.HOMEASSISTANT]
+            adapter = HomeAssistantAdapter(pconfig)
+            assert (await adapter.send("phone", "live message")).success
+
+            registry = PlatformRegistry()
+            register(SimpleNamespace(register_platform=lambda **kwargs: registry.register(PlatformEntry(**kwargs))))
+            monkeypatch.setattr("gateway.platform_registry.platform_registry", registry)
+            monkeypatch.setattr(send_message_tool, "_live_adapter", lambda platform: (None, None))
+            result = await send_message_tool._send_via_adapter(Platform.HOMEASSISTANT, pconfig, "phone", "cron message")
+            assert result["success"] is True
+        finally:
+            await runner.cleanup()
+
+        configured = service in {"mobile_app_phone", "notify.mobile_app_phone"}
+        assert calls == [
+            ("/api/services/notify/mobile_app_phone" if configured else "/api/services/persistent_notification/create",
+             "Bearer example-token", {"title": "Hermes Agent", "message": "live message"}),
+            ("/api/services/notify/mobile_app_phone" if configured else "/api/services/notify/notify",
+             "Bearer example-token", {"message": "cron message", "target": "phone"}),
+        ]
 
 
 # ---------------------------------------------------------------------------

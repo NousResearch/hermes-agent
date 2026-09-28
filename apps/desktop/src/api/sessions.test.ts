@@ -7,6 +7,7 @@ import type { SidebarSessionsResponse } from './sessions'
 vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
 vi.mock('@/store/transcript-tail', () => ({ pageHonorsLatestOrder: () => true, recordTranscriptTail: vi.fn() }))
 vi.mock('./client', () => ({
+  ambientOwnerConnectionId: vi.fn(() => 'prometheus'),
   capabilityScoped: vi.fn(),
   // The cross-backend probe reads the session's own route too: `getLatestSessionMessages`
   // spreads both scope selectors before it dials.
@@ -15,7 +16,8 @@ vi.mock('./client', () => ({
   getApiRequestConnection: vi.fn(() => 'prometheus'),
   getApiRequestProfile: vi.fn(() => null),
   hermesApi: vi.fn(),
-  profileScoped: vi.fn(() => ({}))
+  profileScoped: vi.fn(() => ({})),
+  sessionReadOwnerPin: vi.fn(() => ({}))
 }))
 
 const client = await import('./client')
@@ -24,6 +26,7 @@ const {
   deleteSession,
   fetchStoredTranscriptAcrossBackends,
   getSession,
+  getLatestSessionMessages,
   setSessionArchived,
   setSessionPinnedRemote,
   setSessionUnreadRemote,
@@ -363,5 +366,42 @@ describe('fetchStoredTranscriptAcrossBackends (#94724 no-owner recovery)', () =>
 
     await expect(fetchStoredTranscriptAcrossBackends('sess-1')).resolves.toBeNull()
     expect(hermesApi).toHaveBeenCalledTimes(1)
+  })
+describe('session reads pin the owner connection (#125372)', () => {
+  beforeEach(() => {
+    // Ambient default: no explicit pin, no owner stamp.
+    vi.mocked(client.capabilityScoped).mockReturnValue({})
+    vi.mocked(client.sessionReadOwnerPin).mockReturnValue({})
+  })
+
+  it('pins getSession to the session owner when the ambient scope differs', async () => {
+    // Regression: a session-scoped read dispatched on the WINDOW's ambient
+    // connection scope. With a registered remote exposing a same-named
+    // profile, the wrong backend answered 404 "Session not found" in both
+    // directions. The read must carry the owner's connectionId (+ backend
+    // profile when the caller named none) so Electron routes to the owner.
+    vi.mocked(client.sessionReadOwnerPin).mockImplementation((id: string) =>
+      id === 'remote-owned' ? { connectionId: 'dale-home-lan-9119', profile: 'default' } : {}
+    )
+
+    await getSession('remote-owned')
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      path: '/api/sessions/remote-owned?profile=default',
+      connectionId: 'dale-home-lan-9119'
+    })
+  })
+
+  it('keeps an explicit (connection, profile) pin authoritative in getLatestSessionMessages', async () => {
+    // Explicit caller pin: the real capabilityScoped resolves it; the owner
+    // lookup must not override it.
+    vi.mocked(client.capabilityScoped).mockReturnValue({ profile: 'tommy', connectionId: 'other-conn' })
+
+    await getLatestSessionMessages('sess-y', { connectionId: 'other-conn', profile: 'tommy' })
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      connectionId: 'other-conn',
+      profile: 'tommy'
+    })
   })
 })

@@ -268,8 +268,9 @@ def _finish_dashboard_update_cleanup(
     stop_for_relaunch()
 
 
-def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> None:
-    """Refresh managed dashboards or stop stale manual ones after an update.
+def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> set[int]:
+    """Refresh managed dashboards or stop stale manual ones after an update; returns the PIDs it
+    stopped and could not bring back, so the receipt records them ``failed`` (#109290).
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
     already restarted, so a Serve-only install isn't restarted a second time here.
@@ -295,14 +296,16 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
         print(f"⚠ Could not refresh running dashboard/serve process(es): {exc}")
         print("  If one is still running, restart it so it serves the updated code:")
         print("    hermes dashboard --port <port>   (or: systemctl --user restart hermes-dashboard)")
-        return
-    if not stop_result.get("unrecovered"):
-        return
+        return set()
+    unrecovered = {int(pid) for pid in stop_result.get("unrecovered") or ()}
+    if not unrecovered:
+        return unrecovered
 
     print()
     print("⚠ A web dashboard/serve process was stopped during update and could not be auto-restarted.")
     print("  Re-launch it when you want the web UI back:")
     print("    hermes dashboard --port <port>")
+    return unrecovered
 
 
 def _print_update_completion(message: str) -> None:

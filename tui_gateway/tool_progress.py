@@ -468,7 +468,11 @@ def _progress_subagent(sid: str, name: str, preview, kw, event_type):
     # (keyed off the child sid); on the parent it's hundreds of ignored frames, so skip it.
     if event_type != "subagent.text":
         _emit(event_type, sid, payload)
-    _mirror_subagent_to_child(event_type, payload)
+    # The child runs under the PARENT's profile: the mirror and its liveness registry are scoped to
+    # that home. A parent record already gone (close / WS orphan reap mid-turn) cannot be attributed
+    # to a profile — bind nothing rather than fold the run into the launch profile.
+    if (parent := _sessions.get(sid)) is not None:
+        _mirror_subagent_to_child(event_type, payload, parent.get("profile_home"))
 
 
 # event_type -> (handler, requires): `requires` names the arg that must be truthy for the row to be

@@ -2075,6 +2075,8 @@ class GatewayTurnMixin:
 
         # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
         # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
+        if event.internal and session_key:
+            await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
         context_prompt = self._pinned_session_context_prompt(
             context, _redact_pii, session_key, internal=event.internal,
         )
@@ -2199,6 +2201,10 @@ class GatewayTurnMixin:
             _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(
                 session_key, event.channel_prompt, source, internal=event.internal,
             )
+            if not event.internal:
+                # Persist the coherent context+channel pair before execution: a crash during the
+                # human turn may be followed by an internal startup-resume on the next process.
+                await self._persist_prompt_pins(session_key, _run_start_session_id)
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=_turn_source,
                 session_id=_run_start_session_id, session_key=session_key,
@@ -3869,6 +3875,9 @@ class GatewayTurnMixin:
             next_channel_prompt, next_source = self._pinned_channel_inputs(
                 next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
             )
+            if not pending_event.internal:
+                # A drained human turn re-pins its channel inputs; make them durable like a first turn.
+                await self._persist_prompt_pins(next_session_key, session_id)
             next_message_type = getattr(pending_event, "message_type", None)
         else:
             # Event-less interrupt/steer follow-ups continue the effective prompt

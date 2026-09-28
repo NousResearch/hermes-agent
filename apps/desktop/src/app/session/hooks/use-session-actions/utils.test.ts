@@ -8,8 +8,12 @@ import { $activeGatewayProfile } from '@/store/profile'
 import {
   $currentBranch,
   $currentCwd,
+  $currentModel,
+  $currentProvider,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentModel,
+  setCurrentProvider,
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
@@ -2271,5 +2275,34 @@ describe('preserveLocalPendingTurnMessages attachment rewrites (#120978)', () =>
       '3-user-stored',
       'user-1790168309-ab12cd'
     ])
+  })
+})
+
+describe('applyStoredSessionPreviewRuntimeInfo does not persist the preview', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    setCurrentModel('user-pick')
+    setCurrentProvider('anthropic')
+  })
+
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  // The preview is provisional: it paints while session.resume is still in
+  // flight. An abandoned resume never repairs the selection afterwards, so a
+  // persisting paint strands a manual model with an EMPTY provider in
+  // localStorage — every later session.create pairs that model with the
+  // profile provider and fails the coherence gate.
+  it('moves the visible model/provider without persisting them', () => {
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '', model: 'claude-opus-5-5' }, 'session-next')
+
+    // Visible paint happened…
+    expect($currentModel.get()).toBe('claude-opus-5-5')
+    expect($currentProvider.get()).toBe('')
+
+    // …but nothing was persisted: the composer's sticky selection survives.
+    expect(localStorage.getItem('hermes.desktop.composer.model')).toBe('user-pick')
+    expect(localStorage.getItem('hermes.desktop.composer.provider')).toBe('anthropic')
   })
 })

@@ -631,6 +631,29 @@ def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
         f"  ✓ Turned off MCP servers the profile editor had marked disabled: {names}.")
 
 
+def _migrate_to_48(results: Dict[str, Any], quiet: bool) -> None:
+    # 47 → 48: the container sandbox default gains a display stack (nousresearch/hermes-sandbox:
+    # desktop) so Bot Screen / computer_use / the browser run inside the sandbox. A saved value
+    # still equal to the OLD default is the template copied, not a choice: the key is DROPPED so
+    # the file follows the default. It is not rewritten to the new image, because a written image
+    # is a pin and a pin recreates a persisted Docker container without asking; unpinned, the
+    # runtime keeps an existing sandbox and the CLI / Screen pane ask first. A pinned image stays.
+    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGES
+    for legacy in LEGACY_SANDBOX_IMAGES:
+        for key, old in (
+            ("docker_image", legacy),
+            ("modal_image", legacy),
+            ("daytona_image", legacy),
+            ("singularity_image", f"docker://{legacy}"),
+        ):
+            _rewrite_stale_default(
+                section="terminal", key=key, old=old, new=None,
+                added=f"terminal.{key} unset (follows the default, {DEFAULT_SANDBOX_IMAGE})",
+                message=f"  ✓ terminal.{key}: was the old default; now follows the default sandbox image "
+                        f"({DEFAULT_SANDBOX_IMAGE})",
+            )(results, quiet)
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -765,6 +788,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "  ✓ Removed compression.threshold_tokens: 256000 — the old default. Compaction "
             "follows compression.threshold (50% of the window) again. Set threshold_tokens "
             "to a token count to cap it on purpose."))),
+    # 47 → 48: a saved old-default sandbox image is dropped so the file follows the new default (see _migrate_to_48).
+    (48, _migrate_to_48),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

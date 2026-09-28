@@ -7,7 +7,6 @@ Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO
 import time
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
-from agent.message_sanitization import matches_reasoning_echo_family
 from utils import base_url_host_matches
 
 # Static OpenRouter fallback when the live /v1/models capability cache is cold.
@@ -155,8 +154,15 @@ class ReasoningParamsMixin:
     _build_assistant_message = _forward("agent.chat_completion_helpers", "build_assistant_message")
 
     def _needs_thinking_reasoning_pad(self) -> bool:
-        """True when the provider enforces ``reasoning_content`` echo-back on tool-call replays (DeepSeek, Kimi,
-        MiMo thinking all 400 without it). Cached per (provider, model, base_url), invalidated by
+        """True when the active route enforces ``reasoning_content`` echo-back on replay.
+
+        Table-driven on purpose: membership lives in
+        ``message_sanitization._REASONING_ECHO_RULES`` (DeepSeek, Kimi/Moonshot, Xiaomi MiMo, IFM's
+        hosted K2 API) so a new echo family is ONE TABLE ROW. A hand-rolled per-family chain here is
+        how the IFM family came up missing: the route 400s "Add a supported thinking field to each
+        assistant message in the multi-turn conversation history" on ANY multi-turn replay — text
+        turns included, not just tool-call turns — while the aggregate still asked only
+        deepseek/kimi/mimo. Cached per (provider, model, base_url), invalidated by
         ``switch_model()`` / ``_try_activate_fallback()`` — called ~16× per turn.
 
         DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays of assistant tool-call
@@ -167,8 +173,9 @@ class ReasoningParamsMixin:
         cached = getattr(self, "_thinking_pad_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        result = (self._needs_deepseek_tool_reasoning() or self._needs_kimi_tool_reasoning()
-                  or self._needs_mimo_tool_reasoning() or self._reasoning_echo_opt_in())
+        from agent.message_sanitization import needs_reasoning_echo
+
+        result = needs_reasoning_echo(self.provider, self.model, self.base_url) or self._reasoning_echo_opt_in()
         self._thinking_pad_cache = (key, result)
         return result
 
@@ -185,25 +192,6 @@ class ReasoningParamsMixin:
             return bool((load_config_readonly().get("model") or {}).get("reasoning_echo"))
         except Exception:
             return False
-
-    # Echo families are host/provider-driven, not model-name-driven: aggregators re-exporting Kimi reject the
-    # echo. Rule table: ``message_sanitization._REASONING_ECHO_RULES``. Kimi deliberately passes the raw
-    # provider and no model (its rule matches exact provider ids + hosts only).
-    def _needs_kimi_tool_reasoning(self) -> bool:
-        """True when the current provider is Kimi / Moonshot thinking mode."""
-        return matches_reasoning_echo_family("kimi", self.provider, None, self.base_url)
-
-    def _needs_deepseek_tool_reasoning(self) -> bool:
-        """True when the current provider is DeepSeek thinking mode (omitting the echo is an HTTP 400).
-
-        DeepSeek V4 thinking mode requires ``reasoning_content`` on every assistant tool-call turn; omitting
-        it causes HTTP 400 when the message is replayed in a subsequent API request (#15250).
-        """
-        return matches_reasoning_echo_family("deepseek", (self.provider or "").lower(), self.model, self.base_url)
-
-    def _needs_mimo_tool_reasoning(self) -> bool:
-        """True when the current provider is Xiaomi MiMo thinking mode."""
-        return matches_reasoning_echo_family("mimo", (self.provider or "").lower(), self.model, self.base_url)
 
     _copy_reasoning_content_for_api = _forward("agent.agent_runtime_helpers", "copy_reasoning_content_for_api")
 

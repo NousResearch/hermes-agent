@@ -587,6 +587,11 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
 # purpose: aggregators re-exporting kimi models reject the echo. deepseek — provider "deepseek", model
 # contains "deepseek", or host api.deepseek.com (#15250; V4 rejects empty-string pads, hence the " "
 # single-space pad, #17341). mimo     — provider "xiaomi", model contains "mimo", or host *.xiaomimimo.com.
+# ifm      — host api.ifm.ai / api-staging.ifm.ai (the IFM-hosted K2-Horizon / K2-Think-V2 API answers
+# ANY multi-turn replay without reasoning_content with HTTP 400 "Add a supported thinking field to each
+# assistant message in the multi-turn conversation history"; host-driven on purpose — a re-export of the
+# same weights elsewhere is not known to enforce it. Both "" and " " are accepted there, so the shared
+# single-space pad is used).
 # strict side (field rejected with 400/422 "Extra inputs are not permitted"): everyone else — Mistral,
 # Cerebras, Groq, SambaNova, … (#45655). Strip the key entirely, even a single-space pad.
 _REASONING_ECHO_RULES: tuple = (
@@ -594,6 +599,7 @@ _REASONING_ECHO_RULES: tuple = (
     ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), (), ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
     ("deepseek", frozenset(), frozenset({"deepseek"}), ("deepseek",), ("api.deepseek.com",)),
     ("mimo", frozenset(), frozenset({"xiaomi"}), ("mimo",), ("api.xiaomimimo.com", "xiaomimimo.com")),
+    ("ifm", frozenset(), frozenset(), (), ("api.ifm.ai", "api-staging.ifm.ai")),
 )
 _REASONING_ECHO_RULE_BY_FAMILY = {rule[0]: rule for rule in _REASONING_ECHO_RULES}
 

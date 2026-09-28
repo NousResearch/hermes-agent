@@ -50,6 +50,48 @@ class TestMCPComponentExtraction:
         assert sa._extract_mcp_component("x", "npx", []) is None
 
 
+# ─── Venv discovery ───────────────────────────────────────────────────────────
+
+
+class TestVenvDiscovery:
+    @staticmethod
+    def _fake_dists(rows):
+        class _Dist:
+            def __init__(self, name, version):
+                self.metadata = {"Name": name}
+                self.version = version
+
+        return [_Dist(n, v) for n, v in rows]
+
+    def test_skips_self_dist_placeholder(self, monkeypatch):
+        import importlib.metadata as im
+
+        monkeypatch.setattr(im, "distributions", lambda: self._fake_dists([
+            ("hermes-agent", "0.0.0"),
+            ("requests", "2.32.3"),
+        ]))
+        comps = sa._discover_venv()
+        assert [(c.name, c.version) for c in comps] == [("requests", "2.32.3")]
+
+    def test_audits_released_self_dist_version(self, monkeypatch):
+        import importlib.metadata as im
+
+        monkeypatch.setattr(im, "distributions", lambda: self._fake_dists([
+            ("hermes-agent", "0.19.0"),
+        ]))
+        comps = sa._discover_venv()
+        assert [(c.name, c.version) for c in comps] == [("hermes-agent", "0.19.0")]
+
+    def test_audits_third_party_zero_dist(self, monkeypatch):
+        import importlib.metadata as im
+
+        monkeypatch.setattr(im, "distributions", lambda: self._fake_dists([
+            ("someone-elses-pkg", "0.0.0"),
+        ]))
+        comps = sa._discover_venv()
+        assert [(c.name, c.version) for c in comps] == [("someone-elses-pkg", "0.0.0")]
+
+
 # ─── Plugin discovery ─────────────────────────────────────────────────────────
 
 

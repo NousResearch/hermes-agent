@@ -228,6 +228,43 @@ class TestProfileModeHomesNeverCleaned:
         assert result["deleted"] == 0
         assert dg.load_tracked() == [], "stale entry is dropped from tracking, not retried"
 
+    def test_profile_home_stale_temp_entry_never_deleted(
+        self, _isolate_env, monkeypatch
+    ):
+        """A pre-fix "temp" entry pointing into a profile home (the terminal cache a
+        profile-bound gateway writes at ``<profile home>/cache/terminal``) must be
+        dropped by quick()'s re-validation, not unlinked after the 7-day age."""
+        dg = _load_lib()
+        home = self._bind_profile_home(_isolate_env, monkeypatch)
+        keep = home / "cache" / "terminal" / "clip.txt"
+        keep.parent.mkdir(parents=True)
+        keep.write_text("x")
+        dg.save_tracked([{"path": str(keep), "category": "temp",
+                          "timestamp": (datetime.now(timezone.utc) - timedelta(days=10)).isoformat(),
+                          "size": 1}])
+
+        result = dg.quick()
+
+        assert keep.exists(), "aged 'temp' files under a profile home are user files, never auto-deleted"
+        assert result["deleted"] == 0
+        assert dg.load_tracked() == [], "stale entry is dropped from tracking, not retried"
+        auto, _ = dg.dry_run()
+        assert auto == [], "dry_run() omits the stale profile entry the same way"
+
+    def test_track_rejects_paths_inside_the_profiles_root(
+        self, _isolate_env, monkeypatch
+    ):
+        """``/disk-cleanup track`` validates only is_safe_path, never guess_category,
+        so it is a direct route past the tracking guard — it must refuse profile trees."""
+        dg = _load_lib()
+        home = self._bind_profile_home(_isolate_env, monkeypatch)
+        target = home / "cache" / "terminal" / "x.log"
+        target.parent.mkdir(parents=True)
+        target.write_text("x")
+
+        assert dg.track(str(target), "temp") is False
+        assert dg.load_tracked() == []
+
     def test_empty_dir_sweep_skips_the_whole_profile_home(
         self, _isolate_env, monkeypatch
     ):
@@ -290,7 +327,7 @@ class TestProtectedDirsNeverRmtreed:
         assert not old_file.exists(), "old temp FILE under cache/ is still pruned (control)"
         assert summary["deleted"] == 1
         assert dg.load_tracked() == [], "the stale dir entry is dropped, not retried every session"
-        assert "SKIPPED" in (_isolate_env / "disk-cleanup" / "cleanup.log").read_text()
+        assert "SKIP" in (_isolate_env / "disk-cleanup" / "cleanup.log").read_text()
 
     def test_kanban_test_files_are_never_tracked_or_deleted(self, _isolate_env):
         pi = _load_plugin_init()

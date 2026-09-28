@@ -178,6 +178,9 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
     if not is_safe_path(path):
         _log(f"REJECT: {path} (outside HERMES_HOME)")
         return False
+    if _under_profiles_root(path):  # profile trees are user trees (#123632)
+        _log(f"REJECT: {path} (inside the profiles root)")
+        return False
     size = path.stat().st_size if path.is_file() else 0
     tracked = load_tracked()
     if any(item["path"] == str(path) for item in tracked):
@@ -243,8 +246,12 @@ def _delete_item(item: Dict) -> Optional[str]:
 
 
 # Stored categories re-validated against guess_category() before use: old tracked.json entries
-# may carry "cron-output" for control-plane files or "test" for files under protected trees.
-_STALE_SKIP_NOTE = {"cron-output": "", "test": " — under protected tree"}
+# may carry "cron-output" for control-plane files or "test" for files under protected trees, and
+# "temp" for files under a profile home (a profile-bound gateway writes its terminal cache there
+# and ``track`` used to admit it — guess_category now returns None for the whole profiles root,
+# #123632). All three auto-delete categories re-validate, so quick() cannot auto-delete a file
+# guess_category() would refuse to track.
+_STALE_SKIP_NOTE = {"cron-output": "", "test": " — under protected tree", "temp": ""}
 
 
 def dry_run() -> Tuple[List[Dict], List[Dict]]:

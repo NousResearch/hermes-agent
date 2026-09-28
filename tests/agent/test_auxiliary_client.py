@@ -4869,6 +4869,32 @@ class TestCustomEndpointApiKeyInheritance:
         assert served[:2] == ["sk-first-session", "sk-second-session"]
         assert served[2] not in ("sk-first-session", "sk-second-session")
 
+    @pytest.mark.parametrize("aux_base_url,explicit_key", [
+        ("https://gw.example.com/v1", "   "), (None, "   "), (None, "sk-explicit-aux"),
+    ], ids=["explicit-base-url-blank-key", "runtime-endpoint-blank-key", "runtime-endpoint-explicit-key"])
+    def test_cache_separates_runtimes_whenever_the_build_borrows(self, monkeypatch, aux_base_url, explicit_key):
+        """The cache and the client build must agree on when the main credential is borrowed: a
+        blank explicit key is keyless, and the runtime-endpoint shape never uses the explicit key."""
+        import agent.auxiliary_client as aux
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        aux.shutdown_cached_clients()
+        served = []
+        try:
+            for live_key in ("sk-first-session", "sk-second-session"):
+                token = aux.set_runtime_main("custom", "main-model", base_url="https://gw.example.com/v1", api_key=live_key)
+                try:
+                    client, _ = aux._get_cached_client("custom", "aux-model", base_url=aux_base_url, api_key=explicit_key)
+                finally:
+                    aux.reset_runtime_main(token)
+                served.append(getattr(client, "api_key", None))
+        finally:
+            aux.shutdown_cached_clients()
+            aux.clear_runtime_main()
+
+        assert served == ["sk-first-session", "sk-second-session"]
+
 
 class TestNoProgressTimeoutTaskConfigGating:
     """#108104: ``auxiliary.<task>.no_progress_timeout`` must only reach the request kwargs

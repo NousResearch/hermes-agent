@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from gateway.input_owner import gateway_input_owner
 from gateway.run_inbound_logging import log_inbound_reply_context
-from gateway.platforms.event import MessageEvent, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, ProcessingOutcome, _ProcessingCompletion
 from gateway.platforms.base_pending import reserve_pending_dispatch, release_pending_dispatch_record
 from gateway.response_filters import display_kind_for_event, reply_expected_metadata
 from gateway.run_inbound_turn_context import channel_state_metadata
@@ -44,7 +44,7 @@ class GatewayQueuedFollowupMixin:
         _strict_session_current = GatewayRunner._strict_session_current
 
     async def _run_agent_queued_followup(
-        self, turn_ctx: TurnContext, adapter: Any, pending: Optional[str], pending_event: Any,
+        self: "GatewayRunner", turn_ctx: TurnContext, adapter: Any, pending: Optional[str], pending_event: Any,
         response: Any, result: Any, stream_task: Any,
     ) -> Any:
         """Run the queued / interrupting follow-up as the next turn (recursive ``_run_agent``)."""
@@ -81,7 +81,9 @@ class GatewayQueuedFollowupMixin:
                     adapter.queue_message(session_key, pending)
                 return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
 
-            from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
+            from gateway.run_turn_followup_ack import (
+            _followup_cancel_outcome, _followup_processing_hooks_apply, _run_followup_processing_hook,
+        )
             completed_event = turn_ctx.processing_event
             completed_adapter = self._intake_adapter_for(completed_event.source) if completed_event is not None else None
             outcome = ProcessingOutcome.CANCELLED
@@ -261,9 +263,14 @@ class GatewayQueuedFollowupMixin:
                 await _run_followup_processing_hook(
                     _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
                 raise
-            await _run_followup_processing_hook(
-                _hook_adapter, pending_event, "on_processing_complete",
-                ProcessingOutcome.from_agent_result(followup_result))
+            followup_outcome = ProcessingOutcome.from_agent_result(followup_result)
+            if (completed_event is not None and _hook_adapter is not None
+                    and _followup_processing_hooks_apply(_hook_adapter, pending_event)
+                    and followup_outcome == ProcessingOutcome.SUCCESS and not followup_result.get("already_sent")):
+                completed_event._processing_state.pending_completion = _ProcessingCompletion(_hook_adapter, pending_event)
+            else:
+                await _run_followup_processing_hook(
+                    _hook_adapter, pending_event, "on_processing_complete", followup_outcome)
             merged = _preserve_queued_followup_history_offset(result, followup_result)
             # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
             # the adapter brackets against the event that OPENED the chain. Without this the terminal

@@ -530,6 +530,7 @@ def gateway(
                    if context_pause else "")
                 + ("plugins:\n  enabled:\n    - matrix-live-resolution\n" if resolution_pause else "")
                 + f"display:\n  busy_input_mode: {gateway_busy_input_mode}\n  busy_text_mode: interrupt\n"
+                + "approvals:\n  mode: manual\n  timeout: 15\n"
                 + gateway_extra_config
             ),
         )

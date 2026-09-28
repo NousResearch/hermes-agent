@@ -16,7 +16,7 @@ from nio import (
     RoomSendResponse,
 )
 
-from tests.fakes.fake_llm_provider import Text
+from tests.fakes.fake_llm_provider import Text, ToolCall
 from tests.integration.matrix_live.conftest import (
     LiveGateway,
     LiveRoom,
@@ -36,7 +36,7 @@ def gateway_busy_input_mode(request: pytest.FixtureRequest) -> str:
 
 @pytest.fixture
 def turn_gates() -> Iterator[list[tuple[Event, Event]]]:
-    gates = [(Event(), Event()), (Event(), Event())]
+    gates = [(Event(), Event()) for _ in range(3)]
     try:
         yield gates
     finally:
@@ -45,21 +45,38 @@ def turn_gates() -> Iterator[list[tuple[Event, Event]]]:
 
 
 @pytest.fixture
+def feedback_path(request: pytest.FixtureRequest) -> str:
+    return getattr(request, "param", "ordinary")
+
+
+@pytest.fixture
 def model_responder(
-    turn_gates: list[tuple[Event, Event]], gateway_busy_input_mode: str
-) -> Callable[[dict], Text]:
+    turn_gates: list[tuple[Event, Event]],
+    gateway_busy_input_mode: str,
+    feedback_path: str,
+) -> Callable[[dict], Text | ToolCall]:
     calls = 0
 
-    def respond(_request: dict) -> Text:
+    def respond(_request: dict) -> Text | ToolCall:
         nonlocal calls
         index = calls
         calls += 1
-        if gateway_busy_input_mode == "interrupt":
-            index = min(index, len(turn_gates) - 1)
+        if feedback_path == "ordinary" and gateway_busy_input_mode == "interrupt":
+            index = min(index, 1)
         assert index < len(turn_gates), "Unexpected extra model turn"
         started, release = turn_gates[index]
         started.set()
         assert release.wait(15), "Observer did not release the model turn"
+        if index == 0 and feedback_path == "consumed":
+            return ToolCall("read_file", {"path": "/etc/hostname"})
+        if index == 0 and feedback_path == "approval":
+            return ToolCall(
+                "terminal",
+                {
+                    "command": "rm -rf /tmp/hermes-receipt-approval-target",
+                    "timeout": 10,
+                },
+            )
         return Text(f"Completed Matrix turn {index + 1}")
 
     return respond
@@ -260,6 +277,242 @@ def test_queue_and_recursive_correction_receipts_wait_for_processing(
         except TimeoutError:
             pytest.fail(
                 "Recursive correction receipt timed out:\n"
+                + gateway.container
+                .get_wrapped_container()
+                .logs()
+                .decode(errors="replace")[-6000:]
+            )
+        finally:
+            for _started, release in turn_gates:
+                release.set()
+            await client.close()
+
+    asyncio.run(exchange())
+
+
+@pytest.mark.parametrize("feedback_path", ["fifo"], indirect=True)
+def test_fifo_precedes_late_steering_without_acknowledging_it(
+    gateway: LiveGateway,
+    live_room: LiveRoom,
+    turn_gates: list[tuple[Event, Event]],
+) -> None:
+    async def exchange() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        seen = FeedbackObserver(client, live_room)
+        try:
+            await client.sync(timeout=0)
+            opening = await seen.send("Opening [in:fifo-opening]")
+            assert await asyncio.to_thread(turn_gates[0][0].wait, 5)
+            await seen.observe_until(lambda: seen.reactions.get(opening) == ["👀"])
+            queued = await seen.send("/queue Queued [in:fifo-queued]")
+            await seen.observe_until(
+                lambda: any(
+                    "Queued for the next turn" in reply for reply in seen.replies
+                )
+            )
+            late = await seen.send("/steer Late correction [in:fifo-late]")
+            await seen.observe_until(
+                lambda: any(
+                    "Steer queued into current" in reply for reply in seen.replies
+                )
+            )
+            assert seen.receipts == set()
+            turn_gates[0][1].set()
+            assert await asyncio.to_thread(turn_gates[1][0].wait, 5)
+            await seen.observe_until(
+                lambda: (
+                    opening in seen.receipts and seen.reactions.get(queued) == ["👀"]
+                )
+            )
+            assert (seen.receipts, seen.reactions) == (
+                {opening},
+                {opening: ["👀", "✅"], queued: ["👀"]},
+            )
+            turn_gates[1][1].set()
+            assert await asyncio.to_thread(turn_gates[2][0].wait, 5)
+            await seen.observe_until(
+                lambda: queued in seen.receipts and seen.reactions.get(late) == ["👀"]
+            )
+            assert (seen.receipts, seen.reactions) == (
+                {opening, queued},
+                {opening: ["👀", "✅"], queued: ["👀", "✅"], late: ["👀"]},
+            )
+            turn_gates[2][1].set()
+            await seen.observe_until(
+                lambda: (
+                    late in seen.receipts and seen.reactions.get(late) == ["👀", "✅"]
+                )
+            )
+            assert seen.receipts == {opening, queued, late}
+            requests = gateway.model.main_requests()
+            assert len(requests) == 3
+            assert "[in:fifo-queued]" in str(requests[1]["messages"][-1])
+            assert "[in:fifo-late]" in str(requests[2]["messages"][-1])
+        except TimeoutError:
+            pytest.fail(
+                "FIFO steering timed out:\n"
+                + f"Receipts: {seen.receipts!r}\nReactions: {seen.reactions!r}\nReplies: {seen.replies!r}\n"
+                + gateway.container
+                .get_wrapped_container()
+                .logs()
+                .decode(errors="replace")[-6000:]
+            )
+        finally:
+            for _started, release in turn_gates:
+                release.set()
+            await client.close()
+
+    asyncio.run(exchange())
+
+
+@pytest.mark.parametrize("feedback_path", ["consumed"], indirect=True)
+@pytest.mark.parametrize("completion", ["success", "cancelled"])
+def test_consumed_steering_receipt_precedes_pending_steering(
+    gateway: LiveGateway,
+    live_room: LiveRoom,
+    turn_gates: list[tuple[Event, Event]],
+    completion: str,
+) -> None:
+    async def exchange() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        seen = FeedbackObserver(client, live_room)
+        try:
+            await client.sync(timeout=0)
+            opening = await seen.send("Opening [in:consumed-opening]")
+            assert await asyncio.to_thread(turn_gates[0][0].wait, 5)
+            await seen.observe_until(lambda: seen.reactions.get(opening) == ["👀"])
+            consumed = await seen.send("/steer Process this correction [in:consumed-b]")
+            await seen.observe_until(
+                lambda: (
+                    sum("Steer queued into current" in reply for reply in seen.replies)
+                    == 1
+                )
+            )
+            turn_gates[0][1].set()
+            assert await asyncio.to_thread(turn_gates[1][0].wait, 5)
+            messages = gateway.model.main_requests()[1]["messages"]
+            assert any(
+                message.get("role") == "user"
+                and "[in:consumed-b]" in str(message.get("content"))
+                for message in messages
+            )
+            pending = await seen.send("/steer Defer this correction [in:pending-c]")
+            await seen.observe_until(
+                lambda: (
+                    sum("Steer queued into current" in reply for reply in seen.replies)
+                    == 2
+                )
+            )
+            assert seen.receipts == set()
+            turn_gates[1][1].set()
+            assert await asyncio.to_thread(turn_gates[2][0].wait, 5)
+            await seen.observe_until(
+                lambda: (
+                    consumed in seen.receipts and seen.reactions.get(pending) == ["👀"]
+                )
+            )
+            assert (seen.receipts, seen.reactions) == (
+                {consumed},
+                {opening: ["👀", "✅"], pending: ["👀"]},
+            )
+            if completion == "cancelled":
+                stopped = await seen.send("/stop")
+                await seen.observe_until(lambda: stopped in seen.receipts)
+                assert (seen.receipts, seen.reactions) == (
+                    {consumed, stopped},
+                    {opening: ["👀", "✅"], pending: ["👀"]},
+                )
+                return
+            turn_gates[2][1].set()
+            await seen.observe_until(
+                lambda: (
+                    pending in seen.receipts
+                    and seen.reactions.get(pending) == ["👀", "✅"]
+                )
+            )
+            assert seen.receipts == {consumed, pending}
+        except TimeoutError:
+            pytest.fail(
+                "Consumed steering timed out:\n"
+                + gateway.container
+                .get_wrapped_container()
+                .logs()
+                .decode(errors="replace")[-6000:]
+            )
+        finally:
+            for _started, release in turn_gates:
+                release.set()
+            await client.close()
+
+    asyncio.run(exchange())
+
+
+@pytest.mark.parametrize("feedback_path", ["approval"], indirect=True)
+@pytest.mark.parametrize("answer", ["yes", "no"])
+def test_plaintext_approval_receipt_precedes_active_turn_completion(
+    gateway: LiveGateway,
+    live_room: LiveRoom,
+    turn_gates: list[tuple[Event, Event]],
+    answer: str,
+) -> None:
+    async def exchange() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        seen = FeedbackObserver(client, live_room)
+        try:
+            await client.sync(timeout=0)
+            opening = await seen.send("Approval [in:plaintext-approval]")
+            assert await asyncio.to_thread(turn_gates[0][0].wait, 5)
+            await seen.observe_until(lambda: seen.reactions.get(opening) == ["👀"])
+            turn_gates[0][1].set()
+            await seen.observe_until(
+                lambda: any(
+                    "needs your OK" in reply
+                    and "rm -rf /tmp/hermes-receipt-approval-target" in reply
+                    for reply in seen.replies
+                )
+            )
+            approval = await seen.send(answer)
+            assert await asyncio.to_thread(turn_gates[1][0].wait, 5)
+            await seen.observe_until(lambda: approval in seen.receipts)
+            assert (
+                seen.receipts,
+                seen.reactions.get(opening),
+                seen.reactions.get(approval),
+            ) == (
+                {approval},
+                ["👀"],
+                None,
+            )
+            tool_results = [
+                message["content"]
+                for message in gateway.model.main_requests()[1]["messages"]
+                if message.get("role") == "tool"
+            ]
+            assert tool_results
+            assert any(
+                "denied" in result.lower() or "blocked" in result.lower()
+                for result in tool_results
+            ) == (answer == "no")
+            turn_gates[1][1].set()
+            await seen.observe_until(
+                lambda: (
+                    "Completed Matrix turn 2" in seen.replies
+                    and seen.reactions.get(opening) == ["👀", "✅"]
+                )
+            )
+            assert (
+                seen.receipts,
+                seen.reactions.get(opening),
+                seen.reactions.get(approval),
+            ) == (
+                {approval},
+                ["👀", "✅"],
+                None,
+            )
+        except TimeoutError:
+            pytest.fail(
+                "Approval receipt timed out:\n"
+                + f"Receipts: {seen.receipts!r}\nReactions: {seen.reactions!r}\nReplies: {seen.replies!r}\n"
                 + gateway.container
                 .get_wrapped_container()
                 .logs()

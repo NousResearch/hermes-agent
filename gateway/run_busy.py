@@ -22,7 +22,7 @@ from agent.session_activity import format_iteration_progress
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.base_pending import Withdraw, ingress_order
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import ProcessingOutcome, MessageEvent, MessageType
 from gateway.platforms.base_pending import can_join_pending_event, is_pending_redispatch, release_pending_dispatch, pending_dispatch_needs_snapshot, pending_dispatch_records, pending_dispatch_withdrawn
 from gateway.session import SessionSource
 from gateway.whatsapp_identity import canonical_whatsapp_identifier
@@ -298,7 +298,7 @@ class GatewayBusySessionMixin:
             self._peek_session_state(session_key).conversation.queued_events = kept
         return removed
 
-    def _goal_still_active_for_session(self, session_id: str) -> bool:
+    def _goal_still_active_for_session(self, session_id: Optional[str]) -> bool:
         """Best-effort fresh DB check before running a queued continuation."""
         if not session_id:
             return False
@@ -587,14 +587,14 @@ class GatewayBusySessionMixin:
             else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
         )
 
-    async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> None:
+    async def _send_busy_reply(self, event: MessageEvent, adapter, content: str, *, plain_anchor: bool = False) -> SendResult:
         """Send a busy-path reply anchored to the event (thread metadata included).
 
         ``_notice_reply`` tells adapters that this reply does not answer the event, so an
         adapter that quotes a request once per turn keeps the quote for the turn's answer.
         Gateway-internal; Relay strips it before the wire."""
         reply_anchor = self._reply_anchor_for_event(event)
-        await adapter._send_with_retry(
+        return await adapter._send_with_retry(
             chat_id=event.source.chat_id,
             content=content,
             reply_to=reply_anchor
@@ -635,57 +635,49 @@ class GatewayBusySessionMixin:
                 words.setdefault(word, verb_args)
         return words
 
-    async def _route_plaintext_approval_while_busy(self, event: MessageEvent, session_key: str) -> bool:
+    async def _route_plaintext_approval_while_busy(
+        self: "GatewayRunner", event: MessageEvent, session_key: str
+    ) -> bool:
         """Route a bare "yes"/"no" to the approval handlers while a dangerous-command approval blocks.
 
         Returns True when the message was consumed as an approval response.
         """
-        # A bare "yes" while blocked on a dangerous-command approval must reach the approval handler,
-        # not queue behind a turn that can't start until it resolves (auto-deny deadlock). Gated on
-        # has_blocking_approval so a conversational "yes" never fires a command.
+        from tools.approval import has_blocking_approval
+
+        if not event.allow_gateway_control or not has_blocking_approval(session_key):
+            return False
+        match = self._plaintext_approval_words().get((event.text or "").strip().lower())
+        if match is None:
+            return False
+
+        verb, normalized_args = match
+        handler = self._handle_approve_command if verb == "approve" else self._handle_deny_command
+        event.text = f"/{verb} {normalized_args}".rstrip()
+        adapter = self._delivery_adapter_for(event.source)
+        hook_adapter = self._intake_adapter_for(event.source)
+        outcome = ProcessingOutcome.SUCCESS
         try:
-            from tools.approval import has_blocking_approval
-            # --- Approval response routing (#46866) --- When the agent is blocked waiting for a
-            # dangerous-command approval, plain-text responses like "yes" or "approve" must be routed to the
-            # approval handler instead of being steered/queued/interrupted. Slash forms (/approve, /deny)
-            # already bypass to the runner at the base-adapter guard. This handles the bare-word forms
-            # (Signal/SMS users naturally type "yes" rather than "/approve"). Gating on
-            # has_blocking_approval(session_key) is the disambiguator that keeps a conversational "yes" from
-            # triggering a dangerous command when no approval is actually pending (design intent — see
-            # run.py "Pending exec approvals are handled by /approve and /deny" note). We reuse the
-            # canonical /approve and /deny handlers rather than re-deriving the resolution + i18n messaging:
-            # they resolve the waiting thread, resume typing, AND return a localized confirmation string.
-            # The busy-handler path does not auto-send that return, so we deliver it ourselves (mirroring
-            # the draining-case send above).
-            if event.allow_gateway_control and has_blocking_approval(session_key):
-                _raw_text = (event.text or "").strip().lower()
-                _match = self._plaintext_approval_words().get(_raw_text)
-                if _match is not None:
-                    _verb, _normalized_args = _match
-                    _approval_handler = (
-                        self._handle_approve_command if _verb == "approve" else self._handle_deny_command
-                    )
-                    # Synthesize "/approve [args]" / "/deny" so the slash handlers parse modifiers via
-                    # event.get_command_args(). Always a literal "/": is_command()/get_command_args()
-                    # don't recognize per-platform display prefixes ("!" on Slack/Matrix).
-                    event.text = f"/{_verb} {_normalized_args}".rstrip()
-                    _reply = await _approval_handler(event)
-                    logger.info(
-                        "Approval response via plain text: session=%s verb=%s args=%r",
-                        session_key, _verb, _normalized_args,
-                    )
-                    _adapter = self._delivery_adapter_for(event.source)
-                    if _adapter and _reply:
-                        _text, _eph_ttl = _adapter._unwrap_ephemeral(_reply)
-                        if _text:
-                            await self._send_busy_reply(event, _adapter, _text, plain_anchor=True)
-                    return True
-        except Exception:
-            logger.warning(
-                "Plain-text approval routing failed for session %s; "
-                "falling through to busy handling", session_key, exc_info=True,
+            reply = await handler(event)
+            logger.info(
+                "Approval response via plain text: session=%s verb=%s args=%r",
+                session_key, verb, normalized_args,
             )
-        return False
+            if adapter and reply:
+                text, _eph_ttl = adapter._unwrap_ephemeral(reply)
+                if text:
+                    result = await self._send_busy_reply(event, adapter, text, plain_anchor=True)
+                    if not result.success:
+                        outcome = ProcessingOutcome.FAILURE
+        except asyncio.CancelledError:
+            outcome = ProcessingOutcome.CANCELLED
+            raise
+        except Exception:
+            outcome = ProcessingOutcome.FAILURE
+            logger.warning("Plain-text approval routing failed for session %s", session_key, exc_info=True)
+        finally:
+            if hook_adapter is not None:
+                await hook_adapter._run_processing_hook("on_inline_processing_complete", event, outcome)
+        return True
 
     async def _resolve_busy_steer_or_redirect(
         self, event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any
@@ -712,6 +704,7 @@ class GatewayBusySessionMixin:
             event.message_type == MessageType.TEXT and not event.media_urls and not event.media_types
         )
         if effective_mode == "steer":
+            accepted_input = None
             steer_text = await self._prepare_busy_steer_text(event)
             # Steerable: plain text, OR every attachment is voice media folded into steer_text.
             # A follow-up qualifies for steering when it is plain text, OR when every attachment is
@@ -725,13 +718,14 @@ class GatewayBusySessionMixin:
             if (not pending_dispatch_withdrawn(adapter, session_key, event)
                     and steer_text and (plain_text or _steer_all_voice) and agent_live
                     and hasattr(running_agent, "steer")):
-                steered = self._try_agent_verb(
+                accepted_input = self._try_agent_verb(
                     running_agent, "steer", steer_text, session_key, event=event
                 )
-            if steered:
+                steered = accepted_input is not None
+            if accepted_input is not None:
                 release_pending_dispatch(adapter, session_key, event, claimed=True)
-                self._fold_into_running_turn(running_agent, session_key, event)
-            else:
+                self._fold_into_running_turn(running_agent, session_key, event, input_text=accepted_input)
+            if not steered:
                 effective_mode = "queue"
         elif (
             effective_mode == "interrupt" and plain_text and agent_live
@@ -756,16 +750,17 @@ class GatewayBusySessionMixin:
 
     def _try_agent_verb(
         self, running_agent, verb: str, text: str, session_key: str, *, event: Optional[MessageEvent] = None
-    ) -> bool:
-        """Call ``running_agent.<verb>(text)`` (steer/redirect); False + warning on failure."""
+    ) -> Optional[str]:
+        """Return the exact input admitted by steer/redirect, or None on rejection or failure."""
         try:
             call_text = self._steer_text_with_origin(text, event) if event else text
             if verb == "steer":
-                return self._steer_running_agent(running_agent, call_text)
-            return bool(getattr(running_agent, verb)(call_text))
+                accepted = self._steer_running_agent(running_agent, call_text)
+                return call_text if accepted else None
+            return call_text if getattr(running_agent, verb)(call_text) else None
         except Exception as exc:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
-            return False
+            return None
 
     def _redirect_active_turn(self, running_agent, text: str, session_key: str, event: MessageEvent) -> bool:
         """``redirect()`` the running turn onto *event* and re-anchor its delivery to that message.
@@ -775,9 +770,10 @@ class GatewayBusySessionMixin:
         to *event*, so the reply must quote it (#115001). Both redirect entry points (busy
         interrupt mode and the priority path) go through here.
         """
-        if not self._try_agent_verb(running_agent, "redirect", text, session_key, event=event):
+        accepted_input = self._try_agent_verb(running_agent, "redirect", text, session_key, event=event)
+        if accepted_input is None:
             return False
-        turn = self._fold_into_running_turn(running_agent, session_key, event)
+        turn = self._fold_into_running_turn(running_agent, session_key, event, input_text=accepted_input)
         if turn is None:
             return True  # a newer turn already owns the slot; never re-anchor it
         anchor = self._reply_anchor_for_event(event)
@@ -790,7 +786,9 @@ class GatewayBusySessionMixin:
             turn.ctx.inbound_message_id = inbound_id
         return True
 
-    def _fold_into_running_turn(self, running_agent, session_key: str, event: MessageEvent):
+    def _fold_into_running_turn(
+        self, running_agent, session_key: str, event: MessageEvent, *, input_text: str
+    ):
         """The running turn now answers *event* too (steer, redirect): if *event* was addressed to
         the bot, a bare silence marker must not end the turn. Returns the turn, or None when a newer
         turn already owns the slot."""
@@ -800,7 +798,7 @@ class GatewayBusySessionMixin:
         event._processing_state.defer()
         processing_event = turn.processing_event
         if processing_event is not None and processing_event is not event:
-            processing_event.absorb_turn_input(event)
+            processing_event.absorb_turn_input(event, input_text=input_text)
             if turn.ctx is not None:
                 turn.ctx.reply_expected = processing_event.reply_expected
         return turn
@@ -924,7 +922,9 @@ class GatewayBusySessionMixin:
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 
-    async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+    async def _handle_active_session_busy_message(
+        self: "GatewayRunner", event: MessageEvent, session_key: str
+    ) -> bool:
         # Gateway wakes have no external user identity. Admit them before auth/drain/approval
         # handling, without merging their text into an already queued human message.
         if event.internal and event.allow_gateway_control:
@@ -1222,13 +1222,14 @@ class GatewayBusySessionMixin:
         if not running_agent or not hasattr(running_agent, "steer"):
             return _queue_fallback(t("gateway.steer.queued_no_agent"))
         try:
-            accepted = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
+            input_text = self._steer_text_with_origin(steer_text, event)
+            accepted = self._steer_running_agent(running_agent, input_text)
         except Exception as exc:
             logger.warning("Steer failed for session %s: %s", quick_key, exc)
             return t("gateway.steer.failed", error=exc)
         if not accepted:
             return t("gateway.steer.rejected_empty")
-        self._fold_into_running_turn(running_agent, quick_key, event)
+        self._fold_into_running_turn(running_agent, quick_key, event, input_text=input_text)
         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
         target = (t("gateway.steer.target_subagents") if self._agent_has_active_subagents(running_agent)
                   else t("gateway.steer.target_run"))

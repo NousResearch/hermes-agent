@@ -21,6 +21,7 @@ from gateway.session import SessionSource, neutralize_untrusted_inline_text
 _ATTACHMENT_REF_RE = re.compile(r"^(?:@(?:image|file|url):[^\n]+\n?)+", re.IGNORECASE)
 
 if TYPE_CHECKING:
+    from gateway.platforms.base import BasePlatformAdapter
     from gateway.inbound_context import InboundContextSnapshot, PreparedInboundMessage
 
 
@@ -82,29 +83,53 @@ class _ProcessingPhase(Enum):
 
 
 @dataclass
+class _ProcessingInput:
+    event: "MessageEvent"
+    text: Optional[str]
+
+
+@dataclass
+class _ProcessingCompletion:
+    adapter: "BasePlatformAdapter"
+    event: "MessageEvent"
+
+
+@dataclass
 class _ProcessingState:
     phase: _ProcessingPhase = _ProcessingPhase.PENDING
     outcome: Optional[ProcessingOutcome] = None
     receipt_message_id: Optional[str] = None
-    initial_receipt_message_id: Optional[str] = None
-    receipt_input: Optional["MessageEvent"] = None
+    consumed_receipt_message_id: Optional[str] = None
+    receipt_inputs: List[_ProcessingInput] = field(default_factory=list)
+    pending_completion: Optional[_ProcessingCompletion] = None
 
     def defer(self) -> None:
         self.phase = _ProcessingPhase.DEFERRED
 
-    def take_pending_input(self) -> Optional["MessageEvent"]:
-        event = self.receipt_input
-        if event is None:
-            return None
-        self.receipt_input = None
-        self.receipt_message_id = self.initial_receipt_message_id
-        return event
+    def take_pending_input(self, pending_text: str) -> Optional["MessageEvent"]:
+        pending_indices: set[int] = set()
+        remaining = pending_text
+        # A later correction can quote an earlier input's complete payload.
+        for index in range(len(self.receipt_inputs) - 1, -1, -1):
+            text = self.receipt_inputs[index].text
+            if text is not None and text in remaining:
+                pending_indices.add(index)
+                remaining = remaining.replace(text, "", 1)
+        pending_input = None
+        for index, incoming in enumerate(self.receipt_inputs):
+            if index in pending_indices:
+                pending_input = incoming.event
+                continue
+            self.consumed_receipt_message_id = incoming.event.receipt_message_id
+        self.receipt_inputs.clear()
+        self.receipt_message_id = self.consumed_receipt_message_id
+        return pending_input
 
     def start(self) -> None:
         self.phase = _ProcessingPhase.RUNNING
         self.outcome = None
-        self.initial_receipt_message_id = self.receipt_message_id
-        self.receipt_input = None
+        self.consumed_receipt_message_id = self.receipt_message_id
+        self.receipt_inputs.clear()
 
     def complete(self) -> bool:
         if self.phase in {_ProcessingPhase.DEFERRED, _ProcessingPhase.COMPLETED}:
@@ -230,13 +255,13 @@ class MessageEvent:
             message_id for message_id in (other.message_id, *other.merged_message_ids) if message_id
         )
 
-    def absorb_turn_input(self, other: "MessageEvent") -> None:
+    def absorb_turn_input(self, other: "MessageEvent", *, input_text: Optional[str] = None) -> None:
         self.absorb_reply_expected(other)
         receipt_id = other.receipt_message_id
         if receipt_id:
             self._processing_state.receipt_message_id = receipt_id
             if self._processing_state is not other._processing_state:
-                self._processing_state.receipt_input = other
+                self._processing_state.receipt_inputs.append(_ProcessingInput(other, input_text))
 
     @property
     def receipt_message_id(self) -> Optional[str]:

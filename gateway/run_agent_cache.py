@@ -593,7 +593,7 @@ class GatewayAgentCacheMixin:
             # the successor generation — the displaced /stop tail must not wipe its slot.
             self._drop_turn_slot(session_key, run_generation=_generation_at_interrupt)
 
-    async def _refresh_agent_cache_message_count(self, session_key: str, session_id: Optional[str]) -> None:
+    async def _refresh_agent_cache_message_count(self, session_key: Optional[str], session_id: Optional[str]) -> None:
         """Re-baseline a cached agent's stored message_count after THIS turn — the coherence guard
         rebuilds on mismatch, so without this every turn would rebuild and destroy prompt caching.
         Only the count is refreshed, only if the same agent is still cached. DB errors leave the

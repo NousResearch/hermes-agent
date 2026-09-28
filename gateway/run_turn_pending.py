@@ -30,7 +30,7 @@ class GatewayPendingDrainMixin:
         _restore_pending_dispatch = GatewayRunner._restore_pending_dispatch
 
     async def _run_agent_drain_pending(
-        self,
+        self: "GatewayRunner",
         result: Any,
         adapter: Any,
         source: SessionSource,
@@ -44,6 +44,10 @@ class GatewayPendingDrainMixin:
         from gateway.run import _dequeue_pending_event, _is_control_interrupt_message
         pending_event = None
         pending = None
+        pending_steer = result.get("pending_steer") if result else None
+        pending_input = None
+        if result and processing_event is not None:
+            pending_input = processing_event._processing_state.take_pending_input(pending_steer or "")
         if result and adapter and session_key:
             live_adapter = self._delivery_adapter_for(source)
             if (
@@ -115,60 +119,27 @@ class GatewayPendingDrainMixin:
                 raise
 
         unadmitted_steer: Optional[str] = None
-        leftover_steer = (result.get("pending_steer") or "").strip() if result else None
-        if leftover_steer:
-            pending_steer_input = (
-                processing_event._processing_state.take_pending_input()
-                if processing_event is not None else None
+        if pending_steer:
+            steer_event = (
+                dataclasses.replace(pending_input, text=pending_steer, message_type=MessageType.TEXT)
+                if pending_input is not None else None
             )
-            if not pending and not pending_event:
-                pending = leftover_steer
-                if pending_steer_input is not None:
-                    pending_event = dataclasses.replace(
-                        pending_steer_input, text=pending, message_type=MessageType.TEXT,
-                    )
-                logger.debug(
-                    "Delivering leftover /steer as next turn: '%s...'", pending[:40]
-                )
-            elif pending_event and adapter and session_key:
-                self._restore_pending_dispatch(session_key, pending_event, adapter)
-                pending_event = (
-                    dataclasses.replace(pending_steer_input, text=leftover_steer, message_type=MessageType.TEXT)
-                    if pending_steer_input is not None else None
-                )
-                pending = leftover_steer
-                logger.debug(
-                    "Delivering leftover /steer before queued event for session %s: '%s...'",
-                    session_key,
-                    pending[:40],
-                )
-            elif pending and not pending_event:
-                # A deferred steer continues the active channel context, just like an
-                # eventless follow-up. Reuse its pins without marking the user as internal.
-                steer_prompt, steer_source = self._pinned_channel_inputs(
-                    session_key,
-                    None,
-                    source,
-                    internal=True,
-                )
-                steer_event = (
-                    dataclasses.replace(
-                        pending_steer_input, text=leftover_steer, source=steer_source,
-                        channel_prompt=steer_prompt, message_type=MessageType.TEXT,
-                    )
-                    if pending_steer_input is not None else MessageEvent(
-                        text=leftover_steer, source=steer_source, channel_prompt=steer_prompt,
-                    )
-                )
-                if session_key and self._enqueue_fifo(
-                    session_key, steer_event, adapter
-                ):
-                    logger.debug(
-                        "Enqueued leftover /steer behind pending message for session %s: '%s...'",
-                        session_key, leftover_steer[:40],
-                    )
+            if pending or pending_event:
+                if adapter and session_key:
+                    if steer_event is None:
+                        steer_prompt, steer_source = self._pinned_channel_inputs(
+                            session_key, None, source, internal=True,
+                        )
+                        steer_event = MessageEvent(
+                            text=pending_steer, source=steer_source, channel_prompt=steer_prompt,
+                        )
+                    if not self._enqueue_fifo(session_key, steer_event, adapter):
+                        unadmitted_steer = pending_steer
                 else:
-                    unadmitted_steer = leftover_steer
+                    unadmitted_steer = pending_steer
+            else:
+                pending_event, pending = steer_event, pending_steer
+                logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
 
         pending_parts = [pending]
         if unadmitted_steer is not None:

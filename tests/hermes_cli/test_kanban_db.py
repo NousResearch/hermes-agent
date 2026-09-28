@@ -469,6 +469,57 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_respawn_guard_spaces_quota_flavored_crash_within_cooldown(
+    kanban_home, monkeypatch,
+):
+    """A worker that crashed against the quota wall before the requeue could
+    classify it ``rate_limited`` (#126701) gets the same cooldown spacing as a
+    classified run: ``rate_limit_cooldown`` inside the window, a probe after
+    it — never ``blocker_auth``, keeping #117097's "crashed output is context,
+    not a diagnosis" behavior for every other crash."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    def _seed(title, error):
+        tid = kb.create_task(conn, title=title, assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='crashed', status='failed', ended_at=? "
+            "WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            (error, tid),
+        )
+        return tid
+
+    with kbc.connect() as conn:
+        quota_id = _seed("quota-crash", "provider crashed against rate limit (quota wall)")
+        # Control: an ordinary crash with auth-flavored worker output (#117097)
+        # must stay immediately respawnable — the narrow quota pattern adds
+        # spacing to quota crashes only, never parking.
+        benign_id = _seed("benign-crash", "claude auth status failed to start")
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kbd.check_respawn_guard(conn, quota_id) == "rate_limit_cooldown"
+        assert kbd.check_respawn_guard(conn, benign_id) is None
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        assert kbd.check_respawn_guard(conn, quota_id) is None
+
+        # Cooldown disabled — the quota crash respawns on the next tick, same
+        # as a classified ``rate_limited`` run with the override at 0.
+        monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+        assert kbd.check_respawn_guard(conn, quota_id) is None
+
+
 @pytest.mark.parametrize(
     "error_text, expected",
     [

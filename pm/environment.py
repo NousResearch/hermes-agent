@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 import io
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -47,6 +48,14 @@ _RESOLVER_MARKERS = (
 
 # A package's own build ran and failed; a fetch/download failure never prints this.
 _BUILD_MARKERS = ("the build backend returned an error",)
+_VCS_REQUIREMENT = re.compile(r"\b(?:git|hg|svn|bzr)\+", re.IGNORECASE)
+
+
+def _remove_vcs_requirements(requirements: Path) -> None:
+    """Leave VCS sources to the final frozen sync, not hash-required artifact installs."""
+    lines = requirements.read_text(encoding="utf-8").splitlines()
+    lines = [line for line in lines if not _VCS_REQUIREMENT.search(line)]
+    requirements.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
 class ResolutionConflict(InstallError):
@@ -399,11 +408,15 @@ class PythonEnvironment:
         all_extras: bool = False,
         no_default_groups: bool = True,
         include_hashes: bool = False,
+        artifact_only: bool = False,
         timeout: int = 1800,
     ) -> None:
+        """Export the selected lock closure, optionally limiting it to hashable artifacts."""
         command = ["export", "--frozen", "--python", str(self.python),
                    "--no-emit-project", "--no-annotate", "--no-header",
                    "--format", "requirements-txt", "--output-file", str(out)]
+        if artifact_only:
+            command += ["--no-emit-workspace", "--no-emit-local"]
         if no_default_groups:
             command.append("--no-default-groups")
         if all_packages:
@@ -423,6 +436,8 @@ class PythonEnvironment:
         result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("export", result.returncode, result.stderr or result.stdout)
+        if artifact_only:
+            _remove_vcs_requirements(out)
 
     def install_locked_requirements(
         self,
@@ -453,8 +468,11 @@ class PythonEnvironment:
                 all_extras=all_extras,
                 no_default_groups=no_default_groups,
                 include_hashes=True,
+                artifact_only=True,
                 timeout=timeout,
             )
+            if not requirements.read_text(encoding="utf-8").strip():
+                return
             self._install_requirements_file(
                 requirements, require_hashes=True, compile_bytecode=True, timeout=timeout,
             )

@@ -1,6 +1,6 @@
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
-import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import type { SessionOwnerScope } from '@/store/session-request-router'
 
@@ -18,6 +18,45 @@ export function profileScopeForSessionOwner(owner: SessionOwnerScope): ProfileSc
     connectionId: owner.connectionId,
     profile: owner.targetProfile ?? owner.profile
   }
+}
+
+export interface TranscriptRefresh {
+  messages: ChatMessage[]
+  /**
+   * The refreshed surplus carries a user row this window never streamed: another
+   * view of the same chat is ahead, and the pre-send guard must refuse (fork
+   * risk). False when the surplus is this window's own server-side residue — a
+   * turn that died on an approval timeout leaves its tool/assistant rows
+   * server-side while the window only holds its optimistic user message, whose
+   * id/rowId never reconciled. Graft silently and let the send proceed (#124005).
+   */
+  competingView: boolean
+}
+
+/**
+ * Whether the refreshed transcript carries a user row this window does not know.
+ * A user row is known when its durable id, stored row, or text matches a local
+ * one — the optimistic copy of a message this window typed keeps a local id (and
+ * often no rowId) while the server's copy carries the persisted ids, so text is
+ * what reconciles them. Only an unaccounted user row is another view's message;
+ * tool/assistant-only surplus rows are this window's own turn residue (#124005).
+ */
+export function surplusIsCompetingView(localMessages: ChatMessage[], refreshed: ChatMessage[]): boolean {
+  const localIds = new Set(localMessages.map(message => message.id))
+  const localRowIds = new Set(
+    localMessages.flatMap(message => (message.rowId === undefined ? [] : [message.rowId]))
+  )
+  const localUserTexts = new Set(
+    localMessages.filter(message => message.role === 'user').map(chatMessageText)
+  )
+
+  return refreshed.some(
+    message =>
+      message.role === 'user' &&
+      !localIds.has(message.id) &&
+      (message.rowId === undefined || !localRowIds.has(message.rowId)) &&
+      !localUserTexts.has(chatMessageText(message))
+  )
 }
 
 /**
@@ -112,12 +151,7 @@ export function messagesIfTranscriptBehind(
   return authoredMessageCount(grafted) > localAuthored ? grafted : null
 }
 
-/**
- * Read the authoritative latest page and return a refreshed transcript when
- * this view is behind. Null when current or the read fails — a missing
- * profile or a down backend must not soft-lock send.
- */
-export async function refreshIfTranscriptStale(
+async function fetchRefreshedTranscript(
   storedSessionId: string,
   localMessages: ChatMessage[],
   options?: { excludeMessageId?: string; profile?: ProfileScope }
@@ -143,4 +177,37 @@ export async function refreshIfTranscriptStale(
   } catch {
     return null
   }
+}
+
+/**
+ * Read the authoritative latest page and return a refreshed transcript when
+ * this view is behind. Null when current or the read fails — a missing
+ * profile or a down backend must not soft-lock send.
+ */
+export async function refreshIfTranscriptStale(
+  storedSessionId: string,
+  localMessages: ChatMessage[],
+  options?: { excludeMessageId?: string; profile?: ProfileScope }
+): Promise<ChatMessage[] | null> {
+  return fetchRefreshedTranscript(storedSessionId, localMessages, options)
+}
+
+/**
+ * Same read, plus whether the surplus is a competing view's message. The
+ * pre-send guard refuses only a competing view; this window's own server-side
+ * turn residue (a turn that died on an approval timeout) is grafted silently
+ * and the send proceeds (#124005).
+ */
+export async function transcriptRefreshIfBehind(
+  storedSessionId: string,
+  localMessages: ChatMessage[],
+  options?: { excludeMessageId?: string; profile?: ProfileScope }
+): Promise<TranscriptRefresh | null> {
+  const messages = await fetchRefreshedTranscript(storedSessionId, localMessages, options)
+
+  if (!messages) {
+    return null
+  }
+
+  return { messages, competingView: surplusIsCompetingView(localMessages, messages) }
 }

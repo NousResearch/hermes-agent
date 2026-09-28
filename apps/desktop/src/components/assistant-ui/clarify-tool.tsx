@@ -17,13 +17,15 @@ import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer
 import { useSessionView } from '@/app/chat/session-view'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
+import { Loader } from '@/components/ui/loader'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
+import { AlertTriangle, CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { visibleClarifyCard } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
@@ -214,11 +216,24 @@ function ClarifyLine({
   )
 }
 
-function KeyBadge({ char, preview, selected }: { char: string; preview?: boolean; selected: boolean }) {
+function KeyBadge({
+  char,
+  disabled,
+  preview,
+  selected
+}: {
+  char: string
+  disabled?: boolean
+  preview?: boolean
+  selected: boolean
+}) {
+  // The "Other" row is a <label>, which has no :disabled state of its own —
+  // dim its badge alongside the disabled textarea so it matches the options.
   return (
     <Kbd
       className={cn(
         'mt-px',
+        disabled && 'opacity-50',
         selected && 'border-primary bg-primary text-white shadow-none',
         !selected && preview && 'border-primary text-primary shadow-none'
       )}
@@ -372,6 +387,65 @@ function ClarifyToolSingleSettled({ args, result }: ToolCallMessagePartProps) {
   )
 }
 
+/** How long a painted card may wait for its gateway request before asking the
+ *  backend to re-deliver it. `clarify.request` normally trails `tool.start` by
+ *  a tick; seconds of silence mean the frame was lost on the way. */
+const CLARIFY_DELIVERY_GRACE_MS = 4_000
+
+/**
+ * True once the card has waited past the grace period for a request that
+ * never arrived, and a re-delivery attempt found nothing (#98645).
+ *
+ * The attempt asks the owner socket for `session.events.since` from the end
+ * of the ring: no events come back, but the channel re-delivers the
+ * session's `open_requests` to the request handlers before the call
+ * resolves, so a request the backend still holds parks and the card goes
+ * live on its own.
+ */
+function useUndeliveredClarify(sessionId: null | string, waiting: boolean): boolean {
+  const [undelivered, setUndelivered] = useState(false)
+
+  useEffect(() => {
+    if (!waiting || !sessionId) {
+      return
+    }
+
+    let cancelled = false
+
+    const timer = window.setTimeout(async () => {
+      const gateway = $gateway.get()
+
+      if (gateway) {
+        try {
+          await requestForOwnedSession(
+            sessionId,
+            gateway.request.bind(gateway) as typeof gateway.request,
+            'session.events.since',
+            {
+              last_seen: Number.MAX_SAFE_INTEGER,
+              session_id: sessionId
+            }
+          )
+        } catch {
+          // An older backend or a dropped socket: the notice is still right.
+        }
+      }
+
+      if (!cancelled && !sessionClarifyRequest(sessionId).get()) {
+        setUndelivered(true)
+      }
+    }, CLARIFY_DELIVERY_GRACE_MS)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      setUndelivered(false)
+    }
+  }, [sessionId, waiting])
+
+  return waiting && undelivered
+}
+
 function ClarifyToolPending(props: ToolCallMessagePartProps) {
   // The tool row is in whichever session's transcript rendered it — read THAT
   // session's clarify (primary or tile), not the globally-active one.
@@ -384,6 +458,7 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   // settled card. Latch submit so that gap doesn't demote; Stop also clears
   // the request and must still collapse an unanswered card.
   const [answered, setAnswered] = useState(false)
+  const undelivered = useUndeliveredClarify(sessionId, messageRunning && !request && !answered)
 
   // Stopped mid-prompt with no result — don't leave a dead interactive panel.
   // `session.info` reports running=false while clarify is blocking, so the
@@ -399,20 +474,49 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   // disabled preview immediately instead of a spinner (the single-question
   // card does the same while request_id races the tool block).
   if (request?.questions?.length || fromArgs.questions) {
-    return <ClarifyToolBatchPending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
+    return (
+      <ClarifyToolBatchPending
+        fromArgs={fromArgs}
+        onAnswered={() => setAnswered(true)}
+        request={request}
+        undelivered={undelivered}
+      />
+    )
   }
 
-  return <ClarifyToolSinglePending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
+  return (
+    <ClarifyToolSinglePending
+      fromArgs={fromArgs}
+      onAnswered={() => setAnswered(true)}
+      request={request}
+      undelivered={undelivered}
+    />
+  )
+}
+
+/** Heads a card whose request never reached this window: nothing on it can
+ *  answer, so say so and point at the way out instead of a silent wait. */
+function UndeliveredNotice() {
+  const { t } = useI18n()
+
+  return (
+    <Alert className="gap-x-2 px-3 py-2 text-xs" role="status" variant="warning">
+      <AlertTriangle />
+      <AlertDescription>{t.assistant.clarify.notDelivered}</AlertDescription>
+    </Alert>
+  )
 }
 
 function ClarifyToolSinglePending({
   fromArgs,
   onAnswered,
-  request
+  request,
+  undelivered
 }: {
   fromArgs: ClarifyArgs
   onAnswered: () => void
   request: ClarifyRequest | null
+  undelivered: boolean
 }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
@@ -499,11 +603,13 @@ function ClarifyToolSinglePending({
   const trimmedDraft = draft.trim()
   // The answer is whichever input is active: a picked choice, or typed text.
   // Picking a choice no longer fires immediately — it selects, then the user
-  // confirms with Continue (or Enter from the field).
+  // confirms with Continue (or Enter from the field). Multi-select treats the
+  // typed text as one more answer alongside whatever is already picked.
+  const multiSelectAnswers = multiSelect && trimmedDraft ? [...selectedChoices, trimmedDraft] : selectedChoices
 
   const selectedAnswer = multiSelect
-    ? selectedChoices.length > 0
-      ? JSON.stringify(selectedChoices)
+    ? multiSelectAnswers.length > 0
+      ? JSON.stringify(multiSelectAnswers)
       : null
     : (selectedChoices[0] ?? null)
 
@@ -511,8 +617,12 @@ function ClarifyToolSinglePending({
 
   const selectChoice = useCallback(
     (choice: string, index: number) => {
-      // Picking a choice and typing are mutually exclusive answers.
-      setDraft('')
+      // Picking a choice and typing are mutually exclusive answers in
+      // single-select; multi-select keeps the typed text as one more answer.
+      if (!multiSelect) {
+        setDraft('')
+      }
+
       setSelectedChoices(selected => {
         if (!multiSelect) {
           return [choice]
@@ -535,11 +645,11 @@ function ClarifyToolSinglePending({
       const itemCount = choices.length + 1
 
       // Arrow navigation is a move, not a pick. Multi-select keeps staged
-      // choices while the cursor moves so the user can build a set; the
-      // single-select path retains its existing clear-on-navigation behaviour.
-      setDraft('')
-
+      // choices and the typed text while the cursor moves so the user can
+      // build a set; the single-select path retains its existing
+      // clear-on-navigation behaviour.
       if (!multiSelect) {
+        setDraft('')
         setSelectedChoices([])
       }
 
@@ -602,11 +712,12 @@ function ClarifyToolSinglePending({
   )
 
   // Arrow keys move a visual cursor, 1-9 and A/B/C… pick directly, and Enter
-  // confirms the current answer (or acts on the highlighted row). Stands down
-  // whenever a focusable control (a field, a choice button, the action bar) is
-  // focused, so it never eats keystrokes meant for the composer, the Other box,
-  // or a button the user tabbed to — and whenever this card is not the visible
-  // one, since the binding is window-wide but the answer is session-specific.
+  // confirms the current answer (or acts on the highlighted row). A focused
+  // choice row stays in this handler so Enter reaches activateActive: that
+  // submits a staged single-select answer and toggles a multi-select row.
+  // Every other focused control (the Other box, Skip, Continue, the composer)
+  // keeps its own keys. Inactive cards stand down too — the binding is
+  // window-wide but the answer is session-specific.
   useEffect(() => {
     if (!ready || !hasChoices || submitting) {
       return
@@ -632,7 +743,13 @@ function ClarifyToolSinglePending({
 
       if (
         active &&
-        (active.isContentEditable || active.matches('a[href], button, input, select, textarea, [role="button"]'))
+        (active.isContentEditable ||
+          (active.matches('a[href], button, input, select, textarea, [role="button"]') &&
+            // Choice rows stay in this handler so Enter reaches activateActive.
+            // That submits a staged single-select answer and toggles a
+            // multi-select row. Skip, Continue, and the Other field stay
+            // hands-off.
+            !active.matches('button[data-choice]')))
       ) {
         return
       }
@@ -694,7 +811,7 @@ function ClarifyToolSinglePending({
   if (loading) {
     return (
       <ClarifyShell aria-label={copy.loadingQuestion} className="my-1.5 grid min-h-12 place-items-center" role="status">
-        <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
+        <Loader aria-hidden="true" className="size-6 text-(--ui-text-tertiary)" role="presentation" type="rose-curve" />
       </ClarifyShell>
     )
   }
@@ -703,8 +820,9 @@ function ClarifyToolSinglePending({
     setDraft(value)
 
     // Typing is its own answer — drop any picked choice so the two inputs can't
-    // both look selected.
-    if (value.trim()) {
+    // both look selected. Multi-select allows both: the typed text becomes an
+    // additional answer instead of replacing the picked choices.
+    if (value.trim() && !multiSelect) {
       setSelectedChoices([])
     }
   }
@@ -733,12 +851,13 @@ function ClarifyToolSinglePending({
           </span>
           <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
         </div>
+        {undelivered ? <UndeliveredNotice /> : null}
 
         {hasChoices ? (
           <div className="grid gap-px" role="group">
             {choices.map((choice, index) => (
               <ChoiceButton
-                active={activeIndex === index}
+                active={!undelivered && activeIndex === index}
                 char={letterFor(index)}
                 choice={choice}
                 disabled={submitting || !ready}
@@ -752,13 +871,14 @@ function ClarifyToolSinglePending({
               className={cn(
                 OPTION_ROW_CLASS,
                 'items-center',
-                activeIndex === choices.length && 'bg-(--chrome-action-hover)'
+                !undelivered && activeIndex === choices.length && 'bg-(--chrome-action-hover)'
               )}
-              data-highlighted={activeIndex === choices.length || undefined}
+              data-highlighted={(!undelivered && activeIndex === choices.length) || undefined}
             >
               <KeyBadge
                 char={letterFor(choices.length)}
-                preview={otherFocused || activeIndex === choices.length}
+                disabled={submitting || !ready}
+                preview={!undelivered && (otherFocused || activeIndex === choices.length)}
                 selected={Boolean(trimmedDraft)}
               />
               <Textarea
@@ -769,7 +889,10 @@ function ClarifyToolSinglePending({
                 onBlur={() => setOtherFocused(false)}
                 onChange={event => onDraftChange(event.target.value)}
                 onFocus={() => {
-                  setSelectedChoices([])
+                  if (!multiSelect) {
+                    setSelectedChoices([])
+                  }
+
                   setActiveIndex(choices.length)
                   setOtherFocused(true)
                 }}
@@ -797,23 +920,33 @@ function ClarifyToolSinglePending({
         )}
       </ClarifyShell>
 
-      <div className="flex items-center justify-end gap-1">
-        <Button disabled={submitting || !ready} onClick={() => void respond('')} size="xs" type="button" variant="text">
-          {copy.skip}
-        </Button>
-        <Button disabled={submitting || !ready || !pendingAnswer} size="xs" type="submit">
-          {submitting ? (
-            <Loader2 className="size-3 animate-spin" />
-          ) : (
-            <>
-              {copy.continueLabel}
-              <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
-                ⏎
-              </span>
-            </>
-          )}
-        </Button>
-      </div>
+      {/* Nothing here can answer an undelivered request — drop the actions
+          like the settled card does rather than leave a dead primary button. */}
+      {undelivered ? null : (
+        <div className="flex items-center justify-end gap-1">
+          <Button
+            disabled={submitting || !ready}
+            onClick={() => void respond('')}
+            size="xs"
+            type="button"
+            variant="text"
+          >
+            {copy.skip}
+          </Button>
+          <Button disabled={submitting || !ready || !pendingAnswer} size="xs" type="submit">
+            {submitting ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <>
+                {copy.continueLabel}
+                <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
+                  ⏎
+                </span>
+              </>
+            )}
+          </Button>
+        </div>
+      )}
     </form>
   )
 }
@@ -904,7 +1037,7 @@ function BatchQuestionBlock({
             />
           ))}
           <label className={cn(OPTION_ROW_CLASS, 'items-center')}>
-            <KeyBadge char={letterFor(choices.length)} selected={Boolean(staged.draft.trim())} />
+            <KeyBadge char={letterFor(choices.length)} disabled={disabled} selected={Boolean(staged.draft.trim())} />
             <Textarea
               className={CLARIFY_TEXTAREA_CLASS}
               disabled={disabled}
@@ -943,11 +1076,13 @@ const emptyStage = { choices: [] as string[], draft: '' }
 function ClarifyToolBatchPending({
   fromArgs,
   onAnswered,
-  request
+  request,
+  undelivered
 }: {
   fromArgs?: ClarifyArgs
   onAnswered: () => void
   request: ClarifyRequest | null
+  undelivered: boolean
 }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
@@ -1030,12 +1165,19 @@ function ClarifyToolBatchPending({
   const stagedAnswer = useCallback(
     (question: ClarifyQuestion): string | null => {
       const stage = staged[question.qid] ?? emptyStage
+      const draft = stage.draft.trim()
 
-      if (stage.choices.length > 0) {
-        return question.multiSelect ? JSON.stringify(stage.choices.map(bareChoice)) : bareChoice(stage.choices[0])
+      if (question.multiSelect) {
+        // The typed text is an additional answer, not a replacement for the
+        // staged choices.
+        const combined = [...stage.choices.map(bareChoice), ...(draft ? [draft] : [])]
+
+        return combined.length > 0 ? JSON.stringify(combined) : null
       }
 
-      const draft = stage.draft.trim()
+      if (stage.choices.length > 0) {
+        return bareChoice(stage.choices[0])
+      }
 
       return draft ? draft : null
     },
@@ -1047,7 +1189,11 @@ function ClarifyToolBatchPending({
 
   const confirmAll = useCallback(async () => {
     if (!request || !gateway) {
-      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed, request ? { action: reconnectAction() } : {})
+      notifyError(
+        new Error(request ? copy.gatewayDisconnected : copy.notReady),
+        copy.sendFailed,
+        request ? { action: reconnectAction() } : {}
+      )
 
       return
     }
@@ -1097,12 +1243,20 @@ function ClarifyToolBatchPending({
           : [...stage.choices, choice]
         : [choice]
 
-      return { ...current, [question.qid]: { choices: next, draft: '' } }
+      // Multi-select keeps the typed text alongside the toggled choices;
+      // single-select stays mutually exclusive.
+      return { ...current, [question.qid]: { choices: next, draft: question.multiSelect ? stage.draft : '' } }
     })
   }, [])
 
   const draftFor = useCallback((question: ClarifyQuestion, value: string) => {
-    setStaged(current => ({ ...current, [question.qid]: { choices: [], draft: value } }))
+    setStaged(current => {
+      const stage = current[question.qid] ?? emptyStage
+
+      // Multi-select keeps the staged choices while the free-text field is
+      // edited; single-select stays mutually exclusive.
+      return { ...current, [question.qid]: { choices: question.multiSelect ? stage.choices : [], draft: value } }
+    })
   }, [])
 
   const cancelAll = useCallback(async () => {
@@ -1133,21 +1287,21 @@ function ClarifyToolBatchPending({
   if (questions.length === 0) {
     return (
       <ClarifyShell aria-label={copy.loadingQuestion} className="my-1.5 grid min-h-12 place-items-center" role="status">
-        <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
+        <Loader aria-hidden="true" className="size-6 text-(--ui-text-tertiary)" role="presentation" type="rose-curve" />
       </ClarifyShell>
     )
   }
 
   return (
     <form
-      aria-busy={ready ? undefined : 'true'}
+      aria-busy={ready || undelivered ? undefined : 'true'}
       className="my-1.5 grid gap-4"
       data-clarify-batch={questions.length}
       data-clarify-batch-preview={ready ? undefined : ''}
       onKeyDownCapture={handleClarifySubmitShortcut}
       onSubmit={handleSubmit}
     >
-      {ready ? null : (
+      {ready || undelivered ? null : (
         <span className="sr-only" role="status">
           {copy.loadingQuestion}
         </span>
@@ -1159,6 +1313,7 @@ function ClarifyToolBatchPending({
           </span>
           <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
         </div>
+        {undelivered ? <UndeliveredNotice /> : null}
         {questions.map(question => (
           <BatchQuestionBlock
             disabled={disabled}
@@ -1172,23 +1327,25 @@ function ClarifyToolBatchPending({
         ))}
       </ClarifyShell>
 
-      <div className="flex items-center justify-end gap-1">
-        <Button disabled={disabled} onClick={() => void cancelAll()} size="xs" type="button" variant="text">
-          {copy.skip}
-        </Button>
-        <Button disabled={disabled || !allStaged} size="xs" type="submit">
-          {submitting ? (
-            <Loader2 className="size-3 animate-spin" />
-          ) : (
-            <>
-              {copy.confirmAndContinueLabel}
-              <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
-                ⏎
-              </span>
-            </>
-          )}
-        </Button>
-      </div>
+      {undelivered ? null : (
+        <div className="flex items-center justify-end gap-1">
+          <Button disabled={disabled} onClick={() => void cancelAll()} size="xs" type="button" variant="text">
+            {copy.skip}
+          </Button>
+          <Button disabled={disabled || !allStaged} size="xs" type="submit">
+            {submitting ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <>
+                {copy.confirmAndContinueLabel}
+                <span aria-hidden className="ml-0.5 text-[0.625rem] opacity-70">
+                  ⏎
+                </span>
+              </>
+            )}
+          </Button>
+        </div>
+      )}
     </form>
   )
 }

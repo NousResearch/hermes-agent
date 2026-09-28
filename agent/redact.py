@@ -117,6 +117,11 @@ def _redact_enabled() -> bool:
         from agent.secret_scope import current_secret_scope
         scope = current_secret_scope()
         raw = scope.get("HERMES_REDACT_SECRETS") if scope else None
+        if raw is None and scope is None:
+            # No live scope (the log listener thread formats routed records): read the profile's own .env, as
+            # its scope would, or a first call there would cache a config-only answer for the whole process.
+            from hermes_cli.config import load_env
+            raw = load_env().get("HERMES_REDACT_SECRETS")
         if raw is None:
             from hermes_cli.config import load_config_readonly
             cfg_val = (load_config_readonly().get("security") or {}).get("redact_secrets")
@@ -133,7 +138,14 @@ def _redact_enabled() -> bool:
 # Every pattern MUST start with a literal prefix: _PREFIX_SUBSTRINGS (the cheap
 # pre-screen gate) is derived from these literals and must stay false-negative-free.
 _PREFIX_PATTERNS = [
-    r"sk-[A-Za-z0-9_-]{10,}",           # OpenAI / OpenRouter / Anthropic (sk-ant-*)
+    # Some provider-issued ``sk-`` keys carry dot-delimited body segments (Alibaba
+    # ``sk-sp-…``/``sk-ws-…``). Each unit is one body char optionally preceded by
+    # a single dot, so the body ends on its last non-dot char (sentence punctuation
+    # is never consumed) and can never span ``..``: the ``sk-pro...EFGH`` display
+    # mask is left alone by a second redaction pass instead of collapsing to
+    # ``***``. Kept free of nested unbounded repeats so the pattern passes the
+    # same structural gate plugins must.
+    r"sk-[A-Za-z0-9_-](?:\.?[A-Za-z0-9_-]){9,}",
     r"ghp_[A-Za-z0-9]{10,}",            # GitHub PAT (classic)
     r"github_pat_[A-Za-z0-9_]{10,}",    # GitHub PAT (fine-grained)
     r"gho_[A-Za-z0-9]{10,}",            # GitHub OAuth access token
@@ -487,8 +499,12 @@ _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s
 _SECRET_HEADER_NAMES = r"(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)"
 _SECRET_HEADER_RE = re.compile(rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)", re.IGNORECASE)
 
-# Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars.
-_TELEGRAM_RE = re.compile(r"(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})")
+# Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. The lookbehind
+# anchors the id at the start of its digit run: without it, a long run of digits
+# with no ":<token>" after it (a Unity/YAML ``_typelessdata`` blob in a 2 MB PR
+# diff, hex/decimal dumps) retried the greedy ``\d{8,}`` from every digit —
+# quadratic, one core at 100% for hours while holding the GIL.
+_TELEGRAM_RE = re.compile(r"(?<!\d)(bot)?(\d{8,}):([-A-Za-z0-9_]{30,})")
 
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----")
 
@@ -563,6 +579,15 @@ def _compile_prefix_matcher(patterns: list) -> "re.Pattern[str]":
 
 
 _PREFIX_RE = _compile_prefix_matcher(_PREFIX_PATTERNS)
+
+# Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
+# provider-shaped instead of applying a generic high-entropy dotted-token rule:
+# the ID is exactly 32 lowercase hex chars and the credential suffix is a run of
+# at least 16 alphanumerics, so content-hash filenames (``<sha>.bundle``,
+# ``<md5>.sqlite3``) never match.
+_ZHIPU_API_KEY_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
+)
 
 
 def _mask_control_split_tokens(text: str, mask_fn) -> str:
@@ -905,6 +930,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         # original (the stripped copy and the original are aligned 1:1 for non-control chars).
         text = _mask_control_split_tokens(text, _prefix_sub)
         text = _PREFIX_RE.sub(lambda m: _prefix_sub(m.group(1)), text)
+
+    if "." in text:
+        _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
+        text = _ZHIPU_API_KEY_RE.sub(lambda m: _zhipu_sub(m.group(1)), text)
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)

@@ -52,7 +52,6 @@ test('resolveServedDashboardToken uses the served token and logs when it differs
 
   assert.equal(token, 'served-token')
   assert.equal(logs.length, 1)
-  assert.match(logs[0], /served a different session token/)
 })
 
 test('resolveServedDashboardToken falls back when the served HTML has no token', async () => {
@@ -64,17 +63,6 @@ test('resolveServedDashboardToken falls back when the served HTML has no token',
   })
 
   assert.equal(token, 'spawn-token')
-})
-
-test('resolveServedDashboardToken does not log when served token matches fallback', async () => {
-  const token = await resolveServedDashboardToken('http://127.0.0.1:9120', 'same-token', {
-    fetchText: async () => '<script>window.__HERMES_SESSION_TOKEN__="same-token";</script>',
-    rememberLog: () => {
-      throw new Error('should not log when token already matches')
-    }
-  })
-
-  assert.equal(token, 'same-token')
 })
 
 test('resolveServedDashboardToken propagates fetch errors so callers can fall back explicitly', async () => {

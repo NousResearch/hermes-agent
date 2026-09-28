@@ -173,24 +173,57 @@ class PtySessionRegistry:
         self._buffer_cap = buffer_cap
         self._read_timeout = read_timeout
         self._sessions: Dict[str, PtySession] = {}
+        # The get-or-spawn decision spans awaits (reap_idle, the spawn thread,
+        # session.start), so two connections racing one attach token both saw
+        # "no session" and forked a PTY each: the token then mapped to whichever
+        # registered last while the other tab's live session fell out of the
+        # registry — never reaped, and a reattach landed on the wrong terminal
+        # (#115304). Serialize the decision so a token maps to one PTY.
+        # ponytail: one registry-wide lock, not per key — argv resolution is
+        # already serialized globally for the same reason, and a spawn only
+        # delays NEW chats. Per-key locks if spawn throughput ever matters.
+        self._attach_lock = asyncio.Lock()
 
     async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object]) -> Tuple[PtySession, bool]:
         await self.reap_idle()
-        existing = self._sessions.get(key)
-        if existing is not None and existing.alive:
-            return existing, False
-        if existing is not None:                       # dead remnant
-            await existing.close()
-            self._sessions.pop(key, None)
-        if len(self._sessions) >= self._max:
-            self._reap_one_idle_or_raise()
-        # PTY spawn does blocking fork/exec work — keep it off the event loop.
-        # See #53227.
-        bridge = await asyncio.to_thread(spawn)
-        session = PtySession(key, bridge, buffer_cap=self._buffer_cap, read_timeout=self._read_timeout)
-        await session.start()
-        self._sessions[key] = session
-        return session, True
+        async with self._attach_lock:
+            existing = self._sessions.get(key)
+            if existing is not None and existing.alive:
+                return existing, False
+            if existing is not None:                       # dead remnant
+                await existing.close()
+                self._sessions.pop(key, None)
+            if len(self._sessions) >= self._max:
+                self._reap_one_idle_or_raise()
+            # PTY spawn does blocking fork/exec work — keep it off the event loop.
+            # See #53227.
+            bridge = await asyncio.to_thread(spawn)
+            session = PtySession(key, bridge, buffer_cap=self._buffer_cap, read_timeout=self._read_timeout)
+            await session.start()
+            self._sessions[key] = session
+            return session, True
+
+    async def close_other_sessions(self, prefix: str, *, keep_key: str) -> None:
+        """Close sessions belonging to the same logical client except ``keep_key``.
+
+        Dashboard profile changes keep the browser's attach token but change the
+        canonical session key. The previous profile's detached PTY must not
+        remain alive long enough to hold the TUI session lease and reject a
+        later return to that chat.
+        """
+        async with self._attach_lock:
+            keys = [
+                key for key in self._sessions
+                if key != keep_key and (key == prefix or key.startswith(prefix + "\0"))
+            ]
+            for key in keys:
+                session = self._sessions.pop(key, None)
+                if session is not None:
+                    # A sibling tab sharing the attach token may still be viewing this
+                    # PTY: supersede it explicitly (4409) instead of leaving it silent
+                    # until its next keystroke fails with 1013.
+                    await _close_ws(session._ws, WS_CLOSE_SUPERSEDED)
+                    await session.close()
 
     def detach(self, key: str, ws) -> None:
         s = self._sessions.get(key)

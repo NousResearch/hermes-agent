@@ -6,6 +6,7 @@ import contextlib
 import logging
 import math
 import os
+import re
 from pathlib import Path
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from typing import Dict, List, Optional, Any, Callable
@@ -18,7 +19,7 @@ from gateway.shutdown_watchdog import (
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
     DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
 )
-from utils import is_truthy_value
+from utils import fast_safe_load, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,21 @@ def _getenv_str(name: str, default: str = "") -> str:
 
 
 _Platform__bundled_plugin_names: Optional[set] = None  # cached outside the enum: never a member
+_Platform__bundled_plugin_aliases: Optional[dict] = None  # manifest ``name:`` (lower) -> directory name
+
+
+def _bundled_platform_manifest_name(plugin_dir: Path) -> Optional[str]:
+    """Lowercased ``name:`` from a bundled platform's plugin manifest (None when absent/unreadable)."""
+    try:
+        manifest_file = next(
+            (plugin_dir / m for m in ("plugin.yaml", "plugin.yml") if (plugin_dir / m).exists()), None)
+        if manifest_file is None:
+            return None
+        data = fast_safe_load(manifest_file.read_text(encoding="utf-8-sig")) or {}
+        name = data.get("name") if isinstance(data, dict) else None
+        return str(name).strip().lower() or None
+    except Exception:
+        return None
 
 
 class Platform(Enum):
@@ -208,11 +224,18 @@ class Platform(Enum):
         value = value.strip().lower()
         if value in cls._value2member_map_:
             return cls._value2member_map_[value]
-        global _Platform__bundled_plugin_names
+        global _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases
         if _Platform__bundled_plugin_names is None:
-            _Platform__bundled_plugin_names = cls._scan_bundled_plugin_platforms()
+            _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases = cls._scan_bundled_plugin_platforms()
         registered = value in _Platform__bundled_plugin_names
         if not registered:
+            alias = _Platform__bundled_plugin_aliases.get(value)
+            if alias is not None:
+                # A bundled platform whose plugin.yaml ``name:`` differs from its directory (e.g. dir
+                # "a2a", name "a2a-platform") is configured under the manifest name — ``plugins
+                # enable`` writes that key — so resolve it to the directory-name member that the
+                # registry and every value-based consumer key on.
+                return cls._value2member_map_.get(alias) or cls._add_pseudo_member(alias)
             with contextlib.suppress(Exception):
                 from gateway.platform_registry import platform_registry
                 registered = platform_registry.is_registered(value)
@@ -228,18 +251,26 @@ class Platform(Enum):
         return pseudo
 
     @classmethod
-    def _scan_bundled_plugin_platforms(cls) -> set:
-        """Names of bundled platform plugins under ``plugins/platforms/``."""
+    def _scan_bundled_plugin_platforms(cls) -> "tuple[set, dict]":
+        """Directory names of bundled platform plugins under ``plugins/platforms/``, plus a map of
+        manifest ``name:`` keys that differ from their directory (alias -> directory name). Aliases
+        never shadow a directory name, so the directory stays the canonical platform value."""
         try:
             platforms_dir = Path(__file__).parent.parent / "plugins" / "platforms"
-            return {
-                child.name.lower()
-                for child in (platforms_dir.iterdir() if platforms_dir.is_dir() else ())
+            dirs = [
+                child for child in (platforms_dir.iterdir() if platforms_dir.is_dir() else ())
                 if child.is_dir() and (child / "__init__.py").exists()
                 and ((child / "plugin.yaml").exists() or (child / "plugin.yml").exists())
-            }
+            ]
+            names = {child.name.lower() for child in dirs}
+            aliases = {}
+            for child in dirs:
+                manifest_name = _bundled_platform_manifest_name(child)
+                if manifest_name and manifest_name not in names and manifest_name not in aliases:
+                    aliases[manifest_name] = child.name.lower()
+            return names, aliases
         except Exception:
-            return set()
+            return set(), {}
 
 
 # Built-in values snapshotted before any dynamic _missing_ lookup.
@@ -268,6 +299,17 @@ def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bo
     expected_mode = PORT_BINDING_CONDITIONAL_MODES.get(platform_value)
     return expected_mode is None or str((extra or {}).get("connection_mode", "websocket")).strip().lower() == expected_mode
 
+_DISCORD_CHANNEL_LINK_RE = re.compile(
+    r"https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/channels/(?:[0-9]+|@me)/([0-9]+)/?")
+
+
+def discord_channel_id_from_link(value: str) -> Optional[str]:
+    """Channel id from a pasted Discord channel link (``https://discord.com/channels/<guild>/<channel>``),
+    else None. Message links (a third path segment) and anything that is not a channel link are
+    left alone so callers keep their own error path."""
+    match = _DISCORD_CHANNEL_LINK_RE.fullmatch(value)
+    return match.group(1) if match else None
+
 
 @dataclass
 class HomeChannel:
@@ -280,6 +322,12 @@ class HomeChannel:
     # Authenticated logical-target provenance (relay egress re-attaches; connector stays the authz boundary).
     user_id: Optional[str] = None
     scope_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        # Copy Link is next to Copy Channel ID in Discord. Normalize at the
+        # shared home boundary so env, YAML and plugin-seeded homes agree.
+        if self.platform == Platform.DISCORD and isinstance(self.chat_id, str):
+            self.chat_id = discord_channel_id_from_link(self.chat_id.strip()) or self.chat_id
 
     def to_dict(self) -> Dict[str, Any]:
         optional = {k: v for k in ("thread_id", "user_id", "scope_id") if (v := getattr(self, k))}
@@ -300,38 +348,6 @@ def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> 
         platform_config.setdefault("enabled", True)
     platform_config["home_channel"] = home.to_dict()
     save_config(config)
-
-
-@dataclass
-class SessionResetPolicy:
-    """Inert legacy value type retained solely for the scheduled plugin-compat window.
-
-    Gateway configuration and session lifecycle do not consume this datatype.
-    """
-    mode: str = "none"
-    at_hour: int = 4  # 0-23, local time
-    idle_minutes: int = 1440
-    notify: bool = True  # Notify the user when auto-reset occurs
-    notify_exclude_platforms: tuple = ("api_server", "webhook")
-    bg_process_max_age_hours: int = 24
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {**asdict(self), "notify_exclude_platforms": list(self.notify_exclude_platforms)}
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
-        data = _coerce_dict(data)
-        exclude = data.get("notify_exclude_platforms")
-        # Missing keys and explicit YAML nulls both take the field default.
-        plain = {
-            f.name: f.default if data.get(f.name) is None else data[f.name]
-            for f in fields(cls) if f.name not in ("notify", "notify_exclude_platforms")
-        }
-        return cls(
-            notify=_coerce_bool(data.get("notify"), True),
-            notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
-            **plain,
-        )
 
 
 @dataclass
@@ -459,6 +475,19 @@ class StreamingConfig:
     # Currently applied to Telegram only (other platforms ignore the setting). Default 0 disables the
     # fresh-message replacement path; set >0 to opt in.
     fresh_final_after_seconds: float = 0.0
+
+    @property
+    def globally_enabled(self) -> bool:
+        """The ``streaming.enabled`` master switch (``transport: off`` also disables)."""
+        return bool(self.enabled) and self.transport != "off"
+
+    def enabled_for(self, platform_override: Any) -> bool:
+        """Effective streaming for one platform.
+
+        ``platform_override`` is ``display.platforms.<plat>.streaming`` (``None`` = follow global).
+        A per-platform value can only narrow the global switch, never enable streaming on its own.
+        """
+        return self.globally_enabled and (platform_override is None or bool(platform_override))
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -652,7 +681,9 @@ class GatewayConfig:
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
             "profile_routes": [
-                asdict(r) if is_dataclass(r) and not isinstance(r, type) else r for r in self.profile_routes
+                {k: v for k, v in asdict(r).items() if k != "user_id" or v is not None}
+                if is_dataclass(r) and not isinstance(r, type) else r
+                for r in self.profile_routes
             ],
         }
 
@@ -827,11 +858,3 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config (see ``gateway.config_env``)."""
     from gateway.config_env import _apply_env_overrides as _impl
     _impl(config)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -93,7 +93,10 @@ def list_pending(subsystem: str) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
     for p in _pending_files(subsystem):
         try:
-            records.append(json.loads(p.read_text(encoding="utf-8")))
+            record = json.loads(p.read_text(encoding="utf-8-sig"))
+            if not isinstance(record, dict):
+                raise ValueError(f"expected a JSON object, got {type(record).__name__}")
+            records.append(record)
         except Exception:
             logger.warning("Skipping unreadable pending record: %s", p)
     records.sort(key=lambda r: r.get("created_at", 0))
@@ -105,9 +108,11 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
     path = _pending_path(subsystem, pending_id)
     if not path.exists():
         return None
-    with suppress(Exception):
-        return json.loads(path.read_text(encoding="utf-8"))
-    return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
 
 
 def discard_pending(subsystem: str, pending_id: str) -> bool:
@@ -267,7 +272,7 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
             target_label = payload.get("file_path") or "SKILL.md"
         with suppress(Exception):
             p = skill_dir / target_label
-            current = p.read_text(encoding="utf-8") if p.exists() else ""
+            current = p.read_text(encoding="utf-8-sig") if p.exists() else ""
 
     if action == "patch":
         old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
@@ -277,13 +282,3 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),
                                 fromfile=f"a/{target_label}", tofile=f"b/{target_label}")
     return "".join(diff) or "(no textual change)"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def is_background() -> bool:
-    return current_origin() == "background_review"
-# ---- END PLUGIN-COMPAT ----

@@ -167,14 +167,13 @@ def titled_rows(raw_results: List[Dict[str, Any]], description_key: str) -> List
     ]
 
 
-def lazy_ensure(feature: str) -> None:
-    """Best-effort ``tools.lazy_deps.ensure``: its own ImportError is benign and swallowed;
-    an install hint (any other error) is re-raised as ImportError."""
+def lazy_ensure(extra: str) -> None:
+    """Best-effort ``pm.ensure_import``: a missing-but-unavailable extra raises
+    ``pm.InstallError``, re-raised as ImportError for the caller's own handling."""
+    import pm
+
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure(feature, prompt=False)
-    except ImportError:
-        pass
+        pm.ensure_import(extra)
     except Exception as exc:  # noqa: BLE001
         raise ImportError(str(exc))
 
@@ -184,15 +183,19 @@ def cached_sdk_client(slot: str, env_var: str, missing_key_error: str, feature: 
     reset ``tools.web_tools._<vendor>_client = None`` see fresh state). Raises ValueError
     when the key is unset."""
     import tools.web_tools as _wt
-    cached = getattr(_wt, slot, None)
-    if cached is not None:
-        return cached
+    # Resolved before the cache is consulted: the slot is one per process, but the key can change
+    # under it (``/reload``, or each multiplexed profile's secret scope resolving its own key).
     api_key = provider_env(env_var)
     if not api_key:
         raise ValueError(missing_key_error)
+    # (key, client) as one value so concurrent builds under different keys can never leave one
+    # key recorded beside another key's client.
+    cached = getattr(_wt, slot, None)
+    if cached is not None and cached[0] == api_key:
+        return cached[1]
     lazy_ensure(feature)
     client = factory(api_key)
-    setattr(_wt, slot, client)
+    setattr(_wt, slot, (api_key, client))
     return client
 
 

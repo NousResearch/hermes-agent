@@ -64,6 +64,18 @@ where
         .any(|a| a.as_ref() == "--reinstall" || a.as_ref() == "--repair")
 }
 
+/// Whether an already-installed launch must hand off before Tauri/AppKit.
+///
+/// The runtime's default activation policy is Regular. Entering it registers
+/// this bootstrap process as a Dock app even when Info.plist sets
+/// `LSUIElement`, and the real desktop is a different bundle id, so that
+/// registration is a second Hermes icon. Update, repair, and non-macOS
+/// launches still build the installer UI. The installed-on-disk check is I/O
+/// and stays with the caller.
+pub fn handoff_before_appkit(is_macos: bool, mode: AppMode, force_setup: bool) -> bool {
+    is_macos && mode == AppMode::Install && !force_setup
+}
+
 /// Process-wide install state, shared across Tauri commands.
 ///
 /// The bootstrap is a one-shot, single-tenant process — we only need one
@@ -105,53 +117,47 @@ pub fn run() {
     let force_setup = force_setup_from_args(std::env::args().skip(1));
     tracing::info!(?mode, force_setup, "Hermes installer starting");
 
+    // Hand off before constructing Tauri/AppKit. The setup callback is too
+    // late: by then the process has already been registered as a regular
+    // Dock application.
+    if handoff_before_appkit(cfg!(target_os = "macos"), mode, force_setup) {
+        let install_root = paths::hermes_home().join("hermes-agent");
+        if bootstrap::hermes_is_installed(&install_root) {
+            match bootstrap::spawn_installed_desktop(&install_root) {
+                Ok(()) => {
+                    // Brief grace so the spawned app is registered before we
+                    // exit (mirrors launch_hermes_desktop).
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    tracing::info!(
+                        "hermes already installed — relaunched desktop; exiting installer"
+                    );
+                    return;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        ?err,
+                        "relaunch of installed desktop failed; showing installer UI"
+                    );
+                }
+            }
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .manage(Arc::new(AppState::new(mode)))
-        .setup(move |app| {
+        .setup(|app| {
             use tauri::Manager;
-            // Launcher fast path (macOS only): a bare ("Install") launch when
-            // Hermes is already installed should NOT show the installer or
-            // rebuild — it should just open the app, so the /Applications
-            // "Hermes" doubles as a normal launcher (first run installs, every
-            // later run launches instantly). The window is kept hidden until
-            // here via `"visible": false` so this path never flashes a window.
-            //
-            // Gated to macOS deliberately: on Windows/Linux the installer keeps
-            // its existing behavior (Windows users relaunch via the Start
-            // Menu/Desktop "Hermes" shortcuts that install.ps1 creates, and a
-            // reliable detached relaunch there needs the DETACHED_PROCESS +
-            // startup-grace handling used by launch_hermes_desktop — out of
-            // scope here). So this is a pure no-op on non-macOS.
-            //
-            // `--reinstall`/`--repair` opts out so a broken install can be
-            // repaired by re-running setup instead of launching the bad app.
-            if cfg!(target_os = "macos") && mode == AppMode::Install && !force_setup {
-                let install_root = paths::hermes_home().join("hermes-agent");
-                if bootstrap::hermes_is_installed(&install_root) {
-                    match bootstrap::spawn_installed_desktop(&install_root) {
-                        Ok(()) => {
-                            // Brief grace so the spawned app is registered
-                            // before we exit (mirrors launch_hermes_desktop).
-                            std::thread::sleep(std::time::Duration::from_millis(200));
-                            tracing::info!(
-                                "hermes already installed — relaunched desktop; exiting installer"
-                            );
-                            app.handle().exit(0);
-                            return Ok(());
-                        }
-                        Err(err) => {
-                            tracing::warn!(
-                                ?err,
-                                "relaunch of installed desktop failed; showing installer UI"
-                            );
-                        }
-                    }
-                }
-            }
+            // LSUIElement keeps the launcher hand-off out of the Dock. A
+            // visible installer (first run, repair, update) must still be a
+            // regular foreground app. The successful fast path returned
+            // before Tauri was constructed and cannot reach this callback.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
             // First run / repair install, or Update mode: reveal the UI.
             match app.get_webview_window("main") {
                 Some(win) => {
@@ -187,7 +193,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{force_setup_from_args, AppMode};
+    use super::{force_setup_from_args, handoff_before_appkit, AppMode};
 
     #[test]
     fn bare_args_are_install() {
@@ -217,6 +223,21 @@ mod tests {
         assert!(!force_setup_from_args(["--foo", "bar"]));
         // --update must not be mistaken for a force-setup flag.
         assert!(!force_setup_from_args(["--update"]));
+    }
+
+    #[test]
+    fn bare_macos_install_hands_off_before_appkit() {
+        assert!(handoff_before_appkit(true, AppMode::Install, false));
+    }
+
+    #[test]
+    fn repair_update_and_other_platforms_build_installer_ui() {
+        assert!(!handoff_before_appkit(true, AppMode::Install, true));
+        assert!(!handoff_before_appkit(true, AppMode::Update, false));
+        assert!(!handoff_before_appkit(true, AppMode::Update, true));
+        assert!(!handoff_before_appkit(false, AppMode::Install, false));
+        assert!(!handoff_before_appkit(false, AppMode::Install, true));
+        assert!(!handoff_before_appkit(false, AppMode::Update, false));
     }
 
     #[test]

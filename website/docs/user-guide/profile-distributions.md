@@ -203,9 +203,16 @@ backups/
 # Logs
 errors.log
 .hermes_history
+
+# Distribution-authored scheduler/skills state only
+cron/*
+!cron/jobs.json
+skills/.*
 ```
 
 This mirrors the [hard-excluded paths](#whats-not-in-a-distribution-ever) that the installer strips on its end. Anything else you want to keep out of the repo (scratch files, large assets, local-only skills) should also go in here.
+
+For cron, commit only `cron/jobs.json`. Hermes treats every other entry under `cron/` as runtime state (locks, ledgers, output, suggestions, and future scheduler sidecars) and never installs or replaces it from a distribution. Root-level hidden entries under `skills/` are likewise local Hermes bookkeeping; hidden files inside an authored skill directory remain part of that skill.
 
 ### Step 4 — Push to a git repo
 
@@ -255,7 +262,7 @@ research-bot/
 │   ├── paper-summarization/SKILL.md
 │   └── citation-lookup/SKILL.md
 ├── cron/
-│   └── weekly-digest.json       # scheduled tasks
+│   └── jobs.json                # cron definitions; installed paused
 └── README.md                    # human-facing description (optional)
 ```
 
@@ -265,7 +272,7 @@ When an installer updates to a new version, some things get replaced (author's d
 
 | Category | Paths | On update |
 |---|---|---|
-| **Distribution-owned** | `SOUL.md`, `config.yaml`, `mcp.json`, `skills/`, `cron/`, `distribution.yaml` | Files are replaced from the new clone. Directories are merged per entry: each skill or cron job the new clone ships replaces its counterpart wholesale (files the author retired disappear), while skills or cron jobs you added yourself stay in place. |
+| **Distribution-owned** | `SOUL.md`, `config.yaml`, `mcp.json`, `skills/`, `cron/jobs.json`, `distribution.yaml` | Files are replaced from the new clone. Skill directories are merged per entry. `cron/jobs.json` is merged by job id: shipped definitions update in place, your local jobs and each job's paused/enabled state survive, and newly shipped jobs arrive paused. Other `cron/` files and root-level hidden `skills/` metadata are runtime state and stay local. |
 | **Config override** | `config.yaml` | Actually preserved by default — the installer may have tuned model or provider. Pass `--force-config` on update to reset. |
 | **User-owned** | `memories/`, `sessions/`, `state.db*`, `auth.json`, `.env`, `logs/`, `workspace/`, `plans/`, `home/`, `*_cache/`, `local/` | Never touched |
 
@@ -275,7 +282,7 @@ You can override the distribution-owned list in the manifest:
 distribution_owned:
   - SOUL.md
   - skills/research/            # only my research skills; other installed skills stay
-  - cron/digest.json
+  - cron/jobs.json              # canonical cron store; merged job by job
 ```
 
 When omitted, the defaults above apply — which is what most distributions want.
@@ -403,7 +410,7 @@ hermes profile update research-bot
 What happens:
 
 1. Re-clones the repo from the recorded source URL.
-2. Replaces distribution-owned files (SOUL, mcp.json) and every skill or cron job the distribution ships; skills and cron jobs you added to the profile yourself are left alone.
+2. Replaces distribution-owned files (SOUL, mcp.json) and shipped skills, then merges `cron/jobs.json` by job id. Your own jobs stay, shipped job definitions refresh without changing your paused/enabled choice, and newly shipped jobs arrive paused.
 3. **Preserves** your `config.yaml` — you may have tuned the model, temperature, or other settings. Pass `--force-config` to overwrite.
 4. **Never touches** user data: memories, sessions, auth, `.env`, logs, state.
 
@@ -728,7 +735,7 @@ Profile distributions are unsigned by default. You're trusting:
 - **The git host** (GitHub / GitLab / wherever) to serve the bytes the author pushed.
 - **The author** to not ship a malicious SOUL, skills, or cron jobs.
 
-Cron jobs from a distribution are **not auto-scheduled** — the installer prints `hermes -p <name> cron list` and you enable them explicitly. SOUL.md and skills ARE active as soon as you start chatting with the profile, so read them before your first run if you're installing from someone you don't know.
+Cron jobs from a distribution are **not auto-scheduled** — newly shipped jobs are installed paused. Review them with `hermes -p <name> cron list` and resume only the jobs you trust. SOUL.md and skills ARE active as soon as you start chatting with the profile, so read them before your first run if you're installing from someone you don't know.
 
 Rough analogy: installing a distribution is like installing a browser extension or a VS Code extension. Low friction, high power, trust the source. For internal company distributions, use a private repo and your normal git auth — nothing new to configure.
 

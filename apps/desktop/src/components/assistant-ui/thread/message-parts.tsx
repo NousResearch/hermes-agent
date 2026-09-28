@@ -9,6 +9,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
+import { CatalogInstallTool } from '@/components/assistant-ui/catalog-install-tool'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
@@ -17,19 +18,23 @@ import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/ass
 import { TimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
+import { parseMaybeObject, toolCallFailed } from '@/components/assistant-ui/tool/fallback-model'
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { useI18n } from '@/i18n'
-import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
+import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
+import { isCardTool } from '@/lib/tool-render-class'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
+import { useForcedTextDirection } from '@/store/text-direction'
+import { $showToolActivity } from '@/store/tool-activity'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
@@ -72,7 +77,20 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
   )
 }
 
+// A failure the user still has to see. The gateway's tool.complete carries the
+// failure inside `result`, never as the top-level error that sets isError, so
+// this reads the body like the run summary does. A non-zero exit_code counts
+// too, matching the gateway's _tool_result_needs_user, which forwards terminal
+// {output, exit_code: 1, error: null} even with display.tool_progress off.
+const failedCallNeedsUser = (part: TimelineToolCallProps): boolean => {
+  const exitCode = parseMaybeObject(part.result).exit_code
+
+  return toolCallFailed(part) || (typeof exitCode === 'number' && exitCode !== 0)
+}
+
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {
+  const showToolActivity = useStore($showToolActivity)
+
   // todo parts are hoisted to a dedicated panel above the message content.
   if (isTodoToolName(props.toolName)) {
     return null
@@ -121,6 +139,10 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     )
   }
 
+  if (props.toolName === 'manage_catalog') {
+    return <CatalogInstallTool {...props} />
+  }
+
   if (mcpTargets(props.toolName, props.args).length > 0) {
     return <McpSetupTool {...props} />
   }
@@ -129,8 +151,15 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return <ConnectorTool {...props} />
   }
 
-  if (connectorCalls(props.toolName, props.args).length > 0) {
+  if (toolLabels(props.args).length > 0) {
     return <ConnectorExecution {...props} />
+  }
+
+  // The tool feed (reads, searches, commands) follows display.tool_progress,
+  // never show_reasoning. Cards, approvals, and failed calls the user must act
+  // on remain regardless.
+  if (!showToolActivity && !failedCallNeedsUser(props) && !isCardTool(props.toolName)) {
+    return null
   }
 
   return <ToolFallback {...props} />
@@ -308,6 +337,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
   endIndex,
   startIndex
 }) => {
+  const showReasoning = useStore($showReasoning)
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
   // The guide's reasoning is it reading its own runbook ("Now step 4: offer
@@ -352,7 +382,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     }, undefined)
   )
 
-  if (!hasContent || guidedChat) {
+  if (!hasContent || guidedChat || !showReasoning) {
     return null
   }
 
@@ -380,6 +410,16 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   const { status, text } = useMessagePartReasoning()
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
 
+  // The group above already hides grouped parts; this covers a Reasoning part
+  // rendered without a ReasoningGroup wrapper (assistant-ui drops the group
+  // when a ChainOfThought component is registered).
+  const showReasoning = useStore($showReasoning)
+  const textDirection = useForcedTextDirection()
+
+  if (!showReasoning) {
+    return null
+  }
+
   return (
     <MarkdownTextContent
       containerClassName="text-xs leading-snug text-muted-foreground/85"
@@ -387,6 +427,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
       isRunning={status.type === 'running' || messageRunning}
       scratchpad
       text={separateGluedReasoningBlocks(text.trimStart())}
+      textDirection={textDirection}
     />
   )
 }

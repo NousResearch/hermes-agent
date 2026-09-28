@@ -68,9 +68,23 @@ async def _quiet(call, default=None):
         return default
 
 
+# English source for the transcript-read-failure reply; callers render ``history_unreadable()``
+# (``gateway.shared.history_unreadable``) so the active language applies.
 HISTORY_UNREADABLE = ("⚠️ I can't read this conversation's history right now (your earlier messages "
                       "exist but cannot be loaded). Run `hermes doctor --fix` on the host, or use /new "
                       "to start fresh.")
+
+
+def history_unreadable() -> str:
+    return t("gateway.shared.history_unreadable")
+
+
+def _configured_provider() -> str:
+    """``model.provider`` from the gateway config ("" when unset)."""
+    from gateway.run import _load_gateway_config
+    user_config = _load_gateway_config()
+    model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
+    return _clean_str(model_cfg.get("provider")) if isinstance(model_cfg, dict) else ""
 
 
 def _quiet_sync(call, default=None):
@@ -167,9 +181,9 @@ def _agents_delegation_lines(d: dict) -> list[str]:
     row = f"- `{d.get('delegation_id', '?')}` · {status}"
     quiet = d.get("stalled_after_quiet_seconds")
     if status == "stalling" and quiet is not None:
-        row += f" · no progress {quiet:.0f}s"
+        row += t("gateway.agents.no_progress", seconds=f"{quiet:.0f}")
     elif status != "stalling" and d.get("seconds_since_progress", 0) >= 60:
-        row += f" · quiet {d['seconds_since_progress']:.0f}s"
+        row += t("gateway.agents.quiet_for", seconds=f"{d['seconds_since_progress']:.0f}")
     if goal:
         row += f" · {goal}"
     lines = [row]
@@ -177,10 +191,10 @@ def _agents_delegation_lines(d: dict) -> list[str]:
         if not isinstance(child, dict):
             continue
         tool = child.get("current_tool")
-        doing = f"`{tool}`" if tool else "between turns"
-        part = f"  - child {i + 1}: {child.get('api_calls', '?')} api calls · {doing}"
+        doing = f"`{tool}`" if tool else t("gateway.agents.between_turns")
+        part = t("gateway.agents.child_row", index=i + 1, calls=child.get("api_calls", "?"), doing=doing)
         idle = child.get("seconds_since_activity")
-        lines.append(part + (f" · active {idle:.0f}s ago" if idle is not None else ""))
+        lines.append(part + (t("gateway.agents.active_ago", seconds=f"{idle:.0f}") if idle is not None else ""))
     return lines
 
 
@@ -305,7 +319,7 @@ class GatewayStatusCommandsMixin:
                 t("gateway.status.matrix_scope_header"),
                 t("gateway.status.matrix_scope_room", room=source.chat_name or source.chat_id),
                 t("gateway.status.matrix_scope_room_id", room_id=source.chat_id),
-                t("gateway.status.matrix_scope_thread", thread_id=source.thread_id or "none"),
+                t("gateway.status.matrix_scope_thread", thread_id=source.thread_id or t("gateway.shared.none_value")),
                 t("gateway.status.matrix_scope_mode", scope=scope),
                 t("gateway.status.matrix_scope_key",
                   session_key=self._redact_matrix_session_key(session_key)),
@@ -381,7 +395,7 @@ class GatewayStatusCommandsMixin:
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
         except TranscriptReadError:
-            return HISTORY_UNREADABLE
+            return history_unreadable()
         if not history:
             return t("gateway.context.no_data")
         approx, count = _transcript_estimate(history)
@@ -487,12 +501,11 @@ class GatewayStatusCommandsMixin:
         if view is None or not view.logged_in:
             return t("gateway.credits.not_logged_in")
         # Drop the helper's 📈 header; we print our own.
-        lines = ["💳 **Nous balance**"] + [ln for ln in view.balance_lines if not ln.lstrip().startswith("📈")]
+        lines = [t("gateway.topup.header")] + [ln for ln in view.balance_lines if not ln.lstrip().startswith("📈")]
         if view.identity_line:
             lines += ["", view.identity_line]
         if view.topup_url:
-            lines += ["", f"Manage billing on the portal: {view.topup_url}",
-                      "Top up and manage billing in the browser — your balance updates here after."]
+            lines += ["", t("gateway.topup.portal_link", url=view.topup_url), t("gateway.topup.hint")]
         return "\n".join(lines)
 
     def _context_breakdown_block(self, agent, source, expanded: bool) -> list[str]:
@@ -503,7 +516,7 @@ class GatewayStatusCommandsMixin:
             try:
                 payload = self._session_context_breakdown(agent, source)
             except TranscriptReadError:
-                return [HISTORY_UNREADABLE]  # a read failure is not an empty transcript
+                return [history_unreadable()]  # a read failure is not an empty transcript
             if not (payload.get("categories") or []):
                 return []
             details = _quiet_sync(lambda: compute_context_details(agent), {"skills": [], "toolsets": []}) if expanded else None
@@ -532,7 +545,7 @@ class GatewayStatusCommandsMixin:
             try:
                 payload = self._session_context_breakdown(agent, source)
             except TranscriptReadError:
-                return [HISTORY_UNREADABLE]
+                return [history_unreadable()]
             categories = payload.get("categories") or []
             if not categories:
                 return []
@@ -573,6 +586,11 @@ class GatewayStatusCommandsMixin:
         )
         if not provider and getattr(self, "_session_db", None) is not None:
             provider, base_url = await self._persisted_billing_route(source)
+        if not provider:
+            # Fresh or evicted session with no persisted route (e.g. /usage right after login):
+            # fall back to the configured provider, as /status does, so account limits such as
+            # Codex subscription windows still render from on-disk credentials (#15167).
+            provider = await _quiet(lambda: asyncio.to_thread(_configured_provider)) or None
         if wants_reset:
             if str(provider or "").strip().lower() != "openai-codex":
                 return t("gateway.usage.reset_wrong_provider")
@@ -619,7 +637,7 @@ class GatewayStatusCommandsMixin:
         try:
             history = await self.async_session_store.load_transcript(session_entry.session_id)
         except TranscriptReadError:
-            return HISTORY_UNREADABLE
+            return history_unreadable()
         if history:
             approx, count = _transcript_estimate(history)
             return _with_account_blocks([

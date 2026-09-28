@@ -54,7 +54,7 @@ _FREE_TIER_RETRYABLE_KINDS = {"rate_limited", "at_capacity", "outage"}
 _NON_RETRYABLE_REASONS = {
     "auth", "auth_permanent", "billing", "billing_unverified", "content_policy_blocked",
     "provider_policy_blocked", "model_not_found", "format_error", "ssl_cert_verification",
-    "context_overflow", "interpreter_shutdown",
+    "context_overflow", "interpreter_shutdown", "upstream_blocked",
 }
 
 # Providers whose base_url is user-supplied rather than a known vendor.
@@ -90,12 +90,14 @@ def _surface(layer: str, code: str, retryable: bool, provider: str = "", model: 
     # that actually failed — not whatever the composer points at later.
     identity = {k: v for k, v in (("provider", provider), ("model", model)) if v}
     surface = {"layer": layer, "code": code, "retryable": bool(retryable), **identity}
+    if provider:
+        # Clients name the failing provider in the card copy ("OpenCode Go did
+        # not answer…"), not by its config slug.
+        surface["provider_label"] = _provider_label(provider)
     if layer == LAYER_AUTH and provider:
         # OAuth providers are fixed by signing in again; API-key providers by
-        # replacing the key. The client's one-click recovery needs to know which
-        # and how to name the account it re-opens.
+        # replacing the key. The client's one-click recovery needs to know which.
         surface["auth_kind"] = auth_kind(provider)
-        surface["provider_label"] = _provider_label(provider)
     return surface
 
 
@@ -173,7 +175,13 @@ def build_error_surface_from_result(result: Any, provider: str = "", model: str 
         retryable = result.get("failure_retryable")
         if not isinstance(retryable, bool):
             retryable = reason not in _NON_RETRYABLE_REASONS
-        return _surface(_result_layer(reason, error_text, provider), reason, retryable, provider, model)
+        surface = _surface(_result_layer(reason, error_text, provider), reason, retryable, provider, model)
+        # When the provider named the moment its limit lifts (Retry-After / ``resets_at``,
+        # ``agent/turn_recovery.py::_stamp_limit_reset``) the card can say "Limit resets at HH:mm"
+        # next to Retry instead of leaving the user to guess (#98852). Epoch seconds.
+        if isinstance(resets_at := result.get("failure_resets_at"), (int, float)) and not isinstance(resets_at, bool):
+            surface["resets_at"] = float(resets_at)
+        return surface
     except Exception:  # pragma: no cover — never break the error path
         logger.debug("error_surface: result classification failed", exc_info=True)
         return None
@@ -199,6 +207,11 @@ def build_error_surface_from_exception(
 
         classified = classify_api_error(exc, provider=provider, model=model, api_key=api_key)
         synthetic = {"error": classified.message or message, "failure_reason": classified.reason.value}
+        from agent.agent_runtime_helpers import extract_api_error_context
+        from agent.credential_pool import _parse_absolute_timestamp
+
+        if (resets_at := _parse_absolute_timestamp(extract_api_error_context(exc).get("reset_at"))) is not None:
+            synthetic["failure_resets_at"] = resets_at
         surface = build_error_surface_from_result(synthetic, provider=provider, model=model)
         if surface is not None:
             surface["retryable"] = bool(classified.retryable)
@@ -206,12 +219,3 @@ def build_error_surface_from_exception(
     except Exception:  # pragma: no cover — never break the error path
         logger.debug("error_surface: exception classification failed", exc_info=True)
         return None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-LAYER_RUNTIME = "runtime"
-# ---- END PLUGIN-COMPAT ----

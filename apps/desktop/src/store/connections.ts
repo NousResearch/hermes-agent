@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
+import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -41,6 +42,7 @@ const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 // restore should stop waiting for it. Shared constant so the boot-class
 // budgets can't drift apart (see with-timeout.ts).
 const BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS = BACKEND_BOOT_WAIT_TIMEOUT_MS
+const REGISTRY_READ_TIMEOUT_MS = 5_000
 
 export { $connectionsRegistry } from '@/store/connection-registry-state'
 
@@ -73,6 +75,16 @@ const $activeConnectionProfile = computed(
     registryScoped: connection?.registryScoped === true
   })
 )
+
+// The CONNECTION twin of profile.ts's $activeGatewayProfile subscription.
+// The switch commit point (beginGatewaySwitch → invalidateProfileScopedQueries)
+// runs inside beforeActivate — BEFORE applyActive publishes the new request
+// scope (setApiRequestConnection) — so that invalidation's refetches ride the
+// OUTGOING backend. Re-invalidate on the actual connection-id change, which
+// applyActive publishes only after the tag moved, so the refetch lands on the
+// backend the tags now name. `listen` (not `subscribe`) skips the mount-time
+// fire, and the computed dedupes equal ids, so this only runs on a real switch.
+$activeConnectionId.listen(() => invalidateProfileScopedQueries())
 
 // Remember one profile per source, so switching machines is a re-home rather
 // than a reset to `default`. The map is local UI preference only; Electron
@@ -116,7 +128,12 @@ export async function refreshConnectionsRegistry(): Promise<DesktopConnectionsRe
     return null
   }
 
-  const registry = await bridge.list()
+  const registry = await withTimeout(
+    bridge.list(),
+    REGISTRY_READ_TIMEOUT_MS,
+    'Timed out reading the connection registry'
+  )
+
   setConnectionsRegistry(registry)
 
   return registry
@@ -195,6 +212,7 @@ function waitForInitialConnection(): Promise<void> {
  */
 export async function initializeConnectionsRegistry(): Promise<DesktopConnectionsRegistry | null> {
   const freshSessionRequest = $freshSessionRequest.get()
+
   const [registry, defaultLoaded] = await Promise.all([
     refreshConnectionsRegistry(),
     refreshDefaultProfile().then(
@@ -244,22 +262,26 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     return $connectionsRegistry.get() ?? registry
   }
 
-  // Residual drift: a window can be live on a source the registry cannot name
-  // (a v1-configured remote that reconciliation has not repaired yet, e.g. a
-  // read-only userData that rejected the healed write). $activeConnectionId is
-  // null there, so the preferred-id guard below would miss and "restore" the
-  // registry primary over a connection that is already up and painting —
-  // re-homing the user onto a different backend seconds after boot. The
-  // registry has no claim on a source it does not know; leave the live one be.
-  if ($connection.get() && $activeConnectionId.get() === null) {
-    return registry
-  }
-
   const lastUsed = registry.connections.some(connection => connection.id === registry.lastUsed)
     ? registry.lastUsed
     : registry.primary
 
   const preferredId = registry.launchMode === 'last-used' ? lastUsed : registry.primary
+  const preferred = registry.connections.find(connection => connection.id === preferredId)
+  const live = $connection.get()
+
+  // An unqualified local descriptor is the post-update empty-backend boot, not
+  // a v1 remote the registry cannot name. launchMode=primary must still select
+  // the registered SSH/remote primary instead of staying on that local spawn.
+  const replaceUnqualifiedLocal =
+    live?.mode === 'local' &&
+    $activeConnectionId.get() === null &&
+    registry.launchMode !== 'last-used' &&
+    Boolean(preferred && preferred.kind !== 'local')
+
+  if (live && $activeConnectionId.get() === null && !replaceUnqualifiedLocal) {
+    return registry
+  }
 
   if (!preferredId) {
     return registry

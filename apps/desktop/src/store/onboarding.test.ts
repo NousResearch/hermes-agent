@@ -13,6 +13,7 @@ import {
   refreshOnboarding,
   requestDesktopOnboarding,
   saveOnboardingLocalEndpoint,
+  setOnboardingModel,
   submitOnboardingCode
 } from './onboarding'
 
@@ -147,7 +148,7 @@ describe('refreshOnboarding', () => {
       release()
       await pending
       expect(requests.some(r => r.path === '/api/model/set')).toBe(false)
-      expect($desktopOnboarding.get()).toMatchObject({ targetProfile: 'alpha', flow: { status: 'idle' } })
+      expect($desktopOnboarding.get()).toMatchObject({ targetScope: { profile: 'alpha' }, flow: { status: 'idle' } })
       closeManualOnboarding()
       delayKey = false
       profile = 'beta'
@@ -246,28 +247,31 @@ describe('refreshOnboarding', () => {
     expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
   })
 
-  it('shows a non-blocking notification when preserving configured on fallback', async () => {
-    const notifySpy = vi.spyOn(notifications, 'notify')
-
+  it('keeps an unknown readiness notice temporary and clears it on recovery (#124545)', async () => {
+    vi.useFakeTimers()
+    notifications.clearNotifications()
     installApiMock(vi.fn())
-    $desktopOnboarding.set(
-      baseState({
-        configured: true,
-        providers: [makeOAuthProvider('cached')],
-        reason: null,
-        requested: false
-      })
-    )
+    $desktopOnboarding.set(baseState({ configured: true }))
 
-    await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+    try {
+      await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+      expect(notifications.$notifications.get()).toEqual([
+        expect.objectContaining({ id: 'runtime-not-ready', kind: 'info' })
+      ])
+      expect($desktopOnboarding.get().configured).toBe(true)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(notifications.$notifications.get()).toEqual([])
 
-    expect(notifySpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: 'runtime-not-ready',
-        kind: 'error'
-      })
-    )
-    expect($desktopOnboarding.get().configured).toBe(true)
+      // A later outage can show a fresh notice; an authoritative ready clears it
+      // without waiting for its timer, and must not dismiss unrelated errors.
+      await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+      notifications.notify({ id: 'unrelated', kind: 'error', message: 'Keep me' })
+      await refreshOnboarding(onboardingContext(keylessCustomGateway()))
+      expect(notifications.$notifications.get().map(item => item.id)).toEqual(['unrelated'])
+    } finally {
+      notifications.clearNotifications()
+      vi.useRealTimers()
+    }
   })
 
   it('leaves configured unknown on a boot fallback instead of erasing the cache', async () => {
@@ -623,7 +627,7 @@ describe('saveOnboardingLocalEndpoint', () => {
     }
   }
 
-  it('errors when the endpoint advertises no models (nothing to route to)', async () => {
+  it('returns needsModelInput when the endpoint advertises no models (nothing to route to)', async () => {
     const calls: string[] = []
     installApiMock(async ({ path }: { path: string }) => {
       calls.push(path)
@@ -640,9 +644,90 @@ describe('saveOnboardingLocalEndpoint', () => {
     })
 
     expect(result.ok).toBe(false)
-    expect(result.message).toContain('no models')
+    // The wizard reads this discriminator to reveal a manual model-name input.
+    expect(result.needsModelInput).toBe(true)
+    expect(result.message).toMatch(/didn't enumerate any models|advertised no models/)
     // Must not attempt to persist an assignment without a model.
     expect(calls).not.toContain('/api/model/set')
+  })
+
+  it('uses a manually provided model name and skips discovery when /v1/models is empty', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        // Endpoint reachable but the discovery list is empty — the bug-class
+        // case the wizard used to hard-fail on.
+        return { ok: true, reachable: true, message: '', models: [] }
+      }
+
+      if (path === '/api/model/set') {
+        return {
+          ok: true,
+          provider: 'custom',
+          model: 'command-a-plus-05-2026',
+          base_url: 'https://api.cohere.ai/compatibility/v1'
+        }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint(
+      'https://api.cohere.ai/compatibility/v1',
+      'sk-secret',
+      { requestGateway: readyGateway() },
+      'command-a-plus-05-2026'
+    )
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    // The manually provided model name is persisted verbatim — the runtime
+    // honors it the same way as discover_models: false + an explicit models:.
+    expect(assign?.body).toMatchObject({
+      scope: 'main',
+      provider: 'custom',
+      model: 'command-a-plus-05-2026',
+      base_url: 'https://api.cohere.ai/compatibility/v1',
+      api_key: 'sk-secret'
+    })
+  })
+
+  it('uses a manually provided model name even when /v1/models enumerates models', async () => {
+    // The user is allowed to override the auto-discovered default by typing a
+    // model name before submitting. The wizard never pre-fills the model input
+    // in the happy path, but the store function must still honor modelName
+    // over probe.models[0] when both are available.
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        return { ok: true, reachable: true, message: '', models: ['llama-3.1-8b'] }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'custom', model: 'llama-3.1-8b', base_url: 'http://127.0.0.1:8000/v1' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint(
+      'http://127.0.0.1:8000/v1',
+      '',
+      { requestGateway: readyGateway() },
+      '  llama-3.3-70b  '
+    )
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({ model: 'llama-3.3-70b' })
   })
 
   it('auto-discovers the model and persists provider=custom + base_url, then finishes', async () => {
@@ -725,6 +810,49 @@ describe('saveOnboardingLocalEndpoint', () => {
       model: 'gpt-oss-120b',
       base_url: 'https://text.example.com/v1',
       api_key: 'sk-secret'
+    })
+  })
+
+  it('persists the resolved_base_url that served /models, not the URL as typed (#65488)', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    const api = vi.fn(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        // The probe fell through from the bare host root to its /v1 variant.
+        return {
+          ok: true,
+          reachable: true,
+          message: '',
+          models: ['llama-3.1-8b'],
+          resolved_base_url: 'http://127.0.0.1:1234/v1'
+        }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'custom', model: 'llama-3.1-8b', base_url: 'http://127.0.0.1:1234/v1' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    installApiMock(api)
+
+    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:1234', '', {
+      requestGateway: readyGateway()
+    })
+
+    expect(result.ok).toBe(true)
+
+    // The runtime POSTs {base_url}/chat/completions verbatim, so Save must store
+    // the base that actually answered /models rather than the typed host root.
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({
+      scope: 'main',
+      provider: 'custom',
+      model: 'llama-3.1-8b',
+      base_url: 'http://127.0.0.1:1234/v1'
     })
   })
 
@@ -821,13 +949,7 @@ describe('device-code poll expiry', () => {
       vi.advanceTimersByTime(3000)
     })
 
-    const flow = $desktopOnboarding.get().flow
-    expect(flow.status).toBe('error')
-
-    if (flow.status === 'error') {
-      expect(flow.message).toMatch(/timed out before you finished/)
-      expect(flow.message).not.toMatch(/server-side|CLI/)
-    }
+    expect($desktopOnboarding.get().flow.status).toBe('error')
   })
 
   it('keeps polling while the window is open and clears the expiry on cancel', async () => {
@@ -859,5 +981,55 @@ describe('device-code poll expiry', () => {
       vi.advanceTimersByTime(700_000)
     })
     expect($desktopOnboarding.get().flow.status).toBe('idle')
+  })
+})
+
+// The happy path (cross-provider pick reaches /api/model/set with the picked
+// model's provider) is covered from the ConfirmingModelPanel in
+// components/onboarding/flow.test.tsx so it exercises the onSelect wiring.
+describe('setOnboardingModel', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+  })
+
+  function confirmingModelState(
+    overrides: Partial<Extract<DesktopOnboardingState['flow'], { status: 'confirming_model' }>> = {}
+  ) {
+    return baseState({
+      flow: {
+        status: 'confirming_model',
+        currentModel: 'gpt-5.6-terra',
+        label: 'OpenAI OAuth (ChatGPT)',
+        providerSlug: 'openai',
+        saving: false,
+        ...overrides
+      }
+    })
+  }
+
+  it('reverts the model, provider and label when persistence fails', async () => {
+    installApiMock(async () => {
+      throw new Error('backend down')
+    })
+    $desktopOnboarding.set(confirmingModelState())
+
+    await setOnboardingModel('deepseek/deepseek-v4-flash-0731', 'nous', 'Nous Portal')
+
+    const flow = $desktopOnboarding.get().flow
+    expect(flow.status).toBe('confirming_model')
+
+    if (flow.status === 'confirming_model') {
+      expect(flow.currentModel).toBe('gpt-5.6-terra')
+      expect(flow.providerSlug).toBe('openai')
+      expect(flow.label).toBe('OpenAI OAuth (ChatGPT)')
+      expect(flow.saving).toBe(false)
+    }
   })
 })

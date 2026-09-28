@@ -31,8 +31,7 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         help="DANGEROUS: bypass the catalog removed-plugin blocklist check")
     plugins_install.add_argument(
         "--no-deps", action="store_true",
-        help="Skip the plugin's declared Python dependencies (no conflict check, nothing installed); "
-             "you manage them yourself")
+        help="Download without dependency consent and leave disabled; cannot replace an active plugin")
     _install_enable_group = plugins_install.add_mutually_exclusive_group()
     _install_enable_group.add_argument(
         "--enable", action="store_true",
@@ -54,11 +53,56 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_validate = plugins_subparsers.add_parser(
         "validate", help="Validate a plugin directory for catalog admission (CI gate)")
     plugins_validate.add_argument("path", help="Path to the plugin directory")
+    plugins_validate.add_argument(
+        "--install-deps", action="store_true",
+        help="Install the plugin's declared Python dependencies (pyproject/python_dependencies) into this "
+             "venv before the capability probe, exactly as `plugins install` would — the catalog CI gate")
     add_json_flag(plugins_validate, "Print machine-readable JSON (for CI)")
 
     plugins_update = plugins_subparsers.add_parser(
         "update", help="Pull latest changes for an installed plugin")
     plugins_update.add_argument("name", help="Plugin name to update")
+
+    plugins_adopt = plugins_subparsers.add_parser(
+        "adopt",
+        help="Adopt a self-cloned plugin dir into provenance tracking",
+        description=(
+            "For plugin dirs you cloned yourself (no install record): read "
+            "the git origin URL, write the provenance row, and become a "
+            "tracked git install (check-updates + update)."
+        ),
+    )
+    plugins_adopt.add_argument("name", help="Self-cloned plugin directory name")
+
+    plugins_trust = plugins_subparsers.add_parser(
+        "trust-update-url",
+        help="Confirm a changed plugin update_url into the saved tag",
+        description=(
+            "The ONLY path that moves a saved update_url tag. When a "
+            "plugin's manifest changed its update_url (needs-fixing "
+            "mismatch), running this trusts the new url after review. "
+            "Never triggered automatically."
+        ),
+    )
+    plugins_trust.add_argument("name", help="Plugin name")
+
+    plugins_check = plugins_subparsers.add_parser(
+        "check-updates",
+        aliases=["check"],
+        help="Check whether installed plugins have updates (read-only)",
+        description=(
+            "Standard, read-only update check for every installed plugin: "
+            "saved-tag update_url feeds (with mismatch protection), git "
+            "ls-remote for git installs, and a stateless PyPI probe for "
+            "pip entry-point plugins. NEVER mutates anything — apply with "
+            "`hermes plugins update <name>`."
+        ),
+    )
+    plugins_check.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON (the receipt-section shape)",
+    )
 
     plugins_remove = plugins_subparsers.add_parser(
         "remove", aliases=["rm", "uninstall"], help="Remove an installed plugin")
@@ -107,17 +151,6 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         help="Plugin path or installed plugin id (default: current directory)")
     plugins_doctor.add_argument(
         "--ci", action="store_true", help="Exit non-zero when validation reports an error")
-
-    plugins_compat = plugins_subparsers.add_parser(
-        "compat",
-        help="Show installed plugins that import paths removed by the Sep 2026 decomposition",
-        description="Statically scans every enabled external plugin for imports of pre-decomposition "
-            "module paths (see COMPAT_MANIFEST.md) and prints file:line, old path -> new path. "
-            "Exits 1 when any plugin is affected. Plugins still affected on the removal date are "
-            "not loaded (override: plugins.allow_deprecated_imports: true).")
-    plugins_compat.add_argument("--json", action="store_true", help="Machine-readable output")
-    plugins_compat.add_argument(
-        "path", nargs="?", help="Scan one plugin directory instead of the installed set (for plugin authors)")
 
     plugins_pack = plugins_subparsers.add_parser(
         "pack", help="Declarative, shareable plugin sets (hermes-pack.yaml)",

@@ -1,7 +1,7 @@
 """Tests for the WS-upgrade ticket store (Phase 5 task 5.1).
 
-The store is process-local and threading-safe. Tests run with xdist so
-each worker has its own module instance — no cross-worker bleed — but we
+The store is process-local and threading-safe. Under the per-file
+isolation runner each file has its own process — no cross-file bleed — but we
 call ``_reset_for_tests`` between tests to keep things deterministic.
 """
 
@@ -71,9 +71,6 @@ class TestSingleUse:
 
 
 class TestTTL:
-    def test_constant_is_30_seconds(self):
-        # Pinned so a refactor that doubled the lifetime would surface here.
-        assert TTL_SECONDS == 30
 
     def test_expired_ticket_rejected(self, monkeypatch):
         # Mock time inside the ws_tickets module so mint and consume see

@@ -4,10 +4,12 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 """
 
 import contextlib
+import json
 import os
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -379,6 +381,11 @@ def _reap_orphaned_browser_sessions():
     ``agent-browser-*`` socket dirs; safe from any context."""
     import glob
 
+    # Chromium whose daemon already exited is invisible to the socket-dir scan below (no dir,
+    # no pid file, reparented to init).  Sweep it first so this startup/periodic cadence covers
+    # both halves of the leak — the daemon half here, the orphaned-tree half there.
+    _best_effort("Orphaned Chromium reap", _reap_orphaned_chrome_processes)
+
     # Lightpanda servers keep their own records (no socket dir); sweep them with the
     # same owner-liveness rule BEFORE the daemon scan, which may return early.
     def _reap_lp():
@@ -410,6 +417,257 @@ def _reap_orphaned_browser_sessions():
 
     if reaped:
         _bt.logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)
+
+
+# ---------------------------------------------------------------------------
+# Orphaned Chromium trees — the half of the leak the daemon reaper cannot reach
+# ---------------------------------------------------------------------------
+# ``_reap_socket_dir`` tree-kills a daemon that is STILL ALIVE, which takes its Chromium
+# children with it.  When the daemon is already gone (crash, SIGKILL, a recycled poisoned
+# session, a gateway restart) Chromium is reparented to init: no socket dir, no pid file and
+# no ``_active_sessions`` entry points at it any more, so nothing in the daemon scan can ever
+# find it and it keeps running for days (upstream #100855 — "wedged daemon + headless Chrome
+# survived 47h across two gateway restarts"; #32047 — 202 orphaned Chrome processes).
+#
+# This sweep finds those trees by their temporary profile directory and reaps only trees that
+# no live process can still drive, after watching them for BROWSER_ORPHAN_CHROME_MIN_AGE and
+# with a start-time fingerprint re-validated before the kill (a recycled PID is refused).
+# Mirrors the "persist ownership, reap from the cleanup worker + atexit, verify identity
+# before tree termination" approach of upstream PR #100998.
+
+BROWSER_ORPHAN_CHROME_MIN_AGE = 900      # seconds a tree must be watched before it can be reaped
+_BROWSER_OWNER_STATE_FILE = "browser_owners.json"
+_CHROME_EXE_HINTS = ("chrome", "chromium")
+
+
+def _browser_owner_state_path() -> Optional[Path]:
+    """``<HERMES_HOME>/browser_owners.json`` — persisted per-profile ownership record."""
+    try:
+        return get_hermes_home() / _BROWSER_OWNER_STATE_FILE
+    except Exception:
+        return None
+
+
+def _load_browser_owner_state() -> Dict[str, Dict[str, Any]]:
+    """Ownership record; a missing/corrupt file reads as empty (never raises)."""
+    path = _browser_owner_state_path()
+    if path is None or not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): v for k, v in data.items() if isinstance(v, dict)}
+
+
+def _save_browser_owner_state(state: Dict[str, Dict[str, Any]]) -> None:
+    """Atomically persist the record so a crash mid-write cannot truncate it."""
+    path = _browser_owner_state_path()
+    if path is None:
+        return
+    tmp = path.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        _bt.logger.debug("Could not persist browser owner state: %s", exc)
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+
+
+def _temp_profile_roots() -> Tuple[str, ...]:
+    """Temp roots where Hermes-launched browsers keep their profile (never a user profile)."""
+    roots = {"/tmp", tempfile.gettempdir(), _bt._socket_safe_tmpdir(), os.environ.get("TMPDIR")}
+    out = []
+    for root in roots:
+        if not root:
+            continue
+        real = os.path.realpath(root)
+        if real not in out:
+            out.append(real)
+    return tuple(out)
+
+
+def _profile_is_temporary(profile: str) -> bool:
+    """True when ``profile`` sits under a temp root — the mark of a Hermes-launched browser."""
+    real = os.path.realpath(profile)
+    return any(real == root or real.startswith(root.rstrip("/") + os.sep) for root in _temp_profile_roots())
+
+
+def _devtools_port(profile: str) -> Optional[str]:
+    """CDP port Chromium published in ``<profile>/DevToolsActivePort`` (first line), else None."""
+    try:
+        with open(os.path.join(profile, "DevToolsActivePort"), encoding="utf-8") as fh:
+            first = fh.readline().strip()
+    except OSError:
+        return None
+    return first if first.isdigit() else None
+
+
+def _all_cmdlines() -> Dict[int, str]:
+    """``pid -> cmdline`` for every live process; used to spot an owner by reference."""
+    out: Dict[int, str] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as fh:
+                out[int(entry)] = fh.read().decode("utf-8", "replace").replace("\x00", " ").strip()
+        except OSError:
+            continue
+    return out
+
+
+def _port_has_client(port: str) -> bool:
+    """True when some process holds an ESTABLISHED connection on the CDP ``port``."""
+    try:
+        import psutil
+        for conn in psutil.net_connections(kind="tcp"):
+            if conn.status != psutil.CONN_ESTABLISHED:
+                continue
+            for addr in (conn.laddr, conn.raddr):
+                if addr is not None and str(getattr(addr, "port", "")) == port:
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _chromium_main_processes() -> Optional[list]:
+    """``[(pid, profile, exe, start_time, ppid)]`` for Chromium MAIN processes on temp profiles.
+
+    Renderer/GPU/zygote children inherit ``--user-data-dir``, so only the process without a
+    ``--type=`` flag owns the tree.  ``None`` means "could not scan" (psutil unavailable) —
+    callers must then leave the ownership record untouched rather than treat it as empty.
+    """
+    try:
+        import psutil
+    except Exception as exc:
+        _bt.logger.debug("Chromium orphan scan unavailable (psutil): %s", exc)
+        return None
+    found = []
+    for proc in psutil.process_iter(["pid", "name", "cmdline", "exe", "ppid", "create_time"]):
+        try:
+            info = proc.info
+            if not any(hint in (info.get("name") or "").lower() for hint in _CHROME_EXE_HINTS):
+                continue
+            argv = info.get("cmdline") or []
+            if any(arg.startswith("--type=") for arg in argv):
+                continue
+            profile = next((arg.split("=", 1)[1].strip('"') for arg in argv
+                            if arg.startswith("--user-data-dir=")), "")
+            if not profile or not _profile_is_temporary(profile):
+                continue
+            found.append((info["pid"], profile, info.get("exe") or "",
+                          int(info.get("create_time") or 0), info.get("ppid") or 0))
+        except Exception:
+            continue
+    return found
+
+
+def _chromium_tree_pids(pid: int) -> set:
+    """``pid`` plus every descendant — renderers/GPU/zygotes carry the same ``--user-data-dir``,
+    so a cmdline scan would otherwise mistake the tree's own children for an owner."""
+    pids = {pid}
+    try:
+        import psutil
+        for child in psutil.Process(pid).children(recursive=True):
+            pids.add(child.pid)
+    except Exception:
+        pass
+    return pids
+
+
+def _looks_like_chromium(cmdline: str) -> bool:
+    """True when the *executable* (argv[0]) of a process is Chromium-family.
+
+    Only argv[0] is inspected: a daemon's cmdline can name the profile
+    (``--user-data-dir=…/chrome-xyz``) without being a browser, and the tree's own
+    renderers/zygotes must not shield the tree they belong to.  A profile is locked by exactly
+    one browser instance, so a different Chromium can never be the live owner of ours.
+    """
+    exe = cmdline.strip().split(" ", 1)[0].lower()
+    return "chromium" in exe or "chrome" in exe
+
+
+def _live_owner_reason(profile: str, port: Optional[str], tree_pids: set,
+                       cmdlines: Dict[int, str]) -> Optional[str]:
+    """Why a live process may still drive this browser (None => nobody can)."""
+    if port and _port_has_client(port):
+        return f"established CDP client on :{port}"
+    for pid, cmdline in cmdlines.items():
+        if pid in tree_pids or not cmdline or _looks_like_chromium(cmdline):
+            continue
+        if profile in cmdline:
+            return f"process {pid} references the profile"
+        if port and (f"port={port}" in cmdline or f":{port}" in cmdline):
+            return f"process {pid} references :{port}"
+    return None
+
+
+def _reap_orphaned_chrome_processes() -> int:
+    """Reap Chromium trees no live process can drive; returns how many were reaped.
+
+    Ownership is *persisted* (first sighting starts a grace clock), the tree is only eligible
+    once it has been watched for ``BROWSER_ORPHAN_CHROME_MIN_AGE``, its launcher is gone
+    (ppid 1), no live process references it and no CDP client is attached — and the PID is
+    re-fingerprinted before the tree-kill so a recycled PID is never touched.
+    """
+    from gateway.status import get_process_start_time
+    from tools.process_registry import ProcessRegistry
+
+    now = time.time()
+    procs = _chromium_main_processes()
+    if procs is None:
+        return 0
+    state = _load_browser_owner_state()
+    if not procs:
+        if state:
+            _save_browser_owner_state({})
+        return 0
+
+    cmdlines = _all_cmdlines()
+    reaped = 0
+    seen = set()
+    for pid, profile, exe, started, ppid in procs:
+        seen.add(profile)
+        record = state.get(profile)
+        if record is None:
+            state[profile] = {"first_seen": now, "last_seen": now, "main_pid": pid,
+                              "start_time": started, "exe": exe}
+            continue
+        record.update({"last_seen": now, "main_pid": pid, "start_time": started, "exe": exe})
+        if ppid != 1:
+            continue                                   # launcher/daemon still alive
+        watched = now - float(record.get("first_seen", now))
+        if watched < BROWSER_ORPHAN_CHROME_MIN_AGE:
+            continue                                   # grace: never race a launch in progress
+        reason = _live_owner_reason(profile, _devtools_port(profile), _chromium_tree_pids(pid), cmdlines)
+        if reason:
+            _bt.logger.debug("Chromium PID %d kept: %s", pid, reason)
+            continue
+        fingerprint = get_process_start_time(pid)
+        if fingerprint is None:
+            _bt.logger.warning("Refusing to reap Chromium PID %d (profile %s): no start-time fingerprint",
+                               pid, profile)
+            continue
+        try:
+            ProcessRegistry._terminate_host_pid(pid, fingerprint)
+        except Exception as exc:
+            _bt.logger.debug("Chromium orphan reap failed for PID %d: %s", pid, exc)
+            continue
+        _bt.logger.info("Reaped orphaned Chromium PID %d (profile %s, unowned %ds, exe %s)",
+                        pid, profile, int(watched), exe)
+        shutil.rmtree(profile, ignore_errors=True)
+        state.pop(profile, None)
+        reaped += 1
+
+    for gone in [prof for prof in state if prof not in seen]:
+        state.pop(gone, None)
+    _save_browser_owner_state(state)
+    return reaped
 
 
 def _browser_cleanup_thread_worker():

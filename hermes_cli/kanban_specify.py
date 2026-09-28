@@ -181,8 +181,12 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
     finally:
         if affinity_token is not None:
             reset_affinity_scope(affinity_token)
+    # Segmented (list) content from OpenAI-compatible relays: flatten at the
+    # extraction boundary — the old `or ""` passed the truthy list through to
+    # _extract_json_blob's raw.strip() downstream.
+    from agent.message_content import flatten_message_text
     try:
-        return resp.choices[0].message.content or "", ""
+        return flatten_message_text(resp.choices[0].message.content), ""
     except Exception:
         return "", ""
 

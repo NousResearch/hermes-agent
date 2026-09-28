@@ -125,3 +125,25 @@ def test_describer_refuses_to_overwrite_user_authored(profile_env, monkeypatch):
     assert profiles_mod.read_profile_meta(profile_env)["description"] == "curated"
 
 
+
+
+def test_describer_flattens_segmented_content(registered_profile):
+    """Relays returning segmented (list) content must still be described.
+
+    The old `or ""` extraction passed the truthy list into
+    _extract_json_blob's raw.strip(), raising AttributeError out of
+    describe_profile — one profile's crash kills the whole sweep.
+    """
+    payload = [
+        {"type": "thinking", "thinking": "internal"},
+        {"type": "text", "text": jsonlib.dumps({"description": "segmented relay profile"})},
+    ]
+    with _patch_aux_client(payload), patch(
+        "agent.auxiliary_client.get_auxiliary_extra_body", return_value={}
+    ):
+        outcome = describer.describe_profile("myprof")
+
+    assert outcome.ok, outcome.reason
+    assert outcome.description == "segmented relay profile"
+    meta = profiles_mod.read_profile_meta(registered_profile)
+    assert meta["description"] == "segmented relay profile"

@@ -1,0 +1,19 @@
+name: bunny_space-platform
+title: Bunny Space
+repo: https://github.com/jasm001/hermes-plugin-bunny-space
+sha: f750532b6bbd0e078c16d12f401811d3e8796ee2
+description: Bunny Space gateway adapter for Hermes Agent. Connects a Hermes profile (the bot brain) to
+  the Bunny Space relay so the bot joins private rooms, answers its owner, and handles @bot:<slug>
+  mentions in posts and comments. Outbound pull transport; no external dependencies.
+maintainer: jasm001
+tier: community
+category: platform
+docs_url: https://github.com/jasm001/hermes-plugin-bunny-space#readme
+version: "1.0.1"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - BUNNY_SPACE_BOT_KEY
+  - BUNNY_SPACE_SLUG

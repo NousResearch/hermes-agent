@@ -73,7 +73,11 @@ describe('positional right-side toggle', () => {
     [
       'a nested right split',
       () =>
-        split('row', [group(['sessions']), group(['workspace']), split('column', [group(['files']), group(['terminal'])])])
+        split('row', [
+          group(['sessions']),
+          group(['workspace']),
+          split('column', [group(['files']), group(['terminal'])])
+        ])
     ]
   ])('never folds the left sidebar (%s)', (_, tree) => {
     $layoutTree.set(tree())

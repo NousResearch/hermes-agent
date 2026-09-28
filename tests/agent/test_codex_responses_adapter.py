@@ -1023,6 +1023,24 @@ def test_final_answer_tool_call_echo_is_dropped_beside_the_real_call():
         "to=functions" not in part["text"]
         for item in assistant_message.codex_message_items for part in item["content"]
     )
+
+
+def test_final_answer_prose_naming_a_tool_survives_beside_the_real_call():
+    """Prose that merely names a tool has no serialized args JSON closing before ``to=``: the answer
+    must be posted, not dropped by the echo heuristic (#125458 review)."""
+    response = _echo_leak_response(
+        commentary_texts=["Fetching the docs first."],
+        final_text="Install the package with pip. Reference: to=functions.execute_code for details.",
+    )
+    assistant_message, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "tool_calls"
+    assert "Install the package with pip." in assistant_message.content
+    assert "Reference: to=functions.execute_code" in assistant_message.content
+    assert assistant_message.codex_message_items is not None
+
+
+def test_failed_response_surfaces_error_code():
     """Regression: response_status == 'failed' should surface the error
     code, not just the message. Used to leak a bare 'Slow down' string
     that was indistinguishable from a generic stream truncation."""

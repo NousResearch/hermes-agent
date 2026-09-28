@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent
@@ -543,6 +543,9 @@ class GatewayModelCommandsMixin:
         # Check for session override. See #30479.
         source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(source)
+        # A command can be the first activity after a gateway restart. Rehydrate before parsing
+        # against the current route: aliases are provider-sensitive, and a later turn is too late.
+        cast(Any, self)._rehydrate_session_model_override(session_key)
         ctx = _ModelSwitchContext(
             # Gateway routing columns — forward ALL of them at CREATE time, same fix as the
             # compression-rotation bug in agent/conversation_compression.py. Without these, the branched

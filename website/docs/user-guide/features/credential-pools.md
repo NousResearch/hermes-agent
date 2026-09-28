@@ -371,6 +371,8 @@ The OpenRouter entry above was borrowed from an external source, so the raw key 
 
 An `env:` row is re-hydrated from the environment on every load, and the variable name does not have to be one Hermes declares for the provider: numbered siblings (`OPENROUTER_API_KEY_2`, see [Auto-Discovery](#auto-discovery)) appear here automatically, and a hand-written row pointing at any other variable is filled the same way, without the secret ever being written to `auth.json`.
 
+Every row must be a JSON object. A row that is not (a bare string, a number, `null`) is ignored with a warning naming its type, never its value, and the provider's other rows keep working. The next time Hermes saves that provider's pool, the row is dropped.
+
 Strategies are stored in `config.yaml` (not `auth.json`):
 
 ```yaml

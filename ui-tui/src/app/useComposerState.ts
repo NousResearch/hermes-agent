@@ -388,12 +388,15 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     [appendAttachment, attachImageToken, gw, sys]
   )
 
-  const openEditor = useCallback(async () => {
+  const openEditor = useCallback(async (seed?: string) => {
     const dir = mkdtempSync(join(tmpdir(), 'hermes-'))
     const file = join(dir, 'prompt.md')
     const [cmd, ...args] = resolveEditor()
+    // Explicit seed is the /prompt argument (never the raw slash line).
+    // Ctrl+G / Alt+G omit seed and edit the current composer draft.
+    const initial = seed !== undefined ? seed : [...inputBuf, input].join('\n')
 
-    writeFileSync(file, [...inputBuf, input].join('\n'))
+    writeFileSync(file, initial)
 
     let exitCode: null | number = null
 

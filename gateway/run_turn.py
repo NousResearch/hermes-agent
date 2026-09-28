@@ -1547,11 +1547,8 @@ class GatewayTurnMixin:
         )
         response = agent_result.get("final_response") or ""
 
-        # Collectable response-filter hooks: a subscribed hook may return
-        # {"response": ...} to replace what goes out (e.g. restoring obfuscated PII).
-        response = await apply_collectable_text_filter(
-            self.hooks, "agent:response:filter", hook_ctx or {}, "response", response,
-        )
+        # (The outbound text filter is applied in ``_run_agent``, on the same single funnel that
+        # also covers the queued (/queue) follow-up whose reply never reaches this shaping step.)
         # Hidden-reasoning-only retry exhaustion: the loop's sentinel text doubles as final_response
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
@@ -2213,11 +2210,8 @@ class GatewayTurnMixin:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
-            # Collectable text-filter hooks. A subscribed hook may return
-            # {"message": ...} to replace the text the agent sees (e.g. PII obfuscation).
-            message_text = await apply_collectable_text_filter(
-                self.hooks, "agent:message:filter", hook_ctx, "message", message_text,
-            )
+            # (Text filters for this turn are applied in ``_run_agent`` — the single funnel both
+            # turn entry points pass through, so the queued (/queue) follow-up is covered too.)
 
             # Capture the launch session id so post-run compression publication is identity-guarded
             # (a /new may move session_entry.session_id while the old run is still unwinding).
@@ -2974,12 +2968,54 @@ class GatewayTurnMixin:
 
     async def _run_agent(
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
-        source: SessionSource, session_id: str, **turn_kwargs,
+        source: SessionSource, session_id: str, _filter_outbound: bool = True, **turn_kwargs,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
-        when multiplexing is off)."""
+        when multiplexing is off).
+
+        The collectable text filters live HERE, on the single funnel every turn passes through.
+        The in-band queued (``/queue``) follow-up re-enters a turn through this method without
+        ever reaching the hook block in ``_handle_message_with_agent``, so a filter emitted in
+        that caller would be silently skipped for exactly the messages a user typed while the
+        agent was still busy — the PII case this pair exists for.
+
+        ``_filter_outbound`` is False only for that in-band re-entry: its turn's reply is returned
+        to the frame that opened the chain, which filters it once on the way out. Filtering in
+        every nested frame would apply a non-idempotent hook (obfuscate / reveal) twice to the
+        same delivered text.
+        """
+        filter_ctx = {
+            "platform": source.platform.value if source.platform else "",
+            "user_id": source.user_id,
+            "chat_id": source.chat_id or "",
+            "thread_id": str(source.thread_id) if getattr(source, "thread_id", None) else "",
+            "chat_type": getattr(source, "chat_type", "") or "",
+            "session_id": session_id,
+        }
+        # Collectable text-filter hooks: a subscriber may return {"message": ...} to replace the
+        # text the agent sees (e.g. PII obfuscation), before the model ever reads it. A runner
+        # built without a hook registry (proxy dispatch, light doubles) has no subscribers to
+        # offer: the helper's fail-open contract keeps the turn going instead of raising here.
+        hooks = getattr(self, "hooks", None)
+        message = await apply_collectable_text_filter(
+            hooks, "agent:message:filter", filter_ctx, "message", message,
+        )
         with self._profile_scope_for_source(source):
-            return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
+            result = await self._run_agent_inner(
+                message, context_prompt, history, source, session_id, **turn_kwargs,
+            )
+        # Outbound mirror: a subscriber may return {"response": ...} to replace what goes out
+        # (e.g. revealing the PII obfuscated on the way in). Same funnel, so a queued follow-up's
+        # reply is filtered too; the shaping and delivery steps that run afterwards (hidden-reasoning
+        # exhaustion, intentional-silence verdict, sanitising) already ran AFTER the filter before
+        # this move, so the order they see is unchanged.
+        if _filter_outbound and isinstance(result, dict):
+            response = result.get("final_response")
+            if isinstance(response, str) and response:
+                result["final_response"] = await apply_collectable_text_filter(
+                    hooks, "agent:response:filter", filter_ctx, "response", response,
+                )
+        return result
 
     def _run_agent_display_settings(self, source: SessionSource) -> "GatewayRunner._RunAgentDisplay":
         """Resolve per-platform display, progress, status and streaming-surface settings for a turn."""
@@ -3945,6 +3981,11 @@ class GatewayTurnMixin:
             await self._refresh_agent_cache_message_count(session_key, session_id)
 
             followup_result = await self._run_agent(
+                # The chain's terminal reply is returned to the frame that opened it, which applies
+                # the outbound text filter once; filtering here too would run a non-idempotent
+                # obfuscate/reveal hook twice over the same delivered text. The inbound filter still
+                # runs for this turn's own message, through the same funnel.
+                _filter_outbound=False,
                 message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
                 source=next_source, session_id=session_id, session_key=next_session_key,
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,

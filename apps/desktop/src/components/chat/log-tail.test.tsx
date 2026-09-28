@@ -58,4 +58,20 @@ describe('LogTail search', () => {
     expect(onMatchCountChange).toHaveBeenLastCalledWith(0)
     expect(scrollIntoView).not.toHaveBeenCalled()
   })
+
+  it('resumes following the tail when the search is cleared', () => {
+    const { container, rerender } = render(<LogTail emptyLabel="No logs" lines={['needle']} query="needle" />)
+    const scrollable = container.querySelector('[data-selectable-text]') as HTMLDivElement
+
+    Object.defineProperties(scrollable, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, value: 200 },
+      scrollTop: { configurable: true, value: 0 }
+    })
+    scrollable.dispatchEvent(new Event('scroll', { bubbles: true }))
+
+    rerender(<LogTail emptyLabel="No logs" lines={['needle', 'new output']} query="" />)
+
+    expect(scrollable.scrollTop).toBe(200)
+  })
 })

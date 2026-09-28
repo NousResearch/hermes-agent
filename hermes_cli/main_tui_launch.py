@@ -399,6 +399,14 @@ def _launch_tui(
         env["HERMES_CWD"] = wt_info["path"]
         env["TERMINAL_CWD"] = wt_info["path"]
 
+    # A local interactive session starts where the user launched (or in the --worktree), the
+    # classic CLI's rule; terminal.cwd stays the default for gateway, cron and remote backends.
+    # HERMES_TUI_CWD is what the TUI sends on session.create, which beats the configured cwd (#84015).
+    if str(env.get("TERMINAL_ENV") or "local") == "local":
+        env["TERMINAL_CWD"] = env["HERMES_TUI_CWD"] = env["HERMES_CWD"]
+    else:
+        env.pop("HERMES_TUI_CWD", None)
+
     _apply_tui_python_env(env)
 
     skills_value = ""

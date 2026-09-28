@@ -42,6 +42,8 @@ def test_status_warns_and_uninstall_removes_pre_suffix_launchers(tmp_path, monke
         capture_output=True, text=True, timeout=60,
         check=False,
     )
+    if create.returncode != 0 and gateway_windows._is_access_denied(create.stderr):
+        pytest.skip("schtasks /Create is denied for this user; the live probe needs elevation")
     assert create.returncode == 0, create.stderr
     try:
         gateway_windows.status()

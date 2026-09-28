@@ -1122,3 +1122,9 @@ class TestTrustWarningSymlinkAware:
             self._log("sym", root / "sym" / "SKILL.md", [root], root)
 
         assert "outside the trusted" in caplog.text, caplog.text
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_skills(monkeypatch):
+    # Employee tests cover exclusion; keep direct upstream skill-view coverage active.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

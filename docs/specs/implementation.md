@@ -62,3 +62,32 @@ cloud browser account access, or Railway routing/backup behavior. The pinned
 Hindsight image builds and starts with a disposable pgvector database; migrations
 and the health endpoint pass. Those checks are listed in the deployment
 acceptance procedure and require the future server.
+
+## Surface cleanup
+
+The fixed policy in `agent/employee_policy.py` also governs native slash-command
+registration, skill discovery/loading/seeding, automatic curator/sync work and
+Kanban workers. Upstream implementations remain in place for merges; their
+employee entry points are closed. Dashboard Skills routes are unmounted.
+
+Cron's dashboard keeps inspection, pause/resume and manual execution. Native
+create/edit/delete and blueprint authoring are rejected; edit responsibility
+files instead. The CLI retains cron operations but rejects those authoring
+subcommands. Skill/bundles/sync/curator/Kanban CLI groups are absent.
+
+Legacy personality commands, overlays and the SOUL editor are unavailable.
+Use `employee.name` and `employee.instructions` in the native Config editor.
+Memory administration exposes only Hindsight, reports per-person memory sizes,
+and permits only shared-memory reset; it does not erase people through the old
+USER.md reset control. Individual files remain under `memory/people/`.
+
+Hindsight explicitly preserves next-turn background recall (`recall_sync: false`),
+separately from four-turn retention batches. Tests exercise both native timing
+modes with the real client; current-turn synchronous recall is not an exposed
+product setting. Native project/environment prompt additions remain unchanged.
+
+Retired slash commands and their aliases are rejected at CLI, gateway and TUI dispatch, including automation suggestions. Memory setup offers only Hindsight.
+
+Dedicated TUI/desktop `skills.manage` and `cron.manage` RPCs enforce the same exclusions; TUI command entries and desktop routine create/delete controls are hidden.
+
+Kanban is excluded from dashboard plugin discovery, the plugin hub, and API mounting, so dashboard dispatch cannot bypass gateway worker policy. Profile creation rejects retired skill-install payloads.

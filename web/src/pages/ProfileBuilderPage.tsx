@@ -9,6 +9,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { employeePolicy } from "@/lib/employee-policy";
 import { api } from "@/lib/api";
 import type {
   McpHttpAuth,
@@ -33,7 +34,7 @@ type StepId = "identity" | "model" | "skills" | "mcp" | "review";
 const STEPS: { id: StepId; label: string }[] = [
   { id: "identity", label: "Identity" },
   { id: "model", label: "Model" },
-  { id: "skills", label: "Skills" },
+  ...(employeePolicy.skills ? [{ id: "skills" as const, label: "Skills" }] : []),
   { id: "mcp", label: "MCPs" },
   { id: "review", label: "Review" },
 ];
@@ -139,7 +140,7 @@ export default function ProfileBuilderPage() {
 
   useEffect(() => {
     if (step === "model") loadModels();
-    if (step === "skills") loadSkills();
+    if (employeePolicy.skills && step === "skills") loadSkills();
   }, [step, loadModels, loadSkills]);
 
   const runHubSearch = useCallback(() => {
@@ -257,10 +258,10 @@ export default function ProfileBuilderPage() {
         provider: pickedModel?.provider,
         model: pickedModel?.model,
         mcp_servers: mcpServers.length ? mcpServers : undefined,
-        keep_skills: keepAll ? undefined : Array.from(keptSkills),
+        ...(employeePolicy.skills ? { keep_skills: keepAll ? undefined : Array.from(keptSkills),
         hub_skills: hubSkills.length
           ? hubSkills.map((s) => s.identifier)
-          : undefined,
+          : undefined } : {}),
       });
       const pending = (res.hub_installs ?? []).filter((h) => h.pid).length;
       showToast(
@@ -395,7 +396,7 @@ export default function ProfileBuilderPage() {
             </div>
           )}
 
-          {step === "skills" && (
+          {employeePolicy.skills && step === "skills" && (
             <div className="space-y-4">
               <label className="flex items-center gap-2 text-sm">
                 <Checkbox
@@ -761,7 +762,7 @@ export default function ProfileBuilderPage() {
                 label="Model"
                 value={pickedModel ? pickedModel.label : "Default (set later)"}
               />
-              <ReviewRow
+              {employeePolicy.skills && <ReviewRow
                 label="Skills"
                 value={
                   keepAll
@@ -769,13 +770,13 @@ export default function ProfileBuilderPage() {
                     : `${keptSkills.size} built-in/optional kept` +
                       (hubSkills.length ? ` + ${hubSkills.length} hub` : "")
                 }
-              />
-              {!keepAll && hubSkills.length > 0 && (
+              />}
+              {employeePolicy.skills && !keepAll && hubSkills.length > 0 && (
                 <p className="pl-24 text-xs text-muted-foreground">
                   Hub: {hubSkills.map((s) => s.name).join(", ")}
                 </p>
               )}
-              {keepAll && hubSkills.length > 0 && (
+              {employeePolicy.skills && keepAll && hubSkills.length > 0 && (
                 <ReviewRow
                   label="Hub skills"
                   value={hubSkills.map((s) => s.name).join(", ")}

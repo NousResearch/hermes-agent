@@ -111,6 +111,9 @@ def resolve_personality(value: Any, cfg: Optional[Dict[str, Any]] = None) -> Tup
 
 def active_personality_name(cfg: Optional[Dict[str, Any]]) -> str:
     """The currently selected personality name ('' when none is active)."""
+    from agent.employee_policy import LEGACY_PERSONALITY_ENABLED
+    if not LEGACY_PERSONALITY_ENABLED:
+        return ""
     name = normalize_personality_name(_get(cfg, "display", "personality", default=""))
     return name if name and name in available_personalities(cfg) else ""
 
@@ -118,6 +121,9 @@ def active_personality_name(cfg: Optional[Dict[str, Any]]) -> str:
 def resolve_ephemeral_system_prompt(cfg: Optional[Dict[str, Any]]) -> str:
     """Session overlay: ``display.personality`` when it names a known personality, else the
     user-owned ``agent.system_prompt``. Callers still prefer ``HERMES_EPHEMERAL_SYSTEM_PROMPT``."""
+    from agent.employee_policy import LEGACY_PERSONALITY_ENABLED
+    if not LEGACY_PERSONALITY_ENABLED:
+        return ""
     name = active_personality_name(cfg)
     if name:
         return render_personality_prompt(available_personalities(cfg)[name])

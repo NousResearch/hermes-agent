@@ -76,3 +76,11 @@ def test_catalog_discovery_failure_warning_outranks_the_collision_note(monkeypat
     catalog = server._methods["commands.catalog"](1, {})["result"]
     assert catalog["warning"] == "quick_commands discovery unavailable: config.yaml unreadable"
     assert "/tidy-notes" in catalog["skills"]
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_surface(monkeypatch):
+    # Employee exclusion is covered separately; preserve upstream implementation tests.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

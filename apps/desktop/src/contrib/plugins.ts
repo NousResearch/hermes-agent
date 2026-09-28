@@ -13,6 +13,8 @@
  *    — the agent's/user's doors, watched + hot-reloaded by the runtime loader.
  */
 
+import { employeePolicy } from '@/lib/employee-policy'
+
 import { trackGatewayEventDisposers } from './events'
 import { createPluginContext, type HermesPlugin } from './plugin'
 import { pluginActive, publishPlugin } from './plugins-store'
@@ -35,6 +37,10 @@ export function discoverBundledPlugins(): void {
 
   for (const [path, mod] of Object.entries(modules)) {
     const plugin = mod.default
+
+    if (plugin?.id === 'kanban' && !employeePolicy.kanban) {
+      continue
+    }
 
     if (!plugin?.id || typeof plugin.register !== 'function') {
       console.warn(`[plugins] ${path} has no valid default HermesPlugin export — skipped`)

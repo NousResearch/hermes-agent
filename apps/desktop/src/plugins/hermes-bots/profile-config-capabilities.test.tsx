@@ -268,3 +268,6 @@ describe('a build with no Capabilities exports at all', () => {
     expect(screen.getByRole('button', { name: /Set up/ })).toBeTruthy()
   })
 })
+
+// Exercise retained upstream editors; employee exclusions have separate tests.
+vi.mock('./employee-policy', () => ({ employeePolicy: { skills: true, soulEditor: true } }))

@@ -803,7 +803,10 @@ class GatewayInboundMixin:
             _def = _resolve_cmd(cmd) if cmd else None
             return _def, (_def.name if _def else cmd)
 
+        from hermes_cli.commands import EMPLOYEE_EXCLUDED_COMMAND_NAMES
         command = event.get_command()
+        if command in EMPLOYEE_EXCLUDED_COMMAND_NAMES:
+            return True, "This command is unavailable in the employee runtime.", command, command
         _cmd_def, canonical = _canon(command)
 
         # Expand alias quick commands before built-in dispatch so targets like /model openai/gpt-5.5
@@ -991,6 +994,9 @@ class GatewayInboundMixin:
     ) -> Tuple[bool, Optional[str]]:
         """Dispatch built-in idle-path commands → ``(handled, result)``; prompt-rewriting commands
         mutate ``event.text`` and return ``(False, None)`` to fall through to the agent."""
+        from hermes_cli.commands import EMPLOYEE_EXCLUDED_COMMAND_NAMES
+        if canonical in EMPLOYEE_EXCLUDED_COMMAND_NAMES:
+            return True, "This command is unavailable in the employee runtime."
         plain_handler = (
             self._gateway_plain_command_handlers().get(canonical)
             or self._gateway_idle_command_handlers().get(canonical)

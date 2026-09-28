@@ -52,3 +52,5 @@ is removed or upstream satisfies it. Use this shape:
 
 - [Employee runtime](divergences/employee-runtime.md) — preserve employee behavior on native runtime owners.
 - [Codex review](divergences/codex-review.md) — run read-only implementation review before landing.
+
+- [Employee surface exclusions](divergences/employee-surface.md) — preserve exclusions across commands, loading, services and administration.

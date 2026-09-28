@@ -137,3 +137,9 @@ class TestAgentMailKeyPassthrough:
         assert result["setup_needed"] is False, (
             "an absent optional key must not force the skill into setup_needed"
         )
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_skills(monkeypatch):
+    # Employee tests cover exclusion; keep direct upstream skill-view coverage active.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

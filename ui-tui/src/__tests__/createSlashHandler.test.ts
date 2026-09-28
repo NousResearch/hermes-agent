@@ -363,25 +363,19 @@ describe('createSlashHandler', () => {
     })
   })
 
-  it('opens the skills hub locally for bare /skills', () => {
-    const ctx = buildCtx()
-
-    expect(createSlashHandler(ctx)('/skills')).toBe(true)
-    expect(getOverlayState().skillsHub).toBe(true)
-    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
-  })
-
-  it('routes /skills install <name> to skills.manage without opening overlay', () => {
-    const ctx = buildCtx()
-
-    expect(createSlashHandler(ctx)('/skills install foo')).toBe(true)
-    expect(getOverlayState().skillsHub).toBe(false)
-    expect(ctx.gateway.rpc).toHaveBeenCalledWith('skills.manage', {
-      action: 'install',
-      query: 'foo'
-    })
-  })
+  it.each(['/skills', '/skills install foo', '/skills browse 3', '/reload-skills'])(
+    'sends retired %s to the backend rejection path without a local overlay',
+    command => {
+      const ctx = buildCtx()
+      expect(createSlashHandler(ctx)(command)).toBe(true)
+      expect(getOverlayState().skillsHub).toBe(false)
+      expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+        command: command.slice(1),
+        session_id: null
+      })
+    }
+  )
 
   it('opens the pet picker for /pet list only', () => {
     const ctx = buildCtx()
@@ -402,16 +396,6 @@ describe('createSlashHandler', () => {
       'slash.exec',
       expect.objectContaining({ command: 'pet toggle' })
     )
-  })
-
-  it('routes /skills browse [page] to skills.manage with a numeric page', () => {
-    const ctx = buildCtx()
-
-    createSlashHandler(ctx)('/skills browse 3')
-    expect(ctx.gateway.rpc).toHaveBeenCalledWith('skills.manage', {
-      action: 'browse',
-      page: 3
-    })
   })
 
   it('delegates non-native /skills subcommands to slash.exec', () => {
@@ -480,33 +464,6 @@ describe('createSlashHandler', () => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('branch title'))
     })
     expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
-  })
-
-  it('reloads skills in the live gateway and refreshes the catalog', async () => {
-    const rpc = vi.fn((method: string) => {
-      if (method === 'skills.reload') {
-        return Promise.resolve({ output: '42 skill(s) available' })
-      }
-
-      if (method === 'commands.catalog') {
-        return Promise.resolve({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'demo']] })
-      }
-
-      return Promise.resolve({})
-    })
-
-    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
-
-    createSlashHandler(ctx)('/reload-skills')
-
-    expect(rpc).toHaveBeenCalledWith('skills.reload', {})
-    await vi.waitFor(() => {
-      expect(ctx.transcript.page).toHaveBeenCalledWith('42 skill(s) available', 'Reload Skills')
-      expect(ctx.local.setCatalog).toHaveBeenCalledWith(
-        expect.objectContaining({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'demo']] })
-      )
-    })
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
   // Regressions from Copilot review on #19835: /voice output + frontend

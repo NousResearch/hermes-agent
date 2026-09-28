@@ -487,6 +487,8 @@ interface RoutineRowProps {
   owner: RosterRow
 }
 
+const nativeCronAuthoring = false
+
 export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
   const b = useBots()
   const { t } = useI18n()
@@ -572,18 +574,20 @@ export function RoutineRow({ job, onOpen, owner }: RoutineRowProps) {
           disabled={busy || legacyUnsafe}
           onCheckedChange={value => act(value ? 'resume' : 'pause')}
         />
-        <Tip label={t.common.delete}>
-          <Button
-            aria-label={t.common.delete}
-            className="opacity-0 transition-opacity group-hover:opacity-100"
-            disabled={busy}
-            onClick={() => act('remove')}
-            size="icon-xs"
-            variant="ghost"
-          >
-            <Codicon name="trash" />
-          </Button>
-        </Tip>
+        {nativeCronAuthoring && (
+          <Tip label={t.common.delete}>
+            <Button
+              aria-label={t.common.delete}
+              className="opacity-0 transition-opacity group-hover:opacity-100"
+              disabled={busy}
+              onClick={() => act('remove')}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name="trash" />
+            </Button>
+          </Tip>
+        )}
       </div>
       {/* The schedule pill and the next-run label keep their words: when the
           pane can't fit both on one line the next-run label wraps to a second
@@ -1277,11 +1281,13 @@ export function RoutinesPane() {
           </div>
           <div className="text-[0.65rem] uppercase tracking-wider text-(--ui-text-quaternary)">{c.title}</div>
         </div>
-        <Tip label={c.newCron}>
-          <Button aria-label={c.newCron} onClick={openCreate} size="icon-xs" variant="ghost">
-            <Codicon name="add" />
-          </Button>
-        </Tip>
+        {nativeCronAuthoring && (
+          <Tip label={c.newCron}>
+            <Button aria-label={c.newCron} onClick={openCreate} size="icon-xs" variant="ghost">
+              <Codicon name="add" />
+            </Button>
+          </Tip>
+        )}
       </div>
       <div className="mx-3 border-t border-(--ui-stroke-secondary)" />
       {staleNotice ? (
@@ -1309,11 +1315,13 @@ export function RoutinesPane() {
         // none are tagged for this bot), so it wins the description slot.
         <PanelEmpty
           action={
-            <Button onClick={openCreate} size="sm">
-              {c.newCron}
-            </Button>
+            nativeCronAuthoring && (
+              <Button onClick={openCreate} size="sm">
+                {c.newCron}
+              </Button>
+            )
           }
-          description={filterHint || c.emptyDescNew}
+          description={filterHint || 'Author schedules in responsibility files.'}
           icon="watch"
           title={c.emptyTitleNew}
         />
@@ -1339,7 +1347,7 @@ export function RoutinesPane() {
           setCreateOpen(false)
           setCreateOwner(null)
         }}
-        open={createOpen}
+        open={nativeCronAuthoring && createOpen}
       />
     </div>
   )

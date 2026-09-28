@@ -517,7 +517,8 @@ def _require_valid_memory_provider_name(name: str) -> None:
     and gates which plugin manifest's setup commands run; a strict charset
     allowlist (no path separators, no dots) makes traversal impossible.
     """
-    if not _MEMORY_PROVIDER_NAME_RE.fullmatch(name or ""):
+    from agent.employee_policy import MEMORY_PROVIDER
+    if name != MEMORY_PROVIDER or not _MEMORY_PROVIDER_NAME_RE.fullmatch(name or ""):
         raise _unknown_provider(name)
 
 

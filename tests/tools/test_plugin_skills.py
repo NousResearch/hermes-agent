@@ -479,3 +479,9 @@ class TestBundleContextBanner:
         assert "bar" in sibling_line
         assert "baz" in sibling_line
         assert "foo" not in sibling_line
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_skills(monkeypatch):
+    # Employee tests cover exclusion; keep direct upstream skill-view coverage active.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

@@ -4,6 +4,7 @@ _CLIENT_POLICY: dict[str, Any] = {
     "mode": "local_external",
     "memory_mode": "hybrid",
     "recall_prefetch_method": "recall",
+    "recall_sync": False,
     "recall_types": ["world", "experience", "observation"],
     "prefer_observations": True,
     "recall_budget": "mid",

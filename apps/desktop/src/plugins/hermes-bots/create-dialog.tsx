@@ -1,12 +1,3 @@
-/**
- * The two creation dialogs: New Bot, and the group-chat creation flow the
- * roster's group button opens (plus the per-bot group membership dialog it
- * sits beside).
- *
- * New Bot creates its profile LAZILY, so it owns the single-flight guard and
- * the name pattern that gates the draft.
- */
-
 import {
   Badge,
   Button,
@@ -36,6 +27,14 @@ import {
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
+/**
+ * The two creation dialogs: New Bot, and the group-chat creation flow the
+ * roster's group button opens (plus the per-bot group membership dialog it
+ * sits beside).
+ *
+ * New Bot creates its profile LAZILY, so it owns the single-flight guard and
+ * the name pattern that gates the draft.
+ */
 import { useEffect, useRef, useState } from 'react'
 
 import { avatarColor, blobatarSvg, botAppearance, BotFace } from './avatar'
@@ -45,6 +44,7 @@ import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
+import { employeePolicy } from './employee-policy'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
@@ -398,13 +398,17 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         // profile, so refreshes can't invalidate each other. Older gateways
         // ignore the param and copy — still functional, just forked.
         share_auth: shareAuth,
-        soul: composeSoul({
-          name: slug,
-          title: botTitle,
-          description,
-          roster,
-          customSoul: soul
-        }),
+        ...(employeePolicy.soulEditor
+          ? {
+              soul: composeSoul({
+                name: slug,
+                title: botTitle,
+                description,
+                roster,
+                customSoul: soul
+              })
+            }
+          : {}),
         ...(model.trim() && provider.trim()
           ? {
               model: model.trim(),
@@ -749,7 +753,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                       ]
                     : [
                         { id: 'general', label: b.editor.general },
-                        { id: 'skills', label: b.editor.skills },
+                        ...(employeePolicy.skills ? [{ id: 'skills', label: b.editor.skills }] : []),
                         { id: 'toolsets', label: b.editor.tools },
                         { id: 'mcp', label: 'MCP' }
                       ]
@@ -800,15 +804,16 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                       model
                     }}
                   />
-                  {labeled(
-                    b.editor.soul,
-                    <Textarea
-                      className="min-h-24 font-mono text-xs leading-5"
-                      onChange={event => setSoul(event.target.value)}
-                      placeholder={b.avatar.describeHint}
-                      value={soul}
-                    />
-                  )}
+                  {employeePolicy.soulEditor &&
+                    labeled(
+                      b.editor.soul,
+                      <Textarea
+                        className="min-h-24 font-mono text-xs leading-5"
+                        onChange={event => setSoul(event.target.value)}
+                        placeholder={b.avatar.describeHint}
+                        value={soul}
+                      />
+                    )}
                   <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
                     <Checkbox checked={shareAuth} onCheckedChange={value => setShareAuth(Boolean(value))} />
                     {remoteTarget ? b.editor.shareKeysOn(targetLabel) : b.editor.shareKeys}
@@ -816,10 +821,12 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                   <div className="pl-6 pt-0.5 text-[0.7rem] leading-5 text-(--ui-text-tertiary)">
                     {b.editor.shareKeysHint}
                   </div>
-                  <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
-                    <Checkbox checked={noSkills} onCheckedChange={value => setNoSkills(Boolean(value))} />
-                    {b.editor.createEmpty}
-                  </label>
+                  {employeePolicy.skills && (
+                    <label className="flex items-center gap-2 text-xs text-(--ui-text-secondary)">
+                      <Checkbox checked={noSkills} onCheckedChange={value => setNoSkills(Boolean(value))} />
+                      {b.editor.createEmpty}
+                    </label>
+                  )}
                 </div>
               ) : advTab === 'capabilities' ? (
                 !valid || taken ? (

@@ -481,14 +481,14 @@ _MEMORY_FILES = (("MEMORY.md", "memory"), ("USER.md", "user"))
 @router.get("/api/memory")
 async def get_memory_status(profile: Optional[str] = None):
     def _run():  # load_config(), stats and discovery are disk reads — off-loop
-        cfg = load_config()
-        mem = cfg.get("memory")
-        active = _normalize_memory_provider_name(mem.get("provider")) if isinstance(mem, dict) else ""
+        from agent.employee_policy import MEMORY_PROVIDER
+        active = MEMORY_PROVIDER
         mem_dir = get_hermes_home() / "memories"
         files = {}  # sizes so the UI can show what a reset would erase
         for fname, key in _MEMORY_FILES:
             path = mem_dir / fname
             files[key] = path.stat().st_size if path.exists() else 0
+        files["user"] = sum(path.stat().st_size for path in (get_hermes_home() / "memory" / "people").glob("*.md"))
         return {"active": active, "providers": _discover_memory_provider_statuses(), "builtin_files": files}
 
     return await config_scoped_to_thread(profile, _run)
@@ -497,6 +497,9 @@ async def get_memory_status(profile: Optional[str] = None):
 @router.put("/api/memory/provider")
 async def set_memory_provider(body: MemoryProviderSelect, profile: Optional[str] = None):
     provider = _normalize_memory_provider_name(body.provider)
+    from agent.employee_policy import MEMORY_PROVIDER
+    if provider != MEMORY_PROVIDER:
+        raise HTTPException(status_code=400, detail="This employee uses Hindsight.")
 
     def _run():
         # Readiness resolves through load_config()/_discover_memory_provider_statuses(), so it
@@ -518,8 +521,8 @@ async def set_memory_provider(body: MemoryProviderSelect, profile: Optional[str]
 @router.post("/api/memory/reset")
 async def reset_memory(body: MemoryReset, profile: Optional[str] = None):
     target = (body.target or "all").strip().lower()
-    if target not in {"all", "memory", "user"}:
-        raise HTTPException(status_code=400, detail="target must be all, memory, or user")
+    if target != "memory":
+        raise HTTPException(status_code=400, detail="Only shared memory can be reset here. Manage individual profiles in memory/people/.")
     profile = destructive_profile(profile, "POST /api/memory/reset")
 
     def _run():

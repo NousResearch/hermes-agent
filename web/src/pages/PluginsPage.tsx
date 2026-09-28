@@ -598,9 +598,6 @@ export default function PluginsPage() {
                       value={memorySel}
                       onValueChange={setMemorySel}
                     >
-                      <SelectOption value={MEMORY_PROVIDER_BUILTIN}>
-                        {`(${t.pluginsPage.providerDefaults})`}
-                      </SelectOption>
 
                       {providers.memory_options.map((o) => (
                         <SelectOption key={o.name} value={o.name}>

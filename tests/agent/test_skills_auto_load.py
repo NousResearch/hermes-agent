@@ -1,4 +1,4 @@
-"""skills.auto_load: pinned skills land in every new session's prompt, resolved once per agent."""
+"""Retained skill loaders work explicitly; employee prompts ignore skills.auto_load."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ class TestBuildAutoLoadPrompt:
 
 class TestSharedPromptPath:
     def test_prompt_is_byte_stable_after_config_and_skill_mutation(self, tmp_path, monkeypatch):
-        """The whole point: rebuilds (model switch, compression) reuse the first resolution."""
+        """Model switches and compression must not restore legacy auto-loaded skills."""
         monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
         skill_file = _write_skill(tmp_path, "stable-skill", "ORIGINAL SKILL BYTES")
         cfg = {"skills": {"auto_load": ["stable-skill"]}}
@@ -76,13 +76,13 @@ class TestSharedPromptPath:
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
              patch("hermes_cli.config.load_config_readonly", return_value=cfg):
             first = agent._build_system_prompt()
-            assert "ORIGINAL SKILL BYTES" in first and agent._auto_load_skills_result[1] == ["stable-skill"]
+            assert "ORIGINAL SKILL BYTES" not in first
             skill_file.write_text("---\nname: stable-skill\ndescription: Test.\n---\n\nMUTATED BYTES\n")
             cfg["skills"]["auto_load"] = []
             agent.model = "after-switch"
             agent._cached_system_prompt = None
             rebuilt = agent._build_system_prompt()
-        assert "ORIGINAL SKILL BYTES" in rebuilt and "MUTATED BYTES" not in rebuilt
+        assert "ORIGINAL SKILL BYTES" not in rebuilt and "MUTATED BYTES" not in rebuilt
 
     def test_gates_suppress_auto_load(self, tmp_path, monkeypatch):
         """HERMES_IGNORE_RULES, skip_context_files (delegate children / internal forks) and a session without
@@ -94,7 +94,6 @@ class TestSharedPromptPath:
             monkeypatch.setenv("HERMES_IGNORE_RULES", "true")
             agent = _bare_agent()
             assert "ORIGINAL SKILL BYTES" not in agent._build_system_prompt()
-            assert agent._auto_load_skills_resolved is True and agent._auto_load_skills_result == ("", [], [])
 
             monkeypatch.delenv("HERMES_IGNORE_RULES")
             child = _bare_agent("child")
@@ -103,4 +102,12 @@ class TestSharedPromptPath:
             no_skills = _bare_agent("no-skills")
             no_skills.valid_tool_names = {"memory"}
             assert "ORIGINAL SKILL BYTES" not in no_skills._build_system_prompt()
-            assert "ORIGINAL SKILL BYTES" in _bare_agent("full")._build_system_prompt()
+            assert "ORIGINAL SKILL BYTES" not in _bare_agent("full")._build_system_prompt()
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_surface(monkeypatch):
+    # Employee exclusion is covered separately; preserve upstream implementation tests.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

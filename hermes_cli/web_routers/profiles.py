@@ -9,6 +9,9 @@ Shared helpers are reached via the late-binding seam in :mod:`hermes_cli.web_dep
 so a test's ``monkeypatch.setattr(<owning module>, "_helper", ...)`` keeps working.
 """
 
+from fastapi import Depends
+from hermes_cli.employee_surface import employee_instructions_only
+
 import contextlib
 import copy
 import functools
@@ -802,6 +805,9 @@ async def list_profiles_endpoint():
 
 @router.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
+    from agent.employee_policy import SKILLS_ENABLED
+    if not SKILLS_ENABLED and (body.keep_skills is not None or body.hub_skills):
+        raise HTTPException(status_code=410, detail="Skills are unavailable. Use employee guides.")
     from hermes_cli import profiles as profiles_mod
     explicit_source = (body.clone_from or "").strip()
     if explicit_source:
@@ -986,7 +992,7 @@ async def delete_profile_endpoint(name: str):
     return {"ok": True, "path": str(path)}
 
 
-@router.get("/api/profiles/{name}/soul")
+@router.get("/api/profiles/{name}/soul", dependencies=[Depends(employee_instructions_only)])
 async def get_profile_soul(name: str):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
     def _run():
@@ -1001,7 +1007,7 @@ async def get_profile_soul(name: str):
     return {"content": content, "exists": True}
 
 
-@router.put("/api/profiles/{name}/soul")
+@router.put("/api/profiles/{name}/soul", dependencies=[Depends(employee_instructions_only)])
 async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
 

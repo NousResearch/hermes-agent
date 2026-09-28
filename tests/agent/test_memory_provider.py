@@ -1169,3 +1169,9 @@ class TestSystemPromptGateParity:
         assert added == 1
         names = {t["function"]["name"] for t in agent.tools}
         assert "mnemosyne_remember" in names
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_skills(monkeypatch):
+    # Employee tests cover exclusion; keep direct upstream skill-view coverage active.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

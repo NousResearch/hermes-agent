@@ -212,3 +212,9 @@ class TestSkillScaffoldedSessionLookup:
         assert len(db.list_skill_scaffolded_sessions(limit=2)) == 2
 
 
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_surface(monkeypatch):
+    # Employee exclusion is covered separately; preserve upstream implementation tests.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

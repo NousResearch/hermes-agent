@@ -292,6 +292,9 @@ def _(rid, params: dict) -> dict:
     source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
     ``model`` + ``provider``, ``share_auth``, ``no_alias``, ``mirror_credentials`` (default true: a bare
     ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless)."""
+    from agent.employee_policy import LEGACY_PERSONALITY_ENABLED
+    if not LEGACY_PERSONALITY_ENABLED and "soul" in params:
+        return _err(rid, 4062, "Configure employee.instructions instead of SOUL.md.")
     name = str(params.get("name") or "").strip()
     if not name:
         return _err(rid, 4061, "name required")
@@ -370,6 +373,9 @@ def _(rid, params: dict) -> dict:
     """Editor Save: ``name`` plus any of ``ui_meta`` (+ ``ui_meta_expected_revisions``), ``soul``,
     ``description``, ``model`` + ``provider`` (+ ``confirm_expensive_model``), ``disabled_skills``,
     ``enabled_toolsets``, ``enabled_mcp_servers``; sections are independent, ``applied`` reports each."""
+    from agent.employee_policy import LEGACY_PERSONALITY_ENABLED, SKILLS_ENABLED
+    if (not LEGACY_PERSONALITY_ENABLED and "soul" in params) or (not SKILLS_ENABLED and "disabled_skills" in params):
+        return _err(rid, 4064, "Skills and SOUL controls are unavailable; configure employee.instructions.")
     _name, profile_dir, err = _resolve_profile(rid, params)
     if err is not None:
         return err

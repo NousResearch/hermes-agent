@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { createProfile, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { employeePolicy } from '@/lib/employee-policy'
 import { AlertTriangle } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import type { ProfileInfo } from '@/types/hermes'
@@ -79,7 +80,7 @@ export function CreateProfileDialog({
     try {
       await createProfile({ name: trimmed, clone_from: cloneFrom })
 
-      if (soul.trim()) {
+      if (employeePolicy.soulEditor && soul.trim()) {
         await updateProfileSoul(trimmed, soul)
       }
 
@@ -134,15 +135,17 @@ export function CreateProfileDialog({
             <FieldHint>{p.cloneFromDesc}</FieldHint>
           </Field>
 
-          <Field htmlFor="new-profile-soul" label="SOUL.md" optional optionalLabel={p.soulOptional}>
-            <Textarea
-              className="min-h-28 font-mono text-xs leading-5"
-              id="new-profile-soul"
-              onChange={event => setSoul(event.target.value)}
-              placeholder={p.soulPlaceholder(cloneFrom ? p.soulPlaceholderCloned : p.soulPlaceholderEmpty)}
-              value={soul}
-            />
-          </Field>
+          {employeePolicy.soulEditor && (
+            <Field htmlFor="new-profile-soul" label="SOUL.md" optional optionalLabel={p.soulOptional}>
+              <Textarea
+                className="min-h-28 font-mono text-xs leading-5"
+                id="new-profile-soul"
+                onChange={event => setSoul(event.target.value)}
+                placeholder={p.soulPlaceholder(cloneFrom ? p.soulPlaceholderCloned : p.soulPlaceholderEmpty)}
+                value={soul}
+              />
+            </Field>
+          )}
 
           {error && (
             <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">

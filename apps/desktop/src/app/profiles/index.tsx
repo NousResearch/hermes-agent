@@ -9,6 +9,7 @@ import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
+import { employeePolicy } from '@/lib/employee-policy'
 import { AlertTriangle, Save } from '@/lib/icons'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { normalize } from '@/lib/text'
@@ -262,7 +263,7 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
         />
       </header>
 
-      <SoulEditor profileName={profile.name} />
+      {employeePolicy.soulEditor && <SoulEditor profileName={profile.name} />}
     </PanelDetail>
   )
 }

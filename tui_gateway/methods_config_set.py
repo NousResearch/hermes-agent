@@ -482,6 +482,9 @@ _SESSION_SCOPED_KEYS = frozenset({"model", "fast", "yolo", "reasoning"})
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
+    from agent.employee_policy import LEGACY_PERSONALITY_ENABLED
+    if key in {"personality", "prompt"} and not LEGACY_PERSONALITY_ENABLED:
+        return _err(rid, 4002, "Set employee.name and employee.instructions in the Config editor.")
     session = _sessions.get(params.get("session_id", ""))
     if session is None and params.get("session_id") and key in _SESSION_SCOPED_KEYS \
             and _word(params.get("scope")) != "global":

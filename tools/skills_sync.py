@@ -401,7 +401,8 @@ def sync_skills(quiet: bool = False) -> dict:
     if essential_only and not quiet:
         print("  (profile opted out of bundled skills via .no-bundled-skills — seeding essential skills only)")
     bundled_dir = _get_bundled_dir()
-    if not bundled_dir.exists():
+    from agent.employee_policy import SKILLS_ENABLED
+    if not SKILLS_ENABLED or not bundled_dir.exists():
         return {"copied": [], "updated": [], "skipped": 0, "user_modified": [], "cleaned": [],
                 "suppressed": [], "total_bundled": 0, "optional_provenance_backfilled": []}
     _skills_dir().mkdir(parents=True, exist_ok=True)

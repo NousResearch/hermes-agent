@@ -50,6 +50,7 @@ import { getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { type Translations, useI18n } from '@/i18n'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
+import { employeePolicy } from '@/lib/employee-policy'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
@@ -315,9 +316,7 @@ export function ProfileRail() {
           clientHeight: el.clientWidth,
           scrollHeight: el.scrollWidth,
           scrollTop:
-            getComputedStyle(el).direction === 'rtl'
-              ? el.scrollWidth - el.clientWidth + el.scrollLeft
-              : el.scrollLeft
+            getComputedStyle(el).direction === 'rtl' ? el.scrollWidth - el.clientWidth + el.scrollLeft : el.scrollLeft
         }),
         'x'
       )
@@ -1381,10 +1380,12 @@ function RestSquare({
             <Codicon name="text-size" size="0.875rem" />
             <span>{p.renameMenu}</span>
           </ContextMenuItem>
-          <ContextMenuItem onSelect={onEditSoul}>
-            <Codicon name="edit" size="0.875rem" />
-            <span>{p.editSoul}</span>
-          </ContextMenuItem>
+          {employeePolicy.soulEditor && (
+            <ContextMenuItem onSelect={onEditSoul}>
+              <Codicon name="edit" size="0.875rem" />
+              <span>{p.editSoul}</span>
+            </ContextMenuItem>
+          )}
           <ContextMenuItem
             className="text-destructive focus:text-destructive"
             onSelect={onDelete}
@@ -1627,10 +1628,12 @@ function ProfileSquare({
             <Codicon name="text-size" size="0.875rem" />
             <span>{p.renameMenu}</span>
           </ContextMenuItem>
-          <ContextMenuItem onSelect={onEditSoul}>
-            <Codicon name="edit" size="0.875rem" />
-            <span>{p.editSoul}</span>
-          </ContextMenuItem>
+          {employeePolicy.soulEditor && (
+            <ContextMenuItem onSelect={onEditSoul}>
+              <Codicon name="edit" size="0.875rem" />
+              <span>{p.editSoul}</span>
+            </ContextMenuItem>
+          )}
           <ContextMenuItem onSelect={() => void runExportProfileFlow(name)}>
             <Codicon name="package" size="0.875rem" />
             <span>{p.exportMenu}</span>

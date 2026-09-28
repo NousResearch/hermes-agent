@@ -128,49 +128,24 @@ async function deleteTheNamedProfile() {
 }
 
 describe('ProfilesView', () => {
-  it('shows missing-file guidance only until SOUL.md is saved, not for empty files or read errors', async () => {
-    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true), makeProfile(NAMED_PROFILE)])
-    vi.mocked(getProfileSoul).mockResolvedValueOnce({ content: '', exists: false })
-    vi.mocked(updateProfileSoul).mockRejectedValueOnce(new Error('Read-only profile'))
+  it('does not load or expose retired SOUL editors', async () => {
+    vi.mocked(refreshProfiles).mockResolvedValue([makeProfile('default', true)])
+    vi.mocked(getProfileSoul).mockClear()
+    vi.mocked(updateProfileSoul).mockClear()
 
     await renderProfilesView()
 
-    const missing = /No SOUL\.md file exists for this profile/
-    expect(screen.getByText(missing)).toBeTruthy()
-    fireEvent.change(screen.getByLabelText('SOUL.md'), { target: { value: '# My instructions' } })
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save SOUL.md' })))
-    expect(screen.getByText('Read-only profile')).toBeTruthy()
-    expect(screen.getByText(missing)).toBeTruthy()
-
-    await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save SOUL.md' })))
-    expect(updateProfileSoul).toHaveBeenLastCalledWith('default', '# My instructions')
-    expect(screen.queryByText(missing)).toBeNull()
-
-    // An existing empty file is not a missing file. Selecting a row remounts
-    // the editor, so the previous profile's notice must not carry over.
-    const selectRow = (name: string) =>
-      screen.getAllByRole('button', { name }).find(button => !button.hasAttribute('aria-haspopup'))!
-
-    await act(async () => fireEvent.click(selectRow(NAMED_PROFILE)))
-    expect(getProfileSoul).toHaveBeenLastCalledWith(NAMED_PROFILE)
-    expect(screen.queryByText(missing)).toBeNull()
-
-    vi.mocked(getProfileSoul).mockRejectedValueOnce(new Error('Could not read SOUL.md'))
-    await act(async () => fireEvent.click(selectRow('default')))
-    expect(screen.getByText('Could not read SOUL.md')).toBeTruthy()
-    expect(screen.queryByText(missing)).toBeNull()
+    expect(screen.queryByLabelText(/SOUL\.md/i)).toBeNull()
+    expect(getProfileSoul).not.toHaveBeenCalled()
+    expect(updateProfileSoul).not.toHaveBeenCalled()
   })
 
-  it('opens the shared create dialog with the SOUL.md field (parity with the rail)', async () => {
+  it('opens the shared create dialog without a SOUL field', async () => {
     vi.mocked(refreshProfiles).mockResolvedValue([])
-
     await renderProfilesView()
-
     realClick(await screen.findByRole('button', { name: 'New profile' }))
-
-    const soul = await screen.findByLabelText(/SOUL\.md/i)
-
-    expect(soul.tagName).toBe('TEXTAREA')
+    expect(await screen.findByRole('dialog')).toBeTruthy()
+    expect(screen.queryByLabelText(/SOUL\.md/i)).toBeNull()
   })
 
   it('re-homes to default when the active profile is deleted', async () => {

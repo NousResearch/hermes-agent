@@ -13,6 +13,7 @@ from hermes_cli.memory_setup import _CANCELLED
 
 
 def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr("agent.employee_policy.MEMORY_PROVIDER", "")
     class ChoiceProvider:
         def __init__(self):
             self.save_config = MagicMock()
@@ -89,8 +90,8 @@ def test_install_dependencies_prepares_declared_extra_even_if_importable(tmp_pat
     assert synced == [(["mem0"], True)]
 
 
-def test_cmd_status_memory_tool_gate_disabled(capsys, monkeypatch):
-    """When both memory stores are disabled, Memory status reports memory tool as disabled."""
+def test_cmd_status_keeps_employee_memory_tool_available(capsys, monkeypatch):
+    """Legacy flags do not disable the employee memory tool."""
     _cfg = {"memory": {"memory_enabled": False, "user_profile_enabled": False}}
     monkeypatch.setattr("hermes_cli.config.load_config", lambda: _cfg)
     # check_memory_requirements() reads the readonly loader, not load_config.
@@ -102,7 +103,7 @@ def test_cmd_status_memory_tool_gate_disabled(capsys, monkeypatch):
     memory_setup.cmd_status(SimpleNamespace())
 
     captured = capsys.readouterr().out
-    assert re.search(r"Memory tool:\s+disabled", captured)
+    assert re.search(r"Memory tool:\s+enabled", captured)
     assert re.search(r"Memory injection:\s+disabled", captured)
     assert re.search(r"User profile:\s+disabled", captured)
 

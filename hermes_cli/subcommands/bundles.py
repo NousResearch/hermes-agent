@@ -5,6 +5,9 @@ from __future__ import annotations
 
 def build_bundles_parser(subparsers) -> None:
     """Attach the ``bundles`` subcommand to ``subparsers``."""
+    from agent.employee_policy import SKILLS_ENABLED
+    if not SKILLS_ENABLED:
+        return
     bundles_parser = subparsers.add_parser(
         "bundles", help="Create, list, and manage skill bundles (aliases for multiple skills)",
         description="Skill bundles let you load several skills under one slash "

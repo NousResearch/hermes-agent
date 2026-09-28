@@ -952,6 +952,9 @@ _SLASH_BUILTINS = {
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
     name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
+    from hermes_cli.commands import EMPLOYEE_EXCLUDED_COMMAND_NAMES
+    if name in EMPLOYEE_EXCLUDED_COMMAND_NAMES:
+        return _err(rid, 4018, "This command is unavailable in the employee runtime.")
     session = _sessions.get(params.get("session_id", ""))
 
     # Stage order is load-bearing: quick > plugin > bundle > skill > built-in. One home binding
@@ -981,6 +984,9 @@ def _(rid, params: dict) -> dict:
     # commands also bypass it but return normal slash.exec output (TUI keeps the pager path).
     parts = cmd.lstrip("/").split(maxsplit=1)
     base = (parts[0] if parts else "").lower()
+    from hermes_cli.commands import EMPLOYEE_EXCLUDED_COMMAND_NAMES
+    if base in EMPLOYEE_EXCLUDED_COMMAND_NAMES:
+        return _err(rid, 4018, "This command is unavailable in the employee runtime.")
     arg = parts[1] if len(parts) > 1 else ""
     sid = params.get("session_id", "")
     live_output = _live_slash_command_output(sid, session, base, arg)
@@ -1240,6 +1246,9 @@ def _(rid, params: dict) -> dict:
     """cronjob() keys off HERMES_HOME, so ``profile`` reaches a per-profile cron store."""
     cronjob = _tools_mod("tools.cronjob_tools").cronjob
     action, jid = params.get("action", "list"), params.get("name", "")
+    from agent.employee_policy import CRON_AUTHORING_COMMANDS
+    if action in CRON_AUTHORING_COMMANDS:
+        return _err(rid, 4016, "Author schedules in responsibility files.")
     if action == "list":
         # Paused jobs are excluded by default (reads as deletion in a toggle UI) — forward the flag.
         include_disabled = is_truthy_value(params.get("include_disabled", False))
@@ -1330,6 +1339,9 @@ def _run_action(rid, params: dict, table: dict, label: str, *extra) -> dict:
 @_scoped_rpc("skills.manage")
 def _(rid, params: dict) -> dict:
     """list/install use the scoped profile's skills dir; search/browse/inspect hit the shared hub."""
+    from agent.employee_policy import SKILLS_ENABLED
+    if not SKILLS_ENABLED:
+        return _err(rid, 4017, "Skills are unavailable. Use employee guides and responsibility files.")
     return _run_action(rid, params, _SKILLS_ACTIONS, "skills", params.get("query", ""))
 
 

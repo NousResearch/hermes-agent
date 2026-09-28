@@ -1035,3 +1035,9 @@ class TestCallTimeDirResolution:
                 ss._rmtree_writable(foreign)
         finally:
             reset_hermes_home_override(token)
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_surface(monkeypatch):
+    # These tests exercise retained upstream code; employee tests enforce the gate.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

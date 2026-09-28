@@ -1,3 +1,4 @@
+import { employeePolicy } from "@/lib/employee-policy";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   type CronTriggerController,
@@ -860,6 +861,10 @@ export default function CronPage() {
 
   // Put "Create" button in page header
   useLayoutEffect(() => {
+    if (!employeePolicy.nativeCronAuthoring) {
+      setEnd(null);
+      return;
+    }
     setEnd(
       <Button
         className="uppercase"
@@ -911,14 +916,15 @@ export default function CronPage() {
         </p>
       )}
 
-      <Segmented
+      <p className="text-sm text-muted-foreground">Author schedules in responsibility files. Inspect, pause, resume, or run them here.</p>
+      {employeePolicy.nativeCronAuthoring && <Segmented
         value={view}
         onChange={(v) => setView(v as "jobs" | "blueprints")}
         options={[
           { value: "jobs", label: "Jobs" },
           { value: "blueprints", label: "Blueprints" },
         ]}
-      />
+      />}
 
       {view === "blueprints" && (
         <AutomationBlueprints
@@ -1113,7 +1119,7 @@ export default function CronPage() {
           <Card>
             <CardContent className="flex flex-col items-center gap-3 py-8 text-center text-sm text-muted-foreground">
               <span>{t.cron.noJobs}</span>
-              <Button
+              {employeePolicy.nativeCronAuthoring && <Button
                 className="uppercase"
                 size="sm"
                 onClick={() => {
@@ -1124,7 +1130,7 @@ export default function CronPage() {
                 }}
               >
                 {t.common.create}
-              </Button>
+              </Button>}
             </CardContent>
           </Card>
         )}
@@ -1260,7 +1266,7 @@ export default function CronPage() {
                     {triggeringJobKeys.has(jobKey) ? <Spinner /> : <Zap />}
                   </Button>
 
-                  <Button
+                  {employeePolicy.nativeCronAuthoring && <Button
                     ghost
                     size="icon"
                     title="Edit job"
@@ -1268,9 +1274,9 @@ export default function CronPage() {
                     onClick={() => openEditModal(job)}
                   >
                     <Pencil />
-                  </Button>
+                  </Button>}
 
-                  <Button
+                  {employeePolicy.nativeCronAuthoring && <Button
                     ghost
                     destructive
                     size="icon"
@@ -1279,7 +1285,7 @@ export default function CronPage() {
                     onClick={() => jobDelete.requestDelete(jobKey)}
                   >
                     <Trash2 />
-                  </Button>
+                  </Button>}
                 </div>
               </CardContent>
             </Card>

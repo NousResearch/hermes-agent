@@ -100,6 +100,9 @@ def scan_bundles() -> Dict[str, Dict[str, Any]]:
 
 def get_skill_bundles() -> Dict[str, Dict[str, Any]]:
     """Current bundle mapping; rescans only when a bundle file or the dir mtime changed."""
+    from agent.employee_policy import SKILLS_ENABLED
+    if not SKILLS_ENABLED:
+        return {}
     current_mtime = _max_mtime(_iter_bundle_files())
     if not _bundles_cache or _bundles_cache_mtime != current_mtime:
         scan_bundles()

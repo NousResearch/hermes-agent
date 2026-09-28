@@ -172,3 +172,9 @@ class TestHandPlacedSkillsNoLimit:
         assert "content" in result
         # The full content is returned — no truncation at the storage layer
         assert len(result["content"]) > MAX_SKILL_CONTENT_CHARS
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_skills(monkeypatch):
+    # Employee tests cover exclusion; keep direct upstream skill-view coverage active.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

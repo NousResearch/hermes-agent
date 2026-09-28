@@ -407,3 +407,9 @@ class TestMonitorOutputIsRuntimeData:
                 runtime_data_prompt="## Monitor Baseline\n\nordinary monitor output",
             )
         assert "invisible unicode" in str(exc_info.value)
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_skills(monkeypatch):
+    # Employee tests cover exclusion; keep direct upstream skill-view coverage active.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

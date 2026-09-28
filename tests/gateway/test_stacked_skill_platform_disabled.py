@@ -135,3 +135,9 @@ async def test_stacked_second_skill_disabled_for_platform_is_blocked(monkeypatch
     assert "disabled for telegram" in result
 
 
+
+
+@pytest.fixture(autouse=True)
+def retained_upstream_surface(monkeypatch):
+    # Employee exclusion is covered separately; preserve upstream implementation tests.
+    monkeypatch.setattr("agent.employee_policy.SKILLS_ENABLED", True)

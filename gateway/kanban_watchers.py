@@ -68,6 +68,9 @@ class GatewayKanbanWatchersMixin:
         dispatcher respawned a crashed task). All SQLite work runs in a thread;
         one tick's failure never stops the next.
         """
+        from agent.employee_policy import KANBAN_ENABLED
+        if not KANBAN_ENABLED:
+            return
         try:
             from hermes_cli.config import load_config as _load_config
 
@@ -211,6 +214,9 @@ class GatewayKanbanWatchersMixin:
             from hermes_cli.config import load_config as _load_config
         except Exception:
             logger.warning("kanban dispatcher: config loader unavailable; disabled")
+            return None
+        from agent.employee_policy import KANBAN_ENABLED
+        if not KANBAN_ENABLED:
             return None
         env_override = os.environ.get("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
         if env_override in {"0", "false", "no", "off"}:

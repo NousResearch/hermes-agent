@@ -576,6 +576,9 @@ def skill_view(
     or path ("axolotl", "03-fine-tuning/axolotl"); "plugin:skill" resolves plugin-provided
     skills. ``preprocess`` applies the configured SKILL.md template / inline shell rendering;
     slash/preload callers render the message themselves."""
+    from agent.employee_policy import SKILLS_ENABLED
+    if not SKILLS_ENABLED:
+        return _fail("Skills are unavailable. Use employee guides and responsibility files.")
     try:
         # Validate before the ':' dispatch so a Windows drive path (C:\skills\foo) can't be
         # reinterpreted as a plugin namespace.

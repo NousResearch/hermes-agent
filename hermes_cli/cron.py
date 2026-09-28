@@ -905,6 +905,10 @@ _CRON_SUBCOMMANDS["rm"] = _CRON_SUBCOMMANDS["delete"] = _CRON_SUBCOMMANDS["remov
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
+    from agent.employee_policy import CRON_AUTHORING_COMMANDS, NATIVE_CRON_AUTHORING_ENABLED
+    if not NATIVE_CRON_AUTHORING_ENABLED and subcmd in CRON_AUTHORING_COMMANDS:
+        print('Author schedules in responsibility files; native cron remains available for inspection and execution.')
+        return 2
     handler = _CRON_SUBCOMMANDS.get("list" if subcmd is None else subcmd)
     if handler is not None:
         return handler(args)

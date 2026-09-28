@@ -209,3 +209,45 @@ def test_shutdown_releases_retired_provider_and_transcript():
     del provider
     gc.collect()
     assert reference() is None
+
+
+def test_recall_timing_current_vs_next_turn_uses_real_client():
+    from agent.memory_manager import MemoryManager
+    calls = []
+    class API(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            calls.append(body['query'])
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'results': [{'id': 'fact', 'text': body['query'], 'type': 'world'}]}).encode())
+    server = ThreadingHTTPServer(('127.0.0.1', 0), API)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        for current_turn in (False, True):
+            provider = HindsightMemoryProvider(config={**_CLIENT_POLICY,
+                'api_url': f'http://127.0.0.1:{server.server_port}', 'bank_id': 'employee',
+                'recall_sync': current_turn, 'prefetch_waits_for_retain': False})
+            provider.initialize('conversation')
+            manager = MemoryManager()
+            manager.add_provider(provider)
+            try:
+                first = manager.prefetch_all('First topic')
+                assert ('First topic' in first) if current_turn else first == ''
+                manager.queue_prefetch_all('First topic')
+                assert manager.flush_pending(timeout=10)
+                if provider._prefetch_thread:
+                    provider._prefetch_thread.join(10)
+                second = manager.prefetch_all('Second topic')
+                assert ('Second topic' if current_turn else 'First topic') in second
+            finally:
+                manager.shutdown_all()
+        assert calls == ['First topic', 'First topic', 'Second topic']
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

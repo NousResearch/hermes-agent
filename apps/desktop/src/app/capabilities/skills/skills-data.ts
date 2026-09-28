@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { getSkills, type ProfileScope, profileScopeKey } from '@/hermes'
+import { employeePolicy } from '@/lib/employee-policy'
 import { normalize } from '@/lib/text'
 import type { OfficialSkillInfo, SkillInfo } from '@/types/hermes'
 
@@ -21,6 +22,7 @@ export const skillsQueryKey = (profile: ProfileScope) => [...SKILLS_QUERY_KEY, p
 
 export function useSkillsQuery(profile: ProfileScope) {
   return useQuery({
+    enabled: employeePolicy.skills,
     queryKey: skillsQueryKey(profile),
     queryFn: () => getSkills(profile),
     staleTime: 0

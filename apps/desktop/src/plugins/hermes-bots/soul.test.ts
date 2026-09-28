@@ -175,3 +175,6 @@ describe('the bot_mode_protocol backend capability suppresses every SOUL write',
     )
   })
 })
+
+// Exercise retained upstream editors; employee exclusions have separate tests.
+vi.mock('./employee-policy', () => ({ employeePolicy: { skills: true, soulEditor: true } }))

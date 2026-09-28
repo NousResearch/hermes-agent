@@ -128,7 +128,10 @@ def _get_available_providers() -> list:
         raw = []
 
     results = []
+    from agent.employee_policy import MEMORY_PROVIDER
     for name, desc, available in raw:
+        if name != MEMORY_PROVIDER:
+            continue
         try:
             provider = load_memory_provider(name)
             if not provider:
@@ -244,6 +247,9 @@ def _prompt_schema_fields(name: str, schema: list, provider_config: dict, env_wr
 
 def cmd_setup(args) -> None:
     """Interactive memory provider setup wizard."""
+    from agent.employee_policy import MEMORY_PROVIDER
+    if MEMORY_PROVIDER:
+        return cmd_setup_provider(MEMORY_PROVIDER)
     from hermes_cli.config import load_config, save_config
 
     providers = _get_available_providers()
@@ -355,7 +361,8 @@ def cmd_status(args) -> None:
 
     config = load_config()
     mem_config = config.get("memory", {})
-    provider_name = mem_config.get("provider", "")
+    from agent.employee_policy import MEMORY_PROVIDER
+    provider_name = MEMORY_PROVIDER
 
     # Memory tool enablement for the CLI platform via the canonical resolver, respecting the
     # check_fn gate when both stores are disabled.
@@ -365,7 +372,7 @@ def cmd_status(args) -> None:
     memory_tool_enabled = ("memory" in cli_tools) and check_memory_requirements()
 
     print("\nMemory status\n" + "─" * 40)
-    print("  Built-in (MEMORY.md / USER.md):")
+    print("  Authored memory (shared MEMORY.md and per-person memory/people/):")
     print(f"    Memory injection:   {_mark(mem_config.get('memory_enabled', True))}")
     print(f"    User profile:       {_mark(mem_config.get('user_profile_enabled', True))}")
     print(f"    Memory tool:        {_mark(memory_tool_enabled)}")

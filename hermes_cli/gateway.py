@@ -5496,6 +5496,11 @@ def _cmd_restart(args):
     kind = _installed_service_kind_for(is_windows)
     service_configured = kind is not None and (kind != "windows" or _gw_windows().is_installed())
     if kind is not None:
+        # Reap orphans only past the refusal guards above (#125394): the Desktop backend used to
+        # reap before spawning this command, so a refused restart still cost the profile its
+        # gateway. A service-manager restart never sweeps orphans itself (#77276); the manual
+        # fallback below reaps inside stop_profile_gateway().
+        _reap_unsupervised_gateway_orphans()
         swallow = (RuntimeError, OSError) if kind == "windows" else ()
         try:
             _service_call(kind, "restart", system)

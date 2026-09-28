@@ -486,6 +486,19 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
         logger.warning("goal judge unreachable (%s), allowing lifecycle handoff", reason)
         return
     if verdict == "done":
+        # Ground-truth probe (same policy as hermes_cli.kanban._goal_mode_handoff_rejection):
+        # a worker-controlled summary — and the judge that reads only that summary — cannot
+        # verify a test suite. A red suite (or a green-but-order-dependent stateful cheat)
+        # vetoes the handoff with the probe output; missing signal stays fail-open.
+        from hermes_cli.kanban import _workspace_probe_result
+        probe_failed, probe_detail = _workspace_probe_result(task)
+        if probe_failed:
+            raise _Reject(
+                _GOAL_GATE_MESSAGES[tool_name]["continue"].format(
+                    reason=("workspace verification failed — the test suite does not pass at "
+                            "handoff time (worker summaries and judge verdicts are overridden "
+                            "by this probe):\n" + probe_detail),
+                    tid=tid))
         return
     key = "blocked" if verdict == "blocked" else "continue"
     raise _Reject(_GOAL_GATE_MESSAGES[tool_name][key].format(reason=reason, tid=tid))

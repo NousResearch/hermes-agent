@@ -511,12 +511,37 @@ describe('managed rollout main integration', () => {
     // The live observation reports a different request than the earlier
     // service receipt. Neither receipt may shadow the other: the contradiction
     // must invalidate the success proof rather than being excused by the
-    // service receipt that happens to record the reviewed target.
+    // service receipt that happens to record the reviewed target, and the
+    // projected outcome must not claim success either.
     const observed: any = await (integration.observe as any).observe({
       authorization,
       update: { ok: true, updateOk: true, restoreOk: true, receipt: expected, scopes: [] }
     })
 
+    expect(observed.outcome).toBe('unverified')
+    expect(observed.health.receiptSucceeded).toBe(false)
+    expect(observed.health.installReady).toBe(false)
+  })
+
+  test('refuses a success-shaped live observation when readiness is not proven', async () => {
+    const { integration, authorization } = await reprobeFixture()
+    const expected = { correlationId: CORRELATION_ID, outcome: 'already-current', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'already-current', postSha: TARGET_SHA, requestedSha: 'd'.repeat(40) },
+      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    // The service receipt and the live observation agree on the outcome, but
+    // the live receipt answered a different request, so the success proof is
+    // rejected: even an already-current outcome must not be projected from
+    // health that fails the receipt gate.
+    const observed: any = await (integration.observe as any).observe({
+      authorization,
+      update: { ok: true, updateOk: true, restoreOk: true, receipt: expected, scopes: [] }
+    })
+
+    expect(observed.outcome).toBe('unverified')
     expect(observed.health.receiptSucceeded).toBe(false)
     expect(observed.health.installReady).toBe(false)
   })

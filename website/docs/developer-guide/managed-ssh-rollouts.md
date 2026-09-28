@@ -190,7 +190,7 @@ because the process restarted.
 | Operation | Purpose | May apply the update? | Successful result |
 |---|---|---:|---|
 | **Recheck / reprobe** | Read-only observation of the existing correlation. | No | A terminal observation may settle the original attempt; a non-terminal observation leaves it unverified. |
-| **Recover** | Re-establish restore/clearance for an attempt whose fence still needs proved clearance. | No | Exact correlation plus positive clearance; recovery state is cleared only when proved. |
+| **Recover** | Re-establish restore/clearance for an attempt whose fence still needs proved clearance. | No | Exact correlation plus positive clearance; the durable fence is released only when clearance is proved, and the attempt's own state and outcome are not changed. |
 | **New pinned rollout** | A separately admitted reviewed target. | Yes | A new authorization, not a retry of an unknown launch. |
 
 `reprobe` is admissible only for authorized, observed, unverified, or
@@ -201,7 +201,11 @@ unverified and recovery-required, plus settled failed, refused, updated, and
 already-current attempts whose fence still needs proved clearance. A mismatched
 correlation or unproved clearance is refused. Recovery does not mark an update
 successful, does not relabel a failed/refused outcome, and does not issue a new
-launch capability.
+launch capability. Proved clearance releases the installation's durable fence
+and is recorded as its own `recovery-cleared` evidence kind; it does not clear
+the attempt's own recovery state — an unverified attempt remains unverified and
+may still report `recoveryRequired`, because recovery does not settle the
+launch.
 
 For the single-install service, durable recovery reopens the transport, waits
 for the required restore clearance, closes the transport, and restores each
@@ -217,10 +221,14 @@ ID and retains its correlation ID, reason, and recording time. The unresolved
 index survives process restart and is visible to admission/promotion checks.
 
 A fence cannot be removed by archive, exclusion, or a successful-looking local
-transition. `managed-rollout-journal.ts` requires a
-`settlement-validated` evidence fact for the same correlation ID and installation
-before releasing it. Pruning a settled journal record with an unresolved fence
-leaves a tombstone in the unresolved index so the debt remains enumerable.
+transition. `managed-rollout-journal.ts` releases it only on one of two distinct
+evidence kinds recorded for the same correlation ID and installation:
+`settlement-validated`, a receipt-backed success whose requested and post-update
+SHAs equal the reviewed target, or `recovery-cleared`, proved recovery
+clearance of the original durable scope obligation. Recovery clearance never
+asserts that the update applied and is never recorded as a success settlement.
+Pruning a settled journal record with an unresolved fence leaves a tombstone
+in the unresolved index so the debt remains enumerable.
 
 Promotion is also evidence-gated. A healthy target must have a fresh observation
 for the exact sweep, the admitted SHA, complete and ready scopes, clear update

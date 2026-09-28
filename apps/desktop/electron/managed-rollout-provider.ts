@@ -1719,7 +1719,7 @@ export function createManagedRolloutProvider(
         )
 
         if (ownedFence) {
-          facts.push(fact('settlement-validated', runtime.id, parsed.installId, authorization.correlationId, isoNow(now), 'correlated recovery cleared the original durable scope obligation'))
+          facts.push(fact('recovery-cleared', runtime.id, parsed.installId, authorization.correlationId, isoNow(now), 'correlated recovery cleared the original durable scope obligation'))
           unresolved = { remove: [ownedFence.key] }
         }
       }

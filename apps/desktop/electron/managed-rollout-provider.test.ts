@@ -527,6 +527,11 @@ test.each([
     assert.equal((record.snapshot.attempts[0] as any).phase, observedOutcome)
     assert.equal(record.unresolved.length, 1)
     assert.equal(record.facts.some(item => item.kind === 'settlement-validated'), false)
+    assert.equal(record.facts.some(item => item.kind === 'recovery-cleared'), false)
+    // The failed/refused receipt carries no requested SHA; the projection
+    // records null rather than back-filling the local target as remote
+    // evidence the remote never reported.
+    assert.equal((record.snapshot.attempts[0] as any).receipt?.requestedSha, null)
 
     const recovered = await provider.command({
       id: started.id, expectedRevision: record.snapshot.revision,
@@ -537,7 +542,10 @@ test.each([
     const settled = dependencies.journal.read(started.id)
     assert.equal((settled.snapshot.attempts[0] as any).phase, observedOutcome)
     assert.equal(settled.unresolved.length, 0)
-    assert.ok(settled.facts.some(item => item.kind === 'settlement-validated'))
+    // Recovery releases the fence on proved clearance; it is not a receipt-
+    // backed success settlement, so the two evidence bases stay distinct.
+    assert.equal(settled.facts.some(item => item.kind === 'settlement-validated'), false)
+    assert.ok(settled.facts.some(item => item.kind === 'recovery-cleared'))
   } finally {
     fs.rmSync(journalDirectory, { recursive: true, force: true })
   }
@@ -696,6 +704,7 @@ test('hydrates an authorized running journal record as recoverable unknown witho
       assert.equal(refused.ok, false)
       assert.equal(freshJournal.read(rolloutId).unresolved.length, 1)
       assert.equal(freshJournal.read(rolloutId).facts.some(item => item.kind === 'settlement-validated'), false)
+      assert.equal(freshJournal.read(rolloutId).facts.some(item => item.kind === 'recovery-cleared'), false)
       revision = refused.revision as number
     }
 
@@ -708,7 +717,10 @@ test('hydrates an authorized running journal record as recoverable unknown witho
     } as any)
     assert.equal((recovered as Record<string, unknown>).ok, true)
     assert.equal(freshJournal.read(rolloutId).unresolved.length, 0)
-    assert.ok(freshJournal.read(rolloutId).facts.some(item => item.kind === 'settlement-validated'))
+    // The fence releases on proved recovery clearance, recorded as its own
+    // evidence kind — not as a receipt-backed success settlement.
+    assert.equal(freshJournal.read(rolloutId).facts.some(item => item.kind === 'settlement-validated'), false)
+    assert.ok(freshJournal.read(rolloutId).facts.some(item => item.kind === 'recovery-cleared'))
 
     const afterRecovery = await provider.get(rolloutId) as Record<string, unknown>
     assert.equal((afterRecovery.attempts as Array<Record<string, unknown>>)[0].phase, 'unverified')
@@ -1094,6 +1106,9 @@ test('refuses to settle success when the receipt never recorded which request it
     const settled = await provider.get(started.id) as any
     const record = dependencies.journal.read(started.id)
 
+    // The refused settlement stores no observation, so nothing projects; the
+    // projection never back-fills the reviewed target as request evidence.
+    assert.equal(settled.attempts[0].receipt, null)
     assert.equal(settled.phase, 'attention-required')
     assert.equal(settled.attempts[0].phase, 'unverified')
     assert.equal(settled.attempts[0].recoveryRequired, true)

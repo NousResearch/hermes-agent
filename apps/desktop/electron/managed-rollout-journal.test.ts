@@ -473,6 +473,42 @@ test('refuses fence release without a matching validated settlement fact', () =>
   })
 })
 
+test('releases a fence on matching recovery-clearance evidence without a success receipt', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory)
+    const unresolved = fence()
+    instance.create(snapshot(ROLLOUT_A, { phase: 'attention-required' }), { unresolved: [unresolved] })
+    assert.equal(instance.hasUnresolvedInstall(INSTALL_A), true)
+
+    // Recovery releases the fence on proved clearance. That evidence is its
+    // own kind — it must not masquerade as a receipt-backed settlement.
+    instance.record({
+      id: ROLLOUT_A,
+      expectedRevision: 1,
+      requestId: 'request-recovery-clearance',
+      payload: { action: 'reconciled', key: unresolved.key },
+      snapshot: snapshot(ROLLOUT_A, { phase: 'attention-required' }),
+      events: [event('reconciled', INSTALL_A)],
+      facts: [
+        {
+          kind: 'recovery-cleared',
+          rolloutId: ROLLOUT_A,
+          correlationId: unresolved.correlationId,
+          installId: INSTALL_A,
+          observedAt: '2026-09-21T00:00:01.000Z',
+          basis: 'correlated recovery proved clearance of the durable scope obligation'
+        }
+      ],
+      unresolved: { remove: [unresolved.key] }
+    })
+
+    assert.equal(instance.hasUnresolvedInstall(INSTALL_A), false)
+    const facts = instance.read(ROLLOUT_A).facts
+    assert.ok(facts.some(fact => fact.kind === 'recovery-cleared'))
+    assert.equal(facts.some(fact => fact.kind === 'settlement-validated'), false)
+  })
+})
+
 test('refuses a second writer while the canonical journal owner marker exists', () => {
   withTempDirectory(directory => {
     const instance = journal(directory)

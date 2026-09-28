@@ -85,14 +85,17 @@ does not guess whether the remote update happened.
   admissible for an unverified or recovery-required attempt, and also for a
   settled failed, refused, updated, or already-current attempt whose fence
   still needs proved clearance. It does not launch another update, does not
-  relabel the outcome, and does not declare the target successful.
+  relabel the outcome, and does not declare the target successful. Proved
+  clearance releases the installation's unfinished-attempt fence; it does not
+  change the attempt's own state, so an unverified attempt stays unverified.
 - A new update is a new pinned admission, not an automatic retry of an unknown
   launch.
 
-An unresolved fence remains until settlement evidence for the same installation
-and correlation is validated. Archiving or pruning a record does not erase that
-fence. This prevents a restart, stale screen, or local success-looking message
-from turning an uncertain remote state into a second mutation.
+An unresolved fence remains until evidence for the same installation and
+correlation is validated — a receipt-backed settlement or proved recovery
+clearance. Archiving or pruning a record does not erase that fence. This
+prevents a restart, stale screen, or local success-looking message from
+turning an uncertain remote state into a second mutation.
 
 ## What is available now?
 

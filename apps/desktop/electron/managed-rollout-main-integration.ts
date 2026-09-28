@@ -602,10 +602,20 @@ async function observeRemote(options: ManagedRolloutMainIntegrationOptions, inpu
   try {
     const observed = await observeHealth(options, input.authorization, input.update.receipt, input.authorization.correlationId, input.update.scopes || [])
 
-    const outcome: 'updated' | 'already-current' | 'failed' | 'refused' | 'unverified' = observed.receipt?.outcome === 'already-current'
-      ? 'already-current'
-      : input.update.ok && input.update.updateOk && input.update.restoreOk
-        ? 'updated'
+    const successProved = observed.health.receiptSucceeded && observed.health.installReady
+    const applied = input.update.ok && input.update.updateOk && input.update.restoreOk
+
+    // A success projection must be backed by the live health evidence itself —
+    // the receipt succeeded against the reviewed target and the installation
+    // is ready. When either observation contradicts the success claim, the
+    // outcome stays unknown instead of echoing the earlier service receipt's
+    // flags, and an unproved success-shaped receipt (including already-current)
+    // never projects as success. A known-bad service outcome keeps its own
+    // classification.
+    const outcome: 'updated' | 'already-current' | 'failed' | 'refused' | 'unverified' = successProved && applied
+      ? observed.receipt?.outcome === 'already-current' ? 'already-current' : 'updated'
+      : applied
+        ? 'unverified'
         : input.update.outcome === 'refused' ? 'refused' : 'failed'
 
     return { outcome, receipt: observed.receipt, health: observed.health, authorization: input.authorization }

@@ -75,6 +75,7 @@ export type JournalFactKind =
   | 'detached-intent'
   | 'terminal-receipt'
   | 'settlement-validated'
+  | 'recovery-cleared'
 
 export interface JournalEvidenceFact extends Record<string, unknown> {
   kind: JournalFactKind
@@ -466,7 +467,8 @@ function validateEvidenceFact(value: unknown): JournalEvidenceFact {
     'handoff-accepted',
     'detached-intent',
     'terminal-receipt',
-    'settlement-validated'
+    'settlement-validated',
+    'recovery-cleared'
   ]
 
   if (!kinds.includes(value.kind as JournalFactKind)) {throw new JournalCorruptionError('Journal evidence fact kind is invalid.')}
@@ -1188,9 +1190,13 @@ export class ManagedRolloutJournal {
     for (const fence of current.unresolved) {
       if (retained.has(fence.key)) {continue}
 
+      // Receipt-backed settlement and proved recovery clearance are distinct
+      // evidence kinds: both prove the fence's obligation is cleared, and
+      // neither may be recorded as the other. Recovery releases the fence
+      // without asserting that the update succeeded.
       const settled = nextFacts.some(
         fact =>
-          fact.kind === 'settlement-validated' &&
+          (fact.kind === 'settlement-validated' || fact.kind === 'recovery-cleared') &&
           fact.correlationId === fence.correlationId &&
           fact.installId === fence.installId
       )

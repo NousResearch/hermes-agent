@@ -162,13 +162,35 @@ MATRIX_PROCESS_NOTICES=false
 MATRIX_SESSION_SCOPE=room       # recommended for stable project-room context
 MATRIX_AUTO_THREAD=true
 MATRIX_DM_MENTION_THREADS=false
-MATRIX_REACTIONS=true          # default: true — emoji reactions during processing
 MATRIX_ALLOW_ROOM_MENTIONS=false
 ```
 
-:::tip Disabling reactions
-`MATRIX_REACTIONS=false` turns off the processing-lifecycle emoji reactions (👀/✅/❌) the bot posts on inbound messages. Useful for rooms where reaction events are noisy or aren't supported by all participating clients.
-:::
+### Read receipts and lifecycle reactions
+
+Configure automatic feedback in the owning profile's `config.yaml`:
+
+```yaml
+matrix:
+  read_receipts: immediate
+  reactions: true
+```
+
+| `read_receipts` | Behaviour |
+|-----------------|-----------|
+| `immediate` | Default. Mark an accepted inbound message as read on arrival. |
+| `after_processing` | Mark the message as read when processing completes, including failure. Expected cancellation skips the receipt. |
+| `disabled` | Send no automatic read receipts. |
+
+Unrecognised receipt modes use `immediate`.
+
+`reactions: false` disables the processing reactions (👀/✅/❌). Approval,
+model picker and choice picker reactions remain available. Reactions default to
+`true`; completion keeps the existing success, failure and cancellation behaviour.
+
+Each served profile resolves its own settings. The existing `MATRIX_REACTIONS`
+environment override takes precedence over that profile's YAML value. Receipt
+timing is configured only through `read_receipts` in YAML. Both settings also
+work under `platforms.matrix` or `gateway.platforms.matrix`.
 
 :::tip Room-wide mentions
 Hermes sends structured Matrix user mentions for explicit Matrix IDs such as `@alice:example.org`. Room-wide `@room` notifications are disabled by default; set `MATRIX_ALLOW_ROOM_MENTIONS=true` only in rooms where the bot is allowed to notify everyone.

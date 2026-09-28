@@ -149,6 +149,8 @@ def reinstall_runtime_snapshot(agent: Any, rt: dict[str, Any]) -> None:
         agent._use_prompt_caching = False
         agent._use_native_cache_layout = False
     _rebuild_primary_client(agent, rt, reason="restore_primary")
+    from agent.agent_init import refresh_compressor_output_reservation
+    refresh_compressor_output_reservation(agent)
     agent.context_compressor.update_model(
         model=rt["compressor_model"], context_length=rt["compressor_context_length"],
         base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],

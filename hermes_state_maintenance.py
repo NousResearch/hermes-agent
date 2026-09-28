@@ -91,6 +91,18 @@ def _continued_ancestors_sql(candidates_where: str) -> str:
             ") SELECT id FROM kept")
 
 
+# A pin covers the whole conversation, but a store can hold a pinned segment whose later
+# continuations were published unpinned; those still belong to the pinned chat.
+_PINNED_TAIL_SQL = ("WITH RECURSIVE tail(id) AS ("
+                    " SELECT c.id FROM sessions c JOIN sessions p ON p.id = c.parent_session_id"
+                    f" WHERE COALESCE(p.pinned, 0) = 1 AND {_CONTINUATION_EDGE_SQL}"
+                    " UNION"
+                    " SELECT c.id FROM tail t JOIN sessions p ON p.id = t.id JOIN sessions c ON c.parent_session_id = p.id"
+                    f" WHERE {_CONTINUATION_EDGE_SQL}"
+                    ") SELECT id FROM tail")
+_NOT_PINNED_SQL = f"COALESCE(s.pinned, 0) = 0 AND s.id NOT IN ({_PINNED_TAIL_SQL})"
+
+
 class SessionMaintenanceMixin:
     """Retention pruning, stale-session archiving and VACUUM policy for SessionDB."""
 
@@ -222,7 +234,7 @@ class SessionMaintenanceMixin:
             clauses.append(f"s.archived = {int(archived)}")
         # Pinned is a durable "keep" flag: bulk prune/delete/archive exclude pinned rows unless opted in.
         if not include_pinned:
-            clauses.append("COALESCE(s.pinned, 0) = 0")
+            clauses.append(_NOT_PINNED_SQL)
         return " AND ".join(clauses), params
 
     def _prune_where(self, older_than_days, source, filters, *, whole_lineages: bool = False) -> Tuple[str, list]:
@@ -282,7 +294,7 @@ class SessionMaintenanceMixin:
         if idle_days is None or idle_days < 0:
             return 0
         cutoff = time.time() - float(idle_days) * 86400.0
-        pin_clause = "AND s.pinned = 0" if exclude_pinned else ""
+        pin_clause = f"AND {_NOT_PINNED_SQL}" if exclude_pinned else ""
         rows = self._read_all(
             f"""
             SELECT s.id FROM sessions s

@@ -134,7 +134,9 @@ def test_external_provider_never_gets_profile_homes(monkeypatch, tmp_path):
 
     ws._start_desktop_cron_ticker(threading.Event(), interval=13)
 
+    gate = external.start_kwargs.pop("can_dispatch", None)
     assert external.start_kwargs == {"interval": 13}
+    assert callable(gate)  # ownership gate, not profile scoping (#126907)
 
 
 def test_desktop_ticker_serves_every_profile_and_yields_to_owning_gateway(monkeypatch, _providers, tmp_path):

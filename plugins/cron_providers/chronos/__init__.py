@@ -72,11 +72,13 @@ class ChronosCronScheduler(CronScheduler):
         except Exception as e:
             log("Chronos %s reconcile failed: %s", what, e)
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+    def start(self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None):
         """Arm all enabled jobs via NAS, then RETURN — no loop, no periodic wake (scale-to-zero)."""
         # Kept so a later identity rejection (boot or mid-life re-arm) can hand this process's
-        # fires to the built-in ticker with the gateway's own adapters/loop.
-        self._ticker_kwargs = {"adapters": adapters, "loop": loop, "interval": interval}
+        # fires to the built-in ticker with the gateway's own adapters/loop — and the caller's
+        # ownership gate, so the fallback stands down while a gateway owns this home (#126907).
+        self._ticker_kwargs = {"adapters": adapters, "loop": loop, "interval": interval,
+                               "can_dispatch": can_dispatch}
         self._stop_event = stop_event
         # A new lifecycle can't prove what an interrupted process did: classify unknown, never requeue.
         self.recover_interrupted()

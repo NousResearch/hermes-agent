@@ -239,6 +239,33 @@ def provider_fire_due_accepts(provider: Any, name: str) -> bool:
     )
 
 
+def provider_start_accepts(provider: Any, name: str) -> bool:
+    """Whether ``provider.start`` takes keyword ``name`` (third-party providers may predate it)."""
+    try:
+        parameters = inspect.signature(provider.start).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        p.kind is inspect.Parameter.VAR_KEYWORD
+        or (
+            p.name == name
+            and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        )
+        for p in parameters
+    )
+
+
+def provider_supports_ownership_gate(provider: Any) -> bool:
+    """Whether a provider can safely receive ``start(can_dispatch=...)`` (signature-detected, #126907).
+
+    The Desktop backend passes a live-gateway ownership gate so a provider that degrades to the
+    built-in ticker after start() (Chronos identity rejection) ticks behind the same gate instead
+    of racing the gateway. Providers that predate the kwarg (or swallow it via **kwargs and ignore
+    it) keep working ungated.
+    """
+    return provider_start_accepts(provider, "can_dispatch")
+
+
 def provider_supports_split_fire(provider: Any) -> bool:
     """Whether a provider implements the two-phase fire contract. A legacy provider overriding only
     ``fire_due`` must keep being driven through it — routing around the override would drop its

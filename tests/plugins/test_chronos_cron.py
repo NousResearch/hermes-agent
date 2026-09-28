@@ -264,6 +264,66 @@ def test_fire_due_no_rearm_when_claim_lost(chronos, monkeypatch):
 
 # -- provider capability classification ----------------------------------------
 
+def test_ownership_gate_capability_detection(chronos):
+    """Only providers whose start() accepts ``can_dispatch`` get the Desktop
+    ownership gate; legacy third-party providers keep working ungated."""
+    from cron.scheduler_provider import CronScheduler, provider_supports_ownership_gate
+
+    prov, _fake = chronos
+    assert provider_supports_ownership_gate(prov) is True
+
+    class Legacy(CronScheduler):
+        @property
+        def name(self):
+            return "legacy"
+
+        def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+            pass
+
+    assert provider_supports_ownership_gate(Legacy()) is False
+
+    class Kwargs(CronScheduler):
+        @property
+        def name(self):
+            return "kwargs"
+
+        def start(self, stop_event, **kw):
+            pass
+
+    assert provider_supports_ownership_gate(Kwargs()) is True
+
+
+def test_identity_fallback_forwards_ownership_gate(temp_home, chronos, monkeypatch):
+    """The identity-rejection fallback ticker must tick behind the same
+    ownership gate the Desktop ticker uses, or it races a live gateway (#126907)."""
+    import threading
+
+    from plugins.cron_providers.chronos._nas_client import NasCronClientError
+
+    prov, fake = chronos
+    gate = lambda: True  # noqa: E731
+
+    def rejected(**kw):
+        raise NasCronClientError(
+            "POST /api/agent-cron/provision returned 403: invalid_client",
+            status=403, error_code="invalid_client")
+
+    fake.provision = rejected
+    jobs = [
+        {"id": "a", "enabled": True, "next_run_at": "2026-06-18T12:00:00+00:00", "state": "scheduled"},
+    ]
+    monkeypatch.setattr("cron.jobs.load_jobs", lambda: jobs)
+    monkeypatch.setattr("cron.jobs.get_job", lambda jid: jobs[0])
+    monkeypatch.setattr("cron.executions.recover_interrupted_executions", lambda: 0)
+    seen = {}
+    monkeypatch.setattr(
+        "cron.scheduler_provider.InProcessCronScheduler.start",
+        lambda self, stop_event, **kw: seen.update(kw))
+
+    prov.start(threading.Event(), adapters={"x": 1}, loop=None, interval=7, can_dispatch=gate)
+
+    assert seen.get("can_dispatch") is gate
+
 def test_chronos_is_split_fire_capable(chronos):
     """Regression: Chronos must be classified as a split-aware provider so the
     fire webhook uses durable claim admission (not the legacy fire_due path).

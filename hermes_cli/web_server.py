@@ -152,6 +152,24 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
         except Exception:
             # Fail open to the single-store ticker so the active profile keeps firing.
             _log.exception("Desktop cron: profile enumeration failed; ticking active profile only")
+    else:
+        from cron.scheduler_provider import provider_supports_ownership_gate
+
+        if provider_supports_ownership_gate(provider):
+            # Chronos can degrade to the built-in ticker AFTER start() (identity rejection);
+            # hand it this home's ownership gate so the fallback stands down per tick while
+            # a gateway is live instead of racing it for every due job (#126907). Providers
+            # that predate the kwarg keep working ungated.
+            def _gateway_owns_home() -> bool:
+                try:
+                    from hermes_constants import get_hermes_home
+                    from hermes_cli.profiles import _check_gateway_running
+
+                    return bool(_check_gateway_running(Path(get_hermes_home())))
+                except Exception:
+                    return False  # fail open: tick rather than silently stand down
+
+            start_kwargs["can_dispatch"] = lambda: not _gateway_owns_home()
 
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
     provider.start(stop_event, **start_kwargs)

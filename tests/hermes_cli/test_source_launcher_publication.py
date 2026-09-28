@@ -1,4 +1,5 @@
 """Source launchers keep custom-home and selected-generation state at boot."""
+import base64
 import json
 import os
 from pathlib import Path
@@ -221,6 +222,429 @@ def test_posix_materializer_publishes_only_executable_shell_launchers(tmp_path, 
     before = launcher.stat().st_mtime_ns
     assert _launchers.ensure_install_launchers(repo, out)
     assert launcher.stat().st_mtime_ns == before
+
+
+@pytest.mark.platforms("posix")
+def test_linked_worktree_preserves_primary_user_launcher(tmp_path, monkeypatch):
+    repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    select_generation(repo, "primary", "primary")
+    out = tmp_path / ".local" / "bin"
+    out.mkdir(parents=True)
+    git_env = dict(os.environ)
+    git_env.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    })
+
+    git_executable = shutil.which("git") or "git"
+    if sys.platform == "win32":
+        program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        for relative in (("Git", "cmd", "git.exe"), ("Git", "bin", "git.exe")):
+            candidate = program_files.joinpath(*relative)
+            if candidate.is_file():
+                git_executable = str(candidate)
+                break
+        git_env.setdefault("SystemRoot", r"C:\Windows")
+        git_env.setdefault("ComSpec", r"C:\Windows\system32\cmd.exe")
+
+    def git(*args, cwd=repo):
+        return subprocess.run(
+            [git_executable, *args], cwd=cwd, env=git_env, capture_output=True, text=True,
+            check=True, timeout=30,
+        )
+
+    def publish_from_installer(root, destination):
+        result = subprocess.run(
+            [sys.executable, "-I", "-X", "utf8", str(root / "hermes_cli/_launchers.py"), str(destination)],
+            cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.name", "Hermes Test")
+    git("config", "user.email", "hermes-test@example.invalid")
+    git("config", "core.hooksPath", os.devnull)
+    git("add", "-A")
+    git("commit", "-q", "-m", "fixture")
+
+    primary_publish = publish_from_installer(repo, out)
+    assert len(primary_publish.stdout.splitlines()) == len(_launchers.ENTRY_POINTS)
+    primary_launcher = out / "hermes"
+    original = primary_launcher.read_bytes()
+    linked = tmp_path / "linked"
+    git("worktree", "add", "--detach", str(linked))
+
+    linked_publish = publish_from_installer(linked, out)
+    assert not linked_publish.stdout.strip()
+    assert "leaving launcher(s) owned by another install unchanged" in linked_publish.stderr
+    assert primary_launcher.read_bytes() == original
+    primary_run = subprocess.run(
+        [str(primary_launcher)], cwd=tmp_path, capture_output=True, text=True,
+        encoding="utf-8", timeout=30,
+    )
+    assert primary_run.returncode == 7, primary_run.stdout + primary_run.stderr
+    assert json.loads(primary_run.stdout)["value"] == "primary"
+
+    # A legacy symlink into the primary checkout is foreign to the linked root too.
+    primary_launcher.unlink()
+    legacy_target = repo / ".hermes" / "bin" / "hermes"
+    primary_launcher.symlink_to(legacy_target)
+    assert not publish_from_installer(linked, out).stdout.strip()
+    assert primary_launcher.is_symlink()
+    assert primary_launcher.readlink() == legacy_target
+
+    # A dangling launcher is still occupied; a linked install must not claim it.
+    primary_launcher.unlink()
+    missing_target = tmp_path / "missing-hermes"
+    primary_launcher.symlink_to(missing_target)
+    assert not publish_from_installer(linked, out).stdout.strip()
+    assert primary_launcher.is_symlink()
+    assert primary_launcher.readlink() == missing_target
+
+    # A linked checkout still gets a launcher when its destination is empty.
+    select_generation(linked, "linked", "linked")
+    linked_out = tmp_path / "linked-bin"
+    linked_publish = publish_from_installer(linked, linked_out)
+    assert len(linked_publish.stdout.splitlines()) == len(_launchers.ENTRY_POINTS)
+    linked_run = subprocess.run(
+        [str(linked_out / "hermes")], cwd=tmp_path, capture_output=True, text=True,
+        encoding="utf-8", timeout=30,
+    )
+    assert linked_run.returncode == 7, linked_run.stdout + linked_run.stderr
+    assert json.loads(linked_run.stdout)["value"] == "linked"
+
+
+def _write_windows_store_python(home, name):
+    python = home / "tools" / name / "python.exe"
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.write_bytes(b"simulated Windows interpreter")
+    (home / "tools" / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": name}}}), encoding="utf-8")
+    return python
+
+
+def _write_windows_exe_launcher(target, repo, name, python):
+    from io import BytesIO
+    from zipfile import ZipFile
+
+    archive_bytes = BytesIO()
+    with ZipFile(archive_bytes, "w") as archive:
+        archive.writestr("__main__.py", _launchers._launcher_script(name, repo, None))
+    target.write_bytes(f"#!{python} -I\n".encode("utf-8") + archive_bytes.getvalue())
+
+
+def _write_legacy_windows_exe(target, interpreter, script):
+    from io import BytesIO
+    from zipfile import ZipFile
+
+    archive_bytes = BytesIO()
+    with ZipFile(archive_bytes, "w") as archive:
+        archive.writestr("__main__.py", script)
+    target.write_bytes(f'#!"{interpreter}"\n'.encode("utf-8") + archive_bytes.getvalue())
+
+
+@pytest.mark.platforms("linux")
+def test_windows_cmd_fallback_is_repeatable_with_native_newlines(tmp_path, monkeypatch):
+    repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    _write_windows_store_python(home, "python-A")
+    monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+    original_write = Path.write_text
+
+    def windows_write(path, data, encoding=None, errors=None, newline=None):
+        if newline is None:
+            data = data.replace("\n", "\r\n")
+        return original_write(path, data, encoding=encoding, errors=errors, newline="")
+
+    monkeypatch.setattr(Path, "write_text", windows_write)
+    out = home / "bin"
+    for _ in range(2):
+        written = _launchers._ensure_windows_install_launchers(repo, out)
+        assert _launchers._windows_publication_status(repo, out, written) == (True, set())
+        for name in _launchers.ENTRY_POINTS:
+            target = out / f"{name}.cmd"
+            assert b"\r\r\n" not in target.read_bytes()
+            assert _launchers._owns_windows_launcher(target, repo)
+    # Older default-newline writers emitted CRCRLF. Those blank lines have
+    # no batch behavior, so a same-install wrapper must still be migratable.
+    target = out / "hermes.cmd"
+    target.write_bytes(target.read_bytes().replace(b"\r\n", b"\r\r\n"))
+    assert _launchers._owns_windows_launcher(target, repo)
+    written = _launchers._ensure_windows_install_launchers(repo, out)
+    assert _launchers._windows_publication_status(repo, out, written) == (True, set())
+    assert b"\r\r\n" not in target.read_bytes()
+
+
+@pytest.mark.platforms("linux")
+def test_windows_customized_cmd_is_not_overwritten(tmp_path, monkeypatch):
+    repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    _write_windows_store_python(home, "python-A")
+    monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+    out = home / "bin"
+    _launchers._ensure_windows_install_launchers(repo, out)
+    target = out / "hermes.cmd"
+    original = target.read_bytes() + b"echo user-custom-post-action\r\n"
+    target.write_bytes(original)
+    assert not _launchers._owns_windows_launcher(target, repo)
+    written = _launchers._ensure_windows_install_launchers(repo, out)
+    assert target.read_bytes() == original
+    assert all(Path(path).stem != "hermes" for path in written)
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("payload", ["bootstrap", "path"])
+def test_posix_inert_ownership_mentions_are_preserved(tmp_path, monkeypatch, payload):
+    import shlex
+
+    repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    out = home / "bin"
+    out.mkdir()
+    target = out / "hermes"
+    marker = (f"sys.path.insert(0, {str(repo)!r})" if payload == "bootstrap"
+              else str(repo / "venv/bin/python"))
+    original = f"#!/bin/sh\nexec /bin/echo {shlex.quote(marker)} \"$@\"\n"
+    target.write_text(original, encoding="utf-8")
+    assert not _launchers._owns_launcher(target, repo)
+    assert not _launchers._publish_conveniences(repo, out, ["hermes"])
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("legacy", [False, True])
+def test_windows_mixed_root_launcher_is_preserved(tmp_path, monkeypatch, legacy):
+    repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    python = _write_windows_store_python(home, "python-A")
+    if legacy:
+        python = repo / "venv" / "Scripts" / "python.exe"
+    monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+    out = home / "bin"
+    out.mkdir()
+    target = out / "hermes.exe"
+    script = (f"import sys\nsys.path.insert(0, {str(repo)!r})\n"
+              f"sys.path.insert(0, {str(tmp_path / 'primary')!r})\n"
+              "import hermes_bootstrap\nfrom hermes_cli.main import main\nsys.exit(main())\n")
+    _write_legacy_windows_exe(target, python, script)
+    before = target.read_bytes()
+    assert not _launchers._owns_windows_launcher(target, repo)
+    written = _launchers._ensure_windows_install_launchers(repo, out)
+    assert target.read_bytes() == before
+    assert not (out / "hermes.cmd").exists()
+    assert all(Path(path).stem != "hermes" for path in written)
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("legacy", ["venv", "distlib", "pm"])
+def test_windows_same_install_legacy_exe_migrates_without_distlib(tmp_path, monkeypatch, legacy):
+    repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    store_python = _write_windows_store_python(home, "python-A")
+    monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+    out = home / "bin"
+    out.mkdir()
+    for name, (module, func) in _launchers.ENTRY_POINTS.items():
+        if legacy in {"venv", "distlib"}:
+            python = repo / "venv" / "Scripts" / "python.exe"
+            script = (f"from {module} import {func}\n"
+                      f"import sys\nif __name__ == '__main__':\n    sys.exit({func}())\n")
+            if legacy == "distlib":
+                script = (f"import re, sys\nfrom {module} import {func}\n"
+                          "if __name__ == '__main__':\n"
+                          "    sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\n"
+                          f"    sys.exit({func}())\n")
+        else:
+            python = store_python
+            script = (f"import sys\nsys.path.insert(0, {str(repo)!r})\n"
+                      f"import hermes_bootstrap\nfrom {module} import {func}\n"
+                      f"sys.exit({func}())\n")
+        _write_legacy_windows_exe(out / f"{name}.exe", python, script)
+
+    written = _launchers._ensure_windows_install_launchers(repo, out)
+    assert {Path(path).name for path in written} == {"hermes.cmd", "hermes-acp.cmd"}
+    for name in _launchers.ENTRY_POINTS:
+        assert not (out / f"{name}.exe").exists()
+        assert str(store_python) in (out / f"{name}.cmd").read_text(encoding="utf-8")
+    assert _launchers._windows_publication_status(repo, out, written) == (True, set())
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("legacy", ["venv", "pm"])
+def test_windows_boot_repair_migrates_same_install_legacy_exe(tmp_path, monkeypatch, legacy):
+    from hermes_cli._install_repair import ensure_windows_bin_launchers
+
+    repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    managed = home / "hermes-agent"
+    shutil.move(repo, managed)
+    (managed / "venv" / "Scripts").mkdir(parents=True)
+    store_python = _write_windows_store_python(home, "python-A")
+    monkeypatch.setattr(_launchers, "_is_windows", lambda: True)
+    monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+    out = home / "bin"
+    out.mkdir()
+    for name, (module, func) in _launchers.ENTRY_POINTS.items():
+        if legacy == "venv":
+            python = managed / "venv" / "Scripts" / "python.exe"
+            script = f"import sys\nfrom {module} import {func}\nif __name__ == '__main__':\n    sys.exit({func}())\n"
+        else:
+            python = store_python
+            script = (f"import sys\nsys.path.insert(0, {str(managed)!r})\n"
+                      f"import hermes_bootstrap\nfrom {module} import {func}\nsys.exit({func}())\n")
+        _write_legacy_windows_exe(out / f"{name}.exe", python, script)
+
+    restored = ensure_windows_bin_launchers(managed, windows=True, user_path_entries=[])
+    assert {Path(path).name for path in restored} == {"hermes.cmd", "hermes-acp.cmd"}
+    assert all(not (out / f"{name}.exe").exists() for name in _launchers.ENTRY_POINTS)
+    assert all(str(store_python) in (out / f"{name}.cmd").read_text(encoding="utf-8")
+               for name in _launchers.ENTRY_POINTS)
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("foreign", ["venv", "shared-store", "marker-comment", "marker-string", "cmd-comment"])
+def test_windows_foreign_legacy_or_inert_marker_is_not_claimed(tmp_path, monkeypatch, foreign):
+    repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    shared_store_python = _write_windows_store_python(home, "python-A")
+    monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+    out = home / "bin"
+    out.mkdir()
+    target = out / ("hermes.cmd" if foreign == "cmd-comment" else "hermes.exe")
+    other = tmp_path / "other-install"
+    marker = f"sys.path.insert(0, {str(repo)!r})"
+    if foreign == "venv":
+        script = "from hermes_cli.main import main\nimport sys\nsys.exit(main())\n"
+        python = other / "venv" / "Scripts" / "python.exe"
+    elif foreign == "shared-store":
+        script = (f"import sys\nsys.path.insert(0, {str(other)!r})\n"
+                  "import hermes_bootstrap\nfrom hermes_cli.main import main\nsys.exit(main())\n")
+        python = shared_store_python  # interpreter identity alone is not ownership
+    else:
+        inert = (f"# {marker}\n" if foreign in ("marker-comment", "cmd-comment")
+                 else f"note = {marker!r}\n")
+        script = ("import sys\n" + inert + "import hermes_bootstrap\n"
+                  "from hermes_cli.main import main\nsys.exit(main())\n")
+        python = shared_store_python
+    if foreign == "cmd-comment":
+        encoded = base64.b64encode(script.encode()).decode("ascii")
+        target.write_text(f'@echo off\r\n"{python}" -I -c "import base64; exec(base64.b64decode(\'{encoded}\'))" %*\r\n', encoding="utf-8")
+    else:
+        _write_legacy_windows_exe(target, python, script)
+    before = target.read_bytes()
+
+    written = _launchers._ensure_windows_install_launchers(repo, out)
+    assert all(Path(path).stem != "hermes" for path in written)
+    assert target.read_bytes() == before
+    assert _launchers._windows_publication_status(repo, out, written) == (True, {"hermes"})
+
+
+@pytest.mark.platforms("linux")
+def test_windows_branch_simulation_preserves_foreign_and_refreshes_owned_launchers(
+    tmp_path, monkeypatch
+):
+    """Exercise Windows publication policy on Linux without pretending to run Windows."""
+    repo, home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    python_a = _write_windows_store_python(home, "python-A")
+    monkeypatch.setattr(_launchers, "_load_script_maker", lambda: None)
+
+    foreign_out = home / "bin"
+    foreign_out.mkdir()
+    foreign_exe = foreign_out / "hermes.exe"
+    foreign_exe.write_bytes(b"foreign executable")
+    foreign_cmd = foreign_out / "hermes-acp.cmd"
+    foreign_cmd.write_text("@echo off\r\necho foreign\r\n", encoding="utf-8")
+    before = {path: path.read_bytes() for path in (foreign_exe, foreign_cmd)}
+
+    assert _launchers._ensure_windows_install_launchers(repo, foreign_out) == []
+    assert {path: path.read_bytes() for path in before} == before
+    ready, skipped = _launchers._windows_publication_status(repo, foreign_out, [])
+    assert ready is True
+    assert skipped == {"hermes", "hermes-acp"}
+    monkeypatch.setattr(_launchers, "ensure_install_launchers", _launchers._ensure_windows_install_launchers)
+    monkeypatch.setattr(_launchers, "_register_windows_user_path", lambda _directory: "present")
+    exposure = _launchers._expose_windows_user_bin(repo, create=True)
+    assert exposure["ok"] is True
+    assert exposure["written"] == []
+
+    owned_out = tmp_path / "owned-bin"
+    owned_out.mkdir()
+    owned_exe = owned_out / "hermes.exe"
+    _write_windows_exe_launcher(owned_exe, repo, "hermes", python_a)
+    assert _launchers._owns_launcher(owned_exe, repo)
+    first = _launchers._ensure_windows_install_launchers(repo, owned_out)
+    assert {Path(path).name for path in first} == {"hermes.exe", "hermes-acp.cmd"}
+    assert all(_launchers._owns_launcher(Path(path), repo) for path in first)
+
+    python_b = _write_windows_store_python(home, "python-B")
+    refreshed = _launchers._ensure_windows_install_launchers(repo, owned_out)
+    assert {Path(path).name for path in refreshed} == {"hermes.cmd", "hermes-acp.cmd"}
+    assert not owned_exe.exists()
+    assert all(str(python_b) in Path(path).read_text(encoding="utf-8") for path in refreshed)
+    assert str(python_a) not in (owned_out / "hermes.cmd").read_text(encoding="utf-8")
+
+    local = repo / ".hermes" / "bin"
+    local_written = _launchers._ensure_windows_install_launchers(repo, local)
+    assert {Path(path).name for path in local_written} == {"hermes.cmd", "hermes-acp.cmd"}
+    assert all(str(python_b) in Path(path).read_text(encoding="utf-8") for path in local_written)
+    local_ready, local_skipped = _launchers._windows_publication_status(repo, local, local_written)
+    assert local_ready is True
+    assert local_skipped == set()
+
+
+@pytest.mark.platforms("windows")
+def test_windows_linked_worktree_cli_preserves_primary_shared_launchers(tmp_path, monkeypatch):
+    repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    out = tmp_path / "user-bin"
+    git_env = dict(os.environ)
+    git_env.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    })
+
+    git_executable = shutil.which("git") or "git"
+    if sys.platform == "win32":
+        program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        for relative in (("Git", "cmd", "git.exe"), ("Git", "bin", "git.exe")):
+            candidate = program_files.joinpath(*relative)
+            if candidate.is_file():
+                git_executable = str(candidate)
+                break
+        git_env.setdefault("SystemRoot", r"C:\Windows")
+        git_env.setdefault("ComSpec", r"C:\Windows\system32\cmd.exe")
+
+    def git(*args, cwd=repo):
+        return subprocess.run(
+            [git_executable, *args], cwd=cwd, env=git_env, capture_output=True, text=True,
+            check=True, timeout=30,
+        )
+
+    def publish_from_installer(root, destination):
+        return subprocess.run(
+            [sys.executable, "-I", "-X", "utf8", str(root / "hermes_cli/_launchers.py"), str(destination)],
+            cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.name", "Hermes Test")
+    git("config", "user.email", "hermes-test@example.invalid")
+    git("config", "core.hooksPath", os.devnull)
+    git("add", "-A")
+    git("commit", "-q", "-m", "fixture")
+
+    primary_publish = publish_from_installer(repo, out)
+    assert primary_publish.returncode == 0, primary_publish.stdout + primary_publish.stderr
+    assert len(primary_publish.stdout.splitlines()) == len(_launchers.ENTRY_POINTS)
+    primary_files = {
+        name: next(path for path in (out / f"{name}.exe", out / f"{name}.cmd") if path.is_file())
+        for name in _launchers.WINDOWS_BIN_LAUNCHERS
+    }
+    original = {path: path.read_bytes() for path in primary_files.values()}
+    linked = tmp_path / "linked"
+    git("worktree", "add", "--detach", str(linked))
+
+    linked_publish = publish_from_installer(linked, out)
+    assert linked_publish.returncode == 0, linked_publish.stdout + linked_publish.stderr
+    assert not linked_publish.stdout.strip()
+    assert "leaving launcher(s) owned by another install unchanged" in linked_publish.stderr
+    assert {path: path.read_bytes() for path in original} == original
+
 
 
 def test_materializer_cli_refuses_missing_store_without_publishing(tmp_path, monkeypatch):

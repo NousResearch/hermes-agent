@@ -1543,13 +1543,24 @@ class TurnRunner:
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
+            outcome = _approval_send_outcome(fut, timeout=15)
+            if outcome == "sent":
+                # Text prompts have no card to edit when approval times out.
                 register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+                return
+            if outcome == "ambiguous":
+                # A timeout or lost ack may mean the prompt was posted. Keep the
+                # existing approval armed for a late answer; never send again.
+                logger.warning("Approval text send is possibly delivered; keeping the prompt armed")
+                return
+            if outcome == "declined":
+                raise _ExecApprovalDeclined("exec approval undeliverable: connector egress declined this destination")
+            raise RuntimeError("exec approval text send failed")
         except Exception as e:
+            # The central waiter removes an undeliverable entry only if this
+            # callback raises. Returning here would wait for an unseen prompt.
             logger.error("Failed to send approval request: %s", e)
+            raise
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

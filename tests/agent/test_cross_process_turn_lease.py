@@ -172,27 +172,30 @@ def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
     ]
 
 
+_LATEST = [{"role": "user", "content": "durable latest"}]
+
+
 @pytest.mark.parametrize(
-    "row_before, row_after, reload_rows, expect_reload, expect_row_known",
+    "row_after, reload_rows, expect_reload",
     [
-        # A fresh id that is still fresh keeps the caller's in-memory seed.
-        (False, False, [], False, False),
+        # No row after the wait: keep the caller's seed, even if a reload would return rows.
+        (False, _LATEST, False),
         # The holder created the row meanwhile: reload it, and skip the redundant create.
-        (False, True, [{"role": "user", "content": "durable latest"}], True, True),
-        # The holder deleted the row meanwhile: there is nothing to reload.
-        (True, False, [], False, False),
+        (True, _LATEST, True),
+        # A proven row wins even when its transcript is empty.
+        (True, [], True),
         # An unreadable row that reloads nothing keeps the caller's history, carried input included.
-        (True, "raises", [], False, False),
+        ("raises", [], False),
     ],
-    ids=["still-fresh", "created-during-wait", "deleted-during-wait", "unreadable-empty"],
+    ids=["absent-after-wait", "created-during-wait", "created-empty-during-wait", "unreadable-empty"],
 )
 def test_waited_admission_uses_the_row_read_after_the_lease(
-    monkeypatch, row_before, row_after, reload_rows, expect_reload, expect_row_known,
+    monkeypatch, row_after, reload_rows, expect_reload,
 ):
     """After a contended wait, the row state read under the lease decides reload and row flag."""
     from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
 
-    db = _DB(session_exists=row_before)
+    db = _DB()
 
     def locked_get_session(_session_id):
         raise sqlite3.OperationalError("database is locked")
@@ -226,7 +229,7 @@ def test_waited_admission_uses_the_row_read_after_the_lease(
         assert observed["history"] == reload_rows + [carried]
     else:
         assert observed["history"] is seed
-    assert observed["row_known"] is expect_row_known
+    assert observed["row_known"] is (row_after is True)
 
 
 def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkeypatch):

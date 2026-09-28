@@ -737,39 +737,51 @@ export type PreviewViewMode = 'diff' | 'rendered' | 'source'
  * support so the scrubber can seek and playback does not load the whole file
  * into memory. Against a remote gateway the same helper proxies the bytes
  * through the connection's own auth.
+ *
+ * `reloadKey` is the preview watch's change counter: when the file is rewritten
+ * in place the source is re-resolved and the <audio> element remounted, since an
+ * unchanged `src` string would never make Chromium re-request the bytes.
  */
-function AudioPreviewPlayer({ filePath, label }: { filePath: string; label: string }) {
+function AudioPreviewPlayer({ filePath, label, reloadKey }: { filePath: string; label: string; reloadKey: number }) {
   const { t } = useI18n()
-  const [src, setSrc] = useState('')
-  const [failed, setFailed] = useState(false)
+
+  const [player, setPlayer] = useState<{ src: string; status: 'failed' | 'loading' | 'ready' }>({
+    src: '',
+    status: 'loading'
+  })
 
   useEffect(() => {
     let active = true
 
-    setFailed(false)
-    setSrc('')
+    setPlayer({ src: '', status: 'loading' })
 
     void resolveMediaPlaybackSrc(filePath)
-      .then(value => {
+      .then(src => {
         if (active) {
-          setSrc(value)
+          setPlayer(src ? { src, status: 'ready' } : { src: '', status: 'failed' })
         }
       })
       .catch(() => {
         if (active) {
-          setFailed(true)
+          setPlayer({ src: '', status: 'failed' })
         }
       })
 
     return () => {
       active = false
     }
-  }, [filePath])
+  }, [filePath, reloadKey])
+
+  // Resolving the source is async, so the first commit is always `loading`;
+  // only a rejected resolve or an <audio> error counts as a failure.
+  if (player.status === 'loading') {
+    return <PageLoader label={t.preview.loading} />
+  }
 
   // The bridge can be absent (older Electron main, or a non-desktop host);
   // resolveMediaPlaybackSrc then returns a plain file:// path, which the app
   // origin cannot load. Fail visibly with a way out rather than an inert player.
-  if (failed || !src) {
+  if (player.status === 'failed') {
     return (
       <div className="grid max-w-sm justify-items-center gap-3 text-center">
         <div className="truncate text-sm font-medium text-foreground">{label}</div>
@@ -791,9 +803,10 @@ function AudioPreviewPlayer({ filePath, label }: { filePath: string; label: stri
       <audio
         className="block w-full"
         controls
-        onError={() => setFailed(true)}
+        key={reloadKey}
+        onError={() => setPlayer({ src: '', status: 'failed' })}
         preload="metadata"
-        src={src}
+        src={player.src}
       />
     </div>
   )
@@ -1214,7 +1227,7 @@ export function LocalFilePreview({
   if (isAudio) {
     return (
       <div className="flex h-full w-full items-center justify-center overflow-auto bg-transparent p-4">
-        <AudioPreviewPlayer filePath={filePath} label={target.label} />
+        <AudioPreviewPlayer filePath={filePath} label={target.label} reloadKey={reloadKey} />
       </div>
     )
   }

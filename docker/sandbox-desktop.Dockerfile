@@ -10,13 +10,27 @@
 # Published as nousresearch/hermes-sandbox:desktop by .github/workflows/sandbox-image.yml
 # on releases and manual dispatch only: it carries no Hermes code, so it does not track main.
 # The tag lives in the ARG so CI and a local build read one place; hadolint cannot
-# see through the substitution, hence the inline ignore.
-ARG SANDBOX_BASE=nikolaik/python-nodejs:python3.13-nodejs26
+# see through the substitution, hence the inline ignore. The default is pinned to
+# the multi-arch manifest digest so the base cannot drift under a rebuild: a tag
+# alone resolves different content over time (the same discipline the runtime
+# Dockerfile applies to debian:13.4). To move bases, re-resolve the index digest
+# (docker buildx imagetools inspect) and paste it here.
+ARG SANDBOX_BASE=nikolaik/python-nodejs:python3.13-nodejs26@sha256:2607a06ae1c2dc15d74329d913486e75df2c93584546f7c5a88547a597bd1642
 # hadolint ignore=DL3006
 FROM ${SANDBOX_BASE}
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 ARG CUA_DRIVER_VERSION=0.28.2
+# sha256 of the release asset cua-driver-rs-<version>-linux-<arch>-binary.tar.gz,
+# re-verified on every build before extraction. To bump the driver, re-hash both
+# assets (curl <url> | sha256sum) and paste them here.
+ARG CUA_DRIVER_SHA256_x86_64=a1d99fd04bb4927ef5ffdbe60eb91ed8b51a2bab60e10fc604a75bd59ce69c3e
+ARG CUA_DRIVER_SHA256_arm64=55e8a32839a4ac369a773df4dac87b345bd4567779221ade4a5e39223a45a2e8
+# Exact npm versions, re-pinned on bump: a floating spec (^range, major-only tag)
+# resolves whatever the registry serves at build time, so identical inputs never
+# produced identical images.
+ARG PLAYWRIGHT_VERSION=1.63.0
+ARG AGENT_BROWSER_VERSION=0.26.0
 ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -50,10 +64,10 @@ RUN apt-get -o Acquire::Retries=3 update && \
 # gateway resolves (tools/browser_tool.py AGENT_BROWSER_NPX_SPEC), scripts off:
 # the first browser_navigate in a fresh sandbox must not wait on an npm fetch.
 RUN for i in 1 2 3; do \
-        npx --yes playwright@1 install --with-deps chromium && break || \
+        npx --yes "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium && break || \
         { [ "$i" = 3 ] && exit 1; echo "playwright chromium install failed (attempt $i); retrying in 10s"; sleep 10; }; \
     done && chmod -R a+rX /opt/playwright && \
-    npm install -g --ignore-scripts --no-audit --fetch-retries=5 "agent-browser@^0.26.0" && \
+    npm install -g --ignore-scripts --no-audit --fetch-retries=5 "agent-browser@${AGENT_BROWSER_VERSION}" && \
     agent-browser --version
 
 # cua-driver: computer_use's MCP driver. Pinned release tarball from the
@@ -64,9 +78,13 @@ RUN set -eu; \
         arm64) arch=arm64 ;; \
         *) echo "unsupported TARGETARCH ${TARGETARCH}"; exit 1 ;; \
     esac; \
-    mkdir -p /opt/cua-driver; \
-    curl -fsSL "https://github.com/trycua/cua/releases/download/cua-driver-rs-v${CUA_DRIVER_VERSION}/cua-driver-rs-${CUA_DRIVER_VERSION}-linux-${arch}-binary.tar.gz" \
-        | tar -xz -C /opt/cua-driver; \
+    mkdir -p /opt/cua-driver /tmp/cua-driver-dl; \
+    curl -fsSL --retry 3 -o /tmp/cua-driver-dl/cua-driver.tar.gz \
+        "https://github.com/trycua/cua/releases/download/cua-driver-rs-v${CUA_DRIVER_VERSION}/cua-driver-rs-${CUA_DRIVER_VERSION}-linux-${arch}-binary.tar.gz"; \
+    sha_var="CUA_DRIVER_SHA256_${arch}"; \
+    echo "${!sha_var}  /tmp/cua-driver-dl/cua-driver.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/cua-driver-dl/cua-driver.tar.gz -C /opt/cua-driver; \
+    rm -rf /tmp/cua-driver-dl; \
     ln -sf /opt/cua-driver/cua-driver /usr/local/bin/cua-driver; \
     /usr/local/bin/cua-driver --version
 

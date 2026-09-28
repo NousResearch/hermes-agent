@@ -88,6 +88,10 @@ gateway:
     branched_many:         "⑂ Új ág: **{title}** ({count} üzenet másolva)\nEredeti: `{parent}`\nÁg: `{new}`\nHasználd a `/resume` parancsot az eredetihez való visszatéréshez."
     branched_thread_one:   "⑂ Elágazás **{title}** néven új szálban ({count} üzenet másolva)\nSzál: {thread}\nEredeti: `{parent}` — ez a csevegés rajta marad\nÁg: `{new}`\nA `/branch --here` ebben a csevegésben ágaztat el."
     branched_thread_many:  "⑂ Elágazás **{title}** néven új szálban ({count} üzenet másolva)\nSzál: {thread}\nEredeti: `{parent}` — ez a csevegés rajta marad\nÁg: `{new}`\nA `/branch --here` ebben a csevegésben ágaztat el."
+    branched_one_untitled: "⑂ Új ág létrehozva ({count} üzenet másolva)\nEredeti: `{parent}`\nÁg: `{new}`\nHasználd a `/resume` parancsot az eredetihez való visszatéréshez."
+    branched_many_untitled: "⑂ Új ág létrehozva ({count} üzenet másolva)\nEredeti: `{parent}`\nÁg: `{new}`\nHasználd a `/resume` parancsot az eredetihez való visszatéréshez."
+    branched_thread_one_untitled: "⑂ Elágazás új szálban ({count} üzenet másolva)\nSzál: {thread}\nEredeti: `{parent}` — ez a csevegés rajta marad\nÁg: `{new}`\nA `/branch --here` ebben a csevegésben ágaztat el."
+    branched_thread_many_untitled: "⑂ Elágazás új szálban ({count} üzenet másolva)\nSzál: {thread}\nEredeti: `{parent}` — ez a csevegés rajta marad\nÁg: `{new}`\nA `/branch --here` ebben a csevegésben ágaztat el."
     thread_fallback:       "Itt nem sikerült szálat létrehozni, így az ág e csevegés munkamenetét váltotta le."
 
   commands:

@@ -34,6 +34,18 @@ _RESET_CLEANUP_TIMEOUT_S = 30.0
 # chat_type values whose session key is per-user (DM-like), incl. the unknown/blank case.
 _DM_CHAT_TYPES = {"dm", "direct", "private", ""}
 
+# (thread branch, one message, title on the row) -> reply; an untitled reply never names the title.
+_BRANCH_REPLY_KEYS = {
+    (False, True, True): "gateway.branch.branched_one",
+    (False, False, True): "gateway.branch.branched_many",
+    (False, True, False): "gateway.branch.branched_one_untitled",
+    (False, False, False): "gateway.branch.branched_many_untitled",
+    (True, True, True): "gateway.branch.branched_thread_one",
+    (True, False, True): "gateway.branch.branched_thread_many",
+    (True, True, False): "gateway.branch.branched_thread_one_untitled",
+    (True, False, False): "gateway.branch.branched_thread_many_untitled",
+}
+
 _BRANCH_COPIED_FIELDS = ("content", "tool_calls", "tool_call_id", "finish_reason", "reasoning",
                          "reasoning_content", "reasoning_details", "codex_reasoning_items",
                          "codex_message_items", "timestamp")
@@ -1045,12 +1057,14 @@ class GatewaySessionCommandsMixin:
         # switch_session() records the peer would otherwise leave the branch unroutable.
         # The child sends the parent's exact system prompt: a row without one makes the branch's
         # first turn rebuild (re-probing the workspace) and forfeits the warm cache the copied
-        # transcript buys.
+        # transcript buys. The title goes in the same transaction; one the row cannot take leaves
+        # the branch untitled, and the reply says so.
         try:
             parent = await self._session_db.get_session(parent_session_id)
-            await self._session_db.create_session(
+            title_error, committed_title = await self._session_db.create_session_with_title(
                 session_id=new_session_id,
-                source=source.platform.value if source.platform else "gateway",
+                source=source.platform.value if source.platform else "gateway", title=branch_title,
+                return_title=True,
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 model_config={"_branched_from": parent_session_id},
                 parent_session_id=parent_session_id, user_id=dest_source.user_id,
@@ -1060,16 +1074,24 @@ class GatewaySessionCommandsMixin:
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)
             return t("gateway.branch.create_failed", error=e)
-
         # Chunked transactions; best-effort — a failed copy still yields a usable (partial) branch.
-        with contextlib.suppress(Exception):
+        try:
             # Copy conversation history to the new session in bounded-chunk transactions (see #23254): one
             # txn per row was the removed write-amplification pattern, and a history can be hundreds of
             # rows.
             await self._session_db.append_messages_batch(
                 new_session_id, [_branch_row(msg) for msg in history], chunk_rows=500)
-        with contextlib.suppress(Exception):
-            await self._session_db.set_session_title(new_session_id, branch_title)
+        except Exception as e:
+            logger.error("Branch history copy into %s failed: %s", new_session_id, e)
+        # Chunks commit independently, so only the durable child can say what was copied.
+        try:
+            copied = await self._session_db.get_messages(new_session_id)
+        except Exception as e:
+            logger.error("Failed to recount branch history of %s: %s", new_session_id, e)
+            return t("gateway.branch.switch_failed")
+        msg_count = sum(row.get("role") == "user" for row in copied)
+        titled = bool(committed_title)
+        title_note = "\n" + t("gateway.shared.warn_passthrough", error=title_error) if title_error else ""
         if not in_place:
             # Materialize the thread's own entry, then point IT at the clone; ``session_key`` (this
             # chat) is never touched, so the original conversation stays live here.
@@ -1079,16 +1101,14 @@ class GatewaySessionCommandsMixin:
             return t("gateway.branch.switch_failed")
         self._clear_session_boundary_security_state(dest_key)
         self._evict_cached_agent(dest_key)
-        msg_count = len([m for m in history if m.get("role") == "user"])
+        key = _BRANCH_REPLY_KEYS[(not in_place, msg_count == 1, titled)]
         if in_place:
-            key = "gateway.branch.branched_one" if msg_count == 1 else "gateway.branch.branched_many"
-            reply = t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id)
+            reply = t(key, title=committed_title, count=msg_count, parent=parent_session_id, new=new_session_id)
             if not stay_here and source.platform in BRANCH_THREAD_PLATFORMS:
                 reply += "\n" + t("gateway.branch.thread_fallback")
-            return reply
-        key = "gateway.branch.branched_thread_one" if msg_count == 1 else "gateway.branch.branched_thread_many"
-        return t(key, title=branch_title, count=msg_count, parent=parent_session_id, new=new_session_id,
-                 thread=format_thread_ref(source.platform, dest_source.thread_id))
+            return reply + title_note
+        return t(key, title=committed_title, count=msg_count, parent=parent_session_id, new=new_session_id,
+                 thread=format_thread_ref(source.platform, dest_source.thread_id)) + title_note
 
     async def _branch_open_thread(self, source: SessionSource, title: str) -> Optional[SessionSource]:
         """Open the sibling thread a plain ``/branch`` clones into; the destination source, or

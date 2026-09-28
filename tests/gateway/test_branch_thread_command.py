@@ -112,3 +112,59 @@ async def test_here_or_no_thread_branches_in_place(store, text, adapter):
         # ``--here`` never even asks the platform for a thread.
         assert adapter.calls == ([] if "--here" in text else [("123", "side quest")])
     assert "side quest" in reply
+
+
+@pytest.mark.asyncio
+async def test_branch_reply_names_only_the_title_the_child_row_holds(store):
+    """``/branch <name>`` with a name another session holds: the child is created untitled, and the
+    reply must not claim the name and must say why it was refused."""
+    source = _discord_channel_source()
+    parent = _seed(store, source)
+    store._db.create_session("holder", "discord")
+    store._db.set_session_title("holder", "taken")
+    runner = _runner(store, None)
+
+    reply = await runner._handle_branch_command(MessageEvent(text="/branch taken", source=source))
+
+    child = store.get_or_create_session(source)
+    assert child.session_id != parent.session_id
+    assert store._db.get_session_title(child.session_id) is None
+    assert "**taken**" not in reply and "already in use" in reply
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command, title, reply_start", [
+    ("/branch A  B", "A B", "⑂ Branched to **A B**"),
+    ("/branch \u200b", None, "⑂ Branched ("),
+])
+async def test_branch_reply_uses_committed_title(store, command, title, reply_start):
+    source = _discord_channel_source()
+    _seed(store, source)
+    runner = _runner(store, None)
+
+    reply = await runner._handle_branch_command(MessageEvent(text=command, source=source))
+
+    child = store.get_or_create_session(source)
+    assert store._db.get_session(child.session_id)["title"] == title
+    assert reply.startswith(reply_start)
+    assert "None" not in reply
+
+
+@pytest.mark.asyncio
+async def test_branch_reply_keeps_title_accepted_at_creation_after_rename(store, monkeypatch):
+    source = _discord_channel_source()
+    _seed(store, source)
+    runner = _runner(store, None)
+    create = runner._session_db.create_session_with_title
+
+    async def rename_after_create(*args, **kwargs):
+        result = await create(*args, **kwargs)
+        store._db.set_session_title(kwargs["session_id"], "renamed later")
+        return result
+
+    monkeypatch.setattr(runner._session_db, "create_session_with_title", rename_after_create)
+    reply = await runner._handle_branch_command(MessageEvent(text="/branch original", source=source))
+
+    child = store.get_or_create_session(source)
+    assert store._db.get_session_title(child.session_id) == "renamed later"
+    assert reply.startswith("⑂ Branched to **original**")

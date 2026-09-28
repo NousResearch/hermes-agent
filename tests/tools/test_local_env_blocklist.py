@@ -1572,7 +1572,10 @@ class TestSanePathIncludesHomebrew:
         """
         from tools.environments import local as local_mod
         from tools.environments.local import _make_run_env
-        windows_env = {"Path": r"C:\Windows\System32;C:\Program Files\Git\bin"}
+        # Keep the real home vars: the adapter-secret lookup resolves the profile home.
+        windows_env = {"Path": r"C:\Windows\System32;C:\Program Files\Git\bin",
+                       **{k: os.environ[k] for k in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HERMES_HOME")
+                          if k in os.environ}}
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
         with patch.object(local_mod.os, "environ", windows_env):
             result = _make_run_env({})

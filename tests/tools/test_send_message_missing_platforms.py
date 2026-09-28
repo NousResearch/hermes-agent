@@ -107,12 +107,18 @@ class TestSendMattermost:
             extra = {"url": "https://mm.example.com"}
             result = asyncio.run(_send_mattermost("tok-abc", extra, "channel1", "hello"))
 
-        assert result == {"success": True, "platform": "mattermost", "chat_id": "channel1", "message_id": "post123"}
+        assert result == {
+            "success": True, "platform": "mattermost", "chat_id": "channel1",
+            "message_id": "post123", "message_ids": ["post123"],
+            "total_media": 0, "delivered_media": 0, "failed_media": 0,
+            "media_delivered": False, "partial_failure": False,
+        }
         session.post.assert_called_once()
         call_kwargs = session.post.call_args
         assert call_kwargs[0][0] == "https://mm.example.com/api/v4/posts"
         assert call_kwargs[1]["headers"]["Authorization"] == "Bearer tok-abc"
-        assert call_kwargs[1]["json"] == {"channel_id": "channel1", "message": "hello"}
+        assert call_kwargs[1]["json"] == {"channel_id": "channel1", "message": "hello",
+                                         "props": {"disable_mentions": True}}
 
 
     def test_env_var_fallback(self):

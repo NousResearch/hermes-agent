@@ -148,6 +148,28 @@ class TestEditMessageFinalizeSignature:
 class TestSendOrEditMediaStripping:
     """Verify _send_or_edit strips MEDIA: before sending to the platform."""
 
+    @pytest.mark.parametrize("cursor", [" ▉", "x" * 600])
+    @pytest.mark.asyncio
+    async def test_minimum_post_limit_includes_bounded_cursor(self, cursor):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        from gateway.stream_consumer import _Tick
+        adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500}))
+        # Keep this regression independent of Mattermost's config plumbing.
+        adapter.MAX_MESSAGE_LENGTH = 500
+        adapter._api_post = AsyncMock(return_value={"id": "ack"})
+        cfg = StreamConsumerConfig(cursor=cursor)
+        consumer = GatewayStreamConsumer(adapter, "channel", cfg)
+        consumer._len_fn, consumer._safe_limit = consumer._resolve_length_budget()
+        assert 0 < consumer._safe_limit <= 500 - len(consumer.cfg.cursor)
+        consumer._accumulated = "a" * consumer._safe_limit
+        await consumer._push_update(_Tick())
+        posts = [call.args[1]["message"] for call in adapter._api_post.await_args_list]
+        assert len(posts) == 1
+        assert len(posts[0]) <= 500
+        assert cfg.cursor == cursor
+
+
     @pytest.mark.asyncio
     async def test_first_send_strips_media(self):
         """Initial send removes MEDIA: tags from visible text."""
@@ -586,7 +608,7 @@ class TestFinalResponseDeliveryGuard:
         """A failed first send disables edits: a preview sent after it could never be updated and
         would stay on screen truncated next to the final. Only the complete reply reaches the chat."""
         delivered = []
-        results = iter([SimpleNamespace(success=False, error="timeout")])
+        results = iter([SimpleNamespace(success=False, message_id=None, error="timeout")])
 
         async def send(**kw):
             result = next(results, None) or SimpleNamespace(success=True, message_id=f"m{len(delivered) + 1}")
@@ -1566,3 +1588,260 @@ class TestFlushPendingSync:
         consumer.finish()
         await task
 
+
+
+@pytest.mark.parametrize("done_on_first_tick", [True, False], ids=["done", "interim"])
+@pytest.mark.parametrize("lost_ack", [False, True],
+    ids=["acknowledged", "empty_timeout"])
+@pytest.mark.asyncio
+async def test_mattermost_run_first_overflow_preserves_failed_head(lost_ack, done_on_first_tick):
+    """Exercise run -> first-overflow -> HTTP, including the same old-PR failure path."""
+    import json
+    from gateway.config import PlatformConfig
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+    adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500, "reply_mode": "off"}))
+    posts, acknowledged = [], []
+
+    def post(url, **kwargs):
+        assert url.endswith("/api/v4/posts")
+        posts.append(kwargs["json"])
+        response = AsyncMock()
+        response.__aenter__.return_value = response
+        response.status = 201
+        mid = f"head-{len(posts)}"
+        response.json.return_value = {"id": mid}
+        if len(posts) == 2:
+            if not done_on_first_tick:
+                consumer.finish()
+            if lost_ack:
+                timeout = TimeoutError()
+                assert str(timeout) == ""
+                response.json.side_effect = timeout
+                return response
+        acknowledged.append(mid)
+        return response
+
+    adapter._session = MagicMock()
+    adapter._session.post.side_effect = post
+    consumer = GatewayStreamConsumer(adapter, "channel", config=StreamConsumerConfig(cursor=""))
+    source = "a" * 350 + "\n" + "b" * 350 + "\n" + "c" * 100
+    consumer.on_delta(source)
+    if done_on_first_tick:
+        consumer.finish()
+    await asyncio.wait_for(consumer.run(), timeout=2)
+    assert all(len(payload["message"]) <= 500 for payload in posts)
+    print("B2_HTTP_PROOF " + json.dumps({
+        "lost_ack": lost_ack, "done_on_first_tick": done_on_first_tick,
+        "post_messages": [payload["message"] for payload in posts],
+        "acknowledged": acknowledged, "preview_ids": sorted(consumer._preview_message_ids),
+        "message_id": consumer._message_id, "ambiguous": consumer._delivery_ambiguous,
+    }, sort_keys=True))
+    if lost_ack:
+        assert len(posts) == 2, "first-overflow replayed after an acknowledged head and empty-string timeout"
+        assert consumer._preview_message_ids == {"head-1"}
+        assert consumer._delivery_ambiguous
+    else:
+        assert len(posts) == 3
+        assert consumer._preview_message_ids == {"head-1", "head-2", "head-3"}
+        assert consumer.final_content_delivered
+        assert sum("a" * 350 in payload["message"] for payload in posts) == 1
+
+
+@pytest.mark.parametrize("done_on_first_tick", [True, False], ids=["done", "interim"])
+@pytest.mark.parametrize("lost_post", [1, 2], ids=["first-head", "confirmed-head"])
+@pytest.mark.asyncio
+async def test_initial_overflow_receipt_suppresses_final_replay(lost_post, done_on_first_tick):
+    """Start oversized, lose a head receipt, then use the gateway's final-send owner."""
+    from gateway.config import PlatformConfig
+    from gateway.session import SessionSource
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from tests.gateway.test_stale_finalize_suppression import _make_runner
+
+    adapter = MattermostAdapter(PlatformConfig(extra={
+        "url": "https://mattermost.example", "max_post_length": 500, "reply_mode": "thread",
+    }))
+    posts = []
+
+    def post(url, **kwargs):
+        assert url.endswith("/api/v4/posts")
+        posts.append(kwargs["json"])
+        response = AsyncMock()
+        response.__aenter__.return_value = response
+        response.__aexit__.return_value = False
+        response.status = 201
+        response.json.return_value = {"id": f"post-{len(posts)}"}
+        if len(posts) == lost_post:
+            response.json.side_effect = TimeoutError()
+            if not done_on_first_tick:
+                consumer.finish()
+        return response
+
+    adapter._session = MagicMock()
+    adapter._session.post.side_effect = post
+    root_response = AsyncMock()
+    root_response.__aenter__.return_value = root_response
+    root_response.status = 200
+    root_response.json.return_value = {"id": "root", "root_id": ""}
+    adapter._session.get.return_value = root_response
+    consumer = GatewayStreamConsumer(adapter, "channel", metadata={"thread_id": "root"},
+        config=StreamConsumerConfig(cursor="", edit_interval=0.01, buffer_threshold=1))
+    # Rendering shortens the first head; cleaning removes the voice marker and
+    # contracts newlines in the as-yet-unattempted suffix. Neither moves its receipt.
+    first = "![diagram](https://example.com/image) " + "a" * 300
+    second = "b" * 350
+    initial = "[[audio_as_voice]]" + first + "\n" + second + "\n\n\n" + "c" * 100
+    final = initial + " later tail"
+    consumer.on_delta(initial)
+    if done_on_first_tick:
+        consumer.finish()
+    await asyncio.wait_for(consumer.run(), timeout=2)
+    receipt = consumer._source_receipt
+    preview_ids = set(consumer._preview_message_ids)
+    confirmed_final = consumer.final_content_delivered
+
+    runner = _make_runner(adapter)
+    turn = SimpleNamespace(stream_consumer_holder=[consumer], session_key="initial-overflow",
+        source=SessionSource(platform=adapter.platform, chat_id="channel", chat_type="group", thread_id="root"))
+    response = {"final_response": final, "messages": [{"role": "assistant", "content": final}]}
+    await runner._run_agent_mark_streamed_delivery(response, turn)
+    post_count = len(posts)
+    await runner._run_agent_mark_streamed_delivery(response, turn)
+
+    assert receipt is not None and receipt["uncertain"], "initial overflow lost its source receipt"
+    protected = first if lost_post == 1 else first + "\n" + second
+    assert receipt["source"][:receipt["attempted_end"]] == protected
+    assert receipt["confirmed_end"] == (0 if lost_post == 1 else len(first + "\n"))
+    assert preview_ids == ({"post-1"} if lost_post == 2 else set())
+    assert not confirmed_final, "an unacknowledged head cannot confirm the final response"
+    assert response.get("already_sent") is True
+    assert response["final_response"] == response["messages"][0]["content"] == final
+    assert len(posts) == post_count, "repeated finalization replayed an uncertain span"
+    # Native head sealing retains boundary newlines on the wire; the source
+    # snapshot above independently proves the protected content's exact offset.
+    assert [p["message"] for p in posts[:lost_post]] == [
+        adapter.format_message(first), second + "\n\n",
+    ][:lost_post]
+    expected_suffix = consumer._clean_for_display(final)[len(protected):]
+    assert "".join(p["message"] for p in posts[lost_post:]) == adapter.format_message(expected_suffix)
+    assert all(len(p["message"]) <= 500 and p["root_id"] == "root"
+               and p["props"]["disable_mentions"] for p in posts)
+
+
+@pytest.mark.parametrize("suffix_rejected", [True, False, "permanent"],
+                         ids=["rejected", "uncertain", "permanent-rejection"])
+@pytest.mark.asyncio
+async def test_mattermost_rejected_source_suffix_remains_recoverable(suffix_rejected, caplog):
+    """A rejected suffix can recover; neither an uncertain head nor suffix can replay."""
+    from gateway.config import PlatformConfig
+    from gateway.session import SessionSource
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from tests.gateway.test_stale_finalize_suppression import _make_runner
+
+    adapter = MattermostAdapter(PlatformConfig(extra={
+        "url": "https://mattermost.example", "max_post_length": 500, "reply_mode": "off",
+    }))
+    posts, acknowledged = [], []
+
+    def post(url, **kwargs):
+        assert url.endswith("/api/v4/posts")
+        posts.append(kwargs["json"])
+        response = AsyncMock()
+        response.__aenter__.return_value = response
+        response.__aexit__.return_value = False
+        response.status = 201
+        response.json.return_value = {"id": f"post-{len(posts)}"}
+        if len(posts) == 1 or (len(posts) == 2 and not suffix_rejected):
+            response.json.side_effect = TimeoutError()
+        elif len(posts) == 2 or (suffix_rejected == "permanent" and len(posts) == 3):
+            response.status = 400
+            response.text.return_value = "post rejected"
+        else:
+            acknowledged.append(kwargs["json"]["message"])
+        return response
+
+    adapter._session = MagicMock()
+    adapter._session.post.side_effect = post
+    consumer = GatewayStreamConsumer(adapter, "channel", config=StreamConsumerConfig(cursor=""))
+    first = "![diagram](https://example.com/image) " + "a" * 300
+    initial = "[[audio_as_voice]]" + first + "\n" + "b" * 350
+    final = initial + "\n\n\nworld"
+    consumer.on_delta(initial)
+    consumer.finish()
+    await asyncio.wait_for(consumer.run(), timeout=2)
+    # The actual pre-sealing path owns raw source, not the shorter rendered image URL.
+    receipt = consumer._source_receipt
+    assert receipt is not None
+    assert receipt["attempted_end"] == len(first)
+    assert receipt["confirmed_end"] == 0
+    assert len(posts) == 1
+
+    runner = _make_runner(adapter)
+    turn = SimpleNamespace(stream_consumer_holder=[consumer], session_key="rejected-suffix",
+        source=SessionSource(platform=adapter.platform, chat_id="channel", chat_type="group"))
+    response = {"final_response": final, "messages": [{"role": "assistant", "content": final}]}
+    # The native gateway calls this owner once. A later reconciliation cannot
+    # rescue a rejected suffix after this call has suppressed the normal final.
+    await runner._run_agent_mark_streamed_delivery(response, turn)
+    assert response.get("already_sent") is True, "the uncertain prefix must not reach the full-send fallback"
+    assert response["final_response"] == response["messages"][0]["content"] == final
+
+    suffix = adapter.format_message(consumer._clean_for_display(final)[len(first):])
+    assert [p["message"] for p in posts] == [adapter.format_message(first)] + [suffix] * (
+        2 if suffix_rejected else 1
+    ), "definitive suffix rejection was marked handled and never recovered"
+    assert acknowledged == ([suffix] if suffix_rejected is True else [])
+    if suffix_rejected == "permanent":
+        assert "Source suffix undelivered after bounded recovery" in caplog.text
+    assert not consumer.final_content_delivered, "recovering a suffix does not confirm the uncertain head"
+    assert all(p["props"]["disable_mentions"] and len(p["message"]) <= 500 for p in posts)
+
+
+@pytest.mark.asyncio
+async def test_mattermost_rejected_first_send_after_preseal_failure_preserves_prefix():
+    """Rejected pre-sealing can reach a multi-post first send with a confirmed prefix."""
+    from gateway.config import PlatformConfig
+    from gateway.session import SessionSource
+    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from tests.gateway.test_stale_finalize_suppression import _make_runner
+
+    adapter = MattermostAdapter(PlatformConfig(extra={
+        "url": "https://mattermost.example", "max_post_length": 500, "reply_mode": "off",
+    }))
+    posts, acknowledged = [], []
+
+    def post(url, **kwargs):
+        assert url.endswith("/api/v4/posts")
+        posts.append(kwargs["json"])
+        response = AsyncMock()
+        response.__aenter__.return_value = response
+        response.__aexit__.return_value = False
+        response.status = 201
+        response.json.return_value = {"id": f"post-{len(posts)}"}
+        # Reject the sealed head and its generic retry. The got_done first-send
+        # then accepts its first slice but definitively rejects the second.
+        if len(posts) in {1, 2, 4}:
+            response.status = 400
+            response.text.return_value = "post rejected"
+        else:
+            acknowledged.append(kwargs["json"]["message"])
+        return response
+
+    adapter._session = MagicMock()
+    adapter._session.post.side_effect = post
+    consumer = GatewayStreamConsumer(adapter, "channel", config=StreamConsumerConfig(cursor=""))
+    source = "a" * 500 + "b" * 400
+    consumer.on_delta(source)
+    consumer.finish(source)
+    await asyncio.wait_for(consumer.run(), timeout=2)
+
+    runner = _make_runner(adapter)
+    turn = SimpleNamespace(stream_consumer_holder=[consumer], session_key="rejected-first-send",
+        source=SessionSource(platform=adapter.platform, chat_id="channel", chat_type="group"))
+    response = {"final_response": source, "messages": [{"role": "assistant", "content": source}]}
+    await runner._run_agent_mark_streamed_delivery(response, turn)
+
+    assert "".join(acknowledged) == source, "the confirmed prefix must survive while only its rejected tail recovers"
+    assert response.get("already_sent") is True, "a confirmed first-send prefix still permits full-text replay"
+    assert response["final_response"] == response["messages"][0]["content"] == source
+    assert all(p["props"]["disable_mentions"] and len(p["message"]) <= 500 for p in posts)

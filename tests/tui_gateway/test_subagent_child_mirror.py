@@ -54,10 +54,8 @@ def emits(server, monkeypatch):
 
 
 def _relay(server, event_type, **payload):
-    """Drive _on_tool_progress the way the delegate relay does. The parent record
-    exists like any live turn's does (launch profile: no profile_home) — a parent
-    that is already gone is the fail-closed path, covered in
-    test_subagent_mirror_profile_isolation.py."""
+    """Drive _on_tool_progress the way the delegate relay does; the parent record
+    exists like any live turn's does (launch profile: no profile_home)."""
     server._sessions.setdefault("parent-sid", {"session_key": "parent"})
     server._on_tool_progress(
         "parent-sid",
@@ -164,10 +162,10 @@ def test_stale_child_run_not_reported_active(server, emits):
     pinning running=true on every future lazy resume of that child."""
     server._active_child_runs[(None, "child-1")] = 0.0  # epoch — ancient
 
-    assert server._child_run_active("child-1") is False
+    assert server._child_run_active("child-1", None) is False
 
     _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
-    assert server._child_run_active("child-1") is True
+    assert server._child_run_active("child-1", None) is True
 
 
 def test_prompt_submit_rejected_while_child_run_active(server, emits):
@@ -190,7 +188,7 @@ def test_prompt_submit_rejected_while_child_run_active(server, emits):
     # Run completes → the same submit upgrades into a real conversation
     # (passes the guard; fails later only because this test stubs no agent).
     _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="ok")
-    assert server._child_run_active("child-1") is False
+    assert server._child_run_active("child-1", None) is False
 
 
 def test_active_child_runs_registry_tracks_liveness(server, emits):

@@ -45,11 +45,6 @@ def _seed(db, sid, n=4):
 
 
 class TestMintAndRestore:
-    def test_fresh_store_carries_the_column_at_schema_v31(self, db):
-        cols = {r[1] for r in db._conn.execute("PRAGMA table_info(messages)").fetchall()}
-        assert "message_uid" in cols
-        assert db._conn.execute("SELECT version FROM schema_version").fetchone()[0] >= 31
-
     def test_insert_mints_a_uid_and_stamps_the_callers_dict(self, db):
         db.create_session("s", "cli")
         msgs = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]

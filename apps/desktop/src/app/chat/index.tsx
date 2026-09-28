@@ -351,12 +351,14 @@ export function ChatRuntimeBoundary({
   const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
   const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
 
+  const { page: historicalPage, revealOlder } = history
+
   const expandWindow = useCallback(
     async (beforePrepend?: () => void) => {
       // A historical page is not the live tail: its older neighbours come from
       // the prompt range the rail already draws, never from store backfill.
-      if (history.page) {
-        return history.revealOlder(beforePrepend)
+      if (historicalPage) {
+        return revealOlder(beforePrepend)
       }
 
       // Network latency is not scroll intent. Capture at arrival, immediately
@@ -403,7 +405,7 @@ export function ChatRuntimeBoundary({
 
       return true
     },
-    [runtimeId, storedId, tailProfile, view, history.page, history.revealOlder]
+    [runtimeId, storedId, tailProfile, view, historicalPage, revealOlder]
   )
 
   // An open history page carries its own reach: its first prompt is the anchor,
@@ -412,8 +414,29 @@ export function ChatRuntimeBoundary({
   // still names older marks, so the entry point must stay live here too.
   const olderAvailable = history.page ? history.page.olderAvailable : windowed || restBackfillAvailable
   const isHistorical = Boolean(history.page)
+
+  // Source rows can coalesce or form hidden/sibling branches. Follow the
+  // canonical repository's visible chain rather than comparing raw source IDs.
+  const expectedRuntimeIds = useMemo(() => {
+    if (!isHistorical) {
+      return null
+    }
+
+    const parents = new Map(runtimeMessageRepository.messages.map(item => [item.message.id, item.parentId]))
+    const ids: string[] = []
+    let id = runtimeMessageRepository.headId
+
+    while (id) {
+      ids.push(id)
+      id = parents.get(id) ?? null
+    }
+
+    return ids.reverse().join('\n')
+  }, [isHistorical, runtimeMessageRepository])
+
   const newerAvailable = history.page?.newerAvailable ?? false
-  const { revealRow, returnToLatest } = history
+  const leadingRowId = history.page?.leadingRowId ?? null
+  const { revealRow, returnToLatest, revealNewer, error: historyError } = history
 
   const transcriptWindow = useMemo(
     () => ({
@@ -422,10 +445,26 @@ export function ChatRuntimeBoundary({
       revealRow,
       returnToLatest,
       currentMessages,
+      expectedRuntimeIds,
       isHistorical,
-      newerAvailable
+      newerAvailable,
+      revealNewer,
+      historyError,
+      leadingRowId
     }),
-    [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable]
+    [
+      expandWindow,
+      olderAvailable,
+      revealRow,
+      returnToLatest,
+      currentMessages,
+      expectedRuntimeIds,
+      isHistorical,
+      newerAvailable,
+      revealNewer,
+      historyError,
+      leadingRowId
+    ]
   )
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({

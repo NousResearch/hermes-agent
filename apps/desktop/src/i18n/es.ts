@@ -5377,6 +5377,10 @@ export const esOverrides = {
     thread: {
       loadingSession: 'Cargando sesión',
       showEarlier: 'Mostrar mensajes anteriores',
+      showLater: 'Mostrar mensajes posteriores',
+      jumpToLatest: 'Ir a los últimos mensajes',
+      historyLoadFailed: 'No se pudo cargar el historial. Inténtalo de nuevo.',
+      historyPagingUnavailable: 'Actualiza el backend para navegar entre páginas del historial.',
       loadingResponse: 'Hermes está cargando una respuesta',
       loadingLocalModel: (model: string) => `Cargando ${model} en memoria`,
       processingPrompt: 'Procesando el prompt',

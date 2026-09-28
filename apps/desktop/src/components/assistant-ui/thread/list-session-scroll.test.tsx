@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { act, render, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneLifecycleContext, PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
@@ -958,5 +958,68 @@ describe('list session-scroll restore', () => {
 
     expect(ctlGroups).toBeGreaterThan(0)
     expect(deepGroups).toBeGreaterThan(ctlGroups)
+  })
+})
+
+describe('historical page controls', () => {
+  it('loads newer history on downward intent without jumping live or treating programmatic scroll as paging', async () => {
+    let finish!: (value: boolean) => void
+
+    const revealNewer = vi.fn(
+      () =>
+        new Promise<boolean>(resolve => {
+          finish = resolve
+        })
+    )
+
+    const expandWindow = vi.fn(async () => false)
+    const returnToLatest = vi.fn()
+
+    const { container, getByRole } = render(
+      <ScrollHarness
+        messages={sessionMessages('history', 3)}
+        sessionKey="history"
+        window={{
+          isHistorical: true,
+          newerAvailable: true,
+          olderAvailable: true,
+          revealNewer,
+          expandWindow,
+          returnToLatest
+        }}
+      />
+    )
+
+    await settleScroll()
+    const viewport = viewportEl(container)
+    act(() => {
+      viewport.scrollTop = 0
+      fireEvent.scroll(viewport)
+    })
+    expect(expandWindow).not.toHaveBeenCalled()
+    act(() => {
+      viewport.scrollTop = SCROLL_H - CLIENT_H
+      fireEvent.scroll(viewport)
+    })
+    expect(revealNewer).not.toHaveBeenCalled()
+    fireEvent.wheel(viewport, { deltaY: 120 })
+    expect(revealNewer).toHaveBeenCalledTimes(1)
+    fireEvent.wheel(viewport, { deltaY: 120 })
+    expect(revealNewer).toHaveBeenCalledTimes(1)
+    expect((getByRole('button', { name: 'Show later messages' }) as HTMLButtonElement).disabled).toBe(true)
+    await act(async () => {
+      finish(false)
+    })
+    fireEvent.click(getByRole('button', { name: 'Show later messages' }))
+    expect(revealNewer).toHaveBeenCalledTimes(2)
+    await act(async () => {
+      finish(false)
+    })
+    act(() => requestThreadPageScroll(1, 'history'))
+    expect(revealNewer).toHaveBeenCalledTimes(3)
+    await act(async () => {
+      finish(false)
+    })
+    expect(returnToLatest).not.toHaveBeenCalled()
   })
 })

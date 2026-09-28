@@ -4688,6 +4688,10 @@ export const zh = defineLocale({
     thread: {
       loadingSession: '正在加载会话',
       showEarlier: '显示更早的消息',
+      showLater: '显示后续消息',
+      jumpToLatest: '跳转到最新消息',
+      historyLoadFailed: '无法加载历史记录，请重试。',
+      historyPagingUnavailable: '请更新后端以浏览相邻的历史页面。',
       loadingResponse: 'Hermes 正在加载回复',
       loadingLocalModel: model => `正在将 ${model} 载入内存`,
       processingPrompt: '正在处理提示词',

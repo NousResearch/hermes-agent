@@ -20,6 +20,7 @@ import {
   type TimelineSourceMessage
 } from './timeline-data'
 import { TimelineRail } from './timeline-rail'
+import { scrollTimelineTarget, timelineTarget } from './timeline-scroll'
 import { useTranscriptWindow } from './transcript-window'
 import { useTimelineHistory } from './use-timeline-history'
 
@@ -130,7 +131,6 @@ const ActiveThreadTimeline: FC = () => {
   ])
 
   const root = useRef<HTMLDivElement>(null)
-  const jumpFrame = useRef(0)
   const pending = useRef<AbortController | null>(null)
   const [activeIndex, setActiveIndex] = useState(0)
   const [loadingId, setLoadingId] = useState<string | null>(null)
@@ -138,7 +138,6 @@ const ActiveThreadTimeline: FC = () => {
   const cancelJump = useCallback(() => {
     pending.current?.abort()
     pending.current = null
-    cancelAnimationFrame(jumpFrame.current)
     setLoadingId(null)
   }, [])
 
@@ -198,37 +197,7 @@ const ActiveThreadTimeline: FC = () => {
           return
         }
 
-        const node = viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(revealed)}"]`)
-
-        if (!node) {
-          return
-        }
-
-        const start = viewport.scrollTop
-        const turn = node.closest<HTMLElement>('[data-slot="aui_turn-pair"]') ?? node
-
-        const destination = Math.max(
-          0,
-          start + turn.getBoundingClientRect().top - viewport.getBoundingClientRect().top - 8
-        )
-
-        const duration = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 170
-        const began = performance.now()
-
-        const step = (now: number) => {
-          if (controller.signal.aborted) {
-            return
-          }
-
-          const progress = duration ? Math.min(1, (now - began) / duration) : 1
-          viewport.scrollTop = start + (destination - start) * (1 - (1 - progress) ** 3)
-
-          if (progress < 1) {
-            jumpFrame.current = requestAnimationFrame(step)
-          }
-        }
-
-        jumpFrame.current = requestAnimationFrame(step)
+        await scrollTimelineTarget(viewport, revealed, controller.signal)
       } finally {
         if (pending.current === controller) {
           setLoadingId(null)
@@ -259,7 +228,11 @@ const ActiveThreadTimeline: FC = () => {
 
       const top = viewport.getBoundingClientRect().top
       let first = -1
-      let active = -1
+
+      let active =
+        history.isHistorical && history.leadingRowId != null
+          ? railEntries.findIndex(entry => entry.rowId === history.leadingRowId)
+          : -1
 
       // Walk only mounted messages, never every archived prompt in the rail.
       for (const node of viewport.querySelectorAll<HTMLElement>('[data-message-id]')) {
@@ -273,7 +246,7 @@ const ActiveThreadTimeline: FC = () => {
           first = index
         }
 
-        const turn = node.closest<HTMLElement>('[data-slot="aui_turn-pair"]') ?? node
+        const turn = timelineTarget(node)
 
         if (turn.getBoundingClientRect().top - top <= 8) {
           active = index
@@ -293,9 +266,22 @@ const ActiveThreadTimeline: FC = () => {
     const content = viewport.querySelector('[data-slot="aui_thread-content"]')
 
     if (content) {
-      observer.observe(content, { childList: true })
+      observer.observe(content, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['data-message-id']
+      })
     }
 
+    const resize = new ResizeObserver(schedule)
+
+    if (content) {
+      resize.observe(content)
+    }
+
+    viewport.addEventListener('pointerdown', cancelJump)
+    viewport.addEventListener('keydown', cancelJump)
     viewport.addEventListener('scroll', schedule, { passive: true })
     viewport.addEventListener('wheel', cancelJump, { passive: true })
     schedule()
@@ -303,10 +289,13 @@ const ActiveThreadTimeline: FC = () => {
     return () => {
       cancelAnimationFrame(frame)
       observer.disconnect()
+      resize.disconnect()
+      viewport.removeEventListener('pointerdown', cancelJump)
+      viewport.removeEventListener('keydown', cancelJump)
       viewport.removeEventListener('scroll', schedule)
       viewport.removeEventListener('wheel', cancelJump)
     }
-  }, [cancelJump, railEntries, history.isHistorical])
+  }, [cancelJump, railEntries, history.isHistorical, history.leadingRowId])
 
   if (!railEntries.length) {
     return null

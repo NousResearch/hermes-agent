@@ -102,6 +102,13 @@ def _serialized_tool_call_echo(text: str) -> bool:
 
     Gates part-level drops where whole reply parts are discarded; contrast ``_leaked_tool_call_text``,
     whose broad token match is reserved for paths that only downgrade the turn (re-elicit, incomplete).
+
+    The two branches key on different shapes on purpose. The Harmony branch demands the args
+    JSON close right before ``to=functions.*`` — a bare token in prose must survive the drop —
+    and lets a token-leading echo (``to=functions.x {"...": ...}``, never observed in a leak)
+    ride through as text rather than risk eating clean prose. The shell branch needs no wire
+    token because the Codex-CLI echo it matches is an action lead-in line followed by a
+    ``{"cmd": ...}`` blob; the lead-in line alone makes a prose false positive unlikely.
     """
     return bool(_SERIALIZED_TOOL_CALL_ECHO_PATTERN.search(text)) or _shell_json_echo(text)
 

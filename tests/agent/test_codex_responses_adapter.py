@@ -1040,6 +1040,21 @@ def test_final_answer_prose_naming_a_tool_survives_beside_the_real_call():
     assert assistant_message.codex_message_items is not None
 
 
+def test_token_leading_serialized_shape_stays_posted_beside_the_real_call():
+    """The strict predicate keys on the args JSON closing *before* ``to=functions.*``; when the args
+    ride after the token the part is posted, not dropped (#125458 review: that shape has never been
+    observed in a leak, and dropping on a bare token ahead of JSON would re-open the prose loss)."""
+    response = _echo_leak_response(
+        commentary_texts=["Fetching the docs first."],
+        final_text='Setup done. to=functions.execute_code {"path": "a.py"}',
+    )
+    assistant_message, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+
+    assert finish_reason == "tool_calls"
+    assert "Setup done." in assistant_message.content
+    assert 'to=functions.execute_code {"path": "a.py"}' in assistant_message.content
+
+
 def test_failed_response_surfaces_error_code():
     """Regression: response_status == 'failed' should surface the error
     code, not just the message. Used to leak a bare 'Slow down' string

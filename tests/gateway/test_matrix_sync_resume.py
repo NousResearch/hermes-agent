@@ -37,6 +37,7 @@ def transport(monkeypatch, request):
             self.state_store, self.sync_store = state_store, sync_store
             self.crypto = None
             self.event_handlers, self.global_event_handlers = {}, {}
+            self.event_middlewares = {}
 
         async def whoami(self):
             return SimpleNamespace(user_id=self.mxid, device_id=self.device_id)
@@ -1210,3 +1211,430 @@ async def test_gateway_stop_awaits_native_import_before_closing_transport(
             return_exceptions=True,
         )
         await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["mautrix"], indirect=True)
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "merged",
+        "restart",
+        "refused",
+        "application-failure",
+        "middleware-failure",
+        "middleware-ignore",
+    ],
+)
+async def test_native_sync_checkpoints_only_completed_application_admission(
+    tmp_path,
+    monkeypatch,
+    transport,
+    boundary,
+):
+    from gateway.platforms.event import MessageEvent
+    from plugins.platforms.matrix.sync_transport import DurableSyncStore
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    adapter = make_adapter()
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    del adapter._handle_text_message
+    adapter._source_session_key = lambda _source: "session"
+    source = adapter.build_source(
+        chat_id="!room:example.org", user_id="@alice:example.org"
+    )
+    adapter._build_inbound_event = AsyncMock(
+        side_effect=lambda _room, _sender, event_id, body, *_args: MessageEvent(
+            text=body, source=source, message_id=event_id
+        )
+    )
+    adapter._message_handler = AsyncMock()
+    entered, release, model_entered, model_release = (asyncio.Event() for _ in range(4))
+    real_sleep = asyncio.sleep
+
+    async def clock(delay):
+        if delay == adapter._text_batch_delay_seconds:
+            entered.set()
+            await release.wait()
+            return
+        await real_sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", clock)
+    admitted = []
+
+    async def model(event, _key):
+        admitted.append(event.text)
+        model_entered.set()
+        await model_release.wait()
+
+    adapter._process_message_background = model
+    if boundary == "refused":
+        adapter._message_handler = None
+    if boundary == "application-failure":
+        adapter._start_session_processing = lambda *_args: (_ for _ in ()).throw(
+            RuntimeError("admission failed")
+        )
+    if boundary.startswith("middleware"):
+
+        async def middleware(_event):
+            if boundary == "middleware-failure":
+                raise RuntimeError("middleware failed")
+            return False
+
+        adapter._client.add_event_middleware(matrix.EventType.ROOM_MESSAGE, middleware)
+    response = batch("s2", message("$first"), message("$second"))
+    client = adapter._client
+    dispatch = asyncio.create_task(adapter._absorb_sync(client, response))
+    waiter = asyncio.create_task(entered.wait())
+    try:
+        if boundary.startswith("middleware"):
+            if boundary == "middleware-failure":
+                with pytest.raises(RuntimeError, match="middleware failed"):
+                    await dispatch
+                assert await client.sync_store.get_next_batch() == "s1"
+            else:
+                await dispatch
+                assert await client.sync_store.get_next_batch() == "s2"
+            assert admitted == []
+            return
+        await asyncio.wait([waiter, dispatch], return_when=asyncio.FIRST_COMPLETED)
+        assert (
+            dispatch.done(),
+            await client.sync_store.get_next_batch(),
+            admitted,
+        ) == (False, "s1", [])
+        if boundary == "restart":
+            await adapter.disconnect()
+            with pytest.raises(asyncio.CancelledError):
+                await dispatch
+        else:
+            release.set()
+            if boundary in {"refused", "application-failure"}:
+                with pytest.raises(RuntimeError):
+                    await dispatch
+            else:
+                await dispatch
+                await model_entered.wait()
+                assert (admitted, model_release.is_set()) == (
+                    ["$first\n$second"],
+                    False,
+                )
+        fresh = DurableSyncStore(tmp_path, "unused", "unused", "unused", "unused")
+        fresh.path = client.sync_store.path
+        await fresh.load()
+        assert (
+            await fresh.get_next_batch(),
+            [fresh.reserve_intake(event_id) for event_id in ("$first", "$second")],
+        ) == (("s2", [True, True]) if boundary == "merged" else ("s1", [True, True]))
+        if boundary == "merged":
+
+            async def fail(_event):
+                raise RuntimeError("sibling failed")
+
+            client.add_event_handler(matrix.EventType.ROOM_MESSAGE, fail)
+            release.clear()
+            adapter._active_sessions.clear()
+            response = batch("s3", message("$third"), message("$fourth"))
+            dispatch = asyncio.create_task(adapter._absorb_sync(client, response))
+            entered.clear()
+            await entered.wait()
+            release.set()
+            with pytest.raises(RuntimeError, match="sibling failed"):
+                await dispatch
+            await fresh.load()
+            assert (
+                await fresh.get_next_batch(),
+                [fresh.reserve_intake(event_id) for event_id in ("$third", "$fourth")],
+            ) == ("s2", [False, False])
+        if boundary == "restart":
+            adapter = make_adapter()
+            del adapter._handle_text_message
+            adapter._source_session_key = lambda _source: "session"
+            adapter._build_inbound_event = AsyncMock(
+                side_effect=lambda _room, _sender, event_id, body, *_args: MessageEvent(
+                    text=body, source=source, message_id=event_id
+                )
+            )
+            adapter._message_handler = AsyncMock()
+            adapter._process_message_background = model
+            release.set()
+            responses.append(response)
+            assert await adapter.connect()
+            await model_entered.wait()
+            assert (admitted, await adapter._client.sync_store.get_next_batch()) == (
+                ["$first\n$second"],
+                "s2",
+            )
+    finally:
+        release.set()
+        model_release.set()
+        waiter.cancel()
+        dispatch.cancel()
+        await asyncio.gather(waiter, dispatch, return_exceptions=True)
+        await adapter.disconnect()
+        await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["mautrix"], indirect=True)
+@pytest.mark.parametrize("checkpoint", ["completed", "unfinished"])
+async def test_startup_replay_executes_admitted_input_before_native_checkpoint(
+    tmp_path, monkeypatch, transport, checkpoint
+):
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    adapter = make_adapter()
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    del adapter._handle_text_message
+    adapter._source_session_key = lambda _source: "session"
+    source = adapter.build_source(
+        chat_id="!room:example.org", user_id="@alice:example.org"
+    )
+    adapter._build_inbound_event = AsyncMock(
+        side_effect=lambda _room, _sender, event_id, body, *_args: MessageEvent(
+            text=body, source=source, message_id=event_id
+        )
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {}
+    runner.config = SimpleNamespace(multiplex_profiles=False)
+    runner._startup_restore_in_progress = True
+    runner._startup_restore_queue = []
+    runner._startup_restore_tasks = []
+    runner._sync_voice_mode_state_to_adapter = lambda _adapter: None
+    runner._bind_voice_input_callback = lambda _adapter: None
+    runner._await_startup_warmup = AsyncMock()
+    runner._scale_to_zero_note_real_inbound = lambda: None
+    runner._hm_pre_gateway_dispatch_hook = AsyncMock(
+        side_effect=lambda event, _source: event
+    )
+    runner._is_user_authorized_for_source = lambda _source: True
+    runner._admit_bot_message_for_source = lambda _source: True
+    queued, sibling_entered, sibling_release, executed = (
+        asyncio.Event() for _ in range(4)
+    )
+    seen = []
+
+    async def handler(event):
+        admitted = await runner._hm_admit_event(event)
+        if admitted is None:
+            queued.set()
+            return
+        seen.append((event.message_id, event.text))
+        executed.set()
+
+    adapter.set_message_handler(handler)
+    real_sleep = asyncio.sleep
+
+    async def clock(delay):
+        if delay == adapter._text_batch_delay_seconds:
+            return
+        await real_sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", clock)
+    client = adapter._client
+    accept = client.sync_store.accept_intake
+    accepted = asyncio.Event()
+
+    async def receipt(event_id):
+        await accept(event_id)
+        accepted.set()
+
+    client.sync_store.accept_intake = receipt
+
+    async def sibling(_event):
+        if checkpoint == "completed":
+            return
+        await accepted.wait()
+        sibling_entered.set()
+        await sibling_release.wait()
+
+    client.add_event_handler(matrix.EventType.ROOM_MESSAGE, sibling)
+    dispatch = asyncio.create_task(
+        adapter._absorb_sync(client, batch("s2", message("$queued")))
+    )
+    try:
+        await asyncio.wait_for(queued.wait(), timeout=2)
+        if checkpoint == "completed":
+            await dispatch
+        else:
+            await asyncio.wait_for(sibling_entered.wait(), timeout=2)
+        await asyncio.gather(*adapter._background_tasks)
+        assert (seen, len(runner._startup_restore_queue)) == ([], 1)
+        runner._publish_primary_adapter(Platform.MATRIX, adapter)
+        await runner._finish_startup_restore()
+        await asyncio.gather(*adapter._background_tasks)
+        assert (seen, executed.is_set(), runner._startup_restore_queue) == (
+            [("$queued", "$queued")],
+            True,
+            [],
+        )
+        assert await client.sync_store.get_next_batch() == (
+            "s2" if checkpoint == "completed" else "s1"
+        )
+        if checkpoint == "unfinished":
+            assert not client.sync_store.reserve_intake("$queued")
+        sibling_release.set()
+        await dispatch
+        assert await client.sync_store.get_next_batch() == "s2"
+    finally:
+        sibling_release.set()
+        dispatch.cancel()
+        await asyncio.gather(dispatch, return_exceptions=True)
+        await adapter.disconnect()
+        await asyncio.gather(*adapter._background_tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["mautrix"], indirect=True)
+@pytest.mark.parametrize("buffered", [False, True])
+async def test_restart_fixture_buffers_prime_before_initial_checkpoint_and_watch(
+    tmp_path, monkeypatch, transport, buffered
+):
+    from gateway.platforms.event import MessageEvent
+    from plugins.platforms.matrix.sync_transport import DurableSyncStore
+    from tests.integration.matrix_live import restart_barriers
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    blocked = asyncio.Event()
+    interrupted = []
+    admitted = []
+    real_sleep = asyncio.sleep
+
+    async def clock(delay):
+        if delay == 0.6:
+            return
+        await real_sleep(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", clock)
+
+    async def barrier(home, marker, event_id):
+        (home / marker).write_text(event_id, encoding="utf-8")
+        interrupted.append((marker, event_id))
+        blocked.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(restart_barriers, "_barrier", barrier)
+
+    def attach(adapter):
+        adapter._client.crypto = SimpleNamespace(_receive_room_key=AsyncMock())
+        restart_barriers.register(
+            SimpleNamespace(
+                register_platform_handler=lambda _platform, handler: handler(
+                    adapter._client, adapter
+                )
+            )
+        )
+
+    def create():
+        adapter = make_adapter()
+        del adapter._handle_text_message
+        adapter._source_session_key = lambda _source: "session"
+        source = adapter.build_source(
+            chat_id="!room:example.org", user_id="@alice:example.org"
+        )
+        adapter._build_inbound_event = AsyncMock(
+            side_effect=lambda _room, _sender, event_id, body, *_args: MessageEvent(
+                text=body, source=source, message_id=event_id
+            )
+        )
+
+        async def handler(event):
+            admitted.append((event.message_id, event.text))
+
+        adapter.set_message_handler(handler)
+        adapter._wire_plugin_handlers = lambda _client: attach(adapter)
+        return adapter
+
+    store = DurableSyncStore(
+        tmp_path / "platforms/matrix/store",
+        "https://matrix.example.org",
+        "@bot:example.org",
+        "DEVICE",
+        "test-token",
+    )
+    await store.put_next_batch("before")
+    (tmp_path / "room-input-release").touch()
+    if buffered:
+        (tmp_path / "text-buffered").write_text("$prime", encoding="utf-8")
+    prime = message("$prime")
+    prime["content"]["body"] = "Prime encrypted thread"
+    responses.append(batch("primed", prime))
+    adapter = create()
+    connect = asyncio.create_task(adapter.connect())
+    dispatch = None
+    try:
+        if not buffered:
+            waiter = asyncio.create_task(blocked.wait())
+            await asyncio.wait([waiter, connect], return_when=asyncio.FIRST_COMPLETED)
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+            assert (connect.done(), interrupted, admitted) == (
+                False,
+                [("text-buffered", "$prime")],
+                [],
+            )
+            connect.cancel()
+            await asyncio.gather(connect, return_exceptions=True)
+            await adapter.disconnect()
+            await store.load()
+            assert (await store.get_next_batch(), store.reserve_intake("$prime")) == (
+                "before",
+                True,
+            )
+            responses.append(batch("primed", prime))
+            adapter = create()
+            connect = asyncio.create_task(adapter.connect())
+        assert await connect
+        await asyncio.gather(*adapter._background_tasks)
+        await adapter._sync_checkpoints.settled()
+        assert (admitted, await adapter._client.sync_store.get_next_batch()) == (
+            [("$prime", "Prime encrypted thread")],
+            "primed",
+        )
+        blocked.clear()
+        watched = message("$watched")
+        watched["content"]["body"] = "Watch the split answer"
+        dispatch = asyncio.create_task(
+            adapter._absorb_sync(adapter._client, batch("watched", watched))
+        )
+        waiter = asyncio.create_task(blocked.wait())
+        await asyncio.wait([waiter, dispatch], return_when=asyncio.FIRST_COMPLETED)
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+        await asyncio.gather(*adapter._background_tasks)
+        assert (
+            interrupted[-1],
+            admitted,
+            dispatch.done(),
+            await adapter._client.sync_store.get_next_batch(),
+            adapter._client.sync_store.reserve_intake("$watched"),
+        ) == (
+            ("intake-blocked", "$watched"),
+            [
+                ("$prime", "Prime encrypted thread"),
+                ("$watched", "Watch the split answer"),
+            ],
+            False,
+            "primed",
+            False,
+        )
+    finally:
+        connect.cancel()
+        if dispatch is not None:
+            dispatch.cancel()
+        await asyncio.gather(
+            connect,
+            *(task for task in (dispatch,) if task is not None),
+            return_exceptions=True,
+        )
+        await adapter.disconnect()
+        await asyncio.gather(*adapter._background_tasks, return_exceptions=True)

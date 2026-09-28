@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -478,3 +479,149 @@ async def test_split_replay_uses_terminal_delivery_and_consumes_all_reply_parts(
     assert adapter.handle_message.await_args.args[0].message_id == fresh.event_id
     assert [adapter._followup_store().candidate(source.chat_id, event_id) for event_id in ids] == [None] * len(ids)
     assert adapter._reaction_followup_actions == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boundary", ["queue", "split-final", "failed-final", "empty-final"]
+)
+async def test_replacement_transport_preserves_turn_queue_and_final_choice(
+    delivery, boundary
+):
+    original, source = delivery.adapter, delivery.source
+    replacement = delivery.make_adapter()
+    if boundary != "queue":
+        await delivery.configure(("👍",))
+        original._final_delivery_adapter = lambda _source: replacement
+        original._record_delivery_obligation = AsyncMock(return_value=None)
+        replacement.max_message_length = 500
+        final = "Delivered final answer. " * 70 if boundary == "split-final" else ""
+        if boundary == "failed-final":
+            final = "Failed answer"
+            delivery.client.send_message_event = AsyncMock(
+                side_effect=RuntimeError("send failed")
+            )
+            replacement._send_with_retry = replacement.send
+        result, owner = await original.send_final_ledgered(
+            MessageEvent(text="Question", source=source),
+            "session",
+            final,
+            {"thread_id": source.thread_id},
+            reply_to=None,
+        )
+        assert owner is replacement
+        ids = (
+            (*result.continuation_message_ids, result.message_id)
+            if result.message_id
+            else ()
+        )
+        watches = [
+            replacement._followup_store().candidate(source.chat_id, event_id)
+            for event_id in ids
+        ]
+        if boundary != "split-final":
+            assert all(watch is None for watch in watches)
+            assert original._reaction_followup_actions == {}
+            return
+        assert result.success and result.continuation_message_ids
+        assert all(watch is not None for watch in watches)
+        import sqlite3
+        from contextlib import closing
+
+        with closing(sqlite3.connect(delivery.path)) as db:
+            rows = db.execute(
+                "SELECT turn_id, profile, session_key, session_id, requester, thread_id, "
+                "emoji_json, text_content, delivery_event_id FROM watches ORDER BY event_id"
+            ).fetchall()
+        assert len({row[0] for row in rows}) == 1
+        assert [(row[1:6], json.loads(row[6]), row[7:]) for row in rows] == [
+            (
+                ("work", "session", "sid", source.user_id, source.thread_id),
+                ["👍"],
+                (final, ids[-1]),
+            )
+        ] * len(ids)
+        assert original._reaction_followup_actions == {}
+        await replacement._on_reaction(delivery.reaction(ids[-1]))
+        replacement.handle_message.assert_awaited_once()
+        assert all(
+            replacement._followup_store().candidate(source.chat_id, event_id) is None
+            for event_id in ids
+        )
+        return
+
+    from unittest.mock import Mock
+
+    older = MessageEvent(text="Earlier reaction", source=source, defer_until_idle=True)
+    newer = MessageEvent(text="Newer input", source=source)
+    original._pending_messages["session"] = older
+    replacement._pending_messages["session"] = newer
+    live = [original]
+    runner = object.__new__(GatewayRunner)
+    runner._delivery_adapter_for = lambda _source: live[0]
+    runner._get_proxy_url = lambda: None
+    overflow = []
+    state = SimpleNamespace(conversation=SimpleNamespace(queued_events=overflow))
+    runner._session_state = lambda _key: state
+    runner._peek_session_state = lambda _key: state
+    runner._strict_session_current = AsyncMock(return_value=True)
+    runner._pending_event_audio_paths = Mock(return_value=[])
+    runner._run_agent_display_settings = Mock(
+        return_value=SimpleNamespace(
+            _native_slack_task_cards=False,
+            needs_progress_queue=False,
+            log_mode_enabled=False,
+        )
+    )
+    turn = SimpleNamespace(
+        mute_notification_reply=True,
+        stream_consumer_holder=[],
+        result_holder=[{"completed": True}],
+    )
+    runner._run_agent_build_turn_context = Mock(
+        return_value=(turn, SimpleNamespace(run_sync=lambda: None), None)
+    )
+    runner._run_agent_bind_turn_wiring = Mock(return_value=None)
+    runner._run_agent_start_turn_worker = Mock(
+        return_value=SimpleNamespace(executor_task=None)
+    )
+    for method in (
+        "_run_agent_stream_consumer_task",
+        "_run_agent_track_agent",
+        "_run_agent_monitor_for_interrupt",
+        "_run_agent_finalize_streaming_tts",
+        "_run_agent_cleanup_turn_tasks",
+        "_run_agent_mark_streamed_delivery",
+    ):
+        setattr(runner, method, AsyncMock())
+    runner._run_agent_evict_on_fallback = Mock()
+    runner._run_agent_schedule_bubble_cleanup = Mock()
+
+    async def completed(*_args):
+        live[0] = replacement
+        return {"completed": True}
+
+    runner._run_agent_await_turn_worker = completed
+    consumed = []
+
+    async def next_turn(_turn, owner, text, event, *_args):
+        consumed.append((owner, event, text))
+        return {"completed": True}
+
+    runner._run_agent_queued_followup = next_turn
+    await runner._run_agent_inner(
+        "Question", "", [], source, "sid", session_key="session"
+    )
+    assert consumed == [(replacement, older, older.text)]
+    await runner._run_agent_inner(
+        "Earlier reaction", "", [], source, "sid", session_key="session"
+    )
+    assert consumed == [
+        (replacement, older, older.text),
+        (replacement, newer, newer.text),
+    ]
+    assert (original._pending_messages, replacement._pending_messages, overflow) == (
+        {},
+        {},
+        [],
+    )

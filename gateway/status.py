@@ -2106,13 +2106,17 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         return None
     if not _is_gateway_runtime_lock_active_strict(resolved_lock_path):
         return None
-    if not pid_exists:
-        raise RuntimeError("active gateway lock has no PID metadata")
-    records = (_read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path))
-    if not all(records):
+    # The lock file carries its own full PID record (written at acquire time), so an absent
+    # gateway.pid is not ambiguous by itself -- fall back to the lock's record alone, matching
+    # the non-strict get_running_pid()/live_gateway_pid_for_home() paths (#110166). A PID file
+    # that exists but fails to parse is still treated as malformed.
+    lock_record = _read_gateway_lock_record(resolved_lock_path)
+    pid_record = _read_pid_record(resolved_pid_path) if pid_exists else None
+    if lock_record is None or (pid_exists and pid_record is None):
         raise RuntimeError("gateway PID or lock metadata is malformed")
+    records = tuple(r for r in (pid_record, lock_record) if r is not None)
     pid = _pid_from_record(records[0])
-    if pid is None or pid <= 0 or _pid_from_record(records[1]) != pid:
+    if pid is None or pid <= 0 or any(_pid_from_record(r) != pid for r in records[1:]):
         raise RuntimeError("gateway PID and lock identities disagree")
     if not _pid_exists(pid):
         raise RuntimeError("gateway identity is not live")

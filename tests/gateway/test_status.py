@@ -1737,6 +1737,30 @@ def test_strict_gateway_identity_rejects_reused_pid(tmp_path, monkeypatch):
         status.get_running_pid_identity_strict(pid_path)
 
 
+def test_strict_gateway_identity_uses_lock_record_when_pid_file_is_missing(tmp_path, monkeypatch):
+    """A launch-service gateway whose ``gateway.pid`` was never (re)written -- the shim launcher
+    form of ``gateway run --replace`` (#124893) -- still carries a full PID record in the lock
+    file itself (written at ``acquire_gateway_runtime_lock()`` time). An absent PID file must not
+    be read as ambiguous when the lock record alone identifies a live gateway (#110166 already
+    tolerates this for the non-strict ``get_running_pid()``/``live_gateway_pid_for_home()``
+    paths); only a PID file that exists but fails to parse stays malformed."""
+    pid_path = tmp_path / "gateway.pid"
+    lock_path = tmp_path / "gateway.lock"
+    record = {
+        "pid": 4242, "start_time": 10.0, "kind": "hermes-gateway",
+        "argv": ["/opt/venv/bin/python3", "-m", "hermes_cli.main", "gateway", "run", "--replace"],
+    }
+    lock_path.write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(status, "_get_gateway_lock_path", lambda _path=None: lock_path)
+    monkeypatch.setattr(status, "_is_gateway_runtime_lock_active_strict", lambda _path=None: True)
+    monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 10.0)
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: None)
+
+    assert not pid_path.exists()
+    assert status.get_running_pid_identity_strict(pid_path) == (4242, 10.0)
+
+
 def test_retained_gateway_state_keeps_watchdog_degraded_like_startup_failed():
     """A watchdog-stamped ``degraded`` of a dead process is a current failure under the same rule as
     ``startup_failed`` (#113372): kept while the operator wants the gateway running, ``stopped`` once

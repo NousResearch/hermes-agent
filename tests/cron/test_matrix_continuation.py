@@ -17,10 +17,256 @@ from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.session import SessionSource, SessionStore
 from plugins.platforms.matrix.adapter import MatrixAdapter
+from tools.send_message_tool import _send_to_platform
 
 
 class _MissingEncryption(Exception):
     errcode = "M_NOT_FOUND"
+
+
+@pytest.mark.parametrize("caller", ["tool", "cron"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "changed",
+        "unknown",
+        "isolated_absent",
+        "isolated_existing",
+        "shared_absent",
+        "group_shared_absent",
+        "flat_absent",
+        "native_unavailable",
+        "encrypted_unavailable",
+        "media_unavailable",
+    ],
+)
+def test_native_continuation_requires_fresh_membership_and_existing_participant(
+    destinations, monkeypatch, tmp_path, caller, case
+):
+    import logging
+    from mautrix.client.state_store.memory import MemoryStateStore
+    from mautrix.client.store_updater import StoreUpdatingAPI
+    from mautrix.types import MemberStateEventContent, Membership, RoomID, UserID
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.send_message_tool import send_message_tool
+
+    runner, owners = destinations
+    home, adapter, room = owners["default"]
+    store = adapter._session_store
+    store.config.thread_sessions_per_user = case != "shared_absent"
+    store.config.group_sessions_per_user = case != "group_shared_absent"
+    runner.session_store = store
+    monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: runner)
+    monkeypatch.setattr("model_tools._run_async", asyncio.run)
+    if caller == "tool":
+        monkeypatch.setattr(
+            "tools.send_message_tool._send_to_platform", _send_to_platform
+        )
+    monkeypatch.delattr(adapter, "_get_room_members")
+    thread = None if case == "flat_absent" else "$existing"
+    if thread is None:
+        adapter.config.extra["cron_continuable_surface"] = "in_channel"
+        config_path = home / "config.yaml"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["platforms"]["matrix"]["extra"]["cron_continuable_surface"] = (
+            "in_channel"
+        )
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+    transition = case in {"changed", "unknown"}
+    members = {adapter._user_id, "@alice:remote.test"}
+    if not transition:
+        members.add("@bob:remote.test")
+    state_store = MemoryStateStore()
+
+    async def populate():
+        await state_store.set_members(
+            RoomID(room),
+            {
+                UserID(member): MemberStateEventContent(membership=Membership.JOIN)
+                for member in members
+            },
+        )
+
+    asyncio.run(populate())
+    accepted = False
+    fresh_reads = []
+
+    async def request(method, path, **kwargs):
+        assert str(path).endswith("joined_members"), path
+        fresh_reads.append(accepted)
+        if accepted and case == "unknown":
+            raise ValueError("membership unavailable after accepted send")
+        return {"joined": {member: {} for member in members}}
+
+    sdk = StoreUpdatingAPI(
+        mxid=adapter._user_id,
+        state_store=state_store,
+        api=SimpleNamespace(request=request, log=logging.getLogger("matrix-test")),
+    )
+    adapter._client.state_store = state_store
+    adapter._client.get_joined_members = sdk.get_joined_members
+    adapter._joined_rooms.add(room)
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id=room,
+        thread_id=thread,
+        chat_type="dm" if transition else "group",
+        user_id="@alice:remote.test",
+        profile="default",
+    )
+    unavailable = case.endswith("unavailable")
+    alice = (
+        store.get_or_create_session(source)
+        if case in {"changed", "unknown", "isolated_existing"} or unavailable
+        else None
+    )
+    bob = (
+        store.get_or_create_session(
+            SessionSource(
+                platform=Platform.MATRIX,
+                chat_id=room,
+                thread_id=thread,
+                chat_type="group",
+                user_id="@bob:remote.test",
+                profile="default",
+            )
+        )
+        if case not in {"shared_absent", "group_shared_absent"}
+        else None
+    )
+    before = dict(store._entries)
+    asyncio.run(adapter._resolve_room_identity(room))
+
+    async def send_event(*args):
+        nonlocal accepted
+        if case == "changed":
+            members.add("@bob:remote.test")
+        accepted = True
+        return "$sent"
+
+    adapter._client.send_message_event.side_effect = send_event
+    brief = "Confirmed native brief"
+    http_calls = []
+    if unavailable:
+        from plugins.platforms.matrix.standalone import _MatrixAPIError
+        from tools import send_message_senders
+
+        monkeypatch.setattr(
+            send_message_senders, "_live_adapter", lambda *args, **kwargs: (None, None)
+        )
+        monkeypatch.setattr(MatrixAdapter, "connect", AsyncMock(return_value=False))
+        adapter.send = AsyncMock(side_effect=ValueError("native unavailable"))
+        monkeypatch.setattr(
+            "tools.send_message_tool._send_to_platform", _send_to_platform
+        )
+        config_path = home / "config.yaml"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["platforms"]["matrix"].update(token="token")
+        config["platforms"]["matrix"]["extra"]["homeserver"] = "http://matrix.test"
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+
+        async def http_request(self, method, path, **kwargs):
+            http_calls.append((method, path, kwargs.get("json")))
+            if path.endswith("m.room.encryption"):
+                if case == "encrypted_unavailable":
+                    return {"algorithm": "m.megolm.v1.aes-sha2"}
+                raise _MatrixAPIError(404, {"errcode": "M_NOT_FOUND"})
+            if path.endswith("joined_members"):
+                return {"joined": {member: {} for member in members}}
+            assert method == "PUT" and "/send/" in path, path
+            return {"event_id": await send_event()}
+
+        monkeypatch.setattr(
+            "plugins.platforms.matrix.standalone._HTTPDelivery.request", http_request
+        )
+        if case == "media_unavailable":
+            attachment = tmp_path / "report.txt"
+            attachment.write_bytes(b"Native-only encrypted media")
+            brief += f"\nMEDIA:{attachment}"
+    with _profile_runtime_scope(home, {}):
+        if caller == "tool":
+            tokens = set_session_vars(platform="matrix", user_id="@alice:remote.test")
+            try:
+                result = json.loads(
+                    send_message_tool({
+                        "target": f"matrix:{room}" + (f"/{thread}" if thread else ""),
+                        "message": brief,
+                    })
+                )
+            finally:
+                clear_session_vars(tokens)
+            if case in {"encrypted_unavailable", "media_unavailable"}:
+                assert result.get("error"), result
+                assert not accepted
+                assert not any(method == "PUT" for method, _, _ in http_calls)
+                assert store._entries == before
+                return
+            assert result.get("success"), result
+            if transition:
+                assert result["chat_type"] == "unknown", result
+        else:
+            error = _deliver_result(
+                {
+                    "id": "fresh-membership",
+                    "deliver": "origin",
+                    "attach_to_session": True,
+                    "origin": source.to_dict(),
+                },
+                brief,
+                runner.adapters,
+                SimpleNamespace(is_running=lambda: True),
+            )
+            if case in {"encrypted_unavailable", "media_unavailable"}:
+                assert error and "native unavailable" in error
+                assert not accepted
+                assert not any(method == "PUT" for method, _, _ in http_calls)
+                assert store._entries == before
+                return
+            assert error is None, error
+        should_create = caller == "cron" and case in {
+            "shared_absent",
+            "group_shared_absent",
+        }
+        if should_create:
+            key = store._generate_session_key(source)
+            assert set(store._entries) == {key}
+            alice = store.lookup_by_session_key(key)
+        else:
+            assert store._entries == before
+        if alice is not None:
+            assert [
+                (turn["role"], turn["content"])
+                for turn in store.load_transcript(alice.session_id)
+            ] == (
+                []
+                if transition
+                else [
+                    (
+                        "assistant" if caller == "tool" else "user",
+                        brief
+                        if caller == "tool"
+                        else f"[Cron delivery: fresh-membership]\n{brief}",
+                    )
+                ]
+            )
+        if bob is not None:
+            assert store.load_transcript(bob.session_id) == []
+    assert accepted
+    if unavailable:
+        assert [
+            payload["m.relates_to"]
+            for method, _, payload in http_calls
+            if method == "PUT"
+        ] == [
+            {
+                "rel_type": "m.thread",
+                "event_id": thread,
+                "is_falling_back": True,
+                "m.in_reply_to": {"event_id": thread},
+            }
+        ]
+    if transition:
+        assert True in fresh_reads
 
 
 def _schedule(coro, loop):
@@ -292,8 +538,11 @@ def test_unknown_membership_defers_continuation_until_identity_recovers(
         adapter._user_id = ""
     if chat_type == "group":
         members.add("@bob:remote.test")
+    known = False
     adapter._get_room_members = AsyncMock(
-        side_effect=[None if unknown_state == "membership" else members, members]
+        side_effect=lambda *args, **kwargs: (
+            None if unknown_state == "membership" and not known else members
+        )
     )
     adapter._get_room_member_profiles = AsyncMock(return_value=None)
     adapter._get_room_state_value = AsyncMock(return_value=None)

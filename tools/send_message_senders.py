@@ -552,6 +552,10 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     adapter = MatrixAdapter(pconfig)
     try:
         if not await adapter.connect():
+            if not media_files:
+                return await _registry_standalone_send(
+                    "matrix", pconfig, chat_id, message, thread_id=thread_id
+                )
             return _error("Matrix connect failed")
         return await _matrix_send_core(adapter, chat_id, message, media_files, metadata)
     except Exception as e:

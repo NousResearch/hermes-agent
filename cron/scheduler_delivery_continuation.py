@@ -277,9 +277,24 @@ def _seed_cron_session(
                 thread_id=thread_id,
                 scope_id=str(scope_id) if scope_id else None,
             )
-            # Create the row and pass its exact id to the mirror — origin-heuristic rediscovery
-            # bails on populated chats.
-            _entry = session_store.get_or_create_session(dest_source)
+            _entry = None
+            if platform_enum == Platform.MATRIX:
+                participant_isolated = (
+                    dest_source.chat_type != "dm"
+                    and session_store.config.group_sessions_per_user
+                    and (
+                        not dest_source.thread_id
+                        or session_store.config.thread_sessions_per_user
+                    )
+                )
+                if participant_isolated:
+                    _entry = session_store.lookup_by_session_key(
+                        session_store._generate_session_key(dest_source)
+                    )
+                    if _entry is None:
+                        return False
+            if _entry is None:
+                _entry = session_store.get_or_create_session(dest_source)
             seeded_session_id = getattr(_entry, "session_id", None)
     return mirror_to_session(
         platform_name,

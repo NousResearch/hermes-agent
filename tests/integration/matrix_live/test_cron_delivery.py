@@ -37,7 +37,14 @@ async def main():
         loop = asyncio.get_running_loop()
         job = {'id': 'matrix-live-cron', 'deliver': TARGET, 'attach_to_session': False}
         if UPLOAD_TRANSITION:
-            from tools.send_message_senders import _matrix_send_core
+            from types import SimpleNamespace
+            from tools import send_message_senders
+            from tools.send_message_tool import _send_to_platform
+            from plugins.platforms.matrix.standalone import _HTTPDelivery
+            send_message_senders._live_adapter = lambda *args, **kwargs: (SimpleNamespace(_gateway_loop=loop), adapter)
+            async def reject_http(*args, **kwargs):
+                raise AssertionError('Encrypted SDK media must not use plaintext HTTP')
+            _HTTPDelivery.request = reject_http
             assert adapter._encryption and adapter._client.crypto
             original_upload = adapter._client.upload_media
             async def paused_upload(*args, **kwargs):
@@ -50,9 +57,9 @@ async def main():
             adapter._client.upload_media = paused_upload
             attachment = Path('/opt/data/report.txt')
             attachment.write_bytes(b'Private cron attachment')
-            result = await _matrix_send_core(
-                adapter, TARGET.removeprefix('matrix:').split('/')[0], '',
-                [(str(attachment), False)], {'thread_id': THREAD},
+            result = await _send_to_platform(
+                Platform.MATRIX, adapter.config, TARGET.removeprefix('matrix:').split('/')[0], '',
+                media_files=[(str(attachment), False)], thread_id=THREAD,
             )
             error = result.get('error')
         else:

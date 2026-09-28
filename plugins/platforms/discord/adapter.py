@@ -4721,9 +4721,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # them — without them a guild- or channel-routed profile never matches a native slash command
         # (#69178).
         parent_id = (self._get_parent_channel_id(interaction.channel) if is_thread else None) or ""
-        # Callers build the event only after _check_slash_authorization passed, so the
-        # adapter's role verdict holds here exactly as on the message path
-        # (_discord_message_admission); without it the gateway denies role-only users.
+        # Callers build the event only after _check_slash_authorization passed. The flag means
+        # what it means on the message path (_discord_message_admission): this adapter has a role
+        # allowlist and the user passed its gate, not that the user matched a role. Without it the
+        # gateway denies role-only users.
         source = self.build_source(
             chat_id=str(interaction.channel_id), chat_name=chat_name, chat_type=chat_type,
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,

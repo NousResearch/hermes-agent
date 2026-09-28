@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { recordTranscriptTail } from '@/store/transcript-tail'
+
 import type { SidebarSessionsResponse } from './sessions'
 
 vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
 vi.mock('@/store/transcript-tail', () => ({ recordTranscriptTail: vi.fn() }))
 vi.mock('./client', () => ({
+  ambientOwnerConnectionId: vi.fn(),
   capabilityScoped: vi.fn(),
+  connectionScoped: vi.fn(() => ({})),
   getApiRequestConnection: vi.fn(() => 'prometheus'),
   getApiRequestProfile: vi.fn(() => null),
   hermesApi: vi.fn(),
@@ -18,6 +22,7 @@ const {
   deleteSession,
   getSession,
   getSessionMessages,
+  getLatestSessionMessages,
   setSessionArchived,
   setSessionPinnedRemote,
   setSessionUnreadRemote,
@@ -358,6 +363,97 @@ describe('unscoped session reads resolve the owner before dispatch', () => {
     })
     expect((hermesApi.mock.calls[0][0] as { path: string }).path).toBe(
       '/api/sessions/s5/messages?profile=default&limit=10&order=latest'
+    )
+  })
+})
+
+describe('getLatestSessionMessages keys the tail ledger by the effective owner', () => {
+  // Regression (#125372 follow-up): the READ routes an unscoped caller through
+  // the owner ladder, but the tail ledger entry was keyed by the caller's
+  // ambient scope. With two connections both exposing profile `default`, the
+  // page came from the owner machine while the ledger recorded it under the
+  // ambient one — the reader's owner-keyed lookup then missed, and an unscoped
+  // resolve saw two entries for one stored id and could not pick.
+  const identityCapabilityScoped = () =>
+    vi.mocked(client.capabilityScoped).mockImplementation(
+      // Mirrors the real capabilityScoped for object scopes (minus priority,
+      // which sessionScoped strips anyway).
+      scope => (typeof scope === 'object' && scope !== null ? { ...scope } : scope) as never
+    )
+
+  const recordTail = vi.mocked(recordTranscriptTail)
+
+  beforeEach(() => {
+    vi.mocked(client.connectionScoped).mockReturnValue({})
+    vi.mocked(client.ambientOwnerConnectionId).mockReturnValue(undefined)
+  })
+
+  afterEach(() => {
+    setSessionOwnerResolver(undefined)
+  })
+
+  it('records the entry under the owner scope the unscoped read routed by', async () => {
+    hermesApi.mockResolvedValue({ messages: [] } as never)
+    identityCapabilityScoped()
+    // Window ambient tag is MACHINE-A; the session's owner is MACHINE-B.
+    vi.mocked(client.connectionScoped).mockReturnValue({ connectionId: 'machine-a' })
+    vi.mocked(client.getApiRequestProfile).mockReturnValue('default')
+    setSessionOwnerResolver(() => ({ connectionId: 'machine-b', profile: 'default' }))
+
+    await getLatestSessionMessages('stored')
+
+    // The read went to the owner machine…
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      connectionId: 'machine-b',
+      profile: 'default'
+    })
+    // …so the ledger must key by that same machine, not the ambient one.
+    expect(recordTail).toHaveBeenCalledWith(
+      'stored',
+      expect.anything(),
+      expect.objectContaining({ connectionId: 'machine-b', profile: 'default' }),
+      expect.objectContaining({ connectionId: 'machine-b', profile: 'default' })
+    )
+  })
+
+  it('keeps the ambient ledger key when no owner is known', async () => {
+    hermesApi.mockResolvedValue({ messages: [] } as never)
+    identityCapabilityScoped()
+    vi.mocked(client.connectionScoped).mockReturnValue({ connectionId: 'machine-a' })
+    vi.mocked(client.getApiRequestProfile).mockReturnValue('default')
+    setSessionOwnerResolver(() => undefined)
+
+    await getLatestSessionMessages('stored')
+
+    expect(hermesApi.mock.calls[0][0]).not.toHaveProperty('connectionId')
+    expect(recordTail).toHaveBeenCalledWith(
+      'stored',
+      expect.anything(),
+      expect.objectContaining({ connectionId: 'machine-a' }),
+      expect.objectContaining({ connectionId: 'machine-a', profile: 'default' })
+    )
+  })
+
+  it('never consults the resolver when the caller passed an explicit scope', async () => {
+    hermesApi.mockResolvedValue({ messages: [] } as never)
+    identityCapabilityScoped()
+    vi.mocked(client.connectionScoped).mockReturnValue({ connectionId: 'machine-a' })
+    const resolver = vi.fn(() => ({ connectionId: 'machine-b', profile: 'default' }))
+
+    setSessionOwnerResolver(resolver)
+
+    await getLatestSessionMessages('stored', { connectionId: 'machine-pinned', profile: 'work' })
+
+    expect(resolver).not.toHaveBeenCalled()
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      connectionId: 'machine-pinned',
+      profile: 'work'
+    })
+    expect(recordTail).toHaveBeenCalledWith(
+      'stored',
+      expect.anything(),
+      expect.objectContaining({ connectionId: 'machine-pinned', profile: 'work' }),
+      expect.objectContaining({ connectionId: 'machine-pinned', profile: 'work' })
     )
   })
 })

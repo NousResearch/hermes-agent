@@ -555,7 +555,14 @@ export function getLatestSessionMessages(
   // (ambient, profile string, or explicit pin). Otherwise refreshes create
   // duplicate tail entries and "Show earlier" cannot resolve the loaded tail.
   // Capture before awaiting: the active gateway may change during the read.
-  const route = { ...connectionScoped(), ...sessionScoped(profile) }
+  // The ledger keys by the SAME effective scope the read routes by: the read
+  // resolves an unscoped caller through the owner ladder (#125372), and an
+  // entry recorded under the caller's ambient scope while the page came from
+  // the owner machine splits one session's tail across two keys — the reader's
+  // owner-keyed lookup then misses, and an unscoped resolve cannot pick
+  // between the two entries.
+  const effectiveScope = profile ?? sessionOwnerScope(id)
+  const route = { ...connectionScoped(), ...sessionScoped(effectiveScope) }
   // Only the lookup key is normalized — backfill replays `route` verbatim.
   const ambientConnectionId = route.connectionId || ambientOwnerConnectionId()
   const ambientProfile = getApiRequestProfile() || 'default'
@@ -565,7 +572,7 @@ export function getLatestSessionMessages(
   // silently ends at the compaction boundary and earlier turns are unreachable.
   return getSessionMessages(
     id,
-    profile,
+    effectiveScope,
     {
       limit: LATEST_SESSION_MESSAGES_LIMIT,
       order: 'latest',

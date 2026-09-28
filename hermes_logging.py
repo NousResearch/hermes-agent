@@ -17,7 +17,7 @@ import sys
 import threading
 from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Sequence
 
 from hermes_constants import get_config_path, get_hermes_home, mkdir_under_hermes_home
 
@@ -430,35 +430,6 @@ def _quietly(fn) -> None:
         pass
 
 
-def _stat_owner(path: str) -> Optional[Tuple[int, int, int]]:
-    """``(uid, gid, mode)`` of *path*, or ``None`` when unavailable (Windows, missing file)."""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    uid = getattr(st, "st_uid", None)
-    gid = getattr(st, "st_gid", None)
-    if uid is None or gid is None:
-        return None  # Windows (and any POSIX without the fields): nothing to preserve
-    return int(uid), int(gid), int(st.st_mode)
-
-
-def _restore_owner(path: str, owner: Tuple[int, int, int]) -> None:
-    """Give *path* back to ``(uid, gid)`` and its recorded mode, best-effort.
-
-    Only root may hand a file to another uid, so this is a no-op for an unprivileged
-    process — which never changed the owner in the first place. An ``OSError`` leaves the
-    default file in place: a log that cannot be chowned is still a working log.
-    """
-    uid, gid, mode = owner
-    try:
-        if hasattr(os, "chown") and hasattr(os, "geteuid") and os.geteuid() == 0:
-            os.chown(path, uid, gid)
-        os.chmod(path, mode & 0o7777)
-    except OSError:
-        pass
-
-
 class _ManagedRotatingFileHandler(RotatingFileHandler):
     """RotatingFileHandler with managed-mode perms and external-rotation detection.
 
@@ -569,16 +540,22 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
-        # The stdlib rollover renames baseFilename and opens a fresh one, so the new
-        # file is owned by whichever process wrote the record that crossed maxBytes.
-        # With one rotating handler per profile (#120151), that is usually the long-lived
-        # gateway — so a worker's log can be replaced by a root-owned file the worker can
-        # never reopen, turning a log rotation into a permanent EACCES on that profile.
-        # Snapshot the owner first and hand it back to the new file.
-        previous = _stat_owner(self.baseFilename)
+        # The stdlib rollover opens a fresh baseFilename owned by whichever process crossed
+        # maxBytes. With one rotating handler per profile that is usually the long-lived root
+        # gateway, and a worker on another uid can never reopen its own agent.log (#120151).
+        # Only root can hand the file back; an unprivileged process never changed the owner.
+        try:
+            previous = os.stat(self.baseFilename)
+        except OSError:
+            previous = None
         super().doRollover()
         if previous is not None:
-            _restore_owner(self.baseFilename, previous)
+            try:
+                if getattr(os, "geteuid", lambda: -1)() == 0:
+                    os.chown(self.baseFilename, previous.st_uid, previous.st_gid)
+                os.chmod(self.baseFilename, previous.st_mode & 0o7777)
+            except OSError:
+                pass  # a log that cannot be chowned is still a working log
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot so
         # the next emit doesn't mistake it for external rotation.

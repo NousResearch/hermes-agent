@@ -138,6 +138,12 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
         webgl.onContextLoss(() => {
           webgl.dispose()
           webglRef.current = null
+          try {
+            fitRef.current?.(active)
+            term.refresh(0, term.rows - 1)
+          } catch {
+            // Best-effort DOM repaint fallback after WebGL context loss
+          }
         })
         term.loadAddon(webgl)
         webglRef.current = webgl
@@ -189,7 +195,11 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
 
     const raf = requestAnimationFrame(() => {
       term.options.theme = surfaceTheme()
-      webglRef.current?.clearTextureAtlas()
+      try {
+        webglRef.current?.clearTextureAtlas()
+      } catch {
+        // WebGL context lost or uninitialized
+      }
     })
 
     return () => cancelAnimationFrame(raf)
@@ -221,7 +231,11 @@ export function useAgentTerminal({ active, id, procId }: { active: boolean; id: 
       onActivate: () => {
         const term = termRef.current
 
-        webglRef.current?.clearTextureAtlas()
+        try {
+          webglRef.current?.clearTextureAtlas()
+        } catch {
+          // WebGL context lost or uninitialized
+        }
         term?.refresh(0, term.rows - 1)
         // Take focus on activation (parity with the user terminal) so the active
         // agent tab holds focus and ⌘W's isFocusWithin('[data-terminal]') routes

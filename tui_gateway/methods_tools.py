@@ -561,7 +561,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     r = _tools_mod("hermes_cli.commands").resolve_command(params.get("name", ""))
     if r:
-        return _ok(rid, {"canonical": r.name, "description": r.description, "category": r.category})
+        return _ok(rid, {"canonical": r.name, "description": r.describe(), "category": r.category})
     return _err(rid, 4011, f"unknown command: {params.get('name')}")
 
 
@@ -1343,7 +1343,7 @@ del _name, _fn, _keys
 def _skills_search(rid, params, query):
     search, gh = _tools_mod("tools.skills_hub_search"), _tools_mod("tools.skills_hub_github")
     raw = search.unified_search(query, search.create_source_router(gh.GitHubAuth()), source_filter="all", limit=20) or []
-    return _ok(rid, {"results": [{"name": r.name, "description": r.description} for r in raw]})
+    return _ok(rid, {"results": [{"name": r.name, "description": r.describe()} for r in raw]})
 
 
 def _skills_install(rid, params, query):

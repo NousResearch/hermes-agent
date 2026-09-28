@@ -1447,6 +1447,42 @@
       }
     },
     {
+      "name": "i18n.catalog",
+      "summary": "Pack + overlay messages for one language and surface; the renderer merges them over its bundled catalog.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/I18nCatalogParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/I18nCatalogResult"
+        }
+      }
+    },
+    {
+      "name": "i18n.languages",
+      "summary": "Every language some layer supplies (bundled \u222a user overlay \u222a plugin packs), en first.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/ProfileParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/I18nLanguagesResult"
+        }
+      }
+    },
+    {
       "name": "image.attach",
       "summary": "Queue a gateway-visible image file for the next turn.",
       "params": [
@@ -15715,6 +15751,80 @@
         "title": "HeartbeatSnapshot",
         "type": "object"
       },
+      "I18nCatalogParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "lang": {
+            "title": "Lang",
+            "type": "string"
+          },
+          "surface": {
+            "$ref": "#/components/schemas/LocaleSurface",
+            "default": "core"
+          }
+        },
+        "required": [
+          "lang"
+        ],
+        "title": "I18nCatalogParams",
+        "type": "object"
+      },
+      "I18nCatalogResult": {
+        "additionalProperties": false,
+        "description": "``messages`` is ONLY the pack + user-overlay layer for that surface (flat dotted keys); the\nclient merges it over its bundled ``en``/``<lang>``. ``lang`` is the canonical id the request\nresolved to (``pt-BR`` \u2192 ``pt-br``; an unknown id resolves to ``en`` with an empty layer).",
+        "properties": {
+          "lang": {
+            "title": "Lang",
+            "type": "string"
+          },
+          "surface": {
+            "$ref": "#/components/schemas/LocaleSurface"
+          },
+          "messages": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Messages",
+            "type": "object"
+          }
+        },
+        "required": [
+          "lang",
+          "surface",
+          "messages"
+        ],
+        "title": "I18nCatalogResult",
+        "type": "object"
+      },
+      "I18nLanguagesResult": {
+        "additionalProperties": false,
+        "properties": {
+          "languages": {
+            "items": {
+              "$ref": "#/components/schemas/LanguageOption"
+            },
+            "title": "Languages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "languages"
+        ],
+        "title": "I18nLanguagesResult",
+        "type": "object"
+      },
       "ImageAttachBytesParams": {
         "additionalProperties": false,
         "description": "``content_base64`` (or the ``data`` alias) carries the bytes; ``filename`` / ``ext`` only hint\nthe extension \u2014 magic bytes decide.",
@@ -16325,6 +16435,36 @@
         ],
         "title": "InterruptStatus",
         "type": "string"
+      },
+      "LanguageOption": {
+        "additionalProperties": false,
+        "description": "``agent.i18n_languages.language_options`` row. ``source`` is ``bundled``, ``overlay`` or\n``plugin:<name>`` \u2014 the highest layer that supplies the language.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "endonym": {
+            "title": "Endonym",
+            "type": "string"
+          },
+          "rtl": {
+            "title": "Rtl",
+            "type": "boolean"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "endonym",
+          "rtl",
+          "source"
+        ],
+        "title": "LanguageOption",
+        "type": "object"
       },
       "LayoutApplyPayload": {
         "additionalProperties": true,
@@ -16996,6 +17136,15 @@
         ],
         "title": "LlmOneshotResult",
         "type": "object"
+      },
+      "LocaleSurface": {
+        "enum": [
+          "core",
+          "tui",
+          "desktop"
+        ],
+        "title": "LocaleSurface",
+        "type": "string"
       },
       "LoopSnapshot": {
         "additionalProperties": false,
@@ -21536,7 +21685,7 @@
       },
       "PluginActivation": {
         "additionalProperties": false,
-        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session.",
+        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session.",
         "properties": {
           "name": {
             "title": "Name",

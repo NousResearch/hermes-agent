@@ -262,7 +262,9 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
     install_targets = [pkg] + list(extra_pkgs or [])
     cmd = [pm_bin, *_NODE_PM_ARGV[pm](str(staging)), *install_targets]
     logger.info("[install] %s %s", pm, " ".join(cmd[1:]))
-    if not _run_installer(pm, pkg, cmd, timeout=300, env=with_hermes_node_path()):
+    from tools.environments.local import hermes_subprocess_env
+    # Package install scripts are third-party code: scrubbed env, never Hermes' credentials.
+    if not _run_installer(pm, pkg, cmd, timeout=300, env=with_hermes_node_path(hermes_subprocess_env())):
         return None
     found = _first_existing(staging / "node_modules" / ".bin" / bin_name)
     if found is not None:
@@ -281,7 +283,9 @@ def _install_go(pkg: str, bin_name: str) -> Optional[str]:
         return None
     staging = hermes_lsp_bin_dir()
     logger.info("[install] go install %s (GOBIN=%s)", pkg, staging)
-    if not _run_installer("go", pkg, [go, "install", pkg], timeout=600, env={**os.environ, "GOBIN": str(staging)}):
+    from tools.environments.local import hermes_subprocess_env
+    env = {**hermes_subprocess_env(), "GOBIN": str(staging)}
+    if not _run_installer("go", pkg, [go, "install", pkg], timeout=600, env=env):
         return None
     bin_path = (staging / bin_name).with_suffix(".exe") if _is_windows() else staging / bin_name
     if bin_path.exists():

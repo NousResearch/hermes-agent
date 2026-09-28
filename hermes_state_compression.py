@@ -576,12 +576,17 @@ class SessionCompressionMixin:
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0,
         wait_seconds: float = 1800.0, poll_interval_seconds: float = 1.0, on_wait=None,
         wait_notice_interval_seconds: float = 15.0, should_abort=None, acquire_patience_s: float = 0.5,
+        on_contended=None,
     ) -> bool:
         """Wait for a cross-process turn lease without holding a SQLite lock. ``on_wait(elapsed)`` is
-        best-effort: called when the first attempt fails and about every ``wait_notice_interval_seconds``
-        after. ``should_abort()`` True (e.g. ``/stop``) returns False at once."""
+        best-effort: called when another holder has the lease and about every
+        ``wait_notice_interval_seconds`` after. A busy database is not a holder: the attempt is
+        retried at once with a longer write patience, and ``on_contended()`` is called instead,
+        since the busy writer may be the holder's last flush. ``should_abort()`` True (e.g.
+        ``/stop``) returns False at once."""
         from hermes_state import classify_persistence_error
         deadline = time.monotonic() + max(0.0, float(wait_seconds))
+        patience = acquire_patience_s
         wait_started = None
         last_notice_at = None
         notice_every = max(0.0, float(wait_notice_interval_seconds))
@@ -594,13 +599,25 @@ class SessionCompressionMixin:
                     logger.debug("session turn lease should_abort callback failed", exc_info=True)
             try:
                 if self.try_acquire_session_turn_lease(
-                    session_id, holder, ttl_seconds=ttl_seconds, patience_s=acquire_patience_s):
+                    session_id, holder, ttl_seconds=ttl_seconds, patience_s=patience):
                     return True
             except sqlite3.Error as exc:
-                # Long holder transactions can exhaust one write-patience budget; keep
-                # polling until wait_seconds or should_abort.
+                # Another writer's transaction outlasted the write patience. That is not a lease
+                # holder, so no poll sleep or "another process" notice; the retry waits on the write
+                # lock itself (the poll interval moves into its patience) and wins it once free.
                 if classify_persistence_error(exc) != "locked":
                     raise
+                if on_contended is not None:
+                    try:
+                        on_contended()
+                    except Exception:
+                        logger.debug("session turn lease on_contended callback failed", exc_info=True)
+                patience = min(acquire_patience_s + max(0.0, float(poll_interval_seconds)),
+                               max(acquire_patience_s, deadline - time.monotonic()))
+                if not self._sleep_before_write_retry(deadline, 0.0):
+                    return False
+                continue
+            patience = acquire_patience_s
             now = time.monotonic()
             remaining = deadline - now
             if remaining <= 0:

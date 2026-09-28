@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
+from agent.i18n import t
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
@@ -29,9 +30,8 @@ logger = logging.getLogger("gateway.run")
 
 # A failed /update leaves the previous version running; the full pip/git log stays on the host
 # (`hermes update` re-runs it in the terminal) and only a short tail is quoted in chat.
-_UPDATE_FAILED_NOTICE = (
-    "❌ Hermes update failed; the previous version is still running. Run `hermes update` on the "
-    "host to see the full error, or try /update again later.")
+def _update_failed_notice() -> str:
+    return t("gateway.update.failed_notice")
 
 # An update's completion notice waits for its target platform adapter to (re)connect before it
 # can be delivered. Nothing bounds that wait, so a marker naming a platform that is not
@@ -643,12 +643,9 @@ class GatewayNotificationsMixin:
                 )
                 sent_buttons = True
         if not sent_buttons:
-            default_hint = f" (default: {default})" if default else ""
+            default_hint = t("gateway.update.prompt_default", default=default) if default else ""
             _p = getattr(adapter, "typed_command_prefix", "/")
-            await target.send(
-                f"☤ **Update needs your input:**\n\n{prompt_text}{default_hint}\n\n"
-                f"Reply `{_p}approve` (yes) or `{_p}deny` (no), or type your answer directly."
-            )
+            await target.send(t("gateway.update.prompt", prompt=prompt_text, default_hint=default_hint, prefix=_p))
         # Keep the prompt marker on disk until answered so a restarted watcher can re-forward it.
         self._session_state(target.session_key).persistent.update_prompt_pending = True
         logger.info("Forwarded update prompt to %s: %s", target.session_key, prompt_text[:80])
@@ -700,7 +697,7 @@ class GatewayNotificationsMixin:
                 with _log_suppressed(logging.WARNING, "Update final notification failed: %s"):
                     exit_code = self._update_exit_code(paths)
                     await target.send(
-                        "✅ Hermes update finished." if exit_code == 0 else _UPDATE_FAILED_NOTICE
+                        t("gateway.update.finished") if exit_code == 0 else _update_failed_notice()
                     )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
                 self._clear_update_markers(paths, session_key)
@@ -727,7 +724,7 @@ class GatewayNotificationsMixin:
             paths.exit_code.write_text("124", encoding="utf-8")
             await _flush_buffer()
             with suppress(Exception):
-                await target.send("❌ Hermes update timed out after 30 minutes.")
+                await target.send(t("gateway.update.timed_out"))
             self._clear_update_markers(paths, session_key)
 
     async def _send_update_notification(self) -> bool:
@@ -789,13 +786,13 @@ class GatewayNotificationsMixin:
                 from tools.ansi_strip import strip_ansi
                 output = strip_ansi(output).strip()
                 if exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
+                    msg = t("gateway.update.finished_success")
                     if output:
                         msg = f"{msg}\n\n```\n{_update_output_tail(output, 3500)}\n```"
                 else:
-                    msg = _UPDATE_FAILED_NOTICE
+                    msg = _update_failed_notice()
                     if output:
-                        msg = f"{msg}\n\nLast lines:\n```\n{_update_output_tail(output, 800)}\n```"
+                        msg = t("gateway.update.last_lines", msg=msg, tail=_update_output_tail(output, 800))
                 await adapter.send(chat_id, msg, metadata=_non_conversational_metadata(metadata, platform=platform))
                 logger.info("Sent post-update notification to %s:%s (exit=%s)", platform_str, chat_id, exit_code)
         except Exception as e:
@@ -841,7 +838,7 @@ class GatewayNotificationsMixin:
                     if data.get(field):
                         metadata[field] = str(data[field])
             result = await transport.send(
-                platform, str(chat_id), "♻ Gateway restarted successfully. Your session continues.",
+                platform, str(chat_id), t("gateway.startup.restarted"),
                 metadata=_non_conversational_metadata(metadata, platform=platform),
             )
             # adapter.send() catches provider errors (e.g. "Chat not found") and returns
@@ -942,7 +939,7 @@ class GatewayNotificationsMixin:
         except Exception as exc:
             logger.debug("Free tier startup line skipped: %s", exc)
             return None
-        return "Inference: Nous free tier (nous/welcome). Sign in for more: /login"
+        return t("gateway.startup.free_tier_line")
 
     _planned_restart_notice_lock: Optional[asyncio.Lock] = None
 
@@ -998,7 +995,7 @@ class GatewayNotificationsMixin:
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        message = t("gateway.startup.online")
         free_tier_line = self._free_tier_startup_line()
         if free_tier_line:
             message = f"{message}\n{free_tier_line}"
@@ -1062,30 +1059,11 @@ class GatewayNotificationsMixin:
         if cause == "corrupt":
             db_path = _default_db_path()
             backups_dir = get_default_hermes_root() / "backups"
-            message = (
-                "⚠️ Session database corruption detected. Messages may not be "
-                "persisted. Recovery options:\n"
-                f"1. Run `hermes {profile_arg}doctor --fix`\n"
-                "2. Stop the gateway, then recover with:\n"
-                f"   hermes {profile_arg}sessions recover --source {db_path} "
-                "--inspect-only\n"
-                f"   (if it reports recoverable) hermes {profile_arg}sessions recover "
-                f"--source {db_path} --output recovered-state.db\n"
-                "   — recovery snapshots the damaged file first; do NOT run "
-                "`sqlite3 ... \".recover\"` against the live state.db, a "
-                "vulnerable sqlite3 CLI can corrupt it further\n"
-                f"3. Restore from a backup in {backups_dir}/\n"
-                f"Run `hermes {profile_arg}doctor` for sanitized diagnostics."
-            )
+            message = t("gateway.startup.db_corrupt", profile_arg=profile_arg, db_path=db_path, backups_dir=backups_dir)
         elif cause == "fts_index":
             # Index-scoped corruption: the message tables are not damaged, so the recover /
             # restore advice above would be destructive on a healthy file (#97794).
-            message = (
-                "⚠️ Session database reported a corruption error confined to the search index "
-                "(FTS5); the message tables are not damaged. Messages may not be persisted until "
-                f"it is repaired: run `hermes {profile_arg}doctor --fix`, then restart the gateway. Do not run "
-                f"recovery tools or restore a backup unless `hermes {profile_arg}doctor` confirms damage."
-            )
+            message = t("gateway.startup.db_fts_corrupt", profile_arg=profile_arg)
         else:
             from hermes_state_user_copy import describe_storage_failure
             failure = describe_storage_failure(error)
@@ -1095,11 +1073,8 @@ class GatewayNotificationsMixin:
             # opened its store at startup and stays broken until it is restarted.
             action = failure.action
             if failure.cause not in _SELF_CLEARING_STORAGE_CAUSES:
-                action = f"{action} Then `hermes {profile_arg}gateway restart`."
-            message = (
-                "⚠️ Session database unavailable — messages may not be saved and /resume will be "
-                f"empty. Cause: {failure.gloss}. {action}"
-            )
+                action = t("gateway.startup.db_then_restart", action=action, profile_arg=profile_arg)
+            message = t("gateway.startup.db_unavailable", cause=failure.gloss, action=action)
         logger.warning("Broadcasting state.db failure warning to home channels: %s", error)
         from gateway.warning_notifications import present_notification
         for platform, _platform_cfg, home, transport in self._home_channel_transports():
@@ -2043,14 +2018,14 @@ class GatewayNotificationsMixin:
             return _format_concise_process_notification(session_id, command, session.exit_code, new_output,
                                                         duration_seconds=_dur)
         header = _format_concise_process_notification(session_id, command, session.exit_code, "", duration_seconds=_dur)
-        return f"{header}\n\nFinal output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
+        return t("gateway.background.final_output", header=header, output=new_output.strip()) if new_output.strip() else header
 
     def _format_process_running_message(self, session) -> str:
         from gateway.run import _redact_gateway_user_facing_secrets, _shorten_command_for_display
         new_output = self._redacted_output_tail(session, 500)
         short_cmd = _shorten_command_for_display(_redact_gateway_user_facing_secrets(getattr(session, "command", "") or ""))
-        header = "⏳ Background task still running" + (f" — `{short_cmd}`" if short_cmd else "")
-        return f"{header}\n\nRecent output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
+        header = t("gateway.background.still_running") + (f" — `{short_cmd}`" if short_cmd else "")
+        return t("gateway.background.recent_output", header=header, output=new_output.strip()) if new_output.strip() else header
 
     def arm_process_watcher(self, watcher: dict) -> bool:
         """Start ``_run_process_watcher`` for a watcher registered mid-turn, from the agent's

@@ -23,6 +23,7 @@ const SKILL_TURN: Frame[] = [
 
 async function mount() {
   const stream = renderMessageStream(SID)
+
   const send = (type: GatewayEventName, payload: Record<string, unknown> = {}) =>
     act(() => stream.handleEvent({ type, payload, session_id: SID }))
 
@@ -42,12 +43,7 @@ function expectSingleBubble(stream: ReturnType<typeof renderMessageStream>) {
 it('renders one bubble when the duplicate interim lands after the first completion', async () => {
   const { stream, send } = await mount()
 
-  const skewed: Frame[] = [
-    ...SKILL_TURN.slice(0, 5),
-    SKILL_TURN[5],
-    SKILL_TURN[4],
-    SKILL_TURN[5]
-  ]
+  const skewed: Frame[] = [...SKILL_TURN.slice(0, 5), SKILL_TURN[5], SKILL_TURN[4], SKILL_TURN[5]]
 
   for (const [type, payload] of skewed) {
     await send(type, payload)

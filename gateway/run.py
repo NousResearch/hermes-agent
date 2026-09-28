@@ -31,6 +31,7 @@ from datetime import datetime
 from typing import Callable, Dict, Optional, Any, List, Tuple, cast
 
 from agent.async_utils import safe_schedule_threadsafe
+from agent.i18n import t
 from agent.conversation_compression import (
     COMPACTION_DONE_STATUS, COMPACTION_HEARTBEAT_STATUS, COMPACTION_STATUS, COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
@@ -197,12 +198,10 @@ def _hygiene_compression_timeout_message(
     """Describe the host timeout that actually ended hygiene compression. Chat users cannot edit
     model config, so the copy names /compress, /new and `hermes doctor`, never a config key or the
     raw second counts (those stay in the gateway log)."""
-    lead = (
-        "⚠️ Shortening the conversation history took too long, so I skipped it and kept "
-        "everything as-is. Run /compress to try again or /new to start fresh.")
+    lead = t("gateway.compress.hygiene_timeout")
     if total_exhausted:
         return lead
-    return lead + " If this keeps happening, run `hermes doctor` on the host."
+    return lead + t("gateway.compress.hygiene_timeout_doctor_hint")
 
 
 def _cached_agent_for_hygiene(gateway, session_key: str):
@@ -600,20 +599,22 @@ def _format_exec_approval_fallback(
     the button card (``BasePlatformAdapter._format_exec_approval``), plus the typed ``/approve``
     steps a surface without buttons needs."""
     from gateway.platforms.base_exec_approval import (
-        EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
+        approval_timeout_seconds, ea_header_text, ea_reason_label_text, format_approval_deadline_line)
     cmd_preview = command[:200] + "..." if len(command) > 200 else command
-    heading = ("⚠️ **Smart DENY — owner override for one operation:**" if smart_denied
-               else f"⚠️ **{EA_HEADER_TEXT}**")
+    heading = (t("gateway.exec_approval.smart_deny_heading") if smart_denied
+               else f"⚠️ **{ea_header_text()}**")
 
-    choices = [f"Reply `{command_prefix}approve` to run it once"]
+    choices = [t("gateway.exec_approval.text_choice_once", prefix=command_prefix)]
     if not smart_denied and allow_session:
-        choices.append(f"`{command_prefix}approve session` to allow this pattern for the rest of this session")
+        choices.append(t("gateway.exec_approval.text_choice_session", prefix=command_prefix))
         if allow_permanent:
-            choices.append(f"`{command_prefix}approve always` to allow it permanently")
-    choices.append(f"`{command_prefix}deny` to cancel")
+            choices.append(t("gateway.exec_approval.text_choice_always", prefix=command_prefix))
+    choices.append(t("gateway.exec_approval.text_choice_deny", prefix=command_prefix))
     return (
-        f"{heading}\n```\n{cmd_preview}\n```\n{EA_REASON_LABEL_TEXT}: {description}\n\n"
-        + ", ".join(choices[:-1]) + f", or {choices[-1]}.\n"
+        t("gateway.exec_approval.text_body", heading=heading, command=cmd_preview,
+          reason_label=ea_reason_label_text(), reason=description)
+        + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
+        + t("gateway.exec_approval.text_choice_last", choice=choices[-1])
         + format_approval_deadline_line(approval_timeout_seconds()))
 
 # Ordered: rate-limit beats auth beats policy beats connection; first match wins. Rate-limit goes
@@ -627,27 +628,21 @@ def _format_exec_approval_fallback(
 # been answered by it), a REFUSED/unroutable connect is the endpoint-down case #86570 wrote the
 # wording for, and a cause-free SDK ``APIConnectionError: Connection error.`` supports neither
 # diagnosis, so the catch-all names the failure without asserting a cause.
+# ``(pattern, catalog key)`` — the reply text is resolved with ``t()`` at reply time so the active
+# ``display.language`` applies; ``gateway.errors.*`` in ``locales/en.yaml`` holds the wording.
 _PROVIDER_ERROR_REPLIES = (
-    (_GATEWAY_RATE_LIMIT_RE, "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."),
-    (_GATEWAY_AUTH_ERROR_RE, "⚠️ Sign-in to the AI model service failed. Use /login to sign in again, "
-                             "or ask whoever runs this bot to run `hermes doctor` on the host."),
-    (_GATEWAY_PROVIDER_POLICY_RE, "⚠️ The AI model service rejected this request. Try rephrasing your "
-                                  "message, or use /model to switch models."),
-    (_GATEWAY_CONNECTION_INTERRUPTED_RE, "⚠️ The connection to the AI model service was interrupted mid-request — "
-                                         "usually transient. Use /retry to try again; if it keeps happening, run "
-                                         "`hermes doctor` on the host."),
-    (_GATEWAY_ENDPOINT_UNREACHABLE_RE, "⚠️ The AI model service isn't reachable right now — the configured model "
-                                       "endpoint is not running or is unreachable. Wait a moment and use /retry; "
-                                       "if it persists, run `hermes doctor` on the host."),
-    (_GATEWAY_CONNECTION_ERROR_RE, "⚠️ Hermes could not reach the AI model service (no further detail from the "
-                                   "SDK). Use /retry to try again; if it persists, run `hermes doctor` on the host."))
+    (_GATEWAY_RATE_LIMIT_RE, "gateway.errors.rate_limited"),
+    (_GATEWAY_AUTH_ERROR_RE, "gateway.errors.auth_failed"),
+    (_GATEWAY_PROVIDER_POLICY_RE, "gateway.errors.bad_request"),
+    (_GATEWAY_CONNECTION_INTERRUPTED_RE, "gateway.errors.connection_interrupted"),
+    (_GATEWAY_ENDPOINT_UNREACHABLE_RE, "gateway.errors.unreachable"),
+    (_GATEWAY_CONNECTION_ERROR_RE, "gateway.errors.connection_unknown"))
 
 
-# Shared by the failed-turn normalizer and ``run_turn._hmwa_agent_error_reply``; canonical
-# commands (/compress, /new) — the /compact and /reset aliases are absent from /help.
-_CONTEXT_OVERFLOW_REPLY = (
-    "⚠️ This conversation has grown too long for me to read all at once. "
-    "Use /compress to shorten the history, or /new to start a fresh conversation.")
+def _context_overflow_reply() -> str:
+    """Shared by the failed-turn normalizer and ``run_turn._hmwa_agent_error_reply``; canonical
+    commands (/compress, /new) — the /compact and /reset aliases are absent from /help."""
+    return t("gateway.errors.context_overflow")
 
 
 def _rate_limit_reply(text: str) -> str:
@@ -657,19 +652,16 @@ def _rate_limit_reply(text: str) -> str:
     from agent.retry_utils import format_reset_window, reset_delay_from_message
     seconds = reset_delay_from_message(text) or 0
     if seconds < 120:
-        return "⏱️ The AI model service is rate-limiting requests. Wait a moment, then use /retry."
-    return (f"⏱️ The AI model service's usage limit is reached; it resets in {format_reset_window(seconds)}. "
-            "Use /retry after that, or /model to switch models.")
+        return t("gateway.errors.rate_limited")
+    return t("gateway.errors.usage_limit_resets", window=format_reset_window(seconds))
 
 
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
-    for pattern, reply in _PROVIDER_ERROR_REPLIES:
+    for pattern, reply_key in _PROVIDER_ERROR_REPLIES:
         if pattern.search(text):
-            return _rate_limit_reply(text) if pattern is _GATEWAY_RATE_LIMIT_RE else reply
-    return (
-        "⚠️ The AI model service kept failing. Use /retry to try again, or /model to switch "
-        "models. Details are in the gateway log (`hermes logs`).")
+            return _rate_limit_reply(text) if pattern is _GATEWAY_RATE_LIMIT_RE else t(reply_key)
+    return t("gateway.errors.provider_kept_failing")
 
 
 # Provider/API failure envelope preambles (not ordinary assistant prose), anchored at line start.
@@ -2851,9 +2843,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                     continue
                 # disabled is keyed by the declared frontmatter name (what skills.disabled stores).
                 if slug == normalized and declared_name in disabled:
-                    return (
-                        f"The **{command_name}** skill is installed but disabled.\n"
-                        f"Enable it with: `hermes skills config`")
+                    return t("gateway.skills.disabled", name=command_name)
 
         # Check optional skills (shipped with repo but not installed)
         from hermes_constants import get_optional_skills_dir
@@ -2869,9 +2859,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                 # Install path: official/<category>/<name>
                 rel = skill_md.parent.relative_to(optional_dir)
                 install_path = f"official/{'/'.join(rel.parts)}"
-                return (
-                    f"The **{command_name}** skill is available but not installed.\n"
-                    f"Install it with: `hermes skills install {install_path}`")
+                return t("gateway.skills.not_installed", name=command_name, install_name=install_path)
     except Exception:
         pass
     return None
@@ -3021,8 +3009,7 @@ def _format_concise_process_notification(
     session_id: str, command: str, exit_code, output: str, duration_seconds=None) -> str:
     """One-line completion message for ``concise`` display mode; failure appends a short output tail."""
     ok = exit_code in {0, None}
-    icon = "✅" if ok else "❌"
-    parts = [f"{icon} Background task {'finished' if ok else 'failed'}"]
+    parts = [t("gateway.background.task_finished") if ok else t("gateway.background.task_failed")]
     short_cmd = _shorten_command_for_display(command)
     if short_cmd:
         parts.append(f"— `{short_cmd}`")
@@ -3036,7 +3023,7 @@ def _format_concise_process_notification(
         else:
             details.append(f"{secs}s")
     if not ok:
-        details.append(f"exit {exit_code}")
+        details.append(t("gateway.background.exit_code", code=exit_code))
     if details:
         parts.append(f"({', '.join(details)})")
     text = " ".join(parts)
@@ -3046,9 +3033,9 @@ def _format_concise_process_notification(
         if len(tail) > 500:
             tail = tail[-500:]
         if tail:
-            text += f". Last output:\n```\n{tail}\n```"
+            text += t("gateway.background.last_output", tail=tail)
     if not ok:
-        text += "\nAsk me to rerun it or show the full log."
+        text += t("gateway.background.rerun_hint")
     return text
 
 
@@ -3132,28 +3119,19 @@ def _normalize_empty_agent_response(
         return response
     if agent_result.get("failed"):
         # ``error`` can be an EXPLICIT None (bypasses dict.get default) -> would render "failed: None".
-        error_detail = agent_result.get("error") or "unknown error"
+        error_detail = agent_result.get("error") or t("gateway.shared.unknown_error")
         error_str = str(error_detail).lower()
         # Persistence failures: suggesting /reset would destroy context without fixing storage.
         failure_reason = str(agent_result.get("failure_reason") or "")
         if failure_reason.startswith("session_persistence_failed") or "session storage" in error_str:
             if failure_reason.endswith(":disk") or "disk" in error_str:
-                return (
-                    "⚠️ Session storage was temporarily unavailable, so this "
-                    "turn was stopped to protect your conversation history. "
-                    "Please check available disk space, then send your message again.")
-            return (
-                "⚠️ Session storage was temporarily unavailable, so this "
-                "turn was stopped to protect your conversation history. "
-                "Your message should already be saved — please send it again in a moment.")
+                return t("gateway.errors.session_storage_unavailable_disk")
+            return t("gateway.errors.session_storage_unavailable")
         if is_overflow:
-            return _CONTEXT_OVERFLOW_REPLY
+            return _context_overflow_reply()
         # Raw exception text (class names, JSON bodies, URLs) stays in the gateway log.
         logger.warning("Agent turn failed; reply sanitized for chat. Detail: %s", str(error_detail)[:500])
-        return (
-            "⚠️ Something went wrong and I couldn't finish this reply. Use /retry to try again, "
-            "or /new to start a fresh conversation. Technical details are in the gateway log "
-            "(`hermes logs`).")
+        return t("gateway.errors.generic_failed")
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
     if agent_result.get("interrupted"):
@@ -3170,9 +3148,7 @@ def _normalize_empty_agent_response(
         # (response=0 chars) and the user sees no reply at all. Surface a short retry hint so the message
         # isn't lost in silence. (#31884)
         if api_calls == 0:
-            return (
-                "⚠️ Your message was interrupted before processing started "
-                "(likely by a recent /stop). Please send it again.")
+            return t("gateway.errors.interrupted_before_start")
         return response
     if api_calls > 0:
         # Hidden-reasoning-only retry exhaustion: the loop's sentinel text ("Codex response remained
@@ -3184,7 +3160,7 @@ def _normalize_empty_agent_response(
         if agent_result.get("partial"):
             # ``error`` mirrors the loop's own final text (curated, e.g. "Response truncated due to
             # output length limit") and is kept; a raw provider envelope goes to the log instead.
-            err = str(agent_result.get("error") or "processing incomplete")
+            err = str(agent_result.get("error") or t("gateway.errors.processing_incomplete"))
             # A loop site code (truncated, context_overflow, ...) already wrote the full
             # what-happened / what-to-do sentence: deliver it verbatim. Wrapping it would cut it
             # mid-sentence at 200 chars and append a second, conflicting set of instructions.
@@ -3197,18 +3173,12 @@ def _normalize_empty_agent_response(
                 reason = ""
             else:
                 reason = f": {err[:200]}"
-            return (
-                f"⚠️ I had to stop before finishing{reason}. Use /retry to try again, or /compress "
-                "if this conversation has grown very long.")
-        return (
-            "⚠️ Processing completed but no response was generated. "
-            "This may be a transient error — try sending your message again.")
+            return t("gateway.errors.stopped_before_finishing", reason=reason)
+        return t("gateway.errors.no_response")
 
     # api_calls == 0, not failed/interrupted: agent never ran (post-/stop race); don't drop silently.
     if api_calls == 0 and not agent_result.get("partial"):
-        return (
-            "⚠️ Your message wasn't processed (the previous turn was still "
-            "being cleaned up). Please send it again.")
+        return t("gateway.errors.previous_turn_cleanup")
 
     return response
 
@@ -4017,7 +3987,8 @@ class GatewayRunner(
         return "restart" if self._restart_requested else "shutdown"
 
     def _status_action_gerund(self) -> str:
-        return "restarting" if self._restart_requested else "shutting down"
+        """Localized "restarting" / "shutting down" for the busy/drain notices shown in chat."""
+        return t("gateway.busy.action_restarting") if self._restart_requested else t("gateway.busy.action_shutting_down")
 
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
         # ``active_work`` names each unit only while draining — that is when an observer (``hermes
@@ -4084,10 +4055,11 @@ class GatewayRunner(
     _MAX_INTERRUPT_DEPTH = 3  # Cap recursive interrupt handling
     # Command-specific mid-run reject texts (busy_policy == "reject" with a busy_handler naming an
     # entry here); all other rejected commands get the generic text in _dispatch_busy_slash_command.
+    # Values are catalog keys; ``run_busy._dispatch_busy_slash_command`` resolves them with ``t()``.
     _BUSY_REJECT_TEXT: Dict[str, str] = {
-        "model": "Agent is running — wait or /stop first, then switch models.",
-        "codex-runtime": "Agent is running — wait or /stop first, then change runtime.",
-        "moa": "Agent is running — wait or /stop first, then run /moa."}
+        "model": "gateway.busy.reject_model",
+        "codex-runtime": "gateway.busy.reject_codex_runtime",
+        "moa": "gateway.busy.reject_moa"}
 
     def _active_profile_name(self) -> str:
         """Return the profile name this gateway represents."""
@@ -5465,9 +5437,16 @@ def _claim_host_gateway_role(force: bool = False) -> None:
                        hr.describe(owner) if owner else "another process")
         return
     from gateway.host_attach import (
-        ATTACH_CHANNEL_WAIT_S, START, host_gateway, standalone_attach_decision,
+        ATTACH_CHANNEL_WAIT_S, START, host_gateway, launched_by_other_tenant, standalone_attach_decision,
     )
     from hermes_cli.profiles import profile_is_standalone
+    if owner is not None and launched_by_other_tenant(owner.home, get_hermes_home()):
+        # The lock is per OS user, so a second tenant root can never win it against the first:
+        # refusing 75 here would retry forever and its gateway would never start (#121352).
+        logger.warning(
+            "Another Hermes home's gateway owns this host (%s); starting this home's gateway beside it.",
+            hr.describe(owner))
+        return
     if profile_is_standalone(get_hermes_home()):
         # Recheck after losing the atomic lock: the pre-lock served set may be stale.
         live_owner = host_gateway(wait_for_channel=ATTACH_CHANNEL_WAIT_S)

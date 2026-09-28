@@ -69,7 +69,13 @@ export function onboardingTransition(prev: DesktopOnboardingState, next: Desktop
   if (next.firstRunSkipped && !prev.firstRunSkipped) {
     recordOnboarding('choose_later', 'completed')
 
-    for (const step of ['provider_setup', 'provider_oauth', 'provider_api_key', 'provider_local', 'model_pick'] as const) {
+    for (const step of [
+      'provider_setup',
+      'provider_oauth',
+      'provider_api_key',
+      'provider_local',
+      'model_pick'
+    ] as const) {
       closeOnboardingStep(step)
     }
   }

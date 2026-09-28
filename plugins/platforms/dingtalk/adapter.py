@@ -48,6 +48,7 @@ except Exception:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
+from agent.i18n import t
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.platforms._shared import (
@@ -450,8 +451,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not (msg_id and conversation_id):
             return
         async def _swap() -> None:
-            await self._send_emotion(msg_id, conversation_id, "🤔Thinking", recall=True)
-            await self._send_emotion(msg_id, conversation_id, "🥳Done", recall=False)
+            await self._send_emotion(msg_id, conversation_id, t("platform.dingtalk.emotion.thinking"), recall=True)
+            await self._send_emotion(msg_id, conversation_id, t("platform.dingtalk.emotion.done"), recall=False)
         self._spawn_bg(_swap())
 
     async def _on_message(self, message: "ChatbotMessage") -> None:
@@ -731,7 +732,7 @@ class _IncomingHandler(dingtalk_stream.ChatbotHandler if DINGTALK_STREAM_AVAILAB
                 chatbot_msg.is_in_at_list = True
             msg_id, conversation_id = getattr(chatbot_msg, "message_id", None) or "", getattr(chatbot_msg, "conversation_id", None) or ""
             if msg_id and conversation_id:
-                self._adapter._spawn_bg(self._adapter._send_emotion(msg_id, conversation_id, "🤔Thinking", recall=False))
+                self._adapter._spawn_bg(self._adapter._send_emotion(msg_id, conversation_id, t("platform.dingtalk.emotion.thinking"), recall=False))
             asyncio.create_task(self._safe_on_message(chatbot_msg))  # surfaces exceptions in logs instead of losing them
         except Exception:
             logger.exception("[%s] Error preparing incoming message", self._adapter.name)

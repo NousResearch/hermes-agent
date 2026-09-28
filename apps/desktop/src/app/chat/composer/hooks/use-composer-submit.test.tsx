@@ -498,6 +498,34 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     vi.restoreAllMocks()
   })
 
+  it.each(['/btw what is the task?', '/BTW what is the task?', '/btw'])('keeps a pending clarify answerable while dispatching %s', async text => {
+    parkClarify('runtime-session')
+    const { hook, onSubmit, onSteer } = renderSubmitHook({ busy: true, text })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(text, expect.anything()))
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(respond).not.toHaveBeenCalled()
+    expect(hasOpenServerRequest('req-runtime-session')).toBe(true)
+    expect($clarifyRequests.get()['runtime-session']).toBeDefined()
+  })
+
+  it('still skips clarify for a different slash command', async () => {
+    parkClarify('runtime-session')
+    const { hook, onSubmit } = renderSubmitHook({ busy: true, text: '/status' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('/status', expect.anything()))
+    expect(respond).toHaveBeenCalledWith({ answer: '' })
+    expect(hasOpenServerRequest('req-runtime-session')).toBe(false)
+  })
+
   it('skips the question and still sends the typed message on an idle session', async () => {
     parkClarify('runtime-session')
     const { hook, onSubmit } = renderSubmitHook({ text: 'actually do this instead' })

@@ -470,6 +470,70 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> list[
     return carried
 
 
+def _is_regular_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
+
+
+def _same_regular_file(a: Path, b: Path) -> bool:
+    import filecmp
+    try:
+        return _is_regular_file(a) and _is_regular_file(b) and filecmp.cmp(a, b, shallow=False)
+    except OSError:
+        return False
+
+
+def _back_up_discarded_files(old: Path, new: Path, backup: Path, source: str, revision: object) -> str:
+    """Copy to *backup* what an update of a no-git install throws away; returns the warning, or "".
+
+    Git is not there to tell a user's edit from the plugin's own change, so the installed *revision*
+    is fetched once and compared: a file the update replaces or removes is copied unless it is
+    byte-for-byte what that revision shipped. When the revision cannot be fetched (rewritten history,
+    no recorded revision) every such file is copied, since none can be proven untouched.
+    """
+    from hermes_cli.plugins_cmd import (
+        PluginOperationError, _clone_plugin_repo, _plugins_dir, _resolve_git_url, _resolve_subdir_within)
+    from tools.plugin_guard import EXCLUDED_DIRS
+
+    discarded: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(old):
+        here = Path(dirpath)
+        dirnames[:] = [name for name in dirnames
+                       if not (_skip_preserve(name) or name in EXCLUDED_DIRS
+                               or (here / name).is_symlink() or is_junction(here / name))]
+        for name in filenames:
+            rel = (here / name).relative_to(old)
+            # Only regular files are backed up: links are never followed and FIFOs would block a read.
+            if (not _skip_preserve(name) and _is_regular_file(old / rel)
+                    and not _same_regular_file(old / rel, new / rel)):
+                discarded.append(rel)
+    if not discarded:
+        return ""
+
+    with tempfile.TemporaryDirectory(prefix=".installed-revision-", dir=_plugins_dir()) as tmp:
+        shipped: Optional[Path] = None
+        if isinstance(revision, str) and revision:
+            try:
+                git_url, subdir = _resolve_git_url(source)
+                root = Path(tmp) / "plugin"
+                _clone_plugin_repo(root, git_url, revision, subdir)
+                shipped = _resolve_subdir_within(root, subdir) if subdir else root
+            except (ValueError, PluginOperationError) as exc:
+                logger.info("Installed revision %s of %s is unavailable: %s", revision[:8], old.name, exc)
+        if shipped is not None:
+            discarded = [rel for rel in discarded if not _same_regular_file(old / rel, shipped / rel)]
+    if not discarded:
+        return ""
+    _stash_local_files(old, [rel.as_posix() for rel in discarded], backup)
+    if shipped is None:
+        return (f"The installed revision could not be fetched to tell your edits apart, so all {len(discarded)} "
+                f"file(s) the update replaced or removed were copied to {backup}.")
+    return (f"{len(discarded)} file(s) you edited or added were replaced or removed by the update; copies are "
+            f"under {backup} (the previous version's files, re-apply by hand).")
+
+
 class RepinResult(NamedTuple):
     sha: str
     changed: bool
@@ -587,12 +651,17 @@ def repin_catalog_plugin(
     _stash_local_files(target, modified, backup)
     from hermes_cli.plugins_transaction import update_plugin
 
-    update_plugin(
-        target,
-        catalog_entry=entry,
-        interactive=interactive,
-        carry_user_files=lambda staged: _carry_user_files(target, staged, local),
-    )
+    warnings: list[str] = []
+
+    def _carry(staged: Path) -> list[str]:
+        carried = _carry_user_files(target, staged, local)
+        if local is None:
+            warnings.append(_back_up_discarded_files(
+                target, staged, backup, entry.install_identifier, sidecar.get("sha")))
+        return carried
+
+    update_plugin(target, catalog_entry=entry, interactive=interactive, carry_user_files=_carry)
+    warnings = [w for w in warnings if w]
     matches = []
     for installed_name, row in _read_install_metadata().items():
         if not isinstance(row, dict):
@@ -610,7 +679,6 @@ def repin_catalog_plugin(
         )
     installed_name = matches[0]
     new_target = target.parent / installed_name
-    warnings: list[str] = []
     if modified:
         warnings.append(f"Local edits to {len(modified)} tracked file(s) were not carried over; copies are under "
                         f"{backup} (the previous version's files, re-apply by hand).")

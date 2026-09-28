@@ -261,6 +261,63 @@ def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world
     assert not (target / "dashboard").exists() and not (target / "hooks" / "run.cjs").exists()
 
 
+def _subdir_install(mono: Path, monkeypatch, via: str, revision_known: bool = True):
+    """A no-git install of ``plugins/sub-plugin`` with the user's changes, then a v2 pin. Returns the target."""
+    src = mono / "plugins" / "sub-plugin"
+    src.mkdir(parents=True)
+    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 1.0.0\ndescription: d\n")
+    (src / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    (src / "settings.yaml").write_text("mode: default\n")
+    sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
+    pin = {"sha": _commit(mono, "v1")}
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: [pc_cat.PluginCatalogEntry(
+        name="sub-plugin", repo=mono.as_uri(), sha=pin["sha"], description="d", maintainer="t",
+        subdir="plugins/sub-plugin")])
+    if via == "catalog":
+        target = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("sub-plugin"), force=False)[0]
+    else:
+        target = pc._install_plugin_core(f"{mono.as_uri()}#plugins/sub-plugin", force=False)[0]
+    assert not (target / ".git").exists()
+    if not revision_known:
+        rows = pc._read_install_metadata()
+        rows["sub-plugin"]["revision"] = "0" * 40
+        pc._write_install_metadata(rows)
+
+    (target / "settings.yaml").write_text("mode: mine\n")          # edit to a shipped file
+    (target / "my_hook.py").write_text("X = 1\n")                   # code the user added
+    (src / "__init__.py").write_text("def register(ctx):\n    pass  # v2\n")
+    (src / "settings.yaml").write_text("mode: new-default\n")
+    pin["sha"] = _commit(mono, "v2")
+    return target
+
+
+@pytest.mark.parametrize("via", ["url", "catalog"])
+def test_update_of_a_subdir_install_backs_up_what_the_user_changed_and_only_that(world, tmp_path, monkeypatch, via):
+    """Regression for #126770: without ``.git`` the update discarded an edited shipped file and an added
+    code file with no copy. Both land in plugins-backup; a file the user never touched does not."""
+    target = _subdir_install(tmp_path / "mono", monkeypatch, via)
+    result = pc.dashboard_update_user_plugin("sub-plugin")
+    assert result["ok"] is True
+    assert (target / "settings.yaml").read_text() == "mode: new-default\n" and not (target / "my_hook.py").exists()
+
+    backups = list((world["plugins_dir"].parent / "plugins-backup").glob("sub-plugin-*"))
+    assert len(backups) == 1
+    saved = {p.relative_to(backups[0]).as_posix(): p.read_text() for p in backups[0].rglob("*") if p.is_file()}
+    assert saved == {"settings.yaml": "mode: mine\n", "my_hook.py": "X = 1\n"}
+    assert str(backups[0]) in " ".join([*result.get("warnings", []), result.get("output", "")])
+
+
+def test_update_of_a_subdir_install_backs_up_every_discarded_file_when_its_revision_is_gone(
+        world, tmp_path, monkeypatch):
+    """The installed revision cannot be fetched (rewritten history): nothing proves a file untouched, so
+    every file the update replaces or removes is kept rather than none."""
+    _subdir_install(tmp_path / "mono", monkeypatch, "url", revision_known=False)
+    assert pc.dashboard_update_user_plugin("sub-plugin")["ok"] is True
+    backup = next((world["plugins_dir"].parent / "plugins-backup").glob("sub-plugin-*"))
+    assert (backup / "settings.yaml").read_text() == "mode: mine\n"
+    assert (backup / "my_hook.py").is_file() and (backup / "__init__.py").is_file()
+
+
 def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
     """A single ``!! data/`` status entry must preserve every file below that ignored directory."""
     repo = world["repo"]

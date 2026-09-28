@@ -211,6 +211,10 @@ path conflicts with the new tree's file/directory layout, the update stops befor
 publication so the installed copy — and the user's data — remain intact.
 Edits you made to *tracked* files are not carried onto the new code; copies are
 saved under `~/.hermes/plugins-backup/<name>-<sha>/` and the update warns you.
+Monorepo/subdirectory installs get the same backup: the update fetches the revision
+you had installed, and copies every file it replaces or removes that differs from
+that revision — a shipped file you edited, or a code file you added. If that revision
+can no longer be fetched, every replaced or removed file is copied instead.
 If the new pin renames the plugin's manifest, the old directory is removed and
 your enabled flag follows the new name. `hermes plugins list` shows catalog
 installs as `catalog:<tier>@<sha>` so you can see provenance at a glance.

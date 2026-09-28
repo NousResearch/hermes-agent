@@ -2423,15 +2423,31 @@ class SlackAdapter(BasePlatformAdapter):
             # An HTTP 200 + ``ok=false`` reply raises too; its ``str()`` reads like a transport
             # failure ("status: 200") while the real cause is the body's error code.
             api_error = _slack_response_payload(getattr(e, "response", None)).get("error")
+            if api_error == "message_not_found":
+                # Expected after progress cleanup or a user deletion; callers post fresh.
+                self._forget_status_message(chat_id, message_id)
+                logger.info(
+                    "[Slack] Message %s in channel %s no longer exists; sending fresh instead",
+                    message_id, chat_id)
+                return SendResult(success=False, error=str(e))
             logger.error(
                 "[Slack] Failed to edit message %s in channel %s: api_error=%s: %s",
                 message_id, chat_id, api_error or "none", e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    def _forget_status_message(self, chat_id: str, message_id: str) -> None:
+        """Drop cached status-bubble ids that point at a message that no longer exists, so the next
+        send_or_update_status posts fresh instead of editing a deleted message."""
+        for key, cached in list(self._status_message_ids.items()):
+            if cached == str(message_id) and key[0] == str(chat_id):
+                self._status_message_ids.pop(key, None)
+
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
         """Delete a bot message (used to clean up temporary progress bubbles)."""
         if not self._app:
             return False
+        # Whatever the outcome, a deleted (or undeletable) bubble must not be edited next turn.
+        self._forget_status_message(chat_id, message_id)
         try:
             response = await self._get_client(chat_id).chat_delete(channel=chat_id, ts=message_id)
             if not (hasattr(response, "get") and response.get("ok") is False):

@@ -85,3 +85,28 @@ async def test_distinct_keys_do_not_crosstalk(adapter):
     assert client.chat_update.call_count == 0
 
 
+
+
+class _NotFound(Exception):
+    def __init__(self):
+        super().__init__("message_not_found")
+        self.response = {"ok": False, "error": "message_not_found"}
+
+
+@pytest.mark.asyncio
+async def test_deleted_status_bubble_is_forgotten_and_reposted_quietly(adapter, caplog):
+    """A cleaned-up status bubble must not be edited on the next turn; if Slack says it is gone,
+    the adapter posts fresh without an ERROR log."""
+    await adapter.send_or_update_status("C_CHAN", "lifecycle", "working", metadata=METADATA)
+    client = adapter._get_client.return_value
+    client.chat_delete = AsyncMock(return_value={"ok": True})
+    assert await adapter.delete_message("C_CHAN", "ts_1")
+    await adapter.send_or_update_status("C_CHAN", "lifecycle", "working again", metadata=METADATA)
+    assert client.chat_update.call_count == 0  # never edits the deleted bubble
+    assert client.chat_postMessage.call_count == 2
+
+    client.chat_update = AsyncMock(side_effect=_NotFound())
+    caplog.set_level("INFO")
+    await adapter.send_or_update_status("C_CHAN", "lifecycle", "third", metadata=METADATA)
+    assert client.chat_postMessage.call_count == 3
+    assert not [r for r in caplog.records if r.levelname == "ERROR"]

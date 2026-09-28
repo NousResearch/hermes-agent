@@ -144,7 +144,7 @@ def make_adapter(**extra):
             },
         )
     )
-    adapter._handle_text_message = AsyncMock()
+    adapter._handle_text_message = AsyncMock(return_value=True)
     adapter._dispatch_reaction = AsyncMock()
     return adapter
 
@@ -297,6 +297,7 @@ async def test_retry_clears_only_the_failed_intake_owners_deduplication(
             raise RuntimeError("Hermes intake failed")
         accepted_ids.append(event_id)
         accepted.set()
+        return True
 
     async def plugin(event):
         plugin_attempts.append(str(event.event_id))
@@ -692,3 +693,520 @@ async def test_queued_keys_room_state_and_decrypted_dispatch_precede_ack(
     await restarted.load()
     assert await restarted.get_next_batch() == "s2"
     assert invitations == ["!invite:example.org", "!invite:example.org"]
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["mautrix"], indirect=True)
+@pytest.mark.parametrize("cancel", [False, True, "disconnect-initial"])
+async def test_native_middleware_is_owned_until_completion_or_cancellation(
+    tmp_path,
+    monkeypatch,
+    transport,
+    cancel,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    adapter = make_adapter()
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    entered, release, finished = (asyncio.Event() for _ in range(3))
+
+    async def middleware(_event):
+        entered.set()
+        try:
+            await release.wait()
+            return True
+        finally:
+            finished.set()
+
+    adapter._client.add_event_middleware(matrix.EventType.ROOM_MESSAGE, middleware)
+    dispatch = asyncio.create_task(
+        adapter._absorb_sync(adapter._client, batch("s2", message("$middleware")))
+    )
+    try:
+        waiter = asyncio.create_task(entered.wait())
+        await asyncio.wait([waiter, dispatch], return_when=asyncio.FIRST_COMPLETED)
+        assert (dispatch.done(), await adapter._client.sync_store.get_next_batch()) == (
+            False,
+            "s1",
+        )
+        if cancel:
+            client = adapter._client
+            if cancel == "disconnect-initial":
+                await adapter.disconnect()
+                assert finished.is_set()
+            else:
+                dispatch.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await dispatch
+            assert (finished.is_set(), adapter._handle_text_message.await_count) == (
+                True,
+                0,
+            )
+            assert await client.sync_store.get_next_batch() == "s1"
+        else:
+            release.set()
+            await dispatch
+            assert (finished.is_set(), adapter._handle_text_message.await_count) == (
+                True,
+                1,
+            )
+            assert await adapter._client.sync_store.get_next_batch() == "s2"
+    finally:
+        release.set()
+        dispatch.cancel()
+        await asyncio.gather(dispatch, return_exceptions=True)
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["mautrix"], indirect=True)
+@pytest.mark.parametrize("interruption", ["cancel", "failure"])
+async def test_completed_intake_survives_fresh_adapter_with_unfinished_sibling(
+    tmp_path,
+    monkeypatch,
+    transport,
+    interruption,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    adapter = make_adapter()
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    accepted, blocked, release, stopped = (asyncio.Event() for _ in range(4))
+    intakes = []
+
+    async def intake(_room, _sender, event_id, *_args):
+        intakes.append(event_id)
+        accepted.set()
+        return True
+
+    async def sibling(_event):
+        await accepted.wait()
+        blocked.set()
+        try:
+            await release.wait()
+            raise RuntimeError("incomplete sibling")
+        finally:
+            stopped.set()
+
+    adapter._handle_text_message = intake
+    adapter._client.add_event_handler(matrix.EventType.ROOM_MESSAGE, sibling)
+    response = batch("s2", message("$accepted"))
+    dispatch = asyncio.create_task(adapter._absorb_sync(adapter._client, response))
+    adapter._sync_task = dispatch
+    await asyncio.wait_for(blocked.wait(), timeout=2)
+    if interruption == "failure":
+        release.set()
+        with pytest.raises(RuntimeError, match="incomplete sibling"):
+            await dispatch
+    await adapter.disconnect()
+    assert stopped.is_set()
+    fresh = make_adapter()
+    fresh._handle_text_message = intake
+    responses.append(response)
+    try:
+        assert await fresh.connect()
+        assert (intakes, await fresh._client.sync_store.get_next_batch()) == (
+            ["$accepted"],
+            "s2",
+        )
+    finally:
+        await fresh.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_pending_intake_checkpoint_is_scoped_bounded_and_removed_on_ack(
+    tmp_path,
+    monkeypatch,
+):
+    import json
+    from plugins.platforms.matrix import sync_transport
+
+    monkeypatch.setattr(sync_transport, "MAX_PENDING_INTAKES", 2)
+    scopes = [
+        (tmp_path / "a", "https://matrix.test", "@bot:matrix.test", "BOT"),
+        (tmp_path / "b", "https://matrix.test", "@bot:matrix.test", "BOT"),
+        (tmp_path / "a", "https://other.test", "@bot:matrix.test", "BOT"),
+        (tmp_path / "a", "https://matrix.test", "@other:matrix.test", "BOT"),
+        (tmp_path / "a", "https://matrix.test", "@bot:matrix.test", "OTHER"),
+    ]
+    original = sync_transport.DurableSyncStore(*scopes[0], "secret")
+    await original.put_next_batch("before")
+    for event_id in ("$accepted", "$second"):
+        assert original.reserve_intake(event_id)
+        await original.accept_intake(event_id)
+        original.release_intake(event_id)
+    with pytest.raises(RuntimeError, match="checkpoint is full"):
+        original.reserve_intake("$never-admitted")
+    for event_id in ("$" + "x" * 255, "$" + "é" * 128):
+        with pytest.raises(ValueError, match="event ID exceeds"):
+            original.reserve_intake(event_id)
+    observed = []
+    for scope in [*scopes, scopes[0]]:
+        fresh = sync_transport.DurableSyncStore(*scope, "replacement-secret")
+        await fresh.load()
+        observed.append((
+            await fresh.get_next_batch(),
+            fresh.reserve_intake("$accepted"),
+        ))
+        fresh.release_intake("$accepted")
+    assert observed == [("before", False), *[(None, True)] * 4, ("before", False)]
+    assert json.loads(original.path.read_text(encoding="utf-8")) == {
+        "next_batch": "before",
+        "accepted_events": ["$accepted", "$second"],
+    }
+    await original.put_next_batch("after")
+    assert json.loads(original.path.read_text(encoding="utf-8")) == {
+        "next_batch": "after"
+    }
+    assert original.reserve_intake("$never-admitted")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["mautrix"], indirect=True)
+async def test_unadmitted_intake_is_retryable_after_incomplete_batch(
+    tmp_path,
+    monkeypatch,
+    transport,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    adapter = make_adapter()
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    attempts = []
+
+    async def refused_then_accepted(*_args):
+        attempts.append("intake")
+        return len(attempts) > 1
+
+    async def failed_sibling(_event):
+        raise RuntimeError("sibling failed")
+
+    adapter._handle_text_message = refused_then_accepted
+    adapter._client.add_event_handler(matrix.EventType.ROOM_MESSAGE, failed_sibling)
+    response = batch("s2", message("$unadmitted"))
+    try:
+        with pytest.raises(RuntimeError, match="sibling failed"):
+            await adapter._absorb_sync(adapter._client, response)
+        adapter._client.remove_event_handler(
+            matrix.EventType.ROOM_MESSAGE, failed_sibling
+        )
+        await adapter._absorb_sync(adapter._client, response)
+        assert (attempts, await adapter._client.sync_store.get_next_batch()) == (
+            ["intake", "intake"],
+            "s2",
+        )
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["mautrix"], indirect=True)
+@pytest.mark.parametrize("admitted", [False, True])
+async def test_actual_admission_receipt_covers_inputs_outside_native_callback(
+    tmp_path,
+    monkeypatch,
+    transport,
+    admitted,
+):
+    from gateway.platforms.base import MessageEvent
+    from plugins.platforms.matrix.sync_transport import DurableSyncStore
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    adapter = make_adapter()
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    adapter._message_handler = AsyncMock()
+    monkeypatch.setattr(adapter, "_start_session_processing", lambda *_args: admitted)
+    event = MessageEvent(
+        text="admitted input",
+        message_id="$input",
+        source=adapter.build_source(
+            chat_id="!room:example.org", user_id="@alice:example.org"
+        ),
+    )
+    try:
+        await adapter.handle_message(event)
+        store = adapter._client.sync_store
+        fresh = DurableSyncStore(tmp_path, "unused", "unused", "unused", "unused")
+        fresh.path = store.path
+        await fresh.load()
+        assert (event._gateway_accepted, fresh.reserve_intake("$input")) == (
+            admitted,
+            not admitted,
+        )
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["mautrix"], indirect=True)
+async def test_restart_sibling_interrupts_only_the_admitted_watched_input(
+    tmp_path,
+    monkeypatch,
+    transport,
+):
+    from tests.integration.matrix_live import restart_barriers
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    adapter = make_adapter()
+    responses.append(batch("before"))
+    assert await adapter.connect()
+    adapter._client.crypto = SimpleNamespace(_receive_room_key=AsyncMock())
+    restart_barriers.register(
+        SimpleNamespace(
+            register_platform_handler=lambda _platform, attach: attach(
+                adapter._client, adapter
+            )
+        )
+    )
+    entered = asyncio.Event()
+    interrupted = []
+
+    async def barrier(_home, marker, event_id):
+        interrupted.append((marker, event_id))
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(restart_barriers, "_barrier", barrier)
+    notice = message("$thread-root")
+    notice["content"]["msgtype"] = "m.notice"
+    prime = message("$prime")
+    prime["content"]["body"] = "Prime encrypted thread"
+    watched = message("$watched")
+    watched["content"]["body"] = "Watch the split answer"
+    dispatch = None
+    try:
+        (tmp_path / "room-input-release").touch()
+        await asyncio.wait_for(
+            adapter._absorb_sync(adapter._client, batch("primed", notice, prime)),
+            timeout=2,
+        )
+        dispatch = asyncio.create_task(
+            adapter._absorb_sync(adapter._client, batch("watched", watched))
+        )
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        store = adapter._client.sync_store
+        assert (
+            interrupted,
+            [call.args[2] for call in adapter._handle_text_message.await_args_list],
+            await store.get_next_batch(),
+            store.reserve_intake("$watched"),
+            dispatch.done(),
+        ) == (
+            [("intake-blocked", "$watched")],
+            ["$prime", "$watched"],
+            "primed",
+            False,
+            False,
+        )
+    finally:
+        if dispatch is not None:
+            dispatch.cancel()
+            await asyncio.gather(dispatch, return_exceptions=True)
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["mautrix"], indirect=True)
+@pytest.mark.parametrize("phase", ["initial", "secondary", "running", "restart"])
+async def test_gateway_stop_awaits_native_import_before_closing_transport(
+    tmp_path, monkeypatch, transport, phase
+):
+    from gateway.config import GatewayConfig, HomeChannel, Platform
+    from mautrix.types import EventType
+    from gateway.run import GatewayRunner
+    from plugins.platforms.matrix.sync_transport import DurableSyncStore
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _, responses = transport
+    adapter = make_adapter()
+    runner = GatewayRunner(
+        GatewayConfig(
+            platforms={
+                Platform.MATRIX: PlatformConfig(
+                    enabled=True,
+                    home_channel=HomeChannel(
+                        Platform.MATRIX, "!room:example.org", "Home"
+                    ),
+                )
+            },
+            sessions_dir=tmp_path / "sessions",
+        )
+    )
+    monkeypatch.setattr(runner, "_create_adapter", lambda *_args: adapter)
+    for method in (
+        "_start_log_startup_environment",
+        "_start_recover_previous_run",
+        "_run_free_tier_bootstrap",
+        "_start_finish_wiring",
+        "_stop_hosted_room_worker",
+    ):
+        monkeypatch.setattr(runner, method, AsyncMock())
+    monkeypatch.setattr(runner, "_start_startup_warmup", lambda: None)
+    monkeypatch.setattr(runner, "_start_spawn_background_watchers", lambda: None)
+    monkeypatch.setattr(runner, "_start_install_faulthandler", lambda: None)
+    monkeypatch.setattr(runner, "_start_check_access_policy", lambda: False)
+
+    profile_home = tmp_path / "secondary" if phase == "secondary" else tmp_path
+    if phase == "secondary":
+        runner.config.platforms = {}
+        monkeypatch.setattr(runner, "_multiplex_on", lambda: True)
+        monkeypatch.setattr(
+            runner,
+            "_load_secondary_profile_config",
+            AsyncMock(
+                return_value=GatewayConfig(platforms={Platform.MATRIX: adapter.config})
+            ),
+        )
+
+        async def secondary_start():
+            return await runner._start_one_profile_adapters(
+                "secondary", profile_home, {}
+            )
+
+        monkeypatch.setattr(
+            runner, "_start_secondary_profile_adapters", secondary_start
+        )
+
+    from gateway.run import _profile_runtime_scope
+
+    with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+        store = DurableSyncStore(
+            adapter._resolve_store_dir(),
+            adapter._homeserver,
+            adapter._user_id,
+            adapter._device_id,
+            adapter._access_token,
+        )
+    await store.put_next_batch("before")
+    entered, unwinding, release, finished = (asyncio.Event() for _ in range(4))
+    lock = asyncio.Lock()
+    imported = []
+    clients = []
+    connections = []
+    owned = []
+
+    async def import_key(_event):
+        if finished.is_set():
+            imported.append("key")
+            return
+        async with lock:
+            imported.append("key")
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                unwinding.set()
+                await release.wait()
+                imported.clear()
+                finished.set()
+
+    async def middleware(_event):
+        return True
+
+    async def send_notice(*_args, **_kwargs):
+        async with lock:
+            return "$notice"
+
+    def attach(client):
+        clients.append(client)
+        connections.append(asyncio.current_task())
+        client.add_event_middleware(EventType.ROOM_KEY, middleware)
+        client.add_event_handler(EventType.ROOM_KEY, import_key)
+        monkeypatch.setattr(client, "send_message_event", send_notice)
+
+    monkeypatch.setattr(adapter, "_wire_plugin_handlers", attach)
+    response = batch("after", message("$after-key"))
+    response["to_device"] = {
+        "events": [
+            {
+                "type": "m.room_key",
+                "sender": "@alice:example.org",
+                "content": {
+                    "algorithm": "m.megolm.v1.aes-sha2",
+                    "room_id": "!room:example.org",
+                    "session_id": "session",
+                    "session_key": "key",
+                },
+            }
+        ]
+    }
+    responses.append(response if phase != "running" else batch("before"))
+    startup = asyncio.create_task(runner.start())
+    dispatch = None
+    stop = None
+    waiter = None
+    cleanup_waiter = None
+    try:
+        if phase == "running":
+            assert await startup
+            dispatch = asyncio.create_task(
+                adapter._absorb_sync(adapter._client, response)
+            )
+            adapter._sync_task = dispatch
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        client = clients[0]
+        owned = list(client.hermes_sync._owned_tasks)
+        cleanup_waiting = asyncio.Event()
+        await_cleanup = runner._await_adapter_cleanup_with_timeout
+
+        async def track_cleanup(awaitable, timeout):
+            if asyncio.current_task() is runner._stop_task:
+                cleanup_waiting.set()
+            return await await_cleanup(awaitable, timeout)
+
+        monkeypatch.setattr(runner, "_await_adapter_cleanup_with_timeout", track_cleanup)
+        if phase == "restart":
+            runner._restart_requested = True
+            await asyncio.wait_for(unwinding.wait(), timeout=2)
+        stop = asyncio.create_task(runner.stop())
+        waiter = asyncio.create_task(unwinding.wait())
+        await asyncio.wait(
+            {stop, waiter}, timeout=2, return_when=asyncio.FIRST_COMPLETED
+        )
+        assert (unwinding.is_set(), stop.done()) == (True, False)
+        if phase != "running":
+            cleanup_waiter = asyncio.create_task(cleanup_waiting.wait())
+            await asyncio.wait(
+                {stop, cleanup_waiter}, timeout=2, return_when=asyncio.FIRST_COMPLETED
+            )
+            assert (cleanup_waiting.is_set(), stop.done()) == (True, False)
+        release.set()
+        await asyncio.wait_for(stop, timeout=2)
+        assert (
+            finished.is_set(),
+            imported,
+            [task.done() for task in owned],
+            client.hermes_sync._owned_tasks,
+            await client.sync_store.get_next_batch(),
+            adapter._client,
+            [task.done() for task in connections],
+        ) == (True, [], [True] * len(owned), set(), "before", None, [True])
+        assert await asyncio.wait_for(startup, timeout=2)
+
+        fresh = make_adapter()
+        monkeypatch.setattr(fresh, "_wire_plugin_handlers", attach)
+        responses.append(response)
+        try:
+            with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                assert await fresh.connect()
+            assert (
+                imported,
+                fresh._handle_text_message.await_count,
+                await fresh._client.sync_store.get_next_batch(),
+            ) == (["key"], 1, "after")
+        finally:
+            await fresh.disconnect()
+    finally:
+        release.set()
+        for task in (waiter, cleanup_waiter, dispatch, startup, stop):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (waiter, cleanup_waiter, dispatch, startup, stop) if task is not None),
+            return_exceptions=True,
+        )
+        await adapter.disconnect()

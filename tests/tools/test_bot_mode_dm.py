@@ -286,6 +286,64 @@ def test_reused_old_name_delivers_to_the_new_legitimate_owner(tmp_path):
     assert result["to"] == "@velero-agent"
 
 
+def test_renamed_away_name_with_no_local_stub_still_falls_through_to_relay(tmp_path, monkeypatch):
+    """Regression for Copilot's review of #123138: `previous_names` records a LOCAL rename only
+    and says nothing about other connections, so a name that resolves to NO local profile at all
+    must still reach `_try_relay_delivery` — the redirect guard must never pre-empt the relay
+    fallback for a name it merely saw once in some unrelated local profile's rename history."""
+    _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("oadp-velero-agent",))
+    # Local rename history exists (unrelated to the remote row below) but no local directory
+    # named 'velero-agent' exists at all — `_resolve_local_name` returns None for it.
+    (home / "profiles" / "oadp-velero-agent" / "profile.yaml").write_text(
+        textwrap.dedent(
+            """\
+            description: teammate for tests
+            previous_names:
+              - velero-agent
+            ui_meta:
+              hermes-bots:
+                shape: cloud
+            """
+        ),
+        encoding="utf-8",
+    )
+    bot_relay.write_remote_roster(home, [
+        {"profile": "velero-agent", "handle": "velero-agent", "connection_id": "mini-1",
+         "connection_label": "Mac mini"},
+    ])
+    agent = _FakeAgent(home, title="Bot Chat")
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="velero-agent", message="hi", agent=agent)
+    )
+    assert "error" not in result, result
+    assert result["status"] == "queued"
+
+
+def test_renamed_to_returns_none_on_a_multi_hit_alias(tmp_path):
+    """Worth-a-look from Copilot's review of #123138: `renamed_to` scanned the roster and
+    returned the FIRST profile claiming `want`, with no ambiguity check — the opposite of
+    `_resolve_local_name`'s own rule that a multi-hit alias must never silently pick a winner
+    (#100671). Two profiles both listing the same old name in `previous_names` (recreate-then-
+    rename, or a restored home) must resolve to None, not whichever sorts first."""
+    home = _managed_home(tmp_path, teammates=("alpha", "beta"))
+    for folder in ("alpha", "beta"):
+        (home / "profiles" / folder / "profile.yaml").write_text(
+            textwrap.dedent(
+                """\
+                description: teammate for tests
+                previous_names:
+                  - velero-agent
+                ui_meta:
+                  hermes-bots:
+                    shape: cloud
+                """
+            ),
+            encoding="utf-8",
+        )
+    assert bot_mode_probe.renamed_to("velero-agent", home) is None
+
+
 def test_cannot_message_self(tmp_path):
     home = _managed_home(tmp_path)
     agent = _FakeAgent(home, title="Bot Chat")  # default profile

@@ -277,14 +277,19 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     # clears the old dir's tombstone right after a successful move (so a FUTURE profile may
     # reuse the name) — but a later side effect (cron heartbeat, log write, stray delivery)
     # regenerating an identity marker there makes the exact match above succeed against a name
-    # nobody uses anymore. Consulted only when `resolved` is not itself a live, bot-managed
-    # teammate — a resurrected stub carries no `ui_meta.hermes-bots` (nothing ever re-registered
-    # it as a bot), while a legitimately reused name belongs to a real teammate profile. This
+    # nobody uses anymore. Consulted only when `resolved` names an actual local stub that isn't
+    # itself a live, bot-managed teammate — a resurrected stub carries no `ui_meta.hermes-bots`
+    # (nothing ever re-registered it as a bot), while a legitimately reused name belongs to a real
+    # teammate profile. `previous_names` records a LOCAL rename only and says nothing about other
+    # machines, so `resolved is None` (no local stub at all — the name may still be live on
+    # another connection) must fall through to the relay fallback below instead of hard-failing
+    # here (#123574-style cross-machine regression: the guard used to pre-empt
+    # `_try_relay_delivery` for any name merely listed in *some* local profile's history). This
     # keeps existing exact-folder precedence: a genuine live profile that exactly matches
     # `raw_target` is never blocked by history pointing at the ORIGINAL renamed-away
     # profile (#123133).
     from tools.bot_mode_probe import _is_bot_managed, renamed_to
-    if resolved is None or not _is_bot_managed(roster_homes[resolved]):
+    if resolved is not None and not _is_bot_managed(roster_homes[resolved]):
         new_name = renamed_to(raw_target.lower(), root)
         if new_name is not None and new_name != resolved:
             return _roster_err(f"'{raw_target}' was renamed to '{new_name}' — use that name instead. "

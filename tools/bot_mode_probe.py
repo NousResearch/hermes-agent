@@ -125,13 +125,20 @@ def renamed_to(want: str, root: Path) -> str | None:
     old name resolves live again the moment anything later re-creates an identity marker there
     (a cron heartbeat, a log write, a stray delivery), with nothing to say it was retired. This
     lets ``_resolve_local_name`` catch that case and point at the new name instead of silently
-    delivering into the dead profile (#123133)."""
+    delivering into the dead profile (#123133). None on more than one hit — a multi-hit alias
+    means the roster can't tell which profile inherited the name (recreate-then-rename, a
+    restored home), and guessing the first alphabetically would train the sender onto the wrong
+    profile, exactly what ``_resolve_local_name``'s own ambiguity check exists to prevent
+    (#100671)."""
+    hit: str | None = None
     for name, profile_dir in _roster(root):
         data = _read_yaml_dict(profile_dir / "profile.yaml", "previous_names")
         previous = data.get("previous_names") if data else None
         if isinstance(previous, list) and any(str(p).strip().lower() == want for p in previous):
-            return name
-    return None
+            if hit is not None:
+                return None
+            hit = name
+    return hit
 
 
 def _any_managed(root: Path) -> bool:

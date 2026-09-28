@@ -11,7 +11,7 @@ def test_preset_roundtrip_keeps_refusals_and_dense_spill(tmp_path, monkeypatch):
     mdir.mkdir()
     for name in ("allowed", "refused"):
         (mdir / f"{name}.gguf").touch()
-    monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(path=p, sampling_defaults={}))
+    monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(path=p, sampling_defaults={}, has_unknown_quant_types=False))
     monkeypatch.setattr(presets, "profile_from_gguf", lambda h: ModelProfile(
         name=h.path.stem, weights_bytes=(4 if h.path.stem == "allowed" else 40) << 30,
         embd_table_bytes=0, n_ctx_train=65536, layers=[]))
@@ -42,7 +42,7 @@ def test_optional_draft_is_enabled_only_with_room_at_the_selected_window(tmp_pat
     draft.touch()
     main_profile = ModelProfile("main", 12 << 30, 0, 65536, [], moe=True)
     draft_profile = ModelProfile("draft", 1 << 30, 0, 65536, [])
-    monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(path=p, sampling_defaults={}))
+    monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(path=p, sampling_defaults={}, has_unknown_quant_types=False))
     monkeypatch.setattr(presets, "profile_from_gguf", lambda h: draft_profile if h.path == draft else main_profile)
     tight = HardwareBudget(8 << 30, 8 << 30, 6 << 30)
     result = presets.preset_for_model(main, tight, set())

@@ -64,7 +64,16 @@ def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhe
     draft KV defaults to f16, independently of the target's q8 cache.
     """
     try:
-        draft = profile_from_gguf(read_gguf_header(path))
+        header = read_gguf_header(path)
+        if header.has_unknown_quant_types:
+            # Parseable but unpriced: the unknown tensors are skipped, so the
+            # weights byte count under-counts by the bulk of the file and the
+            # budget check would pass on a number missing most of the draft
+            # (base refused this file outright; head must not advertise an
+            # unloadable draft either). Same early-out as _launch_footprint.
+            logger.warning("draft omitted %s: unknown quant types for this engine", path.name)
+            return False
+        draft = profile_from_gguf(header)
         draft_need = footprint_bytes(
             draft, window, flash_attention=False,
             overhead_bytes=RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(draft.n_vocab, mtp_capable=False))
@@ -94,6 +103,15 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     except (ValueError, OSError) as exc:
         logger.warning("preset skip %s: %s", gguf.name, exc)
         return None
+    if header.has_unknown_quant_types:
+        # Parseable but not runnable: the pinned stock engine cannot execute these quant types
+        # (a fork engine can). Record the refusal so the picker/decisions say WHY instead of the
+        # model silently vanishing from the router; refusals never enter the preset INI.
+        return PresetEntry(
+            model_id=model_id, window=0, spilled=False,
+            refusal=(f"{gguf.name}: uses quant types above this engine build's type table; "
+                     "stock llama.cpp cannot load it — a newer or fork engine is required"))
+
     entry = entry_for_model(model_id)
     is_mtp = entry.mtp if entry is not None else model_id in mtp_capable
 
@@ -171,7 +189,14 @@ def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
 
     model_id = model_id_from_stem(gguf.stem)
     try:
-        profile = profile_from_gguf(read_gguf_header(gguf))
+        header = read_gguf_header(gguf)
+        if header.has_unknown_quant_types:
+            # Weights are unpriced (unknown tensor types are skipped), so the footprint would
+            # under-count by the bulk of the file; treat like unreadable — never shrink the
+            # residency cap on a wrong number.
+            logger.debug("footprint skip %s: unknown quant types for this engine", gguf.name)
+            return None
+        profile = profile_from_gguf(header)
     except (ValueError, OSError) as exc:
         logger.debug("footprint skip %s: %s", gguf.name, exc)
         return None

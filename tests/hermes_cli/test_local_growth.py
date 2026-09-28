@@ -100,6 +100,7 @@ def _header_stub(sampling: dict | None = None):
 
     class _Stub:
         sampling_defaults = dict(sampling or {})
+        has_unknown_quant_types = False
 
     return _Stub()
 
@@ -248,7 +249,7 @@ def test_mtp_plan_matches_cost_at_initial_and_restored_windows(hermes_home, tmp_
     stacked = RUNTIME_OVERHEAD_BYTES + ub_logits_bytes(profile.n_vocab, mtp_capable=True, mtp_prefill=True)
     mdir = tmp_path / "models"
     _stage_fake_gguf(mdir, profile.name)
-    monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}))
+    monkeypatch.setattr(presets, "read_gguf_header", lambda p: SimpleNamespace(sampling_defaults={}, has_unknown_quant_types=False))
     monkeypatch.setattr(presets, "profile_from_gguf", lambda h: profile)
 
     def generate(device, ram, override=0):

@@ -344,6 +344,10 @@ def _permanent_set() -> set:
             logger.warning("Failed to load permanent allowlist: %s", e)
             approved = set()
         _permanent_approved_by_home[home_key] = approved
+        # This read is the routed profile's sync point with its file; without a
+        # baseline the next save treats every loaded entry as this process's own
+        # approval and writes back entries the operator has since removed.
+        _permanent_baseline_by_home[home_key] = set(approved)
     return approved
 
 

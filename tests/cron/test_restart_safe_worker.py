@@ -780,6 +780,49 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
     assert queued == ["exec-outer"]
 
 
+def test_nested_delivery_batch_with_matrix_queues_under_own_execution(
+    monkeypatch,
+):
+    import cron.scheduler as scheduler
+    import cron.scheduler_delivery as scheduler_delivery
+
+    queued = []
+    monkeypatch.setattr(
+        "cron.delivery_queue.enqueue_and_wait",
+        lambda execution_id, job, content, **kw: (
+            queued.append(execution_id) or "queued-marker"
+        ),
+    )
+    targets = [
+        {"platform": "telegram", "chat_id": "123"},
+        {"platform": "matrix", "chat_id": "!room:example.test"},
+    ]
+    monkeypatch.setattr(scheduler, "_resolve_delivery_targets", lambda *a, **k: targets)
+    monkeypatch.setattr(
+        scheduler_delivery, "_resolve_delivery_targets", lambda *a, **k: targets
+    )
+
+    def _standalone(*_args, **_kwargs):
+        raise AssertionError("standalone Matrix path reached")
+
+    monkeypatch.setattr("gateway.config.load_gateway_config", _standalone)
+    monkeypatch.setenv("_HERMES_CRON_EXTERNAL_WORKER", "exec-outer")
+
+    result = scheduler._deliver_result(
+        {
+            "id": "job-inner",
+            "execution_id": "exec-inner",
+            "deliver": "telegram:123,matrix:!room:example.test",
+        },
+        "done",
+        adapters=None,
+        loop=None,
+    )
+
+    assert result == "queued-marker"
+    assert queued == ["exec-inner"]
+
+
 def test_gateway_tool_run_without_adapter_objects_hands_off(monkeypatch):
     import cron.scheduler as scheduler
 

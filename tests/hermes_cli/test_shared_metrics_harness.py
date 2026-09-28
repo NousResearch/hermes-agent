@@ -125,6 +125,19 @@ def test_foreground_terminal_commands_count_by_kind_and_outcome(direct_runtime, 
     assert "definitely" not in json.dumps(_stored_values(tmp_path, contract.TERMINAL_OUTCOME_METRIC))
 
 
+def test_backend_exception_mentioning_timeout_is_not_a_terminal_timeout(direct_runtime, tmp_path, monkeypatch):
+    from tools.environments.base import BaseEnvironment
+    from tools.terminal_tool import terminal_tool
+
+    def connect_timeout(self, *a, **k):
+        raise RuntimeError("ssh: connect to host example port 22: Connection timeout")
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr(BaseEnvironment, "execute", connect_timeout)
+    assert json.loads(terminal_tool("echo hi", task_id="harness-exc"))["exit_code"] == 124  # user-facing result unchanged
+    assert not _stored_values(tmp_path, contract.TERMINAL_OUTCOME_METRIC)
+
+
 # ---- loop guards -------------------------------------------------------------------------------
 
 def test_loop_guards_count_once_per_turn_per_signal_and_detector(direct_runtime, tmp_path):

@@ -1273,9 +1273,9 @@ def _run_foreground(
             )
             break
         except Exception as e:
+            # A backend exception (e.g. an SSH connect timeout) never reached an exit status, so it
+            # is not a terminal outcome; Hermes' own deadline arrives as ``hermes_timed_out``.
             if "timeout" in str(e).lower():
-                if metered:
-                    record_terminal_outcome(command, env_type, outcome="timeout")
                 return _error_json(f"Command timed out after {effective_timeout} seconds", exit_code=124)
             # Retry on transient errors
             if retry_count < max_retries:

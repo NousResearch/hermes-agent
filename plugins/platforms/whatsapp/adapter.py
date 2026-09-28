@@ -541,6 +541,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             bridge_argv = [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
                            "--mode", _wenv("WHATSAPP_MODE", "self-chat")]
             if _IS_WINDOWS:
+                # Diagnostic-only on this child: bridge.js never reads the stamp
+                # (its only child use is execFileSync('ffmpeg')); the value is
+                # consumed by the respawned gateway's breakaway-state probe
+                # (_windows_gateway_breakaway_state), mirrored here so a
+                # job-teardown kill stays distinguishable in env dumps.
                 bridge_env = self._bridge_env()
                 try:
                     self._bridge_process = subprocess.Popen(

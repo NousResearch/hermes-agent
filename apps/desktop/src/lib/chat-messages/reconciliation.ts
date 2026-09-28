@@ -507,6 +507,41 @@ export function preserveLocalAssistantErrors(
   return insertPreservedErrorRuns(merged, currentMessages, preserveIds)
 }
 
+/**
+ * Re-graft trailing client-local `system` notices (the fallback-switch notice
+ * from status.update): refreshes rebuild from stored rows, which never carry
+ * them, so the notice vanished on the next refresh (#126422). Stored rows own
+ * a `rowId` and are left to the page. Idempotent by id and text.
+ */
+export function preserveLocalSystemNotices(nextMessages: ChatMessage[], currentMessages: ChatMessage[]): ChatMessage[] {
+  const trailing: ChatMessage[] = []
+
+  for (let index = currentMessages.length - 1; index >= 0; index -= 1) {
+    const message = currentMessages[index]
+
+    if (message.role !== 'system') {
+      break
+    }
+
+    if (message.rowId === undefined) {
+      trailing.unshift(message)
+    }
+  }
+
+  if (!trailing.length) {
+    return nextMessages
+  }
+
+  const nextIds = new Set(nextMessages.map(message => message.id))
+  const nextTexts = new Set(nextMessages.map(message => chatMessageText(message).trim()))
+
+  const unstored = trailing.filter(
+    message => !nextIds.has(message.id) && !nextTexts.has(chatMessageText(message).trim())
+  )
+
+  return unstored.length ? [...nextMessages, ...unstored] : nextMessages
+}
+
 export function branchGroupForUser(userMessage: ChatMessage): string {
   return `branch:${userMessage.id}`
 }

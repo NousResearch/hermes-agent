@@ -648,6 +648,166 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
     assert "PYTHONPATH" not in worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root)
 
 
+def _commit_generation(repo_root: Path, name: str, *, with_site_packages: bool) -> Path:
+    """Commit a PM generation for ``repo_root`` in the sandboxed home; return its venv."""
+    import pm.environments
+
+    version = f"{sys.version_info[0]}.{sys.version_info[1]}"
+    venv = pm.environments.install_state_dir(repo_root) / "environments" / name / "venv"
+    (venv / "lib" / f"python{version}").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text(f"version = {version}\n", encoding="utf-8")
+    (venv.parent / ".lease-managed").write_text("", encoding="utf-8")
+    if with_site_packages:
+        # The generation's .pth hands back this interpreter's own packages, so the
+        # activated worker can still import its dependencies after PM rewrites sys.path.
+        selected = pm.environments.site_packages(venv)
+        selected.mkdir()
+        (selected / "test_deps.pth").write_text(
+            "\n".join(p for p in sys.path
+                      if Path(p).name in ("site-packages", "dist-packages")) + "\n",
+            encoding="utf-8")
+        # Importable only through this generation, so the worker proves it activated it.
+        (selected / "_generation_sentinel.py").write_text(f"NAME = {name!r}\n", encoding="utf-8")
+    pm.environments.runtime_facts_path(repo_root).write_text(
+        json.dumps({"packages": {"venv": {"environment": str(venv)}}, "schema": 1}),
+        encoding="utf-8")
+    return venv
+
+
+def test_pin_restores_the_committed_generation_site_packages(tmp_path):
+    """#122222: the sanitizer drops the generation ``activate_dependencies`` put on our
+    ``sys.path``, and the worker inherits the store Python, which owns no dependencies. The
+    pin hands the child PM's committed generation -- after the checkout, before the entries
+    the sanitizer kept -- and invents nothing when no generation is committed."""
+    import cron.scheduler_worker_env as worker_env_mod
+    import pm.environments
+
+    repo_root = tmp_path / "hermes-agent"
+    repo_root.mkdir()
+    venv = _commit_generation(repo_root, "gen1", with_site_packages=True)
+    selected = pm.environments.site_packages(venv)
+
+    env = worker_env_mod.pin_hermes_tree_on_pythonpath(
+        {"PYTHONPATH": str(tmp_path / "kept")}, repo_root
+    )
+    assert env["PYTHONPATH"].split(os.pathsep) == [
+        str(repo_root), str(selected), str(tmp_path / "kept"),
+    ]
+
+    # A runner that owns its dependencies has no committed generation: tree only.
+    pm.environments.runtime_facts_path(repo_root).unlink()
+    assert worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root) == {
+        "PYTHONPATH": str(repo_root)
+    }
+
+
+_BOOT_ORDER_PROBE = """
+import json, os, sys
+import pm.environments
+
+boots = []
+pm.environments.activate_dependencies = lambda root: boots.append("cron.jobs" in sys.modules)
+import cron
+print(json.dumps({"boots": boots, "marker": os.environ.get(sys.argv[1])}))
+"""
+
+
+@pytest.mark.parametrize("marked", [True, False])
+def test_marked_worker_boots_dependencies_before_cron_jobs(marked):
+    """#122222: ``-m cron.scheduler`` executes ``cron/__init__.py`` first, whose first import
+    (``cron.jobs`` -> ``hermes_yaml`` -> ``ruamel``) is already a dependency, so the marked
+    worker must boot before it -- exactly once, consuming the marker so the worker's own
+    children do not inherit it. An unmarked importer (the gateway already booted through
+    ``hermes_bootstrap``) is never re-booted."""
+    import cron.worker_bootstrap as worker_bootstrap
+
+    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    env = {k: v for k, v in os.environ.items() if k != worker_bootstrap.WORKER_MARKER}
+    env["PYTHONPATH"] = str(repo_root)
+    if marked:
+        env[worker_bootstrap.WORKER_MARKER] = "1"
+    child = subprocess.run(
+        [sys.executable, "-c", _BOOT_ORDER_PROBE, worker_bootstrap.WORKER_MARKER],
+        cwd=repo_root, env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert child.returncode == 0, child.stderr
+    result = json.loads(child.stdout.strip().splitlines()[-1])
+    assert result == {"boots": [False] if marked else [], "marker": None}
+
+
+_REAL_BOOT_PROBE = """
+import json, sys
+try:
+    import cron
+except RuntimeError as exc:
+    print(json.dumps({"error": str(exc), "jobs": "cron.jobs" in sys.modules}))
+    sys.exit(3)
+import _generation_sentinel
+print(json.dumps({"sentinel": _generation_sentinel.NAME, "path": sys.path,
+                  "jobs": "cron.jobs" in sys.modules}), flush=True)
+sys.stdin.read()
+"""
+
+
+def _marked_worker(repo_root: Path, stderr) -> subprocess.Popen:
+    import cron.worker_bootstrap as worker_bootstrap
+
+    env = dict(os.environ, PYTHONPATH=str(repo_root))
+    env[worker_bootstrap.WORKER_MARKER] = "1"
+    return subprocess.Popen(
+        [sys.executable, "-c", _REAL_BOOT_PROBE], cwd=repo_root, env=env,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True)
+
+
+def test_marked_worker_keeps_its_generation_through_a_rotation(tmp_path):
+    """#122222 / #122936 review: the real PM boot activates the committed generation before
+    ``cron.jobs`` loads and leases it for the worker's lifetime. When an update commits a
+    newer generation mid-job, the collector must not delete the one the live worker imports
+    from; it becomes collectable once the worker exits."""
+    import cron.worker_bootstrap as worker_bootstrap
+    import pm.environments
+    from hermes_cli.runtime_state import collect_generations
+
+    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    generation = _commit_generation(repo_root, "g1", with_site_packages=True).parent
+    stderr_path = tmp_path / "worker.stderr"
+    with stderr_path.open("w") as stderr:
+        child = _marked_worker(repo_root, stderr)
+    try:
+        result = json.loads(child.stdout.readline())
+        assert result["sentinel"] == "g1" and result["jobs"] is True
+        first_site = next(p for p in result["path"] if Path(p).name == "site-packages")
+        assert first_site == str(pm.environments.site_packages(generation / "venv"))
+
+        _commit_generation(repo_root, "g2", with_site_packages=True)
+        assert collect_generations(repo_root, min_age_seconds=0) == []
+        assert generation.is_dir()
+    finally:
+        try:
+            child.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            raise
+    assert child.returncode == 0, stderr_path.read_text()
+    assert collect_generations(repo_root, min_age_seconds=0) == [generation]
+
+
+def test_marked_worker_exits_before_cron_jobs_when_activation_fails():
+    """#122936 review: a genuine PM refusal (committed generation without site-packages) must
+    stop the worker before its first dependency import -- the spawn site reports the pre-ack
+    exit -- rather than run on an inherited path nothing leases."""
+    import cron.worker_bootstrap as worker_bootstrap
+
+    repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
+    _commit_generation(repo_root, "damaged", with_site_packages=False)
+    child = _marked_worker(repo_root, subprocess.PIPE)
+    out, err = child.communicate(timeout=60)
+    assert child.returncode == 3, err
+    result = json.loads(out.strip().splitlines()[-1])
+    assert "has no site-packages" in result["error"]
+    assert result["jobs"] is False
+
+
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     import cron.scheduler as scheduler
 

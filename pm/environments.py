@@ -35,6 +35,17 @@ def install_state_dir(project_root: Path) -> Path:
     return installs_root() / install_key(project_root)
 
 
+def install_state_permission_message(project_root: Path, exc: PermissionError) -> str | None:
+    """Describe an access failure inside this install's dependency state."""
+    if not exc.filename:
+        return None
+    denied = Path(exc.filename).resolve()
+    if not denied.is_relative_to(install_state_dir(project_root).resolve()):
+        return None
+    return (f"install state is not writable by this user ({denied}); "
+            "run as the install owner or grant write access")
+
+
 def runtime_facts_path(project_root: Path) -> Path:
     return install_state_dir(project_root) / "facts.json"
 

@@ -32,7 +32,7 @@ def test_native_emotes_and_stickers_reach_model_and_withdraw_only_new_input(
 ) -> None:
     started = time.monotonic()
     prefix = (
-        "import asyncio, json\nfrom rich_content_client import accepted_exchange, paused_sticker, withdrawn_reply\n"
+        "import asyncio, json\nfrom rich_content_client import accepted_exchange, paused_sticker, withdrawn_reply, paused_emote, queued_stickers\n"
         f"ROOM = {live_room.room_id!r}\nBOT = {live_room.bot.user_id!r}\n"
         f"DEVICE = {live_room.bot.device_id!r}\nENCRYPTED = {encrypted!r}\n"
     )
@@ -107,11 +107,120 @@ def test_native_emotes_and_stickers_reach_model_and_withdraw_only_new_input(
             "content": sticker_parts[0]["text"] + "\n[screenshot]",
         }
         assert requests[2]["messages"][: len(previous)] == [
-            *previous[:-1], prior_sticker,
+            *previous[:-1],
+            prior_sticker,
         ]
         assert requests[1]["messages"] == previous
         current = requests[2]["messages"][-1]["content"]
         assert isinstance(current, str)
         assert "[redacted]" in current and "Withdrawn fox" not in current
+
+        for marker in (
+            "context-started",
+            "context-release",
+            "expected-media-change",
+            "media-change-observed",
+        ):
+            (home / marker).unlink()
+        output = linux_nio_observer.run_python(
+            prefix
+            + f"ROOT = {received['root']!r}\n"
+            + "print(json.dumps(asyncio.run(asyncio.wait_for(paused_emote(ROOM, ROOT, encrypted=ENCRYPTED), timeout=10))))\n"
+        )
+        initiating = json.loads(output.strip().splitlines()[-1])
+        _wait_for(
+            lambda: (home / "context-started").exists(),
+            "queued sticker preparation barrier",
+            timeout=10,
+        )
+        output = linux_nio_observer.run_python(
+            prefix
+            + f"ROOT = {received['root']!r}\nURL = {received['url']!r}\n"
+            + "print(json.dumps(asyncio.run(asyncio.wait_for(queued_stickers(ROOM, ROOT, URL, BOT, encrypted=ENCRYPTED), timeout=10))))\n"
+        )
+        retained, target = json.loads(output.strip().splitlines()[-1])
+        _wait_for(
+            lambda: (
+                (home / "rich-events-queued").exists()
+                and (home / "rich-events-queued")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                == [retained, target]
+            ),
+            "both native stickers queued",
+            timeout=10,
+        )
+        (home / "read-effective-event").write_text(
+            json.dumps({
+                "room": live_room.room_id,
+                "event": retained,
+                "sender": live_room.observer.user_id,
+            }),
+            encoding="utf-8",
+        )
+        _wait_for(
+            lambda: (home / "effective-event-read").exists(),
+            "unchanged queued sticker read",
+            timeout=10,
+        )
+        read = json.loads((home / "effective-event-read").read_text(encoding="utf-8"))
+        assert read["errors"] == []
+        assert read["events"][0]["event_id"] == retained
+        assert live_room.bot.user_id in read["events"][0]["body"]
+        (home / "expected-media-change").write_text(target, encoding="utf-8")
+        asyncio.run(asyncio.wait_for(redact(), timeout=5))
+        _wait_for(
+            lambda: (home / "media-change-observed").exists(),
+            "second queued sticker withdrawal",
+            timeout=10,
+        )
+        (home / "context-release").write_text("release", encoding="utf-8")
+        linux_nio_observer.run_python(
+            prefix
+            + f"TARGET = {initiating!r}\nROOT = {received['root']!r}\n"
+            + "asyncio.run(asyncio.wait_for(withdrawn_reply(ROOM, BOT, encrypted=ENCRYPTED, reply_target=TARGET, thread_root=ROOT, count=2), timeout=10))\n"
+        )
+        requests = gateway.model.main_requests()
+        assert len(requests) == 5
+        prior = requests[3]["messages"]
+        assert requests[4]["messages"][: len(prior)] == prior
+        assert requests[1]["messages"] == previous
+        current = requests[4]["messages"][-1]["content"]
+        assert isinstance(current, list)
+        text = "".join(part.get("text", "") for part in current)
+        assert "[sticker: Retained queued sticker]" in text
+        assert "[redacted]" in text and "Withdrawn queued sticker" not in text
+        assert f"[sticker: {live_room.bot.user_id}" not in text
+        pixels = [
+            part["image_url"]["url"] for part in current if part["type"] == "image_url"
+        ]
+        assert len(pixels) == 1
+        assert base64.b64decode(pixels[0].split(",", 1)[1]).startswith(
+            b"\x89PNG\r\n\x1a\n"
+        )
+    except Exception as exc:
+        requests = [
+            [
+                {
+                    **message,
+                    "content": (
+                        message["content"][:2000]
+                        if isinstance(message["content"], str)
+                        else message["content"]
+                    ),
+                }
+                for message in request["messages"]
+                if message["role"] != "system"
+            ]
+            for request in gateway.model.main_requests()
+        ]
+        logs = gateway.container.get_wrapped_container().logs().decode(errors="replace")
+        gateway_log = tmp_path / "hermes" / "logs" / "gateway.log"
+        if gateway_log.exists():
+            logs += "\n" + gateway_log.read_text(encoding="utf-8", errors="replace")
+        pytest.fail(
+            f"{exc}\nNon-system model messages:\n{json.dumps(requests)}\nGateway log tail:\n{logs[-6000:]}",
+            pytrace=False,
+        )
     finally:
         record_property("body_seconds", round(time.monotonic() - started, 3))

@@ -365,6 +365,38 @@ def test_server_strips_client_auth_header():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("headers,allowed", [
+    ({}, True),                                                    # plain local client
+    ({"Origin": "http://{authority}"}, True),                      # the proxy's own origin
+    ({"Host": "localhost:{port}"}, True),                          # loopback alias
+    ({"Host": "rebound.example:{port}"}, False),                   # foreign Host
+    ({"Origin": "https://site.example"}, False),                   # cross-site browser request
+    ({"Origin": "null"}, False),                                   # opaque browser origin
+])
+def test_loopback_proxy_serves_only_local_non_browser_requests(headers, allowed):
+    """A loopback-bound proxy forwards with the operator's credential only for requests whose Host
+    names the loopback listener and that carry no foreign Origin; refused ones never go upstream."""
+    async def run():
+        captured: Dict[str, Any] = {"requests": []}
+        upstream_runner, upstream_base = await _start_runner(_build_fake_upstream(captured))
+        proxy_runner, proxy_base = await _start_runner(create_app(FakeAdapter(f"{upstream_base}/v1")))
+        authority = proxy_base.removeprefix("http://")
+        sent = {k: v.format(authority=authority, port=authority.rsplit(":", 1)[1]) for k, v in headers.items()}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(f"{proxy_base}/v1/chat/completions", json={}, headers=sent) as resp:
+                    await resp.read()
+                    status = resp.status
+        finally:
+            await proxy_runner.cleanup()
+            await upstream_runner.cleanup()
+        assert (status == 200, len(captured["requests"]) == 1) == (allowed, allowed), status
+        if not allowed:
+            assert 400 <= status < 500
+
+    asyncio.run(run())
+
+
 def _build_sse_upstream(
     frames: list[bytes],
     *,

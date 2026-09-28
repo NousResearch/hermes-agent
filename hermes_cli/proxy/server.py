@@ -11,6 +11,7 @@ import asyncio
 import logging
 import signal
 from typing import Optional
+from urllib.parse import urlsplit
 
 try:
     import aiohttp
@@ -51,6 +52,38 @@ def _json_error(status: int, message: str, code: str = "proxy_error") -> "web.Re
     """OpenAI-style error JSON response."""
     body = {"error": {"message": message, "type": code, "code": code}}
     return web.json_response(body, status=status)
+
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::"})
+
+
+def _authority_hostname(authority: str) -> str:
+    """Lowercased hostname of a Host-header authority; ``""`` when malformed (fails closed)."""
+    if not authority or any(c in authority for c in "@/\\?# \t"):
+        return ""
+    try:
+        parts = urlsplit("//" + authority)
+        parts.port  # noqa: B018 — raises ValueError on a malformed port
+    except ValueError:
+        return ""
+    return (parts.hostname or "").lower()
+
+
+def _local_request_error(host_header: str, origin: Optional[str], bound_host: str) -> Optional[str]:
+    """Why a request must be refused, or None. The proxy attaches the operator's subscription
+    credential to whatever reaches it, so a web page in the operator's browser must not be able
+    to drive it: a loopback/specific-IP bind accepts only its own Host names (a DNS-rebound
+    hostname fails), and any Origin other than the proxy's own is a cross-site browser request.
+    Non-browser clients send no Origin and are unaffected. A wildcard bind is an explicit LAN
+    opt-in, so only the Origin rule applies there."""
+    hostname = _authority_hostname(host_header)
+    bound = bound_host.strip("[]").lower()
+    if not hostname or (bound not in _WILDCARD_HOSTS and hostname not in _LOOPBACK_HOSTS | {bound}):
+        return "host_not_allowed"
+    if origin is not None and origin.strip().lower() != f"http://{host_header.strip().lower()}":
+        return "origin_not_allowed"
+    return None
 
 
 def _filter_headers(headers, drop: frozenset = _HOP_BY_HOP_HEADERS) -> dict:
@@ -123,7 +156,7 @@ async def _stream_back(request: "web.Request", session, upstream_resp) -> "web.S
     return resp
 
 
-def create_app(adapter: UpstreamAdapter) -> "web.Application":
+def create_app(adapter: UpstreamAdapter, bound_host: str = DEFAULT_HOST) -> "web.Application":
     """Build the aiohttp application bound to a specific upstream adapter.
 
     Every adapter method is synchronous and blocking (the Nous adapter takes the 15s cross-process
@@ -132,7 +165,15 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
     the single loop and every other in-flight streaming completion.
     """
     _require_aiohttp()
-    app = web.Application(client_max_size=MAX_REQUEST_BYTES)
+
+    @web.middleware
+    async def local_only(request: "web.Request", handler):
+        refusal = _local_request_error(request.headers.get("Host", ""), request.headers.get("Origin"), bound_host)
+        if refusal:
+            return _json_error(403, "Request refused: only local, non-browser clients may use this proxy.", code=refusal)
+        return await handler(request)
+
+    app = web.Application(client_max_size=MAX_REQUEST_BYTES, middlewares=[local_only])
     # AppKey: forward-compat with aiohttp versions that strip bare-string keys.
     app[web.AppKey("adapter", UpstreamAdapter)] = adapter
 
@@ -189,7 +230,7 @@ async def run_server(
 ) -> None:
     """Run the proxy in the current event loop until shutdown_event is set."""
     _require_aiohttp()
-    app = create_app(adapter)
+    app = create_app(adapter, bound_host=host)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)

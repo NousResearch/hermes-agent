@@ -161,15 +161,20 @@ OpenAI-compatible client.
 
 ## Exposing on LAN
 
-By default the proxy binds `127.0.0.1` (localhost only). To let other
-machines on your network use it:
+By default the proxy binds `127.0.0.1` (localhost only). It refuses requests
+whose `Host` header is not its own address (`localhost`, `127.0.0.1`, `[::1]`
+or the bound IP) and any request carrying a browser `Origin` other than its
+own, so a web page open in your browser cannot use it. Clients such as SDKs
+and `curl` send no `Origin` and are unaffected. To let other machines on your
+network use it:
 
 ```bash
 hermes proxy start --host 0.0.0.0 --port 8645
 ```
 
 ⚠ **Be aware:** anyone on your network can now use your Portal
-subscription. The proxy has no auth of its own — it accepts any bearer.
+subscription. A wildcard bind skips the `Host` check (any name may reach it);
+the browser `Origin` check still applies. The proxy has no auth of its own — it accepts any bearer.
 Use a firewall, VPN, or reverse proxy with proper auth if you expose
 this beyond your trusted network.
 

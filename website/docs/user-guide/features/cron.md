@@ -1159,6 +1159,8 @@ cronjob(
 )
 ```
 
+Editing a recurring job into a one-shot (for example `hermes cron edit <job_id> --schedule "in 30m"`) makes it run once: earlier runs and a recurring `repeat` count do not carry over. The edit is refused while the job is running; retry once the run finishes.
+
 ## Managing jobs programmatically
 
 The agent-facing API is one tool:

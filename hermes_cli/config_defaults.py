@@ -2314,6 +2314,14 @@ DEFAULT_CONFIG = {
         # Max active messages per session for in-memory export (`hermes sessions export`); checked
         # per session, so full-DB backups of small sessions work.
         "max_export_messages": 20000,
+        # Import guards (session import, profile adoption, foreign-session import). Setting any
+        # to 0 disables that guard. Global: they also bound the dashboard /api/sessions/import
+        # endpoint, whose request body is separately capped.
+        "import_max_sessions": 500,
+        "import_max_messages_per_session": 10000,
+        "import_max_total_messages": 50000,
+        "import_max_session_bytes": 5 * 1024 * 1024,
+        "import_max_total_bytes": 25 * 1024 * 1024,
     },
     # First-touch onboarding hints (agent/onboarding.py). Each hint shows once and is latched under
     # `seen`; wipe the section to re-see all hints.

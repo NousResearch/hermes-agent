@@ -1914,7 +1914,12 @@ def _(rid, params: dict, session: dict) -> dict:
 @_session_method("session.history")
 def _(rid, params: dict, session: dict) -> dict:
     history = list(session.get("history", []))
-    if session.get("session_key"):
+    # Address the session the live agent writes to, not session_key: a compression rotation moves the
+    # tip mid-session, and include_ancestors walks parent pointers, so a stale parent materializes
+    # root..parent and NEVER the continuation — a reconnect in that window renders a transcript missing
+    # every turn since the rotation (#123545).
+    row_session = _submit_row_target_key(session)
+    if row_session:
         with _session_db(session) as db:
             if db is not None:
                 # include_row_ids: the durable row id is how clients address a persisted turn (reactions,
@@ -1924,7 +1929,7 @@ def _(rid, params: dict, session: dict) -> dict:
                     # stamp, so an unstamped read here silently strips the one durable address clients can
                     # use. See #87059.
                     history = db.get_messages_as_conversation(
-                        session["session_key"], include_ancestors=True, include_row_ids=True)
+                        row_session, include_ancestors=True, include_row_ids=True)
     return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
 
 

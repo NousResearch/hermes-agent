@@ -246,6 +246,64 @@ def test_message_react_targets_the_row_in_the_session_that_owns_it(monkeypatch, 
         db.close()
 
 
+def test_session_history_reads_the_continuation_after_a_rotation(monkeypatch, tmp_path):
+    """``session.history`` addresses the durable transcript by session. ``include_ancestors`` walks PARENT
+    pointers, so a stale ``session_key`` materializes root..parent and never the continuation — a
+    reconnect in the post-rotation window renders a transcript missing every turn since the rotation."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key, session, agent, child = _rotated_session(monkeypatch, db)
+    try:
+        db.append_message(child, "user", content="sent after the rotation")
+        got = server.handle_request({"id": "h1", "method": "session.history", "params": {"session_id": sid}})
+        assert "result" in got, got
+        texts = [m.get("text") or m.get("content") for m in got["result"]["messages"]]
+        assert "sent after the rotation" in texts, (
+            f"session.history served the stale parent {key}, not the live {child}: {got['result']['messages']}")
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_out_of_band_probe_reads_the_continuation_after_a_rotation(monkeypatch, tmp_path):
+    """``_adopt_out_of_band_turns`` keyset-probes for foreign rows (a Telegram reply, a cron delivery)
+    written since the turn started. On a rotated session the parent holds none of them, so the probe
+    returns nothing and the model never sees the out-of-band turn — a regression of the contract this
+    function exists for (#42962/#86588)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key, session, agent, child = _rotated_session(monkeypatch, db)
+    try:
+        from tui_gateway import prompt_turn
+        # _adopt_out_of_band_turns reads _message_row_id, which methods_prompt publishes onto server's
+        # globals at bind_module time (prompt_turn's own module never imports it). Importing the module
+        # here runs that binding — the same order server.py's own import loop produces.
+        from tui_gateway import methods_prompt  # noqa: F401
+        assert hasattr(server, "_message_row_id"), "the bind seam must publish _message_row_id"
+        # Stamp the in-memory history with the row ids the rotation actually created, so `seen` is the
+        # newest row the agent's own flush wrote and the foreign row is strictly newer.
+        with session["history_lock"]:
+            session["history"] = [
+                dict(r, _row_id=r["_row_id"]) for r in db.get_messages_as_conversation(child, include_row_ids=True)
+            ]
+            session["history_version"] = 1
+        stamped = [m["_row_id"] for m in session["history"]]
+        assert stamped, "the rotation must have created rows to stamp"
+        seen = max(stamped)
+        # Another surface appends to the session the LIVE agent writes to, after those rows.
+        foreign = db.append_message(child, "user", content="a Telegram reply that arrived mid-turn")
+        assert foreign > seen, f"the foreign row {foreign} must sort after the in-flight rows {stamped}"
+
+        # Call the REBOUND copy on server: bind_module re-creates each body against server's globals, and
+        # that copy is what production runs. prompt_turn's original still points at its own module dict,
+        # where _message_row_id (published by methods_prompt) was never bound.
+        server._adopt_out_of_band_turns(session)
+        texts = [str(m.get("content")) for m in session["history"]]
+        assert "a Telegram reply that arrived mid-turn" in texts, (
+            f"the out-of-band probe read the stale parent {key} and adopted nothing: {texts}")
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 def test_unrotated_session_keeps_writing_to_session_key(monkeypatch, tmp_path):
     """The ordinary case is unchanged: no rotation, the row lands under session_key as before."""
     db = SessionDB(db_path=tmp_path / "state.db")

@@ -522,9 +522,12 @@ def _adopt_out_of_band_turns(session: dict) -> None:
     def _foreign(rid) -> bool:
         return _below_ceiling(rid) and rid > seen
     # Keyset probe first: the common turn has nothing to adopt and must not pay a full transcript decode.
+    # Address the live session, not session_key: a rotation moves the tip mid-session, so the parent
+    # holds none of the foreign rows (Telegram reply, cron) this function exists to adopt and the model
+    # silently never sees them (#123545).
     with _session_db(session) as db:
         try:
-            newer = db.get_messages(session["session_key"], after_id=seen) if db is not None else []
+            newer = db.get_messages(_submit_row_target_key(session), after_id=seen) if db is not None else []
         except Exception:
             logger.debug("out-of-band history probe failed; turn runs on the in-memory history", exc_info=True)
             return

@@ -24,8 +24,8 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from agent.i18n import t
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
     EGRESS_DECLINE_CODE,
@@ -227,6 +227,12 @@ class RelayAdapter(BasePlatformAdapter):
     def _chat_platform(self, chat_id: str) -> Optional[str]:
         """The chat's underlying platform as seen inbound, else the primary's."""
         return self._platform_by_chat.get(str(chat_id)) or self.descriptor.platform
+
+    def _metrics_platform(self, chat_id: str) -> Optional[str]:
+        """The platform a chat's shared metrics carry: the inbound's, else the primary's only when this
+        socket fronts one platform (a multi-platform connector's unknown chat stays unlabelled)."""
+        fronted = {p for p, _ in (getattr(self._transport, "_identities", None) or ())}
+        return self._platform_by_chat.get(str(chat_id)) or (self.descriptor.platform if len(fronted) <= 1 else None)
 
     def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
         platform = (logical_platform or (metadata or {}).get("_relay_logical_platform")
@@ -725,7 +731,7 @@ class RelayAdapter(BasePlatformAdapter):
         """
         merged_meta = self._task_card_metadata(reply_to, metadata)
         result = await self._card_frame(
-            chat_id, "task_card", reply_to, merged_meta, chunks=[dict(t) for t in tasks]
+            chat_id, "task_card", reply_to, merged_meta, chunks=[dict(task) for task in tasks]
         )
         if isinstance(result, SendResult):
             return result
@@ -2024,8 +2030,6 @@ class RelayAdapter(BasePlatformAdapter):
 
     _PROMPT_UNAVAILABLE = SendResult(success=False, error="relay prompt op unavailable")
 
-    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n\n"
-    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
     _EA_CMD_BUDGET = 1500
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
@@ -2052,9 +2056,9 @@ class RelayAdapter(BasePlatformAdapter):
         """Three-button slash-command confirmation over the relay (resolves via
         tools.slash_confirm.resolve; success=False falls back to text-intercept)."""
         options = [
-            {"id": "once", "label": "Approve Once", "style": "primary"},
-            {"id": "always", "label": "Always Approve"},
-            {"id": "cancel", "label": "Cancel", "style": "danger"},
+            {"id": "once", "label": t("platform.relay.confirm_approve_once"), "style": "primary"},
+            {"id": "always", "label": t("platform.relay.confirm_always_approve")},
+            {"id": "cancel", "label": t("platform.relay.confirm_cancel"), "style": "danger"},
         ]
         result = await self._mint_and_send_prompt(
             "slash_confirm", {"session_key": session_key, "confirm_id": confirm_id}, chat_id,
@@ -2079,7 +2083,7 @@ class RelayAdapter(BasePlatformAdapter):
         back to base."""
         if choices and self.descriptor.supports_op("prompt"):
             options = [{"id": f"c{i}", "label": str(choice)[:75]} for i, choice in enumerate(choices)]
-            options.append({"id": "other", "label": "✏️ Other (type your answer)"})
+            options.append({"id": "other", "label": t("platform.relay.prompt_other")})
             result = await self._mint_and_send_prompt(
                 "clarify",
                 {
@@ -2214,8 +2218,7 @@ class RelayAdapter(BasePlatformAdapter):
             return
         self._send_lifecycle_ack(
             chat_id,
-            "⌛ That prompt is no longer waiting for an answer. "
-            "Send your reply as a normal message.",
+            t("platform.relay.prompt_expired"),
             self._prompt_reply_metadata(event),
         )
 
@@ -2230,7 +2233,57 @@ class RelayAdapter(BasePlatformAdapter):
             meta["thread_id"] = str(thread_id)
         return meta
 
-    # ── Phase 3 ack lifecycle (👀 → ✅/❌) ────────────────────────────────
+    # ── Phase 3 ack lifecycle (in-progress → outcome reaction) ───────────────
+
+    # Telegram accepts only a CURATED reaction vocabulary — the 73 emoji listed
+    # on `ReactionTypeEmoji` (https://core.telegram.org/bots/api#reactiontypeemoji,
+    # "Reaction emoji. Currently, it can be one of …"). 👀 (U+1F440) is in that
+    # set; ✅ (U+2705) and ❌ (U+274C) are NOT. So on Telegram the in-progress
+    # ack landed and every completion ack was rejected by the Bot API — the
+    # `turn_ack_reaction_lifecycle` finding ("👀 lands and is removed on
+    # completion; the ✅ completion reaction never lands"). Because a react
+    # failure is deliberately cosmetic (`_react` is best-effort, logged at
+    # debug), it failed silently on every single Telegram turn.
+    #
+    # 👍/👎 are both in Telegram's set and carry the same success/failure sense.
+    # Platforms with free-form reaction vocabularies (Slack, Discord, Matrix,
+    # Signal) keep ✅/❌, which read better and are what their users already see.
+    # Per-platform divergence here follows `_descriptor_for_chat`'s precedent:
+    # platform capabilities genuinely differ, so one hardcoded set cannot serve
+    # every lane a multi-platform gateway fronts.
+    _ACK_EMOJI_DEFAULT = ("👀", "✅", "❌")
+    _ACK_EMOJI_BY_PLATFORM = {
+        "telegram": ("👀", "👍", "👎"),
+    }
+    # `_event_from_wire` maps an absent OR unknown wire platform to
+    # `Platform.RELAY`, so an unresolved lane arrives as the truthy string
+    # "relay", never as "". Treating only "" as unresolved makes the fallback
+    # dead code and silently serves ✅ to a Telegram-primary gateway whose
+    # connector did not stamp the platform.
+    _ACK_PLATFORM_UNRESOLVED = frozenset({"", "relay"})
+
+    def _ack_emoji(self, event, chat_id) -> tuple:
+        """(in_progress, success, failure) for the lane this event arrived on.
+
+        Prefers the EVENT's own platform: an ack always follows an inbound
+        event, so the platform is on hand and needs no cache. Falls back to the
+        chat's lane as seen inbound, then to the descriptor's primary platform.
+        Each candidate is checked in turn because any of them can be the
+        placeholder "relay", which resolves nothing.
+
+        `Platform` is a plain `Enum`, so `str()` on a member yields
+        "Platform.TELEGRAM", not "telegram" — read `.value` first or every
+        lookup misses and silently falls back to the default set.
+        """
+        for candidate in (
+            getattr(getattr(event, "source", None), "platform", None),
+            self._platform_by_chat.get(str(chat_id)),
+            getattr(self.descriptor, "platform", None),
+        ):
+            name = str(getattr(candidate, "value", candidate) or "").lower()
+            if name and name not in self._ACK_PLATFORM_UNRESOLVED:
+                return self._ACK_EMOJI_BY_PLATFORM.get(name, self._ACK_EMOJI_DEFAULT)
+        return self._ACK_EMOJI_DEFAULT
 
     async def _react(
         self,
@@ -2258,21 +2311,24 @@ class RelayAdapter(BasePlatformAdapter):
         return result is not None
 
     async def on_processing_start(self, event) -> None:
-        """Add the 👀 in-progress reaction (op-gated; silent no-op otherwise)."""
+        """Add the in-progress reaction (op-gated; silent no-op otherwise)."""
         message_id, chat_id = _event_ids(event)
         if message_id and chat_id:
-            await self._react(str(chat_id), str(message_id), "👀")
+            eyes, _ok, _fail = self._ack_emoji(event, chat_id)
+            await self._react(str(chat_id), str(message_id), eyes)
 
     async def on_processing_complete(self, event, outcome) -> None:
-        """Swap 👀 for ✅/❌ per outcome (op-gated; silent no-op otherwise)."""
+        """Swap the in-progress reaction for the outcome one (op-gated; silent
+        no-op otherwise)."""
         message_id, chat_id = _event_ids(event)
         if not (message_id and chat_id):
             return
-        await self._react(str(chat_id), str(message_id), "👀", remove=True)
+        eyes, ok_emoji, fail_emoji = self._ack_emoji(event, chat_id)
+        await self._react(str(chat_id), str(message_id), eyes, remove=True)
         if outcome == ProcessingOutcome.SUCCESS:
-            await self._react(str(chat_id), str(message_id), "✅")
+            await self._react(str(chat_id), str(message_id), ok_emoji)
         elif outcome == ProcessingOutcome.FAILURE:
-            await self._react(str(chat_id), str(message_id), "❌")
+            await self._react(str(chat_id), str(message_id), fail_emoji)
 
     # ── Phase 4 thread lifecycle ──────────────────────────────────────────
 
@@ -2348,11 +2404,3 @@ _PROMPT_RESOLVERS = {
     "slash_confirm": RelayAdapter._resolve_slash_confirm,
     "clarify": RelayAdapter._resolve_clarify,
 }
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import cast  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

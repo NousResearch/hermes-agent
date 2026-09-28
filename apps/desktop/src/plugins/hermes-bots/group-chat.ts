@@ -59,6 +59,7 @@ let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 /** One room inside the bounded ui_meta projection: a compacted log plus the
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
 interface GroupChatSyncRoom {
+  holdDetection?: boolean
   image?: null | string
   log: GroupMessage[]
   members?: GroupMember[]
@@ -353,6 +354,7 @@ export function groupChatSyncSnapshot(
           }
         : {}),
       log,
+      holdDetection: room.holdDetection !== false,
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
         name: String(member?.name || '').slice(0, 128),
@@ -543,15 +545,18 @@ export function mergeGroupChatSyncSnapshots(
     let identity: GroupChatSyncRoom | undefined
     let members: GroupMember[]
     let image: null | string | undefined
+    let holdDetection = true
 
     if (localRevision > remoteRevision) {
       identity = localRoom
       members = [...(localRoom?.members || [])]
       image = localRoom?.image
+      holdDetection = localRoom?.holdDetection !== false
     } else if (remoteRevision > localRevision) {
       identity = remoteRoom
       members = [...(remoteRoom?.members || [])]
       image = remoteRoom?.image
+      holdDetection = remoteRoom?.holdDetection !== false
     } else {
       identity = localRoom || remoteRoom
       const byId = new Map<string, GroupMember>()
@@ -562,6 +567,9 @@ export function mergeGroupChatSyncSnapshots(
 
       members = [...byId.values()]
       image = Object.prototype.hasOwnProperty.call(localRoom || {}, 'image') ? localRoom.image : remoteRoom?.image
+      holdDetection = Object.prototype.hasOwnProperty.call(localRoom || {}, 'holdDetection')
+        ? localRoom?.holdDetection !== false
+        : remoteRoom?.holdDetection !== false
     }
 
     rooms[key] = {
@@ -580,6 +588,7 @@ export function mergeGroupChatSyncSnapshots(
 
         return byTime || groupChatSyncEntryKey(left).localeCompare(groupChatSyncEntryKey(right))
       }),
+      holdDetection,
       members,
       revision: Math.max(remoteRevision, localRevision),
       ...(omitted > 0
@@ -810,10 +819,15 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
     rooms[targetName] = {
       ...existing,
       log: bounded.log,
+      holdDetection:
+        !isPreserved && remoteRevision >= localRevision
+          ? projected.holdDetection !== false
+          : existing.holdDetection !== false,
       watermarks: bounded.watermarks,
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
       stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
-      externalCursors: existing.externalCursors && typeof existing.externalCursors === 'object' ? existing.externalCursors : {},
+      externalCursors:
+        existing.externalCursors && typeof existing.externalCursors === 'object' ? existing.externalCursors : {},
       members: [...members.values()],
       ...(projectedRoomId || existing.roomId
         ? {
@@ -893,6 +907,8 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
 
     durable[name] = {
       log: room.log,
+      holdDetection: room.holdDetection !== false,
+      heldMessages: room.heldMessages || {},
       watermarks: room.watermarks || {},
       sessions: room.sessions || {},
       stranded: room.stranded || {},
@@ -1595,6 +1611,8 @@ export function updateGroupChat(
 
       durable[name] = {
         log: room.log,
+        holdDetection: room.holdDetection !== false,
+        heldMessages: room.heldMessages || {},
         watermarks: room.watermarks,
         sessions: room.sessions || {},
         sessionOwners: room.sessionOwners || {},
@@ -1647,12 +1665,26 @@ export interface GroupHoldStamp extends GroupHold {
 }
 
 /** The room record as the coordination engine handles it: `GroupChat` plus
- *  `turn`, the runtime-only descriptor of the member currently mid-turn. Like
- *  `running`/`epoch` it never persists, so it has no place in the durable
- *  shape. Holds carry the fuller live stamp. */
+ *  runtime-only turn/cancellation state. Like `running`/`epoch` these fields
+ *  never persist, so they have no place in the durable shape. Holds carry the
+ *  fuller live stamp. */
 export interface GroupChatRoom extends GroupChat {
   holds?: Record<string, GroupHoldStamp>
+  /** Epoch minted by the latest explicit Stop action. A turn dispatched under
+   *  an older epoch is cancelled even when sticky hold detection is disabled. */
+  stoppedEpoch?: number
   turn?: GroupMember | null
+}
+
+/** Toggle automatic text-to-hold detection for one room. Turning it off also
+ *  releases existing sticky holds; already-consumed messages remain queued
+ *  and are delivered on each member's next visible turn. */
+export function setGroupChatHoldDetection(group: string, enabled: boolean) {
+  return updateGroupChat(group, (room: GroupChatRoom) => ({
+    ...room,
+    holdDetection: enabled,
+    ...(enabled ? {} : { holds: {} })
+  }))
 }
 
 /** Set or clear a group chat's room picture (small data URL, normalized by

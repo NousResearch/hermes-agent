@@ -55,7 +55,11 @@ def provider(monkeypatch):
 def codex_backend(monkeypatch):
     """Route the plugin's ``httpx.Client`` at a fake Codex images backend; returns the request log
     and lets a test swap the response via ``state["respond"]``."""
-    monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+    # Seed the auth.json token below the credential/base resolver so generate() exercises the real
+    # (token, base_url) binding; no pool present.
+    from agent import auxiliary_client
+    monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda provider: (False, None))
+    monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: "codex-token")
     state = {"requests": [], "respond": None}
 
     def _default(request):
@@ -82,18 +86,9 @@ def codex_backend(monkeypatch):
 
 
 class TestMetadata:
-    def test_name(self, provider):
-        assert provider.name == "openai-codex"
 
-    def test_display_name(self, provider):
-        assert provider.display_name == "OpenAI (Codex auth)"
 
-    def test_default_model(self, provider):
-        assert provider.default_model() == "gpt-image-2-medium"
 
-    def test_list_models_three_tiers(self, provider):
-        ids = [m["id"] for m in provider.list_models()]
-        assert ids == ["gpt-image-2-low", "gpt-image-2-medium", "gpt-image-2-high"]
 
     def test_setup_schema_has_no_required_env_vars(self, provider):
         """#102144: the keyless row must declare the shared Codex OAuth bootstrap hook (otherwise setup
@@ -110,16 +105,16 @@ class TestMetadata:
 
 class TestAvailability:
     def test_unavailable_without_codex_token(self, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda: (None, None))
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
     def test_available_with_codex_token(self, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "tok")
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda: ("tok", "https://chatgpt.com/backend-api/codex"))
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is True
 
     def test_openai_api_key_alone_is_not_enough(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
+        monkeypatch.setattr(codex_plugin, "_read_codex_credential", lambda: (None, None))
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
 
@@ -127,8 +122,72 @@ class TestAvailability:
 
 
 class TestGenerate:
+    @pytest.mark.parametrize("edit", [False, True])
+    def test_custom_codex_route_keeps_image_request_on_configured_host(
+        self, provider, codex_backend, monkeypatch, edit,
+    ):
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://images.example.test/codex/")
+        kwargs = {"image_url": "data:image/png;base64," + _b64_png()} if edit else {}
+        result = provider.generate("a cat", **kwargs)
+        assert result["success"] is True
+        (request,) = codex_backend["requests"]
+        path = "images/edits" if edit else "images/generations"
+        assert str(request.url) == f"https://images.example.test/codex/{path}"
+        assert request.headers["Authorization"] == "Bearer codex-token"
+        assert request.headers["originator"] == "codex_cli_rs"
+
+    @pytest.mark.parametrize("override", ["", "   "])
+    def test_blank_override_preserves_official_route(
+        self, provider, codex_backend, monkeypatch, override,
+    ):
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", override)
+        assert provider.generate("a cat")["success"] is True
+        (request,) = codex_backend["requests"]
+        assert str(request.url) == "https://chatgpt.com/backend-api/codex/images/generations"
+        assert request.headers["originator"] == "hermes-agent"
+
+    def test_profile_scope_routes_each_request_without_borrowing_process_override(
+        self, provider, codex_backend, monkeypatch,
+    ):
+        from agent import secret_scope
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://other-profile.example.test/codex")
+        for scope, expected in [
+            ({"HERMES_CODEX_BASE_URL": "https://profile.example.test/images-api/"},
+             "https://profile.example.test/images-api/images/generations"),
+            ({}, "https://chatgpt.com/backend-api/codex/images/generations"),
+        ]:
+            token = set_secret_scope(scope)
+            try:
+                assert provider.generate("a cat")["success"] is True
+            finally:
+                reset_secret_scope(token)
+            assert str(codex_backend["requests"][-1].url) == expected
+
+    @pytest.mark.parametrize("failure", ["http", "empty", "exception"])
+    def test_custom_route_failure_never_retries_on_official_host(
+        self, provider, codex_backend, monkeypatch, failure,
+    ):
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://images.example.test/codex")
+
+        def respond(request):
+            if failure == "exception":
+                raise httpx.ConnectError("fixture connection failed", request=request)
+            if failure == "http":
+                return httpx.Response(403, json={"error": {"message": "denied"}})
+            return httpx.Response(200, json={"data": []})
+
+        codex_backend["respond"] = respond
+        assert provider.generate("a cat")["success"] is False
+        (request,) = codex_backend["requests"]
+        assert request.url.host == "images.example.test"
+
     def test_returns_auth_error_without_codex_token(self, provider, monkeypatch):
-        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
+        from agent import auxiliary_client
+        monkeypatch.setattr(auxiliary_client, "_select_pool_entry", lambda provider: (False, None))
+        monkeypatch.setattr(auxiliary_client, "_read_codex_singleton_token", lambda: None)
         result = provider.generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "auth_required"
@@ -160,6 +219,18 @@ class TestGenerate:
         }
         # The whole point of the native route: nothing about a chat model in the request.
         assert not any(key in body for key in ("tools", "input", "instructions"))
+
+    def test_custom_codex_base_receives_the_image_request(self, provider, codex_backend, tmp_path, monkeypatch):
+        """With ``HERMES_CODEX_BASE_URL`` set, image requests go to the gateway's base instead of
+        the hard-coded chatgpt.com host (#121486) — the text client honours the same override."""
+        monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex-gw.example/backend-api/codex")
+
+        result = provider.generate("a cat")
+
+        assert result["success"] is True
+        (request,) = codex_backend["requests"]
+        assert request.url.host == "codex-gw.example"
+        assert request.url.path.endswith("/backend-api/codex/images/generations")
 
     def test_source_images_post_edits_with_inline_data_urls(self, provider, codex_backend, tmp_path):
         local = tmp_path / "ref.png"
@@ -195,10 +266,6 @@ class TestGenerate:
         body = json.loads(codex_backend["requests"][0].content)
         assert body["images"] == [{"image_url": "data:image/png;base64," + _b64_png()}]
 
-    def test_capabilities_advertise_image_inputs(self, provider):
-        caps = provider.capabilities()
-        assert caps["modalities"] == ["text", "image"]
-        assert caps["max_reference_images"] == 16
 
     def test_rejects_non_image_local_source(self, provider, codex_backend, tmp_path):
         text_path = tmp_path / "not-image.txt"

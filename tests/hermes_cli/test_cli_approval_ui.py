@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import cli as cli_module
+from agent.i18n import t
 from cli import HermesCLI
 
 
@@ -206,12 +207,12 @@ class TestCliApprovalUi:
         rendered = "".join(text for _style, text in fragments)
 
         # All four choices visible even with a huge command.
-        for label in ("Allow once", "Allow for this session",
-                      "Add to permanent allowlist", "Deny"):
+        for key in ("approval_once", "approval_session", "approval_always", "approval_deny"):
+            label = t(f"cli.tui.{key}")
             assert label in rendered, f"choice {label!r} missing"
 
         # Command got truncated with a marker.
-        assert "(command truncated" in rendered
+        assert t("cli.tui.approval_command_truncated") in rendered
 
     def test_background_task_registers_thread_local_approval_callbacks(self):
         """Background /btw tasks must use the prompt_toolkit approval UI.
@@ -309,42 +310,6 @@ class TestModalPaintNow:
         # ...but _paint_now() always paints.
         cli._paint_now()
         assert cli._app.invalidate.called
-
-
-    def _drive(self, cli, target, state_attr):
-        result = {}
-
-        def _run():
-            result["value"] = target()
-
-        with patch.object(cli_module, "_cprint"):
-            thread = threading.Thread(target=_run, daemon=True)
-            thread.start()
-            deadline = time.time() + 2
-            while getattr(cli, state_attr) is None and time.time() < deadline:
-                time.sleep(0.01)
-            assert getattr(cli, state_attr) is not None
-            assert cli._app.invalidate.called, (
-                f"{state_attr} panel was not painted despite throttle + resize gates"
-            )
-            # Reset so we can prove the response-received teardown also repaints
-            # (the panel must clear at once, not be held by the throttle).
-            cli._app.invalidate.reset_mock()
-            getattr(cli, state_attr)["response_queue"].put(
-                "deny" if state_attr == "_approval_state" else
-                ("a" if state_attr == "_clarify_state" else "pw")
-            )
-            thread.join(timeout=2)
-            # clarify returns immediately on a response (no teardown repaint);
-            # approval and sudo repaint to tear the panel down.
-            if state_attr != "_clarify_state":
-                assert cli._app.invalidate.called, (
-                    f"{state_attr} panel was not repainted on teardown"
-                )
-        assert not thread.is_alive()
-        return result["value"]
-
-
 
 
     def test_secret_response_teardown_paints(self):

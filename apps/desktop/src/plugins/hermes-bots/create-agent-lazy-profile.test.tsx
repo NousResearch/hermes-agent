@@ -101,13 +101,17 @@ function withQueryClient(children: ReactNode) {
   )
 }
 
-async function renderDialog(hasCapabilitiesView: boolean) {
+async function renderDialog(hasCapabilitiesView: boolean, onConfigureModel?: (bot: RosterRow) => void) {
   mocks.hasCapabilitiesView.value = hasCapabilitiesView
   vi.resetModules()
 
   const { CreateAgentDialog } = await import('./create-dialog')
 
-  const view = render(withQueryClient(<CreateAgentDialog onClose={() => undefined} open roster={roster} />))
+  const view = render(
+    withQueryClient(
+      <CreateAgentDialog onClose={() => undefined} onConfigureModel={onConfigureModel} open roster={roster} />
+    )
+  )
 
   fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
   fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
@@ -256,6 +260,8 @@ describe('materializing the draft profile', () => {
       'default'
     ])
     fireEvent.click(screen.getByRole('option', { name: /Fresh profile/ }))
+    // Shared keys live on the TARGET machine, and the label says which.
+    screen.getByText('Share keys & accounts with the default profile on Studio')
 
     fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
 
@@ -286,6 +292,75 @@ describe('materializing the draft profile', () => {
         profile: 'inbox-triage'
       })
     )
+  })
+})
+
+describe('provider readiness before the intro turn', () => {
+  const notReady = { error: 'No usable credentials found for openrouter.', ok: false }
+
+  it('keeps the bot, skips the intro, and offers model setup when its provider is not ready', async () => {
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) =>
+      method === 'setup.runtime_check' ? notReady : base(method, params)
+    )
+    const onConfigureModel = vi.fn()
+
+    await renderDialog(true, onConfigureModel)
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: false }))
+    expect(mocks.request).toHaveBeenCalledWith('setup.runtime_check', { profile: 'inbox-triage' })
+    expect(createCalls()).toHaveLength(1)
+
+    const toast = mocks.notify.mock.calls.at(-1)![0]
+
+    expect(toast).toMatchObject({
+      detail: notReady.error,
+      kind: 'warning',
+      title: 'Bot "Inbox Triage" created'
+    })
+    toast.action.onClick()
+    expect(onConfigureModel).toHaveBeenCalledWith(expect.objectContaining({ name: 'inbox-triage' }))
+  })
+
+  it('runs the intro when the provider check passes', async () => {
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) =>
+      method === 'setup.runtime_check' ? { ok: true } : base(method, params)
+    )
+
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    expect(mocks.notify).toHaveBeenLastCalledWith({ kind: 'success', message: 'Bot "Inbox Triage" created' })
+  })
+
+  it('checks a remote bot on its own machine and warns without an editor shortcut', async () => {
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+    mocks.requestProfile.mockImplementation(async () => notReady)
+
+    await renderDialog(true, vi.fn())
+    await screen.findByText('Create on')
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() =>
+      expect(mocks.notify).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: 'warning', title: 'Bot "Inbox Triage" created on Studio' })
+      )
+    )
+    expect(mocks.requestProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'studio' }),
+      'setup.runtime_check',
+      { profile: 'inbox-triage' }
+    )
+    expect(mocks.notify.mock.calls.at(-1)![0].action).toBeUndefined()
+    expect(mocks.request).not.toHaveBeenCalledWith('setup.runtime_check', expect.anything())
   })
 })
 

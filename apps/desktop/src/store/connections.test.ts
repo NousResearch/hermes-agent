@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import type { DesktopConnectionsRegistry } from '@/global'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
 
 import { deferred } from '../test/deferred'
 
@@ -150,7 +151,11 @@ beforeEach(() => {
   api.mockResolvedValue({ profiles: [] })
   setApiRequestConnection(null)
   setApiRequestProfile(null)
-  vi.stubGlobal('window', { hermesDesktop: { api, connections: { list, setLastUsed } }, localStorage, location: window.location })
+  vi.stubGlobal('window', {
+    hermesDesktop: { api, connections: { list, setLastUsed } },
+    localStorage,
+    location: window.location
+  })
 })
 
 afterEach(() => vi.unstubAllGlobals())
@@ -162,6 +167,24 @@ describe('connection registry cache', () => {
     expect(list).toHaveBeenCalledTimes(1)
     expect($connectionsRegistry.get()).toEqual(registry)
     expect($activeConnectionId.get()).toBeNull()
+
+    // A stuck IPC read must release the lifecycle's retry loop and preserve
+    // the last good cache, even if the timed-out snapshot eventually arrives.
+    vi.useFakeTimers()
+    const stuck = deferred<DesktopConnectionsRegistry>()
+    list.mockImplementationOnce(() => stuck.promise)
+
+    try {
+      const refresh = refreshConnectionsRegistry()
+      const rejected = expect(refresh).rejects.toThrow('Timed out reading the connection registry')
+      await vi.advanceTimersByTimeAsync(5_000)
+      await rejected
+      stuck.resolve({ ...registry, connections: [] })
+      await Promise.resolve()
+      expect($connectionsRegistry.get()).toEqual(registry)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('restores the last-used source once when that launch mode is enabled', async () => {
@@ -183,6 +206,24 @@ describe('connection registry cache', () => {
     await initializeConnectionsRegistry()
 
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
+  })
+
+  it('selects the registry primary on boot when an update left an unqualified local descriptor', async () => {
+    // Post-update boot can publish a local descriptor with no registry id
+    // while connections.json still says launchMode=primary and the primary is
+    // SSH. That live local must not block selecting the registered primary.
+    list.mockResolvedValueOnce({
+      ...registry,
+      lastUsed: 'local',
+      launchMode: 'primary',
+      primary: 'homelab'
+    })
+    $connection.set({ mode: 'local' })
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
   })
 
   it('restores a remote registry primary through its exact connection id', async () => {
@@ -858,7 +899,7 @@ describe('selectConnection', () => {
     expect($showAllProfiles.get()).toBe(true)
   })
 
-  it('boot restore proceeds after the descriptor wait deadline (bounded wait)', async () => {
+  it('boot restore proceeds after the descriptor wait deadline (bounded wait)', { timeout: 30_000 }, async () => {
     // A primary that never publishes (spawn failure, dead SSH target) must
     // not strand the registry restore forever: after the deadline the restore
     // runs exactly as it did before the wait existed.
@@ -873,7 +914,7 @@ describe('selectConnection', () => {
       expect(ensureGatewayAgent).not.toHaveBeenCalled()
 
       // Descriptor never arrives; deadline elapses.
-      await vi.advanceTimersByTimeAsync(60_000)
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS + 15_000)
       await restoring
 
       expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())

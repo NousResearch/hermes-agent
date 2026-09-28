@@ -6,9 +6,23 @@ from time import time as wall_time
 from typing import Any, MutableMapping, Optional, TypeVar
 
 
-# These fields describe Hermes' durable record, not provider-visible message
-# content. They must not influence context-pressure decisions.
-PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset({"timestamp"})
+# These fields describe Hermes' durable record and timeline display, not
+# provider-visible message content. The request builder strips them from every
+# outgoing copy and the token estimator ignores them: one set, so an estimate
+# never prices bytes the provider never receives (an edit's inline_diff in
+# display_metadata is ~9KB and would trigger premature compaction).
+# Transcript-repair bookkeeping riding on batch rows / live dicts (agent/transcript_repair.py): the
+# stored-row CAS digest and the durable row adopted onto the live dict. Never transcript payload.
+DB_ROW_SNAPSHOT = "_db_row_snapshot"
+CANONICAL_ROW = "_canonical_row"
+REPAIR_BOOKKEEPING_FIELDS = frozenset({DB_ROW_SNAPSHOT, CANONICAL_ROW})
+# Unanswered text a merged user row held before the current turn was absorbed
+# (agent_runtime_helpers._merge_consecutive_users); the persist override keeps it.
+# It repeats the row's own content, so pricing it would double the estimate.
+MERGED_TURN_PREFIX = "_merged_turn_prefix"
+PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
+    {"timestamp", "display_kind", "display_metadata", "_row_id", MERGED_TURN_PREFIX}
+) | REPAIR_BOOKKEEPING_FIELDS
 
 _Message = TypeVar("_Message", bound=MutableMapping[str, Any])
 

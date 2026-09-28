@@ -295,7 +295,8 @@ def fire_overdue_jobs(
         return 0
 
     from cron.jobs import (
-        ONESHOT_GRACE_SECONDS, _ensure_aware, _hermes_now, is_job_runnable, load_jobs,
+        ONESHOT_GRACE_SECONDS, _elapsed_seconds, _ensure_aware, _hermes_now,
+        is_job_runnable, load_jobs,
     )
 
     if now is None:
@@ -312,7 +313,7 @@ def fire_overdue_jobs(
             due_dt = _ensure_aware(datetime.fromisoformat(next_run_at))
         except (ValueError, TypeError):
             continue
-        overdue_seconds = (now - due_dt).total_seconds()
+        overdue_seconds = _elapsed_seconds(now, due_dt)
         if overdue_seconds < grace_minutes * 60:
             continue
         job_id = str(job.get("id") or "")
@@ -418,6 +419,8 @@ class InProcessCronScheduler(CronScheduler):
         from cron.scheduler import CronTickYielded
         from cron.scheduler import tick as cron_tick
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
+        from cron.scheduler_ownership import register_ticked_homes
+        from hermes_constants import get_process_hermes_home
 
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
 
@@ -434,6 +437,9 @@ class InProcessCronScheduler(CronScheduler):
                 default_profile=default_profile, profile_gate=profile_gate,
             )
             return
+
+        # Single-profile ticker: the launch home is the only home this process owns cron for.
+        register_ticked_homes([get_process_hermes_home()])
 
         # Startup recovery and the initial heartbeat run before the guarded loop; a broken
         # store here must not take the whole ticker thread down (#111010) — the loop's own
@@ -515,8 +521,10 @@ class InProcessCronScheduler(CronScheduler):
             SharedRouteAdapters, _primary_profile_routes_for_current_home,
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
+        from cron.scheduler_ownership import register_ticked_homes
 
         initial_homes = _existing_profile_homes(profile_homes)
+        register_ticked_homes([_profile_entry(entry)[1] for entry in initial_homes])
         logger.info(
             "Multiplex cron scheduler started for %d profile(s): %s%s",
             len(initial_homes),
@@ -573,6 +581,10 @@ class InProcessCronScheduler(CronScheduler):
                 if profile_gate is not None:
                     enumerated = [(name, home) for name, home in enumerated if profile_gate(name, home)]
                 cycle_homes = enumerated
+                # Republish the owned set BEFORE any tick: the per-profile yield gate asks
+                # "do I own cron for this home?" and a profile added or gated out this cycle
+                # must be reflected in that answer, not one cycle late.
+                register_ticked_homes([home for _name, home in cycle_homes])
             except BaseException as e:
                 logger.error("Cron profile enumeration error: %s", e, exc_info=True)
                 _tick_error = f"{type(e).__name__}: {e}"
@@ -637,26 +649,3 @@ class InProcessCronScheduler(CronScheduler):
                 # burst-firing zero-length sleep cycles (#114467).
                 next_tick = now + wait_for
             stop_event.wait(max(0.0, next_tick - now))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def provider_supports_fire_cancel(provider: Any) -> bool:
-    """Return whether ``fire_claimed`` accepts a ``cancel_event`` kwarg."""
-    try:
-        parameters = inspect.signature(provider.fire_claimed).parameters.values()
-    except (TypeError, ValueError):
-        return False
-    return any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        or (
-            parameter.name == "cancel_event"
-            and parameter.kind
-            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-        )
-        for parameter in parameters
-    )
-# ---- END PLUGIN-COMPAT ----

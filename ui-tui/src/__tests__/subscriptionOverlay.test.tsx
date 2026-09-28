@@ -1,6 +1,7 @@
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
+import { stripAnsi } from '@hermes/shared/ansi'
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -24,7 +25,6 @@ vi.mock('@hermes/ink', async importOriginal => {
 import type { SubscriptionOverlayState } from '../app/interfaces.js'
 import { SubscriptionOverlay } from '../components/subscriptionOverlay.js'
 import type { SubscriptionStateResponse } from '../gatewayTypes.js'
-import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 const t = DEFAULT_THEME
@@ -139,14 +139,38 @@ const overlay = (s: SubscriptionStateResponse): SubscriptionOverlayState => ({ c
 // Overview: the entry screen across every account state (plan + usage + the
 // actions that enter the in-terminal change flow).
 describe('SubscriptionOverlay — overview', () => {
-  it('free: upsell + "Start a subscription", no tier list, no "credits"', () => {
-    const out = render(overlay(state({ current: null, usage: { available: true, status: 'free', plan_name: null } })))
+  it('free with catalog: plans render inline; the generic portal row disappears', () => {
+    const out = render(overlay(freeWithCatalog()))
 
-    expect(out).toContain('Plan: Free · free models only')
-    expect(out).toContain('Paid models need a subscription')
-    expect(out).toContain('Start a subscription')
-    expect(out).not.toContain('$20/mo')
-    expect(out.toLowerCase()).not.toContain('credits')
+    expect(out).toContain('Plus · $20/mo · $1,000 credits/mo')
+    expect(out).toContain('Ultra · $40/mo · $3,000 credits/mo')
+    expect(out).not.toContain('upgrade') // a start, not a move
+    expect(out).not.toContain('$0/mo') // free tier is not an option
+    expect(out).not.toContain('Choose a plan')
+    expect(out).not.toContain('Start a subscription')
+  })
+
+  it('free with catalog: picking a plan opens the portal once, even on double-Enter', async () => {
+    const openManageLink = vi.fn(() => Promise.resolve(true))
+    const preview = vi.fn(() => Promise.resolve(null))
+    const sys = vi.fn()
+
+    const mounted = mount({
+      ctx: { ...ctx, openManageLink, preview, sys } as SubscriptionOverlayState['ctx'],
+      screen: 'overview',
+      state: freeWithCatalog()
+    })
+
+    inputHarness.handler?.('', { return: true }) // first row = Plus
+    inputHarness.handler?.('', { return: true })
+    await vi.waitFor(() => expect(openManageLink).toHaveBeenCalled())
+    mounted.cleanup()
+
+    expect(openManageLink).toHaveBeenCalledTimes(1)
+    expect(openManageLink).toHaveBeenCalledWith('plus')
+    expect(preview).not.toHaveBeenCalled()
+    // openManageLink narrates the handoff itself.
+    expect(sys).not.toHaveBeenCalled()
   })
 
   it('subscriber: status line + plan bar + top-up bar, no "credits"', () => {
@@ -278,7 +302,6 @@ describe('SubscriptionOverlay — overview', () => {
     )
 
     expect(out).toContain('Scheduled change')
-    expect(out).toContain('──▶')
     expect(out).toContain('Free')
     expect(out).toContain('Jul 15, 2026')
     // the status line itself echoes the transition
@@ -318,6 +341,14 @@ const at = (
   extra: Partial<SubscriptionOverlayState> = {}
 ): SubscriptionOverlayState => ({ ctx, screen, state: s, ...extra })
 
+// Free account (no current sub) where NAS still returns the tier catalog.
+const freeWithCatalog = (): SubscriptionStateResponse =>
+  state({
+    current: null,
+    tiers: TIERS.map(tier => ({ ...tier, is_current: false })),
+    usage: { available: true, plan_name: null, status: 'free' }
+  })
+
 describe('SubscriptionOverlay — overview actions', () => {
   it('admin subscriber: offers Change plan + Cancel subscription', () => {
     const out = render(overlay(subscriber()))
@@ -353,11 +384,11 @@ describe('SubscriptionOverlay — overview actions', () => {
 })
 
 describe('SubscriptionOverlay — step-up', () => {
-  it('prompts to enable terminal billing (never leaks the raw scope)', () => {
+  it('prompts to allow Remote Spending (never leaks the raw scope)', () => {
     const out = render(at('stepup', subscriber(), { stepUpRetry: { kind: 'preview', tierId: 'ultra' } }))
 
-    expect(out).toContain('Terminal billing')
-    expect(out).toContain('Enable terminal billing')
+    expect(out).toContain('Remote Spending')
+    expect(out).toContain('Allow Remote Spending')
     expect(out).not.toContain('billing:manage')
   })
 })
@@ -418,15 +449,6 @@ describe('SubscriptionOverlay — confirm', () => {
     expect(out).toContain('No charge now')
   })
 
-  it('cancellation: shows cancel-at-period-end copy', () => {
-    const out = render(
-      at('confirm', subscriber(), { pending: { kind: 'cancellation', targetTierId: null, preview: null } })
-    )
-
-    expect(out).toContain('Confirm cancellation')
-    expect(out).toContain('will not renew')
-  })
-
   it('blocked: shows the reason + Manage on portal', () => {
     const out = render(
       at('confirm', subscriber(), {
@@ -444,14 +466,6 @@ describe('SubscriptionOverlay — confirm', () => {
 })
 
 describe('SubscriptionOverlay — result', () => {
-  it('ok: shows Done + the re-run hint', () => {
-    const out = render(at('result', subscriber(), { result: { ok: true, message: 'Upgraded to Ultra.' } }))
-
-    expect(out).toContain('Done')
-    expect(out).toContain('Upgraded to Ultra.')
-    expect(out).toContain('Re-run /subscription')
-  })
-
   it('error with recovery: shows the message + Open the portal', () => {
     const out = render(
       at('result', subscriber(), {

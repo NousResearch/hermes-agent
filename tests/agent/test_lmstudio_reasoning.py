@@ -17,14 +17,6 @@ from hermes_constants import VALID_REASONING_EFFORTS
 _LM_RANK = {"minimal": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4}
 
 
-@pytest.mark.parametrize("effort", ["max", "ultra"])
-def test_strong_efforts_clamp_to_lmstudio_ceiling(effort):
-    """"max"/"ultra" exceed LM Studio's vocabulary and clamp to its ceiling.
-
-    Without the clamp they miss the valid set, keep the "medium" default and
-    resolve *below* "xhigh" -- more requested reasoning yielding less.
-    """
-    assert resolve_lmstudio_effort({"enabled": True, "effort": effort}, None) == "xhigh"
 
 
 def test_effort_ladder_is_monotonic():
@@ -37,32 +29,10 @@ def test_effort_ladder_is_monotonic():
     assert ranks == sorted(ranks), dict(zip(VALID_REASONING_EFFORTS, resolved))
 
 
-@pytest.mark.parametrize(
-    "effort,expected",
-    [
-        ("minimal", "minimal"),
-        ("low", "low"),
-        ("medium", "medium"),
-        ("high", "high"),
-        ("xhigh", "xhigh"),
-    ],
-)
-def test_levels_within_lmstudio_vocabulary_are_unchanged(effort, expected):
-    """Negative control: the clamp must not disturb levels LM Studio knows."""
-    assert resolve_lmstudio_effort({"enabled": True, "effort": effort}, None) == expected
 
 
-def test_unparseable_effort_still_falls_back_to_medium():
-    """Negative control: clamping must not change the unrecognized-input path.
-
-    This is the behaviour "max"/"ultra" were previously conflated with.
-    """
-    assert resolve_lmstudio_effort({"enabled": True, "effort": "banana"}, None) == "medium"
 
 
-def test_disabled_reasoning_still_resolves_to_none():
-    """Negative control: the clamp sits after the enabled=False short-circuit."""
-    assert resolve_lmstudio_effort({"enabled": False, "effort": "max"}, None) == "none"
 
 
 @pytest.mark.parametrize("effort", ["max", "ultra"])

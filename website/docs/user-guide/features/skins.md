@@ -56,7 +56,7 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `banner_dim` | Muted text in the banner (separators, secondary labels) | `#B8860B` (dark goldenrod) |
 | `banner_text` | Body text in the banner (tool names, skill names) | `#FFF8DC` (cornsilk) |
 | `ui_accent` | General UI accent color (highlights, active elements) | `#FFBF00` |
-| `ui_label` | UI labels and tags | `#4dd0e1` (teal) |
+| `ui_label` | UI labels and tags | `#DAA520` (goldenrod) |
 | `ui_ok` | Success indicators (checkmarks, completion) | `#4caf50` (green) |
 | `ui_error` | Error indicators (failures, blocked) | `#ef5350` (red) |
 | `ui_warn` | Warning indicators (caution, approval prompts) | `#ffa726` (orange) |
@@ -67,7 +67,7 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `session_border` | Session ID dim border color | `#8B8682` |
 | `status_bar_bg` | Background color for the TUI status / usage bar | `#1a1a2e` |
 | `voice_status_bg` | Background color for the voice-mode status badge | `#1a1a2e` |
-| `selection_bg` | Background color for the TUI mouse-selection highlighter. Falls back to `completion_menu_current_bg` when unset. | `#333355` |
+| `selection_bg` | Background color for the TUI mouse-selection highlighter. Falls back to `completion_menu_current_bg` when unset. | `#3a3a55` |
 | `completion_menu_bg` | Background color for the completion menu list | `#1a1a2e` |
 | `completion_menu_current_bg` | Background color for the active completion row | `#333355` |
 | `completion_menu_meta_bg` | Background color for the completion meta column | `#1a1a2e` |
@@ -94,8 +94,8 @@ Text strings used throughout the CLI interface.
 |-----|-------------|---------|
 | `agent_name` | Name shown in banner title and status display | `Hermes Agent` |
 | `welcome` | Welcome message shown at CLI startup | `Welcome to Hermes Agent! Type your message or /help for commands.` |
-| `goodbye` | Message shown on exit | `Goodbye! ⚕` |
-| `response_label` | Label on the response box header | ` ⚕ Hermes ` |
+| `goodbye` | Message shown on exit | `Goodbye! ☤` |
+| `response_label` | Label on the response box header | ` ☤ Hermes ` |
 | `prompt_symbol` | Symbol before the user input prompt (bare token, renderers add a trailing space) | `❯` |
 | `help_header` | Header text for the `/help` command output | `(^_^)? Available Commands` |
 
@@ -107,6 +107,7 @@ Text strings used throughout the CLI interface.
 | `tool_emojis` | dict | Per-tool emoji overrides for spinners and progress (`{tool_name: emoji}`) | `{}` |
 | `banner_logo` | string | Rich-markup ASCII art logo (replaces the default HERMES_AGENT banner) | `""` |
 | `banner_hero` | string | Rich-markup hero art (replaces the default caduceus art) | `""` |
+| `customCSS` | string | Raw CSS injected into the desktop app and web dashboard while the skin is active (GUI surfaces only; ignored by the CLI/TUI). Capped at 32 KiB. | `""` |
 
 ## Custom skins
 
@@ -212,6 +213,24 @@ branding:
 tool_prefix: "▏"
 ```
 
+### Raw `customCSS`
+
+For selector-level styling that colors can't express — font sizes, spacing, pseudo-elements, animations — drop raw CSS into `customCSS`. The desktop app and web dashboard inject it as a `<style>` tag while the skin is active and remove it when you switch to a skin without it.
+
+```yaml
+name: myskin
+
+colors:
+  background: "#1a1030"
+  ui_accent: "#ff5fd2"
+
+customCSS: |
+  .chat-input { font-size: 16px; }
+  .status-bar { background: rgba(0, 0, 0, 0.5); }
+```
+
+The field is capped at 32 KiB and applies to GUI surfaces only — the CLI and TUI ignore it. Because it lives in your skin YAML under `~/.hermes/skins/`, it survives app updates (no more hacking `app.asar`).
+
 ## Hermes Mod — Visual Skin Editor
 
 [Hermes Mod](https://github.com/cocktailpeanut/hermes-mod) is a community-built web UI for creating and managing skins visually. Instead of writing YAML by hand, you get a point-and-click editor with live preview.
@@ -259,7 +278,7 @@ npm start
 6. Click **Save** to write the skin YAML to `~/.hermes/skins/`.
 7. Click **Activate** to set it as the current skin (updates `display.skin` in `config.yaml`).
 
-Hermes Mod respects the `HERMES_HOME` environment variable, so it works with [profiles](/user-guide/profiles) too.
+Hermes Mod respects the `HERMES_HOME` environment variable, so it works with [profiles](../profiles.md) too.
 
 ## Operational notes
 

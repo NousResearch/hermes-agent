@@ -16,7 +16,10 @@ The client entrypoint is `src/entry.tsx`. It exits early if `stdin` is not a TTY
 python -m tui_gateway.entry
 ```
 
-Interpreter resolution order is: `HERMES_PYTHON` → `PYTHON` → `$VIRTUAL_ENV/bin/python` → `./.venv/bin/python` → `./venv/bin/python` → `python3` (or `python` on Windows).
+Interpreter resolution uses `HERMES_PYTHON`, supplied by the CLI launcher or
+Nix wrapper. Direct development runs without that value use `python3` on PATH,
+or `python` on Windows. The TUI does not search `PYTHON`, `VIRTUAL_ENV`, or
+checkout venv directories for a different interpreter.
 
 The transport is newline-delimited JSON-RPC over stdio:
 
@@ -66,6 +69,26 @@ npm test         # single run
 npm run test:watch
 ```
 
+## Live agents
+
+The dock above the composer appears automatically while children are running. It shows
+actual live-child counts, task names, elapsed time, and the latest activity. Its row budget
+shrinks on short terminals; finished work remains in the existing `/agents` / `/replay` history
+rather than permanently occupying composer space. Async completion units are not counted
+as extra agents.
+
+- **Ctrl+T** expands the roster without clearing your draft; **Esc** returns.
+- **↑/↓** selects an agent, **Enter** opens its details (tools, output, files, usage).
+- **t** opens its bounded live transcript tail; **g/G** moves to top/bottom.
+- **e** opens a separate steering form. **Enter** queues guidance and **Esc** returns.
+  “Queued” means accepted for the next tool boundary, not confirmed delivery.
+- **x** requests that the selected child stop; **X** requests a subtree stop.
+- Existing sort/filter, spawn-pause, timeline, and replay controls remain available.
+
+The roster hydrates from the session-scoped `subagent.list` RPC alongside streamed events.
+Only an open tail view polls `subagent.tail`; steering uses the existing `subagent.steer` RPC.
+No model tool schema or prompt-caching behavior changes.
+
 ## App model
 
 `src/app.tsx` is the center of the UI. Heavy logic is split into `src/app/`:
@@ -96,7 +119,7 @@ npm run test:watch
 - `types.ts` — `SlashCommand` interface and `SlashRunCtx` execution context (gateway rpc, transcript helpers, session refs, stale-guard)
 - `registry.ts` — assembles `SLASH_COMMANDS` from all command files in registration order (core → billing → credits → session → ops → setup → debug) and exposes `findSlashCommand(name)` for case-insensitive lookup
 - `commands/core.ts` — general TUI commands
-- `commands/billing.ts` — `/billing`: manage Nous terminal billing — buy credits, auto-reload, limits
+- `commands/billing.ts` — `/billing`: manage Nous remote spending — buy credits, auto-reload, limits
 - `commands/credits.ts` — `/credits`
 - `commands/session.ts` — session and agent commands
 - `commands/ops.ts` — operations commands
@@ -209,13 +232,17 @@ Tool/status activity is shown in a live activity lane. Transcript rows stay focu
 
 ## Prompt flows
 
-The Python gateway can pause the main loop and request structured input:
+The Python gateway can pause the main loop and ask the client a question. These are JSON-RPC
+**requests from the server** (string id, answered with a response frame of the same id — see
+`createServerRequestHandler.ts`), not events:
 
-- `approval.request`: allow once, allow for session, allow always, or deny
-- `clarify.request`: pick from choices or type a custom answer
-- `sudo.request`: masked password entry
-- `secret.request`: masked value entry for a named env var
+- `approval`: allow once, allow for session, allow always, or deny → `{ choice }`
+- `clarify`: pick from choices or type a custom answer → `{ answer }` (batch: `{ answers }`)
+- `sudo`: masked password entry → `{ value }`
+- `secret`: masked value entry for a named env var → `{ value }`
 - `session.list`: used by `SessionPicker` for `/resume`
+
+A withdrawn question (timeout, interrupt) arrives as a `request.cancel` event carrying its id.
 
 These are stateful UI branches in `app.tsx`, not separate screens.
 
@@ -225,17 +252,17 @@ The following commands are handled directly by the TUI client. Unrecognized comm
 
 ### Core (`core.ts`)
 `/help`, `/quit` (alias `/exit`), `/update`, `/clear` (alias `/new`),
-`/compact`, `/copy`, `/paste`, `/details` (alias `/detail`),
+`/density`, `/copy`, `/paste`, `/details` (alias `/detail`),
 `/statusbar` (alias `/sb`), `/queue` (alias `/q`), `/logs`, `/history`,
 `/save`, `/undo`, `/retry`, `/steer`, `/mouse` (alias `/scroll`),
 `/status`, `/title`, `/fortune`, `/redraw`, `/terminal-setup`
 
 ### Billing (`billing.ts`)
-`/billing` — manage Nous terminal billing — buy credits, auto-reload, limits
+`/billing` — manage Nous remote spending — buy credits, auto-reload, limits
 
 ### Session (`session.ts`)
 `/model`, `/sessions` (aliases `/switch`, `/session`, `/resume`),
-`/background` (aliases `/bg`, `/btw`), `/image`, `/personality`,
+`/bg`, `/btw`, `/image`, `/personality`,
 `/compress`, `/branch` (alias `/fork`), `/voice`, `/skin`,
 `/indicator`, `/yolo`, `/reasoning`, `/fast`, `/busy`, `/verbose`, `/usage`
 
@@ -284,12 +311,7 @@ Primary event types the client handles today:
 | `tool.generating`          | `{ name }`                                                                  |
 | `tool.progress`            | `{ name, preview }`                                                         |
 | `tool.complete`            | `{ tool_id, name, error?, summary?, duration_s?, inline_diff?, todos? }`    |
-| `clarify.request`          | `{ question, choices?, request_id }`                                        |
-| `approval.request`         | `{ command, description, allow_permanent? }`                                |
-| `sudo.request`             | `{ request_id }`                                                            |
-| `sudo.expire`              | `{ request_id }` clears a timed-out sudo prompt                             |
-| `secret.request`           | `{ prompt, env_var, request_id }`                                           |
-| `secret.expire`            | `{ request_id }` clears a timed-out secret prompt                           |
+| `request.cancel`           | `{ id, method, reason }` clears the withdrawn server→client request         |
 | `background.complete`      | `{ task_id, text }`                                                         |
 | `billing.step_up.verification` | `{ verification_url, user_code }`                                       |
 | `review.summary`           | `{ text }`                                                                  |
@@ -366,7 +388,7 @@ ui-tui/
         types.ts                    SlashCommand interface and SlashRunCtx execution context
         registry.ts                 SLASH_COMMANDS assembly and findSlashCommand lookup
         commands/
-          billing.ts                /billing — manage Nous terminal billing
+          billing.ts                /billing — manage Nous remote spending
           core.ts                   general TUI commands
           credits.ts                /credits
           debug.ts                  /heapdump, /mem
@@ -401,7 +423,7 @@ ui-tui/
       todoPanel.tsx              todo list panel
 
     config/
-      env.ts                     environment variable resolution and Termux/mouse defaults
+      env.ts                     environment variable resolution and mouse defaults
       limits.ts                  paste size, live-render and history limits
       timing.ts                  streaming batch and debounce timing constants
 
@@ -456,7 +478,7 @@ ui-tui/
       perfPane.tsx               FPS / render perf overlay pane
       platform.ts                platform-aware keybinding and SSH detection helpers
       precisionWheel.ts          high-precision scroll wheel with sticky-frame budget
-      prompt.ts                  composer prompt text helpers (Termux-safe)
+      prompt.ts                  composer prompt text helpers
       reasoning.ts               reasoning tag detection and split helpers
       rpc.ts                     JSON-RPC result and command dispatch helpers
       subagentTree.ts            subagent tree flattening and aggregate helpers
@@ -464,7 +486,6 @@ ui-tui/
       terminalModes.ts           terminal mode reset sequences (kitty, mouse, etc.)
       terminalParity.ts          VSCode-like terminal detection and hint helpers
       terminalSetup.ts           IDE keybinding config file install helpers
-      termux.ts                  Termux platform detection helpers
       text.ts                    text helpers, ANSI detection, tool trail builders
       todo.ts                    todo item tone and display helpers
       viewportStore.ts           viewport height nanostore via ScrollBoxHandle

@@ -62,6 +62,7 @@ except Exception as exc:  # pragma: no cover - dependency guard
     raise
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 _READY_RE = re.compile(r"HERMES_(?:DASHBOARD|BACKEND)_READY port=(\d+)")
 _STALL_LOG_RE = re.compile(r"event loop stalled|ws write slow \(loop stalled")
 
@@ -120,7 +121,7 @@ def seed_scratch_home(home: Path, *, isolation: str, heartbeat_secs: int, respaw
         "memory": {"enabled": False},
     }
     # config.yaml is the canonical config; write it directly.
-    import yaml  # provided by the runtime venv
+    import hermes_yaml as yaml
 
     (home / "config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=True), encoding="utf-8")
     # A stub .env so credential resolution doesn't spelunk the real home.
@@ -178,7 +179,7 @@ class ScratchDashboard:
         ]
         self.proc = subprocess.Popen(
             cmd, cwd=str(REPO_ROOT), env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1,
         )
         threading.Thread(target=self._drain, args=(self.proc.stdout,), name="dash-log", daemon=True).start()
         if not self._ready.wait(timeout=90.0):

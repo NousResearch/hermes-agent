@@ -49,6 +49,12 @@ class BaseLifecycleMixin:
             return
         event = args[0] if args else None
         if isinstance(event, MessageEvent):
+            if hook_name == "on_processing_complete":
+                completion = event._processing_state.pending_completion
+                if completion is not None:
+                    event._processing_state.pending_completion = None
+                    await completion.adapter._run_processing_hook(
+                        hook_name, completion.event, *args[1:], **kwargs)
             if hook_name == "on_processing_start":
                 event._processing_state.start()
             elif hook_name == "on_processing_complete":

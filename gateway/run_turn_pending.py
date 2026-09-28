@@ -25,7 +25,7 @@ class GatewayPendingDrainMixin:
 
 
     async def _run_agent_drain_pending(
-        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str],
+        self: "GatewayRunner", result: Any, adapter: Any, source: SessionSource, session_key: Optional[str],
         processing_event: Optional[MessageEvent] = None,
     ) -> Tuple[Any, Optional[str]]:
         """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
@@ -35,6 +35,10 @@ class GatewayPendingDrainMixin:
         from gateway.run import _dequeue_pending_event, _is_control_interrupt_message
         pending_event = None
         pending = None
+        pending_steer = result.get("pending_steer") if result else None
+        pending_input = None
+        if result and processing_event is not None:
+            pending_input = processing_event._processing_state.take_pending_input(pending_steer or "")
         if result and adapter and session_key:
             live_adapter = self._delivery_adapter_for(source)
             if (live_adapter is not None and live_adapter is not adapter
@@ -101,13 +105,19 @@ class GatewayPendingDrainMixin:
                 raise
 
         # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
-        if result and not pending and not pending_event and result.get("pending_steer"):
-            pending = result.get("pending_steer")
-            if processing_event is not None:
-                pending_input = processing_event._processing_state.take_pending_input()
-                if pending_input is not None:
-                    pending_event = dataclasses.replace(pending_input, text=pending, message_type=MessageType.TEXT)
-            logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
+        if pending_steer:
+            steer_event = (
+                dataclasses.replace(pending_input, text=pending_steer, message_type=MessageType.TEXT)
+                if pending_input is not None else None
+            )
+            if pending or pending_event:
+                if adapter and session_key:
+                    self._enqueue_fifo(
+                        session_key, steer_event or MessageEvent(text=pending_steer, source=source), adapter
+                    )
+            else:
+                pending_event, pending = steer_event, pending_steer
+                logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
 
         # Safety net: a pending slash command is never passed to the agent as user input.
         if pending and pending.strip().startswith("/"):

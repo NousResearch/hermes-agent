@@ -2051,7 +2051,9 @@ class GatewayTurnMixin(GatewayTurnExecutionMixin, GatewayTurnPreparationMixin, G
 
 
 
-    async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
+    async def _handle_message_with_agent(
+        self: "GatewayRunner", event, source, _quick_key: str, run_generation: int
+    ):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = log_inbound_reply_context(source, event.text, event)

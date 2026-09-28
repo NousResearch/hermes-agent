@@ -6,6 +6,23 @@ import sys
 
 import pytest
 
+def test_cancel_queued_delivery_is_durable_and_cannot_recall_claimed_turn(tmp_path):
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "first")
+    cancelled = mailbox.cancel_queued_delivery(tmp_path, queued["delivery_id"], reason="stopped")
+    assert cancelled["status"] == "cancelled" and cancelled["reason"] == "stopped"
+    assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+    assert mailbox.cancel_queued_delivery(tmp_path, queued["delivery_id"], reason="other") == cancelled
+    assert mailbox.read_delivery_result(tmp_path, queued["delivery_id"]) == cancelled
+
+    second = mailbox.deliver_to_live_owner(tmp_path, owner, "second")
+    claimed = mailbox.claim_pending_delivery(tmp_path, owner)
+    assert claimed["delivery_id"] == second["delivery_id"]
+    assert mailbox.cancel_queued_delivery(tmp_path, second["delivery_id"])["status"] == "claimed"
+
 @pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])
 def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
     from tools import bot_live_delivery as mailbox

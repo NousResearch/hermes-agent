@@ -292,6 +292,8 @@ async def test_a_peer_run_into_an_open_bot_chat_is_driven_by_its_owners_receipt(
             assert status["reason"] == expected[1] and "429" in status["error"]
         else:
             assert status["interrupted"] is True and status["completed"] is False
+            assert record["status"] == "cancelled"
+            assert record["reason"] == "peer_run_stopped_before_claim"
         assert run_id not in adapter._active_run_tasks, "the run retired like an executor-backed one"
     finally:
         lease.release()

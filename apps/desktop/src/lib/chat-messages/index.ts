@@ -15,7 +15,13 @@ export {
   textPart
 } from './parts'
 export type { UnspokenTurnSpeech } from './parts'
-export { branchGroupForUser, preserveLocalAssistantErrors, spliceOlderPreservedRows } from './reconciliation'
+export {
+  branchGroupForUser,
+  FALLBACK_SWITCH_NOTICE_ID_PREFIX,
+  preserveLocalAssistantErrors,
+  preserveLocalFallbackNotices,
+  spliceOlderPreservedRows
+} from './reconciliation'
 export {
   restorePendingBlockingToolCall,
   restorePendingClarifyToolCall,

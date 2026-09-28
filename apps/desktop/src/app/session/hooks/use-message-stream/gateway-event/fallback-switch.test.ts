@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { type ChatMessage, chatMessageText, preserveLocalFallbackNotices } from '@/lib/chat-messages'
+
 import { handleStatusEvent } from './status'
 import type { GatewayEventContext } from './types'
 
@@ -63,5 +65,39 @@ describe('desktop fallback switch', () => {
 
     expect(handleStatusEvent(ctx)).toBe(true)
     expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
+  // The injected row is renderer-only, so the post-turn transcript refresh —
+  // which rebuilds from the stored rows — is where it used to disappear. The
+  // id this handler stamps is the marker the preserve pass reads; if the two
+  // ever drift, the notice silently vanishes again (#126422).
+  it('stamps the marker the transcript refresh preserves', () => {
+    const notice =
+      '⚠️ Model fallback: wan2.7-image-pro via alibaba-token-plan unavailable (bad request); using qwen3.8-max via alibaba-token-plan.'
+
+    const { ctx, updateSessionState } = statusContext(notice)
+
+    expect(handleStatusEvent(ctx)).toBe(true)
+
+    const stored: ChatMessage[] = [
+      { id: 'row-5', parts: [{ text: 'go', type: 'text' }], role: 'user', rowId: 5 },
+      { id: 'row-6', parts: [{ text: 'done', type: 'text' }], role: 'assistant', rowId: 6 }
+    ]
+
+    const injected = updateSessionState.mock.results[0]?.value.messages[0] as ChatMessage
+
+    expect(chatMessageText(injected)).toContain('qwen3.8-max')
+
+    // What the renderer holds when the turn ends: the optimistic user row, the
+    // switch notice, and the still-unstored reply it announced.
+    const local: ChatMessage[] = [
+      stored[0],
+      injected,
+      { id: 'assistant-stream-1', parts: [], pending: true, role: 'assistant' }
+    ]
+
+    const refreshed = preserveLocalFallbackNotices(stored, local)
+
+    expect(refreshed.map(message => message.id)).toEqual(['row-5', injected.id, 'row-6'])
   })
 })

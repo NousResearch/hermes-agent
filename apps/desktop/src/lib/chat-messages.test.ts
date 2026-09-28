@@ -12,6 +12,7 @@ import {
   completeOpenTimelineParts,
   mergeFinalAssistantText,
   preserveLocalAssistantErrors,
+  preserveLocalFallbackNotices,
   reasoningPart,
   renderMediaTags,
   restorePendingClarifyToolCall,
@@ -777,6 +778,104 @@ describe('preserveLocalAssistantErrors', () => {
 
     expect(assistant?.error).toBe('OpenRouter 403')
     expect(assistant?.pending).toBe(false)
+  })
+})
+
+// The gateway announces a provider/model switch over `status.update` and never
+// stores it; the desktop injects it as a renderer-only row, so every post-turn
+// transcript refresh (which rebuilds from the stored rows) used to drop the one
+// line explaining why the reply came from a different model (#126422).
+describe('preserveLocalFallbackNotices', () => {
+  const user = (id: string, text: string, rowId?: number): ChatMessage => ({
+    id,
+    parts: [{ text, type: 'text' }],
+    role: 'user',
+    ...(rowId === undefined ? {} : { rowId })
+  })
+
+  const notice = (id = 'fallback-switch-1700000000000'): ChatMessage => ({
+    id,
+    parts: [{ text: '⚠️ Model fallback: using qwen3.8-max via alibaba-token-plan.', type: 'text' }],
+    role: 'system'
+  })
+
+  const reply = (id: string, rowId: number): ChatMessage => ({
+    id,
+    parts: [{ text: 'done', type: 'text' }],
+    role: 'assistant',
+    rowId
+  })
+
+  it('keeps the notice the refresh dropped, above the reply it announced', () => {
+    const currentMessages: ChatMessage[] = [user('user-1', 'go', 5), notice(), reply('assistant-stream-1', 6)]
+
+    const refreshed: ChatMessage[] = [user('row-5', 'go', 5), reply('row-6', 6)]
+
+    const merged = preserveLocalFallbackNotices(refreshed, currentMessages)
+
+    expect(merged.map(message => message.id)).toEqual(['row-5', 'fallback-switch-1700000000000', 'row-6'])
+  })
+
+  it('holds its position across a second refresh instead of stacking copies', () => {
+    const currentMessages: ChatMessage[] = [user('user-1', 'go', 5), notice(), reply('assistant-stream-1', 6)]
+
+    const once = preserveLocalFallbackNotices([user('row-5', 'go', 5), reply('row-6', 6)], currentMessages)
+
+    const twice = preserveLocalFallbackNotices([user('row-5', 'go', 5), reply('row-6', 6)], once)
+
+    expect(twice.map(message => message.id)).toEqual(once.map(message => message.id))
+  })
+
+  it('does not re-add a switch the stored transcript already carries', () => {
+    const stored = [user('row-5', 'go', 5), { ...notice('row-6'), rowId: 6 }]
+
+    const merged = preserveLocalFallbackNotices(stored, [user('user-1', 'go', 5), notice()])
+
+    expect(merged).toBe(stored)
+  })
+
+  it('does not re-add the notice under its own id either', () => {
+    const stored = [user('row-5', 'go', 5), notice()]
+
+    expect(preserveLocalFallbackNotices(stored, [user('user-1', 'go', 5), notice()])).toBe(stored)
+  })
+
+  it('leaves the sibling client-local notices the marker does not name alone', () => {
+    const approvalTimeout: ChatMessage = {
+      id: 'approval-timeout-srv-1',
+      parts: [{ text: 'The approval request timed out.', type: 'text' }],
+      role: 'system'
+    }
+
+    const compressComplete: ChatMessage = {
+      id: 'compress-complete-1700000000000',
+      parts: [{ text: 'Compression finished.', type: 'text' }],
+      role: 'system'
+    }
+
+    const currentMessages: ChatMessage[] = [
+      user('user-1', 'go', 5),
+      approvalTimeout,
+      compressComplete,
+      notice(),
+      reply('assistant-stream-1', 6)
+    ]
+
+    const merged = preserveLocalFallbackNotices([user('row-5', 'go', 5), reply('row-6', 6)], currentMessages)
+
+    expect(merged.map(message => message.id)).toEqual(['row-5', 'fallback-switch-1700000000000', 'row-6'])
+  })
+
+  it('returns the same array when the session has no local notice to keep', () => {
+    const refreshed = [user('row-5', 'go', 5), reply('row-6', 6)]
+
+    expect(preserveLocalFallbackNotices(refreshed, [user('user-1', 'go', 5)])).toBe(refreshed)
+  })
+
+  it('trails the transcript when no refreshed row anchors it', () => {
+    const merged = preserveLocalFallbackNotices([user('row-5', 'go', 5)], [notice()])
+
+    expect(merged.map(message => message.id)).toEqual(['row-5', 'fallback-switch-1700000000000'])
   })
 })
 

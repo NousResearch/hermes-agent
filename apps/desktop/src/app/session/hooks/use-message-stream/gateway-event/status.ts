@@ -1,7 +1,7 @@
 import { isSessionNotOwnedError } from '@/app/session/hooks/use-prompt-actions/utils'
 import { translateNow, TRANSLATIONS } from '@/i18n'
 import { getRuntimeI18nLocale } from '@/i18n/runtime'
-import { textPart } from '@/lib/chat-messages'
+import { FALLBACK_SWITCH_NOTICE_ID_PREFIX, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText } from '@/lib/chat-runtime'
 import type { ErrorSurface } from '@/lib/error-surface'
 import { errorCardText } from '@/lib/error-surface-copy'
@@ -124,6 +124,10 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       // A provider/model switch is durable: the TUI paints it on the status rail, but Desktop
       // used to swallow every non-compaction status.update, so the reply came from a different
       // model with no indication.
+      //
+      // The row is renderer-only — the switch is not in the session store — so it is stamped
+      // with FALLBACK_SWITCH_NOTICE_ID_PREFIX, which preserveLocalFallbackNotices reads to
+      // graft it back onto the post-turn transcript refresh instead of losing it there.
       const text = coerceGatewayText(payload?.text).trim()
 
       flushQueuedDeltas(sessionId)
@@ -132,7 +136,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
         messages: [
           ...state.messages,
           {
-            id: `fallback-switch-${occurredAt}`,
+            id: `${FALLBACK_SWITCH_NOTICE_ID_PREFIX}${occurredAt}`,
             role: 'system',
             parts: [textPart(text, occurredAt)],
             timestamp: occurredAt

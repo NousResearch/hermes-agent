@@ -507,6 +507,103 @@ export function preserveLocalAssistantErrors(
   return insertPreservedErrorRuns(merged, currentMessages, preserveIds)
 }
 
+/**
+ * Id prefix of the renderer-only provider/model fallback notice. The status
+ * gateway-event handler stamps rows with it (gateway-event/status.ts) and this
+ * module recognises them, so the marker lives here as the one source both
+ * sides read.
+ */
+export const FALLBACK_SWITCH_NOTICE_ID_PREFIX = 'fallback-switch-'
+
+const isFallbackSwitchNotice = (message: ChatMessage): boolean =>
+  message.role === 'system' && message.id.startsWith(FALLBACK_SWITCH_NOTICE_ID_PREFIX)
+
+/**
+ * Keep the client-local provider/model fallback notice across a transcript
+ * refresh (#126422). The notice lives only in the renderer: the gateway
+ * broadcasts the switch as a `status.update` status line (matching what the
+ * TUI paints on its status rail) and never writes it to the session store. A
+ * refresh rebuilds the transcript from the stored rows alone, so without this
+ * pass the user watches a reply arrive from a different model with the one
+ * line that explains why silently dropped. Mirrors
+ * preserveLocalPendingTurnMessages / preserveLocalAssistantErrors.
+ *
+ * Only rows carrying the fallback marker are in scope. The sibling
+ * client-local notices (`approval-timeout-*`, `compress-complete-*`, `btw-*`,
+ * `review-summary-*`, `background-complete-*`) are separate reports with their
+ * own ledger semantics and must not be affected by this pass.
+ *
+ * A switch the refreshed transcript already carries is left alone — same id,
+ * or the same system line (the store keeps its own `model_switch` marker), so
+ * a refresh that did include the switch is never painted twice. Placement
+ * follows local order: the notice goes after the last refreshed row it locally
+ * followed (a rowId that resolved into the page), i.e. above whatever the
+ * refresh appended after it; with no resolvable neighbour it trails the
+ * transcript, like the other preserved runs.
+ */
+export function preserveLocalFallbackNotices(
+  nextMessages: ChatMessage[],
+  previousMessages: ChatMessage[]
+): ChatMessage[] {
+  const notices = previousMessages.filter(isFallbackSwitchNotice)
+
+  if (!notices.length) {
+    return nextMessages
+  }
+
+  const indexByRowId = new Map<number, number>()
+
+  nextMessages.forEach((message, index) => {
+    if (message.rowId !== undefined && !indexByRowId.has(message.rowId)) {
+      indexByRowId.set(message.rowId, index)
+    }
+  })
+
+  const presentIds = new Set(nextMessages.map(message => message.id))
+
+  const presentSystemText = new Set(
+    nextMessages.filter(message => message.role === 'system').map(normalizedMessageText)
+  )
+
+  const afterIndex = new Map<number, ChatMessage[]>()
+  const trailing: ChatMessage[] = []
+
+  for (const notice of notices) {
+    if (presentIds.has(notice.id) || presentSystemText.has(normalizedMessageText(notice))) {
+      continue
+    }
+
+    // The nearest locally preceding row the refresh also knows names the spot:
+    // the notice sat directly under it, so it belongs directly above whatever
+    // the refresh placed next (the reply the switch announced).
+    let anchorIndex: number | undefined
+
+    for (let probe = previousMessages.indexOf(notice) - 1; probe >= 0; probe -= 1) {
+      const { rowId } = previousMessages[probe]
+
+      if (rowId !== undefined && indexByRowId.has(rowId)) {
+        anchorIndex = indexByRowId.get(rowId)
+
+        break
+      }
+    }
+
+    if (anchorIndex === undefined) {
+      trailing.push(notice)
+
+      continue
+    }
+
+    afterIndex.set(anchorIndex, [...(afterIndex.get(anchorIndex) ?? []), notice])
+  }
+
+  if (!afterIndex.size) {
+    return trailing.length ? [...nextMessages, ...trailing] : nextMessages
+  }
+
+  return [...nextMessages.flatMap((message, index) => [message, ...(afterIndex.get(index) ?? [])]), ...trailing]
+}
+
 export function branchGroupForUser(userMessage: ChatMessage): string {
   return `branch:${userMessage.id}`
 }

@@ -8,7 +8,13 @@ import {
 } from '@/app/chat/transcript-backfill'
 import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
-import { type ChatMessage, preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  preserveLocalAssistantErrors,
+  preserveLocalFallbackNotices,
+  sealOpenToolParts,
+  toChatMessages
+} from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { latestSessionTodos, latestSessionTodoSnapshot } from '@/lib/todos'
@@ -312,8 +318,13 @@ export async function reconcileTileTranscripts({
           // background refresh that lands mid-send would drop it and the
           // message would have to be retyped. Same composition order as
           // reconcileAuthoritativeChatMessages (use-session-actions/index.ts).
+          // The fallback-switch notice is renderer-only too, so it needs the
+          // same graft: the refresh rebuilds from the store and cannot know it.
           messages: preserveLocalAssistantErrors(
-            preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+            preserveLocalPendingTurnMessages(
+              preserveLocalFallbackNotices(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+              state.messages
+            ),
             state.messages
           )
         }),
@@ -394,9 +405,13 @@ export async function hydrateStoredSessionTranscript({
         runtimeSessionId,
         state => ({
           ...state,
-          // Keep backfilled pages, un-acked optimistic input and local errors.
+          // Keep backfilled pages, un-acked optimistic input, local errors and
+          // the renderer-only fallback notice (see the warm-refresh site above).
           messages: preserveLocalAssistantErrors(
-            preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+            preserveLocalPendingTurnMessages(
+              preserveLocalFallbackNotices(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+              state.messages
+            ),
             state.messages
           )
         }),
@@ -546,7 +561,10 @@ export async function reconcileActiveTranscript({
         // older pages "Show earlier" already backfilled instead of clobbering
         // them (see transcript-backfill).
         messages: preserveLocalAssistantErrors(
-          preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+          preserveLocalPendingTurnMessages(
+            preserveLocalFallbackNotices(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+            state.messages
+          ),
           state.messages
         )
       }),

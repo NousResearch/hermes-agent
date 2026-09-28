@@ -235,13 +235,30 @@ class TestSlackNativeSlashes:
         )
 
 
-    def test_via_hermes_only_never_return_as_native_slashes(self):
+    def test_via_hermes_only_never_return_as_native_slashes(self, monkeypatch):
         """At zero headroom the ceiling assertion is tautological: the
         generator skips at the cap, so len <= 25 cannot fail while the
         constant is pinned at 25. The live failure mode is *which* 25 win —
-        no _SLACK_VIA_HERMES_ONLY name may leak back into a native slot."""
+        no _SLACK_VIA_HERMES_ONLY name may leak back into a native slot.
+        A plain leak intersection is tautological too (the generator filters
+        on the same set), so drive the filter itself: shrink the set by one
+        demoted name and require it back as a native slash — the only edit
+        direction in which the generator's set and the leak check's set can
+        disagree."""
+        import hermes_cli.commands_platforms as commands_platforms
+
+        # title ranks inside the 25-slot window once undemoted; if curation
+        # drops it, re-pick a name that does instead of weakening this test.
+        freed = "title"
+        assert freed in _SLACK_VIA_HERMES_ONLY, (
+            f"{freed!r} is no longer demoted; pick another name that ranks inside the cap"
+        )
+        shrunk = frozenset(_SLACK_VIA_HERMES_ONLY) - {freed}
+        monkeypatch.setattr(commands_platforms, "_SLACK_VIA_HERMES_ONLY", shrunk)
+
         native = {n for n, _d, _h in slack_native_slashes()}
-        leaked = native & _SLACK_VIA_HERMES_ONLY
+        assert freed in native, f"undemoting {freed!r} did not return it to native slashes"
+        leaked = native & shrunk
         assert not leaked, f"demoted commands back as native slashes: {sorted(leaked)}"
 
 

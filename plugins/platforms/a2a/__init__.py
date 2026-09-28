@@ -4,7 +4,11 @@ five outbound client tools of the ``a2a`` toolset through the public PluginConte
 from __future__ import annotations
 
 import logging
-import os
+
+# Profile-scoped secret reader (gateway/AGENTS.md § Profile scope): one gateway process
+# serves every profile, so a bare ``os.getenv`` here would read the DEFAULT profile's
+# bridged values and enable this platform on profiles that never configured it.
+from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +38,18 @@ def validate_config(config) -> bool:
 
 
 def is_connected(config) -> bool:
-    """'Connected' when explicitly enabled (the gateway only instantiates enabled platforms)."""
+    """'Connected' when explicitly enabled, or when THIS profile configures an ``A2A_PORT``.
+
+    The port is read through the same scope-aware accessor the adapter uses, never a bare
+    ``os.getenv``. One gateway process serves every profile (``gateway.multiplex_profiles``),
+    so ``os.environ`` holds the DEFAULT profile's bridged ``A2A_PORT``; an unscoped read
+    enabled the inbound adapter on secondaries that never configured A2A, and each then
+    bound the module default port — colliding with the profile that owns A2A. Under an
+    installed scope a scoped miss returns the default (falsy), while the unscoped
+    default-profile path and single-profile installs keep the ``os.environ`` read.
+    """
     extra = getattr(config, "extra", {}) or {}
-    return bool(extra.get("enabled")) or bool(os.getenv("A2A_PORT"))
+    return bool(extra.get("enabled")) or bool(_get_scoped_secret("A2A_PORT"))
 
 
 def interactive_setup() -> None:

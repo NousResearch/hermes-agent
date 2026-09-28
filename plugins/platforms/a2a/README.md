@@ -60,6 +60,18 @@ via `tasks/get`.
 - **Per-peer tokens**: `A2A_PEER_TOKENS="alice:tok1,bob:tok2"` gives each
   remote agent its own credential; that authenticated name (never anything
   in the request body) drives rate limiting, trust, and audit.
+- **Credentials rotate without a restart.** The accepted set is re-read from
+  `~/.hermes/.env` through a bounded cache (`A2A_CRED_SOURCE_TTL`, default
+  5s): edit the file, wait out the window, and the new credential is accepted
+  and the retired one rejected — no gateway restart, and no file parsed per
+  request.
+- **Every rejected authentication is alerted, once.** A 401/405 carries a
+  machine-readable reason (`no_credential`, `unknown_credential`,
+  `malformed_header`, `method_not_allowed`) in `error.data.reason`, and each
+  rejection writes exactly one alert record to the audit file plus a gateway
+  WARNING. `security.register_alert_sink(fn)` adds a webhook/Slack sink; the
+  built-in audit+log sink always stays on. Credential values never appear in a
+  response, log line or audit record.
 - Inbound text — including `/`-prefixed text — is run through
   prompt-injection filters and framed as untrusted peer input; remote peers
   cannot invoke operator slash commands.
@@ -85,6 +97,7 @@ via `tasks/get`.
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |
 | `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply; the orphan sweep never fails a task before this window (floor 300s) or while a request still waits on it. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push signing. |
+| `A2A_CRED_SOURCE_TTL` | `5` | Seconds between re-reads of the accepted-credential source (`.env`); the bounded window in which a credential rotation takes effect without a restart. |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict skills on the Agent Card. |
 
 See `DESIGN.md` for architecture and the requirement-tracing table.

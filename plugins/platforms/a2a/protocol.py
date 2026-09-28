@@ -93,8 +93,12 @@ def jsonrpc_result(req_id: Any, result: Any) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
-def jsonrpc_error(req_id: Any, code: int, message: str) -> dict:
-    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+def jsonrpc_error(req_id: Any, code: int, message: str, data: Any = None) -> dict:
+    """JSON-RPC error object. ``data`` carries machine-readable detail (e.g. the auth reason code)."""
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": req_id, "error": error}
 
 
 def send_message_response(payload: dict) -> dict:

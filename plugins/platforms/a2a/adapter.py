@@ -169,8 +169,26 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _error(self, http_code: int, req_id: Any, code: int, message: str):
-        self._json(http_code, _err(req_id, code, message))
+    def _error(self, http_code: int, req_id: Any, code: int, message: str, data: Any = None):
+        self._json(http_code, _err(req_id, code, message, data=data))
+
+    def _auth_reject(self, reason: str, *, http_code: int, req_id: Any, code: int, message: str):
+        """Reject a request with a diagnostic reason AND emit exactly one alert for the rejection.
+
+        Every rejection on the auth-gated surface goes through here, so the alert can never be
+        duplicated by a caller that also logs and the reason can never be dropped. The presented
+        credential is never echoed — only the reason code travels.
+        """
+        security.alert_auth_failure(reason, client_ip=self._client_ip(),
+                                    http_method=self.command or "", path=self.path or "")
+        self._error(http_code, req_id, code, f"{message} ({reason})", data={"reason": reason})
+
+    def _method_not_allowed(self):  # noqa: N802
+        """Unsupported HTTP method: a 405 that says why and alerts, not the default bare 501."""
+        self._auth_reject(security.AUTH_METHOD_NOT_ALLOWED, http_code=405, req_id=None,
+                          code=protocol.ERR_UNAUTHORIZED, message="method not allowed")
+
+    do_PUT = do_DELETE = do_PATCH = _method_not_allowed
 
     def _client_ip(self) -> str:
         return self.client_address[0] if self.client_address else ""
@@ -206,17 +224,22 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             return self._json(404, {"error": "not found"})
         payload = {"status": "ok", "agent": agent.get("name") or adapter.agent_name}
         # Agent Cards are public; profile/tenant topology is not leaked on remote unauthenticated GETs.
+        # A GET is not a rejected request in any case, so a bad credential here is not alerted on.
         sec = adapter._security_context
-        if sec.localhost_only() or sec.authenticate(self.headers.get("Authorization"), self._client_ip()) is not None:
+        if sec.localhost_only() or sec.authenticate_detailed(
+                self.headers.get("Authorization"), self._client_ip()).ok:
             payload["served_agents"] = adapter._served_agent_summary(public_url=public_url)
         self._json(200, payload)
 
     def do_POST(self):  # noqa: N802
         adapter = self.adapter
         # Identity comes from the credential (or the socket in localhost-only mode) — never the body.
-        identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
-        if identity is None:
-            return self._error(401, None, protocol.ERR_UNAUTHORIZED, "unauthorized")
+        auth = adapter._security_context.authenticate_detailed(
+            self.headers.get("Authorization"), self._client_ip())
+        if auth.identity is None:
+            return self._auth_reject(auth.reason, http_code=401, req_id=None,
+                                     code=protocol.ERR_UNAUTHORIZED, message="unauthorized")
+        identity = auth.identity
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length > _MAX_BODY:

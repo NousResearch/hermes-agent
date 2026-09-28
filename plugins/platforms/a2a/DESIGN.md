@@ -101,6 +101,20 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
   for rate limiting, the trust gate, message framing, and audit. A shared
   `A2A_BEARER_TOKEN` authenticates as `ip:<addr>`. Nothing in the request
   body can assert identity. Comparisons are constant-time.
+- **Credential rotation without a restart:** accepted credentials are re-read
+  from the profile's `.env` on a bounded TTL cache (`A2A_CRED_SOURCE_TTL`,
+  default 5s) rather than frozen at adapter start, so a rotation lands without
+  a gateway restart while a request still pays only a dict lookup. A
+  secondary profile's credential source path and capture-time snapshot are
+  resolved at construction (inside the profile scope) because request threads
+  carry no profile contextvar.
+- **Auth-failure alerting:** every rejected authentication carries a
+  machine-readable reason (`no_credential` / `unknown_credential` /
+  `malformed_header` / `method_not_allowed`) in `error.data.reason` and emits
+  exactly one alert record — one audit line plus one gateway WARNING by
+  default, plus any sink registered via `security.register_alert_sink`
+  (webhook/Slack later) without touching the auth path. Credential values are
+  never echoed, logged or audited; a raising sink cannot turn a 401 into a 500.
 - **Trust gate:** `A2A_TRUSTED_PEERS` (or config `a2a.trusted_peers`)
   optionally restricts which authenticated identities may run tasks.
 - **Injection filters:** ALL inbound text (including `/`-prefixed — remote
@@ -141,6 +155,8 @@ them (#11025 requirement). The `a2a_history` tool recalls them by context id.
 | #56435 | Task completion notifications | push notifications (`_send_push_notification`) |
 | #25176, #689 | Agent↔agent messaging across machines | client tools + inbound adapter |
 | #7517 et al. | Multi-peer orchestration | `a2a_orchestrate` |
+| docs §7.2, §9.2 | Credential rotation honoured without a gateway restart | `security._credential_source_values`, `A2ASecurityContext.authenticate_detailed` |
+| docs §9.6, §9.12 | Auth-failure alerting + a negative test of the auth gate | `security.alert_auth_failure`, `A2ARequestHandler._auth_reject`, `tests/plugins/test_a2a_auth_rotation_and_alerts.py` |
 
 ## Deliberately out of scope (future, not this pass)
 - **a2a-sdk / gRPC + HTTP+JSON bindings.** Only the JSONRPC binding is

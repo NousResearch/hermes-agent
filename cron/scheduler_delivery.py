@@ -1271,7 +1271,7 @@ def _cron_delivery_notify_enabled(cfg: Optional[dict]) -> bool:
 
 
 def _record_delivery_verification(job: dict, unverified_targets: list) -> None:
-    """Persist ``last_delivery_unverified``: list of ``platform:chat_id`` targets acked with no
+    """Persist ``last_delivery_unverified``: list of ``platform:chat_id[:thread_id]`` targets acked with no
     evidence, or None, alongside queued Bot Chat receipts. Never raises (bookkeeping must not fail a
     delivery)."""
     new_value = list(unverified_targets) or None
@@ -1505,7 +1505,9 @@ def _live_send_text(
             job["id"], t.platform_name, t.chat_id)
         return True, True, None
     except Exception as ex:
-        # Real send error (not a slow confirmation): fall through to standalone.
+        # Real send error (not a slow confirmation): fall through to standalone. The router raises
+        # a failed SendResult's error string, so this is where send_path_degraded arrives.
+        t.live_error = str(ex)
         target_errors.append(f"live adapter send failed: {ex}")
         raise
 

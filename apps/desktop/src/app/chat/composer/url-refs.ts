@@ -123,6 +123,18 @@ function markdownCodeRanges(text: string) {
   return [...fenced, ...inlineCodeRanges(text, fenced)]
 }
 
+/** Markdown inline links, `[label](destination)`. A pasted link is explicit
+ *  syntax the user kept intact, not prose to chip: chipping the destination
+ *  rewrites the href into an invalid `@url:` reference, and chipping a URL
+ *  inside the label breaks the link apart the same way. */
+function markdownLinkRanges(text: string) {
+  return Array.from(text.matchAll(/\[[^[\]\n]*\]\([^\n]*?\)/g), match => {
+    const start = match.index ?? 0
+
+    return { end: start + match[0].length, start }
+  })
+}
+
 /** A URL at the end of a sentence carries the punctuation that ended it. */
 function splitUrlTail(raw: string) {
   let url = raw.replace(/[,.;:!?]+$/, '')
@@ -143,16 +155,18 @@ const hasHost = (url: string) => /^https?:\/\/[^/\s]/i.test(url)
 export function linkifyUrls(text: string) {
   REF_RE.lastIndex = 0
 
-  // URLs inside an existing `@url:` directive or a Markdown code span are not
-  // prose to chip — the directive is already a reference, and code is verbatim
-  // payload the user pasted (a stack trace, a command, a log line).
+  // URLs inside an existing `@url:` directive, a Markdown code span, or a
+  // Markdown link are not prose to chip — the directive is already a
+  // reference, code is verbatim payload the user pasted (a stack trace, a
+  // command, a log line), and a link's label/destination are explicit syntax
+  // whose href a chip would corrupt.
   const protectedRanges = Array.from(text.matchAll(REF_RE)).map(match => {
     const start = match.index ?? 0
 
     return { end: start + match[0].length, start }
   })
 
-  protectedRanges.push(...markdownCodeRanges(text))
+  protectedRanges.push(...markdownCodeRanges(text), ...markdownLinkRanges(text))
 
   let out = ''
   let cursor = 0

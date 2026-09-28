@@ -116,6 +116,28 @@ describe('linkifyUrls', () => {
     )
   })
 
+  // #125886: a pasted Markdown link is explicit syntax whose href a chip would
+  // corrupt into an invalid reference, so label and destination stay verbatim.
+  it('preserves a Markdown link destination verbatim', () => {
+    const text = 'see [Mission Control issue 7](https://example.invalid/projects/synthetic/issues/7) now'
+
+    expect(linkifyUrls(text)).toBe(text)
+  })
+
+  it('preserves a parenthesized Wikipedia-style destination while chipping prose', () => {
+    expect(linkifyUrls('a https://prose.dev and [wiki](https://en.wikipedia.org/wiki/Foo_(bar))')).toBe(
+      'a @url:`https://prose.dev` and [wiki](https://en.wikipedia.org/wiki/Foo_(bar))'
+    )
+  })
+
+  it('preserves a URL inside a link label', () => {
+    expect(linkifyUrls('[https://label.dev](https://dest.dev)')).toBe('[https://label.dev](https://dest.dev)')
+  })
+
+  it('still chips a parenthesized bare URL that is not a Markdown link', () => {
+    expect(linkifyUrls('(https://prose.dev)')).toBe('(@url:`https://prose.dev`)')
+  })
+
   it('leaves text without a scheme alone', () => {
     expect(linkifyUrls('example.dev/a and src/foo.ts')).toBe('example.dev/a and src/foo.ts')
   })

@@ -428,6 +428,25 @@ def test_terminal_provider_exit_blocks_after_one_attempt_in_either_lane(kanban_h
         assert kb.get_task(conn, tid).status == "blocked"
 
 
+def test_worker_definition_error_exit_code_parks_a_card(monkeypatch):
+    """``--skills`` names that ALL fail to resolve raise ``ValueError("Unknown skill(s): …")``
+    before the agent exists, so the worker's exit code is the only signal the dispatcher gets.
+    Inside a worker (``HERMES_KANBAN_TASK`` set) it must read as EX_CONFIG — the card parks on the
+    first spawn instead of spending ``failure_limit`` spawns on an error a retry cannot heal —
+    while a person's run and every other error keep the caller's own code."""
+    import hermes_cli.kanban_db as _kb
+
+    error = ValueError("Unknown skill(s): english-learning-typ0")
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    assert _kb.kanban_worker_failure_exit_code(error) == 1
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc")
+    assert _kb.kanban_worker_failure_exit_code(error) == _kb.KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+    # A stranger that merely talks about skills is not this failure.
+    assert _kb.kanban_worker_failure_exit_code(ValueError("Unknown skill conflict mode: keep")) == 1
+    assert _kb.kanban_worker_failure_exit_code(ValueError("HTTP 401 unauthorized")) == 1
+    # Callers with a code of their own keep it for everything else.
+    assert _kb.kanban_worker_failure_exit_code(ValueError("HTTP 401 unauthorized"), 75) == 75
 
 
 def test_respawn_guard_defers_rate_limited_within_cooldown(

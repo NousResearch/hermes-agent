@@ -277,6 +277,8 @@ def gateway(
                 + "platforms:\n  matrix:\n    enabled: true\n"
                 + ("    thread_require_mention: true\n" if mode == "pause-context" else "")
                 + "updates:\n  check: false\n"
+                + ("auxiliary:\n  background_review:\n    enabled: false\n  title_generation:\n    model_upgrade_enabled: false\n"
+                   if mode == "polls" else "")
                 + ("display:\n  busy_input_mode: queue\n  busy_ack_enabled: false\n"
                    if mode == "pause-queued-context" else "")
                 + ("plugins:\n  enabled:\n    - matrix-live-context\n"

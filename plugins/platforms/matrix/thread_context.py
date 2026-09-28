@@ -17,6 +17,7 @@ from plugins.platforms.matrix.reply_context import (
     _own_text,
 )
 from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.polls import POLL_TYPES, poll_context
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 
 
@@ -37,7 +38,7 @@ async def history_entry(client: Any, raw: dict, cache: MatrixEventContextCache, 
         cache.store(room_id, raw["event_id"], MatrixEventContext(
             str(raw.get("sender") or ""), "[redacted]", redacted=True,
         ))
-    if raw.get("type", "m.room.message") not in {"m.room.message", "m.room.encrypted"}:
+    if raw.get("type", "m.room.message") not in {"m.room.message", "m.room.encrypted", *POLL_TYPES}:
         return None
     if MatrixRelation.from_content(event_content(raw).get("m.relates_to")).is_edit:
         return None
@@ -54,7 +55,7 @@ async def history_entry(client: Any, raw: dict, cache: MatrixEventContextCache, 
         return MatrixEventContext(
             str(raw.get("sender") or ""), "[redacted]", redacted=True,
         ), state.original_content
-    body = content.get("body")
+    body = poll_context(content, raw.get("type")) or content.get("body")
     if not isinstance(body, str):
         return None
     body = body.strip()

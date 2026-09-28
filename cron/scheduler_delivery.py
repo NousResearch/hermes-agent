@@ -910,6 +910,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
                      f"profile's environment ({type(exc).__name__}: {exc}); do not resend")
     if home.parent.name != "profiles":
         argv += ["-p", "default"]
+    if argv[1:3] == ["-m", "hermes_cli.main"]:
+        # served_profile_child_env strips Hermes-owned PYTHONPATH entries; under a store-python
+        # shim the bare interpreter then cannot import the package find_spec just proved (#122487).
+        from pathlib import Path
+
+        from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+        pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
 
     query_file = None
     try:

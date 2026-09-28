@@ -242,9 +242,17 @@ def _install_npm(pkg: str, bin_name: str, extra_pkgs: Optional[list] = None) -> 
     pm = _node_package_manager()
     if pm is None:
         return None
-    # Managed Node first: $HERMES_HOME/node isn't on an arbitrary process's
-    # PATH, so a bare which() would miss the Node that Hermes installed.
+    # npm is Hermes's own PM-managed copy, never the user's; pnpm/yarn are an explicit user choice.
     pm_bin = find_node_executable(pm)
+    if pm_bin is None and pm == "npm":
+        try:
+            import pm as pm_store
+
+            pm_store.ensure("npm")
+            pm_bin = find_node_executable("npm")
+        except Exception as exc:  # noqa: BLE001 — a refused/failed PM install skips this server, never the session
+            logger.warning("[install] cannot install %s: managed npm unavailable (%s)", pkg, exc)
+            return None
     if pm_bin is None:
         # Deliberately no silent fallback to npm: a pnpm/yarn choice is usually a supply-chain policy.
         logger.warning("[install] cannot install %s: lsp.package_manager is %r but no usable %s was found "

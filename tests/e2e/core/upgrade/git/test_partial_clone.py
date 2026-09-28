@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.git import _git_world as G
 
@@ -60,12 +59,9 @@ def test_updates_land_and_the_clone_keeps_its_shape(runs, shape):
         f"seeded the wrong clone shape for {shape}: {run['shape0']}"
     assert cp1.returncode == 0 and run["head1"] == I.head_sha(), f"N-1 -> HEAD update failed:\n{w.diag(cp1)}"
     assert G.TRACEBACK not in G.output(cp1), f"N-1 -> HEAD update printed a traceback:\n{w.diag(cp1)}"
-    with known_failure(r"full clone was converted to a partial clone",
-                       "gated on #122353: the post-update tag fetch passes --filter=tree:0 and turns a full clone "
-                       "into a promisor clone (HEAD's post-swap code, so a fix flips this directly)"):
-        assert run["shape1"] == run["shape0"], (
-            f"{'the full clone was converted to a partial clone' if shape == 'full' else 'the clone changed shape'} "
-            f"by the N-1 -> HEAD update: {run['shape0']} -> {run['shape1']}\n{w.diag(cp1)}")
+    assert run["shape1"] == run["shape0"], (
+        f"{'the full clone was converted to a partial clone' if shape == 'full' else 'the clone changed shape'} "
+        f"by the N-1 -> HEAD update: {run['shape0']} -> {run['shape1']}\n{w.diag(cp1)}")
     assert cp2.returncode == 0 and run["head2"] == run["target2"], f"HEAD -> next update failed:\n{w.diag(cp2)}"
     assert run["shape2"] == run["shape0"], f"the clone changed shape: {run['shape0']} -> {run['shape2']}\n{w.diag(cp2)}"
     version = run["version"]

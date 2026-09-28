@@ -518,6 +518,19 @@ if _legacy_post_swap is not None:
     raise SystemExit(_continue_legacy_post_swap(_handoff_path, argv_tail=_argv_tail))
 
 
+# Only the CLI follows its sticky profile. Direct gateway/cron/ACP entry points keep
+# their launch environment; their argv can also use -p for unrelated purposes.
+# Inspect the actual loading module, not argv[0] (console scripts can be renamed).
+_cli_main_path = _root / "hermes_cli" / "main.py"
+if any(
+    (module_file := getattr(sys.modules.get(name), "__file__", None))
+    and Path(module_file).resolve() == _cli_main_path
+    for name in ("hermes_cli.main", "__main__")
+):
+    from hermes_cli._startup_profile import _apply_profile_override
+
+    _apply_profile_override(preserve_argv=True)
+
 from pm.environments import activate_dependencies
 from hermes_cli._early_recovery import recover_if_needed
 

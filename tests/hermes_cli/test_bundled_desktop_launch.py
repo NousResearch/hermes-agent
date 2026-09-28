@@ -279,8 +279,9 @@ class TestCmdGuiOnABundle:
         (profile / "config.yaml").write_text("{}\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(root))
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "work", "desktop"])
-        monkeypatch.setattr(cli_main, "_explicit_cli_profile", None)
-        cli_main._apply_profile_override()
+        from hermes_cli import _startup_profile
+        monkeypatch.setattr(_startup_profile, "_explicit_cli_profile", None)
+        _startup_profile._apply_profile_override()
 
         code, builds, launches = self._run(monkeypatch, repo, self._args())
 

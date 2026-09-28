@@ -191,7 +191,8 @@ matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87
 
 ## Profiles (multi-instance)
 
-`_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module import for
+`_apply_profile_override()` in `hermes_cli/_startup_profile.py` sets `HERMES_HOME` before PM
+prepares dependencies or the CLI imports application modules for
 single-profile commands (`hermes -p x <cmd>`), so there `get_hermes_home()` scopes to the active
 profile. The multiplex gateway and the Desktop/dashboard `serve` backend instead bind the active
 profile per activity via a contextvar override while `os.environ["HERMES_HOME"]` keeps the launch

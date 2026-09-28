@@ -10,7 +10,7 @@ import difflib
 import re
 from functools import lru_cache
 
-# `--profile` / `-p` is consumed by ``main._apply_profile_override`` before argparse runs
+# `--profile` / `-p` is consumed by ``_startup_profile._apply_profile_override`` before argparse runs
 # (it sets ``HERMES_HOME`` and strips itself from ``sys.argv``), so it isn't on the parser.
 # Listed here so all "carry over on relaunch" metadata lives in one file.
 PRE_ARGPARSE_INHERITED_FLAGS: list[tuple[str, bool]] = [("--profile", True), ("-p", True)]
@@ -29,7 +29,7 @@ _OPTIONAL_VALUE_FLAGS_FALLBACK: frozenset[str] = frozenset({"-c", "--continue"})
 def _cfg_path() -> str:
     """``~/.hermes/config.yaml`` spelled for the active profile, for help text.
 
-    ``main._apply_profile_override`` builds this parser (via ``top_level_value_flag_sets``) BEFORE
+    ``_startup_profile._apply_profile_override`` builds this parser (via ``top_level_value_flag_sets``) BEFORE
     it re-homes the process to the sticky ``active_profile``; ``get_hermes_home()`` would emit the
     "[HERMES_HOME fallback] ... wrong profile" warning on every ``hermes`` command for that
     throwaway help string. Read the process home directly: after the override it IS the profile home.
@@ -44,7 +44,7 @@ def top_level_value_flag_sets() -> tuple[frozenset[str], frozenset[str]]:
     """(required-value, optional-value) top-level flags, derived from the REAL parser.
 
     Introspects ``build_top_level_parser()`` (every option with nargs != 0) so the argv scanners in
-    ``main.py`` (``_first_positional_argv``, ``_apply_profile_override``) can never drift from the
+    ``main._first_positional_argv`` and ``_startup_profile._apply_profile_override`` can never drift from the
     argparse surface — the drift that made ``hermes --reasoning high chat …`` misread ``high`` as
     the subcommand and forced eager plugin discovery.
 

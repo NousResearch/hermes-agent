@@ -22,7 +22,8 @@ creates a database, reads configuration, or starts a child process for a
 profile must retain or pass that profile's `HERMES_HOME`; falling back to the
 default root mixes the wrong profile's state into the operation.
 
-The CLI bootstrap calls `_apply_profile_override()` before importing the rest
+The CLI bootstrap calls `hermes_cli._startup_profile._apply_profile_override()` before
+preparing dependencies or importing the rest
 of Hermes. An explicit `--profile`/`-p` resolves that profile and writes the
 resolved directory to `HERMES_HOME`. Without an explicit selector, a
 profile-specific `HERMES_HOME` is preserved; otherwise the bootstrap can use

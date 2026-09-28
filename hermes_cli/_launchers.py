@@ -44,7 +44,9 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
         "os.environ.pop('VIRTUAL_ENV', None); "
         f"sys.path.insert(0, {str(root)!r}); "
         f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {default_home}; "
-        "import hermes_bootstrap; "
+        # The CLI selects its profile inside its first bootstrap import. Other
+        # modules/code still need dependencies activated before they can import.
+        + ("" if code is None and module == "hermes_cli.main" else "import hermes_bootstrap; ")
         + entry
     )
     return [str(python), "-I", "-c", bootstrap, *args]
@@ -283,15 +285,16 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
         "    from hermes_cli._launchers import print_runtime_command\n"
         f"    print_runtime_command(Path({str(repo_root.resolve())!r}), sys.argv[2:])\n"
         "    sys.exit(0)\n"
-        "import hermes_bootstrap\n"
         "if sys.argv[1:2] == ['--run-module']:\n"
         "    import runpy\n"
         "    if len(sys.argv) < 3: sys.exit('hermes: --run-module needs a module')\n"
+        "    if sys.argv[2] != 'hermes_cli.main': import hermes_bootstrap\n"
         "    module = sys.argv.pop(2)\n"
         "    del sys.argv[1]\n"
         "    runpy.run_module(module, run_name='__main__', alter_sys=True)\n"
         "    sys.exit(0)\n"
-        f"from {module} import {func}\n"
+        + ("" if module == "hermes_cli.main" else "import hermes_bootstrap\n")
+        + f"from {module} import {func}\n"
         "sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\n"
         f"sys.exit({func}())\n"
     )

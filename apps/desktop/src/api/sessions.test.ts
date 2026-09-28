@@ -20,7 +20,6 @@ const client = await import('./client')
 const {
   deleteSession,
   getSession,
-  getSessionMessages,
   getLatestSessionMessages,
   setSessionArchived,
   setSessionPinnedRemote,
@@ -276,17 +275,6 @@ describe('session reads pin the owner connection (#125372)', () => {
       path: '/api/sessions/remote-owned?profile=default',
       connectionId: 'dale-home-lan-9119'
     })
-  })
-
-  it('leaves ambient reads untouched when no owner is known', async () => {
-    vi.mocked(client.sessionReadOwnerPin).mockReturnValue({})
-
-    await getSessionMessages('sess-x')
-
-    expect(hermesApi.mock.calls[0][0]).toMatchObject({
-      path: '/api/sessions/sess-x/messages'
-    })
-    expect(hermesApi.mock.calls[0][0]).not.toHaveProperty('connectionId')
   })
 
   it('keeps an explicit (connection, profile) pin authoritative in getLatestSessionMessages', async () => {

@@ -226,29 +226,22 @@ export function getApiRequestConnection(): null | string {
   return $apiRequestScope.get().connectionId
 }
 
-// ── Session-owner reads: the connection a session-scoped REST read must ride ─
+// ── Session-owner pin for session-scoped REST reads (#125372) ──────────────
 //
-// A session-scoped read (detail / messages / timeline) only means anything on
-// the backend that OWNS the session's row (#125372). The renderer already
-// knows that owner (tile route → persisted hint → connection-tagged row,
-// resolved by store/session-states knownOwnerForSession), but read helpers
-// dispatched with the WINDOW's ambient connection scope — so with a registered
-// remote that exposes a same-named profile, the wrong backend answered
-// 404 "Session not found" in both directions. The store pushes its resolver
-// through setSessionOwnerResolver (same seam pattern as setApiRequestProfile:
-// no store import here, which would close a module cycle) and the session read
-// helpers pin the resolved connection.
+// A read of /api/sessions/{id}[/messages|/timeline|/messages/around] only
+// means anything on the backend that OWNS the row. The store already resolves
+// that owner (knownOwnerForSession: tile route → persisted hint → tagged row)
+// and pushes the resolver here — same no-store-import seam as
+// setApiRequestProfile — so read helpers stop riding the WINDOW's ambient
+// connection onto a host that answers 404 "Session not found".
 
 export interface SessionReadOwnerRoute {
   connectionId?: null | string
-  mode?: string
   profile?: null | string
   targetProfile?: null | string
 }
 
-export type SessionReadOwner = string | SessionReadOwnerRoute
-
-export type SessionOwnerResolver = (sessionId: string) => SessionReadOwner | null | undefined
+export type SessionOwnerResolver = (sessionId: string) => SessionReadOwnerRoute | null | string | undefined
 
 let _sessionOwnerResolver: SessionOwnerResolver | null = null
 
@@ -256,17 +249,12 @@ export function setSessionOwnerResolver(resolver: SessionOwnerResolver | null): 
   _sessionOwnerResolver = resolver
 }
 
-function sessionOwnerForRead(sessionId: string): SessionReadOwner | null | undefined {
-  return _sessionOwnerResolver?.(sessionId)
-}
-
 /** The connection pin a session-scoped READ must carry for `id`, or {} when
- *  the ambient scope is already right. An explicit (connection, profile)
- *  object scope short-circuits: the caller has already routed the request. An
- *  exact owner route pins its connection — 'local' INCLUDED, the sanctioned
- *  way back to this device when the window's primary is a remote registry
- *  source — plus, when the caller named no profile, the route's backend-facing
- *  profile: the answering host resolves ?profile= against ITS OWN profiles. */
+ *  the caller already pinned a connection, no exact owner is known, or the
+ *  owner is the ambient connection. Pins 'local' too (the only way back to
+ *  this device when the primary is a remote registry source). When the caller
+ *  named no profile, the owner's backend-facing profile rides along: the
+ *  answering host resolves ?profile= against ITS OWN profiles. */
 export function sessionReadOwnerPin(
   id: string,
   profile?: ProfileScope
@@ -275,24 +263,19 @@ export function sessionReadOwnerPin(
     return {}
   }
 
-  const owner = sessionOwnerForRead(id)
+  const owner = _sessionOwnerResolver?.(id)
 
-  if (!owner || typeof owner === 'string' || !('connectionId' in owner)) {
+  if (!owner || typeof owner === 'string') {
     return {}
   }
 
   const connectionId = String(owner.connectionId ?? '').trim()
 
-  // No exact connection in the route → no pin (ambient behavior, never guess).
-  if (!connectionId) {
+  if (!connectionId || connectionId === (ambientOwnerConnectionId() ?? 'local')) {
     return {}
   }
 
   const ownerProfile = String(owner.targetProfile || owner.profile || '').trim()
-
-  if (connectionId === (ambientOwnerConnectionId() ?? 'local')) {
-    return {}
-  }
 
   return {
     connectionId,

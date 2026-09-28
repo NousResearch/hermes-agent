@@ -411,18 +411,18 @@ def execution_history_summary(*, job_id: Optional[str] = None) -> Dict[str, Any]
     where = " WHERE job_id=?" if job_id is not None else ""
     params = (str(job_id),) if job_id is not None else ()
     with _transaction() as conn:
-        count = conn.execute("SELECT COUNT(*) FROM executions" + where, params).fetchone()[0]
+        # One statement keeps count/endpoints on one snapshot even while a worker prunes.
         # ISO offsets can differ between writes; compare instants, not timestamp text.
-        endpoints = []
-        for order in ("ASC", "DESC"):
-            row = conn.execute(
-                "SELECT claimed_at FROM executions" + where
-                + f" ORDER BY julianday(claimed_at) {order}, claimed_at {order} LIMIT 1",
-                params,
-            ).fetchone()
-            endpoints.append(row[0] if row is not None else None)
-    return {"retained_count": count, "oldest_claimed_at": endpoints[0],
-            "newest_claimed_at": endpoints[1]}
+        row = conn.execute(
+            "WITH retained AS (SELECT claimed_at FROM executions" + where + ") "
+            "SELECT COUNT(*) AS retained_count, "
+            "(SELECT claimed_at FROM retained ORDER BY julianday(claimed_at), claimed_at "
+            "LIMIT 1) AS oldest_claimed_at, "
+            "(SELECT claimed_at FROM retained ORDER BY julianday(claimed_at) DESC, "
+            "claimed_at DESC LIMIT 1) AS newest_claimed_at FROM retained",
+            params,
+        ).fetchone()
+    return dict(row)
 
 
 def get_execution(execution_id: str) -> Optional[Dict[str, Any]]:

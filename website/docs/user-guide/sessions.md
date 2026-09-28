@@ -846,7 +846,7 @@ Runs FTS5, dedupes hits by session lineage, and returns the top N sessions. Disc
 
 Each result carries:
 
-- `session_id`, `title`, `when`, `source`
+- `session_id`, `title`, `when`, `source`, `workspace` — project folder basename the session ran from, or `null` if unbound
 - `snippet` — FTS5-highlighted match excerpt
 - `detail` — `full` or `compact`
 - `bookend_start` / `bookend_end` — first/last 3 user+assistant messages for full results; empty lists for compact results
@@ -854,6 +854,8 @@ Each result carries:
 - `match_message_id`, `messages_before`, `messages_after`
 
 The top result reconstructs goal → match → resolution immediately. If another compact result looks more promising, use its session and message IDs with the scroll shape. Typical wall time is tens of milliseconds on a real session DB.
+
+Pass `workspace="my-app"` (a project folder basename or full cwd path) to restrict discovery to sessions run from that project — matched against the session's git repo root, else its cwd. Useful when the user means "in this project" and a bare query could otherwise surface a lexically closer match from a different project.
 
 **2. Scroll — pass `session_id` + `around_message_id`:**
 
@@ -884,7 +886,7 @@ Returns the whole session, or a bounded head/tail view for large sessions. This 
 session_search()
 ```
 
-Returns recent sessions chronologically (titles, previews, timestamps). Useful when the user asks "what was I working on" without naming a topic.
+Returns recent sessions chronologically (titles, previews, timestamps, and `workspace`). Useful when the user asks "what was I working on" without naming a topic. Pass `workspace=` here too to scope browsing to one project — otherwise a multi-project profile's top results can all come from whichever project was most recently active.
 
 ### FTS5 query syntax
 

@@ -192,7 +192,7 @@ Granted only to sessions of the desktop setup profile (`role: setup` in its `pro
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Four shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), read (pass `session_id` only), browse (no args). Discovery supports time bounds (`after`/`before` — ISO dates or relative durations like `7d`, `24h`, `2w`) and `exclude_session_ids` for iterative re-finding. | — |
+| `session_search` | Search past sessions stored in the local session DB, or scroll inside one. FTS5-backed retrieval; returns actual messages from the DB (no LLM calls). Four shapes: discovery (pass `query`), scroll (pass `session_id` + `around_message_id`), read (pass `session_id` only), browse (no args). Discovery supports time bounds (`after`/`before` — ISO dates or relative durations like `7d`, `24h`, `2w`) and `exclude_session_ids` for iterative re-finding. Discovery and browse both support `workspace` (a project folder basename or cwd path) to restrict results to one project, and every result carries a `workspace` field so sessions from different projects can be told apart. | — |
 
 ## `skills` toolset
 

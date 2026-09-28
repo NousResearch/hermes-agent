@@ -463,7 +463,10 @@ For safely retryable creation, send an `Idempotency-Key` header (1–255 visible
 When `session_id` identifies an existing Hermes session and no explicit
 `conversation_history` or `previous_response_id` is supplied, the run loads
 that session's active transcript. Session turn leases serialize concurrent
-writers and refresh the transcript after a contended wait.
+writers and refresh the transcript after a contended wait. A turn also
+refreshes it when another writer finished a turn after the transcript was
+loaded, so its answer is part of the next turn's context. The same holds for
+`X-Hermes-Session-Id` on Chat Completions and for the session-chat endpoints.
 
 ### GET /v1/runs/\{run_id\}
 

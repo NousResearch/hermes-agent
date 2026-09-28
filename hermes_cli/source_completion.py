@@ -116,16 +116,33 @@ def main(argv: list[str] | None = None) -> int:
             # update ends with the tree at HEAD and nothing built -- lands here
             # on the next ordinary startup. Same tail as an install, so the two
             # states cannot drift apart.
-            ok = complete_source_checkout(
-                root, desktop=args.desktop, assume_yes=True,
-                completion_message=None, announce="\n✓ Code updated!",
-            )
+            from hermes_cli.update_lock import UpdateLock
+
+            # The launcher that armed this tail claimed the update marker with its own
+            # pid and is only waiting for us. Take the claim over before any build
+            # work: when that launcher dies (a Desktop-retired SSH backend), the
+            # marker must keep naming a live process or the next backend treats it
+            # as stale and races a second build onto this checkout.
+            _update_tail_lock = UpdateLock()
+            if not _update_tail_lock.acquire(take_over=True):
+                # Not our spawner's claim: a genuine update owns the tree.
+                print("✗ Another update claimed this tree while the tail was starting.",
+                      file=sys.stderr)
+                return 2
+            try:
+                ok = complete_source_checkout(
+                    root, desktop=args.desktop, assume_yes=True,
+                    completion_message=None, announce="\n✓ Code updated!",
+                )
+            finally:
+                _update_tail_lock.release()
+            return 0 if ok else 1
         else:
             ok = complete_source_checkout(
                 root, desktop=args.desktop, assume_yes=not args.interactive,
                 completion_message="✓ Install complete!",
             )
-        return 0 if ok else 1
+            return 0 if ok else 1
 
     from pm.environments import activation_environment
 

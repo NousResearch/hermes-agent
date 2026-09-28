@@ -300,7 +300,9 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
                     # Relaunching would land back here and sync again, forever.
                     raise RuntimeError("dependency sync left this install out of date")
             else:
-                _finish_source_update(root, current=current, pending=pending)
+                _finish_source_update(
+                    root, current=current, pending=pending,
+                    spawner_pid=os.getpid() if lock.acquired else None)
         finally:
             lock.release()
     python = resolve_store_python(root)
@@ -323,10 +325,17 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     return None
 
 
-def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
-    """Sync dependencies when they are stale, then run the tail the marker still owes."""
+def _finish_source_update(root: Path, *, current: bool, pending: Path,
+                          spawner_pid: int | None = None) -> None:
+    """Sync dependencies when they are stale, then run the tail the marker still owes.
+
+    ``spawner_pid`` is the process whose claim on the update marker covers this tail
+    (the SSH backend that armed it). The tail takes that claim over, so it survives
+    this process dying while the tail is still building.
+    """
     import sys
     from hermes_cli._early_recovery import _marker_owner_is_live
+    from hermes_cli.update_lock import UPDATE_SPAWNER_PID_ENV
     from pm.environments import activation_environment
 
     if not current:
@@ -351,12 +360,18 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     # The tail's progress lines go to stderr: this is an automatic repair in
     # front of whatever command the user ran, and that command may be
     # emitting machine-readable stdout (a JSON probe, a piped query).
+    child_env = activation_environment(root)
+    if spawner_pid is not None:
+        # The claim on the marker names the spawning backend; the tail doing the
+        # actual builds takes it over, and the re-exec between here and its
+        # prepared phase is exactly where a Desktop-retired backend dies.
+        child_env[UPDATE_SPAWNER_PID_ENV] = str(spawner_pid)
     code = subprocess.call(
         [sys.executable, "-I", "-B", "-u",
          str(root / "hermes_cli/source_completion.py"),
          "--source", str(root), "--finish-update",
-         *(("--desktop",) if desktop else ())],
-        cwd=root, env=activation_environment(root), stdout=sys.__stderr__,
+         *((("--desktop",) if desktop else ()))],
+        cwd=root, env=child_env, stdout=sys.__stderr__,
     )
     if code != 0:
         raise RuntimeError(

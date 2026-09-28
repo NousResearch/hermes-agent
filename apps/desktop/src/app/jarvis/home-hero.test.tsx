@@ -8,7 +8,7 @@ import { applyVoiceEngineFromConfig } from '@/store/voice-prefs'
 
 import { JarvisHomeHero } from './home-hero'
 import { initialJarvisUiState } from './projector'
-import { $jarvisUi } from './store'
+import { $jarvisUi, publishJarvisVoiceState } from './store'
 
 const insert = vi.hoisted(() => vi.fn())
 
@@ -79,6 +79,22 @@ describe('Agent CzesiekHomeHero', () => {
       act(() => $jarvisUi.set({ ...initialJarvisUiState(), task: { id: 't1', phase }, voice }))
       expect(screen.getByTestId('jarvis-home-status').textContent).toContain(label)
     }
+  })
+
+  it('follows the Live voice state while a conversation is open, instead of freezing on listening', () => {
+    renderHero({ listening: true })
+
+    // A conversation just opened: listening until the session reports itself.
+    expect(screen.getByTestId('jarvis-core').getAttribute('data-voice')).toBe('listening')
+
+    act(() => publishJarvisVoiceState('speaking'))
+
+    expect(screen.getByTestId('jarvis-core').getAttribute('data-voice')).toBe('speaking')
+    expect(screen.getByTestId('jarvis-home-status').textContent).toContain(pl.jarvisShell.home.orbStatus.speaking)
+
+    act(() => publishJarvisVoiceState('idle'))
+
+    expect(screen.getByTestId('jarvis-core').getAttribute('data-voice')).toBe('listening')
   })
 
   it('an action chip starts the request in the composer instead of sending it', () => {

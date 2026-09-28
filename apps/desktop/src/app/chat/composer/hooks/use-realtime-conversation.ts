@@ -9,11 +9,34 @@ import { notifyError } from '@/store/notifications'
 import { requestForOwnedSession } from '@/store/session-states'
 import { $subagentsBySession } from '@/store/subagents'
 
-import { type ReplyMessage, submitAndAwaitReply } from './agent-reply'
+import { type AgentReply, type ReplyMessage, submitAndAwaitReply } from './agent-reply'
 import type { ConversationStatus } from './use-voice-conversation'
 
 /** How long one `ask_jarvis` turn may run before the voice gives up on it. */
 const ASK_TIMEOUT_MS = 5 * 60_000
+
+/**
+ * How long the Live model waits for an inline answer before it is released
+ * with a short spoken acknowledgement. Long enough for a quick turn, short
+ * enough that the voice never goes silent mid-conversation.
+ */
+const ASK_INLINE_BUDGET_MS = 7_000
+
+/** How often a queued report is offered to the model (it retries while it speaks). */
+const ANNOUNCEMENT_DRAIN_MS = 400
+
+/** The answer to an `ask_jarvis` call, or null when the inline budget ran out. */
+function withInlineBudget(answer: Promise<AgentReply>): Promise<AgentReply | null> {
+  return Promise.race([answer, new Promise<null>(resolve => window.setTimeout(() => resolve(null), ASK_INLINE_BUDGET_MS))])
+}
+
+/**
+ * The honest outcome once the hard limit passes, whatever the turn is doing —
+ * a turn whose submit itself hangs must not leave the model waiting forever.
+ */
+function afterHardLimit(): Promise<AgentReply> {
+  return new Promise(resolve => window.setTimeout(() => resolve({ id: null, reason: 'timeout' }), ASK_TIMEOUT_MS))
+}
 
 interface UseRealtimeConversationArgs {
   sessionId: string | null
@@ -68,15 +91,35 @@ export function useRealtimeConversation({
   const dispatching = useRef(false)
   const currentSession = useRef(sessionId)
   const pending = useRef<{ session: string | null; cancelled: boolean } | null>(null)
+  /** Asks whose answer is still on its way, so a late report knows its conversation. */
+  const slowAsks = useRef<{ cancelled: boolean; session: string | null }[]>([])
 
-  if (currentSession.current !== sessionId && pending.current) {
-    if (pending.current.session === null && currentSession.current === null) {
-      pending.current.session = sessionId
-    } else {
-      pending.current.cancelled = true
-      pending.current = null
-      dispatching.current = false
+  if (currentSession.current !== sessionId && (pending.current || slowAsks.current.length)) {
+    // A null session that just got an id is this composer's own conversation
+    // being created, not a switch: whatever is in flight is adopted by it.
+    const claimed = currentSession.current === null && sessionId !== null
+
+    if (pending.current) {
+      if (claimed) {
+        pending.current.session = sessionId
+      } else {
+        pending.current.cancelled = true
+        pending.current = null
+        dispatching.current = false
+      }
     }
+
+    slowAsks.current = slowAsks.current.filter(task => {
+      if (claimed) {
+        task.session = sessionId
+
+        return true
+      }
+
+      task.cancelled = true
+
+      return false
+    })
   }
 
   currentSession.current = sessionId
@@ -101,20 +144,61 @@ export function useRealtimeConversation({
   }, [sessionId])
 
   const ask = useCallback(async (request: string) => {
-    const reply = await submitAndAwaitReply(
+    const sid = currentSession.current
+
+    const answer = submitAndAwaitReply(
       { busy: () => args.current.busy(), messages: () => args.current.messages() },
       () => args.current.onSubmit(request),
       ASK_TIMEOUT_MS
     )
 
-    if (reply.id === null) {
-      return reply.reason === 'timeout'
-        ? 'Hermes nadal pracuje nad odpowiedzią. Wynik pozostanie w rozmowie tekstowej.'
-        : 'Hermes nie zwrócił odpowiedzi.'
+    const inline = await withInlineBudget(answer)
+
+    if (inline) {
+      if (inline.id === null) {
+        return inline.reason === 'timeout'
+          ? 'Hermes nadal pracuje nad odpowiedzią. Wynik pozostanie w rozmowie tekstowej.'
+          : 'Hermes nie zwrócił odpowiedzi.'
+      }
+
+      args.current.markSpoken(inline.id)
+
+      return inline.text
     }
 
-    args.current.markSpoken(reply.id)
-    return reply.text
+    // Hermes is still working: release the model right away so it keeps
+    // talking, and hand the real answer to it as soon as it lands.
+    const task = { cancelled: false, session: sid }
+
+    slowAsks.current.push(task)
+
+    void Promise.race([answer, afterHardLimit()])
+      .then(reply => {
+        if (task.cancelled || currentSession.current !== task.session) {
+          return
+        }
+
+        if (reply.id !== null) {
+          args.current.markSpoken(reply.id)
+          announcements.current.push(reply.text.slice(0, 3000))
+        } else {
+          announcements.current.push(
+            reply.reason === 'timeout'
+              ? 'Hermes nie zakończył tego w wyznaczonym czasie. Nie mam potwierdzonego wyniku i nie potwierdzam sukcesu.'
+              : 'Hermes nie zwrócił potwierdzonego wyniku. Sprawdź rozmowę tekstową; nie traktuj tego jako ukończenia.'
+          )
+        }
+      })
+      .catch(() => {
+        if (!task.cancelled && currentSession.current === task.session) {
+          announcements.current.push('Nie udało się dokończyć tego zadania. Sprawdź połączenie i rozmowę tekstową.')
+        }
+      })
+      .finally(() => {
+        slowAsks.current = slowAsks.current.filter(item => item !== task)
+      })
+
+    return 'Sprawdzam. Powiem, jak będę wiedział.'
   }, [])
 
   const delegate = useCallback(async (request: string) => {
@@ -213,7 +297,7 @@ export function useRealtimeConversation({
         }
       })
 
-    return 'Przekazuję zlecenie do wykonania w rozmowie. To potwierdzenie przyjęcia, nie ukończenia. Możemy dalej rozmawiać; poinformuję Cię, gdy pojawi się raport.'
+    return 'Przekazuję zadanie do wykonania i powiem, gdy pojawi się wynik.'
   }, [])
 
   useEffect(() => {
@@ -227,7 +311,7 @@ export function useRealtimeConversation({
       if (next && sessionRef.current?.notify?.(next)) {
         announcements.current.shift()
       }
-    }, 1000)
+    }, ANNOUNCEMENT_DRAIN_MS)
 
     return () => window.clearInterval(timer)
   }, [enabled])

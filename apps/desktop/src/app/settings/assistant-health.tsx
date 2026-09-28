@@ -185,6 +185,7 @@ export function AssistantHealth() {
       const session = await startLiveVoice(
         {
           onAsk: async () => 'To tylko test dźwięku. Nie wykonuj zadań. Potwierdź, że słyszysz użytkownika.',
+          onDelegate: async () => 'To tylko test dźwięku. Nie uruchamiaj współpracowników, tylko potwierdź odsłuch.',
           onError: error => {
             if (run !== generation.current) {
               return

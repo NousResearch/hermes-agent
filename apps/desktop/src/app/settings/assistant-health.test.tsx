@@ -28,6 +28,19 @@ test('stored API credentials remain explicitly unverified and are never displaye
   expect(screen.queryByText(/secret-must-not-render/)).toBeNull()
 })
 
+test('the voice test acknowledges delegated work instead of running it', async () => {
+  let handlers!: RealtimeVoiceHandlers
+  mocks.start.mockImplementation((value: RealtimeVoiceHandlers) => {
+    handlers = value
+
+    return Promise.resolve({ setMuted: vi.fn(), stop: vi.fn() } as unknown as RealtimeVoiceSession)
+  })
+  render(<AssistantHealth />)
+  fireEvent.click(screen.getByRole('button', { name: 'Przetestuj rozmowę' }))
+  expect(handlers.onDelegate).toBeTypeOf('function')
+  await expect(handlers.onDelegate('zbadaj rynek')).resolves.toMatch(/test dźwięku/i)
+})
+
 test('a fatal error while connecting stops a late voice session instead of leaving the mic open', async () => {
   let finish!: (session: RealtimeVoiceSession) => void
   let handlers!: RealtimeVoiceHandlers

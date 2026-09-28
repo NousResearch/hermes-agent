@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { createRealtimeEventHandler, type RealtimeVoiceHandlers } from './realtime-voice'
+import { canInjectReport, createRealtimeEventHandler, NOTIFY_GRACE_MS, type RealtimeVoiceHandlers } from './realtime-voice'
 
 function setup(onAsk: RealtimeVoiceHandlers['onAsk'] = async request => `answer to ${request}`) {
   const sent: Record<string, unknown>[] = []
@@ -86,5 +86,22 @@ describe('createRealtimeEventHandler', () => {
 
     expect(handlers.onStatus.mock.calls.map(([status]) => status)).toEqual(['speaking', 'listening'])
     expect(handlers.onTranscript).toHaveBeenCalledWith('assistant', 'Gotowe.')
+  })
+})
+
+describe('canInjectReport', () => {
+  it('takes a queued report at once while the model is quiet', () => {
+    expect(canInjectReport('listening', 0, 1_000)).toBe(true)
+  })
+
+  it('retries while the model speaks, then forces the report in after the grace window', () => {
+    expect(canInjectReport('speaking', 0, 1_000)).toBe(false)
+    expect(canInjectReport('speaking', 1_000, 1_000 + NOTIFY_GRACE_MS - 1)).toBe(false)
+    expect(canInjectReport('speaking', 1_000, 1_000 + NOTIFY_GRACE_MS)).toBe(true)
+  })
+
+  it('never leaves a report stuck behind a model that stays in thinking', () => {
+    expect(canInjectReport('thinking', 0, 5_000)).toBe(false)
+    expect(canInjectReport('thinking', 5_000, 5_000 + NOTIFY_GRACE_MS)).toBe(true)
   })
 })

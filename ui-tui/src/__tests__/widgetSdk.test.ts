@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { dialogTestApp, gridTestApp } from '../sdk/apps/index.js'
 import { closeWidget, dispatchWidgetInput, launchWidget, openWidget } from '../sdk/host.js'
-import { getWidgetApp } from '../sdk/registry.js'
+import { getWidgetApp, widgetHelp, widgetUsage } from '../sdk/registry.js'
 import type { WidgetInput } from '../sdk/types.js'
 
 const key = (overrides: Partial<WidgetInput['key']> = {}, ch = ''): WidgetInput =>
@@ -15,6 +15,13 @@ const key = (overrides: Partial<WidgetInput['key']> = {}, ch = ''): WidgetInput 
 beforeEach(() => resetOverlayState())
 
 describe('widget SDK host', () => {
+  it('localizes built-in metadata while preserving the widget registry contract', () => {
+    const app = getWidgetApp('grid-test')!
+
+    expect(widgetHelp(app, 'zh')).toBe('打开可交互的 Widget 网格演示浮层')
+    expect(widgetUsage(app, 'zh')).toContain('用法：/grid-test')
+  })
+
   it('launch → dispatch → close lifecycle drives the overlay slot', () => {
     expect(launchWidget('grid-test', '5x2')).toBeNull()
     expect(getOverlayState().widget).toMatchObject({ appId: 'grid-test' })

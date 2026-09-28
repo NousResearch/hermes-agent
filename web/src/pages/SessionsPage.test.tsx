@@ -119,6 +119,31 @@ afterEach(async () => {
 });
 
 describe("SessionsPage per-row profile routing (#99387)", () => {
+  it("keeps running sessions visible when a bulk deletion skips them", async () => {
+    await renderSessionsPage(["idle", "running"].map((id) => ({
+      id, profile: "worker", source: "cli", model: null, title: `Session ${id}`,
+      started_at: 1, ended_at: null, last_active: 1, is_active: false,
+      message_count: 2, tool_call_count: 0, input_tokens: 1, output_tokens: 1, preview: "hi",
+    })));
+    apiMocks.bulkDeleteSessions.mockResolvedValue({ deleted: 1, skipped_active: ["running"] });
+    // A failed refresh must retain the rows reconciled from the deletion response.
+    apiMocks.getSessions.mockRejectedValue(new Error("refresh unavailable"));
+    await act(async () => {
+      document.querySelectorAll('[role="checkbox"][aria-label="Select session"]').forEach(click);
+    });
+    await act(async () => click(button("Delete 2")));
+    await waitFor(() => Boolean(document.querySelector('[role="alertdialog"]')));
+    const confirm = Array.from(document.querySelectorAll('[role="alertdialog"] button')).find(
+      (b) => b.textContent?.trim() === "Delete",
+    );
+    await act(async () => click(confirm ?? null));
+
+    expect(apiMocks.bulkDeleteSessions).toHaveBeenCalledWith(["idle", "running"], "worker");
+    expect(document.body.textContent).toContain("Session running");
+    expect(document.body.textContent).not.toContain("Session idle");
+    expect(document.body.textContent).toContain("1 deleted; 1 kept because a turn is running");
+  });
+
   it("sends every per-row request to the row's owning profile, not the management default", async () => {
     await renderSessionsPage([
       { id: "sid-guanli", profile: "guanli", source: "cli", model: null, title: "Managed", started_at: 1, ended_at: null,

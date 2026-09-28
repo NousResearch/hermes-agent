@@ -1,6 +1,7 @@
 import { Box, Text } from '@hermes/ink'
 import { memo, type ReactNode, useEffect, useRef, useState } from 'react'
 
+import { type TranslationKey, useI18n } from '../i18n/index.js'
 import { sparkRows } from '../lib/charts.js'
 import type { GridAreaCell, GridTrackSize } from '../lib/widgetGrid.js'
 import type { GridTestState } from '../sdk/apps/gridTestState.js'
@@ -22,7 +23,7 @@ const GRID_HEIGHT = HEADER_ROWS + STREAM_ROWS * 6
 interface StreamDef {
   id: string
   render: (inner: { height: number; t: Theme; width: number }) => ReactNode
-  title: string
+  titleKey: TranslationKey
 }
 
 // ── tick + history hooks ────────────────────────────────────────────────────
@@ -58,24 +59,18 @@ const useHistory = (tick: number, sample: () => number, cap = 240) => {
 
 // ── stream panels ───────────────────────────────────────────────────────────
 
-const TOKEN_WORDS = (
-  `Hermes streams tokens into the promoted cell while the grid reshapes around it. ` +
-  `Cells are keyed by id, so promotion never resets a panel — history, cursors and ` +
-  `tickers all survive the relayout. Row and column tracks re-solve to integer ` +
-  `terminal cells on every change, spans bridge the gaps they cross, and dense ` +
-  `auto-placement backfills the holes the promoted panel leaves behind. `
-).split(' ')
-
 function TokenStream({ height, t, width }: { height: number; t: Theme; width: number }) {
+  const { t: ti } = useI18n()
+  const tokenWords = ti('widget.grid.tokenStream').split(' ')
   const tick = useTick(90)
-  const wordCount = tick % (TOKEN_WORDS.length * 4)
+  const wordCount = tick % (tokenWords.length * 4)
   // Keep roughly enough trailing text to fill the cell, on word boundaries.
   const budget = Math.max(16, width * height)
   const words: string[] = []
   let used = 0
 
   for (let i = wordCount; i >= 0 && used < budget; i--) {
-    const word = TOKEN_WORDS[i % TOKEN_WORDS.length]!
+    const word = tokenWords[i % tokenWords.length]!
 
     words.unshift(word)
     used += word.length + 1
@@ -160,15 +155,18 @@ function ToolTicker({ height, t }: { height: number; t: Theme; width: number }) 
 }
 
 function MetaPanel({ t }: { height: number; t: Theme; width: number }) {
+  const { locale, t: ti } = useI18n()
   const tick = useTick(1000)
   const startedRef = useRef(Date.now())
   const uptime = Math.floor((Date.now() - startedRef.current) / 1000)
 
   return (
     <Box flexDirection="column">
-      <Text color={t.color.text}>{new Date().toLocaleTimeString()}</Text>
-      <Text color={t.color.muted}>{`up ${Math.floor(uptime / 60)}m ${uptime % 60}s`}</Text>
-      <Text color={t.color.muted}>{`${tick} ticks`}</Text>
+      <Text color={t.color.text}>{new Date().toLocaleTimeString(locale)}</Text>
+      <Text color={t.color.muted}>
+        {ti('widget.grid.uptime', { minutes: Math.floor(uptime / 60), seconds: uptime % 60 })}
+      </Text>
+      <Text color={t.color.muted}>{ti('widget.grid.ticks', { count: tick })}</Text>
     </Box>
   )
 }
@@ -190,7 +188,7 @@ export const STREAM_DEFS: StreamDef[] = [
   {
     id: 'tokens',
     render: ({ height, t, width }) => <TokenStream height={height} t={t} width={width} />,
-    title: 'token stream'
+    titleKey: 'widget.grid.stream.tokens'
   },
   {
     id: 'throughput',
@@ -205,7 +203,7 @@ export const STREAM_DEFS: StreamDef[] = [
         width={width}
       />
     ),
-    title: 'throughput'
+    titleKey: 'widget.grid.stream.throughput'
   },
   {
     id: 'heap',
@@ -220,7 +218,7 @@ export const STREAM_DEFS: StreamDef[] = [
         width={width}
       />
     ),
-    title: 'memory'
+    titleKey: 'widget.grid.stream.memory'
   },
   {
     id: 'latency',
@@ -235,17 +233,17 @@ export const STREAM_DEFS: StreamDef[] = [
         width={width}
       />
     ),
-    title: 'latency'
+    titleKey: 'widget.grid.stream.latency'
   },
   {
     id: 'tools',
     render: ({ height, t, width }) => <ToolTicker height={height} t={t} width={width} />,
-    title: 'tool feed'
+    titleKey: 'widget.grid.stream.tools'
   },
   {
     id: 'meta',
     render: ({ height, t, width }) => <MetaPanel height={height} t={t} width={width} />,
-    title: 'session'
+    titleKey: 'widget.grid.stream.session'
   }
 ]
 
@@ -303,6 +301,7 @@ export const GridStreamsDemo = memo(function GridStreamsDemo({
   state: GridTestState
   t: Theme
 }) {
+  const { t: ti } = useI18n()
   const columnTracks: GridTrackSize[] = [{ fr: 1 }, { fr: 1 }, { fr: 1 }]
   const main = STREAM_DEFS[state.streamMain % STREAM_DEFS.length]!
 
@@ -326,9 +325,9 @@ export const GridStreamsDemo = memo(function GridStreamsDemo({
           width={cell.width}
         >
           <Text bold color={t.color.primary}>
-            hermes mission control
+            {ti('widget.grid.missionControl')}
           </Text>
-          <Text color={t.color.muted}>{`main: ${main.title}`}</Text>
+          <Text color={t.color.muted}>{ti('widget.grid.main', { name: ti(main.titleKey) })}</Text>
         </Box>
       )
     },
@@ -341,7 +340,7 @@ export const GridStreamsDemo = memo(function GridStreamsDemo({
           focused={STREAM_DEFS[state.streamFocus % STREAM_DEFS.length]!.id === def.id}
           main={def.id === main.id}
           t={t}
-          title={def.title}
+          title={ti(def.titleKey)}
         >
           {def.render}
         </StreamPanel>

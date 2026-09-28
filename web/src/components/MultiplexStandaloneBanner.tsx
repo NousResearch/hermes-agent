@@ -17,7 +17,7 @@ export function MultiplexStandaloneBanner({
 }: {
   status: StatusResponse | null;
 }) {
-  const { t } = useI18n();
+  const { t, format } = useI18n();
   const reason = status?.multiplex_standalone_reason ?? null;
   const [dismissed, setDismissed] = useState<string | null>(() => {
     try {
@@ -29,12 +29,10 @@ export function MultiplexStandaloneBanner({
   if (!reason || dismissed === reason) return null;
 
   const unserved = (status?.profiles ?? []).filter((p) => p !== "default");
-  const template =
-    t.app.multiplexStandaloneBanner ??
-    "Your gateway serves only one profile. Not served: {profiles}. Why: {reason}. Fix: hermes gateway migrate --multiplex";
-  const message = template
-    .replace("{profiles}", unserved.length > 0 ? unserved.join(", ") : "—")
-    .replace("{reason}", reason);
+  const message = format(t.app.multiplexStandaloneBanner, {
+    profiles: unserved.length > 0 ? unserved.join(", ") : "—",
+    reason,
+  });
 
   const dismiss = () => {
     try {
@@ -55,7 +53,7 @@ export function MultiplexStandaloneBanner({
       <span className="min-w-0 flex-1">{message}</span>
       <button
         type="button"
-        aria-label={t.app.dismiss ?? "Dismiss"}
+        aria-label={t.app.dismiss}
         onClick={dismiss}
         className="shrink-0 opacity-70 hover:opacity-100"
       >

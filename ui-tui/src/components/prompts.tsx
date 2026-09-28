@@ -1,6 +1,7 @@
 import { Box, Text, useInput, wrapAnsi } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
+import { useI18n } from '../i18n/index.js'
 import { isMac } from '../lib/platform.js'
 import { clarifyBatchRevisitState } from '../lib/text.js'
 import type { Theme } from '../theme.js'
@@ -13,14 +14,23 @@ const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
 // tirith warning present → backend downgrades "always" to session scope, so drop it.
 const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
 const APPROVAL_OPTS_SMART_DENY = ['once', 'deny'] as const
-const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
+
+const approvalLabelKey = (o: 'once' | 'session' | 'always' | 'deny') =>
+  `prompt.approval${o.charAt(0).toUpperCase() + o.slice(1)}` as const
+
 const CMD_PREVIEW_LINES = 10
 
 type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export function approvalOptions(req: ApprovalReq): readonly ApprovalChoice[] {
   if (req.choices) {
-    return req.choices.filter((choice): choice is ApprovalChoice => APPROVAL_OPTS.includes(choice as ApprovalChoice))
+    const choices = req.choices.filter((choice): choice is ApprovalChoice =>
+      APPROVAL_OPTS.includes(choice as ApprovalChoice)
+    )
+
+    if (choices.length > 0) {
+      return choices
+    }
   }
 
   if (req.smartDenied) {
@@ -67,7 +77,9 @@ export function approvalAction(
   }
 
   if (key.return) {
-    return { kind: 'choose', choice: opts[sel]! }
+    const choice = opts[sel]
+
+    return choice ? { kind: 'choose', choice } : { kind: 'noop' }
   }
 
   if (key.upArrow && sel > 0) {
@@ -83,6 +95,7 @@ export function approvalAction(
 
 export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptProps) {
   const [sel, setSel] = useState(0)
+  const { t: ti } = useI18n()
   const opts = approvalOptions(req)
 
   useInput((ch, key) => {
@@ -110,7 +123,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   return (
     <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
       <Text bold color={t.color.warn}>
-        ⚠ approval required · {req.description}
+        {ti('prompt.approvalRequired', { description: req.description })}
       </Text>
 
       <Box flexDirection="column" paddingLeft={1}>
@@ -122,7 +135,10 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
 
         {overflow > 0 ? (
           <Text color={t.color.muted}>
-            … +{overflow} more line{overflow === 1 ? '' : 's'} (full text above)
+            {ti('prompt.previewOverflow', {
+              count: String(overflow),
+              lineNoun: ti(overflow === 1 ? 'prompt.previewLine' : 'prompt.previewLines')
+            })}
           </Text>
         ) : null}
       </Box>
@@ -133,12 +149,12 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
         <Text key={o}>
           <Text color={t.color.muted} {...chipRowProps(t, sel === i)}>
             {sel === i ? '▸ ' : '  '}
-            {i + 1}. {LABELS[o]}
+            {i + 1}. {ti(approvalLabelKey(o) as never)}
           </Text>
         </Text>
       ))}
 
-      <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-{opts.length} quick pick · Esc/Ctrl+C deny</Text>
+      <Text color={t.color.muted}>{ti('prompt.selectHint', { n: `1-${opts.length}` })}</Text>
     </Box>
   )
 }
@@ -148,6 +164,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
   const [custom, setCustom] = useState('')
   const [typing, setTyping] = useState(false)
   const choices = req.choices ?? []
+  const { t: ti } = useI18n()
   const batch = req.questions ?? []
   const isBatch = batch.length > 0
 
@@ -198,8 +215,11 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
 
   const heading = (
     <Text bold>
-      <Text color={t.color.accent}>ask</Text>
-      <Text color={t.color.text}> {isBatch ? `${batch.length} questions` : req.question}</Text>
+      <Text color={t.color.accent}>{ti('prompt.clarifyLabel')}</Text>
+      <Text color={t.color.text}>
+        {' '}
+        {isBatch ? ti('prompt.clarifyBatchCount', { count: batch.length }) : req.question}
+      </Text>
     </Text>
   )
 
@@ -305,9 +325,11 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
   })
 
   if (isBatch) {
+    const confirmAction = remainingCount === 1 ? ti('prompt.clarifyConfirmContinue') : ti('prompt.clarifyLockAnswer')
+
     const hint = typing
-      ? `Enter ${remainingCount === 1 ? 'confirm and continue' : 'lock answer'} · Esc back`
-      : `↑/↓ select · Enter ${remainingCount === 1 ? 'confirm and continue' : 'lock answer'} · Tab/Shift+Tab switch question · Esc/Ctrl+C cancel`
+      ? ti('prompt.clarifyTypingHint', { action: confirmAction })
+      : ti('prompt.clarifyBatchSelectHint', { action: confirmAction })
 
     return (
       <Box flexDirection="column">
@@ -331,7 +353,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
                 // current answers stay readable while Tab walks the list.
                 <Box paddingLeft={2}>
                   <Text color={answer ? t.color.ok : t.color.muted} italic={!answer}>
-                    {answer || '(skipped)'}
+                    {answer || ti('prompt.clarifySkipped')}
                   </Text>
                 </Box>
               ) : null}
@@ -350,7 +372,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
                   </Box>
                 ) : (
                   <Box flexDirection="column" paddingLeft={2}>
-                    {[...activeChoices, 'Other (type your answer)'].map((c, ci) => (
+                    {[...activeChoices, ti('input.typeOther')].map((c, ci) => (
                       <Text key={ci}>
                         <Text color={t.color.muted} {...chipRowProps(t, sel === ci)}>
                           {sel === ci ? '▸ ' : '  '}
@@ -366,7 +388,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
         })}
 
         <Text color={t.color.muted}>
-          {answeredCount}/{batch.length} answered · {hint}
+          {ti('prompt.clarifyAnsweredStatus', { answered: answeredCount, total: batch.length, hint })}
         </Text>
       </Box>
     )
@@ -389,8 +411,9 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
         </Box>
 
         <Text color={t.color.muted}>
-          Enter send · Esc {choices.length ? 'back' : 'cancel'} ·{' '}
-          {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : 'Ctrl+C cancel'}
+          {ti('prompt.typeHint', { action: choices.length ? ti('prompt.typeHintBack') : ti('prompt.typeHintCancel') })}
+          {' · '}
+          {isMac ? ti('prompt.copyPasteHint') : ti('input.interruptHintMac')}
         </Text>
       </Box>
     )
@@ -400,7 +423,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
     <Box flexDirection="column">
       {heading}
 
-      {[...choices, 'Other (type your answer)'].map((c, i) => (
+      {[...choices, ti('input.typeOther')].map((c, i) => (
         <Text key={i}>
           <Text color={t.color.muted} {...chipRowProps(t, sel === i)}>
             {sel === i ? '▸ ' : '  '}
@@ -409,13 +432,14 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
         </Text>
       ))}
 
-      <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-{choices.length} quick pick · Esc/Ctrl+C cancel</Text>
+      <Text color={t.color.muted}>{ti('prompt.selectHintEsc', { n: String(choices.length) })}</Text>
     </Box>
   )
 }
 
 export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProps) {
   const [sel, setSel] = useState(0)
+  const { t: ti } = useI18n()
 
   useInput((ch, key) => {
     const lower = ch.toLowerCase()
@@ -444,8 +468,8 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   const accent = req.danger ? t.color.error : t.color.warn
 
   const rows = [
-    { color: t.color.text, label: req.cancelLabel ?? 'No' },
-    { color: req.danger ? t.color.error : t.color.text, label: req.confirmLabel ?? 'Yes' }
+    { color: t.color.text, label: req.cancelLabel ?? ti('common.no') },
+    { color: req.danger ? t.color.error : t.color.text, label: req.confirmLabel ?? ti('common.yes') }
   ]
 
   return (
@@ -471,7 +495,7 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
         </Text>
       ))}
 
-      <Text color={t.color.muted}>↑/↓ select · Enter confirm · Y/N quick · Esc cancel</Text>
+      <Text color={t.color.muted}>{ti('prompt.confirmHint')}</Text>
     </Box>
   )
 }

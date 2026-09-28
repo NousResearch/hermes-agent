@@ -354,6 +354,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("TZ", "UTC")
     monkeypatch.setenv("LANG", "C.UTF-8")
     monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    # User-facing strings are locale-aware. Keep baseline tests in English so
+    # a developer's real display.language cannot rewrite hard-coded contract
+    # assertions; i18n tests opt into other languages explicitly.
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
     monkeypatch.setenv("PYTHONHASHSEED", "0")
 
     # 4b. Disable AWS IMDS lookups. Without this, any test that ends up

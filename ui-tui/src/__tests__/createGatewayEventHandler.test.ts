@@ -14,6 +14,7 @@ import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { ZERO } from '../domain/usage.js'
+import { translate } from '../i18n/index.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -1663,6 +1664,14 @@ describe('createGatewayEventHandler', () => {
 
   it('an interrupted reply whose every delta landed after Ctrl+C still shows the persisted partial', () => {
     expect(interruptedTranscript([], ['alpha', ' beta'], 'alpha beta')).toEqual(['alpha beta\n\n*[interrupted]*'])
+  })
+
+  it('keeps localized interruption markers when reconciling persisted reply text', () => {
+    patchUiState({ locale: 'zh' })
+    const marker = `*[${translate('zh', 'common.interrupted')}]*`
+
+    expect(interruptedTranscript(['alpha'], [' beta'], 'alpha beta')).toEqual([`alpha beta\n\n${marker}`])
+    expect(interruptedTranscript([], ['gamma'], 'gamma')).toEqual([`gamma\n\n${marker}`])
   })
 
   it('keepBusy interrupt holds busy until the gateway settles and suppresses the cancelled turn’s final_response', () => {

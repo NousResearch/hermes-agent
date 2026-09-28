@@ -1,109 +1,131 @@
-import { applyDocumentLocale, LOCALE_ENDONYMS } from "@hermes/shared/i18n";
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
-import type { Locale, Translations } from "./types";
-import { en } from "./en";
-import { zh } from "./zh";
-import { zhHant } from "./zh-hant";
-import { ja } from "./ja";
-import { de } from "./de";
-import { es } from "./es";
-import { fr } from "./fr";
-import { tr } from "./tr";
-import { uk } from "./uk";
-import { af } from "./af";
-import { ko } from "./ko";
-import { it } from "./it";
-import { ga } from "./ga";
-import { pt } from "./pt";
-import { ru } from "./ru";
-import { hu } from "./hu";
-import { ar } from "./ar";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
-const TRANSLATIONS: Record<Locale, Translations> = {
-  en,
-  zh,
-  "zh-hant": zhHant,
-  ja,
-  de,
-  es,
-  fr,
-  tr,
-  uk,
-  af,
-  ko,
-  it,
-  ga,
-  pt,
-  ru,
-  hu,
-  ar,
-};
+import { applyDocumentLocale } from "@hermes/shared/document-locale";
 
-const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
+import { getManagementProfile } from "../lib/api";
+import type { Locale } from "./types";
+import {
+  I18nContext,
+  getInitialLocale,
+  formatTranslation,
+  persistConfiguredLocale,
+  persistLocale,
+  readConfiguredLocaleChange,
+  resolveTranslations,
+} from "./runtime";
 
-// Display metadata for the language picker — endonyms from @hermes/shared so the
-// desktop and web pickers can never disagree on a language's native name.
-export const LOCALE_META: Record<Locale, { name: string }> = Object.fromEntries(
-  SUPPORTED_LOCALES.map((id) => [id, { name: LOCALE_ENDONYMS[id] }]),
-) as Record<Locale, { name: string }>;
-
-const STORAGE_KEY = "hermes-locale";
-
-function isLocale(value: string): value is Locale {
-  return (SUPPORTED_LOCALES as string[]).includes(value);
-}
-
-function getInitialLocale(): Locale {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && isLocale(stored)) return stored;
-  } catch {
-    // SSR or privacy mode
-  }
-  return "en";
-}
-
-interface I18nContextValue {
-  locale: Locale;
-  setLocale: (l: Locale) => void;
-  t: Translations;
-}
-
-const I18nContext = createContext<I18nContextValue>({
-  locale: "en",
-  setLocale: () => {},
-  t: en,
-});
+const CONFIG_REVISION_POLL_MS = 5_000;
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
+  const localeChangeVersionRef = useRef(0);
+  const pendingSaveRef = useRef<Promise<void> | null>(null);
+  const revisionRef = useRef<string | null>(null);
+  const syncActiveRef = useRef(false);
+  const syncInFlightRef = useRef(false);
+  const translations = useMemo(() => resolveTranslations(locale), [locale]);
 
-  const setLocale = useCallback((l: Locale) => {
-    setLocaleState(l);
-    try {
-      localStorage.setItem(STORAGE_KEY, l);
-    } catch {
-      // ignore
-    }
+  const applyLocale = useCallback((nextLocale: Locale) => {
+    setLocaleState(nextLocale);
+    persistLocale(nextLocale);
   }, []);
+
+  const setLocale = useCallback(
+    async (nextLocale: Locale) => {
+      const profile = getManagementProfile();
+      const version = ++localeChangeVersionRef.current;
+      // Serialize writes to the captured profile. Publish only the newest successful
+      // choice, so rejected or superseded requests cannot overwrite the displayed language.
+      const save = (pendingSaveRef.current ?? Promise.resolve())
+        .catch(() => {})
+        .then(() => persistConfiguredLocale(nextLocale, profile))
+        .then(() => {
+          if (
+            version === localeChangeVersionRef.current &&
+            getManagementProfile() === profile
+          ) {
+            applyLocale(nextLocale);
+          }
+        });
+      pendingSaveRef.current = save;
+      try {
+        await save;
+      } finally {
+        if (pendingSaveRef.current === save) pendingSaveRef.current = null;
+        // An overlapping read was not applied: leave it eligible for the next poll.
+        revisionRef.current = null;
+      }
+    },
+    [applyLocale],
+  );
 
   useEffect(() => {
     applyDocumentLocale(locale);
   }, [locale]);
 
-  const value: I18nContextValue = {
-    locale,
-    setLocale,
-    t: TRANSLATIONS[locale],
-  };
+  const syncConfiguredLocale = useCallback(async () => {
+    if (
+      !syncActiveRef.current ||
+      syncInFlightRef.current ||
+      pendingSaveRef.current
+    )
+      return;
 
-  return (
-    <I18nContext.Provider value={value}>
-      {children}
-    </I18nContext.Provider>
+    syncInFlightRef.current = true;
+    const localeChangeVersion = localeChangeVersionRef.current;
+    try {
+      const change = await readConfiguredLocaleChange(revisionRef.current);
+      if (!syncActiveRef.current) return;
+      if (
+        !pendingSaveRef.current &&
+        localeChangeVersion === localeChangeVersionRef.current
+      ) {
+        revisionRef.current = change.revision;
+        if (change.locale) applyLocale(change.locale);
+      }
+    } catch {
+      // Keep the last-good locale and revision while config is unavailable.
+    } finally {
+      syncInFlightRef.current = false;
+    }
+  }, [applyLocale]);
+
+  useEffect(() => {
+    syncActiveRef.current = true;
+    void syncConfiguredLocale();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") {
+        void syncConfiguredLocale();
+      }
+    }, CONFIG_REVISION_POLL_MS);
+    const syncWhenVisible = () => {
+      if (document.visibilityState !== "hidden") {
+        void syncConfiguredLocale();
+      }
+    };
+
+    window.addEventListener("focus", syncWhenVisible);
+    document.addEventListener("visibilitychange", syncWhenVisible);
+    return () => {
+      syncActiveRef.current = false;
+      localeChangeVersionRef.current += 1;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", syncWhenVisible);
+      document.removeEventListener("visibilitychange", syncWhenVisible);
+    };
+  }, [syncConfiguredLocale]);
+
+  const value = useMemo(
+    () => ({ format: formatTranslation, locale, setLocale, t: translations }),
+    [locale, setLocale, translations],
   );
-}
 
-export function useI18n() {
-  return useContext(I18nContext);
+  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

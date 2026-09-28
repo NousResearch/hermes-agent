@@ -17,23 +17,13 @@ import {
 
 export interface EffortOption {
   value: string;
-  label: string;
+  labelKey: ReasoningEffortValue;
 }
 
-const EFFORT_LABELS: Record<ReasoningEffortValue, string> = {
-  none: "Off (no thinking)",
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra High",
-  max: "Max",
-  ultra: "Ultra",
-};
 
 /** `none` first, then the seven levels ascending — the shared value order. */
 export const EFFORT_OPTIONS: ReadonlyArray<EffortOption> = REASONING_EFFORT_VALUES.map(
-  (value) => ({ value, label: EFFORT_LABELS[value] }),
+  (value) => ({ value, labelKey: value }),
 );
 
 export const VALID_EFFORTS: ReadonlySet<string> = new Set(REASONING_EFFORT_VALUES);

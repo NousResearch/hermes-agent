@@ -54,6 +54,7 @@ class GatewayReadyPayload(Payload):
     skin: SkinPayload
     change_events: bool
     replay_epoch: str
+    language: str | None = None
     heartbeat: bool | None = None  # WebSocket transport only
 
 
@@ -209,6 +210,8 @@ class StatusUpdatePayload(Payload):
     """``server._status_update`` and the direct emitters (goal / loop / heartbeat / process)."""
 
     kind: str
+    text_key: str | None = None
+    text_vars: dict[str, str | int | float] | None = None
     text: str
 
 
@@ -330,6 +333,8 @@ class NotificationShowPayload(Payload):
     """``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s
     slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent."""
 
+    text_key: str | None = None
+    text_vars: dict[str, str | int | float] | None = None
     text: str
     level: str
     kind: str

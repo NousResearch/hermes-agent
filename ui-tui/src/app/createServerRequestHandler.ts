@@ -1,9 +1,11 @@
 import type { ServerRequest } from '@hermes/shared/json-rpc-channel'
 
+import { translate } from '../i18n/index.js'
 import type { ClarifyBatchQuestion } from '../types.js'
 
 import { patchOverlayState } from './overlayStore.js'
 import { rememberServerRequest } from './serverRequestStore.js'
+import { getUiState } from './uiStore.js'
 
 export interface ServerRequestHandlerContext {
   ringPromptBell: () => void
@@ -77,7 +79,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
             allowPermanent: p.allow_permanent !== false,
             choices: strList(p.choices) ?? undefined,
             command: str(p.command),
-            description: str(p.description) || 'dangerous command',
+            description: str(p.description) || translate(getUiState().locale, 'approval.dangerousCommand'),
             requestId: request.id,
             smartDenied: p.smart_denied === true
           }
@@ -103,7 +105,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
         patchOverlayState({
           vaultUnlock: { backend: str(p.backend), displayName: str(p.display_name), requestId: request.id }
         })
-        open(request, `unlock ${str(p.display_name)}`)
+        open(request, translate(getUiState().locale, 'status.unlockVault', { name: str(p.display_name) }))
 
         return true
 

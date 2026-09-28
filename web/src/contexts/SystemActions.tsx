@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { ActionStatusResponse } from "@/lib/api";
 import { Toast } from "@nous-research/ui/ui/components/toast";
-import { sharedGatewayProfiles, sharedGatewayRestartedMessage } from "@/lib/shared-gateway";
+import { sharedGatewayProfiles } from "@/lib/shared-gateway";
 import { useI18n } from "@/i18n";
 import {
   SystemActionsContext,
@@ -25,7 +25,7 @@ export function SystemActionsProvider({
     null,
   );
   const [toast, setToast] = useState<ToastState | null>(null);
-  const { t } = useI18n();
+  const { t, format } = useI18n();
 
   useEffect(() => {
     if (!toast) return;
@@ -55,7 +55,7 @@ export function SystemActionsProvider({
             type: ok ? "success" : "error",
             message: ok
               ? shared
-                ? sharedGatewayRestartedMessage(shared.length)
+                ? format(t.sharedGateway.restarted, { count: shared.length })
                 : t.status.actionFinished
               : `${t.status.actionFailed} (exit ${resp.exit_code ?? "?"})`,
           });
@@ -71,7 +71,7 @@ export function SystemActionsProvider({
     return () => {
       cancelled = true;
     };
-  }, [activeAction, t.status.actionFinished, t.status.actionFailed]);
+  }, [activeAction, format, t.sharedGateway.restarted, t.status.actionFinished, t.status.actionFailed]);
 
   const runAction = useCallback(
     async (action: SystemAction) => {

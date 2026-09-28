@@ -5,6 +5,8 @@ import type {
 } from '@hermes/shared/gateway-events'
 import { atom } from 'nanostores'
 
+import { type Locale, translate } from '../i18n/index.js'
+
 import { patchOverlayState } from './overlayStore.js'
 
 export interface ConnectionOperationSnapshot {
@@ -41,12 +43,14 @@ export const isSettledOperation = (opId: string): boolean => settledOperationIds
 
 export const isDismissedOperation = (opId: string): boolean => dismissedOperationIds.includes(opId)
 
-const outcomeWord = (target: ConnectionOperationTarget): string => {
+const outcomeWord = (target: ConnectionOperationTarget, locale: Locale): string => {
   if (target.state === 'connected') {
-    return 'connected'
+    return translate(locale, 'connection.connected')
   }
 
-  return target.state === 'skipped' ? 'skipped' : 'not connected'
+  return target.state === 'skipped'
+    ? translate(locale, 'connection.skipped')
+    : translate(locale, 'connection.notConnected')
 }
 
 export function applyConnectionRequest(payload: ConnectionRequestPayload): void {
@@ -70,7 +74,7 @@ export function applyConnectionRequest(payload: ConnectionRequestPayload): void 
   patchOverlayState({ connection: { opId: payload.op_id } })
 }
 
-export function applyConnectionUpdate(payload: ConnectionUpdatePayload): string[] {
+export function applyConnectionUpdate(payload: ConnectionUpdatePayload, locale: Locale = 'en'): string[] {
   const current = $connectionOperation.get()
   const shown = current !== null && current.opId === payload.op_id
 
@@ -85,7 +89,7 @@ export function applyConnectionUpdate(payload: ConnectionUpdatePayload): string[
       clearConnectionOperation()
     }
 
-    return payload.targets.map(target => `${target.name}: ${outcomeWord(target)}`)
+    return payload.targets.map(target => `${target.name}: ${outcomeWord(target, locale)}`)
   }
 
   if (!shown || !current || payload.seq <= current.seq) {

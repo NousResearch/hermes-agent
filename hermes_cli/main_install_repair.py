@@ -237,11 +237,27 @@ def _configured_features_missing_deps() -> list[tuple[str, str]]:
     try:
         from gateway.config import load_gateway_config
         from gateway.platform_registry import platform_registry
+        from gateway.run import _BUILTIN_ADAPTERS, _builtin_adapter_import
 
         for platform in load_gateway_config().get_connected_platforms():
             entry = platform_registry.get(platform.value)
-            if entry is not None and not entry.check_fn():
-                missing.append((entry.label, entry.install_hint or "Run `hermes setup` to install support."))
+            if entry is not None:
+                if not entry.check_fn():
+                    missing.append((entry.label, entry.install_hint or "Run `hermes setup` to install support."))
+                continue
+            # Not yet migrated to platform_registry (e.g. weixin, signal): fall back to the
+            # legacy built-in table so its missing deps are surfaced too, not just skipped (#126028).
+            spec = _BUILTIN_ADAPTERS.get(platform)
+            if spec is None:
+                continue
+            module, adapter_name, requirement, warning = spec
+            try:
+                _adapter_cls, requirements_ok = _builtin_adapter_import(module, adapter_name, requirement)
+                deps_ok = requirements_ok() if callable(requirements_ok) else requirements_ok
+            except Exception:
+                deps_ok = False
+            if not deps_ok:
+                missing.append((platform.value, warning or "Run `hermes setup` to install support."))
     except Exception as exc:
         logger.debug("configured-platform dependency check skipped: %s", exc)
     try:

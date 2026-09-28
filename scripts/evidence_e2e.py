@@ -184,6 +184,32 @@ def main() -> int:
     check("the newer on-disk count was NOT clobbered",
           "success_count: 99" in skill_md.read_text(encoding="utf-8"))
 
+    # 7. Concurrency: two threads updating the same skill must ADD (11+1+1 = 13), not overwrite.
+    import threading
+
+    skill_md.write_text(
+        "---\nname: e2e-skill\ndescription: race\nevidence:\n  success_count: 11\n"
+        "  fail_count: 0\n  steps: []\n  evolution: []\n---\n\n# Race\n", encoding="utf-8")
+    smt._run_write_gate = orig_gate  # gate off => the write path runs
+    errs: list = []
+
+    def bump():
+        try:
+            smt.skill_manage(action="patch", name="e2e-skill", evidence_merge={"success_count": 1})
+        except Exception as exc:  # noqa: BLE001
+            errs.append(repr(exc))
+
+    ts = [threading.Thread(target=bump) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(timeout=30)
+    check("concurrent writers do not deadlock", not any(t.is_alive() for t in ts))
+    check("concurrent writers raise nothing", not errs, str(errs)[:200])
+    check("11 + 1 + 1 = 13 — no lost update (real stack)",
+          "success_count: 13" in skill_md.read_text(encoding="utf-8"),
+          str([l for l in skill_md.read_text(encoding="utf-8").splitlines() if "success_count" in l]))
+
     print()
     print(f"E2E PASS — {len(PASSED)} checks against the real tool stack")
     return 0

@@ -76,9 +76,11 @@ def test_stale_replay_is_rejected(tmp_path):
     (skill_dir / "SKILL.md").write_text(BASE, encoding="utf-8")
     with patch.object(smt, "SKILLS_DIR", tmp_path), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
-        result = smt._act_patch({
-            "name": "test-skill", "content": None, "old_string": None, "new_string": None,
-            "file_path": None, "replace_all": False,
+        # Use the real replay entry point (what /skills approve calls) so the bypass token is set —
+        # a frozen candidate is only honoured there, not from an arbitrary caller.
+        result = smt.apply_skill_pending({
+            "action": "patch", "name": "test-skill", "content": None, "old_string": None,
+            "new_string": None, "file_path": None, "replace_all": False,
             "evidence_merge": {"_source_digest": "wrong", "_candidate_content": BASE},
         })
     parsed = json.loads(result) if isinstance(result, str) else result
@@ -220,11 +222,14 @@ def test_batch_preview_is_frozen_inside_evidence_payload(tmp_path):
     assert "success_count: 12" in preview
     assert "success_count: 99" not in preview
     # A replay against the moved file is refused rather than clobbering the newer count.
+    # Go through the real approve entry point: a frozen candidate is honoured only when the
+    # gate-bypass token is set, so calling the handler directly would test nothing.
     with patch.object(smt, "SKILLS_DIR", tmp_path), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
-        replayed = smt._act_patch({
-            "name": "test-skill", "content": None, "old_string": None, "new_string": None,
-            "file_path": None, "replace_all": False, "evidence_merge": staged})
+        replayed = smt.apply_skill_pending({
+            "action": "patch", "name": "test-skill", "content": None, "old_string": None,
+            "new_string": None, "file_path": None, "replace_all": False,
+            "evidence_merge": staged})
     parsed = json.loads(replayed) if isinstance(replayed, str) else replayed
     assert parsed["success"] is False
     assert "stale" in parsed["error"]
@@ -301,3 +306,79 @@ def test_restaging_a_staged_payload_is_idempotent(tmp_path):
         assert smt.skill_manage(action="patch", name="test-skill", evidence_merge=staged) == "staged"
     again = captured["payload"]["evidence_merge"]
     assert "success_count: 12" in again["_candidate_content"]
+
+
+def test_concurrent_evidence_updates_do_not_lose_a_count(tmp_path):
+    """Two threads updating the same skill must ADD, not overwrite.
+
+    Read-merge-write has to be one critical section. If the merge happens outside the lock, both
+    threads read the same count and the second write silently discards the first — the exact
+    failure additive counters exist to prevent. 11 + 1 + 1 must be 13.
+
+    Deterministic by construction: the two threads are released together from a barrier, and the
+    merge is forced to happen outside the lock to model the interleaving. Patching globals is
+    process-wide, so the patch is installed ONCE around both threads rather than per-thread.
+    """
+    import threading
+
+    skill_dir = tmp_path / "test-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(BASE, encoding="utf-8")
+
+    barrier = threading.Barrier(2)
+    errors: list = []
+    gate = threading.Event()
+
+    def bump():
+        try:
+            barrier.wait(timeout=10)  # both threads race into the read
+            gate.wait(timeout=10)
+            smt._act_patch({
+                "name": "test-skill", "content": None, "old_string": None, "new_string": None,
+                "file_path": None, "replace_all": False,
+                "evidence_merge": {"success_count": 1},
+            })
+        except Exception as exc:  # noqa: BLE001 — surfaced via `errors`
+            errors.append(repr(exc))
+
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+        threads = [threading.Thread(target=bump) for _ in range(2)]
+        for t in threads:
+            t.start()
+        gate.set()
+        for t in threads:
+            t.join(timeout=30)
+
+    assert not any(t.is_alive() for t in threads), "a writer deadlocked on the skill lock"
+    assert not errors, errors
+    text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert "success_count: 13" in text, f"lost update: got {[l for l in text.splitlines() if 'success_count' in l]}"
+
+
+def test_injected_candidate_content_is_ignored_off_the_replay_path(tmp_path):
+    """A caller-supplied _candidate_content must not skip merge_evidence.
+
+    Only apply_skill_pending (which sets the bypass token) may write a frozen candidate. Otherwise
+    anyone could pass _candidate_content plus a matching digest and write arbitrary evidence
+    without the merge's fail-closed validation. The private keys are staging metadata, so the merge
+    rejects them as unknown fields — which is the correct fail-closed outcome, and the forged
+    count must not appear either way.
+    """
+    skill_dir = tmp_path / "test-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(BASE, encoding="utf-8")
+    forged = BASE.replace("success_count: 11", "success_count: 9999")
+
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
+         patch.object(smt, "_run_write_gate", return_value=None):
+        result = smt.skill_manage(action="patch", name="test-skill", evidence_merge={
+            "success_count": 1,
+            "_source_digest": smt.content_digest(BASE),
+            "_candidate_content": forged,
+        })
+
+    text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert "success_count: 9999" not in text, "injected candidate was written"
+    assert text == BASE, "the forged delta must not be written at all"

@@ -759,17 +759,25 @@ def _act_patch(a):
         target = Path(found["path"]) / "SKILL.md"
         merged = a["evidence_merge"]
         try:
-            current = target.read_text(encoding="utf-8-sig")
-            # Replay of an approved candidate: write the exact bytes that were previewed, and
+            # Replay of an APPROVED candidate: write the exact bytes that were previewed, and
             # refuse if the source moved since approval (a concurrent writer would be lost).
-            if "_candidate_content" in merged:
+            # Only honour a frozen candidate on the real replay path (_skill_gate_bypass set by
+            # apply_skill_pending). Otherwise anyone could hand us _candidate_content and skip
+            # merge_evidence entirely, discarding its fail-closed validation.
+            if "_candidate_content" in merged and _skill_gate_bypass.get():
+                current = target.read_text(encoding="utf-8-sig")
                 if content_digest(current) != merged.get("_source_digest"):
                     return _err("Skill changed since approval; evidence_merge replay is stale and was rejected.")
                 candidate = merged["_candidate_content"]
-            else:
+                return _edit_skill(a["name"], candidate, expected_source_digest=merged.get("_source_digest"))
+            # Read, merge and write as ONE critical section. Merging outside the lock would let two
+            # concurrent updates both read 11 and both write 12, silently losing a success — the one
+            # thing additive counters exist to prevent. The lock is re-entrant, so the nested acquire
+            # inside _guarded_write is a no-op and the digest compare still runs there.
+            with _skill_mutation_locks([a["name"]]):
+                current = target.read_text(encoding="utf-8-sig")
                 candidate = merge_evidence(current, merged)
-            return _edit_skill(a["name"], candidate,
-                               expected_source_digest=merged.get("_source_digest"))
+                return _edit_skill(a["name"], candidate, expected_source_digest=content_digest(current))
         except EvidenceMergeError as exc:
             return _err(f"evidence_merge rejected: {exc}")
     if a["content"] and (a["old_string"] or a["new_string"] is not None):

@@ -604,31 +604,36 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 
 
 # ---- Detection ----------------------------------------------------------------------------
-# Commands that hand their arguments to a SECOND parse: eval joins its argv and reads it as a script,
-# a shell carrier reads its -c payload, ssh hands the joined argv to the remote login shell, watch and
-# su run theirs through sh -c. Under any of them an operator escaped at this level comes out of the
-# first parse bare and is an operator on the second: ``eval echo hello \\> /dev/sda`` writes (bash
-# ground truth, and so do ``command eval``, ``bash -c 'eval ...'`` and ``bash -c echo\\ hello\\ \\>\\ x``)
-# while ``echo hello \\> /dev/sda`` prints. The floor cannot see which parse a byte meets last, so
-# with a second parser anywhere on the line an escaped operator is read as live -- the conservative
-# side, and the parent's reading; ``xargs`` and ``exec`` run their argv as is and are not on the list.
-_REPARSING_COMMAND_NAMES = _SHELL_CARRIER_NAMES | {"ssh", "watch", "su"}
+# The parent read an escaped operator as live everywhere: ``\\>`` stripped to ``>`` before matching, so
+# ``eval echo hello \\> /dev/sda`` (eval joins its argv and parses it again), ``xargs bash -c '...'``,
+# ``find -exec bash -c '...'``, ``env -S bash -c '...'`` and ``eval${IFS}echo${IFS}hello${IFS}\\>...``
+# all hit the floor. Bash ground truth: every one of them writes. The same reading also blocked
+# ``echo hello \\> "/dev/disk0"``, which prints and writes nothing. There is no list of dispatchers
+# that closes the first set -- anything can carry ``bash -c`` as an argument -- so the floor keeps the
+# parent's reading everywhere a second parse could exist and reads a line as a SINGLE parse only when
+# nothing on it can hand an argument to anyone: one simple command, no substitution, and a command
+# word that is a builtin printer. Only there is an escaped operator certainly an argument.
+_SINGLE_PARSE_COMMAND_NAMES = frozenset({"echo", "printf"})
 
 
-def _reparses_arguments(command: str) -> bool:
-    """Return whether any command-position word hands its arguments to another parse."""
-    return any(
-        os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() in _REPARSING_COMMAND_NAMES
+def _single_parse_only(command: str) -> bool:
+    """Return whether the shell parses this line exactly once (see _SINGLE_PARSE_COMMAND_NAMES)."""
+    if "$(" in command or "`" in command or "<(" in command or ">(" in command:
+        return False
+    words = [
+        os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower()
         for _, _, word in _iter_shell_command_word_spans(command)
-    )
+    ]
+    return len(words) == 1 and words[0] in _SINGLE_PARSE_COMMAND_NAMES
 
 
 def _strip_shell_escapes(command: str, *, live_operators: bool = False) -> str:
     """Strip backslash escapes for matching (``r\\m`` runs as ``rm``), left to right as the shell reads
     them. An escaped redirect operator is the one escape that must NOT become its bare character:
     ``echo hello \\> "/dev/disk0"`` prints ``hello > /dev/disk0`` and writes nothing, so its ``\\>``
-    becomes a space -- unless ``live_operators`` says a second parse will read it (see
-    _REPARSING_COMMAND_NAMES), in which case it is the bare operator that parse will run.
+    becomes a space -- unless ``live_operators`` says a second parse may read it (the line is not a
+    lone builtin printer, see _single_parse_only), in which case it is the bare operator that parse
+    would run.
     ``echo foo\\\\> "/dev/disk0"`` is the word ``foo\\`` followed by a REAL redirect either way, so
     the operator survives with the literal backslash detached from it (``foo\\ >``); left glued,
     _mask_quoted_prose would read ``\\>`` as an escape and let the write past the floor."""
@@ -708,8 +713,8 @@ def _normalize_command_for_detection(command: str) -> str:
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
     # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm). An escaped
-    # operator stays live when eval, a shell carrier, ssh, watch or su will parse the line again.
-    command = _strip_shell_escapes(command, live_operators=_reparses_arguments(command))
+    # operator stays live unless the line is a lone builtin printer that nothing parses again.
+    command = _strip_shell_escapes(command, live_operators=not _single_parse_only(command))
     command = re.sub(r"''|\"\"", '', command)
     # Collapse $IFS / ${IFS...} (incl. `${IFS:0:1}`) to a space: IFS defaults to whitespace, so `rm${IFS}-rf${IFS}/`
     # runs as `rm -rf /`, and every pattern — incl. the hardline floor — anchors on literal \s between tokens.
@@ -1198,6 +1203,45 @@ def _execution_flag_findings(command: str):
                         yield (f"arbitrary program execution via {executable_name} {finding[0]}", finding[1])
 
 
+def _iter_unquoted_word_spans(text: str):
+    """Yield (start, end) of every shell word in ``text``, split on UNQUOTED whitespace only."""
+    start = None
+    for kind, i, _, quote in _scan_shell(text):
+        if kind == "char" and quote is None and text[i].isspace():
+            if start is not None:
+                yield start, i
+                start = None
+        elif start is None:
+            start = i
+    if start is not None:
+        yield start, len(text)
+
+
+def _dispatched_shell_findings(command: str):
+    """Yield the ``-c`` payload of a shell reached THROUGH another command.
+
+    ``xargs bash -c '...'``, ``find . -exec sh -c '...' \\;`` and ``env -S bash -c '...'`` hand a
+    shell exactly the payload ``bash -c '...'`` would get at command position, and the payload is a
+    quoted argument the positionless rules read as prose. Any command can carry a shell as an
+    argument, so it is the shell word that is looked for, anywhere in the segment, never the
+    dispatcher. _execution_flag_findings owns the shells at command position; this owns the rest,
+    with the same payload parser, so the two cannot disagree on what a ``-c`` carries."""
+    for segment in _iter_top_level_shell_segments(command):
+        command_starts = {start for start, _, _ in _iter_shell_command_word_spans(segment)}
+        for start, end in _iter_unquoted_word_spans(segment):
+            if start in command_starts:
+                continue
+            name = os.path.basename(_deobfuscate_shell_word_for_detection(segment[start:end])).lower()
+            if name not in _SHELL_NAMES:
+                continue
+            tokens = _shell_segment_tokens(segment, start)
+            if not tokens:
+                continue
+            found, payload = _bash_exec_payload(tokens[1:])
+            if found and payload:
+                yield ("shell command via -c/-lc flag", payload)
+
+
 def _skip_shell_whitespace(command: str, pos: int) -> int:
     while pos < len(command) and command[pos].isspace():
         pos += 1
@@ -1635,7 +1679,8 @@ def _command_detection_variants(command: str):
     # hardline floor inspect what will actually run without promoting similar flags or quoted prose.
     pending = [normalized]
     while pending:
-        for _, payload in _execution_flag_findings(pending.pop()):
+        source = pending.pop()
+        for _, payload in (*_execution_flag_findings(source), *_dispatched_shell_findings(source)):
             if fresh(payload):
                 yield payload
                 # A payload may start with an option-looking program and then invoke a hardline command

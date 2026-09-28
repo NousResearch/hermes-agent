@@ -24,7 +24,7 @@ from tools.approval import (
     disable_session_yolo,
 )
 from tools.approval_context import reset_current_session_key, set_current_session_key
-from tools.approval_detection import _collapse_device_paths, _reparses_arguments, _strip_shell_escapes
+from tools.approval_detection import _collapse_device_paths, _single_parse_only, _strip_shell_escapes
 
 
 # Commands that MUST be hardline-blocked: every one destroys a whole disk.
@@ -213,6 +213,21 @@ _BLOCK_DEVICE_HARDLINE_BLOCK = [
     'eval echo foo\\\\> "/dev/sda"',
     "ssh host echo hello \\> /dev/sda",
     "watch echo hello \\> /dev/sda",
+    # ...and the second parse reached through a dispatcher, a substitution, a pipe or an IFS spelling:
+    # anything can carry `bash -c` as an argument, so nothing but a lone printer is a single parse
+    "env -S bash -c 'eval echo hello \\> /dev/sda'",
+    "xargs bash -c 'eval echo hello \\> /dev/sda'",
+    "find . -exec bash -c 'eval echo hello \\> /dev/sda' \;",
+    # a shell reached THROUGH another command parses its -c payload like one at command position
+    "xargs bash -c 'cat x > /dev/sda'",
+    "find . -exec sh -c 'wipefs -a /dev/sda' \;",
+    "env -S bash -c 'dd if=/dev/zero of=/dev/sda'",
+    "xargs -I{} /bin/bash -c 'cat {} > /dev/disk0'",
+    'find . -exec "bash" -c "cat x > /dev/nvme0n1" \;',
+    "eval${IFS}echo${IFS}hello${IFS}\\>${IFS}/dev/sda",
+    "echo hello \\> /dev/sda | bash",
+    "echo $(eval echo hi \\> /dev/sda)",
+    "echo hi \\> <(eval echo x \\> /dev/sda)",
     # A real device path still matches after every boundary that is not a path character.
     "cat x > /dev/sda",
     'cat x > "/dev/sda"',
@@ -352,9 +367,14 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
     # an escaped `>` is a literal argument: bash prints `hello > /dev/disk0` and writes nothing
     'echo hello \\> "/dev/disk0"',
     "echo hello \\> /dev/disk0",
-    # ...and without a second parse the escape stays an argument: xargs and exec run their argv as is
-    "printf x | xargs echo \\> /dev/sda",
-    "exec echo hello \\> /dev/disk0",
+    "printf '%s\\n' hello \\> /dev/sda",
+    'echo "eval is a word" \\> /dev/disk0',
+    "e\\cho hello \\> /dev/disk0",
+    # a dispatched shell with a harmless payload, and a dispatched shell as quoted prose
+    "xargs bash -c 'ls'",
+    "find . -name '*.log' -exec sh -c 'echo {}' \;",
+    "echo \"xargs bash -c 'cat x > /dev/sda'\"",
+    "grep -c bash /etc/passwd",
     # The operand lookahead must not read a trailing comment as the operand.
     "shred -u notes.txt # never do this to /dev/sda",
     # `-n`/`--no-act` is wipefs doing everything except the write: a diagnostic.
@@ -407,6 +427,7 @@ def test_lookalike_commands_stay_runnable(command):
     "mv x /dev//nvme0n1",
     "tee ..//dev/disk0 < x",
     "cp x /dev/nvme/../sda",
+    "xargs bash -c 'cp x /dev/nvme0n1'",
     ]],
     *[(c, False) for c in [
     "echo test > /dev/null",
@@ -476,6 +497,8 @@ def clean_session(monkeypatch):
     "eval echo hello \\> /dev/sda",
     "command eval echo hello \\> /dev/sda",
     "bash -c 'eval echo hello \\> /dev/sda'",
+    "xargs bash -c 'eval echo hello \\> /dev/sda'",
+    "eval${IFS}echo${IFS}hello${IFS}\\>${IFS}/dev/sda",
 ])
 def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     """These reached the approval tier at best (or no tier at all) — exactly what
@@ -539,21 +562,26 @@ def test_escaped_redirects_are_arguments_not_operators(raw, stripped):
     ('eval echo foo\\\\> "/dev/sda"', 'eval echo foo\\ > "/dev/sda"'),
 ])
 def test_escapes_under_a_second_parse_come_out_live(raw, stripped):
-    assert _reparses_arguments(raw)
+    assert not _single_parse_only(raw)
     assert _strip_shell_escapes(raw, live_operators=True) == stripped
 
 
-@pytest.mark.parametrize("command,reparsed", [
-    ("eval echo hello \\> /dev/sda", True),
-    ("command eval echo hello \\> /dev/sda", True),
-    ("bash -c echo\\ hello\\ \\>\\ /dev/sda", True),
-    ("true && ssh host echo hello \\> /dev/sda", True),
-    ("echo hello \\> /dev/disk0", False),
-    ('echo "eval is a word" \\> /dev/disk0', False),
-    ("printf x | xargs echo \\> /dev/sda", False),
+@pytest.mark.parametrize("command,single", [
+    ("echo hello \\> /dev/disk0", True),
+    ('echo "eval is a word" \\> /dev/disk0', True),
+    ("printf '%s' hi \\> /dev/sda", True),
+    ("e\\cho hello \\> /dev/disk0", True),
+    ("eval echo hello \\> /dev/sda", False),
+    ("xargs bash -c 'eval echo hello \\> /dev/sda'", False),
+    ("eval${IFS}echo${IFS}hello${IFS}\\>${IFS}/dev/sda", False),
+    ("echo hello \\> /dev/sda | bash", False),
+    ("echo $(date) \\> /dev/sda", False),
+    ("echo `date` \\> /dev/sda", False),
+    ("sudo echo hello \\> /dev/sda", False),
+    ("echo hello \\> /dev/sda; true", False),
 ])
-def test_second_parse_is_a_command_word_not_a_substring(command, reparsed):
-    assert _reparses_arguments(command) is reparsed
+def test_only_a_lone_printer_is_a_single_parse(command, single):
+    assert _single_parse_only(command) is single
 
 
 # The premise, measured on a real shell: only a second parse turns `\>` into a redirect.
@@ -565,10 +593,15 @@ def test_second_parse_is_a_command_word_not_a_substring(command, reparsed):
     ("bash -c 'eval echo hello \\> out'", True),
     ("bash -c echo\\ hello\\ \\>\\ out", True),
     ("echo foo\\\\> out", True),
+    ("echo x | xargs bash -c 'eval echo hello \\> out'", True),
+    ("eval${IFS}echo${IFS}hello${IFS}\\>${IFS}out", True),
+    ("echo hello \\> out | bash", True),
+    ('echo "eval is a word" \\> out', False),
+    ("printf '%s' hello \\> out", False),
 ])
 def test_bash_agrees_which_escaped_redirects_write(tmp_path, script, writes):
     subprocess.run(
         ["bash", "-c", script], cwd=tmp_path, check=False, timeout=10,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     assert (tmp_path / "out").exists() is writes

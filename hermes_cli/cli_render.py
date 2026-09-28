@@ -19,6 +19,9 @@ from contextlib import contextmanager, suppress
 from agent.think_scrubber import THINK_TAG_NAMES
 from hermes_cli.banner import format_banner_version_label
 from rich.console import Console
+from rich.markdown import Markdown
+from rich.style import Style
+from rich.theme import Theme
 from rich.text import Text as _RichText
 from typing import Any
 
@@ -890,7 +893,43 @@ class ChatConsole:
         self._buffer.seek(0)
         self._buffer.truncate()
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
-        self._inner.print(*args, **kwargs)
+        if any(isinstance(arg, Markdown) for arg in args):
+            base_fallback = "#FFD700"
+            try:
+                from hermes_cli.skin_engine import get_active_skin
+                _skin = get_active_skin()
+                banner_hex = _skin.get_color("banner_text", base_fallback)
+                bold_hex = _skin.get_color("bold_text", banner_hex)
+            except Exception:
+                banner_hex = bold_hex = base_fallback
+
+            def _valid_hex(value: object, fallback: str) -> str:
+                if not isinstance(value, str) or not value.strip():
+                    return fallback
+                try:
+                    Style.parse(value)
+                except Exception:
+                    return fallback
+                return value
+
+            banner_hex = _valid_hex(banner_hex, base_fallback)
+            bold_hex = _valid_hex(bold_hex, banner_hex)
+            theme_pushed = False
+            try:
+                new_theme = Theme({
+                    "markdown.paragraph": Style(color=banner_hex),
+                    "markdown.strong": Style(color=bold_hex, bold=True),
+                })
+                self._inner.push_theme(new_theme)
+                theme_pushed = True
+                self._inner.print(*args, **kwargs)
+            except Exception:
+                self._inner.print(*args, **kwargs)
+            finally:
+                if theme_pushed:
+                    self._inner.pop_theme()
+        else:
+            self._inner.print(*args, **kwargs)
         for line in _OSC_ESCAPE_RE.sub("", self._buffer.getvalue()).rstrip("\n").split("\n"):
             _cprint(line)
 

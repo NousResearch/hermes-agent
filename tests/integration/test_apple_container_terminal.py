@@ -11,7 +11,7 @@ import subprocess
 import pytest
 
 
-pytestmark = [pytest.mark.macos_only, pytest.mark.skipif(
+pytestmark = [pytest.mark.platforms("macos"), pytest.mark.skipif(
     os.getenv("HERMES_RUN_APPLE_CONTAINER_INTEGRATION") != "1",
     reason="set HERMES_RUN_APPLE_CONTAINER_INTEGRATION=1 on macOS 26 ARM64",
 )]

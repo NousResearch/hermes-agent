@@ -483,7 +483,7 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -
     if not key or not isinstance(text, str) or not text.strip():
         return None
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.message_metadata import stamp_message_timestamp
+    from agent.message_metadata import stamp_message_timestamp, stamp_message_uid
     staged = stamp_message_timestamp({"role": "user", "content": text})
     if display_kind:
         staged["display_kind"] = display_kind
@@ -492,7 +492,8 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -
             return None
         try:
             staged["_row_id"] = db.append_message(
-                key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"])
+                key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
+                message_uid=stamp_message_uid(staged))  # the live dict the turn adopts carries the row's uid
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
             return None

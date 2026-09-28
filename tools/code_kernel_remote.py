@@ -83,7 +83,10 @@ def main():
             payload, _ = run_cell(request, execution_count)
             res_name = name.replace("cell_req_", "cell_res_")
             tmp = os.path.join(CELLS, res_name + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
+            # Cell results carry the executed code's output: owner-only, even if
+            # the process umask is permissive.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False)
             os.replace(tmp, os.path.join(CELLS, res_name))
             if payload["status"] == "exit":
@@ -204,23 +207,39 @@ atexit.register(shutdown_all_remote_kernels)
 def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                          sandbox_tools: frozenset, *, idle_exit: int) -> Optional[RemoteKernel]:
     """Start a detached kernel runner on the remote. None on failure (dir removed)."""
+    from tools.code_execution_rpc import _execute_checked, _private_dirs_cmd
     from tools.code_execution_tool import (
-        MAX_STDOUT_BYTES, _ship_file_to_remote, _env_temp_dir, generate_hermes_tools_module,
+        MAX_STDOUT_BYTES, _ship_file_to_remote, _env_temp_dir,
+        _ship_env_file_and_launch, generate_hermes_tools_module,
     )
     kernel_dir = f"{_env_temp_dir(env)}/hermes_rkernel_{uuid.uuid4().hex[:12]}"
     q_dir = shlex.quote(kernel_dir)
     kernel = None
     try:
-        _sh(env, f"mkdir -p {q_dir}/cells {q_dir}/rpc")
+        # Private dirs: the kernel dir lives under a shared temp dir and carries
+        # the RPC token (in req files), tool results, and cell code/output.
+        # Fail closed on setup failure rather than ship secrets into a dir that
+        # stayed permissive.
+        _execute_checked(env, _private_dirs_cmd(kernel_dir, f"{kernel_dir}/cells",
+                                                f"{kernel_dir}/rpc"),
+                         "remote kernel dir setup", timeout=15)
         rpc_token = secrets.token_urlsafe(32)
         _ship_file_to_remote(env, f"{kernel_dir}/kernel_runner.py", REMOTE_KERNEL_RUNNER_SOURCE.format(
             cell_source=RUNNER_CELL_SOURCE, capture_limit=MAX_STDOUT_BYTES, idle_exit=idle_exit))
         _ship_file_to_remote(env, f"{kernel_dir}/hermes_tools.py",
                              generate_hermes_tools_module(list(sandbox_tools), transport="file"))
-        env_prefix = (f"HERMES_KERNEL_DIR={q_dir} HERMES_RPC_DIR={shlex.quote(kernel_dir + '/rpc')} "
-                      f"HERMES_RPC_TOKEN={shlex.quote(rpc_token)} PYTHONDONTWRITEBYTECODE=1 PYTHONPATH={q_dir}")
-        started = _sh(env, f"cd {q_dir} && nohup env {env_prefix} python3 kernel_runner.py "
-                           f"> {q_dir}/runner.log 2>&1 & echo PID:$!", timeout=20)
+        # kernel.env is removed after sourcing: the runner's env keeps the
+        # values, so the token file need not sit at rest for the kernel's
+        # lifetime. runner.log is pre-created 600 so the launch redirect never
+        # lands at the remote's default umask. The inner `&` stays inside the
+        # subshell where `$!` resolves to the runner pid.
+        launch_cmd = _ship_env_file_and_launch(
+            env, kernel_dir, "kernel.env",
+            "rm -f ./kernel.env && touch runner.log && chmod 600 runner.log && "
+            '{ nohup python3 kernel_runner.py > runner.log 2>&1 & echo "PID:$!"; }',
+            rpc_dir=f"{kernel_dir}/rpc", rpc_token=rpc_token,
+            HERMES_KERNEL_DIR=kernel_dir, PYTHONPATH=kernel_dir)
+        started = _sh(env, launch_cmd, timeout=20)
         pid = next((line.strip()[4:].strip() for line in started.splitlines()
                     if line.strip().startswith("PID:")), "")
         if not pid.isdigit():
@@ -286,9 +305,9 @@ def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> Tuple[str
     kernel.cell_seq += 1
     seq = f"{kernel.cell_seq:06d}"
     q_cells, q_res = shlex.quote(f"{kernel.kernel_dir}/cells"), shlex.quote(f"cell_res_{seq}.json")
-    _ship_file_to_remote(kernel.env, f"{kernel.kernel_dir}/cells/cell_req_{seq}.json.tmp",
-                         json.dumps({"id": seq, "code": code}, ensure_ascii=False))
-    kernel.sh(f"mv {q_cells}/cell_req_{seq}.json.tmp {q_cells}/cell_req_{seq}.json", timeout=10)
+    # One round-trip: tmp write + rename publishes the request atomically.
+    _ship_file_to_remote(kernel.env, f"{kernel.kernel_dir}/cells/cell_req_{seq}.json",
+                         json.dumps({"id": seq, "code": code}, ensure_ascii=False), atomic=True)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -302,7 +321,13 @@ def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> Tuple[str
                 status = payload.get("status", "error")
             except ValueError:
                 payload, status = {}, "protocol-error"
-            kernel.sh(f"rm -f {q_cells}/{q_res}", timeout=10)
+            try:
+                kernel.sh(f"rm -f {q_cells}/{q_res}", timeout=10)
+            except Exception:
+                # Best-effort: the cell already ran, so raising here would send
+                # the caller to its per-call fallback and run the code twice.
+                # A leftover result file is harmless (seq is monotonic).
+                logger.debug("remote kernel: cell result cleanup failed", exc_info=True)
             return status, payload
         time.sleep(_CELL_POLL_INTERVAL)
     return "timeout", {}
@@ -361,6 +386,14 @@ def _run_attached_cell(kernel: RemoteKernel, key: Tuple, code: str, *, env, task
     cell_status, cell_payload = "no-result", {}
     try:
         cell_status, cell_payload = _run_remote_cell(kernel, code, timeout)
+    except Exception:
+        # The atomic ship is the only remote call here that can raise (the poll
+        # and result cleanup are best-effort), so the request never reached the runner and the
+        # caller's per-call fallback runs the code exactly once. Kill the
+        # kernel as the timeout path does: leaving it registered would let the
+        # next call reuse a kernel whose state silently missed this cell.
+        _REGISTRY.discard(key, kernel)
+        raise
     finally:
         stop_event.set()
         rpc_thread.join(timeout=5)

@@ -2,6 +2,7 @@
 interpolation, hidden-whitespace and suspicious-entry filtering, the filtered
 subprocess env, command resolution, the cached-npx binary shortcut and the shared stderr log."""
 
+import codecs
 import json
 import logging
 import os
@@ -57,6 +58,39 @@ def _close_mcp_stderr_logs(*, scope: Optional[str] = None) -> None:
                 fh.close()
             except OSError:
                 logger.warning("Could not close MCP stderr log for %s", key, exc_info=True)
+
+
+class _StderrTee:
+    """A stdio child's stderr, copied into the shared log as it arrives while the last few KB stay
+    readable, so a server that dies at startup can say why on the MCP status surfaces instead of only in
+    the log (#124264). ``sink`` is handed to the child; ``close()`` returns the captured tail."""
+
+    _TAIL_BYTES = 16384
+
+    def __init__(self, log_fh: Any):
+        read_fd, write_fd = os.pipe()
+        self.sink = os.fdopen(write_fd, "wb", buffering=0)
+        self._log, self._tail = log_fh, bytearray()
+        self._reader = threading.Thread(target=self._pump, args=(read_fd,), name="mcp-stderr", daemon=True)
+        self._reader.start()
+
+    def _pump(self, read_fd: int) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        with os.fdopen(read_fd, "rb", buffering=0) as source:
+            while chunk := source.read(65536):
+                self._tail = (self._tail + chunk)[-self._TAIL_BYTES:]
+                try:
+                    self._log.write(decoder.decode(chunk))
+                    self._log.flush()
+                except (OSError, ValueError):  # log closed at shutdown: keep draining the child
+                    pass
+
+    def close(self, timeout: float = 2.0) -> str:
+        """Close our write end and give the reader *timeout* to drain (a surviving grandchild can keep
+        the pipe open); the tail read so far."""
+        self.sink.close()
+        self._reader.join(timeout)
+        return self._tail.decode("utf-8", errors="replace")
 
 
 def _write_stderr_log_header(server_name: str) -> None:
@@ -162,33 +196,55 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
     return None
 
 
-def _node_fallback(command: str, *, windows: Optional[bool] = None) -> str:
-    """Well-known Node install locations for bare ``npx``/``npm``/``node``; *command* unchanged when none exists.
+# Bare MCP launchers Hermes ships through PM, keyed to the package that provides them.
+_MANAGED_LAUNCHERS = {"npx": "npm", "npm": "npm", "node": "npm", "uv": "uv", "uvx": "uv"}
 
-    The managed tree comes from ``iter_hermes_node_dirs`` (Windows unpacks into ``<home>\\node``, POSIX into
-    ``<home>/node/bin``) under the active profile's ``get_hermes_home()``; on Windows the real files are
-    ``npx.cmd``/``node.exe`` (``windows`` injectable, as for ``_npx_bin_candidates``)."""
-    from hermes_constants import get_hermes_home, iter_hermes_node_dirs
-    home = os.path.expanduser("~")
-    # /usr/local/bin: canonical Node location (from-source Linux, Hermes Docker image, Intel Homebrew),
-    # needed when a hand-authored env.PATH omits it — npx's shebang re-execs /usr/bin/env node.
-    directories = [*map(str, iter_hermes_node_dirs(get_hermes_home())), os.path.join(home, ".local", "bin"),
-                   os.path.join(os.sep, "usr", "local", "bin")]
-    candidates = (c for d in directories for c in _npx_bin_candidates(d, command, windows=windows))
-    return next((c for c in candidates if os.path.isfile(c) and os.access(c, os.X_OK)), command)
+
+def _managed_launcher(command: str) -> Optional[tuple[str, list[str]]]:
+    """PM's executable for a bare launcher name and the toolchain dirs its children need first on
+    PATH (npx's ``env node``, uvx's sibling uv). Never the user's copy: a missing managed tool is
+    provisioned through PM, which raises naming the remedy when it may not. None only when PM
+    ships no build for this platform (Termux), where the platform's own copy IS the toolchain."""
+    import pm
+
+    package = _MANAGED_LAUNCHERS[command]
+    if pm.get_package(package).missing_reason(pm.current_target()) is not None:
+        return None
+    pm.ensure(package)
+    if package == "uv":
+        launcher = pm.uv_launcher(command)
+        dirs = [str(launcher.parent)] if launcher is not None else []
+    else:
+        from hermes_constants import with_hermes_node_path
+
+        dirs = [d for d in with_hermes_node_path({"PATH": ""})["PATH"].split(os.pathsep) if d]
+    executable = shutil.which(command, path=os.pathsep.join(dirs)) if dirs else None
+    if executable is None:
+        raise RuntimeError(f"Hermes-managed {command} is not installed; run `hermes pm install {package}`")
+    return executable, dirs
 
 
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
-    """Resolve a stdio command against the exact subprocess env (bare ``npx``/``npm``/``node`` under a filtered PATH).
+    """Resolve a stdio command against the exact subprocess env (bare launchers under a filtered PATH).
 
-    A ``PATH`` lookup only runs when the child env actually carries one: ``shutil.which`` with
+    Bare ``npx``/``npm``/``node``/``uv``/``uvx`` resolve to Hermes's PM-managed copies with their
+    toolchain dirs first on the child PATH, never the user's (an absolute ``command:`` stays the
+    user's choice). Anything else resolves on the child env's PATH only: ``shutil.which`` with
     ``path=None`` silently falls back to the PARENT's ``os.environ["PATH"]``, letting a command
     "resolve" against an env the child will never be spawned with. An absent child PATH is a
     miss; an explicitly empty one keeps its cwd-only meaning (same distinction the child's
-    ``execvp`` will see). Bare ``npx``/``npm``/``node`` still fall through to the explicit
-    well-known Node directories, everything else stays as-written for an honest spawn failure."""
+    ``execvp`` will see); a miss stays as-written for an honest spawn failure."""
     resolved_command = os.path.expanduser(str(command).strip())
     resolved_env = dict(env or {})
+    launcher = re.sub(r"\.(cmd|exe)$", "", resolved_command, flags=re.IGNORECASE)  # Windows spellings
+    managed = _managed_launcher(launcher) if launcher in _MANAGED_LAUNCHERS else None
+    if managed is not None:
+        resolved_command, dirs = managed
+        # Moved to the front even when already on PATH behind a user's copy.
+        keys = {os.path.normcase(d) for d in dirs}
+        rest = [p for p in resolved_env.get("PATH", "").split(os.pathsep) if p and os.path.normcase(p) not in keys]
+        resolved_env["PATH"] = os.pathsep.join([*dirs, *rest])
+        return resolved_command, resolved_env
     if os.sep not in resolved_command:
         path_arg = resolved_env.get("PATH")
         which_hit = shutil.which(resolved_command, path=path_arg) if path_arg is not None else None
@@ -196,8 +252,6 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
             which_hit = _which_with_config_pathext(resolved_command, path_arg, resolved_env)
         if which_hit:
             resolved_command = which_hit
-        elif resolved_command in {"npx", "npm", "node"}:
-            resolved_command = _node_fallback(resolved_command)
     command_dir = os.path.dirname(resolved_command)
     if command_dir:
         resolved_env = _prepend_path(resolved_env, command_dir)
@@ -296,6 +350,21 @@ def _interpolate_env_vars(value):
     if isinstance(value, list):
         return [_interpolate_env_vars(v) for v in value]
     return value
+
+
+def _require_rendered_remote(server_name: str, config: dict) -> dict:
+    """*config* back, unless it is a remote server whose ``url`` / ``headers`` still carry a literal
+    ``${VAR}`` after rendering: sending that is a guaranteed 401 that reads as a bad credential
+    (#119092), so fail closed naming the variable instead."""
+    if "url" not in config:
+        return config
+    values = [config.get("url") or "", *(config.get("headers") or {}).values()]
+    unresolved = sorted({m.group(1) for value in values for m in _ENV_VAR_PATTERN.finditer(str(value))})
+    if unresolved:
+        refs = ", ".join(f"${{{ref}}}" for ref in unresolved)
+        raise ValueError(f"MCP server '{server_name}': {refs} in url/headers is not set in this profile's "
+                         ".env or secret source")
+    return config
 
 
 # (server_name, dotted key path) pairs already warned about: config loads repeat per discovery pass.

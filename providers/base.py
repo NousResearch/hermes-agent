@@ -409,7 +409,9 @@ class ProviderProfile:
             with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
-            return [m["id"] for m in items if isinstance(m, dict) and "id" in m]
+            from hermes_cli.chat_catalog import chat_catalog_ids
+
+            return chat_catalog_ids(items)
         except Exception as exc:
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None

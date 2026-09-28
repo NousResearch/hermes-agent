@@ -760,10 +760,13 @@ class GatewayStartupMixin:
     def _crash_left_reply(self, history: list, started: float, origin) -> Optional[str]:
         """What a crash-left turn owes, judged as live delivery would have: ``None`` when it never
         persisted a final reply after *started*; ``""`` when nothing would have been presented (a
-        silence marker on a machinery turn, a muted diagnostic wake); else the text to send, with a
-        human turn's bare silence marker replaced by the same notice the live path sends."""
+        silence marker on a machinery turn or on a turn the adapter reported as not addressed to the
+        bot, a muted diagnostic wake); else the text to send, with any other bare silence marker
+        replaced by the same notice the live path sends."""
         from gateway.platforms.base import _strip_media_directives
-        from gateway.response_filters import is_intentional_silence_response, is_machinery_display_kind
+        from gateway.response_filters import (
+            is_intentional_silence_response, is_machinery_display_kind, silence_allowed,
+        )
         from gateway.run import _sanitize_gateway_final_response
         from gateway.run_turn import _UNEXPECTED_SILENCE_REPLY
         from gateway.warning_notifications import diagnostic_turn_muted
@@ -774,8 +777,7 @@ class GatewayStartupMixin:
                 or (coerce_epoch(last.get("timestamp")) or 0) < started):
             return None
         prompt = next((m for m in reversed(visible) if m.get("role") == "user"), {})
-        machinery = is_machinery_display_kind(prompt.get("display_kind"))
-        if machinery:
+        if is_machinery_display_kind(prompt.get("display_kind")):
             try:  # the owning profile's display policy, as the adapter reads it at delivery
                 scope = self._media_delivery_scope_for_source(origin)
             except Exception:
@@ -785,7 +787,9 @@ class GatewayStartupMixin:
                 if diagnostic_turn_muted(prompt.get("display_metadata"), origin.platform):
                     return ""
         if is_intentional_silence_response(last["content"]):
-            return "" if machinery else _UNEXPECTED_SILENCE_REPLY
+            silent_ok = silence_allowed(
+                prompt.get("display_kind"), (prompt.get("display_metadata") or {}).get("reply_expected"))
+            return "" if silent_ok else _UNEXPECTED_SILENCE_REPLY
         return _strip_media_directives(_sanitize_gateway_final_response(origin.platform, last["content"])).strip() or None
 
     @staticmethod
@@ -882,6 +886,7 @@ class GatewayStartupMixin:
                 disarm_startup_watchdog()
         logger.info("Session storage: %s", self.config.sessions_dir)
         self._start_log_systemd_timing_alignment()
+        self._start_log_retired_session_reset()
         self._log_agent_budget()
         # Warn prominently when redaction is opted out; the redactor snapshots its state at import time,
         # so this line is the source of truth for the process lifetime.
@@ -931,6 +936,19 @@ class GatewayStartupMixin:
             if _adv_msg:
                 logger.warning("%s", _adv_msg)
                 logger.warning("Run `hermes doctor` on the gateway host for full remediation steps.")
+
+    def _start_log_retired_session_reset(self) -> None:
+        """Warn per served profile whose config still declares an idle/daily ``session_reset``,
+        unless the plugin that honours it is enabled. Never raises."""
+        with _log_suppressed(logging.DEBUG, "retired session_reset check failed", exc_info=True):
+            from gateway.config_loader import read_yaml_layers
+            from hermes_cli.profiles import profiles_to_serve
+            from hermes_cli.session_reset_retirement import format_notice, reset_plugin_enabled, retired_reset_policy
+            hits = [(name, found) for name, home in profiles_to_serve(bool(self.config.multiplex_profiles))
+                    if (found := retired_reset_policy(read_yaml_layers(home)))]
+            if hits and not reset_plugin_enabled():
+                for name, (path, mode) in hits:
+                    logger.warning("Profile %s: %s", name, format_notice(path, mode))
 
     def _start_log_systemd_timing_alignment(self) -> None:
         """Warn when systemd's TimeoutStopSec does not cover the drain window (a unit file from before
@@ -1763,7 +1781,9 @@ class GatewayStartupMixin:
         # Ensure a session_store entry exists for this key; switch_session then re-points it.
         await self.async_session_store.get_or_create_session(dest.source)
         # switch_session ends the prior session and reopens the CLI session under the new key.
-        switched = await self.async_session_store.switch_session(session_key, cli_session_id)
+        switched = await self.async_session_store.switch_session(
+            session_key, cli_session_id, preserve_prompt_pin=False,
+        )
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {cli_session_id}")
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale

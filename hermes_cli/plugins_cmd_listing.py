@@ -24,12 +24,14 @@ def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set
         filtered = [entry for entry in filtered if entry[3] != "bundled"]
     if getattr(args, "enabled", False):
         active = _pc()._category_active_names()
-        filtered = [
-            entry for entry in filtered
-            if _pc()._plugin_status(entry[0], enabled, disabled, key=entry[5], source=entry[3], dir_path=entry[4],
-                              active=active) == "enabled"
-        ]
+        filtered = [entry for entry in filtered if _entry_status(entry, enabled, disabled, active) == "enabled"]
     return filtered
+
+
+def _entry_status(entry: tuple, enabled: set, disabled: set, active: set) -> str:
+    """``_plugin_status`` for one ``_discover_all_plugins`` row."""
+    name, _version, _description, source, dir_path, key = entry
+    return _pc()._plugin_status(name, enabled, disabled, key, source=source, dir_path=dir_path, active=active)
 
 
 _STATUS_MARKUP = {"disabled": "[red]disabled[/red]", "enabled": "[green]enabled[/green]"}

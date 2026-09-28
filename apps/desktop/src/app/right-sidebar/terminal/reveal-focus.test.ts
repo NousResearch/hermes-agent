@@ -76,6 +76,7 @@ beforeEach(() => {
   unmountKeybinds = renderHook(
     () =>
       useKeybinds({
+        requestGateway: vi.fn(),
         archiveSelectedSession: () => undefined,
         openNewSessionTab: () => undefined,
         startFreshSession: () => undefined,

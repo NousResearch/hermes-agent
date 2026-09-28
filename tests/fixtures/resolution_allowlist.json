@@ -171,11 +171,6 @@
   },
   {
     "path": "hermes_cli/gateway.py",
-    "symbol": "_append_node_dir_for_service",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/gateway.py",
     "symbol": "_build_wsl_interop_paths",
     "kind": "bare_which"
   },
@@ -300,11 +295,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/main_install_repair.py",
-    "symbol": "_resolve_node_runtime_npm",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/main_tui_launch.py",
     "symbol": "_apply_tui_python_env",
     "kind": "bare_which"
@@ -377,11 +367,6 @@
   {
     "path": "hermes_cli/source_build.py",
     "symbol": "run_source_script",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/source_build.py",
-    "symbol": "source_product_current",
     "kind": "bare_which"
   },
   {
@@ -550,6 +535,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "tools/mcp_tool_config.py",
+    "symbol": "_managed_launcher",
+    "kind": "bare_which"
+  },
+  {
     "path": "tools/process_registry.py",
     "symbol": "_build_systemd_scope_argv",
     "kind": "bare_which"
@@ -692,6 +682,11 @@
   {
     "path": "tools/bot_desktop/runtime.py",
     "symbol": "installable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "tools/file_operations_lint.py",
+    "symbol": "LintMixin._run_managed_node_linter",
     "kind": "bare_which"
   }
 ]

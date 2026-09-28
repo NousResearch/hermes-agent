@@ -63,8 +63,8 @@ _VERIFY_TIMEOUT = 15
 from hermes_constants import PROFILE_ID_RE as _PROFILE_ID_RE
 
 _SUPERVISOR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
-_UNIT_RE = re.compile(r"^hermes-serve(-[a-z0-9][a-z0-9_-]{0,63})?\.service$")
-_SERVE_UNIT_PATTERN = "hermes-serve*"
+_UNIT_RE = re.compile(r"^hermes-(serve|dashboard)(-[a-z0-9][a-z0-9_-]{0,63})?\.service$")
+_SERVE_UNIT_PATTERNS = ("hermes-serve*", "hermes-dashboard*")
 _SCOPE_LABELS = ("user", "system")
 _UNIT_RESTART_TIMEOUT = 60
 _UNIT_SETTLE_ATTEMPTS = 10
@@ -109,14 +109,24 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
     this process's authorization gates (``DISCORD_ALLOWED_CHANNELS``, ``GATEWAY_ALLOW_ALL_USERS`` ...)
     and enforce them as its own — its ``.env`` only overwrites the keys it defines (#113270). Gates are
     dropped when *profile* is not the launch profile; a same-profile child keeps an operator export.
+
+    Restarting the host multiplexer from a named profile does not copy this process's environ: the
+    child is ``host_gateway_child_env`` (``served_profile_child_env`` for the default root) so the
+    launching profile's platform credentials never become the primary adapter's.
     """
-    env = os.environ.copy()
+    launch = _launch_profile()
+    target = profile if profile is not None else launch
+    if target == "default" and launch != "default":
+        from tools.environments.local import host_gateway_child_env
+        env = host_gateway_child_env()
+    else:
+        env = os.environ.copy()
+        if profile is not None and profile != launch:
+            from tools.environments.local_env_policy import strip_profile_gate_env
+            strip_profile_gate_env(env)
     for marker in _GATEWAY_MARKERS:
         env.pop(marker, None)
     env[_RECOVERY_ENV] = "1"
-    if profile is not None and profile != _launch_profile():
-        from tools.environments.local_env_policy import strip_profile_gate_env
-        strip_profile_gate_env(env)
     return env
 
 
@@ -261,21 +271,22 @@ def _systemctl_scopes() -> list[tuple[str, list[str]]]:
 
 
 def _listed_serve_units(scope: list[str], *, run: Callable[..., Any]) -> list[str]:
-    """Serve units systemd knows about in one scope, validated by name."""
-    result = _run_quiet(
-        run,
-        scope + ["list-units", _SERVE_UNIT_PATTERN, "--plain", "--no-legend", "--no-pager"],
-        timeout=_VERIFY_TIMEOUT,
-    )
-    if result is None:
-        return []
-    # The glob is a systemd pattern, not a name gate (`hermes-serve*` also matches
-    # `hermes-server.service`): require the exact base unit or the profile family.
+    """Serve/dashboard units systemd knows about in one scope, validated by name."""
     units: list[str] = []
-    for line in (getattr(result, "stdout", "") or "").splitlines():
-        parts = line.split()
-        if parts and _UNIT_RE.fullmatch(parts[0]) and parts[0] not in units:
-            units.append(parts[0])
+    for pattern in _SERVE_UNIT_PATTERNS:
+        result = _run_quiet(
+            run,
+            scope + ["list-units", pattern, "--plain", "--no-legend", "--no-pager"],
+            timeout=_VERIFY_TIMEOUT,
+        )
+        if result is None:
+            continue
+        # The glob is a systemd pattern, not a name gate (`hermes-serve*` also matches
+        # `hermes-server.service`): require the exact base unit or the profile family.
+        for line in (getattr(result, "stdout", "") or "").splitlines():
+            parts = line.split()
+            if parts and _UNIT_RE.fullmatch(parts[0]) and parts[0] not in units:
+                units.append(parts[0])
     return units
 
 
@@ -341,7 +352,7 @@ def _normalized_skips(skip_units: Iterable[Any]) -> tuple[set[tuple[str, str]], 
 def restart_serve_units(
     *, skip_units: Iterable[Any] = (), run: Callable[..., Any] = subprocess.run, sleep: Callable[[float], Any] = time.sleep
 ) -> dict[str, list[str]]:
-    """Restart every active ``hermes-serve*`` systemd unit from this process.
+    """Restart every active ``hermes-serve*``/``hermes-dashboard*`` systemd unit from this process.
 
     Units are enumerated from systemd, never from the update inventory, so a manually launched or
     Desktop-owned ``hermes serve`` (no unit) structurally cannot be touched here.

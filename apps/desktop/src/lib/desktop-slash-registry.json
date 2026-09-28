@@ -88,6 +88,7 @@
   "/retry": null,
   "/review": null,
   "/rollback": null,
+  "/s": null,
   "/save": null,
   "/sb": "terminal",
   "/sessions": null,

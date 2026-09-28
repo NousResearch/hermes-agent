@@ -411,6 +411,21 @@ def served_profile_child_env(
     return env
 
 
+def host_gateway_child_env(
+    base: "Mapping[str, str] | None" = None,
+) -> dict[str, str]:
+    """Child env for the host gateway: the default profile's secrets, never the launcher's.
+
+    ``served_profile_child_env`` — not ``os.environ.copy()``. A profile-scoped parent
+    (desktop, fleet restart, detached watcher) must not donate its dotenv to the
+    multiplexer that owns the primary adapter map.
+    """
+    from hermes_constants import get_default_hermes_root
+    return served_profile_child_env(
+        base=base, target_home=get_default_hermes_root(), inherit_credentials=True,
+    )
+
+
 def _is_routed_home(target_home: "str | Path") -> bool:
     """True when ``target_home`` is not the process's own (launch) home.
 
@@ -435,11 +450,11 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
     installing a HERMES_HOME override without that flag."""
     from agent.secret_scope import _is_global_env, load_env_file
-    from hermes_constants import get_hermes_home_override, get_process_hermes_home
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     target = target_home or get_hermes_home_override()
     if not target or not _is_routed_home(target):
         return env
-    launch_home = get_process_hermes_home()
+    launch_home = get_routing_process_hermes_home()
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
     # Folded strip: on Windows the env block is case-insensitive, so residue
     # stored under a variant casing is the same variable and must go too. The

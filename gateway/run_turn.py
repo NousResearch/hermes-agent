@@ -25,7 +25,9 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
-from gateway.response_filters import display_kind_for_event, is_machinery_display_kind
+from gateway.response_filters import (
+    display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
+)
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -1278,7 +1280,9 @@ class GatewayTurnMixin:
             session_id=session_entry.session_id, session_db=_hyg_session_db,
         )
         _seed_hygiene_system_prompt(_hyg_agent, _hyg_session_row)
-        # A rebuilt (not retained) prompt is deliberately stale for every real gateway surface.
+        # The stamp only marks this agent as no real surface. Since #104414 Platform is not a
+        # restore-identity field, so it no longer forces the next live turn to rebuild; the seed's
+        # retain flag is what keeps the reduced-toolset build out of the session row (#122822).
         _hyg_agent.platform = _GATEWAY_HYGIENE_PLATFORM
         return _hyg_agent, _hyg_session_db
 
@@ -1322,6 +1326,10 @@ class GatewayTurnMixin:
                     task_id=session_entry.session_id or "default",
                 ),
             )
+            # Register the live worker with shutdown NOW, not only once it is deferred: the default
+            # executor is outside self._executor's quiesce, so an untracked in-flight summary would let
+            # stop() close/checkpoint state.db under its late write (mirrors run_codex_hygiene_compaction).
+            self._track_deferred_agent_worker(attempt.future, _hyg_agent)
             attempt.wait_started = time.monotonic()
             try:
                 _compressed = await self._hmwa_hygiene_wait_for_summary(attempt, hs, session_entry)
@@ -1416,27 +1424,15 @@ class GatewayTurnMixin:
         if history:
             return
         if not await self.async_session_store.has_any_sessions():
-            _intro_note = (
-                "[System note: This is the user's very first message ever. "
-                "Briefly introduce yourself and mention that /help shows available commands. "
-                "Keep the introduction concise -- one or two sentences max.]"
+            # Same branch logic as the TUI (profile-build offer once when "ask", else plain intro);
+            # first_contact_turn_note already falls back to the plain intro on error.
+            from agent.onboarding import first_contact_turn_note
+            note = first_contact_turn_note(
+                _load_gateway_config(), _hermes_home / "config.yaml",
+                session_history_empty=True, install_has_prior_sessions=False,
             )
-            # onboarding.profile_build == "ask" (default) and not yet offered: swap the plain intro for
-            # a consent-gated profile-build directive. Fires at most once.
-            try:
-                from agent.onboarding import (
-                    PROFILE_BUILD_FLAG, is_seen, mark_seen, profile_build_directive,
-                    profile_build_mode,
-                )
-                _onb_cfg = _load_gateway_config()
-                if profile_build_mode(_onb_cfg) == "ask" and not is_seen(_onb_cfg, PROFILE_BUILD_FLAG):
-                    turn_sidecar_notes.append(profile_build_directive().strip())
-                    mark_seen(_hermes_home / "config.yaml", PROFILE_BUILD_FLAG)
-                else:
-                    turn_sidecar_notes.append(_intro_note)
-            except Exception as _pb_err:
-                logger.debug("Profile-build onboarding directive failed, using plain intro: %s", _pb_err)
-                turn_sidecar_notes.append(_intro_note)
+            if note:
+                turn_sidecar_notes.append(note)
 
         # One-time prompt if no home channel is set (webhooks deliver to configured targets instead).
         if not source.platform or source.platform in (Platform.LOCAL, Platform.WEBHOOK):
@@ -1517,6 +1513,7 @@ class GatewayTurnMixin:
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
         persist_user_display_kind: Optional[str] = None,
+        reply_expected: Optional[bool] = None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -1533,15 +1530,22 @@ class GatewayTurnMixin:
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
-        # opened the chain: an internal follow-up may go silent, a human one must not.
+        # opened the chain: an internal follow-up, or a message not addressed to the bot, may go
+        # silent; any other human one must not.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        _silence_reply_expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
+        if _intentional_silence and not silence_allowed(_silence_kind, _silence_reply_expected):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
             )
             _intentional_silence = False
             response = _UNEXPECTED_SILENCE_REPLY
+        elif _intentional_silence and not is_machinery_display_kind(_silence_kind):
+            logger.debug(
+                "silence marker suppressed on an unaddressed turn: platform=%s chat=%s",
+                _platform_name, source.chat_id or "unknown",
+            )
 
         # "(empty)" = the model produced no visible content after exhausting all retries. One
         # text with the CLI explainer and the desktop (agent/turn_explainers.py) so the user
@@ -2071,7 +2075,11 @@ class GatewayTurnMixin:
 
         # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
         # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
-        context_prompt = self._pinned_session_context_prompt(context, _redact_pii, session_key)
+        if event.internal and session_key:
+            await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
+        context_prompt = self._pinned_session_context_prompt(
+            context, _redact_pii, session_key, internal=event.internal,
+        )
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).
@@ -2189,17 +2197,27 @@ class GatewayTurnMixin:
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
+            # Internal events reuse the last human turn's channel inputs (see _pinned_channel_inputs).
+            _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(
+                session_key, event.channel_prompt, source, internal=event.internal,
+            )
+            if not event.internal:
+                # Persist the coherent context+channel pair before execution: a crash during the
+                # human turn may be followed by an internal startup-resume on the next process.
+                await self._persist_prompt_pins(session_key, _run_start_session_id)
             agent_result = await self._run_agent(
-                message=message_text, context_prompt=prepared.context_prompt, history=history, source=source,
+                message=message_text, context_prompt=prepared.context_prompt, history=history, source=_turn_source,
                 session_id=_run_start_session_id, session_key=session_key,
                 run_generation=run_generation, event_message_id=self._reply_anchor_for_event(event),
                 inbound_message_id=str(event.message_id) if event.message_id else None,
-                channel_prompt=event.channel_prompt, moa_config=getattr(event, "_moa_config", None),
+                channel_prompt=_turn_channel_prompt, moa_config=getattr(event, "_moa_config", None),
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
+                reply_expected=event.reply_expected,
                 persist_user_display_metadata={
-                    "gateway_input_owner": prepared.persistence_owner, **diagnostic_metadata(event)},
+                    "gateway_input_owner": prepared.persistence_owner,
+                    **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
@@ -2228,6 +2246,7 @@ class GatewayTurnMixin:
                 agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
                 persist_user_display_kind=prepared.persist_user_display_kind,
+                reply_expected=event.reply_expected,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
@@ -3722,7 +3741,7 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+            if silence_allowed(turn_ctx.persist_user_display_kind, turn_ctx.reply_expected):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",
@@ -3825,6 +3844,7 @@ class GatewayTurnMixin:
         # Queued Discord turns carry the same routing note as first turns; persist the authored text.
         next_persist_message = None
         next_display_kind = display_kind_for_event(pending_event)
+        next_reply_expected = pending_event.reply_expected if pending_event is not None else None
         # See #60671.
         if pending_event is not None:
             next_source = getattr(pending_event, "source", None) or source
@@ -3852,8 +3872,17 @@ class GatewayTurnMixin:
             next_persist_message = strip_discord_triggering_note(pending_event, next_message)
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
-            next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+            next_channel_prompt, next_source = self._pinned_channel_inputs(
+                next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
+            )
+            if not pending_event.internal:
+                # A drained human turn re-pins its channel inputs; make them durable like a first turn.
+                await self._persist_prompt_pins(next_session_key, session_id)
             next_message_type = getattr(pending_event, "message_type", None)
+        else:
+            # Event-less interrupt/steer follow-ups continue the effective prompt
+            # of the turn they are recursively following.
+            next_channel_prompt = turn_ctx.channel_prompt
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.
@@ -3901,7 +3930,9 @@ class GatewayTurnMixin:
                 channel_prompt=next_channel_prompt, message_type=next_message_type,
                 persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
-                persist_user_display_metadata=diagnostic_metadata(pending_event) or None,
+                reply_expected=next_reply_expected,
+                persist_user_display_metadata={
+                    **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
             )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
@@ -3925,6 +3956,7 @@ class GatewayTurnMixin:
                 **merged,
                 "queued_terminal_inbound_id": next_inbound_id,
                 "queued_terminal_display_kind": next_display_kind,
+                "queued_terminal_reply_expected": next_reply_expected,
                 "queued_terminal_notification_category": (
                     (pending_event.metadata or {}).get("notification_category", "result")
                     if pending_event is not None and pending_event.internal else "result"),
@@ -4226,6 +4258,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
@@ -4262,6 +4295,7 @@ class GatewayTurnMixin:
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata,
             scheduled_heartbeat=scheduled_heartbeat,
         )

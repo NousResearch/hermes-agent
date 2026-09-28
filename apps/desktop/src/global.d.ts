@@ -78,7 +78,7 @@ declare global {
       // a running subagent's session.
       openSessionWindow: (
         sessionId: string,
-        opts?: { profile?: null | string; watch?: boolean }
+        opts?: { connectionId?: null | string; profile?: null | string; watch?: boolean }
       ) => Promise<{ ok: boolean; error?: string }>
       // Resume this session in the user's own terminal emulator (`hermes --tui
       // --resume <id>`) — the external terminal, not the in-app pane.
@@ -115,14 +115,6 @@ declare global {
       chatOnboarding?: {
         grow: (request: GrowRequest) => void
         soloBoot: () => void
-      }
-      introReveal?: {
-        open: (payload?: { hideMain?: boolean }) => Promise<{ ok: boolean }>
-        close: (payload?: { showMain?: boolean }) => Promise<{ ok: boolean }>
-        skip: () => void
-        ready: () => void
-        onSkip: (callback: () => void) => () => void
-        onClosed: (callback: () => void) => () => void
       }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
@@ -243,7 +235,10 @@ declare global {
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
-      oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
+      oauthLoginConnectionConfig: (
+        remoteUrl: string,
+        options?: DesktopOauthLoginOptions
+      ) => Promise<DesktopOauthLoginResult>
       oauthLogoutConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLogoutResult>
       // Hermes Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
@@ -362,9 +357,6 @@ declare global {
       guestOnboardingEnabled?: boolean
       /** Sanitized local `display.skin`, available before any gateway connects. */
       localSkin?: { profile: string; skin: HermesSkin } | null
-      /** Launch flag: skip the first-run film (HERMES_SKIP_INTRO=1 or
-       *  --skip-intro) so a fresh HERMES_HOME lands on the guided chat. */
-      skipIntro?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       minimizeToTray?: {
@@ -441,8 +433,9 @@ declare global {
       desktopPluginsRoot?: () => Promise<string>
       /** Refresh unified packages' desktop halves and return the touched paths. */
       reconcileDesktopPlugins?: () => Promise<string[]>
-      /** LOCAL `<HERMES_HOME>/logs` (profile-aware) — error card "Open Logs". */
-      logsRoot?: () => Promise<string>
+      /** LOCAL `<HERMES_HOME>/logs` of `profile` (default: the active Desktop
+       *  profile) — error card "Open Logs". */
+      logsRoot?: (profile?: string) => Promise<string>
       // Local AGENT-plugin root (<HERMES_HOME>/plugins), same Electron-local
       // resolution. The disk door also scans it for `<name>/desktop/plugin.js`
       // so one agent-plugin package can ship a desktop UI half. Optional:
@@ -580,6 +573,8 @@ declare global {
       onBatteryChanged?: (callback: (onBattery: boolean) => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
+      /** Resolve This device without starting an install. Missing on an older preload. */
+      probeLocalBackend?: () => Promise<{ bootstrapNeeded: boolean }>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
       recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
@@ -1153,6 +1148,7 @@ export interface DesktopAgentRoster {
     kind: DesktopConnectionKind
     reachable: boolean
     error?: string
+    needsSignIn?: boolean
     // Stable backend identity (/api/status install_id) when known.
     installId?: string
   }[]
@@ -1234,6 +1230,29 @@ export interface DesktopConnectionProbeResult {
 export interface ExternalOpenFailedPayload {
   url: string
   message?: string
+  /** Machine-readable failure class; the dialog picks localized copy per code. */
+  code?: 'missing-file'
+}
+
+export interface DesktopOauthLoginOptions {
+  /**
+   * Registry-draft identity for a sign-in that runs before the draft is
+   * saved. The main process derives the login window's cookie partition from
+   * the settled connection id; without it an unsaved draft's session lands in
+   * the legacy shared jar the saved connection never reads.
+   */
+  connectionId?: null | string
+  /** Draft label — used to mint the id when `connectionId` is absent. */
+  label?: string
+  /**
+   * Draft entry kind — the kind the save will persist. Together with
+   * `authMode` it gates the pre-save cookie jar: only a cookie-auth remote
+   * draft gets its own jar; cloud and token drafts sign in on the legacy
+   * shared jar, which is what they read after the save.
+   */
+  kind?: DesktopConnectionKind
+  /** Draft auth mode ('oauth' | 'token') the save will persist. */
+  authMode?: 'oauth' | 'token'
 }
 
 export interface DesktopOauthLoginResult {
@@ -1241,6 +1260,11 @@ export interface DesktopOauthLoginResult {
   baseUrl: string
   connected: boolean
   error?: string
+  /**
+   * The connection id the session was written for. A pre-save sign-in should
+   * pin this into the draft so the later save reuses the same id (and jar).
+   */
+  connectionId?: string
 }
 
 export interface DesktopOauthLogoutResult {

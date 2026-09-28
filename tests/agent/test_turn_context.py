@@ -506,6 +506,29 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     assert not _title_turn(platform).called
 
 
+def test_prologue_names_a_subagent_run_after_its_goal_without_a_model_call():
+    """A delegate run gets ``Subagent: <goal>`` at derived authority so it reads as machinery
+    wherever ``sessions.show_subagents`` lists it, instead of staying untitled (#97202)."""
+    from agent import turn_context
+
+    agent = _TitlingAgent("subagent")
+    agent._session_db.set_auto_title.return_value = True
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            agent, [{"role": "user", "content": "Audit the billing module\n\nContext: ..."}])
+    assert not titler.called
+    agent._session_db.set_auto_title.assert_called_once_with(
+        "sess-1", "Subagent: Audit the billing module", source="derived")
+
+
+def test_prologue_leaves_cron_runs_untitled():
+    agent = _TitlingAgent("cron")
+    from agent import turn_context
+
+    turn_context._maybe_title_session_at_turn_start(agent, [{"role": "user", "content": "Run the job"}])
+    assert not agent._session_db.set_auto_title.called
+
+
 def test_prologue_forwards_the_submit_title_preview_to_the_titler():
     """A paste-shrunk ``display_metadata.title_preview`` from prompt.submit is the text the
     titler should read, not the full pasted body."""

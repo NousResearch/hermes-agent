@@ -833,6 +833,25 @@ class TestProfileCatalogAuthoritative:
         assert result["accepted"] is True
         assert result["recognized"] is True
 
+    def test_nebius_relay_base_url_validates_against_relay_listing(self, monkeypatch):
+        """A configured relay base URL must decide Nebius Token Factory validation (#121388)."""
+        relay_base_url = "https://relay.example.invalid/v1"
+        calls = []
+
+        def fetch_relay_models(_api_key, base_url, **_kwargs):
+            calls.append(base_url)
+            return ["relay-only/model"] if base_url == relay_base_url else ["canonical-only/model"]
+
+        monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda _provider: ["canonical-only/model"])
+        monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch_relay_models)
+
+        result = validate_requested_model(
+            "relay-only/model", "nebius-token-factory", api_key="k", base_url=relay_base_url)
+
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert calls == [relay_base_url]
+
 
 # -- validate — whitespace in self-hosted / user-configured ids --------------
 

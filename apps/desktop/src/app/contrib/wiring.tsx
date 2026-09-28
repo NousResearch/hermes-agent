@@ -21,7 +21,6 @@ import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dial
 import { FindBar } from '@/components/find-bar'
 import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
-import { IntroRevealGate } from '@/components/intro-reveal'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { OnboardingChatGate } from '@/components/onboarding-chat/gate'
@@ -88,10 +87,12 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
+import type { SessionInfo } from '@/types/hermes'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
@@ -440,7 +441,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({ activeSessionIdRef })
 
-  const { applySavedMainModel, refreshCurrentModel, selectModel } = useModelControls({
+  const { applySavedMainModel, followDefaultModel, refreshCurrentModel, selectModel } = useModelControls({
     cacheOwnerConnectionId: activeConnectionId || undefined,
     cacheProfile: activeGatewayProfile,
     queryClient,
@@ -564,7 +565,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     removeSession,
     resumeSession,
     selectSidebarItem,
-    startFreshSessionDraft
+    startFreshSessionDraft,
+    unarchiveSession
   } = useSessionActions({
     activeSessionId,
     activeSessionIdRef,
@@ -1068,6 +1070,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   useKeybinds({
     archiveSelectedSession,
     openNewSessionTab,
+    requestGateway,
     startFreshSession: startFreshSessionDraft,
     toggleCommandCenter,
     toggleSelectedPin
@@ -1092,6 +1095,32 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     return () => registerPaneCloser('workspace')
   }, [navigate])
 
+  // One owner-aware door for "open a stored session from a list row" — the
+  // sessions sidebar, the Cron page's run history and the command center all
+  // funnel here. The clicked ROW is the identity, not its bare id: two
+  // profiles can hold twins with the same stored id (#92454), and an id-only
+  // resume resolves against whichever cached row is found first — the user
+  // clicks a row previewing profile A (or a cron run served by an SSH backend)
+  // and the resume dials the ambient backend instead, so the transcript never
+  // loads (#82527). Pin the row's own (connection, profile) as the resume owner
+  // before navigating; untagged rows (single-profile installs and the legacy
+  // primary-SSH path) keep the ambient/id-only path. Clear any stale explicit
+  // hint first: older builds incorrectly persisted those rows as `local`,
+  // which made a remote session click switch to the Mac backend and fail with
+  // "session not found".
+  const openStoredSession = (sessionId: string, session?: SessionInfo) => {
+    const ownerRoute = sessionOwnerRouteFromRow(session)
+
+    if (ownerRoute) {
+      requestSessionResume(sessionId, ownerRoute)
+    } else {
+      forgetSessionOwnerHintsForSession(sessionId)
+      requestSessionResume(sessionId)
+    }
+
+    openSession(sessionId, navigate)
+  }
+
   // The controller's entire callback surface, gathered into the stable
   // `actions` bag. `nextActions` is TS-checked against WiringActions each
   // render; its fields are copied into the ref object so `actions` keeps one
@@ -1100,7 +1129,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const nextActions: WiringActions = {
     onAddContextRef: composer.addContextRefAttachment,
     onAddUrl: url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url),
-    onArchiveSession: sessionId => void archiveSession(sessionId),
+    // The sidebar row menu reuses this verb in the Archived view too, where the
+    // row is already archived — dispatch by state so the verb restores there
+    // instead of re-archiving (#98813).
+    onArchiveSession: sessionId => {
+      const listed = $sessions.get().find(session => sessionMatchesStoredId(session, sessionId))
+
+      const isArchived =
+        listed?.archived === true || $archivedSessions.get().some(session => sessionMatchesStoredId(session, sessionId))
+
+      void (isArchived ? unarchiveSession(sessionId) : archiveSession(sessionId))
+    },
     onAttachDroppedItems: composer.attachDroppedItems,
     onAttachImageBlob: composer.attachImageBlob,
     onAttachPastedText: composer.attachPastedText,
@@ -1143,28 +1182,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRemoveAttachment: id => void composer.removeAttachment(id),
     onRestoreToMessage: restoreToMessage,
     // Already on screen (open tile, or the main session)? Jump to its tab;
-    // otherwise load it into main. Same door every other session link uses.
-    // The clicked ROW is the identity, not its bare id: two profiles can hold
-    // twins with the same stored id (#92454), and an id-only resume resolves
-    // against whichever cached row is found first — the user clicks a row
-    // previewing profile A and the resume dials profile B. Pin the row's own
-    // (connection, profile) as the resume owner before navigating; untagged
-    // rows (single-profile installs and the legacy primary-SSH path) keep the
-    // ambient/id-only path. Clear any stale explicit hint first: older builds
-    // incorrectly persisted those rows as `local`, which made a remote session
-    // click switch to the Mac backend and fail with "session not found".
-    onResumeSession: (sessionId, session) => {
-      const ownerRoute = sessionOwnerRouteFromRow(session)
-
-      if (ownerRoute) {
-        requestSessionResume(sessionId, ownerRoute)
-      } else {
-        forgetSessionOwnerHintsForSession(sessionId)
-        requestSessionResume(sessionId)
-      }
-
-      openSession(sessionId, navigate)
-    },
+    // otherwise load it into main. Same owner-aware door every other session
+    // link uses (openStoredSession).
+    onResumeSession: openStoredSession,
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSteerHidden: injectHiddenPrompt,
@@ -1176,6 +1196,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       triggerAndRefreshCronJobs(jobId, profileScope === ALL_PROFILES ? 'all' : profileScope)
         .then(() => undefined)
         .catch(() => undefined),
+    followDefaultModel,
     getGateway: () => gatewayRef.current,
     openAgents,
     openCommandCenterSection,
@@ -1312,7 +1333,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
       {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
-      {!isAuxiliaryWindow() && <IntroRevealGate enabled={gatewayState === 'open'} />}
       {!isAuxiliaryWindow() && (
         <OnboardingChatGate
           enabled={gatewayState === 'open'}
@@ -1399,8 +1419,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             initialSection={commandCenterInitialSection}
             onClose={closeOverlayToPreviousRoute}
             onDeleteSession={removeSession}
+            onLoadMoreSessions={loadMoreSessions}
             onNavigateRoute={path => navigateToWorkspacePage(navigate, path)}
-            onOpenSession={sessionId => openSession(sessionId, navigate)}
+            onOpenSession={openStoredSession}
           />
         </Suspense>
       )}
@@ -1413,10 +1434,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       {cronOpen && (
         <Suspense fallback={null}>
-          <CronView
-            onClose={closeOverlayToPreviousRoute}
-            onOpenSession={sessionId => openSession(sessionId, navigate)}
-          />
+          <CronView onClose={closeOverlayToPreviousRoute} onOpenSession={openStoredSession} />
         </Suspense>
       )}
 

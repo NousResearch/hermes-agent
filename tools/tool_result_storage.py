@@ -6,6 +6,7 @@ ran a terminal), remote backends get the translated in-sandbox path (probed for 
 else a copy in the sandbox temp dir; (3) ``enforce_turn_budget``."""
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -23,6 +24,11 @@ STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
 SPILLOVER_SUBDIR = "cache/spillover"
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
+# The exact key set tools/mcp_tool_handlers.py::_render_call_tool_result emits. A JSON object whose
+# keys stay inside this set is that handler's own envelope, never an arbitrary tool's JSON payload.
+_MCP_ENVELOPE_KEYS = frozenset({"result", "structuredContent", "_meta"})
+_ENVELOPE_METADATA_TAG = "<mcp-result-metadata>"
+_ENVELOPE_METADATA_CLOSING_TAG = "</mcp-result-metadata>"
 _UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
 _MAX_RESULT_FILENAME_STEM = 120
 
@@ -173,6 +179,47 @@ def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) 
     return content[:last_nl + 1 if last_nl > max_chars // 2 else max_chars], True
 
 
+def _pageable_text(content: str) -> str:
+    """Rewrite an MCP handler result envelope into the text it wraps, else return *content*.
+
+    ``tools/mcp_tool_handlers.py::_render_call_tool_result`` hands the model a JSON string
+    (``{"result": <text>, ...}``) so structured metadata survives inline delivery. Persisting
+    that string verbatim put a multi-hundred-KB document on ONE line with escaped newlines, so
+    the ``read_file`` offset/limit pagination the ``<persisted-output>`` block recommends could
+    not be used at all (#90426).
+
+    Recognized by SHAPE, not by tool name: the envelope is the only JSON object in the codebase
+    whose keys are a subset of ``{"result", "structuredContent", "_meta"}`` with a non-empty
+    string ``result``. That keeps opaque JSON from any other tool verbatim, and it also covers
+    the aggregate path (``enforce_turn_budget`` persists under ``_BUDGET_TOOL_NAME``, so a
+    ``mcp__``-prefix test would miss exactly the results it has to fix).
+
+    Sibling members are appended after the text in a delimited metadata block instead of being
+    dropped: they are the structured payloads ``_render_call_tool_result`` deliberately keeps
+    for the model (#115430), and the spill file is the only copy left once the envelope is
+    replaced by the preview. Anything unrecognized — unparseable JSON, a non-object, an unknown
+    key, a missing/empty/non-string ``result`` (e.g. a structuredContent-only result, which has
+    no pageable text) — is persisted verbatim, exactly as before.
+    """
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return content
+    if not isinstance(payload, dict) or not payload or not set(payload) <= _MCP_ENVELOPE_KEYS:
+        return content
+    text = payload.get("result")
+    if not isinstance(text, str) or not text:
+        return content
+    extras = {key: value for key, value in payload.items() if key != "result"}
+    if not extras:
+        return text
+    try:
+        metadata = json.dumps(extras, ensure_ascii=False, indent=1, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return text
+    return f"{text}\n\n{_ENVELOPE_METADATA_TAG}\n{metadata}\n{_ENVELOPE_METADATA_CLOSING_TAG}\n"
+
+
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     """Write content into the sandbox via env.execute(); True on success. Content goes through
     stdin, not the command string: Linux ``MAX_ARG_STRLEN`` caps one argv element at 128 KB,
@@ -181,11 +228,13 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     The write is round-trip verified with ``wc -c`` (one extra exec RTT per oversized result):
     a zero exit from ``cat`` does not prove the bytes landed (quota/ENOSPC races, API-body
     truncation on payload backends). A measured mismatch removes the archive and fails closed;
-    an unprobeable backend (no ``wc``, exec error, unparseable output) stays best-effort success.
-    Heredoc-mode backends append exactly one trailing newline by construction
-    (``BaseEnvironment._embed_stdin_heredoc``), so one extra byte is accepted there."""
+    an unprobeable backend (no ``wc``, exec error, unparseable output) stays best-effort success."""
     storage_dir = os.path.dirname(remote_path)
-    cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
+    # Private dir: archived results carry tool output (can hold secrets) under a
+    # shared temp root on remote backends. The umask also covers the cat redirect.
+    from tools.code_execution_rpc import _private_dirs_cmd
+    cmd = (f"{_private_dirs_cmd(storage_dir)} "
+           f"&& cat > {shlex.quote(remote_path)}")
     if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
         return False
 
@@ -202,10 +251,6 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
         return True
     persisted_size = int(raw[-1])
     if persisted_size == expected:
-        return True
-    # Only heredoc mode may be +1; the payload backend (managed_modal) delivers stdin verbatim, so
-    # it is expected byte-exact and any drift there is a real loss.
-    if persisted_size == expected + 1 and getattr(env, "_stdin_mode", None) == "heredoc":
         return True
     logger.warning("Sandbox spill for %s is not lossless (%d bytes in sandbox, expected %d) — discarding archive",
                    remote_path, persisted_size, expected)
@@ -255,16 +300,19 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
         threshold = config.resolve_threshold(tool_name)
     if threshold == float("inf") or len(content) <= threshold:
         return content
+    # The size decision above stays on the raw inline result (that is what cost context); the file
+    # and the preview carry the pageable text inside an MCP envelope (#90426).
+    persisted_content = _pageable_text(content)
     filename = _safe_result_filename(tool_use_id)
-    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+    preview, has_more = generate_preview(persisted_content, max_chars=config.preview_size)
 
     def _persisted(path: str, host_suffix: str = "") -> str:
         logger.info("Persisted large tool result: %s (%s, %d chars -> %s%s)",
-                    tool_name, tool_use_id, len(content), path, host_suffix)
-        return _build_persisted_message(preview, has_more, len(content), path)
+                    tool_name, tool_use_id, len(persisted_content), path, host_suffix)
+        return _build_persisted_message(preview, has_more, len(persisted_content), path)
 
     # Always persist host-side first: cache/spillover is the single canonical home.
-    host_path = _write_to_spillover(content, filename)
+    host_path = _write_to_spillover(persisted_content, filename)
     host_side = _is_host_side_env(env)
     if host_side and host_path is not None:
         return _persisted(host_path)
@@ -276,7 +324,7 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
             return _persisted(visible, f" [host: {host_path}]")
         remote_path = f"{_resolve_storage_dir(env)}/{filename}"
         try:
-            if _write_to_sandbox(content, remote_path, env):
+            if _write_to_sandbox(persisted_content, remote_path, env):
                 return _persisted(remote_path)
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)

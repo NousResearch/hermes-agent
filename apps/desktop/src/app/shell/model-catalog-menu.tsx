@@ -27,7 +27,6 @@ import {
   DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
-import { usePointerQuiet } from '@/components/ui/keyboard-first'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -392,9 +391,9 @@ export function ModelCatalogMenu({
   )
 
   const [kbOverride, setKbOverride] = useState<null | number>(null)
-  // A parked cursor is not a cursor in use: until the mouse actually moves,
-  // hover can't take rows out from under the keyboard.
-  const pointerQuiet = usePointerQuiet()
+  // Searchable DropdownMenu rows already cancel Radix's hover-to-focus while
+  // the search owns focus (#53980). Keep rows hit-testable so the first
+  // deliberate click works even before the pointer has moved (#123040).
 
   const rowIsCurrent = (row: KbRow) =>
     row.kind === 'moa'
@@ -445,6 +444,85 @@ export function ModelCatalogMenu({
     closeMenu()
   }
 
+  // ── Keyboard path into a row's edit submenu (#86966) ─────────────────────
+  // Rows are HIGHLIGHTED, not DOM-focused (focus stays in the search input so
+  // typing keeps working), which is why Radix's own ArrowRight-on-the-trigger
+  // never fires. ArrowRight therefore hands focus to the highlighted trigger
+  // and replays the key there: from that point Radix owns everything — opening
+  // the sub, focusing its first item, and returning focus to the trigger when
+  // ArrowLeft closes it. `handleSubOpenChange` below finishes that round trip
+  // by putting focus back in the search field. (Escape is not part of it:
+  // inside a sub, Radix dismisses the WHOLE menu rather than just the sub.)
+  //
+  // ArrowRight is hard-coded rather than direction-aware because Radix's own
+  // binding is: the app installs no `DirectionProvider` and passes no `dir`,
+  // so `useDirection` resolves to `ltr` and Radix opens subs on ArrowRight in
+  // every locale, RTL included. Matching that keeps the two in step; whoever
+  // wires up a `DirectionProvider` has to teach this handler the same
+  // direction Radix reads, or the sub goes unreachable again in Arabic.
+  // WHICH row we opened from the keyboard, not merely THAT we opened one: a
+  // bare flag is still set when a keyboard-opened sub closes because the mouse
+  // moved on to another row, and refocusing search there pulls focus out from
+  // under a pointer interaction that has already taken the menu over.
+  const keyboardSubRef = useRef<null | { key: string; trigger: HTMLElement }>(null)
+
+  const openActiveSubmenu = (): boolean => {
+    const trigger = listRef.current?.querySelector<HTMLElement>('[data-kb-active]')
+
+    if (!trigger || !kbActiveKey) {
+      return false
+    }
+
+    keyboardSubRef.current = { key: kbActiveKey, trigger }
+    trigger.focus()
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'ArrowRight' }))
+
+    // Highlight also lands on rows that are plain items rather than submenu
+    // triggers (the MoA presets), which swallow the key; an open can also be
+    // interrupted. Either way, don't strand focus on a row where typing no
+    // longer reaches the search field.
+    requestAnimationFrame(() => {
+      // Only while the claim is still ours and untouched: a sub that opened
+      // and closed inside this one frame has already been handled below, and
+      // a stale frame reaching in afterwards would move focus twice.
+      if (keyboardSubRef.current?.trigger !== trigger) {
+        return
+      }
+
+      if (trigger.getAttribute('data-state') !== 'open') {
+        keyboardSubRef.current = null
+        searchRef.current?.focus()
+      }
+    })
+
+    return true
+  }
+
+  // Only the sub THIS row opened from the keyboard owes focus back to the
+  // search field; during mouse use focus never left it, and hover open/close
+  // fires constantly.
+  const handleSubOpenChange = (open: boolean, key: string) => {
+    const claim = keyboardSubRef.current
+
+    if (open || claim?.key !== key) {
+      return
+    }
+
+    keyboardSubRef.current = null
+
+    // Deferred one frame because Radix restores focus to the trigger straight
+    // AFTER this callback — and that restore is the signal we need. Radix does
+    // it only for a keyboard close (ArrowLeft); a sub closed because the
+    // pointer moved to another row leaves focus where it fell, and grabbing it
+    // then would fight the mouse. So finish the round trip only if the trigger
+    // really is holding focus.
+    requestAnimationFrame(() => {
+      if (document.activeElement === claim.trigger) {
+        searchRef.current?.focus()
+      }
+    })
+  }
+
   // Keep the selected row in view while arrowing through the scrollable list.
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -461,9 +539,6 @@ export function ModelCatalogMenu({
     }
   }
 
-  // Rows are hover-selectable, so they go inert with the pointer.
-  const quietRows = pointerQuiet && 'pointer-events-none'
-
   return (
     <>
       <DropdownMenuSearch
@@ -479,6 +554,13 @@ export function ModelCatalogMenu({
             event.preventDefault()
             event.stopPropagation()
             commitKbRow()
+          } else if (event.key === 'ArrowRight' && caretAtEnd(event.currentTarget)) {
+            // Claimed only with the caret parked at the end of the query, where
+            // ArrowRight has nothing left to do as a text cursor.
+            if (openActiveSubmenu()) {
+              event.preventDefault()
+              event.stopPropagation()
+            }
           }
         }}
         onValueChange={value => {
@@ -514,7 +596,7 @@ export function ModelCatalogMenu({
           {copy.noModels}
         </DropdownMenuItem>
       ) : hasList ? (
-        <div className={cn('max-h-[max(150px,30dvh)] overflow-y-auto py-0.5', quietRows)} ref={listRef}>
+        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" ref={listRef}>
           {groups.map(group => {
             const slug = group.provider.slug
 
@@ -575,19 +657,24 @@ export function ModelCatalogMenu({
                       effFast
                     )
 
-                    const meta = [
+                    // Row meta (variant tag, fast mode, reasoning effort) renders as
+                    // discrete badge chips BESIDE the name — not appended to it — so
+                    // "High" reads as the model's reasoning setting, never as part of a
+                    // differently-named model.
+                    const metaTags = [
                       tag || null,
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
                       (caps?.reasoning ?? true) && !(isCurrent && current.effortPending)
                         ? reasoningEffortLabel(effEffort || defaultEffort, isCurrent ? current.effortWire : undefined)
                         : null
-                    ]
-                      .filter(Boolean)
-                      .join(' ')
+                    ].filter((chip): chip is string => Boolean(chip))
 
                     // Clicking the row commits the model and closes; the edit
                     // submenu (reasoning/fast) is reached by HOVER, so you can
-                    // tweak those without the click dismissing everything.
+                    // tweak those without the click dismissing everything. The
+                    // trailing caret is what advertises that submenu — without
+                    // it the row's effort badge reads as a fixed model+effort
+                    // combo rather than an editable setting (#86966).
                     const activate = () => {
                       if (!isCurrent) {
                         void selectFamily(family, group.provider)
@@ -597,9 +684,11 @@ export function ModelCatalogMenu({
                     }
 
                     return (
-                      <DropdownMenuSub key={`${group.provider.slug}:${family.id}`}>
+                      <DropdownMenuSub
+                        key={`${group.provider.slug}:${family.id}`}
+                        onOpenChange={open => handleSubOpenChange(open, `${group.provider.slug}:${family.id}`)}
+                      >
                         <DropdownMenuSubTrigger
-                          hideChevron
                           onClick={activate}
                           onKeyDown={event => {
                             if (event.key === 'Enter' || event.key === ' ') {
@@ -608,9 +697,18 @@ export function ModelCatalogMenu({
                           }}
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                            <span className="min-w-0 truncate">
+                              <HighlightMatches foldSeparators query={search} text={name} />
+                            </span>
+                            {metaTags.map(chip => (
+                              <span
+                                className="shrink-0 rounded-sm border border-(--ui-stroke-secondary) bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] font-medium uppercase leading-none tracking-wide text-(--ui-text-tertiary)"
+                                key={chip}
+                              >
+                                {chip}
+                              </span>
+                            ))}
                           </span>
                           {loadProgress ? (
                             <span
@@ -680,7 +778,7 @@ export function ModelCatalogMenu({
       ) : null}
 
       {!hideCatalog && shownMoaPresets.length > 0 ? (
-        <div className={cn(quietRows)}>
+        <div>
           {hasList ? <DropdownMenuSeparator className="mx-0" /> : null}
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
           {shownMoaPresets.map(preset => {
@@ -706,7 +804,7 @@ export function ModelCatalogMenu({
       ) : null}
 
       {customSlug && customProviders.length > 0 ? (
-        <div className={cn(quietRows)}>
+        <div>
           {hasList || shownMoaPresets.length > 0 ? <DropdownMenuSeparator className="mx-0" /> : null}
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copyPicker.customModel}</DropdownMenuLabel>
           {customProviders.map(provider => (
@@ -762,6 +860,14 @@ export function ModelCatalogMenu({
 
 /** Re-exported so callers building a footer row match the catalog's rows. */
 export { dropdownMenuRow }
+
+/** True when the text cursor sits at the very end with nothing selected — the
+ *  only state where ArrowRight is free for the menu to claim. */
+function caretAtEnd(input: HTMLInputElement): boolean {
+  const { selectionEnd, selectionStart, value } = input
+
+  return selectionStart === value.length && selectionEnd === value.length
+}
 
 // The backend's provider row for staged local models (inventory.py's
 // _local_runtime_row). Downloads-in-flight attach to this group.

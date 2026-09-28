@@ -321,7 +321,8 @@ def _project_tree_row(r: dict) -> dict:
     """Project a SessionDB row to the minimal shape the sidebar renders (grouping fields +
     what ``SidebarSessionRow`` reads), minus the heavy columns."""
     row = {k: r.get(k) for k in (
-        "id", "_lineage_root_id", "_lineage_ids", "parent_session_id", "title", "preview")}
+        "id", "_lineage_root_id", "_lineage_ids", "parent_session_id",
+        "_reset_from", "_branched_from", "title", "preview")}
     row.update(
         started_at=r.get("started_at") or 0, ended_at=r.get("ended_at"),
         last_active=r.get("last_active") or r.get("started_at") or 0,

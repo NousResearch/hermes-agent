@@ -1,5 +1,5 @@
 import type { ModelOptionProvider } from '@hermes/shared'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   collapseModelFamilies,
@@ -274,6 +274,91 @@ describe('featured defaults', () => {
 
     expect(visible.has(modelVisibilityKey('ollama', 'qwen3:latest'))).toBe(true)
     expect(visible.has(modelVisibilityKey('ollama', 'llama3.2:latest'))).toBe(true)
+  })
+})
+
+describe('seedKnownModels', () => {
+  const featuredProvider = (slug: string, models: string[], featured_models: string[]): ModelOptionProvider => ({
+    featured_models,
+    models,
+    name: slug,
+    slug
+  })
+
+  // Fresh module per load: the atoms read localStorage at import, so a
+  // re-import stands in for a renderer reload after a pre-snapshot persist.
+  const loadStore = () => import('./model-visibility')
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  it('does not adopt a stale allowlist as a judgement over catalog-present defaults', async () => {
+    // A visible set persisted before the snapshot existed, first loaded by a
+    // build whose catalog already ships gpt-6 — the bug class from 122053:
+    // seeding everything as judged would keep gpt-6 hidden forever.
+    window.localStorage.setItem('hermes.desktop.visible-models', JSON.stringify(['openai-codex::gpt-5.5']))
+
+    const store = await loadStore()
+
+    const providers = [
+      featuredProvider('openai-codex', ['gpt-5.5', 'gpt-6'], ['gpt-5.5', 'gpt-6']),
+      featuredProvider('qwen', ['qwen3-coder', 'qwen4'], ['qwen3-coder'])
+    ]
+
+    store.seedKnownModels(providers)
+
+    const visible = store.effectiveVisibleKeys(store.$visibleModels.get(), providers)
+
+    // The curated defaults the stale allowlist omitted come back…
+    expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-5.5'))).toBe(true)
+    expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-6'))).toBe(true)
+    expect(visible.has(modelVisibilityKey('qwen', 'qwen3-coder'))).toBe(true)
+    // …while the user's explicit hide of the non-default qwen4 holds verbatim.
+    expect(visible.has(modelVisibilityKey('qwen', 'qwen4'))).toBe(false)
+  })
+
+  it('re-seeding is inert once a snapshot exists (never a running union)', async () => {
+    window.localStorage.setItem('hermes.desktop.visible-models', JSON.stringify(['openai-codex::gpt-5.5']))
+
+    const store = await loadStore()
+    const first = [featuredProvider('openai-codex', ['gpt-5.5'], ['gpt-5.5'])]
+    store.seedKnownModels(first)
+
+    // A later catalog refresh with a brand-new model must not mark it judged.
+    const grown = [featuredProvider('openai-codex', ['gpt-5.5', 'gpt-7'], ['gpt-5.5', 'gpt-7'])]
+    store.seedKnownModels(grown)
+
+    const visible = store.effectiveVisibleKeys(store.$visibleModels.get(), grown)
+    expect(visible.has(modelVisibilityKey('openai-codex', 'gpt-7'))).toBe(true)
+  })
+
+  it('honours an explicit hide-all sentinel: its defaults stay unknown, not re-admitted', async () => {
+    window.localStorage.setItem('hermes.desktop.visible-models', JSON.stringify(['nous::']))
+
+    const store = await loadStore()
+    const providers = [featuredProvider('nous', ['hermes-4', 'hermes-5'], ['hermes-4', 'hermes-5'])]
+
+    store.seedKnownModels(providers)
+
+    const visible = store.effectiveVisibleKeys(store.$visibleModels.get(), providers)
+    expect(visible.has(modelVisibilityKey('nous', 'hermes-4'))).toBe(false)
+    expect(visible.has(modelVisibilityKey('nous', 'hermes-5'))).toBe(false)
+  })
+
+  it('leaves a fresh install unseeded: no stored set, nothing to adopt', async () => {
+    const store = await loadStore()
+    const providers = [featuredProvider('openai-codex', ['gpt-5.5', 'gpt-6'], ['gpt-5.5', 'gpt-6'])]
+
+    store.seedKnownModels(providers)
+
+    // Nothing was persisted before the snapshot existed, so there is no
+    // adoption to do; the curated defaults show and `known` stays null.
+    expect(store.$knownModels.get()).toBeNull()
+    expect(store.effectiveVisibleKeys(store.$visibleModels.get(), providers)).toEqual(
+      store.defaultVisibleKeys(providers)
+    )
   })
 })
 

@@ -17,6 +17,21 @@ from gateway.restart import (
 )
 from hermes_cli import stderr_timestamp
 
+
+def _script(tmp_path, name: str, source: str) -> str:
+    """Write *source* to a real script file and return its path.
+
+    Gateway-lookalike children must run from a FILE, never ``python -c <src> <tail>``: a ``-c``
+    command line is an interpreter running inline source, and the identity matchers deliberately
+    refuse to read the trailing argv off one — that tail belongs to a program the inline source
+    may spawn LATER, which is how the post-update restart watcher was mistaken for a live
+    gateway (#107002).
+    """
+    path = tmp_path / name
+    path.write_text(source, encoding="utf-8")
+    return str(path)
+
+
 _STALE_GATEWAY_ARGV = [
     sys.executable,
     "-m",
@@ -119,8 +134,10 @@ def test_main_forwards_launchd_label_to_child_only_under_launchd(tmp_path, monke
     assert marker_path.read_text(encoding="utf-8") == expected
 
 
-# The child is ``python -c <record argv>`` carrying a "gateway run" tail as inert data, which is
-# exactly what the guard's real-gateway spawn check matches; it exits at once.
+# The child is a SCRIPT carrying a "gateway run" tail, which is what the guard's real-gateway
+# spawn check matches; it exits at once. Not ``python -c <src> <tail>``: a ``-c`` command line is
+# an interpreter running inline source, and the identity matchers refuse to read the trailing argv
+# off one — that tail belongs to a program the inline source may spawn LATER (#107002).
 @pytest.mark.spawns_gateway_lookalike
 def test_main_injects_flag_into_stale_gateway_child(tmp_path, monkeypatch):
     """Stale plist inner argv must grow --external-supervisor in the grandchild."""
@@ -128,13 +145,15 @@ def test_main_injects_flag_into_stale_gateway_child(tmp_path, monkeypatch):
     monkeypatch.delenv(EXTERNAL_GATEWAY_SUPERVISOR_ENV, raising=False)
     log_path = tmp_path / "gateway.error.log"
     marker_path = tmp_path / "argv.txt"
-    code = (
+    script = _script(
+        tmp_path,
+        "record_argv.py",
         "import sys\n"
-        f"from pathlib import Path\n"
+        "from pathlib import Path\n"
         f"Path({str(marker_path)!r}).write_text("
-        "'\\n'.join(sys.argv[1:]), encoding='utf-8')\n"
+        "'\\n'.join(sys.argv[1:]), encoding='utf-8')\n",
     )
-    stale = [sys.executable, "-c", code, "-m", "hermes_cli.main", "gateway", "run", "--replace"]
+    stale = [sys.executable, script, "-m", "hermes_cli.main", "gateway", "run", "--replace"]
 
     rc = stderr_timestamp.main(
         ["--error-log", str(log_path), "--", *stale]
@@ -208,6 +227,8 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
     please-restart code (75) or a non-gateway child's 78."""
     log_path = tmp_path / "gateway.error.log"
     gateway_tail = ["-m", "hermes_cli.main", "gateway", "run"]
+    exit_config = _script(tmp_path, "exit_config.py", f"raise SystemExit({GATEWAY_FATAL_CONFIG_EXIT_CODE})\n")
+    exit_restart = _script(tmp_path, "exit_restart.py", f"raise SystemExit({GATEWAY_SERVICE_RESTART_EXIT_CODE})\n")
 
     rc_config = stderr_timestamp.main(
         [
@@ -215,8 +236,7 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
             str(log_path),
             "--",
             sys.executable,
-            "-c",
-            f"raise SystemExit({GATEWAY_FATAL_CONFIG_EXIT_CODE})",
+            exit_config,
             *gateway_tail,
         ]
     )
@@ -226,8 +246,7 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
             str(log_path),
             "--",
             sys.executable,
-            "-c",
-            f"raise SystemExit({GATEWAY_SERVICE_RESTART_EXIT_CODE})",
+            exit_restart,
             *gateway_tail,
         ]
     )
@@ -237,8 +256,7 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
             str(log_path),
             "--",
             sys.executable,
-            "-c",
-            f"raise SystemExit({GATEWAY_FATAL_CONFIG_EXIT_CODE})",
+            exit_config,
         ]
     )
 

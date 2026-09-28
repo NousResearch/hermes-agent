@@ -290,29 +290,15 @@ def _is_windows_npm_path(npm_path: str) -> bool:
 
 
 def _resolve_node_runtime_npm() -> str | None:
-    """Resolve an npm executable that belongs to the host's Node runtime.
+    """PM's npm, refused on a POSIX host when it is a Windows shim (EISDIR over WSL UNC paths, #30271).
 
-    On WSL, PATH interop can hand back a Windows npm that fails with EISDIR / symlink errors over
-    ``\\\\wsl.localhost\\...`` UNC paths. Refuse it on a POSIX host and re-scan PATH minus the
-    Windows drive mounts. ``None`` when no suitable npm is reachable.
-
-    On WSL/Linux ``shutil.which("npm")`` may resolve a Windows npm exposed through PATH interop. See #30271.
+    Never re-scans the user's PATH for another npm: Hermes runs only its PM-managed toolchain.
     """
     from hermes_constants import find_node_executable
     npm = find_node_executable("npm")
-    if _is_windows():
+    if _is_windows() or not npm:
         return npm
-    if not npm:
-        return None
-    if not _is_windows_npm_path(npm):
-        return npm
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        if not directory or _is_windows_npm_path(directory):
-            continue
-        candidate = shutil.which("npm", path=directory)
-        if candidate and not _is_windows_npm_path(candidate):
-            return candidate
-    return None
+    return None if _is_windows_npm_path(npm) else npm
 
 
 def _resolve_update_branch(args) -> str:

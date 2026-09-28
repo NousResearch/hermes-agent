@@ -289,7 +289,7 @@ def _wants_tui_early(argv: "list[str] | None" = None) -> bool:
         argv = sys.argv[1:]
     if "--cli" in argv:
         return False
-    if os.environ.get("HERMES_TUI") == "1" or "--tui" in argv:
+    if os.environ.get("HERMES_TUI") == "1" or any(flag in argv for flag in ("--tui", "--native", "--tui-native")):
         return True
     try:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -426,6 +426,9 @@ _startup_fast.ensure_project_root_on_path()
 # HERMES_HOME set, and the flag stripped so argparse never sees it. Falls back
 # to ~/.hermes/active_profile for the sticky default.
 _PROFILE_NAME_RE = r"^[a-z0-9][a-z0-9_-]{0,63}$"  # mirrors hermes_cli.profiles._PROFILE_ID_RE
+# Set only when -p/--profile was on argv. Sticky active_profile must not count:
+# `hermes desktop` with no flag must not overwrite Desktop's stored profile.
+_explicit_cli_profile: str | None = None
 
 
 def _inside_mcp_add_args(argv: list, index: int) -> bool:
@@ -575,8 +578,19 @@ def _s6_supervised_gateway_run(argv: list) -> bool:
     return _s6_running()
 
 
+def explicit_cli_profile() -> str | None:
+    """Profile named by a consumed ``-p``/``--profile`` flag, else None.
+
+    Sticky ``active_profile`` is not explicit. Desktop launch must not overwrite
+    its stored profile when the user omitted the flag.
+    """
+    return _explicit_cli_profile
+
+
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before imports."""
+    global _explicit_cli_profile
+    _explicit_cli_profile = None
     argv = sys.argv[1:]
     profile_name, consume, profile_index = _scan_profile_flag(argv)
 
@@ -622,6 +636,8 @@ def _apply_profile_override() -> None:
         print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
         return
     os.environ["HERMES_HOME"] = hermes_home
+    if consume > 0:
+        _explicit_cli_profile = profile_name
     # Strip the flag from argv so argparse doesn't choke
     if consume > 0 and profile_index is not None:
         start = profile_index + 1  # +1 because argv is sys.argv[1:]
@@ -855,6 +871,7 @@ from hermes_cli.main_desktop import (  # frozen updater surface: update_cmd*.py 
     _desktop_macos_relaunchable_fixup,
     _desktop_packaged_executable,
     _install_rebuilt_desktop_app,
+    _installed_desktop_apps,
 )
 from hermes_cli.main_web_build import (
     _sweep_stale_bytecode_if_checkout_changed,
@@ -1841,6 +1858,7 @@ def cmd_chat(args):
         _launch_tui(
             passthrough.pop("resume"),
             tui_dev=getattr(args, "tui_dev", False),
+            native_mode=getattr(args, "tui_native", False) or None,
             model=getattr(args, "model", None),
             accept_hooks=getattr(args, "accept_hooks", False),
             **passthrough,
@@ -2450,6 +2468,9 @@ from hermes_cli.update_receipt import update_receipt_scope
 @update_receipt_scope()
 def cmd_update(args):
     """Update Hermes Agent: hangup protection + update lock around ``_cmd_update_impl``."""
+    from hermes_cli.update_owning_install import retarget_to_owning_install
+
+    retarget_to_owning_install(PROJECT_ROOT)
     if _update_preflight_handled(args):
         return
     gateway_mode = getattr(args, "gateway", False)
@@ -2637,6 +2658,28 @@ def _dashboard_sanitize_desktop_env(headless_backend) -> None:
         os.environ.pop("HERMES_SERVE_HEADLESS", None)
 
 
+def _require_dashboard_web_deps() -> None:
+    """Exit with the right message when the dashboard's web-server packages can't import.
+
+    A plain missing-package ImportError gets the standard repair guidance; the
+    ``DLL load failed ... _ssl`` signature of Windows Smart App Control blocking the
+    embedded runtime gets the policy guidance instead, so users stop looping on
+    repair for a block repair can never lift (#63796)."""
+    try:
+        import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
+    except ImportError as e:
+        from hermes_cli.main_dep_hints import (
+            missing_optional_deps_message,
+            smart_app_control_block_message,
+        )
+
+        print(smart_app_control_block_message(e) or missing_optional_deps_message(
+            "dashboard", "its web-server packages (fastapi, uvicorn)", "all"))
+        print(f"Details: {e}")
+        sys.exit(1)
+
+
 def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     """Deps check, skills seed, terminal env bridge, plugins, MCP discovery.
 
@@ -2650,15 +2693,7 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     except Exception:
         pass
 
-    try:
-        import fastapi  # noqa: F401
-        import uvicorn  # noqa: F401
-    except ImportError as e:
-        from hermes_cli.main_dep_hints import missing_optional_deps_message
-
-        print(missing_optional_deps_message("dashboard", "its web-server packages (fastapi, uvicorn)", "all"))
-        print(f"Details: {e}")
-        sys.exit(1)
+    _require_dashboard_web_deps()
 
     # Seed bundled skills on first dashboard launch so the desktop GUI's
     # skills picker / agent skill discovery sees the bundled library.
@@ -2771,6 +2806,7 @@ def cmd_dashboard(args):
         allow_public=getattr(args, "insecure", False),
         initial_profile=getattr(args, "open_profile", "") or "",
         headless=_headless_backend,
+        isolated=getattr(args, "isolated", False),
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,
         start_mcp_discovery_after_bind=_mcp_discovery_after_bind,

@@ -95,6 +95,26 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     """
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
 
+    # A live gateway on THIS backend's HERMES_HOME owns cron delivery with live platform
+    # adapters (#52202): let it tick, and start nothing here. Without this, the fail-open
+    # paths below (profile enumeration failure, empty served set, external provider) start
+    # an ungated single-store ticker that races the gateway's tick-lock; when the desktop
+    # wins, delivery has no live adapter and the cold send hangs until script_timeout.
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import _check_gateway_running
+
+        if _check_gateway_running(Path(get_hermes_home())):
+            _log.info(
+                "Desktop cron scheduler not started: live gateway owns cron on this "
+                "HERMES_HOME; the gateway ticks with live adapters"
+            )
+            return
+    except Exception:
+        # Liveness probe failed: fall through to the existing per-tick gating, which
+        # still stands down profile-by-profile for gateway-owned homes.
+        _log.warning("Desktop cron: gateway-ownership probe failed; using per-tick gating only", exc_info=True)
+
     provider = resolve_cron_scheduler()
 
     start_kwargs: dict = {"interval": interval}
@@ -221,10 +241,12 @@ async def _lifespan(app: "FastAPI"):
         # one that would race the same credential (#77276). Runs
         # unconditionally; protection of a healthy standalone gateway lives
         # INSIDE the reaper (registration probed with cleanup_stale=False).
+        # Startup grace: spare a gateway still claiming gateway.pid/lock (#122533).
         try:
+            from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
             from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
 
-            _reap_unsupervised_gateway_orphans()
+            _reap_unsupervised_gateway_orphans(min_age_s=_REAP_MIN_AGE_SECONDS)
         except Exception:
             _log.exception("Desktop startup: orphan gateway reap failed")
 
@@ -1277,6 +1299,7 @@ def _on_server_started(
     host: str,
     port: int,
     headless: bool,
+    isolated: bool,
     open_browser: bool,
     initial_profile: str,
     start_mcp_discovery_after_bind: bool,
@@ -1318,6 +1341,11 @@ def _on_server_started(
         except (TypeError, ValueError):
             grace = DEFAULT_IDLE_GRACE_S
         start_idle_watchdog(server, app.state.ssh_isolated_clients, grace_s=grace)
+        # A connected client keeps the idle watchdog quiet forever, and the host's updater may not
+        # restart this backend, so it retires itself (between turns) when the install moves on.
+        from hermes_cli.web_server_skew_exit import start_code_skew_watchdog
+
+        start_code_skew_watchdog(server)
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
@@ -1334,7 +1362,7 @@ def _on_server_started(
 
         register_self(
             "serve" if headless else "dashboard",
-            detail={"host": host, "port": actual_port, "profile": initial_profile or ""},
+            detail={"host": host, "port": actual_port, "profile": initial_profile or "", "isolated": isolated},
         )
         attach_self_to_kill_on_close_job()
 
@@ -1347,11 +1375,18 @@ def _on_server_started(
     _best_effort("host rendezvous publish", lambda: _publish_host_rendezvous(host, actual_port))
 
     _write_dashboard_ready_file(actual_port)
-    # Port-discovery sentinel parsed by the Desktop spawn (matches either
-    # token). Written to fd 1: tui_gateway.server redirects sys.stdout to
-    # stderr at import, and the Desktop watches child.stdout (#96282).
-    ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
-    _write_machine_sentinel_line(f"{ready_token} port={actual_port}")
+    # Port-discovery sentinel parsed by the Desktop spawn. Written to fd 1:
+    # tui_gateway.server redirects sys.stdout to stderr at import, and the
+    # Desktop watches child.stdout (#96282). A headless `serve` announces the
+    # neutral token FIRST and the legacy HERMES_DASHBOARD_READY one after it:
+    # a packaged Desktop artifact whose parser predates the neutral token
+    # (#60772) still matches the legacy sentinel, while current parsers match
+    # either. The legacy `dashboard` backend keeps its own single token.
+    if headless:
+        _write_machine_sentinel_line(f"HERMES_BACKEND_READY port={actual_port}")
+        _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
+    else:
+        _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
     if headless:
         # Auth-gated JSON-RPC/WS only — announce the bind, not a URL. flush:
         # a piped stdout otherwise surfaces this minutes after the sentinel.
@@ -1468,6 +1503,7 @@ def start_server(
     allow_public: bool = False,
     initial_profile: str = "",
     headless: bool = False,
+    isolated: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
@@ -1477,6 +1513,8 @@ def start_server(
     ``initial_profile`` is appended to the auto-opened URL as ``?profile=<name>``
     (profile alias ``<profile> dashboard``). ``headless`` is the ``serve`` path:
     JSON-RPC/WS backend, no UI build, no SPA mount (``HERMES_SERVE_HEADLESS``).
+    ``isolated`` (``--isolated``) is recorded in the spawn ledger so attach-first
+    discovery never adopts this process.
     ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state, never persisted or exported to children.
     ``start_mcp_discovery_after_bind`` (Desktop ``serve``) defers MCP discovery
@@ -1562,6 +1600,7 @@ def start_server(
                 host=host,
                 port=port,
                 headless=headless,
+                isolated=isolated,
                 open_browser=open_browser,
                 initial_profile=initial_profile,
                 start_mcp_discovery_after_bind=start_mcp_discovery_after_bind,

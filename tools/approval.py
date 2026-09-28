@@ -1053,11 +1053,20 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     """Unconditional floors, BEFORE yolo / mode=off / cron approve-mode so no
     session-level setting can bypass them: hardline catastrophic commands,
     password-piping to ``sudo -S`` with no SUDO_PASSWORD configured (full guard
-    only), and the user's own approvals.deny rules ("never, even under yolo")."""
+    only), the user's own approvals.deny rules ("never, even under yolo"), and
+    deletion of the Python interpreter/venv this very runtime boots from (a
+    delete the agent cannot walk back — the next start fails before any tool
+    can run, #58748)."""
+    from agent.runtime_self_protection import command_deletes_runtime
+
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc, command)
+    runtime_target = command_deletes_runtime(command)
+    if runtime_target:
+        logger.warning("Runtime self-delete block: %s (command: %s)", runtime_target, command[:200])
+        return _hardline_block_result(f"recursive/any delete of {runtime_target}", command)
     if sudo_guard:
         is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
         if is_sudo_guess:

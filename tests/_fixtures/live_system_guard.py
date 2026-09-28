@@ -334,14 +334,14 @@ def _live_system_guard(request, monkeypatch):
         # webhook port. 2026-09-03: 39 such orphans lived 6 days after a
         # sibling refactor moved the spawn seam and left tests patching the
         # facade. The canonical matcher, never an argv substring.
-        from gateway.status import _gateway_command_subcommand
+        from gateway.status import gateway_spawn_intent_subcommand
         # A gateway launched INSIDE a container (`docker exec … hermes gateway start`) cannot
         # reach the host's systemd unit or webhook port; tests/docker/ exists to exercise it.
         in_container = _first_token_basename(cmd_str) in _CONTAINER_RUNTIMES
         if (
             not lookalike_ok
             and not in_container
-            and _gateway_command_subcommand(cmd_str) in ("run", "start", "restart")
+            and gateway_spawn_intent_subcommand(cmd_str) in ("run", "start", "restart")
         ):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "

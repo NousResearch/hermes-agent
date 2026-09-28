@@ -178,7 +178,9 @@ VALID_HOOKS: Set[str] = {
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.
-    # on_kanban_dispatch_tick fires once per dispatcher tick in dispatch_once, strictly AFTER the board's
+    "gateway_platform_event",
+    # Callback owners only: action result truthy means the owner will answer the callback.
+    "gateway_platform_action",
     # single-writer dispatch lock has been released (the #56066 original fired inside the lock — the #64231
     # disposition mandates the post-lock re-port), so a slow subscriber can never extend the writer critical
     # section. Kwargs: board: str | None, profile_name: str, dry_run: bool, outcome: "ok" | "skipped_locked"

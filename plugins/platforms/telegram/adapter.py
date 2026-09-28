@@ -903,7 +903,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _is_callback_user_authorized(
         self, user_id: str, *, chat_id: Optional[str] = None, chat_type: Optional[str] = None,
-        thread_id: Optional[str] = None, user_name: Optional[str] = None) -> bool:
+        thread_id: Optional[str] = None, user_name: Optional[str] = None, is_bot: bool = False) -> bool:
         """Return whether a Telegram inline-button caller may perform gated actions."""
         normalized_user_id = str(user_id or "").strip()
         if not normalized_user_id:
@@ -915,7 +915,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if getattr(self, "_authorization_check", None) is not None:
             injected = self._is_sender_authorized(
                 normalized_user_id, chat_type=normalized_chat_type, chat_id=str(chat_id or normalized_user_id),
-                thread_id=str(thread_id) if thread_id is not None else None)
+                thread_id=str(thread_id) if thread_id is not None else None, is_bot=is_bot)
             if injected is not None:
                 return injected
         auth_fn = self._legacy_runner_auth_fn()
@@ -925,7 +925,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 source = SessionSource(
                     platform=Platform.TELEGRAM, chat_id=str(chat_id or normalized_user_id), chat_type=normalized_chat_type,
                     user_id=normalized_user_id, user_name=str(user_name).strip() if user_name else None,
-                    thread_id=str(thread_id) if thread_id is not None else None)
+                    thread_id=str(thread_id) if thread_id is not None else None, is_bot=bool(is_bot))
                 return bool(auth_fn(source))
             except Exception:
                 logger.debug(
@@ -4756,7 +4756,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             handler = getattr(self, "_platform_event_handler", None)
             from hermes_cli.lifecycle import has_hook
-            if handler is not None and has_hook("gateway_platform_event"):
+            if handler is not None and has_hook("gateway_platform_action"):
                 event = self._normalize_callback_query_event(query, received_at)
                 if event is not None:
                     source = self._source_from_callback_query_for_auth(query)
@@ -4812,8 +4812,8 @@ class TelegramAdapter(BasePlatformAdapter):
             getattr(chat, "type", "dm"), is_forum=getattr(chat, "is_forum", False) is True)
         thread_id = str(thread_id_raw) if thread_id_raw is not None and is_topic else None
         return self.build_source(
-            chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_name, thread_id=thread_id,
-            message_id=str(message_id))
+            chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_name,
+            is_bot=bool(getattr(user, "is_bot", False)), thread_id=thread_id, message_id=str(message_id))
 
     async def _claim_callback_state(self, query, cb: Dict[str, Any], state: dict, key, denial: str, resolved: str, *, pop: bool = True):
         """Auth-gate a button tap, then claim its pending entry; None (after answering) when refused or expired."""

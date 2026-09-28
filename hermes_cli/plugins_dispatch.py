@@ -48,6 +48,7 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
     "pre_auxiliary_call", "post_auxiliary_call", "pre_verify", "on_session_start", "on_session_end",
+    "gateway_platform_action",
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
@@ -234,6 +235,8 @@ class PluginDispatchMixin:
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
+                        if hook_name == "gateway_platform_action":
+                            results.append({"handled": False})
                         if fail_closed:  # policy hook: fail closed with a block directive
                             results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
@@ -513,6 +516,8 @@ class PluginDispatchMixin:
                     results.append(ret)
             except asyncio.TimeoutError:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
+                if hook_name == "gateway_platform_action":
+                    results.append({"handled": False})
                 if fail_closed:  # policy hook: fail closed with a block directive
                     results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
             except (Exception, SystemExit) as exc:

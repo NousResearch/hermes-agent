@@ -26,7 +26,7 @@ from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional, cast
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -1674,31 +1674,30 @@ class GatewayAdapterLifecycleMixin:
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))
 
-    async def _handle_gateway_platform_event(self, event: dict, source) -> Optional[list]:
-        """Authorize a normalized adapter event and publish it to plugin hooks.
+    def _is_user_authorized_for_source(self, source) -> bool:
+        """Use GatewayRunner's established normalized-source authorization."""
+        return cast(Any, self)._is_user_authorized_for_source(source)
 
-        ``callback_query`` hooks use an opt-in result contract: only a plugin callback that
-        returns an explicit owner marker can claim a Telegram button tap. Ordinary observer
-        values remain visible to logs/callers but never count as a claim.
+    async def _handle_gateway_platform_event(self, event: dict, source) -> Optional[list]:
+        """Authorize and publish one normalized adapter event to plugin hooks.
+
+        A ``callback_query`` is an action event, not a passive observation: existing plugins
+        claim and answer their own callbacks by returning a truthy result. Other platform events
+        remain observer-only.
         """
-        results = None
         callback_query = event.get("event_type") == "callback_query"
-        # Observer failures must never break the adapter's update loop.
-        with _log_suppressed(logging.DEBUG, "gateway_platform_event hook dispatch failed", exc_info=True):
+        if callback_query:
+            auth_check = getattr(self, "_is_user_authorized_for_source", None)
+            if not callable(auth_check) or not auth_check(source):
+                return []
+            with _log_suppressed(logging.DEBUG, "gateway platform action dispatch failed", exc_info=True):
+                from hermes_cli.lifecycle import invoke_hook
+                return await asyncio.to_thread(invoke_hook, "gateway_platform_action", **event)
+        with _log_suppressed(logging.DEBUG, "gateway platform observer dispatch failed", exc_info=True):
             from hermes_cli.lifecycle import has_hook, invoke_hook
             if has_hook("gateway_platform_event") and self._is_user_authorized_for_source(source):
-                if callback_query:
-                    results = await asyncio.to_thread(invoke_hook, "gateway_platform_event", **event)
-                else:
-                    results = invoke_hook("gateway_platform_event", **event)
-        if callback_query:
-            # A reaction/message observer can return any truthy value. Only an explicit
-            # owner marker may stop the adapter from answering "Niet verwerkt".
-            return [
-                r for r in (results or [])
-                if isinstance(r, dict) and r.get("_callback_query_claim") is True
-            ]
-        return results
+                return invoke_hook("gateway_platform_event", **event)
+        return None
 
     def _make_profile_platform_event_handler(self, profile_name: str):
         """Bind platform-event auth and hook dispatch to one multiplex profile."""

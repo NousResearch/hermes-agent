@@ -117,7 +117,8 @@ def _auth_reaction_update(user_id, chat_type="private", chat_id=123, message_id=
 class TestRunnerDispatch:
     def test_authorized_event_routes_normalized_envelope(self):
         runner = object.__new__(GatewayRunner)
-        runner._is_user_authorized = lambda source: source.user_id == "777"
+        runner._platform_event_handler = object()
+        runner._is_user_authorized_for_source = lambda source, *, allow_adapter_delegation=True: True
         invoke = MagicMock()
         source = _adapter()._source_from_reaction_for_auth(
             _auth_reaction_update(user_id=777)
@@ -151,34 +152,47 @@ class TestRunnerDispatch:
 
     def test_callback_query_returns_observer_results_without_claiming_them(self):
         runner = object.__new__(GatewayRunner)
-        runner._is_user_authorized = lambda source: True
+        runner._is_user_authorized_for_source = lambda source, *, allow_adapter_delegation=True: True
         source = _adapter()._source_from_reaction_for_auth(
             _auth_reaction_update(user_id=777)
         )
         event = {"platform": "telegram", "event_type": "callback_query", "payload": {}}
-        observed = [{"observed": True}]
-        with patch("hermes_cli.lifecycle.invoke_hook", return_value=observed):
+        manager = PluginManager()
+        observer_context = PluginContext(PluginManifest(name="observer", source="user"), manager)
+        owner_context = PluginContext(PluginManifest(name="owner", source="user"), manager)
+        observer = MagicMock(return_value=True)
+        owner = MagicMock(return_value=True)
+        observer_context.register_hook("gateway_platform_event", observer)
+        owner_context.register_hook("gateway_platform_action", owner)
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
             result = asyncio.run(runner._handle_gateway_platform_event(event, source))
-        assert result == []
+        assert result == [True]
+        observer.assert_not_called()
+        owner.assert_called_once()
+        assert owner.call_args.kwargs["platform"] == event["platform"]
+        assert owner.call_args.kwargs["event_type"] == event["event_type"]
 
-    def test_callback_query_uses_thread_and_preserves_falsy_claim(self):
+    def test_platform_action_timeout_is_not_claimed(self):
         runner = object.__new__(GatewayRunner)
-        runner._is_user_authorized = lambda source: True
-        source = _adapter()._source_from_reaction_for_auth(
-            _auth_reaction_update(user_id=777)
-        )
-        event = {"platform": "telegram", "event_type": "callback_query", "payload": {}}
-        claimed = [{"_callback_query_claim": True, "value": False}]
-        off_loop = AsyncMock(return_value=claimed)
-        with patch("gateway.run_adapters.asyncio.to_thread", off_loop):
-            result = asyncio.run(runner._handle_gateway_platform_event(event, source))
-        assert result == claimed
-        off_loop.assert_awaited_once()
+        runner._is_user_authorized_for_source = lambda source, *, allow_adapter_delegation=True: True
+        manager = PluginManager()
+        ctx = PluginContext(PluginManifest(name="slow-owner", source="user"), manager)
 
+        async def slow_owner(**event):
+            await asyncio.sleep(0.2)
+            return True
+
+        ctx.register_hook("gateway_platform_action", slow_owner)
+        source = _adapter()._source_from_reaction_for_auth(_auth_reaction_update(user_id=777))
+        event = {"platform": "telegram", "event_type": "callback_query", "payload": {}}
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager), \
+             patch("hermes_cli.plugins._resolve_hook_callback_timeout", return_value=0.01):
+            result = asyncio.run(runner._handle_gateway_platform_event(event, source))
+        assert result == [{"handled": False}]
 
     def test_plugin_layer_error_is_isolated(self):
         runner = object.__new__(GatewayRunner)
-        runner._is_user_authorized = lambda source: True
+        runner._is_user_authorized = lambda source, *, allow_adapter_delegation=True: True
         invoke = MagicMock(side_effect=RuntimeError("plugin boom"))
         source = _adapter()._source_from_reaction_for_auth(
             _auth_reaction_update(user_id=777)

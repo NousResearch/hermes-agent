@@ -59,7 +59,7 @@ def _update(query):
 
 @pytest.fixture(autouse=True)
 def _hook_present(monkeypatch):
-    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: True)
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: name == "gateway_platform_action")
 
 
 async def _tap(a, query):
@@ -94,6 +94,12 @@ class TestNormalize:
         source = _adapter()._source_from_callback_query_for_auth(_query(user_id=7, chat_id=-100))
         assert source.user_id == "7"
         assert source.chat_id == "-100"
+
+    def test_source_carries_bot_flag_for_callback_auth(self):
+        query = _query()
+        query.from_user.is_bot = True
+        source = _adapter()._source_from_callback_query_for_auth(query)
+        assert source.is_bot is True
 
     def test_source_without_tapper_fails_closed(self):
         q = _query()
@@ -198,7 +204,7 @@ class TestRunnerBoundary:
 
         def invoke(name, **event):
             hook_thread["id"] = threading.get_ident()
-            return [{"_callback_query_claim": True, "value": "claimed"}]
+            return [True]
 
         async def run():
             loop_thread["id"] = threading.get_ident()
@@ -207,12 +213,13 @@ class TestRunnerBoundary:
             return await runner._handle_gateway_platform_event(event, source)
 
         with patch("hermes_cli.lifecycle.invoke_hook", invoke):
-            assert asyncio.run(run()) == [{"_callback_query_claim": True, "value": "claimed"}]
+            assert asyncio.run(run()) == [True]
         assert hook_thread["id"] != loop_thread["id"]
 
     def test_unauthorized_tapper_never_reaches_hooks(self):
         runner = object.__new__(GatewayRunner)
-        runner._is_user_authorized = lambda source: False
+        runner._platform_event_handler = object()
+        runner._is_user_authorized_for_source = lambda source, *, allow_adapter_delegation=True: False
         invoke = MagicMock()
         a = _adapter()
         a.set_platform_event_handler(runner._handle_gateway_platform_event)
@@ -231,9 +238,9 @@ class TestRunnerBoundary:
             seen.append((platform, event_type, payload))
             return {"_callback_query_claim": True}
 
-        context.register_hook("gateway_platform_event", on_event)
+        context.register_hook("gateway_platform_action", on_event)
         runner = object.__new__(GatewayRunner)
-        runner._is_user_authorized = lambda source: source.user_id == "555000111"
+        runner._is_user_authorized_for_source = lambda source, *, allow_adapter_delegation=True: source.user_id == "555000111"
         a = _adapter()
         a.set_platform_event_handler(runner._handle_gateway_platform_event)
         q = _query("ok:draft-1")

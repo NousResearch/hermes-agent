@@ -234,6 +234,12 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path):
     os.utime(repo / "README", (time.time() + 60, time.time() + 60))
     assert worktree_gc._git(["status", "--porcelain"], cwd=str(repo)).returncode == 0
     assert git_state_hint(str(repo)) is not None
+    # The automatic session-start snapshot (status) and a delegated subagent's worktree (checkout).
+    from agent.coding_context import build_coding_workspace_block
+    from tools.subagent_worktree import create_subagent_worktree
+    assert "- Status:" in build_coding_workspace_block(repo)
+    sub = create_subagent_worktree(str(repo), "filters")
+    assert sub is not None and (Path(sub["path"]) / "README").read_text() == "hi\n"
     assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
 
 

@@ -775,7 +775,7 @@ def _close_job(job) -> None:
         pass
 
 
-def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
+def bounded_git_probe(argv: Sequence[str], *, timeout: float, env: "Mapping[str, str] | None" = None) -> str:
     """Run a short ``git`` probe and return stripped stdout, or ``""`` on ANY failure.
 
     On Windows ``run()``'s post-timeout cleanup calls an unbounded ``communicate()``; a suspended
@@ -801,7 +801,7 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
     openai/codex#36793). ``process_group`` only changes which group the child belongs to; it does not detach
     the terminal or alter the fast path.
     """
-    result = bounded_probe_run(argv, timeout=timeout, env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV})
+    result = bounded_probe_run(argv, timeout=timeout, env={**(env or noninteractive_git_env()), **NO_LAZY_FETCH_ENV})
     if result is None or result.returncode != 0:
         return ""
     return (result.stdout or "").strip()

@@ -1621,9 +1621,11 @@ def _context_section(content: str, label: str, warn_name: str, path: Path, conte
     return _truncate_content(body, warn_name, context_length=context_length, read_path=str(path))
 
 
-def _project_root(cwd_path: Path) -> Path:
-    """Containment root for project context files: the git root, else the cwd."""
-    return _find_git_root(cwd_path) or cwd_path.resolve()
+def _project_root(cwd_path: Path, directory: Optional[Path] = None) -> Path:
+    """Containment root for a project context file found in *directory* (default: the cwd): the git root, else
+    the cwd; a root at or above ``$HOME`` narrows to *directory* (``subdirectory_hints._containment_root``)."""
+    from agent.subdirectory_hints import _containment_root  # late import: that module imports this one
+    return _containment_root(_find_git_root(cwd_path) or cwd_path.resolve(), (directory or cwd_path).resolve())
 
 
 def _hermes_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
@@ -1632,7 +1634,7 @@ def _hermes_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     if path is None:
         return []
     label = str(path.relative_to(cwd_path)) if path.is_relative_to(cwd_path) else path.name
-    return [(label, path, _read_context_file(path, _project_root(cwd_path)))]
+    return [(label, path, _read_context_file(path, _project_root(cwd_path, path.parent)))]
 
 
 def _agents_md_directory_chain(cwd_path: Path) -> list[Path]:
@@ -1649,9 +1651,9 @@ def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
     """AGENTS.md chain from git root down to cwd; per directory the first NON-EMPTY of ``AGENTS.override.md`` /
     ``AGENTS.md`` / ``agents.md`` wins (empty or unreadable files are listed but fall through)."""
     cwd_resolved = cwd_path.resolve()
-    root = _project_root(cwd_resolved)
     found: list[tuple[str, Path, str]] = []
     for directory in _agents_md_directory_chain(cwd_resolved):
+        root = _project_root(cwd_resolved, directory)
         for name in ("AGENTS.override.md", "AGENTS.md", "agents.md"):
             candidate = directory / name
             if not _exists_or_denied(candidate):

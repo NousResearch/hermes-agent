@@ -531,6 +531,36 @@ class TestBuildContextFilesPrompt:
         link.write_text("REGULAR-MARKER")
         assert "REGULAR-MARKER" in build_context_files_prompt(cwd=str(project), skip_soul=True)
 
+    @pytest.mark.parametrize("loader", ["startup", "subdirectory_hint"])
+    def test_home_or_above_is_never_the_containment_root(self, tmp_path, monkeypatch, loader):
+        """A dotfiles repo at $HOME (startup context) or a session rooted at $HOME (subdirectory hints) would
+        contain every file below it: a download the agent unpacked must not link a context file to a home file."""
+        home = tmp_path / "home"
+        (home / ".git").mkdir(parents=True)
+        (home / "notes.md").write_text("HOME-MARKER")
+        (home / "AGENTS.md").write_text("OWN-HOME-AGENTS")
+        unpacked = home / "Downloads" / "unpacked"
+        (unpacked / "docs").mkdir(parents=True)
+        (unpacked / "docs" / "rules.md").write_text("INSIDE-MARKER")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+
+        def load() -> str:
+            if loader == "startup":
+                return build_context_files_prompt(cwd=str(unpacked), skip_soul=True)
+            from agent.subdirectory_hints import SubdirectoryHintTracker
+            return SubdirectoryHintTracker(working_dir=str(home)).check_tool_call(
+                "read_file", {"path": str(unpacked / "x.py")}) or ""
+
+        link = unpacked / "AGENTS.md"
+        link.symlink_to(home / "notes.md")
+        assert "HOME-MARKER" not in load()
+        link.unlink()
+        link.symlink_to(unpacked / "docs" / "rules.md")
+        assert "INSIDE-MARKER" in load()
+        if loader == "startup":  # the user's own AGENTS.md at the dotfiles root still loads
+            assert "OWN-HOME-AGENTS" in load()
+
 
 
 

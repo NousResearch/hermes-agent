@@ -386,6 +386,18 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
         # A plugin profile's transport IS its api_mode when a plugin registered that dialect.
         from agent.transports import registered_api_modes
         return pdef.transport if pdef.transport in registered_api_modes() else "chat_completions"
+    # User-config providers (``providers.<name>``, ``custom_providers.<name>``) are absent from
+    # the built-in catalog but declare their wire protocol in config.yaml. Resolve them through the
+    # same compat view every other call site uses — it flattens v12 ``providers:`` so ``custom:<key>``
+    # slugs match, folds ``api_mode``/``transport`` and canonicalizes aliases — so a config-defined
+    # anthropic_messages gateway is not misrouted onto the OpenAI wire. (#126308)
+    try:
+        from hermes_cli.config import load_config_readonly, get_compatible_custom_providers
+        pdef = resolve_provider_full(provider, {}, get_compatible_custom_providers(load_config_readonly()))
+    except Exception:
+        pdef = None
+    if pdef is not None and pdef.transport in TRANSPORT_TO_API_MODE:
+        return TRANSPORT_TO_API_MODE[pdef.transport]
     if provider == "bedrock":
         return "bedrock_converse"
     return "chat_completions"
@@ -445,6 +457,13 @@ def custom_provider_aliases(display_name: str, provider_key: str = "") -> frozen
     return frozenset(aliases)
 
 
+def _custom_provider_transport(entry: Dict[str, Any]) -> str:
+    """Declared wire protocol of a custom entry. The wizard persists ``api_mode`` and
+    hand-written configs use ``transport``; both are the same field (#126308)."""
+    declared = entry.get("api_mode") or entry.get("transport") or ""
+    return declared if isinstance(declared, str) and declared.strip() else "openai_chat"
+
+
 def resolve_custom_provider(name: str, custom_providers: Optional[List[Dict[str, Any]]]) -> Optional[ProviderDef]:
     """Resolve a provider from the user's config.yaml ``custom_providers`` list. A stored bare
     ``"custom"`` (corrupt state from a prior model-switch bug) falls back to the first valid entry
@@ -464,7 +483,7 @@ def resolve_custom_provider(name: str, custom_providers: Optional[List[Dict[str,
             continue
         provider_key = (entry.get("provider_key") or "").strip()
         pdef = _user_pdef(custom_provider_slug(display_name, provider_key), display_name, api_url,
-                          (entry.get("key_env") or "").strip())
+                          (entry.get("key_env") or "").strip(), _custom_provider_transport(entry))
         if first_valid is None:
             first_valid = pdef
         if requested in custom_provider_aliases(display_name, provider_key):

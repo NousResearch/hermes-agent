@@ -18,6 +18,10 @@ def _cleared_status_copy(entry: PooledCredential) -> PooledCredential:
                    extra={k: v for k, v in entry.extra.items() if k != "failure_reason"})
 
 
+class CredentialNotSavedError(RuntimeError):
+    """``add_entry`` wrote the pool but the store does not hold the new row."""
+
+
 class CredentialPoolAdminMixin:
     def reset_status(self, credential_id: str) -> Optional[PooledCredential]:
         """Clear only the target's local error state, preserving sibling cooldowns."""
@@ -109,43 +113,49 @@ class CredentialPoolAdminMixin:
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
         from agent.credential_pool import (
-            SINGLE_USE_REFRESH_POOL_PROVIDERS, _borrowed_single_use_pool_root, _next_priority,
-            _profile_owns_pool_provider, write_credential_pool,
+            _borrowed_single_use_pool_root, _next_priority, _profile_owns_pool_provider,
+            write_credential_pool,
         )
         from hermes_cli import auth as auth_mod
+        from hermes_cli.auth_oauth_grants import SINGLE_USE_REFRESH_POOL_PROVIDERS
 
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
-            borrowed_ids = set(getattr(self, "_borrowed_root_ids", ()) or ())
-            # A named profile adding its FIRST single-use OAuth credential
-            # must claim the row in its own store even when root has no row to
-            # borrow.  In that empty-root case ``_borrowed_root_ids`` is empty,
-            # but the generic ``_persist`` path still classifies the profile as
-            # a borrower and sends the payload through persist_pool_entries'
-            # update-only root merge.  With no matching root id the new row is
-            # dropped while ``hermes auth add`` reports success.
-            profile_claims_first_single_use_row = (
+            borrowed_ids = self._borrowed_root_ids
+            # Decided now, not from load_pool()'s snapshot: a profile with no
+            # rows of its own borrows from root even when root has none, and
+            # ``_persist`` would send the new row to the update-only root merge,
+            # which drops it (#103694).
+            profile_borrows = (
                 self.provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
                 and not _profile_owns_pool_provider(self.provider)
                 and _borrowed_single_use_pool_root() is not None
             )
-            if borrowed_ids or profile_claims_first_single_use_row:
-                # ``hermes -p <profile> auth add <single-use provider>``: the
-                # profile is claiming its OWN credential. Persist only the
-                # profile-owned rows locally — copying the borrowed root
-                # grant alongside them would fork its single-use refresh
-                # token (#100339).  The same local-claim path is required when
-                # root and profile are both empty. Once the profile
-                # owns rows, the root fallback for this provider is shadowed
-                # (existing contract).
+            if borrowed_ids or profile_borrows:
+                # ``hermes -p <profile> auth add <single-use provider>``: a fresh
+                # login inside the profile is the profile's OWN credential, so
+                # it goes to the profile store, never to root. Borrowed root
+                # rows stay out of it — a copy would fork their single-use
+                # refresh token (#100339). Once the profile owns rows, the root
+                # fallback for this provider is shadowed.
                 self._entries = [e for e in self._entries if e.id not in borrowed_ids]
                 written = write_credential_pool(
                     self.provider, [e.to_dict() for e in self._entries],
                     token_bases=self._persisted_token_pairs,
                 )
                 self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
-                self._borrowed_root_ids = None
+                self._borrowed_root_ids = set()
             else:
                 self._persist()
+            # Callers print "Added" on return; a row the store did not keep
+            # must fail loudly instead.
+            if not any(isinstance(row, dict) and row.get("id") == entry.id
+                       for row in auth_mod.read_credential_pool(self.provider)):
+                self._entries = [e for e in self._entries if e.id != entry.id]
+                raise CredentialNotSavedError(
+                    f"The {self.provider} credential was not saved: {auth_mod._auth_file_path()} "
+                    f"does not contain it after the write, so nothing was added. Check that the file "
+                    f"is writable, then run the command again."
+                )
             return entry

@@ -820,8 +820,7 @@ def _write_through_provider_state_to_global_root(
 
 def _singleton_target_for_entry(pool: "CredentialPool", entry: "PooledCredential") -> Optional[Path]:
     """Root ``.anthropic_oauth.json`` when *entry* is a borrowed hermes_pkce row, else None."""
-    borrowed_ids = getattr(pool, "_borrowed_root_ids", None) or ()
-    if entry.source != "hermes_pkce" or entry.id not in borrowed_ids:
+    if entry.source != "hermes_pkce" or entry.id not in getattr(pool, "_borrowed_root_ids", ()):
         return None
     try:
         from agent.anthropic_credentials import _root_hermes_oauth_file
@@ -1011,7 +1010,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         self._current_id: Optional[str] = None
         # Ids of rows read via the global-root fallback (single-use OAuth
         # providers only); set by load_pool(), consumed by add_entry().
-        self._borrowed_root_ids: Optional[Set[str]] = None
+        self._borrowed_root_ids: Set[str] = set()
         self._persisted_token_pairs: Dict[str, Tuple[Any, Any]] = {}
         self._strategy = get_pool_strategy(provider)
         # RLock: _replace_entry/_persist self-acquire it so the DEFERRED

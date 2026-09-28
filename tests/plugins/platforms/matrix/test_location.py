@@ -163,18 +163,30 @@ async def test_location_reaches_text_path_with_original_identity(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("html_fallback", [False, True])
-@pytest.mark.parametrize("label", ["Location", "Meeting point @file:current.txt"])
+@pytest.mark.parametrize(
+    ("label", "separator"),
+    [
+        ("", ""),
+        ("", "\n"),
+        ("", "\n\n"),
+        ("Location", "\n\n"),
+        ("Meeting point @file:current.txt", "\n\n"),
+    ],
+)
 @pytest.mark.parametrize(
     "description", [None, "", ["invalid"], "> MSC label @file:current.txt"]
 )
 async def test_location_reply_keeps_quoted_references_out_of_current_text(
-    adapter, html_fallback, label, description
+    adapter, html_fallback, label, separator, description
 ):
     adapter._require_mention = True
     quoted_text = "@file:notes.txt\n@skill:previous-context"
     event = location_event({
         "geo_uri": "geo:1,2",
-        "body": f"> <@bot:example.org> @file:notes.txt\n> @skill:previous-context\n\n{label}",
+        "body": (
+            "> <@bot:example.org> @file:notes.txt\n"
+            f"> @skill:previous-context{separator}{label}"
+        ),
         "org.matrix.msc3488.location": {"description": description},
         "m.relates_to": {
             "rel_type": "m.thread",
@@ -196,7 +208,7 @@ async def test_location_reply_keeps_quoted_references_out_of_current_text(
         description if isinstance(description, str) and description else label
     )
     text = "📍 Location: 1.0, 2.0"
-    if current_label != "Location":
+    if current_label and current_label != "Location":
         text += f" ({current_label})"
 
     await adapter._on_room_message(event)

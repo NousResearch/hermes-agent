@@ -96,6 +96,12 @@ class GatewayInboundMixin:
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
                     event = dataclasses.replace(event, text=_new_text)
+                    try:
+                        from plugins.source_context import invalidate_source_fragments
+
+                        invalidate_source_fragments(event)
+                    except Exception:
+                        logger.debug("tool source context invalidate failed", exc_info=True)
                 break
             if _action == "allow":
                 break
@@ -741,6 +747,11 @@ class GatewayInboundMixin:
             return None
         target = target if target.startswith("/") else f"/{target}"
         event.text = f"{target} {event.get_command_args().strip()}".strip()
+        try:
+            from plugins.source_context import invalidate_source_fragments
+            invalidate_source_fragments(event)
+        except Exception:
+            logger.debug("tool source context invalidate failed", exc_info=True)
         target_command = target.lstrip("/")
         return target_command.split()[0] if target_command else target_command
 
@@ -788,6 +799,11 @@ class GatewayInboundMixin:
                 new_command = str(hook_result.get("command_name", "")).strip().lstrip("/")
                 if new_command:
                     event.text = f"/{new_command} {str(hook_result.get('raw_args', '')).strip()}".strip()
+                    try:
+                        from plugins.source_context import invalidate_source_fragments
+                        invalidate_source_fragments(event)
+                    except Exception:
+                        logger.debug("tool source context invalidate failed", exc_info=True)
                     return False, None, event.get_command()
         return False, None, None
 
@@ -866,6 +882,11 @@ class GatewayInboundMixin:
         await self._send_command_ack(source, ack, name)
         try:
             event.text = build()
+            try:
+                from plugins.source_context import invalidate_source_fragments
+                invalidate_source_fragments(event)
+            except Exception:
+                logger.debug("tool source context invalidate failed", exc_info=True)
         except Exception:
             return True, f"Could not start /{name} — please try again."
         return False, None
@@ -900,6 +921,11 @@ class GatewayInboundMixin:
         )
         await self._send_command_ack(source, _ack, "init")
         event.text = _init_prompt
+        try:
+            from plugins.source_context import invalidate_source_fragments
+            invalidate_source_fragments(event)
+        except Exception:
+            logger.debug("tool source context invalidate failed", exc_info=True)
         return False, None
 
     async def _hm_cmd_blueprint(self, event, source, _quick_key):
@@ -914,6 +940,11 @@ class GatewayInboundMixin:
             await self._send_command_ack(source, _text, "blueprint")
         try:
             event.text = _blueprint_seed
+            try:
+                from plugins.source_context import invalidate_source_fragments
+                invalidate_source_fragments(event)
+            except Exception:
+                logger.debug("tool source context invalidate failed", exc_info=True)
         except Exception:
             return True, _text or None
         return False, None
@@ -948,6 +979,11 @@ class GatewayInboundMixin:
             return True, usage
         with suppress(Exception):
             event.text = payload
+            try:
+                from plugins.source_context import invalidate_source_fragments
+                invalidate_source_fragments(event)
+            except Exception:
+                logger.debug("tool source context invalidate failed", exc_info=True)
         return False, None
 
     async def _hm_cmd_moa(self, event, source, _quick_key):
@@ -967,6 +1003,11 @@ class GatewayInboundMixin:
             moa_cfg = normalize_moa_config({})
         try:
             event.text = moa_payload
+            try:
+                from plugins.source_context import invalidate_source_fragments
+                invalidate_source_fragments(event)
+            except Exception:
+                logger.debug("tool source context invalidate failed", exc_info=True)
             _moa_state = self._session_state(_quick_key)
             # Same one-shot snapshot `/model --once` uses, so eviction/stop/finalizer settle both alike.
             self._claim_one_turn_restore(_quick_key)
@@ -1105,6 +1146,12 @@ class GatewayInboundMixin:
             if not bundle_result:
                 return False
             event.text, _loaded, missing = bundle_result
+            try:
+                from plugins.source_context import invalidate_source_fragments
+
+                invalidate_source_fragments(event)
+            except Exception:
+                logger.debug("tool source context invalidate failed", exc_info=True)
             if missing:
                 logger.info("Bundle %s skipped missing skills: %s", bundle_key, ", ".join(missing))
             return True  # Fall through to normal message processing with bundle content
@@ -1197,10 +1244,21 @@ class GatewayInboundMixin:
                 if not stacked_result:
                     return f"Failed to load stacked skills for /{command}."
                 event.text, _loaded, _missing = stacked_result
+                try:
+                    from plugins.source_context import invalidate_source_fragments
+
+                    invalidate_source_fragments(event)
+                except Exception:
+                    logger.debug("tool source context invalidate failed", exc_info=True)
             else:
                 msg = build_skill_invocation_message(cmd_key, user_instruction, task_id=_quick_key)
                 if msg:
                     event.text = msg
+                    try:
+                        from plugins.source_context import invalidate_source_fragments
+                        invalidate_source_fragments(event)
+                    except Exception:
+                        logger.debug("tool source context invalidate failed", exc_info=True)
             # Fall through to normal message processing with skill content
         except Exception as e:
             logger.debug("Skill command check failed (non-fatal): %s", e)

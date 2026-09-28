@@ -466,10 +466,8 @@ def _transcribe_minimax(
 
     # 1. Determine region and API key
     region = str(mm_config.get("region") or "").strip().lower()
-    explicit_key = str(mm_config.get("api_key") or "").strip()
-
-    cn_key = explicit_key or _resolve_provider_key("MINIMAX_CN_API_KEY", "minimax")
-    global_key = explicit_key or _resolve_provider_key("MINIMAX_API_KEY", "minimax")
+    cn_key = _resolve_provider_key("MINIMAX_CN_API_KEY", "minimax")
+    global_key = _resolve_provider_key("MINIMAX_API_KEY", "minimax")
 
     if not region:
         region = "cn" if cn_key and not global_key else "global"

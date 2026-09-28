@@ -601,6 +601,14 @@ _LAUNCHER_WITH_NATIVE_CHILD = (
     "    time.sleep(0.1)\n"
 )
 
+# The crash-path twin: the launcher itself dies right after spawning the worker,
+# so the worker is orphaned while the teardown still owes it a signal.
+_LAUNCHER_THAT_DIES_AND_LEAVES_A_WORKER = (
+    "import subprocess, sys\n"
+    "w = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\n"
+    "print(w.pid, flush=True)\n"
+)
+
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 def test_terminate_process_takes_the_native_descendant_with_it():
@@ -698,3 +706,109 @@ def test_terminate_process_sweeps_a_group_that_ignores_the_term(monkeypatch):
     # TERM to the group, probe (signal 0), then the KILL sweep for the survivor.
     assert signalled == [(111, _signal.SIGTERM), (111, 0), (111, _signal.SIGKILL)]
     assert terminated == []  # the group path never degrades to launcher-only
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_terminate_process_signals_a_reaped_launchers_group(monkeypatch):
+    """The crash path: the CLI died early, _session's poll() reaped it, and
+    getpgid can no longer see the pid — but the group it led outlives it while
+    any member lives. Bailing there would signal nothing at all (the exact
+    #124835 leak); the sweep must fall back to the launcher's pid, which
+    _spawn guarantees is the group id (#124835 review)."""
+    import signal as _signal
+
+    import agent.copilot_acp_client as mod
+
+    signalled, terminated = [], []
+
+    class _Proc:
+        pid = 111
+
+        def terminate(self):
+            terminated.append(111)
+
+        def wait(self, timeout=None):
+            return 0  # already reaped: Popen returns immediately
+
+        def kill(self):
+            pass
+
+    def _getpgid(pid):
+        raise ProcessLookupError(pid)
+
+    monkeypatch.setattr(mod.os, "name", "posix")
+    monkeypatch.setattr(mod.os, "getpgid", _getpgid, raising=False)
+    monkeypatch.setattr(mod.os, "killpg", lambda pgid, sig: signalled.append((pgid, sig)), raising=False)
+    CopilotACPClient._terminate_process(_Proc())  # type: ignore[arg-type]
+    assert signalled == [(111, _signal.SIGTERM), (111, 0), (111, _signal.SIGKILL)]
+    assert terminated == []
+
+
+def test_terminate_process_sweeps_the_tree_on_windows(monkeypatch):
+    """No process groups on Windows: a launcher TERM stops at the npm wrapper,
+    so teardown must also run the taskkill /T /F tree sweep instead of leaving
+    the native descendant running (#124835's Windows twin)."""
+    from types import SimpleNamespace
+
+    import hermes_cli._subprocess_compat as compat
+    import agent.copilot_acp_client as mod
+
+    terminated, swept = [], []
+
+    class _Proc:
+        pid = 222
+
+        def terminate(self):
+            terminated.append(222)
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    # A module-local os stand-in, NOT a global os.name patch: a global 'nt'
+    # makes pathlib instantiate WindowsPath on POSIX hosts the moment a failed
+    # assertion's repr touches Path, which turns a red test into an INTERNALERROR.
+    monkeypatch.setattr(mod, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(compat, "kill_process_tree", lambda proc: swept.append(proc.pid))
+    CopilotACPClient._terminate_process(_Proc())  # type: ignore[arg-type]
+    assert terminated == [222]  # graceful window first
+    assert swept == [222]  # then the tree sweep
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_terminate_process_reaches_survivors_after_the_launcher_is_reaped():
+    """End-to-end crash path: the launcher exits on its own, poll() reaps it,
+    and the native worker it spawned keeps running — getpgid can no longer see
+    the pid. The teardown must still take the worker down; bailing on the
+    ProcessLookupError is exactly the #124835 leak the tree-kill exists for."""
+    import contextlib
+    import subprocess as sp
+    import time as _time
+
+    argv = [sys.executable, "-c", _LAUNCHER_THAT_DIES_AND_LEAVES_A_WORKER]
+    proc = sp.Popen(argv, stdin=sp.PIPE, stdout=sp.PIPE, stderr=sp.PIPE, process_group=0)
+    try:
+        worker_pid = int(proc.stdout.readline().decode().strip())
+        proc.wait(timeout=10)  # the launcher exits immediately...
+        assert proc.poll() is not None  # ...and is reaped, like _session's poll()
+        os.kill(worker_pid, 0)  # the worker outlives its dead launcher
+
+        CopilotACPClient._terminate_process(proc)
+
+        deadline = _time.monotonic() + 5
+        while _time.monotonic() < deadline:
+            try:
+                os.kill(worker_pid, 0)
+            except OSError:
+                break
+            _time.sleep(0.05)
+        else:
+            with contextlib.suppress(OSError):
+                os.kill(worker_pid, 9)
+            raise AssertionError("the reaped launcher's worker survived the teardown")
+    finally:
+        with contextlib.suppress(Exception):
+            proc.kill()
+            proc.wait(timeout=5)

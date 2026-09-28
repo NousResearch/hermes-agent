@@ -325,12 +325,29 @@ class CopilotACPClient:
                     proc.kill()
 
         if os.name != "posix":
-            _launcher_only()
+            # No process groups on Windows, so a launcher TERM stops at the npm wrapper
+            # and the native descendant survives (#124835's Windows twin). Graceful window
+            # first, then the taskkill /T /F tree sweep — a fail-open no-op once the tree
+            # is gone.
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+            from hermes_cli._subprocess_compat import kill_process_tree
+
+            kill_process_tree(proc)
             return
         try:
             pgid = os.getpgid(proc.pid)
         except OSError:
-            return  # already reaped
+            # The launcher is already reaped — poll() reaps in _session, so this is the
+            # crash path (CLI exited early). A group outlives its leader, and _spawn put
+            # this launcher at the head of its own group, so the pid it died with is
+            # STILL the group id: signalling it reaches the surviving descendants. An
+            # emptied group answers ProcessLookupError, and bailing here instead would
+            # signal nothing at all — the exact leak this teardown exists to close.
+            pgid = proc.pid
         if pgid != proc.pid:
             _launcher_only()
             return
@@ -339,7 +356,8 @@ class CopilotACPClient:
         try:
             proc.wait(timeout=2)
         except Exception:
-            # The launcher still lives, so the pgid is still ours — hard-kill the group.
+            # The group's pgid is claimed by any surviving member, ours included —
+            # hard-kill the group.
             with contextlib.suppress(OSError):
                 os.killpg(pgid, signal.SIGKILL)
             with contextlib.suppress(Exception):

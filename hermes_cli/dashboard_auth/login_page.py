@@ -169,6 +169,20 @@ _LOGIN_HTML_TEMPLATE = """\
     font-size: 0.95rem;
   }}
 
+  /* Server-side notice (e.g. an expired OAuth round trip bounced back here).
+     Rendered only for whitelist-mapped phrases — never raw query input. */
+  .login-notice {{
+    margin: 0 0 1.25rem;
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--hairline);
+    color: color-mix(in srgb, var(--foreground) 80%, transparent);
+    font-size: 0.9rem;
+  }}
+
+  .login-notice + .subtitle {{
+    margin-bottom: 1.25rem;
+  }}
+
   .provider-list {{
     display: grid;
     gap: 0.75rem;
@@ -290,6 +304,7 @@ _LOGIN_HTML_TEMPLATE = """\
   <div class="brand">Nous<span class="dot"></span>Research</div>
   <div class="card">
     <h1>Sign in</h1>
+{login_notice}
     <p class="subtitle">Choose a sign-in method to continue to the Hermes Agent dashboard.</p>
     <div class="provider-list">
 {provider_buttons}
@@ -439,16 +454,23 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
-def render_login_html(*, next_path: str = "") -> str:
+def render_login_html(*, next_path: str = "", notice: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
     ``next_path`` is threaded into each provider button/form so the OAuth round
     trip carries it end-to-end. The caller validates it same-origin; it is
     HTML-escaped here as defence in depth.
+
+    ``notice`` is a short server-authored status line (e.g. the expired-sign-in
+    message). Callers must pass whitelist-mapped text only, never raw user
+    input; it is still HTML-escaped here as defence in depth.
     """
     providers = list_session_providers()
     if not providers:
         return _EMPTY_HTML
+    notice_html = (
+        f'<p class="login-notice">{html.escape(notice, quote=True)}</p>' if notice else ""
+    )
     # URL-encode then HTML-escape, matching the gate's ``_safe_next_target``
     # shape so a round-tripped value is byte-identical.
     next_qs = f"&next={html.escape(quote(next_path, safe=''), quote=True)}" if next_path else ""
@@ -463,6 +485,7 @@ def render_login_html(*, next_path: str = "") -> str:
     return _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
         password_script=_PASSWORD_FORM_SCRIPT if needs_password_script else "",
+        login_notice=notice_html,
     )
 
 
@@ -484,7 +507,8 @@ def render_native_provider_choice_html(
                        f'Sign in with {html.escape(p.display_name)}</a>')
     if not buttons:
         return _EMPTY_HTML
-    return _LOGIN_HTML_TEMPLATE.format(provider_buttons="\n".join(buttons), password_script="")
+    return _LOGIN_HTML_TEMPLATE.format(
+        provider_buttons="\n".join(buttons), password_script="", login_notice="")
 
 
 def _render_password_form(provider, next_path: str) -> str:

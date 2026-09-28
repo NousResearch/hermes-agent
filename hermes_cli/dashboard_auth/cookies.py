@@ -36,7 +36,11 @@ _NAME_VARIANTS = ("__Host-", "__Secure-", "")
 # RT cookie lifetime is a generous browser-side upper bound; the provider's own RT TTL is the
 # real authority (an expired RT -> RefreshExpiredError -> re-login).
 _RT_MAX_AGE = 30 * 24 * 60 * 60
-_PKCE_MAX_AGE = 10 * 60
+# 30 minutes, not 10: IDP flows that wait on an emailed verification code regularly
+# outlive a 10-minute window, and the failure lands as an opaque 400 on /auth/callback
+# (#126061). Widening is cheap — the cookie is single-use, bound to one state, and
+# cleared on callback, so the extra window is not a reusable credential.
+_PKCE_MAX_AGE = 30 * 60
 # Long enough for one portal round trip / back-button; short enough that a user returning later
 # gets a fresh silent attempt rather than a stuck /login.
 _SSO_ATTEMPT_MAX_AGE = 60

@@ -5,8 +5,8 @@
 // `locales/_keys.desktop.json` (repo root, committed). This script derives that
 // file from `src/i18n/en.ts` — every leaf's dotted path, sorted; function-
 // valued entries are keys too (a pack overrides them with a positional
-// `{0}`/`{1}` string). Run via `npm run i18n:keys`; the build runs it as well
-// so the committed file can't drift from the catalog unnoticed (`--check`).
+// `{0}`/`{1}` string). Run via `npm run i18n:keys` and commit the result (`--check` verifies);
+// the build never writes it — a dirty checkout would break `hermes update`.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'

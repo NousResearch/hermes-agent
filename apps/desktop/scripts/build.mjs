@@ -18,9 +18,8 @@ export function buildSourceDesktop({ source = repoRoot, icons, run = execFileSyn
     cpSync(join(icons, 'apps/desktop/assets'), join(app, 'assets'), { recursive: true })
   }
   step('apps/desktop/scripts/write-build-stamp.mjs')
-  // Language-pack validators read the catalog's key set from the repo; keep
-  // the committed file in step with en.ts on every build.
-  step('apps/desktop/scripts/i18n-keys.mjs', ['--source', source])
+  // locales/_keys.desktop.json is a committed artifact (i18n-keys.test.mjs pins it to en.ts);
+  // the build must not write into the checkout — a dirty tree breaks `hermes update`.
   step('apps/desktop/scripts/stage-native-deps.mjs')
   step('scripts/build/desktop.mjs', ['--source', source, '--icons', icons,
     '--stamp', join(app, 'build/install-stamp.json'), '--native-deps', join(app, 'build/native-deps'), '--out', join(app, 'dist')])

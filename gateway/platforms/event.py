@@ -82,11 +82,6 @@ class MessageEvent:
     channel_context: Optional[str] = None
     # Set for synthetic events (e.g. background-process notifications) that must bypass user authorization.
     internal: bool = False
-    # Set for synthetic turns that carry no channel inputs of their own (goal continuation,
-    # heartbeat due-prompts, /goal resume) so the turn reuses the session's pinned channel
-    # prompt/parent instead of overwriting it with this event's own None (#126109). Independent
-    # of ``internal``: these events still go through user authorization.
-    inherit_channel_pin: bool = False
     # Free-form per-event metadata (e.g. ``whatsapp_from_owner=True``); plugins must ``.get()``.
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
@@ -97,6 +92,12 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Set for synthetic turns that carry no channel inputs of their own (goal continuation,
+    # heartbeat due-prompts, /goal resume) so the turn reuses the session's pinned channel
+    # prompt/parent instead of overwriting it with this event's own None (#126109). Independent
+    # of ``internal``: these events still go through user authorization. Appended after
+    # ``reply_expected`` for positional compat (see the field-order rule above).
+    inherit_channel_pin: bool = False
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)

@@ -628,7 +628,10 @@ class GatewayAgentCacheMixin:
         source rebuilt from the persisted origin, without chat_name/user_name/message_id. Rendering
         from it re-keyed the pin, and the next human turn re-keyed it back (A→B→A), rewriting
         already-sent system bytes each time. An internal event is never a real metadata change, so
-        it reuses an existing pin verbatim; with no pin yet it renders and pins as usual."""
+        it reuses an existing pin verbatim; with no pin yet it renders and pins as usual. Callers
+        pass ``event.internal or event.inherit_channel_pin`` (synthetic goal/heartbeat/resume
+        turns strip ``message_id``, which is also a ``_ephemeral_change_key`` input) so this pin
+        and ``_pinned_channel_inputs`` reuse on the same decision."""
         _pin_state = self._peek_session_state(session_key) if session_key else None
         _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
         if internal and _eph_pin is not None:

@@ -82,6 +82,22 @@ describe('a reply the turn re-streams after sealing it as an interim paints once
     expect(visibleAssistantTexts()).toEqual([REPLY])
   })
 
+  it('never reaches across a message.start boundary to settle an earlier occurrence', async () => {
+    mountStream()
+    await start()
+    await interim(REPLY)
+    // A chained / prompt-less turn begins: message.start starts a new
+    // occurrence and resets interimBoundaryPending while keeping the messages,
+    // so the sealed interim above is now the PREVIOUS turn's segment. Matching
+    // it would delete this turn's live bubble and complete the old one.
+    await start()
+    await delta(REPLY)
+    await flushDeltas()
+    await complete(REPLY)
+
+    expect(visibleAssistantTexts()).toEqual([REPLY, REPLY])
+  })
+
   it('still keeps a distinct interim segment beside the reply', async () => {
     mountStream()
     await start()

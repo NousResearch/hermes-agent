@@ -304,20 +304,23 @@ class Mem0MemoryProvider(MemoryProvider):
         if self._backend is None or self._is_breaker_open():
             return
 
-        def _sync():
-            if self._backend is not None:
-                messages = [
-                    {"role": "user", "content": _truncate_for_sync(user_content, self._sync_max_chars)},
-                    {"role": "assistant", "content": _truncate_for_sync(assistant_content, self._sync_max_chars)},
-                ]
-                self._try(lambda: self._add(messages, infer=True), logger.warning, "Mem0 sync failed: %s")
-
         with self._sync_lock:
             prev = self._sync_thread
             if prev and prev.is_alive():
-                prev.join(timeout=5.0)
-                if prev.is_alive():  # still busy after the wait: skip to avoid duplicate ingestion
-                    return
+                prev.join(timeout=5.0)  # backpressure only: this turn is different content, never a duplicate
+
+            def _sync():
+                # OSS extraction (a local LLM call) routinely outlives the wait above; chaining behind
+                # the previous turn keeps writes in order instead of dropping this turn's memory.
+                if prev is not None:
+                    prev.join()
+                if self._backend is not None:
+                    messages = [
+                        {"role": "user", "content": _truncate_for_sync(user_content, self._sync_max_chars)},
+                        {"role": "assistant", "content": _truncate_for_sync(assistant_content, self._sync_max_chars)},
+                    ]
+                    self._try(lambda: self._add(messages, infer=True), logger.warning, "Mem0 sync failed: %s")
+
             self._sync_thread = spawn_context_thread(_sync, name="mem0-sync")
             self._sync_thread.start()
 

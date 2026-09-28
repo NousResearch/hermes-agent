@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from gateway.session_context import declare_stateless_channel
+from hermes_cli.env_loader import enable_yolo_mode
 from hermes_cli.fallback_config import get_fallback_chain
 
 _ALL_TOOLSETS = {"all", "*"}
@@ -275,7 +276,7 @@ def run_oneshot(
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
     # Non-interactive by definition — an approval prompt would hang forever.
-    os.environ["HERMES_YOLO_MODE"] = "1"
+    enable_yolo_mode("--oneshot")
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
     # Same finite-chat marker as `hermes chat -q` (cli.py): the session-source resolver uses it to drop an
     # inherited tui/desktop transport label, and delegate dispatch to route detached results inline.

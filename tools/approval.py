@@ -20,6 +20,7 @@ import threading
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
+from hermes_cli.env_loader import get_yolo_mode_source
 from tools import approval_context
 from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
@@ -43,6 +44,8 @@ logger = logging.getLogger(__name__)
 # Frozen at import: reading os.environ per call would let any skill running in the process set
 # this and bypass every approval check (prompt-injection escalation path).
 _YOLO_MODE_FROZEN: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
+# Dotenv can reload later; diagnostics must explain the value the gate actually froze.
+_YOLO_MODE_SOURCE_FROZEN: str | None = get_yolo_mode_source() if _YOLO_MODE_FROZEN else None
 
 
 # --- Per-session approval state (thread-safe) -----------------------------------------------------------------------

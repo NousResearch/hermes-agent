@@ -1,13 +1,18 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, statSync, utimesSync, openSync, closeSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, symlinkSync, statSync, utimesSync, openSync, closeSync, renameSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { afterEach, expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import { buildTui } from '../scripts/build/tui.mjs'
 import { buildWeb } from '../scripts/build/web.mjs'
 import { productOutput, publishDirectory, renameWithRetry, withProduct } from '../scripts/build/frontend-common.mjs'
+
+vi.mock('node:fs', async importOriginal => {
+  const fs = await importOriginal()
+  return { ...fs, renameSync: vi.fn(fs.renameSync) }
+})
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
@@ -171,9 +176,20 @@ test('publication stops retrying a hold that is not transient and keeps the prev
   closeSync(held)
 }, 30_000)
 
-test('rename retry rethrows a failure no hold can explain instead of sleeping through it', async () => {
-  // A missing source can never be renamed; waiting the whole budget first only delays the
-  // error the caller gets either way. Only the two hold codes are worth retrying.
+test.each(['ENOENT', 'EEXIST', 'ENOTEMPTY'])('rename retry rethrows %s on the first attempt', async code => {
+  // Windows also reports occupied destinations as EPERM, so real filesystem errors alone
+  // cannot exercise every non-retryable code. Count calls instead of timing the backoff.
+  const failure = Object.assign(new Error('rename failed'), { code })
+  const rename = vi.mocked(renameSync).mockClear().mockImplementation(() => { throw failure })
+  try {
+    await expect(renameWithRetry('source', 'destination')).rejects.toBe(failure)
+    expect(rename).toHaveBeenCalledExactlyOnceWith('source', 'destination')
+  } finally {
+    rename.mockReset()
+  }
+})
+
+test('rename retry preserves filesystem errors for missing sources and occupied destinations', async () => {
   const base = fixture()
   await expect(renameWithRetry(path.join(base, 'missing'), path.join(base, 'elsewhere')))
     .rejects.toMatchObject({ code: 'ENOENT' })

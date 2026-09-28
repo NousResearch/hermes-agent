@@ -288,7 +288,178 @@ def test_fresh_queued_heartbeat_admitted(monkeypatch):
     assert process_heartbeat_still_alive(event) is True
 
 
-# ── entry-point coverage (#120395): the BUSY drain path ─────────────────────
+def _ret(value):
+    """An async callable that ignores its arguments and returns ``value``."""
+    async def _coro(*_a, **_kw):
+        return value
+    return _coro
+
+
+def _make_prepared(message_text: str = "heartbeat #1"):
+    """A ``GatewayRunner._PreparedTurn`` carrying the minimum the guard path needs."""
+    from gateway.run import GatewayRunner
+
+    return GatewayRunner._PreparedTurn(
+        history=[],
+        context_prompt="ctx",
+        message_text=message_text,
+        persist_user_message=None,
+        persist_user_timestamp=None,
+        persist_user_display_kind=None,
+    )
+
+
+# ── entry-point 2: the pre-``_run_agent`` re-check ───────────────────────────
+# The comment on these three entry points claims all of them are covered.
+# Muting each guard branch in turn showed they were NOT: mutating
+# ``_hmwa_resolve_session`` turns ``test_turn_resolve_session_drops_a_stale_heartbeat``
+# red and mutating the busy-drain guard turns the two busy-drain tests red, but
+# mutating this one left the whole file green — it had no driver at all. This is
+# that driver.
+
+
+def test_turn_start_recheck_drops_a_heartbeat_that_died_while_waiting(monkeypatch):
+    """Guard site 2 (the pre-``_run_agent`` re-check) must reject a heartbeat
+    whose process exited *after* the turn was admitted.
+
+    The site exists for the gap between admission and execution: on a busy
+    session the ``_hmwa_resolve_session`` check can be minutes stale, so this
+    re-check runs immediately before the runner starts. A heartbeat that was
+    live at admission but whose process died while the turn waited must not buy
+    a model call to deliver a \"still running\" line the user already saw finish.
+
+    Drives the real ``_handle_message_with_agent`` with ``_hmwa_prepare_turn``
+    stubbed, so deleting the guard branch turns this red.
+    """
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from gateway.config import Platform
+    from gateway.run_heartbeat_acceptance import process_heartbeat_still_alive
+    from tools import process_registry as pr_mod
+
+    # Live at admission, dead by turn-start — the case this site exists for.
+    monkeypatch.setattr(
+        pr_mod.process_registry, "get",
+        lambda sid: SimpleNamespace(id=sid, started_at=1700000000.0, exited=True),
+    )
+
+    event = MessageEvent(
+        text="heartbeat #1 — still running after 1m",
+        message_id="hb-recheck",
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42", chat_type="dm"),
+    )
+    event._process_heartbeat_session_id = "proc_died_while_waiting"
+    event._process_heartbeat_started_at = 1700000000.0
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._session_sources = {}
+    ran_agent = []
+
+    async def _get_or_create(source, **_kw):
+        return SimpleNamespace(session_id="sid-1", session_key="sess", active_stream_id=None)
+
+    async def _lookup_by_key(key, **_kw):
+        return None
+
+    async_session = SimpleNamespace(
+        get_or_create_session=_get_or_create,
+        lookup_by_session_key=_lookup_by_key,
+    )
+    monkeypatch.setattr(
+        type(runner), "async_session_store", property(lambda _s: async_session), raising=True
+    )
+
+    # Admission must succeed (the process looked alive when the turn resolved),
+    # then the turn must be dropped at the re-check without running the agent.
+    monkeypatch.setattr(
+        runner, "_hmwa_resolve_session",
+        _ret((event.source, SimpleNamespace(session_id="sid-1"), "sess")),
+    )
+    monkeypatch.setattr(
+        runner, "_hmwa_prepare_turn",
+        _ret((_make_prepared("heartbeat #1"), [])),
+    )
+
+    async def _run_agent(**kwargs):
+        ran_agent.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(runner, "_run_agent", _run_agent)
+    # hooks.emit must not blow up before the re-check.
+    monkeypatch.setattr(
+        runner, "hooks", SimpleNamespace(emit=_ret(None)), raising=False
+    )
+
+    asyncio.run(runner._handle_message_with_agent(event, event.source, "quick", 1))
+
+    assert not ran_agent, (
+        "a heartbeat whose process exited while the turn waited must not reach "
+        "the agent runner — that is exactly the wasted model call the re-check "
+        "exists to prevent (#120395)"
+    )
+    assert process_heartbeat_still_alive(event) is False
+
+
+def test_turn_start_recheck_admits_a_live_heartbeat(monkeypatch):
+    """The sibling guard: a heartbeat whose process is still alive at turn-start
+    must still run. Keeps the re-check from over-collecting (#120395)."""
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from gateway.config import Platform
+    from tools import process_registry as pr_mod
+
+    monkeypatch.setattr(
+        pr_mod.process_registry, "get",
+        lambda sid: SimpleNamespace(id=sid, started_at=1700000000.0, exited=False),
+    )
+
+    event = MessageEvent(
+        text="heartbeat #2",
+        message_id="hb-recheck-live",
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42", chat_type="dm"),
+    )
+    event._process_heartbeat_session_id = "proc_alive_at_start"
+    event._process_heartbeat_started_at = 1700000000.0
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._session_sources = {}
+    ran_agent = []
+
+    async def _get_or_create(source, **_kw):
+        return SimpleNamespace(session_id="sid-1", session_key="sess", active_stream_id=None)
+
+    async_session = SimpleNamespace(
+        get_or_create_session=_get_or_create, lookup_by_session_key=_ret(None),
+    )
+    monkeypatch.setattr(
+        type(runner), "async_session_store", property(lambda _s: async_session), raising=True
+    )
+    monkeypatch.setattr(
+        runner, "_hmwa_resolve_session",
+        _ret((event.source, SimpleNamespace(session_id="sid-1"), "sess")),
+    )
+    monkeypatch.setattr(
+        runner, "_hmwa_prepare_turn",
+        _ret((_make_prepared("heartbeat #2"), [])),
+    )
+
+    async def _run_agent(**kwargs):
+        ran_agent.append(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(runner, "_run_agent", _run_agent)
+    monkeypatch.setattr(
+        runner, "hooks", SimpleNamespace(emit=_ret(None)), raising=False
+    )
+
+    asyncio.run(runner._handle_message_with_agent(event, event.source, "quick", 1))
+
+    assert ran_agent, "a live heartbeat must still reach the agent runner"
+
+
+# ── entry-point 3: the busy drain path ──────────────────────────────────────
 # The two guards above (``_hmwa_resolve_session`` and the pre-``_run_agent``
 # check) only run on the turn that ADMITS the heartbeat. A heartbeat queued
 # behind a busy session is consumed later by ``_run_agent_drain_pending`` ->

@@ -3690,7 +3690,30 @@ def _commit_compaction(
         try:
             # Memory extraction runs in BOTH modes: pre-compaction turns are summarized
             # away whether or not the id rotates.
-            agent.commit_memory_session(messages)
+            # The engine session-end notification below answers with a full per-session
+            # reset, which nulls the in-flight attempt telemetry the success emit still
+            # needs (#118580). The attempt is live (in-place keeps the id; rotation
+            # rebinds after), so hold the telemetry trio across the call.
+            # ponytail: save/restore of 3 attrs; a keep-flag on on_session_end if more sites need it.
+            _telemetry_compressor = agent.context_compressor
+            _held_telemetry = tuple(
+                getattr(_telemetry_compressor, _name, None) for _name in (
+                    "_last_compression_telemetry", "_active_compression_telemetry",
+                    "_compression_telemetry_seed",
+                )
+            )
+            try:
+                agent.commit_memory_session(messages)
+            finally:
+                for _name, _value in zip(
+                    (
+                        "_last_compression_telemetry", "_active_compression_telemetry",
+                        "_compression_telemetry_seed",
+                    ),
+                    _held_telemetry,
+                ):
+                    with contextlib.suppress(Exception):
+                        setattr(_telemetry_compressor, _name, _value)
 
             # Pop _compaction_tail tags before the size estimate / rotation: they must not
             # inflate anti-growth or reach the provider. Track ids: salvage may subset list.

@@ -104,6 +104,76 @@ class TestGatewayQuickCommands:
         assert result == "ok"
 
     @pytest.mark.asyncio
+    async def test_exec_command_receives_command_and_exact_origin(self):
+        from gateway.run import GatewayRunner
+
+        class _Process:
+            async def communicate(self):
+                return b"ok", b""
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {
+            "quick_commands": {
+                "where": {
+                    "type": "exec",
+                    "command": (
+                        "printf '%s|%s|%s|%s|%s' "
+                        '"$HERMES_COMMAND_NAME" "$HERMES_COMMAND_ARGS" '
+                        '"$HERMES_ORIGIN_PLATFORM" "$HERMES_ORIGIN_CHAT_ID" '
+                        '"$HERMES_ORIGIN_THREAD_ID"'
+                    ),
+                }
+            }
+        }
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("where", "wallet HYPE")
+        event.source.chat_id = "-1003958174857"
+        event.source.thread_id = "3822"
+        with patch("asyncio.create_subprocess_shell", return_value=_Process()) as spawn:
+            result = await runner._handle_message(event)
+
+        assert result == "ok"
+        child_env = spawn.call_args.kwargs["env"]
+        assert child_env["HERMES_COMMAND_NAME"] == "where"
+        assert child_env["HERMES_COMMAND_ARGS"] == "wallet HYPE"
+        assert child_env["HERMES_ORIGIN_PLATFORM"] == "telegram"
+        assert child_env["HERMES_ORIGIN_CHAT_ID"] == "-1003958174857"
+        assert child_env["HERMES_ORIGIN_THREAD_ID"] == "3822"
+
+    @pytest.mark.asyncio
+    async def test_exec_command_clears_inherited_thread_origin(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        class _Process:
+            async def communicate(self):
+                return b"ok", b""
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {
+            "quick_commands": {
+                "where": {
+                    "type": "exec",
+                    "command": "printf '%s' \"${HERMES_ORIGIN_THREAD_ID-unset}\"",
+                }
+            }
+        }
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+        event = self._make_event("where")
+        event.source.thread_id = None
+        monkeypatch.setenv("HERMES_ORIGIN_THREAD_ID", "stale-thread")
+
+        with patch("asyncio.create_subprocess_shell", return_value=_Process()) as spawn:
+            result = await runner._handle_message(event)
+
+        assert result == "ok"
+        assert "HERMES_ORIGIN_THREAD_ID" not in spawn.call_args.kwargs["env"]
+
+    @pytest.mark.asyncio
     async def test_exec_command_does_not_leak_credentials(self):
         """Quick command exec must sanitize env — API keys must not appear in output."""
         from gateway.run import GatewayRunner

@@ -31,6 +31,12 @@ class QuotedImageEnrichment:
     text: str
 
 
+@dataclass(frozen=True)
+class AuthoredImageEnrichment:
+    paths: tuple[str, ...]
+    text: str
+
+
 @dataclass
 class PreparedInboundMessage:
     """A new input whose external context is rendered again before model use.
@@ -44,6 +50,7 @@ class PreparedInboundMessage:
     text: str
     redact_pii: bool = False
     quoted_images: tuple[QuotedImageEnrichment, ...] = ()
+    authored_images: AuthoredImageEnrichment | None = None
     message_text: str | None = None
     persist_user_message: str | None = None
     persist_user_timestamp: float | None = None
@@ -83,11 +90,18 @@ class PreparedInboundMessage:
     def _retained_image_paths(self, paths: list[str]) -> list[str]:
         current = self.snapshot.reply_image_paths()
         authored = self.event.authored_media().media_urls
+        media_event = getattr(self.snapshot, "media_event", None)
+        current_authored = (
+            media_event(self.event).authored_media().media_urls
+            if callable(media_event)
+            else authored
+        )
         quoted = {image.path for image in self.quoted_images}
         return [
             path
             for path in paths
-            if path not in quoted or path in current or path in authored
+            if (path not in quoted or path in current or path in current_authored)
+            and (path not in authored or path in current_authored or path in current)
         ]
 
     def _revalidate_native_input(
@@ -107,6 +121,13 @@ class PreparedInboundMessage:
             for image in self.quoted_images
             if image.path in current and image.text
         ]
+        media_event = getattr(self.snapshot, "media_event", None)
+        if self.authored_images is not None and callable(media_event):
+            authored = media_event(self.event).authored_media().media_urls
+            if self.authored_images.text and all(
+                path in authored for path in self.authored_images.paths
+            ):
+                descriptions.insert(0, self.authored_images.text)
         if descriptions:
             text = "\n\n".join([*descriptions, text])
         reply = self.snapshot.reply_event(self.event)

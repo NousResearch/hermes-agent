@@ -61,10 +61,13 @@ class GatewayStartupNoticesMixin:
             if not platform_str or not chat_id:
                 return None
             platform = Platform(platform_str)
-            # Relay-aware transport over the REQUESTER'S profile adapter map; ``self.adapters`` is the
-            # default profile's, so a secondary's "restarted" notice would leave through the wrong bot.
+            # The receiving bot can differ from the runtime profile. Legacy markers have only
+            # the runtime hint; an explicit "default" transport must still select the primary bot.
+            transport_profile = data.get("transport_profile")
+            if transport_profile is None:
+                transport_profile = self._marker_profile(data)
             transport = resolve_delivery_transport(
-                platform, self.config, self._adapters_for_profile(self._marker_profile(data)))
+                platform, self.config, self._adapters_for_profile(transport_profile))
             if transport is None:
                 logger.debug("Restart notification skipped: no live transport for %s", platform_str)
                 return None

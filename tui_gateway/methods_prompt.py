@@ -536,7 +536,8 @@ def _lock_in_submit_turn(
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+        if session.get("lazy") and _child_run_active(
+            str(session.get("session_key") or ""), session.get("profile_home") or None):
             return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
         if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
             return _err(
@@ -1274,11 +1275,3 @@ def _approval_respond_session_fallback(params: dict):
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import types  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

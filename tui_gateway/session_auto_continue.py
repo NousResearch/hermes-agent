@@ -5,6 +5,7 @@ busy-submit handling. Bodies are rebound onto server.py's globals at install tim
 from __future__ import annotations
 
 import contextlib
+import os
 
 from .method_ctx import bind_module
 
@@ -67,6 +68,15 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         return None
     if not marker.get("auto_continue", True):
         return None  # The mailbox owns recovery and receipt identity for imported turns.
+    # Ownership, not forensics: a sibling backend sharing this HERMES_HOME can be mid-turn on this very session, so
+    # its live marker says "someone is working on it", never "someone crashed". Leave the marker for its writer —
+    # clearing it would cancel the live turn's own account of itself. See #94778.
+    writer_state = marker_writer_state(marker)
+    if writer_state == "alive" and marker.get("writer_pid") != os.getpid():
+        logger.info("auto-continue for %s held back: marker writer pid %s is still alive (reader pid %s); the "
+                    "marker is ownership evidence and the owner clears it", session_key,
+                    marker.get("writer_pid"), os.getpid())
+        return None
     enabled, freshness_secs, max_attempts = _auto_continue_config()
     age = time.time() - marker["started_at"]
     if not enabled or age > freshness_secs or marker["attempts"] >= max_attempts:
@@ -124,7 +134,8 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
     if _start_session_work(kickoff, name=f"auto-continue-{sid}") is None:
         session["_auto_continue_scheduled"] = False
         return None
-    logger.info("auto-continue scheduled for session %s (attempt %d, interrupted %.0fs ago)", session_key, attempt, age)
+    logger.info("auto-continue scheduled for session %s (attempt %d, interrupted %.0fs ago, writer pid %s: %s, "
+                "reader pid %s)", session_key, attempt, age, marker.get("writer_pid"), writer_state, os.getpid())
     return {"attempt": attempt, "interrupted_at": marker["started_at"]}
 
 

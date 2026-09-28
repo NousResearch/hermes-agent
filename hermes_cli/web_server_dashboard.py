@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import hermes_yaml as yaml
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
@@ -790,6 +790,20 @@ def _plugin_api_mount_skip_reason(plugin: Dict[str, Any], enabled_set: set, disa
     return None
 
 
+async def _plugin_route_secret_scope(profile: Optional[str] = None):
+    """Home + secret scope for one ``/api/plugins/<name>/`` request: the launch profile's, or the
+    ``?profile=``-requested one — the same ``_config_profile_scope`` seam the built-in routers use.
+    Without it plugin handlers ran unscoped, so under multi-profile hosting every ``get_secret``
+    / ``resolve_runtime_provider`` failed closed with ``UnscopedSecretError`` (#120310; the bundled
+    kanban plugin's Decompose / Specify / Estimate aux-LLM calls, #123372). ``async`` on purpose:
+    a sync yield-dependency's setup and teardown run on different threadpool threads, so the
+    scope token would be reset in a foreign context; sync handlers still see the scope because
+    ``run_in_threadpool`` copies the request context into the worker."""
+    from hermes_cli.web_server_profiles import _config_profile_scope
+    with _config_profile_scope(profile):
+        yield
+
+
 def _mount_plugin_api_routes():
     """Import and mount backend API routes from plugins that declare them.
 
@@ -863,7 +877,11 @@ def _mount_plugin_api_routes():
             if router is None:
                 _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])
                 continue
-            app.include_router(router, prefix=f"/api/plugins/{plugin['name']}")
+            app.include_router(
+                router,
+                prefix=f"/api/plugins/{plugin['name']}",
+                dependencies=[Depends(_plugin_route_secret_scope)],
+            )
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)

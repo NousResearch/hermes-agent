@@ -30,10 +30,11 @@ import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
+import { findCatalogProvider } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
 import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
-import { notifyError, readableError } from '@/store/notifications'
+import { notify, notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
 
 import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -44,6 +45,7 @@ import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ModelSelect, withActive } from './model-select'
 import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
+import { dismissStaleAux, readStaleAuxDismissal, staleAuxFingerprint } from './stale-aux-dismissal'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
@@ -165,11 +167,17 @@ export function staleAuxAssignments(
       // (auxiliary_client._normalize_aux_provider), so it can never be a stale pin.
       return p && p !== 'auto' && p !== 'main' && p !== main && !entry.local_endpoint
     })
-    .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
+    // base_url rides along for the dismissal fingerprint (see
+    // stale-aux-dismissal.ts): repointing a pin at a different endpoint changes
+    // the billing surface and must re-arm an acknowledged banner.
+    .map(entry => ({ base_url: entry.base_url, task: entry.task, provider: entry.provider, model: entry.model }))
 }
 
 interface StaleAuxWarningProps {
   applying: boolean
+  /** Offered only on the persistent variant — the post-switch notice announces
+   *  a change that just happened and must not be silenced. */
+  onDismiss?: () => void
   onReset: () => void
   slots: readonly StaleAuxAssignment[]
   taskLabel: (key: string) => string
@@ -179,7 +187,9 @@ interface StaleAuxWarningProps {
 // current main. Surfaces the silent credit-burn path (e.g. aux pinned to a
 // $0-balance provider after switching main away from it) and offers the
 // existing one-click reset rather than auto-clearing legitimate pins.
-function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarningProps) {
+// Sized to be read at a glance (#66740) with the theme-aware amber text the
+// app's warn badges use, so light mode keeps its contrast.
+function StaleAuxWarning({ applying, onDismiss, onReset, slots, taskLabel }: StaleAuxWarningProps) {
   const { t } = useI18n()
   const m = t.settings.model
 
@@ -192,9 +202,9 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
   const names = slots.map(slot => taskLabel(slot.task)).join(', ')
 
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-      <AlertTriangle className="size-3.5 shrink-0" />
-      <span className="grow">
+    <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-400/60 bg-amber-500/15 px-3 py-2.5 text-sm text-amber-600 dark:text-amber-300">
+      <AlertTriangle className="size-4 shrink-0" />
+      <span className="grow font-medium">
         {m.staleAuxBefore(slots.length, names)}
         <span className="font-mono">{allSameProvider ? provider : m.staleAuxOtherProviders}</span>
         {m.staleAuxAfter}
@@ -202,6 +212,11 @@ function StaleAuxWarning({ applying, onReset, slots, taskLabel }: StaleAuxWarnin
       <Button disabled={applying} onClick={onReset} size="sm" variant="textStrong">
         {m.resetAllToMain}
       </Button>
+      {onDismiss && (
+        <Button disabled={applying} onClick={onDismiss} size="sm" variant="textStrong">
+          {m.staleAuxDismiss}
+        </Button>
+      )}
     </div>
   )
 }
@@ -394,7 +409,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // leaving it out of the real inventory used for readiness/setup metadata.
   const mainProviderOptions = useMemo(
     () =>
-      selectedProvider && !providers.some(provider => provider.slug === selectedProvider)
+      selectedProvider && !findCatalogProvider(providers, selectedProvider)
         ? [{ name: selectedProvider, slug: selectedProvider, models: [] }, ...providers]
         : providerOptions,
     [providerOptions, providers, selectedProvider]
@@ -406,7 +421,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   const moaSlotProviderOptions = providerOptions.filter(provider => (provider.slug || '').toLowerCase() !== 'moa')
 
   const selectedProviderRow = useMemo(
-    () => providers.find(provider => provider.slug === selectedProvider),
+    () => findCatalogProvider(providers, selectedProvider),
     [providers, selectedProvider]
   )
 
@@ -424,12 +439,12 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   }, [selectedProvider])
 
   const auxDraftProviderModels = useMemo(
-    () => providers.find(provider => provider.slug === auxDraft.provider)?.models ?? [],
+    () => findCatalogProvider(providers, auxDraft.provider)?.models ?? [],
     [auxDraft.provider, providers]
   )
 
   const modelsForProvider = useCallback(
-    (provider: string) => providers.find(row => row.slug === provider)?.models ?? [],
+    (provider: string) => findCatalogProvider(providers, provider)?.models ?? [],
     [providers]
   )
 
@@ -581,11 +596,29 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [auxiliary, mainModel]
   )
 
+  // Acknowledgement of the persistent stale-aux banner (#66740): a dismissal
+  // is bound to the exact pin configuration it acknowledged, so any slot edit,
+  // main switch, or endpoint repoint produces a different fingerprint and
+  // re-arms the warning. Seeded lazily at first render (before the data can
+  // paint, so an acknowledged banner never flashes); the panel stays mounted
+  // across profile switches, so re-read when the scope changes.
+  const [dismissedStaleAux, setDismissedStaleAux] = useState<null | string>(() =>
+    readStaleAuxDismissal(scopeProfile)
+  )
+
+  useEffect(() => {
+    setDismissedStaleAux(readStaleAuxDismissal(scopeProfile))
+  }, [scopeProfile])
+
+  const staleAuxDismissed =
+    persistentStaleAux.length > 0 &&
+    dismissedStaleAux === staleAuxFingerprint(mainModel?.provider ?? '', persistentStaleAux)
+
   // Capabilities of the APPLIED main model — gates the profile-default
   // reasoning/speed controls the same way the composer picker gates per-model
   // edits (reasoning defaults on, fast defaults off when unreported).
   const mainCaps = useMemo(() => {
-    const row = providers.find(provider => provider.slug === mainModel?.provider)
+    const row = mainModel ? findCatalogProvider(providers, mainModel.provider) : undefined
 
     return mainModel ? row?.capabilities?.[mainModel.model] : undefined
   }, [providers, mainModel])
@@ -729,6 +762,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       const model = result.model || selectedModel
       setMainModel({ provider, model })
       setSwitchStaleAux(result.stale_aux ?? [])
+      notify({ kind: 'success', title: m.mainAppliedTitle, message: m.mainAppliedMessage(model) })
 
       // Live UI stores mirror the ACTIVE profile's model; a scoped apply
       // changed a different profile and must not repaint them.
@@ -743,7 +777,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       setApplying(false)
     }
   }, [
-    m.loadFailed,
+    m,
     onMainModelChanged,
     refresh,
     scopeProfile,
@@ -760,7 +794,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // main endpoint.
   const endpointForProvider = useCallback(
     (provider: string) => {
-      const row = providers.find(entry => entry.slug === provider)
+      const row = findCatalogProvider(providers, provider)
 
       return row?.api_url ? { base_url: row.api_url } : {}
     },
@@ -915,7 +949,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         <section>
           <p className="mb-3 text-xs text-muted-foreground">{m.appliesDesc}</p>
           <div className="flex flex-wrap items-center gap-2">
-            <Select onValueChange={setSelectedProvider} value={selectedProvider}>
+            <Select onValueChange={setSelectedProvider} value={selectedProviderRow?.slug ?? selectedProvider}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
                 <SelectValue placeholder={m.provider} />
               </SelectTrigger>
@@ -1050,16 +1084,24 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
             </Button>
           </div>
           <p className="mb-2 text-xs text-muted-foreground">{m.auxiliaryDesc}</p>
-          {(switchStaleAux.length === 0 || !showMain) && persistentStaleAux.length > 0 && (
-            <div className="mb-2.5">
-              <StaleAuxWarning
-                applying={applying}
-                onReset={() => void resetAuxiliaryModels()}
-                slots={persistentStaleAux}
-                taskLabel={auxiliaryTaskLabel}
-              />
-            </div>
-          )}
+          {(switchStaleAux.length === 0 || !showMain) &&
+            persistentStaleAux.length > 0 &&
+            !staleAuxDismissed && (
+              <div className="mb-2.5">
+                <StaleAuxWarning
+                  applying={applying}
+                  onDismiss={() => {
+                    const mainProvider = mainModel?.provider ?? ''
+
+                    dismissStaleAux(scopeProfile, mainProvider, persistentStaleAux)
+                    setDismissedStaleAux(staleAuxFingerprint(mainProvider, persistentStaleAux))
+                  }}
+                  onReset={() => void resetAuxiliaryModels()}
+                  slots={persistentStaleAux}
+                  taskLabel={auxiliaryTaskLabel}
+                />
+              </div>
+            )}
           <div className="grid gap-1">
             {AUX_TASKS.map(meta => {
               const copy = m.tasks[meta.key] ?? { label: meta.key, hint: meta.key }
@@ -1098,7 +1140,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                           <div className="flex flex-wrap items-center gap-2">
                             <Select
                               onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
-                              value={auxDraft.provider}
+                              value={findCatalogProvider(providers, auxDraft.provider)?.slug ?? auxDraft.provider}
                             >
                               <SelectTrigger
                                 aria-label={`${copy.label} provider`}
@@ -1119,7 +1161,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                               className="min-w-48"
                               models={auxDraftProviderModels}
                               onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
-                              provider={providers.find(row => row.slug === auxDraft.provider)}
+                              provider={findCatalogProvider(providers, auxDraft.provider)}
                               providerSlug={auxDraft.provider}
                               value={auxDraft.model}
                             />
@@ -1351,7 +1393,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                           )
                         }))
                       }
-                      provider={providers.find(row => row.slug === slot.provider)}
+                      provider={findCatalogProvider(providers, slot.provider)}
                       providerSlug={slot.provider}
                       value={slot.model}
                     />
@@ -1437,7 +1479,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                         aggregator: updateMoaSlot(prev.aggregator, { model: value })
                       }))
                     }
-                    provider={providers.find(row => row.slug === currentMoaPreset.aggregator.provider)}
+                    provider={findCatalogProvider(providers, currentMoaPreset.aggregator.provider)}
                     providerSlug={currentMoaPreset.aggregator.provider}
                     value={currentMoaPreset.aggregator.model}
                   />

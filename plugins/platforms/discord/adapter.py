@@ -6626,6 +6626,8 @@ def _define_discord_view_classes() -> None:
             )
 
         async def _on_cancel(self, interaction: discord.Interaction):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_UNAUTHORIZED):
+                return
             self.resolved = True
             self.clear_items()
             await self._edit(interaction, "Model selection cancelled.", color=discord.Color.greyple())
@@ -7364,25 +7366,3 @@ def register(ctx) -> None:
         emoji="🎮",
         allow_update_command=True,
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'env_int': ('utils', 'env_int'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

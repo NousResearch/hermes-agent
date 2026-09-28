@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { I18nProvider } from '@/i18n/context'
+import { resetTranscriptLightbox } from '@/store/transcript-lightbox'
 
 import { ZoomableImage } from './zoomable-image'
 
@@ -28,6 +29,7 @@ async function renderWithI18n(ui: React.ReactNode) {
 describe('ZoomableImage zoomSrc', () => {
   afterEach(() => {
     cleanup()
+    resetTranscriptLightbox()
   })
 
   it('paints the bounded src inline but enlarges the full-resolution zoomSrc (#93204)', async () => {
@@ -57,6 +59,52 @@ describe('ZoomableImage zoomSrc', () => {
       // Both inline and lightbox use src — backward compatible with callers that
       // pass a single source.
       expect(screen.getAllByAltText('shot').every(img => img.getAttribute('src') === THUMB)).toBe(true)
+    })
+  })
+
+  // #123018: transcript rows remount routinely while a turn streams (render-
+  // budget slice recycling, markdown AST re-parse). The open flag lives in a
+  // store keyed by source identity, so a remounted row re-presents its own
+  // open lightbox instead of dropping it.
+  it('re-presents an open lightbox after the row unmounts and remounts (#123018)', async () => {
+    const { unmount } = await renderWithI18n(<ZoomableImage alt="shot" src={THUMB} zoomSrc={FULL} />)
+
+    fireEvent.click(screen.getByAltText('shot'))
+
+    await waitFor(() => {
+      expect(screen.getAllByAltText('shot').some(img => img.getAttribute('src') === FULL)).toBe(true)
+    })
+
+    // The row recycles — component-local state dies with it.
+    unmount()
+    await renderWithI18n(<ZoomableImage alt="shot" src={THUMB} zoomSrc={FULL} />)
+
+    await waitFor(() => {
+      expect(screen.getAllByAltText('shot').some(img => img.getAttribute('src') === FULL)).toBe(true)
+    })
+  })
+
+  it('keeps only one preview open at a time and only the owning row can close it', async () => {
+    await renderWithI18n(
+      <>
+        <ZoomableImage alt="one" src={THUMB} zoomSrc={FULL} />
+        <ZoomableImage alt="two" src={THUMB} zoomSrc={THUMB} />
+      </>
+    )
+
+    fireEvent.click(screen.getAllByAltText('one')[0]!)
+
+    await waitFor(() => {
+      expect(screen.getAllByAltText('one').some(img => img.getAttribute('src') === FULL)).toBe(true)
+    })
+
+    // Opening the second preview replaces the first — same one-at-a-time UX
+    // as the component-local flag.
+    fireEvent.click(screen.getAllByAltText('two')[0]!)
+
+    await waitFor(() => {
+      expect(screen.getAllByAltText('two').some(img => img.getAttribute('src') === THUMB)).toBe(true)
+      expect(screen.queryAllByAltText('one').every(img => img.getAttribute('src') !== FULL)).toBe(true)
     })
   })
 })

@@ -326,6 +326,19 @@ KNOWN_PROVIDER_KEY_PREFIXES: Dict[str, tuple] = {
 }
 
 
+def _matches_key_prefix(provider_id: str, val: str) -> bool:
+    """True when *val* starts with one of *provider_id*'s declared key prefixes (False when the
+    provider declares none)."""
+    return val.startswith(KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id, ()))
+
+
+def looks_like_openrouter_key(value: Any) -> bool:
+    """True when *value* carries an OpenRouter key prefix. OPENAI_API_KEY is a legacy home for an
+    OpenRouter key, so only a value shaped like one may be read as an OpenRouter credential: a real
+    OpenAI key must never be auto-routed to, or sent to, openrouter.ai."""
+    return _matches_key_prefix("openrouter", str(value or "").strip())
+
+
 def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Optional[str]:
     """*value* stripped when it is a usable, prefix-valid secret; None (after warning on a provable
     prefix mismatch, so it never shadows a later credential source) otherwise. Providers without a
@@ -334,7 +347,7 @@ def _usable_declared_secret(provider_id: str, value: Any, source: str) -> Option
     if not has_usable_secret(val):
         return None
     prefixes = KNOWN_PROVIDER_KEY_PREFIXES.get(provider_id)
-    if prefixes and not any(val.startswith(p) for p in prefixes):
+    if prefixes and not _matches_key_prefix(provider_id, val):
         logger.warning(
             "Ignoring %s for provider %r: value does not match the expected key "
             "prefix (%s). Falling back to the next credential source. Fix or "
@@ -1442,14 +1455,19 @@ def _openrouter_auto_detected(scoped_key_env: Callable[[str], str]) -> bool:
     """True when an OpenRouter credential exists via env key or the credential pool (a key added via
     `hermes auth add openrouter` has no env var; without the pool check it is invisible to
     auto-detection and requests go out with no Authorization header)."""
-    if any(has_usable_secret(scoped_key_env(v)) for v in ("OPENAI_API_KEY", "OPENROUTER_API_KEY")):
+    if has_usable_secret(scoped_key_env("OPENROUTER_API_KEY")):
+        return True
+    # OPENAI_API_KEY counts only when it holds an OpenRouter-shaped key (legacy home); a real OpenAI
+    # key falls through to the ``openai-api`` registry row instead of being shipped to OpenRouter.
+    legacy_key = scoped_key_env("OPENAI_API_KEY")
+    if has_usable_secret(legacy_key) and looks_like_openrouter_key(legacy_key):
         return True
     try:
         # Auto-detect an OpenRouter credential added via `hermes auth add openrouter` (manual pool entry, no
         # env var). Without this, a key that only lives in the credential pool is invisible to
         # auto-detection — the user sees `hermes auth list` showing the credential while requests go out
         # with no Authorization header ("HTTP 401: Missing Authentication header"). The env-var check above
-        # only covers keys exported as OPENROUTER_API_KEY / OPENAI_API_KEY. See issue #42130.
+        # only covers OPENROUTER_API_KEY and an sk-or- key in OPENAI_API_KEY. See issue #42130.
         from agent.credential_pool import load_pool as _load_pool
         return bool(_load_pool("openrouter").has_credentials())
     except Exception as e:
@@ -1553,8 +1571,8 @@ def resolve_provider(
     """Determine which inference provider to use.
 
     "auto" priority (explicit intent beats a stale OAuth login): 1. CLI api_key/base_url ->
-    "openrouter"; 2. config.yaml ``model.provider``; 3. OPENAI_API_KEY / OPENROUTER_API_KEY ->
-    "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
+    "openrouter"; 2. config.yaml ``model.provider``; 3. OPENROUTER_API_KEY (or an sk-or- key in
+    OPENAI_API_KEY) -> "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
     7. Nous free tier when it is on and its identity exists (never created here);
     8. AWS Bedrock chain; 9. AuthError(no_provider_configured).
 
@@ -2413,51 +2431,3 @@ def logout_command(args) -> None:
         print("Hermes will use OpenRouter for inference.")
     else:
         print("Run `hermes model` or configure an API key to use Hermes.")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from http.server import BaseHTTPRequestHandler  # noqa: F401,E402
-from http.server import HTTPServer  # noqa: F401,E402
-from typing import TYPE_CHECKING  # noqa: F401,E402
-import base64  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-from urllib.parse import parse_qs  # noqa: F401,E402
-import ssl  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-import sys  # noqa: F401,E402
-from urllib.parse import urlencode  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'CODEX_OAUTH_USER_AGENT': ('hermes_cli.auth_constants', 'CODEX_OAUTH_USER_AGENT'),
-    'CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS': ('hermes_cli.auth_codex', 'CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS'),
-    'DEFAULT_SPOTIFY_REDIRECT_URI': ('hermes_cli.auth_constants', 'DEFAULT_SPOTIFY_REDIRECT_URI'),
-    'DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS': ('hermes_cli.auth_constants', 'DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS'),
-    'MINIMAX_OAUTH_GRANT_TYPE': ('hermes_cli.auth_constants', 'MINIMAX_OAUTH_GRANT_TYPE'),
-    'NOUS_INFERENCE_INVOKE_SCOPE': ('hermes_cli.auth_constants', 'NOUS_INFERENCE_INVOKE_SCOPE'),
-    'NOUS_SHARED_STORE_FILENAME': ('hermes_cli.auth_nous', 'NOUS_SHARED_STORE_FILENAME'),
-    'OAUTH_OVER_SSH_DOCS_URL': ('hermes_cli.auth_constants', 'OAUTH_OVER_SSH_DOCS_URL'),
-    'QWEN_OAUTH_CLIENT_ID': ('hermes_cli.auth_constants', 'QWEN_OAUTH_CLIENT_ID'),
-    'QWEN_OAUTH_TOKEN_URL': ('hermes_cli.auth_constants', 'QWEN_OAUTH_TOKEN_URL'),
-    'SINGLE_USE_OAUTH_SINGLETON_FILES': ('hermes_cli.auth_oauth_grants', 'SINGLE_USE_OAUTH_SINGLETON_FILES'),
-    'SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS': ('hermes_cli.auth_constants', 'SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS'),
-    'SPOTIFY_DASHBOARD_URL': ('hermes_cli.auth_constants', 'SPOTIFY_DASHBOARD_URL'),
-    'XAI_OAUTH_DEVICE_CODE_URL': ('hermes_cli.auth_constants', 'XAI_OAUTH_DEVICE_CODE_URL'),
-    'XAI_OAUTH_DISCOVERY_URL': ('hermes_cli.auth_constants', 'XAI_OAUTH_DISCOVERY_URL'),
-    'XAI_OAUTH_ISSUER': ('hermes_cli.auth_constants', 'XAI_OAUTH_ISSUER'),
-    'refresh_nous_oauth_pure': ('hermes_cli.auth_nous', 'refresh_nous_oauth_pure'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

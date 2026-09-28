@@ -14,6 +14,7 @@ import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { ZERO } from '../domain/usage.js'
+import { translate } from '../i18n/index.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -1620,6 +1621,57 @@ describe('createGatewayEventHandler', () => {
       vi.runAllTimers()
       vi.useRealTimers()
     }
+  })
+
+  // Ctrl+C seals the reply at the keypress, but the agent streams until it
+  // notices the interrupt and persists everything it streamed (state.db and the
+  // next request's history). The screen must show that same partial.
+  const interruptedTranscript = (deltas: string[], late: string[], persisted: string) => {
+    vi.useFakeTimers()
+
+    try {
+      const history: Msg[] = []
+      const ctx = buildCtx(history)
+      ctx.gateway.gw.request = vi.fn(async () => ({ status: 'interrupted' }))
+      ctx.transcript.setHistoryItems = (next: ((prev: Msg[]) => Msg[]) | Msg[]) =>
+        history.splice(0, history.length, ...(typeof next === 'function' ? next([...history]) : next))
+      const onEvent = createGatewayEventHandler(ctx)
+
+      patchUiState({ sid: 'sess-1' })
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      deltas.forEach(text => onEvent({ payload: { text }, type: 'message.delta' } as any))
+      turnController.interruptTurn({
+        appendMessage: (msg: Msg) => history.push(msg),
+        gw: ctx.gateway.gw,
+        sid: 'sess-1',
+        sys: ctx.system.sys
+      })
+      late.forEach(text => onEvent({ payload: { text }, type: 'message.delta' } as any))
+      onEvent({ payload: { status: 'interrupted', text: persisted }, type: 'message.complete' } as any)
+
+      return history.filter(m => m.role === 'assistant').map(m => m.text)
+    } finally {
+      vi.runAllTimers()
+      vi.useRealTimers()
+    }
+  }
+
+  it('an interrupted reply shows the partial the agent persisted, including deltas streamed after Ctrl+C', () => {
+    expect(interruptedTranscript(['alpha beta', ' ga'], ['mma', ' delta'], 'alpha beta gamma delta')).toEqual([
+      'alpha beta gamma delta\n\n*[interrupted]*'
+    ])
+  })
+
+  it('an interrupted reply whose every delta landed after Ctrl+C still shows the persisted partial', () => {
+    expect(interruptedTranscript([], ['alpha', ' beta'], 'alpha beta')).toEqual(['alpha beta\n\n*[interrupted]*'])
+  })
+
+  it('keeps localized interruption markers when reconciling persisted reply text', () => {
+    patchUiState({ locale: 'zh' })
+    const marker = `*[${translate('zh', 'common.interrupted')}]*`
+
+    expect(interruptedTranscript(['alpha'], [' beta'], 'alpha beta')).toEqual([`alpha beta\n\n${marker}`])
+    expect(interruptedTranscript([], ['gamma'], 'gamma')).toEqual([`gamma\n\n${marker}`])
   })
 
   it('keepBusy interrupt holds busy until the gateway settles and suppresses the cancelled turn’s final_response', () => {

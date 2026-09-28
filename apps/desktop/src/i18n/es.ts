@@ -685,6 +685,8 @@ export const esOverrides = {
       'composer.focus': 'Enfocar compositor',
       'composer.modelPicker': 'Abrir selector de modelo',
       'composer.voice': 'Iniciar / detener conversación por voz',
+      'composer.reasoningUp': 'Subir nivel de razonamiento',
+      'composer.reasoningDown': 'Bajar nivel de razonamiento',
       'view.toggleSidebar': 'Alternar barra lateral de sesiones',
       'view.cycleSidebarGrouping': 'Cambiar la agrupación de sesiones',
       'view.toggleRightSidebar': 'Alternar explorador de archivos',
@@ -711,6 +713,15 @@ export const esOverrides = {
       'view.findInPage': 'Buscar en la página',
       'view.findNext': 'Siguiente coincidencia',
       'view.findPrevious': 'Coincidencia anterior',
+      'view.tabSlot.1': 'Cambiar a la pestaña 1',
+      'view.tabSlot.2': 'Cambiar a la pestaña 2',
+      'view.tabSlot.3': 'Cambiar a la pestaña 3',
+      'view.tabSlot.4': 'Cambiar a la pestaña 4',
+      'view.tabSlot.5': 'Cambiar a la pestaña 5',
+      'view.tabSlot.6': 'Cambiar a la pestaña 6',
+      'view.tabSlot.7': 'Cambiar a la pestaña 7',
+      'view.tabSlot.8': 'Cambiar a la pestaña 8',
+      'view.tabSlot.9': 'Cambiar a la pestaña 9',
       'appearance.toggleMode': 'Alternar claro / oscuro',
       'profile.default': 'Cambiar al perfil predeterminado',
       'profile.switch.1': 'Cambiar al perfil 1',
@@ -1173,7 +1184,10 @@ export const esOverrides = {
         'Deja que Hermes resalte cada paso mientras te guía por la app. Se desactiva automáticamente tras tus primeros 30 días; puedes volver a activarlo.',
       composerPopoutTitle: 'Compositor flotante',
       composerPopoutDesc:
-        'Permite arrastrar el compositor fuera de su posición fija. Desactívalo para mantenerlo anclado abajo.',
+        'Permite arrastrar el compositor fuera de su posición fija. Si está desactivado, permanece anclado abajo.',
+      fileBrowserTitle: 'Explorador de archivos',
+      fileBrowserDesc:
+        'Muestra el explorador de archivos junto al chat cuando hay un espacio de trabajo abierto. El botón de la barra de título también cambia este ajuste.',
       vibeHeartsTitle: 'Corazones de vibra',
       vibeHeartsDesc:
         'Corazones flotantes cuando dices gracias, te quiero, buen bot o envías un corazón. Independiente de las reacciones a mensajes de arriba.',
@@ -2033,6 +2047,8 @@ export const esOverrides = {
       provider: 'Proveedor',
       model: 'Modelo',
       applying: 'Aplicando...',
+      mainAppliedTitle: 'Modelo principal actualizado',
+      mainAppliedMessage: model => `Las sesiones nuevas usarán ${model}.`,
       defaultsLabel: 'Valores predeterminados',
       reasoning: 'Razonamiento',
       reasoningOff: 'Desactivado',
@@ -2045,6 +2061,7 @@ export const esOverrides = {
       restartFailed: 'No se pudo reiniciar el backend',
       auxiliaryTitle: 'Modelos auxiliares',
       resetAllToMain: 'Restablecer todos al principal',
+      staleAuxDismiss: 'No volver a mostrar',
       auxiliaryDesc:
         'Las tareas auxiliares usan el modelo principal de forma predeterminada. Asigna un modelo dedicado a cualquier tarea para anularlo.',
       setToMain: 'Usar principal',
@@ -2779,12 +2796,17 @@ export const esOverrides = {
       emptyHint: 'Explora el catálogo de abajo e instala un plugin revisado con un clic.',
       loadFailed: 'No se pudieron cargar los plugins del agente',
       toggleFailed: (name: string) => `No se pudo cambiar ${name}`,
+      toolsetOn: (name: string, profile: string) => `Herramientas de agente de ${name} activadas para ${profile}`,
+      toolsetOff: (name: string, profile: string) => `Herramientas de agente de ${name} desactivadas para ${profile}`,
+      toolsetToggleFailed: (name: string) =>
+        `No se pudieron cambiar las herramientas de agente de ${name}; el panel de Escritorio no se modificó`,
       legacyBackend:
         'Este backend es anterior a los interruptores de plugins por clave: actualiza Hermes para gestionarlo aquí.',
       portableBadge: 'portátil',
       serverStates: {
         connected: 'conectado',
         app_not_running: 'la app no se está ejecutando',
+        hermes_not_connected: 'falta la conexión MCP',
         endpoint_unavailable: 'endpoint no disponible',
         no_interactive_session: 'sin sesión interactiva',
         version_too_old: 'versión demasiado antigua',
@@ -3056,12 +3078,6 @@ export const esOverrides = {
       system: 'Sistema',
       usage: 'Uso'
     },
-    sectionDescriptions: {
-      maintenance: 'Diagnóstico, copias de seguridad, curador y datos de memoria',
-      sessions: 'Buscar y gestionar sesiones',
-      system: 'Estado, registros y acciones del sistema',
-      usage: 'Actividad de tokens, coste y skills a lo largo del tiempo'
-    },
     nav: {
       newChat: {
         title: 'Nueva sesión',
@@ -3148,7 +3164,7 @@ export const esOverrides = {
     actions: count => `${count} acciones`,
     logFile: 'Archivo de registro',
     logLevel: 'Nivel',
-    logSearchPlaceholder: 'Filtrar líneas de registro…',
+    logSearchPlaceholder: 'Buscar en los registros…',
     maintenance: {
       runOps: 'Diagnóstico',
       doctor: 'Ejecutar diagnóstico',
@@ -3197,6 +3213,13 @@ export const esOverrides = {
   },
   messaging: {
     search: 'Buscar mensajería...',
+    statusFilter: {
+      all: 'Todos',
+      bad: 'Errores',
+      good: 'Conectados',
+      muted: 'Inactivos',
+      warn: 'Requiere atención'
+    },
     loading: 'Cargando plataformas de mensajería...',
     loadFailed: 'No se pudieron cargar las plataformas de mensajería',
     states: {
@@ -3763,6 +3786,8 @@ export const esOverrides = {
     nameLabel: 'Nombre',
     namePlaceholder: 'Resumen matutino',
     promptLabel: 'Prompt',
+    scriptLabel: 'Script',
+    scriptBadge: 'script',
     promptPlaceholder: 'Resume mis hilos de Slack sin leer y envíame por email los 5 principales...',
     frequencyLabel: 'Frecuencia',
     deliverLabel: 'Entregar a',
@@ -4051,6 +4076,7 @@ export const esOverrides = {
       backgroundRunning: 'Tarea en segundo plano en ejecución',
       draftSession: 'Borrador — aún no se ha enviado nada',
       handoffOrigin: platform => `Transferido desde ${platform}`,
+      continuationOrigin: 'Continuación automática: esta conversación fue comprimida y continuada',
       ownedByProfile: profile => `Perfil: ${profile}`,
       renamed: 'Renombrada',
       renameFailed: 'No se pudo renombrar',
@@ -4251,6 +4277,8 @@ export const esOverrides = {
     restoredDraftNotice: 'Se restauró tu mensaje sin enviar',
     restoredDraftUndo: 'Deshacer',
     queueEdit: 'Editar',
+    queueExpand: 'Expandir',
+    queueCollapse: 'Contraer',
     queueSendNext: 'Próximo',
     queueSteer: 'Redirigir — encauzar el turno en vivo ahora',
     queueSend: 'Enviar',
@@ -4259,6 +4287,9 @@ export const esOverrides = {
     queueResumeTip: 'La cola se pausó al detener; reanuda el envío de los turnos en cola',
     queueStuckTitle: 'Mensaje en cola no enviado',
     queueStuckBody: 'Un turno en cola no llegó a enviarse. Sigue en la cola; vuelve a intentarlo.',
+    queueDroppedTitle: 'Entrada en cola descartada',
+    queueDroppedBody:
+      'Se descartó esta entrada en segundo plano porque su sesión no se pudo reanudar tras varios intentos. El resto de la cola no se ha visto afectado.',
     previewUnavailable: 'Vista previa no disponible',
     previewLabel: label => `Vista previa de ${label}`,
     couldNotPreview: label => `No se pudo previsualizar ${label}`,
@@ -4351,6 +4382,7 @@ export const esOverrides = {
     goalWaiting: 'Objetivo esperando',
     subagents: count => `${count} subagente${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tareas ${done}/${total}`,
+    previousTodos: (done, total) => `Tareas anteriores ${done}/${total}`,
     running: 'En ejecución',
     stop: 'Detener',
     dismiss: 'Descartar',
@@ -4942,7 +4974,11 @@ export const esOverrides = {
     noAuthenticatedProviders: 'No hay proveedores autenticados.',
     addProvider: 'Añadir proveedor…',
     addCustomModel: 'Añadir modelo personalizado',
-    removeCustomModel: 'Quitar modelo personalizado'
+    removeCustomModel: 'Quitar modelo personalizado',
+    resetToDefaults: 'Restablecer valores predeterminados',
+    resetConfirm: '¿Restablecer la visibilidad de los modelos?',
+    resetDescription: 'Se borran tus elecciones de modelos visibles y ocultos, y cada proveedor vuelve a su lista predeterminada. Los modelos personalizados que añadiste se conservan y se muestran.',
+    resetAction: 'Restablecer'
   },
   shell: {
     windowControls: 'Controles de ventana',
@@ -5432,8 +5468,9 @@ export const esOverrides = {
             `${provider} devolvió un error del servidor. Reinténtalo en un momento o cambia de proveedor.`
         },
         timeout: {
-          title: 'Se agotó el tiempo de la respuesta',
-          body: (provider: string) => `${provider} no respondió a tiempo. Reinténtalo para enviarlo de nuevo.`
+          title: 'No se pudo conectar con el servicio de IA',
+          body: (provider: string) =>
+            `No se pudo conectar con ${provider} o no respondió a tiempo. Revisa tu conexión a internet y vuelve a intentarlo.`
         },
         stream_drop: {
           title: 'La respuesta se cortó',
@@ -5570,6 +5607,8 @@ export const esOverrides = {
       preparingAudio: 'Preparando audio...',
       stopReading: 'Detener lectura',
       readAloud: 'Leer en voz alta',
+      copyFullResponse: 'Copiar la respuesta completa',
+      readAloudFullResponseHint: 'Mayús+clic: leer la respuesta completa',
       editMessage: 'Editar mensaje',
       expandMessage: 'Expandir mensaje',
       scrollToBottom: 'Desplazarse hacia abajo',
@@ -5622,7 +5661,9 @@ export const esOverrides = {
       lateAnswer: (question, choice) => `Con respecto a “${question}”: mi respuesta es ${choice}`,
       lateAnswerTip: 'Redactar esta respuesta como mensaje de seguimiento',
       lateAnswerHint:
-        'Este prompt ya no espera una respuesta. Elige una opción para redactarla como mensaje de seguimiento.'
+        'Este prompt ya no espera una respuesta. Elige una opción para redactarla como mensaje de seguimiento.',
+      notDelivered:
+        'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
     },
     catalogInstall: {
       preparing: 'Preparando la instalación…',
@@ -6058,6 +6099,11 @@ export const esOverrides = {
   ui: {
     search: {
       clear: 'Limpiar búsqueda'
+    },
+    logs: {
+      bottom: 'Ir al final',
+      search: 'Buscar en los registros…',
+      top: 'Ir al inicio'
     },
     pagination: {
       label: 'paginación',

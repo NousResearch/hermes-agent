@@ -76,6 +76,7 @@ def transition(tmp_path):
     (package / "venv_sync.py").write_text(
         "from hermes_cli.probe import event\n"
         "publish_launchers = lambda root: event('launchers')\n"
+        "collect_superseded_generations = lambda root: event('collect')\n"
         "refuse_foreign_owned_venv = lambda root: None\n"
         "from pathlib import Path\n"
         "import os\n"
@@ -270,7 +271,9 @@ def test_interrupt_after_child_success_demotes_gateway_marker_at_boundary(transi
 
     def capture_child(*args, **kwargs):
         proc = popen(*args, **kwargs)
-        if not children:
+        # Hook the completion child itself: arming the host obligation may probe the checkout
+        # identity through git first (#125952), and that probe is not the process under test.
+        if not children and str(root / "hermes_cli/update_completion.py") in args[0]:
             children.append(proc)
             wait = proc.wait
             kill = proc.kill

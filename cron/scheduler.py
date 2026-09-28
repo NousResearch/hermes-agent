@@ -2726,19 +2726,35 @@ def run_one_job(
             if _launch_external_cron_worker(job):
                 return True
         except Exception as handoff_error:
-            error = f"Restart-safe cron worker dispatch failed: {handoff_error}"
+            # Past the handoff the worker may have adopted the row, run side effects
+            # and sent its own notice: record bookkeeping only, never a false
+            # "dispatch failed" incident/ping.
+            post_handoff = isinstance(handoff_error, _ExternalWorkerPostHandoffError)
+            stage = "failed after handoff" if post_handoff else "dispatch failed"
+            error = f"Restart-safe cron worker {stage}: {handoff_error}"
             logger.error("Job '%s': %s", job["id"], error)
             claim = job.get("fire_claim")
             owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+            delivery_error = delivery_outcome = None
             try:
+                # A pre-handoff dispatch failure is a job failure like any other: it
+                # must open an incident and leave through the job's failure lane
+                # (#123401). Without this the outage is silent — no cron_incidents
+                # row, no ping — while executions.db keeps piling up failed rows.
+                if not post_handoff:
+                    delivery_error, delivery_outcome = _deliver_crash_failure(
+                        job, error, adapters=adapters, loop=loop)
                 mark_job_run(
                     job["id"],
                     False,
                     error,
+                    delivery_error=delivery_error,
                     **({"expected_fire_owner": owner} if owner else {}),
                 )
             finally:
-                finish_execution(execution_id, success=False, error=error)
+                finish_execution(
+                    execution_id, success=False, error=error,
+                    delivery_outcome=delivery_outcome)
             return True
     if extra_prompt is None:
         # Gateway-forwarded manual run stamps its prompt on the job via trigger_job; the fire that
@@ -3408,6 +3424,10 @@ def _wait_for_external_cron_worker_body(
         )
 
 
+class _ExternalWorkerPostHandoffError(RuntimeError):
+    """The waiter failed after the worker was spawned and may own the execution."""
+
+
 def _wait_for_external_cron_worker(
     process: subprocess.Popen,
     *,
@@ -3419,6 +3439,8 @@ def _wait_for_external_cron_worker(
         return _wait_for_external_cron_worker_body(
             process, execution_id=execution_id
         )
+    except Exception as wait_error:
+        raise _ExternalWorkerPostHandoffError(str(wait_error)) from wait_error
     finally:
         if job_id is not None:
             with _running_lock:
@@ -3699,6 +3721,13 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         home_token = set_hermes_home_override(profile_home)
         multiplex_active = bool(payload.get("multiplex_active", False))
         set_multiplex_active(multiplex_active)
+        # Plugin secret sources (``ctx.register_secret_source()``) only exist after plugin
+        # discovery; this process starts with the builtin registry alone, so hydrating without it
+        # silently dropped every plugin-sourced credential (#121929). Runs under the home override
+        # so a multiplexed worker loads the OWNING profile's plugins, not the launch profile's.
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
         hydrate_profile_secret_sources(profile_home)
         secret_token = set_secret_scope(build_profile_secret_scope(profile_home), profile_home=str(profile_home))
         with use_cron_store(profile_home):
@@ -4194,31 +4223,3 @@ if __name__ == "__main__":
             0 if _run_external_worker_payload(args.external_worker_file, args.ack_file) else 1
         )
     tick(verbose=True)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import asyncio  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-import signal  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'BOT_CHAT_PLATFORM': ('cron.scheduler_delivery', 'BOT_CHAT_PLATFORM'),
-    'SharedRouteAdapters': ('cron.scheduler_preflight', 'SharedRouteAdapters'),
-    'cron_delivery_targets': ('cron.scheduler_delivery', 'cron_delivery_targets'),
-    'parse_bot_chat_deliver_token': ('cron.scheduler_delivery', 'parse_bot_chat_deliver_token'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

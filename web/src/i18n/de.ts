@@ -162,6 +162,7 @@ export const de: TranslationOverlay = {
     deleteSelectedConfirmMessage:
       "Dies entfernt {count} ausgewählte Sitzungen und alle zugehörigen Nachrichten dauerhaft. Dies kann nicht rückgängig gemacht werden.",
     selectedSessionsDeleted: "{count} Sitzungen gelöscht",
+    selectedSessionsSkippedActive: "{deleted} gelöscht; {count} behalten, weil noch ein Turn läuft",
     failedToDeleteSelected: "Ausgewählte Sitzungen konnten nicht gelöscht werden",
     resumeInChat: "Im Chat fortsetzen",
     newChat: "Neuer Chat",

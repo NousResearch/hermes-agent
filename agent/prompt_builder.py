@@ -255,9 +255,10 @@ SESSION_SEARCH_GUIDANCE = (
 # patch-it coaching that used to open this block duplicated the ## Skills section (which teaches both "offer
 # to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. Only
 # the compaction-pruning contract lives here — nothing else teaches it.
+SKILL_SAFETY_HEADING = "## Skill Safety Rule"
 SKILLS_GUIDANCE = (
     "When you work out a non-trivial workflow, record it with skill_manage for future reuse.\n\n"
-    "## Skill Safety Rule\n"
+    f"{SKILL_SAFETY_HEADING}\n"
     "A skill placeholder containing `[SKILL_PRUNED]` lost its content in context compression and is inaccessible — "
     "reload it with skill_view(name='...') before acting on anything that depends on it. After reloading, ignore any "
     "remaining `[SKILL_PRUNED]` markers for that same skill; they are historical artifacts of earlier compactions."
@@ -389,6 +390,15 @@ TASK_COMPLETION_GUIDANCE = (
     "(different package manager, different approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) for results you couldn't actually "
     "produce. Reporting a blocker honestly is always better than inventing a result."
+)
+
+ASYNC_HANDOFF_GUIDANCE = (
+    "# Async handoff\n"
+    "When delegate_task explicitly says background work will deliver its result only after you end the current turn, "
+    "ending the turn is the required handoff — not abandoning the task. Finish only work that does not depend on the "
+    "pending result, then give a brief status and stop so delivery can occur. Do not manufacture polling, no-op, "
+    "placeholder, or unrelated tool calls just to keep the turn open. Do not claim the pending result or task "
+    "completion before it is delivered."
 )
 
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls
@@ -1768,26 +1778,3 @@ def build_context_files_prompt(
         return ""
     return ("# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n"
             + "\n".join(sections))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'org_id_of_path': ('agent.skill_utils', 'org_id_of_path'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

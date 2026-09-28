@@ -191,8 +191,23 @@ export interface EnvVarInfo {
   // desktop-only env-var prefix guesses. Empty for non-provider env vars.
   provider?: string
   provider_label?: string
+  // A credential env var can be shared by multiple built-in routes. The
+  // singular fields above remain for compatibility; this list lets the Keys
+  // tab render every provider card without duplicating credential storage.
+  provider_profiles?: EnvProviderProfile[]
+  // Frontend-only hint copied from a provider profile while grouping a shared
+  // credential. It keeps the provider's first credential ahead of aliases.
+  provider_primary?: boolean
   redacted_value: null | string
   tools: string[]
+  url: null | string
+}
+
+export interface EnvProviderProfile {
+  description: string
+  primary: boolean
+  provider: string
+  provider_label: string
   url: null | string
 }
 
@@ -452,6 +467,7 @@ export interface HermesConfig {
     skin?: string
     interim_assistant_messages?: boolean
     timestamps?: boolean
+    tool_progress?: boolean | string
   }
   desktop?: {
     font_family?: string
@@ -472,6 +488,7 @@ export interface HermesConfig {
     stop_phrases?: unknown
     thinking_sound?: unknown
     barge_in_threshold_multiplier?: unknown
+    silence_duration?: unknown
   }
 }
 
@@ -535,6 +552,13 @@ export interface SessionInfo {
    *  entry is a projected continuation tip. Intermediates matter: a persisted
    *  tile or route can hold a middle segment's id from when IT was the tip. */
   _lineage_ids?: null | string[]
+  /** Provenance of this row when it is a projected continuation tip:
+   *  `'compression'` means the conversation was rotated by automatic context
+   *  compression and this row continues a sealed earlier segment — it is NOT a
+   *  fresh conversation and NOT a user branch (#121148). Surfaced so the
+   *  sidebar can label the lineage; undefined against older backends and for
+   *  plain rows and branches. */
+  continuation_kind?: 'compression'
   input_tokens: number
   /** Spend for the session, straight off the `sessions` row. `actual` is set
    *  when the provider reported a price; `estimated` is our own pricing-table
@@ -547,8 +571,15 @@ export interface SessionInfo {
   message_count: number
   model: null | string
   output_tokens: number
-  /** Parent conversation when this row is a /branch fork. */
+  /** Parent conversation id. Written for genuine /branch forks *and* for
+   *  /new / idle / daily resets (durable lineage). Nesting uses
+   *  {@link _branched_from} vs {@link _reset_from}, not this field alone. */
   parent_session_id?: null | string
+  /** Predecessor of a /new or idle/daily reset. Not a fork — the sidebar
+   *  renders these as siblings of the previous topic. */
+  _reset_from?: null | string
+  /** Parent of a genuine /branch fork. The sidebar nests only these. */
+  _branched_from?: null | string
   /** Durable server-side pin flag (`sessions.pinned`). The list endpoints
    *  back-fill pinned conversations past their LIMIT, so a pinned row is
    *  always present in a page — which makes this authoritative for the
@@ -683,7 +714,11 @@ export interface SessionMessagesResponse {
   pagination?: {
     limit: number
     offset: number
-    order: 'latest' | 'oldest'
+    /** Order the backend actually applied, echoed back from the request.
+     *  Absent on backends that predate the `order` param: they answered from
+     *  the OLDEST row while still returning this object, so a page may only be
+     *  read as a tail when this is `'latest'` (see `pageHonorsLatestOrder`). */
+    order?: 'latest' | 'oldest'
     returned: number
   }
   session_id: string
@@ -1307,6 +1342,11 @@ export interface SessionSearchResult {
   session_started: number | null
   snippet: string
   source: string | null
+  /** Real session title from the sessions table; the backend enriches every
+   *  search hit with it (web_routers/sessions.py add_lineage_result), absent
+   *  for untitled sessions. The sidebar maps it onto the synthesized row so
+   *  search hits show the actual name, not the matched-message snippet. */
+  title?: string | null
 }
 
 export interface SessionSearchResponse {
@@ -1586,6 +1626,11 @@ export interface ModelAssignmentRequest {
 /** An auxiliary task still pinned to a provider that differs from the
  *  newly-selected main provider after a main-model switch. */
 export interface StaleAuxAssignment {
+  /** Endpoint the pin bills, when the source knows it (the auxiliary config
+   *  read carries it; the switch echo doesn't). Part of the desktop's
+   *  stale-aux dismissal fingerprint so a repointed endpoint re-arms the
+   *  warning. Optional: backend `stale_aux` responses predate the field. */
+  base_url?: string
   task: string
   provider: string
   model: string

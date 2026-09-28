@@ -6,6 +6,7 @@ import { useRemoteSetup } from '@/components/remote-setup/use-remote-setup'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
+import { Loader } from '@/components/ui/loader'
 import type {
   DesktopConnectionKind,
   DesktopConnectionsRegistry,
@@ -237,11 +238,34 @@ export function ConnectionsRegistrySection() {
   // the main process, so a crafted payload can't slip past the UI check).
   const [dupeError, setDupeError] = useState<null | string>(null)
 
+  // The draft's auth mode lives inside the remote-setup state below; the
+  // sign-in identity callback runs at login time (after that state exists),
+  // so it reads the mode through this ref rather than the render-time closure.
+  const remoteAuthModeRef = useRef<'oauth' | 'token'>('token')
+
   const remote = useRemoteSetup({
     host: 'registry',
     enabled: editor?.kind === 'remote' || editor?.kind === 'cloud',
-    onNotice: notify
+    onNotice: notify,
+    // The registry draft can sign in BEFORE it is saved: the login carries
+    // the draft's identity so the main process settles the id the save will
+    // reuse and writes the session into the jar the saved connection reads.
+    // The kind/authMode gate in oauth-partition.ts decides WHICH jar that is:
+    // a cookie-auth remote draft gets its own; cloud and token drafts share
+    // the legacy jar, exactly what they resolve to after the save. Pin the
+    // settled id into the draft so Save reuses it.
+    oauthLoginIdentity: () => ({
+      connectionId: editor?.id ?? null,
+      label: editor?.label ?? '',
+      kind: editor?.kind,
+      authMode: editor?.kind === 'cloud' ? 'oauth' : remoteAuthModeRef.current
+    }),
+    onOAuthLoginSettled: settledId => {
+      setEditor(prev => (prev && !prev.id ? { ...prev, id: settledId } : prev))
+    }
   })
+
+  remoteAuthModeRef.current = remote.credentials.authMode
 
   const bridge = window.hermesDesktop?.connections
 
@@ -581,9 +605,7 @@ export function ConnectionsRegistrySection() {
       )}
 
       {loading ? (
-        <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-          <Loader2 className="size-4 animate-spin" />
-        </div>
+        <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.common.loading} type="rose-curve" />
       ) : !registry || registry.connections.length === 0 ? (
         <EmptyState title={s.empty} />
       ) : displayedConnections.length === 0 ? (
@@ -618,7 +640,7 @@ export function ConnectionsRegistrySection() {
                     size="sm"
                     variant="outline"
                   >
-                    {testingId === conn.id ? <Loader2 className="size-3.5 animate-spin" /> : s.testConnection}
+                    {testingId === conn.id ? <Loader2 className="animate-spin" /> : s.testConnection}
                   </Button>
                   {!isPrimary && (
                     <Button disabled={busy} onClick={() => void makePrimary(conn.id)} size="sm" variant="outline">
@@ -642,7 +664,7 @@ export function ConnectionsRegistrySection() {
                         size="icon-sm"
                         variant="ghost"
                       >
-                        {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+                        {busy ? <Loader2 className="animate-spin" /> : <Trash2 />}
                       </Button>
                     </>
                   )}
@@ -731,7 +753,7 @@ export function ConnectionsRegistrySection() {
                     onClick={() => void remote.signIn()}
                     size="sm"
                   >
-                    {remote.signingIn ? <Loader2 className="size-4 animate-spin" /> : null}
+                    {remote.signingIn ? <Loader2 className="animate-spin" /> : null}
                     {remote.isPassword
                       ? t.settings.gateway.signIn
                       : t.settings.gateway.signInWith(remote.providerLabel)}
@@ -869,11 +891,11 @@ export function ConnectionsRegistrySection() {
             >
               {updatingAll ? (
                 <>
-                  <Loader2 className="size-3.5 animate-spin" /> {s.updateAllRunning}
+                  <Loader2 className="animate-spin" /> {s.updateAllRunning}
                 </>
               ) : (
                 <>
-                  <RefreshCw className="size-3.5" /> {s.updateAll}
+                  <RefreshCw /> {s.updateAll}
                 </>
               )}
             </Button>

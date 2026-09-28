@@ -773,6 +773,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['s'],
     name: 'steer',
     run: (arg, ctx) => {
       const payload = arg?.trim() ?? ''

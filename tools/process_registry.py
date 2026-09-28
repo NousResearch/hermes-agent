@@ -631,6 +631,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         "no job control in this shell", "cannot set terminal process group",
         "tcsetattr: Inappropriate ioctl for device")
 
+    # Class default so registries built via __new__ (tests) still restore on first drain.
+    _completions_restored = False
+
     def __init__(self):
         self._running: Dict[str, ProcessSession] = {}
         self._finished: Dict[str, ProcessSession] = {}
@@ -641,12 +644,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # process_loop and the gateway drain it after each agent turn to trigger new turns.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
-        # Rehydrate durable delegation completions once, at registry startup.
-        try:
-            from tools.async_delegation import restore_undelivered_completions
-            restore_undelivered_completions(self.completion_queue)
-        except Exception as exc:
-            logger.warning("Could not restore async delegation completions: %s", exc)
+        # Durable delegation completions are rehydrated by restore_completions(), NOT here: the
+        # module-level singleton runs __init__ on `import model_tools`, and the replay opens
+        # (creates, migrates) the launch profile's state.db (#123265). Importing the module is
+        # side-effect free and keeps its import-order contract for later completion writers.
+        import tools.async_delegation  # noqa: F401
         # Completions the agent already consumed via wait()/read_log() (output in
         # hand): drain loops AND gateway/tui watchers skip them.
         self._completion_consumed: set = set()
@@ -700,14 +702,19 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 self._emit_heartbeat(session, now)
 
     def _emit_heartbeat(self, session: ProcessSession, now: float) -> None:
+        """Queue a heartbeat carrying the output since the last one. A tick with nothing new is
+        skipped outright: every queued event costs the owner a full model turn, and "still running,
+        no output" is already visible on the process surfaces (status stack, /agents dock)."""
+        session._heartbeat_last = now
         with session._lock:
             delta = session.total_output_chars - session._heartbeat_total_at_last
             output = session.output_buffer[-delta:] if delta > 0 else ""
             session._heartbeat_total_at_last = session.total_output_chars
+        if not output:
+            return
         if len(output) > HEARTBEAT_OUTPUT_CHARS:
             cut = len(output) - HEARTBEAT_OUTPUT_CHARS
             output = f"...({cut} earlier characters omitted)\n" + output[-HEARTBEAT_OUTPUT_CHARS:]
-        session._heartbeat_last = now
         session._heartbeat_seq += 1
         notification = {
             **self._watch_event_base(session),
@@ -915,21 +922,85 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return cls._is_host_pid_alive(pid) and (
             expected_start is None or cls._safe_host_start_time(pid) == expected_start)
 
+    def _detached_host_fate(self, pid: Optional[int], expected_start: Optional[int]) -> str:
+        """How a recovered host PID should be supervised.
+
+        ``running`` — alive and still ours (start time matches, no baseline, or
+        the start-time probe could not be read). Re-attach; do not invent an exit.
+        ``reused`` — alive, and the start time positively differs. The number
+        belongs to someone else; close our entry and never signal that PID.
+        ``gone`` — the PID is not alive. Prune it; no exit status was collected.
+        """
+        if self._host_pid_is_ours(pid, expected_start):
+            return "running"
+        if not pid or not self._is_host_pid_alive(pid):
+            return "gone"
+        if expected_start is None:
+            return "running"
+        current = self._safe_host_start_time(pid)
+        if current is None or current == expected_start:
+            return "running"
+        return "reused"
+
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
-        """Update recovered host-PID sessions when the underlying process has exited."""
+        """Re-attach, close, or prune a recovered host-PID session.
+
+        A completion is not queued here: recovery has no waitable handle, so it
+        never collected an exit status.
+        """
         if session is None or session.exited or not session.detached or session.pid_scope != "host":
             return session
-        # A recycled PID (alive but not ours) counts as "our process exited" so a
-        # later kill() can never tree-kill the stranger.
-        if self._host_pid_is_ours(session.pid, session.host_start_time):
+        fate = self._detached_host_fate(session.pid, session.host_start_time)
+        if fate == "running":
             return session
+        if fate == "gone":
+            return self._prune_uncollected_detached(session)
+        self._close_reused_detached(session)
+        return session
+
+    def _close_reused_detached(self, session: ProcessSession) -> None:
+        """Close an entry whose PID was recycled onto another process.
+
+        The stranger is not signalled, and no completion is queued: we never
+        collected an exit status for the process we spawned.
+        """
         with session._lock:
             if session.exited:
-                return session
-            # No waitable handle survives recovery, so the real exit code is unknown.
-            session.exited, session.exit_code = True, None
-        self._move_to_finished(session)
-        return session
+                return
+            session.exited = True
+        with self._lock:
+            if session.id in self._running:
+                session.exited_at = time.time()
+                self._running.pop(session.id, None)
+            self._finished[session.id] = session
+        self._write_checkpoint()
+        session._completion_event.set()
+
+    def _prune_uncollected_detached(self, session: ProcessSession) -> Optional[ProcessSession]:
+        """Drop a recovered entry whose PID is gone, without inventing an exit.
+
+        An owned systemd scope stays reachable so kill can still reap it. A
+        scope-less entry is removed: poll/list must not report a collected exit.
+        """
+        with session._lock:
+            session.exited = True
+        with self._lock:
+            self._running.pop(session.id, None)
+            if session.systemd_unit:
+                self._finished[session.id] = session
+            else:
+                self._finished.pop(session.id, None)
+        self._write_checkpoint()
+        session._completion_event.set()
+        return session if session.systemd_unit else None
+
+    def _uncollected_gone(self, session: Optional[ProcessSession]) -> bool:
+        """True when a detached entry was closed without a collected exit status
+        and the PID is no longer alive. List/poll must not report that as exited."""
+        return bool(
+            session is not None and session.exited and session.exit_code is None
+            and session.detached and session.pid_scope == "host"
+            and not self._is_host_pid_alive(session.pid))
 
     @staticmethod
     def _proc_alive(proc) -> bool:
@@ -1110,7 +1181,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             if pty_alive:
                 survivors.append(session.pid)
         if session.pid_scope == "host" and session.pid:
-            if self._host_pid_is_ours(session.pid, session.host_start_time):
+            if self._detached_host_fate(session.pid, session.host_start_time) == "running":
                 if session.pid not in survivors:
                     survivors.append(session.pid)
                 survivors.extend(
@@ -1705,7 +1776,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if session is None:
             return False
         with suppress(Exception):
-            self._refresh_detached_session(session)
+            refreshed = self._refresh_detached_session(session)
+            if refreshed is None:
+                return False
+            session = refreshed
         return not session.exited and not (
             session.watch_patterns and not session._watch_disabled and session._watch_hits > 0)
 
@@ -1774,7 +1848,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                         # where the reader is blocked but the direct child has already exited (issue
                         # #17327).
                         self._reconcile_local_exit(session)
-                        self._refresh_detached_session(session)
+                        if self._refresh_detached_session(session) is None:
+                            break
                     if session._completion_event.is_set():
                         break
                     session._completion_event.wait(min(remaining, interval))
@@ -1832,6 +1907,28 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # ownership, so leave them for the owner.
         return not (is_async_delegation and evt.get("restored"))
 
+    def restore_completions(self) -> int:
+        """Rehydrate durable delegation completions from the LAUNCH profile's ledger, once per
+        process. Called by the first consumer that drains the queue (CLI/TUI drain, gateway boot,
+        TUI poller) so a mere ``import model_tools`` never touches state.db (#123265). The replay
+        always runs in the launch scope: the TUI poller / prompt_turn drain call this under the
+        session's profile binding, and a once-per-process replay taken under a secondary's scope
+        would leave the launch ledger unreplayed for the life of the process. Secondaries are
+        replayed by the gateway's ``_restore_secondary_completion_ledgers``."""
+        if self._completions_restored:
+            return 0
+        self._completions_restored = True
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(None)
+        try:
+            from tools.async_delegation import restore_undelivered_completions
+            return restore_undelivered_completions(self.completion_queue)
+        except Exception as exc:
+            logger.warning("Could not restore async delegation completions: %s", exc)
+            return 0
+        finally:
+            reset_hermes_home_override(token)
+
     def drain_notifications(
         self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,
     ) -> "list[tuple[dict, str]]":
@@ -1843,6 +1940,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         compression-chain-aware check) consumes ONLY on True, ``session_key`` uses plain
         equality; non-owned events are re-queued for their owner. No filter consumes
         everything (legacy single-session) except restored delegation payloads (fail-closed)."""
+        self.restore_completions()
         results: "list[tuple[dict, str]]" = []
         requeue: "list[dict]" = []
         # delegation.surface_child_process_notifications, read at most once per drain
@@ -1996,7 +2094,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def poll(self, session_id: str) -> dict:
         """Check status and get new output for a background process."""
         session = self.get(session_id)
-        if session is None:
+        if session is None or self._uncollected_gone(session):
             return _not_found(session_id)
         self._reconcile_local_exit(session)  # orphaned-pipe reader guard
         with session._lock:
@@ -2222,24 +2320,27 @@ class ProcessRegistry(ProcessCheckpointMixin):
         elif session.env_ref and session.pid:
             session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:
-            # Identity check, not bare liveness: a gone/recycled PID means our
-            # process exited — never tree-kill the stranger. Still stop an owned
-            # scope: a daemonized descendant may survive the wrapper PID.
+            # Same fate as poll/list: a gone or reused PID means our process is
+            # gone — never tree-kill the stranger — but a live PID with an
+            # unreadable start time is still ours and must really be killed.
             # If this recovered session also carries an owned systemd scope, stop that scope before
             # returning: a daemonized descendant may still be alive there even though the wrapper PID exited
             # or was recycled across the gateway restart (#70716, teknium1 review).
-            if not self._host_pid_is_ours(session.pid, session.host_start_time):
+            if self._detached_host_fate(session.pid, session.host_start_time) != "running":
                 if session.systemd_unit:
                     _stop_systemd_unit(session.systemd_unit)
                 with session._lock:
-                    session.exited = True
-                    session.exit_code = None
                     output = _completion_output(session)
                 if consume_output:
                     self._completion_consumed.add(session_id)
-                self._move_to_finished(session)
+                # No waitable handle, so this is not a collected exit. Close the
+                # entry without queueing a completion, and do not signal a PID
+                # whose start time does not match.
+                self._close_reused_detached(session)
                 return {"status": "already_exited", "exit_code": session.exit_code, **output}
-            self._terminate_host_pid(session.pid, session.host_start_time)
+            # Identity was just proven above. Re-passing the start time would make
+            # an unreadable probe refuse the kill and leave the re-adopted child running.
+            self._terminate_host_pid(session.pid)
         else:
             return {
                 # Reject non-positive timeouts — the schema declares minimum=1, but not every caller
@@ -2342,7 +2443,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             sessions.update(self._finished)
             sessions.update(self._running)
-        all_sessions = [self._refresh_detached_session(s) for s in sessions.values()]
+        all_sessions = [
+            refreshed for refreshed in (
+                self._refresh_detached_session(s) for s in sessions.values()
+            ) if refreshed is not None and not self._uncollected_gone(refreshed)
+        ]
         if task_id or session_key:
             all_sessions = [
                 s for s in all_sessions
@@ -2412,6 +2517,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             return [s for s in self._finished.values()
                     if s.owner_task_id == owner_task_id and s.notify_on_complete
+                    and s.exit_code is not None
                     and s.id not in self._completion_consumed and s.id not in self._poll_observed]
 
     def transfer_ownership(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,
@@ -2708,12 +2814,3 @@ registry.register(
     handler=_handle_process,
     emoji="⚙️",
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_max_age_hours (#29177)
-# ---- END PLUGIN-COMPAT ----

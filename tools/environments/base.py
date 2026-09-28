@@ -227,8 +227,11 @@ class BaseEnvironment(ABC):
     implement ``_run_bash()`` and ``cleanup()``; the base provides ``execute()`` with
     snapshot sourcing, CWD tracking, interrupt handling and timeout enforcement."""
 
-    # Subclasses that embed stdin as a heredoc (Modal, Daytona) set this.
-    _stdin_mode: str = "pipe"  # "pipe" or "heredoc"
+    # How execute() hands stdin to _run_bash: "pipe" (process stdin, default),
+    # "payload" (passed through as stdin_data; the backend transports it via its
+    # SDK -- Modal/managed Modal stream it, Daytona/Vercel stage a file) or
+    # "heredoc" (embedded in the command; no built-in backend, plugins only).
+    _stdin_mode: str = "pipe"  # "pipe" | "payload" | "heredoc"
 
     # True only when commands execute on the SAME host as the Hermes process
     # (LocalEnvironment); controller-host facts then describe the execution target.
@@ -430,6 +433,18 @@ class BaseEnvironment(ABC):
         delimiter = f"HERMES_STDIN_{uuid.uuid4().hex[:12]}"
         return (f"{{\n{command}\n}} << '{delimiter}' < <(IFS= read -r -d '' s || :; printf '%s' \"${{s%?}}\")\n"
                 f"{stdin_data}\n{delimiter}")
+
+    def _staged_stdin_path(self) -> str:
+        """Unique sandbox path for staging a payload-mode stdin file."""
+        temp_dir = self.get_temp_dir().rstrip("/") or "/"
+        return f"{temp_dir}/.hermes-stdin-{uuid.uuid4().hex}"
+
+    @staticmethod
+    def _redirect_stdin_from_file(command: str, path: str) -> str:
+        """Prefix ``command`` so the shell reads stdin from the staged ``path`` and
+        unlinks it before ``command`` runs (the shell then owns the payload)."""
+        quoted = shlex.quote(path)
+        return f"exec 0< {quoted} || exit $?\nrm -f -- {quoted} || exit $?\n{command}"
 
     # --- Process lifecycle ---
     def _wait_for_process(
@@ -738,33 +753,3 @@ class BaseEnvironment(ABC):
             return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
         except Exception:
             return False
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import IO  # noqa: F401,E402
-from typing import Protocol  # noqa: F401,E402
-import codecs  # noqa: F401,E402
-from collections import deque  # noqa: F401,E402
-import re  # noqa: F401,E402
-import select  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'sanitize_task_id_for_path': ('tools.environments.path_utils', 'sanitize_task_id_for_path'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

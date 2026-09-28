@@ -162,6 +162,7 @@ export const fr: TranslationOverlay = {
     deleteSelectedConfirmMessage:
       "Cela supprime définitivement {count} sessions sélectionnées et tous leurs messages. Cette action est irréversible.",
     selectedSessionsDeleted: "{count} sessions supprimées",
+    selectedSessionsSkippedActive: "{deleted} supprimées ; {count} conservées car un tour est en cours",
     failedToDeleteSelected: "Échec de la suppression des sessions sélectionnées",
     resumeInChat: "Reprendre dans le chat",
     newChat: "Nouveau chat",

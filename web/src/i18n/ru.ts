@@ -162,6 +162,7 @@ export const ru: TranslationOverlay = {
     deleteSelectedConfirmMessage:
       "Это безвозвратно удалит {count} выбранных сессий и все их сообщения. Это действие нельзя отменить.",
     selectedSessionsDeleted: "Удалено сессий: {count}",
+    selectedSessionsSkippedActive: "Удалено: {deleted}; сохранено: {count}, так как ход ещё выполняется",
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
     newChat: "Новый чат",

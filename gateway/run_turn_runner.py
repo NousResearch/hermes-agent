@@ -72,6 +72,19 @@ class _ExecApprovalDeclined(RuntimeError):
     """
 
 
+class _ExecApprovalUndeliverable(RuntimeError):
+    """The approval prompt never reached the user on any lane (text fallback included).
+
+    Same propagation contract as `_ExecApprovalDeclined`: raised out of
+    `_approval_notify_sync` so `_await_gateway_decision` drops the queue entry
+    and returns ``notify_failed`` — the tool BLOCKS fail-closed immediately.
+    Before this, a scheduling failure (no loop) or a failed text send returned
+    quietly: the entry then waited out the full ``approvals.timeout`` while the
+    user stared at a chat that never showed a prompt (t_f6d13263: four silent
+    300s wedges on a WhatsApp himalaya send).
+    """
+
+
 class TurnRunner:
     """Per-turn collaborator carrying ``GatewayRunner._run_agent_inner``'s tool-progress callbacks."""
 
@@ -1537,19 +1550,39 @@ class TurnRunner:
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
         msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
-        try:
-            # Mark as approval prompt so WeCom routes through the control lane.
-            metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
-            fut = self._schedule(
-                adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
+        # Mark as approval prompt so WeCom routes through the control lane.
+        metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
+        fut = self._schedule(
+            adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
+        )
+        # Same verdicts as the button lane (`_approval_send_outcome` logs every failure). A text
+        # prompt that never landed used to return quietly here: the queue entry then waited out
+        # the full approvals.timeout with NO prompt in the chat and NO log above DEBUG
+        # (t_f6d13263: four silent 300s wedges on a WhatsApp himalaya send). Fail closed and
+        # loudly instead — nobody can answer a prompt they never saw.
+        outcome = _approval_send_outcome(fut, timeout=15)
+        if outcome in ("sent", "ambiguous"):
+            if outcome == "ambiguous":
+                # Timeout ≠ failure: the message may have posted with a late ack. The registration
+                # stays armed so a typed /approve still resolves; no re-send (duplicate prompts).
+                logger.warning(
+                    "Approval text prompt send timed out — treating as possibly-delivered "
+                    "(no re-send; the prompt stays armed for a late reply)"
+                )
+            # No card to edit on the text path: the prompt has no buttons to drop and carries
+            # the /approve instructions, so the timeout notice is posted as a new message.
+            register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+            return
+        if outcome == "declined":
+            # The connector authorized this destination and refused it; re-sending as text is
+            # what the egress guard exists to stop (see the button-lane decline above).
+            raise _ExecApprovalDeclined(
+                "exec approval undeliverable: connector egress declined this destination"
             )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
-        except Exception as e:
-            logger.error("Failed to send approval request: %s", e)
+        raise _ExecApprovalUndeliverable(
+            "exec approval text prompt could not be delivered (gateway loop unavailable "
+            "or the platform send failed; see the logged 'Prompt send failed' warning)"
+        )
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

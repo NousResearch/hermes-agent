@@ -9,6 +9,7 @@ import platform
 import re
 import signal
 import subprocess
+from collections import OrderedDict
 from contextlib import suppress
 from functools import wraps
 from pathlib import Path
@@ -188,7 +189,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsapp_jid
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
 from gateway.platforms.helpers import cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
@@ -311,6 +312,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
         # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
         self._configure_text_batch_delays()
+        # Exec-approval polls: poll message id -> {"session_key", "choices": {label: choice}}.
+        # A vote arrives as a poll_update event (bridge-emitted for polls we created); the
+        # interception in ``_build_message_event`` maps the voted label back to a choice and
+        # resolves the approval. Bounded LRU so stale entries cannot accumulate.
+        self._exec_approval_polls: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"
@@ -687,6 +693,100 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[%s] Native WhatsApp clarify poll failed; falling back to text: %s", self.name, result.error)
         return await super().send_clarify(chat_id=chat_id, question=question, choices=choices, clarify_id=clarify_id, session_key=session_key, metadata=metadata)
 
+    # Exec-approval prompts render as a native WhatsApp poll: one option per action row
+    # (Allow Once / Allow Session / Always Allow / Deny), so the decision is one tap instead of
+    # typing /approve. A vote arrives as a poll_update event that ``_build_message_event``
+    # intercepts and routes to ``tools.approval.resolve_gateway_approval`` (same seam as
+    # whatsapp_cloud's approval buttons). WhatsApp polls carry no styles, so ``style`` is ignored.
+    _EA_POLL_QUESTION_BUDGET: int = 900  # poll name cap is 1024; leave headroom for the marker
+    _EXEC_APPROVAL_POLL_CACHE: int = 200  # live + stale poll states kept (LRU-capped)
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Approval poll with one option per action row; a vote resolves via
+        ``tools.approval.resolve_gateway_approval``."""
+        # Truncate the fully formatted prompt (shared wording from base_exec_approval) to the
+        # poll-question budget; the option labels carry the decision. Poll names are plain text,
+        # so strip the code fences (the command still reads fine on its own line).
+        question = self._ea_fit(prompt.text, self._EA_POLL_QUESTION_BUDGET).replace("```", "")
+        options = [label for label, _choice, _style in prompt.actions]
+        result = await self.send_poll(prompt.chat_id, question, options, selectable_count=1)
+        # One bounded retry on a "Not connected" bridge: the WhatsApp socket reconnects in
+        # seconds while the HTTP server keeps answering, and a failed prompt must not wedge the
+        # approval (the runner's fallback re-sends as text — better to land the tappable poll).
+        if (not result.success and result.message_id is None
+                and "not connected" in (result.error or "").lower()):
+            await asyncio.sleep(3)
+            result = await self.send_poll(prompt.chat_id, question, options, selectable_count=1)
+        if result.success and result.message_id:
+            polls = getattr(self, "_exec_approval_polls", None)
+            if polls is None:
+                polls = self._exec_approval_polls = OrderedDict()
+            polls[str(result.message_id)] = {
+                "session_key": prompt.session_key,
+                "chat_id": prompt.chat_id,  # the exact id the runner paused typing for
+                "choices": {label: choice for label, choice, _style in prompt.actions},
+            }
+            while len(polls) > self._EXEC_APPROVAL_POLL_CACHE:
+                polls.popitem(last=False)
+        return result
+
+    async def _maybe_handle_approval_poll_vote(self, data: Dict[str, Any]) -> bool:
+        """Consume a poll_update event that answers a pending exec-approval poll.
+
+        Returns True when the event was consumed (resolved, rejected, or expired) and must not
+        reach the agent path. Votes on any other poll (clarify, foreign) are left untouched.
+        """
+        if data.get("nativeType") != "pollUpdateMessage":
+            return False
+        polls = getattr(self, "_exec_approval_polls", None)
+        if not polls:
+            return False
+        poll_update = ((data.get("nativeMetadata") or {}).get("pollUpdate") or {})
+        state = polls.get(str(poll_update.get("pollId") or ""))
+        if state is None:
+            return False  # not our approval poll (clarify poll, or long-resolved and evicted)
+        chat_id = str(data.get("chatId") or "")
+        sender_id = str(data.get("senderId") or "")
+        # Same gate as any other inbound answer: a stale prompt must not be votable after the
+        # sender left the allowlist (taps bypass _should_process_message, whatsapp_cloud parity).
+        allowed = self._is_group_allowed(chat_id) if data.get("isGroup", False) else self._is_dm_intake_allowed(sender_id)
+        if not allowed:
+            logger.warning("[%s] Rejected unauthorized approval poll vote from %s (poll_id=%s)",
+                           self.name, sender_id or "<unknown>", poll_update.get("pollId"))
+            return True  # claim so the vote is not re-dispatched as plain text
+        voted = [str(opt) for opt in (poll_update.get("selectedOptions") or [])]
+        choice = next((state["choices"][opt] for opt in voted if opt in state["choices"]), None)
+        if choice is None:
+            # An option that maps to no action row (e.g. a mid-send poll edit): leave the state
+            # live and let the vote flow on — the user can still type /approve.
+            return False
+        session_key = state["session_key"]
+        polls.pop(str(poll_update.get("pollId")), None)
+        from tools import approval as _approval
+        count = _approval.resolve_gateway_approval(session_key, choice)
+        if count:
+            self.resume_typing_for_chat(state.get("chat_id") or chat_id)  # the notify path paused typing for this wait
+            reply = "✅ Approved." if choice != "deny" else "❌ Denied."
+        else:
+            # A vote after the wait timed out must not claim approval: the command was already
+            # denied fail-closed (whatsapp_cloud parity).
+            logger.info("[%s] Approval poll vote with no waiter (session=%s) — already resolved or timed out",
+                        self.name, session_key)
+            reply = "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
+
+        async def _reply() -> None:
+            with suppress(Exception):
+                await self.send(chat_id, reply)
+
+        # Best-effort ack on a background task: this runs in the bridge poll loop, and a slow
+        # send (bridge hiccup) must not delay the dispatch of other inbound messages.
+        bg = getattr(self, "_background_tasks", None)
+        task = asyncio.create_task(_reply())
+        if bg is not None:
+            bg.add(task)
+            task.add_done_callback(bg.discard)
+        return True
+
     @_needs_bridge
     async def send_location(self, chat_id: str, latitude: float, longitude: float, *, name: Optional[str] = None, address: Optional[str] = None,
                             reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -866,6 +966,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
+            # Approval-poll votes are consumed HERE, before any other inbound handling: the vote
+            # answers a prompt the AGENT is blocked on, so it must resolve the approval rather
+            # than queue as a follow-up turn behind the blocked run.
+            if await self._maybe_handle_approval_poll_vote(data):
+                return None
             if not self._should_process_message(data):
                 return None
             msg_type = self._classify_bridge_message(data)

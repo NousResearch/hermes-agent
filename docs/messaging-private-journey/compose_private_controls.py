@@ -69,6 +69,18 @@ def main():
         '--filter=blob:none', '--depth=1', 'origin', *commits)
     if git(destination, 'rev-parse', ROUTE + '^{commit}').decode().strip() != ROUTE:
         raise RuntimeError('delegated Route source identity changed')
+    # Avoid one lazy-fetch network round trip per selected blob.
+    objects = set()
+    for commit, paths in ((ROUTE, ROUTE_FILES),
+                          (args.permission_commit, PERMISSION_FILES),
+                          (args.consumer_commit, CONSUMER_FILES)):
+        if commit:
+            rows = git(destination, 'ls-tree', '-r', commit, '--', *paths).splitlines()
+            if len(rows) != len(paths):
+                raise RuntimeError('owner commit is missing a declared path')
+            objects.update(row.split()[2].decode('ascii') for row in rows)
+    git(destination, '-c', 'protocol.file.allow=never', 'fetch', '-q', '--no-tags',
+        'origin', *sorted(objects))
     for path in ROUTE_FILES:
         (destination / path).write_bytes(git(destination, 'show', ROUTE + ':' + path))
     for name, paths, local, commit in (

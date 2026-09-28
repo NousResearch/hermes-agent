@@ -269,6 +269,11 @@ _CONTEXT_OVERFLOW_PATTERNS = (
 # model_not_found triggers fallback instead of burning retries (#58446).
 # Codex ChatGPT-account entitlement 400 — the account can never use the named slug (#71970, #106475).
 CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER = "model is not supported when using codex with a chatgpt account"
+# OpenCode Zen relays an upstream model gate as 403 "Upstream request failed: Model access is
+# disabled" (error type ``api_error``): the upstream rejected the MODEL, not the credential —
+# the same class as the Codex entitlement rejection, so the pool benches the (credential, model)
+# pair and a working key is never marked auth-failed (#124021).
+ZEN_MODEL_ACCESS_DISABLED_MARKER = "model access is disabled"
 
 _MODEL_NOT_FOUND_PATTERNS = (
     "is not a valid model", "invalid model", "model not found", "model_not_found", "does not exist",
@@ -1025,6 +1030,11 @@ def _status_403(c: _Ctx) -> Verdict:
     # 403 and on established block/challenge markers; any other 403 stays auth.
     if any(p in c.msg for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
+    # A model-level gate rejects the MODEL, not the credential: model-scoped bench,
+    # the key stays valid for its siblings (#124021). Before the auth fallback, whose
+    # re-auth guidance would mark a working key failed for a retired/inaccessible slug.
+    if ZEN_MODEL_ACCESS_DISABLED_MARKER in c.msg:
+        return _V_MODEL_ENTITLEMENT
     return _V_AUTH_FALLBACK
 
 

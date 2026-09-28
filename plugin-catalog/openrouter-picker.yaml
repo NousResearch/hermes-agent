@@ -1,0 +1,15 @@
+name: openrouter-picker
+repo: https://github.com/PIR8-Software/Hermes-OR-Picker
+sha: 20e4c817945220d0b2df6ca60b0b4d3b112b3f39
+subdir: catalog
+description: Curated OpenRouter model list for Hermes Desktop, separate from the stock OpenRouter catalog.
+maintainer: PIR8-Software
+tier: community
+category: desktop
+version: "1.0.0"
+docs_url: https://github.com/PIR8-Software/Hermes-OR-Picker#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

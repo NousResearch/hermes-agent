@@ -39,6 +39,8 @@ def _surviving_pre_update_serve_runtimes(plan) -> list[dict]:
                 "profile": str(getattr(runtime, "profile", "")),
                 "supervisor": str(getattr(runtime, "supervisor", "")),
                 "_create_time": _numeric(detail.get("create_time") if isinstance(detail, dict) else None)}
+            if isinstance(detail, dict):
+                planned[pid].update({k: detail[k] for k in ("systemd_scope", "systemd_unit") if k in detail})
     except Exception as exc:
         logger.debug("Could not read planned serve runtimes: %s", exc)
         return []
@@ -236,7 +238,11 @@ def _warn_stale_serve_runtimes(rows) -> None:
             f" (profile {row.get('profile') or 'default'}, {row.get('supervisor') or 'unknown'})")
     print("    Ask their owner to relaunch `hermes serve` / `hermes dashboard`, or reconnect Desktop for an SSH backend.")
     if sys.platform == "linux" and any(row.get("supervisor") == "systemd" for row in rows):
-        print("    For unit-managed backends: `systemctl --user restart hermes-serve.service`.")
+        from hermes_cli.update_inventory import systemd_restart_command
+
+        unit_cmds = list(dict.fromkeys(filter(None, (systemd_restart_command(row) for row in rows))))
+        for cmd in unit_cmds or ["systemctl --user restart hermes-serve.service"]:
+            print(f"    For unit-managed backends: `{cmd}`.")
     if sys.platform == "darwin" and any(row.get("supervisor") == "launchd" for row in rows):
         print("    For launchd-managed backends: `launchctl kickstart -k gui/$UID/<label>`.")
 

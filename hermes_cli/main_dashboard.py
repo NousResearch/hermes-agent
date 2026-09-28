@@ -231,6 +231,36 @@ def _get_pid_cgroup_path(pid: int) -> str | None:
     return next(_pid_unified_cgroup_entries(pid), None)
 
 
+_USER_MANAGER_CGROUP_RE = re.compile(r"/user@\d+\.service/")
+
+
+def _systemd_unit_owning_backend(pid: int) -> tuple[str, str] | None:
+    """``(scope, unit)`` of the systemd service whose ``MainPID`` is *pid*; None otherwise.
+
+    Cgroup membership alone is not ownership: a backend launched from a shell inside another
+    unit's cgroup (the gateway's agent terminal) sits in that unit without being its main
+    process, and restarting that unit would restart the wrong process. None off Linux
+    (no ``/proc``), when the unit is unreadable, or when systemctl is unavailable.
+
+    The manager comes from ``user@<uid>.service`` in the cgroup path, not from the slice name: a
+    unit with ``Slice=`` set (``/hermes.slice/…``) or none at all (``/hermes-serve.service``) is
+    still the system manager's, and a user unit always sits under its ``user@`` manager.
+    """
+    cgroup = _get_pid_cgroup_path(pid)
+    unit = _get_systemd_service_for_pid(pid)
+    if unit is None or not cgroup:
+        return None
+    scope = "user" if _USER_MANAGER_CGROUP_RE.search(cgroup) else "system"
+    manager = ["--user"] if scope == "user" else []
+    try:
+        result = _run_probe(["systemctl", *manager, "show", unit, "--property=MainPID", "--value"], timeout=5)
+    except _SYSTEMCTL_ERRORS:
+        return None
+    if result.returncode != 0 or (result.stdout or "").strip() != str(pid):
+        return None
+    return scope, unit
+
+
 def _try_restart_systemd_service(svc_name: str, cgroup_path: str | None = None) -> bool:
     """Restart *svc_name* via systemctl (``--user`` for user-scope units). True on success.
 

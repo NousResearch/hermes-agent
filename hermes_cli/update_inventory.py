@@ -268,13 +268,38 @@ def _is_desktop_ssh_ledger_entry(entry: dict) -> bool:
         return False
 
 
+def _systemd_owner_for_ledger_entry(pid: int) -> "tuple[str, str] | None":
+    """``(scope, unit)`` of the systemd service whose main process is this ledger row, if any.
+
+    A backend run as its own unit (``ExecStart=hermes dashboard ...``) records no spawner, so the
+    spawner probe alone misreads it as ``manual-serve``: the plan proposes a respawn-argv restart
+    for a process systemd owns, and every CLI start then files a "manual restart still pending"
+    reminder the operator cannot discharge. Only ``MainPID`` ownership classifies; sharing a
+    unit's cgroup does not."""
+    with suppress(Exception):
+        from hermes_cli import main_dashboard as _dash
+
+        return _dash._systemd_unit_owning_backend(pid)
+    return None
+
+
+def systemd_restart_command(row: dict) -> str | None:
+    """``systemctl [--user] restart <unit>`` for a row classified ``systemd`` with its unit recorded
+    (the unit is whatever the operator named it, not necessarily ``hermes-serve.service``), else None."""
+    unit = row.get("systemd_unit")
+    if not unit:
+        return None
+    return f"systemctl {'--user ' if row.get('systemd_scope') == 'user' else ''}restart {unit}"
+
+
 def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     """Serve/dashboard backends from the spawn ledger — runtimes the gateway collectors can never see
     (a manual `hermes serve --host <ip>` for a remote Desktop, a long-lived `hermes dashboard`).
     ledger_entries() live-verifies (pid, create_time) so PID reuse never fabricates a row. Desktop-
     supervised backends (spawner still alive) restart via the Desktop's own respawn, not ours.
     A backend owned by a loaded launchd job is classified ``launchd`` (kickstart restart, never a
-    detached argv respawn) — the spawner probe cannot see that (#116503)."""
+    detached argv respawn) — the spawner probe cannot see that (#116503). A backend that is the
+    main process of a systemd unit is classified ``systemd`` for the same reason."""
     with _probe("Serve/dashboard ledger inventory"):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
@@ -297,6 +322,8 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
                 # No local spawner, so the probe below would read manual-serve and file a reminder
                 # nobody here can discharge; its token file and owner nonce belong to the client.
                 supervisor = "desktop-ssh"
+            elif unit := _systemd_owner_for_ledger_entry(pid):
+                supervisor, detail["systemd_scope"], detail["systemd_unit"] = "systemd", unit[0], unit[1]
             else:
                 supervisor = "desktop" if spawner_is_dead(entry) is False else "manual-serve"
             plan.runtimes.append(_runtime(
@@ -393,7 +420,7 @@ def match_runtime_outcomes(
 
     The platform restart branches each re-discover their own targets, so a runtime the plan saw can
     be missed with no signal. Returns one ``{kind, profile, pid, mechanism, outcome}`` row per
-    planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred`` or
+    planned runtime (a ``systemd`` serve row also carries ``systemd_scope``/``systemd_unit`` for the hint); outcome is ``restarted``, ``stopped``, ``failed``, ``deferred`` or
     ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
     Serve/dashboard runtimes are reconciled in their OWN vocabulary and never borrow the gateway's
     outcome: with ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as
@@ -450,9 +477,10 @@ def match_runtime_outcomes(
 
         for r in plan.runtimes:
             if isinstance(r, RuntimeRecord):
-                outcomes.append(
-                    {"kind": r.kind, "profile": r.profile, "pid": r.pid, "mechanism": r.restart_via, "outcome": _outcome(r)}
-                )
+                outcome = {"kind": r.kind, "profile": r.profile, "pid": r.pid, "mechanism": r.restart_via,
+                           "outcome": _outcome(r)}
+                outcome.update({k: r.detail[k] for k in ("systemd_scope", "systemd_unit") if k in (r.detail or {})})
+                outcomes.append(outcome)
     except Exception as exc:
         logger.debug("Runtime-outcome reconciliation failed: %s", exc)
     return outcomes
@@ -496,7 +524,9 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
         # A serve/dashboard is not reachable by any `gateway restart` command: name the process, not the wrong verb.
         # See #100479.
         if sys.platform == "linux":
-            print("      systemctl --user restart hermes-serve.service   # unit-managed serve")
+            unit_cmds = list(dict.fromkeys(filter(None, (systemd_restart_command(o) for o in missed))))
+            for cmd in unit_cmds or ["systemctl --user restart hermes-serve.service"]:
+                print(f"      {cmd}   # unit-managed serve")
         print("      relaunch `hermes serve` / `hermes dashboard`")
     return True
 

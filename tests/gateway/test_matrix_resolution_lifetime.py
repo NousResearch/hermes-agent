@@ -97,6 +97,11 @@ def _client(adapter, raw, scope, barrier, started, release):
             })
         if barrier == ("original" if event.event_id == "$target" else "replacement"):
             await pause()
+        if event.event_id == "$edit":
+            replacement = _edited(original, "WITHDRAWN EDIT")["unsigned"][
+                "m.relations"
+            ]["m.replace"]
+            return types.Event.deserialize({**replacement, "origin_server_ts": 1})
         return types.Event.deserialize({**original, "origin_server_ts": 1})
 
     store = _edit_store({

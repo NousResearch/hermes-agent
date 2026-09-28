@@ -678,12 +678,48 @@ class SessionDB(
             # openers don't race the absent-path -> schema-commit window.
             if not self.db_path.exists() or has_invalid_sqlite_header_preopen(self.db_path):
                 with quarantine_cross_process_lock(self.db_path) as lock_acquired:
-                    if not lock_acquired:
+                    if lock_acquired:
+                        self._handle_quarantine_if_invalid(already_locked=True)
+                    else:
+                        # Contention: another opener owns the quarantine and is
+                        # replacing the invalid file. Re-entering the quarantine path
+                        # would wait out a SECOND 5s lock window and then raise the
+                        # misleading "could not be moved aside" DatabaseError (#126773),
+                        # so skip quarantine — but keep the serialization this lock
+                        # provides: connect only once the winner's fresh db is in place,
+                        # otherwise our open lands on the still-invalid file (or creates
+                        # a racing fresh file under the winner's feet) and fails.
+                        # Normally this resolves in milliseconds; the full lock window
+                        # is the pathological ceiling, where sqlite's own error names
+                        # the real state instead of a bogus move failure.
                         logger.warning(
-                            "startup quarantine lock for %s not acquired within 5s; proceeding",
+                            "startup quarantine lock for %s not acquired within 5s; "
+                            "waiting for the lock owner's fresh database instead of "
+                            "quarantining ourselves",
                             self.db_path,
                         )
-                    self._handle_quarantine_if_invalid(already_locked=lock_acquired)
+                        wait_deadline = time.monotonic() + 5.0  # same window as the lock
+                        while time.monotonic() < wait_deadline:
+                            if self.db_path.exists() and not has_invalid_sqlite_header_preopen(self.db_path):
+                                break
+                            time.sleep(0.05)
+                        if self.db_path.exists() and has_invalid_sqlite_header_preopen(self.db_path):
+                            # Ceiling: the lock owner neither fixed the file nor
+                            # finished within the window. Name the contention instead
+                            # of failing on sqlite's opaque NOTADB error (#126773).
+                            msg = (
+                                f"state.db has an invalid header and the startup "
+                                "quarantine lock was held by another process for the "
+                                "full window; the file was left in place. Wait for "
+                                "other Hermes processes to exit, then retry — or run "
+                                f"`hermes sessions recover --source {self.db_path} "
+                                "--inspect-only`, or restore a snapshot with "
+                                "`/snapshot list` then `/snapshot restore <id>` "
+                                "(terminal `hermes` chat only)."
+                            )
+                            logger.error(msg)
+                            _set_last_init_error(msg)
+                            raise sqlite3.DatabaseError(msg)
                     self._connect_and_init_with_lock_patience()
             else:
                 self._handle_quarantine_if_invalid(already_locked=False)
@@ -763,7 +799,31 @@ class SessionDB(
         except OSError:
             zsize = -1
         qpath = quarantine_invalid_state_db(self.db_path, already_locked=already_locked)
-        where = f"moved aside to {qpath}" if qpath else "left in place (it could not be moved aside)"
+        if qpath:
+            where = f"moved aside to {qpath}"
+        elif not already_locked and self.db_path.exists() \
+                and has_invalid_sqlite_header_preopen(self.db_path):
+            # No qpath + file STILL invalid on a caller that does not hold the lock:
+            # either the quarantine lock was held elsewhere, or the rename itself
+            # failed. Probe the lock once (non-blocking) so the error names the real
+            # cause instead of "could not be moved aside" (#126773).
+            with quarantine_cross_process_lock(self.db_path, timeout=0.0) as probe:
+                if not probe:
+                    msg = (
+                        f"state.db was empty or damaged ({zsize} bytes); the startup "
+                        "quarantine lock was held by another process for the full "
+                        "window, so the invalid file was left in place. Wait for the "
+                        "other Hermes process to finish starting, then retry — or run "
+                        f"`hermes sessions recover --source {self.db_path} "
+                        "--inspect-only`, or restore a snapshot with `/snapshot list` "
+                        "then `/snapshot restore <id>` (terminal `hermes` chat only)."
+                    )
+                    logger.error(msg)
+                    _set_last_init_error(msg)
+                    raise sqlite3.DatabaseError(msg)
+            where = "left in place (it could not be moved aside)"
+        else:
+            where = "left in place (it could not be moved aside)"
         msg = (
             f"state.db was empty or damaged ({zsize} bytes) and has been {where}; Hermes started with a "
             "fresh, empty session database. To bring old sessions back, run "

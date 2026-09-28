@@ -135,24 +135,43 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
 
     # A live gateway on THIS backend's HERMES_HOME owns cron delivery with live platform
     # adapters (#52202). The per-tick ``profile_gate`` already stands down while it runs and
-    # resumes once it stops (Desktop's own gateway stop, a crash), so only the fail-open paths
-    # (profile enumeration failure, empty served set, external provider) bail out here: their
-    # ungated single-store ticker would race the gateway's tick-lock, and when the desktop wins,
-    # delivery has no live adapter and the cold send hangs until script_timeout.
+    # resumes once it stops (Desktop's own gateway stop, a crash). The fail-open paths (profile
+    # enumeration failure, empty served set, external provider) have no profile gate: ungated,
+    # their single-store ticker would race the gateway's tick-lock, and when the desktop wins,
+    # delivery has no live adapter and the cold send hangs until script_timeout. They re-check
+    # the same ownership probe instead of taking it once at startup, so they also take over
+    # once that gateway stops (#126822).
     if "profile_gate" not in start_kwargs:
-        try:
-            from hermes_constants import get_hermes_home
-            from hermes_cli.profiles import _check_gateway_running
+        from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import _check_gateway_running
 
-            if _check_gateway_running(Path(get_hermes_home())):
-                _log.info(
-                    "Desktop cron scheduler not started: live gateway owns cron on this "
-                    "HERMES_HOME; the gateway ticks with live adapters"
-                )
-                return
-        except Exception:
-            # Liveness probe failed: start the ticker rather than silently stand down.
-            _log.warning("Desktop cron: gateway-ownership probe failed; starting the ticker", exc_info=True)
+        own_home = Path(get_hermes_home())
+        probe_failed: list = []
+
+        def _gateway_owns_cron() -> bool:
+            try:
+                return _check_gateway_running(own_home)
+            except Exception:
+                # Start the ticker rather than silently stand down; warn once, not every tick.
+                if not probe_failed:
+                    probe_failed.append(True)
+                    _log.warning("Desktop cron: gateway-ownership probe failed; starting the ticker", exc_info=True)
+                return False
+
+        if isinstance(provider, InProcessCronScheduler):
+            # Per-tick gate: a skipped tick leaves due jobs in place for the next allowed one.
+            start_kwargs["can_dispatch"] = lambda: not _gateway_owns_cron()
+        elif _gateway_owns_cron():
+            # External providers take no per-tick gate: defer their start until the gateway is gone.
+            _log.info(
+                "Desktop cron scheduler waiting: live gateway owns cron on this HERMES_HOME; "
+                "the gateway ticks with live adapters (re-probing every %ds)", interval,
+            )
+            while _gateway_owns_cron():
+                if stop_event.wait(interval):
+                    return
+            if stop_event.is_set():
+                return  # shutdown landed during the final probe
 
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
     provider.start(stop_event, **start_kwargs)

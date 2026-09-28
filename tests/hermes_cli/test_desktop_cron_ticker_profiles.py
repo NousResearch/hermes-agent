@@ -114,7 +114,9 @@ def test_enumeration_failure_fails_open(monkeypatch, _providers):
 
     ws._start_desktop_cron_ticker(threading.Event(), interval=11)
 
-    assert builtin.start_kwargs == {"interval": 11}
+    # Single-store fallback (no profile_homes); its gateway gate is covered by the stand-down tests.
+    assert builtin.start_kwargs["interval"] == 11
+    assert "profile_homes" not in builtin.start_kwargs
 
 
 def test_external_provider_never_gets_profile_homes(monkeypatch, tmp_path):

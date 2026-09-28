@@ -40,9 +40,13 @@ describe('decideNvidiaEglFallback', () => {
 
   it('the known-broken set is closed, not a floor', () => {
     // Contract: only series with confirmed #40077-style reports belong in the
-    // set; adding one is a deliberate, evidence-backed change.
+    // set; adding one is a deliberate, evidence-backed change. Detection must
+    // follow set membership exactly, so no neighbouring series rides along.
     expect(NVIDIA_BROKEN_EGL_MAJORS.has(580)).toBe(true)
-    expect([...NVIDIA_BROKEN_EGL_MAJORS].every((m) => Number.isInteger(m))).toBe(true)
+
+    for (let major = 500; major <= 700; major++) {
+      expect(decideNvidiaEglFallback({ ...LINUX, driverMajor: major }).enable).toBe(NVIDIA_BROKEN_EGL_MAJORS.has(major))
+    }
   })
 
   it('stays off below the broken major and when detection finds no driver', () => {

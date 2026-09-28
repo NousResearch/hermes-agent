@@ -120,6 +120,70 @@ class TestPreUpdateBackupIntegrityGuard:
         assert "Pre-update snapshot" in out
         assert "integrity check FAILED" not in out
 
+    def test_live_connection_only_silences_the_accusation_not_the_detection(
+        self, hermes_home, capsys, monkeypatch
+    ):
+        """The updater's own state.db handle must not decide this verdict.
+
+        The guard reads the *live* home's state.db, so a SessionDB handle this process
+        opened makes the byte-level header probe unavailable. That costs the header
+        answer only: the size ceiling and ``PRAGMA integrity_check`` run either way, so
+        a healthy database stays quiet and a damaged one is still reported. Both halves
+        matter — reading the skipped probe as a verdict accuses the healthy file, and
+        reading it as indeterminate launders the damaged one.
+        """
+        from argparse import Namespace
+        from contextlib import closing
+
+        import hermes_cli.backup as backup_mod
+        from hermes_cli.sqlite_safe_read import connect_tracked
+        from hermes_cli.update_cmd import _run_pre_update_backup
+
+        db = hermes_home / "state.db"
+        # A state.db spanning many pages, so "wreck page 3" lands in the data, not the schema.
+        with closing(sqlite3.connect(db)) as conn:
+            conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, blob TEXT)")
+            conn.executemany(
+                "INSERT INTO messages (blob) VALUES (?)", [(f"{'x' * 900}{i}",) for i in range(200)])
+            conn.commit()
+        page_size = int.from_bytes(db.read_bytes()[16:18], "big")
+        assert db.stat().st_size > 4 * page_size, "fixture must span more pages than it wrecks"
+
+        live = connect_tracked(db)
+        try:
+            snap_id = _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        finally:
+            live.close()
+        out = capsys.readouterr().out
+        assert snap_id is not None
+        assert "integrity check FAILED" not in out, (
+            f"a live connection made a healthy state.db look corrupt: {out}"
+        )
+
+        # The same live handle over a genuinely damaged file must still be reported:
+        # wreck one interior page, leaving the header, after the snapshot completes so
+        # the snapshot itself stays a usable restore point.
+        real_create = backup_mod.create_quick_snapshot
+
+        def create_then_wreck(**kwargs):
+            snap_id = real_create(**kwargs)
+            raw = bytearray(db.read_bytes())
+            raw[3 * page_size:4 * page_size] = b"\xff" * page_size
+            db.write_bytes(bytes(raw))
+            assert db.read_bytes()[:16] == b"SQLite format 3\0", "the header must survive the wreck"
+            return snap_id
+
+        monkeypatch.setattr(backup_mod, "create_quick_snapshot", create_then_wreck)
+        live = connect_tracked(db)
+        try:
+            _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        finally:
+            live.close()
+        loud = capsys.readouterr().out
+        assert "integrity check FAILED" in loud, (
+            f"a live connection hid real corruption from the updater: {loud}"
+        )
+
     def test_zeroed_db_after_snapshot_is_loud(self, hermes_home, capsys, monkeypatch):
         """If state.db is zeroed right after the snapshot completes, the
         guard must warn loudly instead of proceeding silently (exit-0 mask)."""

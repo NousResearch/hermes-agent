@@ -138,6 +138,11 @@ def step_state_db_guard() -> dict:
     if not state_path.exists():
         return {"ok": True, "skipped": "no-state-db"}
     result = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
+    # valid is tri-state: only a definite False accuses the database. None means no check
+    # reached a verdict (the byte probe was unavailable and nothing deeper could judge),
+    # which is a skip, not a failed check.
+    if result.get("valid") is None:
+        return {"ok": True, "skipped": "integrity-indeterminate"}
     if result.get("valid"):
         return {"ok": True}
     message = result.get("message", "unknown error")

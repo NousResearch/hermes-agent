@@ -448,7 +448,12 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
         )
         return False
     restored = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
-    return bool(restored.get("valid"))
+    # `valid` is tri-state: only a definite False is a failed restore, so an unjudged byte
+    # probe never prints the corruption claim the file did not earn.
+    if restored.get("valid") is False:
+        print(f"  ✗ Restored copy failed integrity: {restored.get('message', 'unknown error')}")
+        return False
+    return True
 
 
 def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
@@ -460,8 +465,11 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
         if not state_path.exists():
             return
         ok = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
-        if ok.get("valid"):
-            logger.debug("Post-update state.db integrity OK (%s): %s", label, ok.get("message"))
+        # `valid` is tri-state: None means no check reached a verdict (a live connection made
+        # the byte probe unavailable and nothing deeper could judge), which is not a corruption
+        # verdict. Only a definite False may accuse the database.
+        if ok.get("valid") is not False:
+            logger.debug("Post-update state.db integrity not a failure (%s): %s", label, ok.get("message"))
             return
         print()
         print(f"⚠ state.db is corrupted after update ({label}): " + ok.get("message", "unknown error"))
@@ -473,13 +481,15 @@ def _verify_and_restore_one_state_db(home: Path, *, label: str) -> None:
             snap_state = snap_dir / "state.db"
             if not snap_state.exists():
                 continue
-            if not verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid"):
+            if verify_sqlite_integrity(snap_state, check_header=True, run_pragma=True).get("valid") is False:
                 continue
             try:
                 if _restore_state_db_from_snapshot(state_path, snap_state):
                     print(f"  ✓ Auto-restored from snapshot {snap_dir.name} ({label})")
                 else:
-                    print("  ✗ Auto-restore FAILED — restored copy also failed integrity")
+                    # Not always an integrity failure: the restore also refuses while another
+                    # process or this one still holds the db. The helper prints which.
+                    print("  ✗ Auto-restore did not complete — see the reason above")
             except OSError as exc:
                 print(f"  ✗ Auto-restore file copy failed: {exc}")
             return
@@ -669,13 +679,16 @@ def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
     _integrity = verify_sqlite_integrity(
         _src_path, check_header=True, run_pragma=True, max_bytes=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
     )
-    if _integrity.get("valid"):
+    # `valid` is tri-state and None is falsy: an unjudged check (the byte probe was unavailable
+    # behind a live connection and nothing deeper could judge) must not print the FAILED claim,
+    # or a healthy state.db gets accused on every update this process touches.
+    if _integrity.get("valid") is not False:
         return
     print(f"  ⚠ state.db integrity check FAILED after snapshot: {_integrity.get('message', 'unknown error')}")
     _snap_state = _quick_snapshot_root(get_hermes_home()) / snapshot_id / "state.db"
     if not _snap_state.exists():
         print("  ⚠ Snapshot does not contain state.db (was skipped or too large).")
-    elif verify_sqlite_integrity(_snap_state, check_header=True, run_pragma=True).get("valid"):
+    elif verify_sqlite_integrity(_snap_state, check_header=True, run_pragma=True).get("valid") is not False:
         print("  ✓ Snapshot copy is valid — continuing update.")
         print("    If state.db is lost after update it will be auto-restored.")
     else:

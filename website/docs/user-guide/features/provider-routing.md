@@ -127,6 +127,35 @@ with or without the `openrouter/` prefix). The override follows the model the ag
 own pins. Edit `config.yaml` directly for these keys: model ids contain dots, which `hermes config set`
 reads as path separators.
 
+## Picking it in the model picker
+
+You do not have to hand-write any of this for the model you are switching to. After you pick an
+OpenRouter model in `hermes model`, `hermes setup`, or `/model`, a **Providers** step lists every upstream
+provider OpenRouter may route that model to, with the numbers that decide the choice:
+
+```
+[ ] alibaba         $0.15/$0.60   1.0M  up  99.9%     78t/s  p50 2.0s
+[✓] deepseek        $0.15/$0.60   1.0M  up 100.0%    123t/s  p50 0.8s
+[ ] wafer           $0.20/$0.60   1.0M  up  98.7%     21t/s  p50 1.7s
+[ ] ⚠ siliconflow   $0.30/$1.20   1.0M  up  90.9%     67t/s  p50 1.3s
+```
+
+- `$/Mtok in/out`, context window, 30-minute uptime, tokens/sec and p50 latency come from
+  OpenRouter's own endpoint stats (throughput and latency need an OpenRouter API key configured).
+- `⚠` marks a provider that does not accept `tools`. Do not pin those: the agent cannot call tools
+  through them.
+- `SPACE` toggles a row, `ENTER` applies, `ESC` goes back. Confirming with nothing checked leaves
+  routing exactly as it is, and the trailing `clear` row drops the model's entry entirely — the only
+  way back to OpenRouter's default ranking for a model you already pinned.
+- The checked rows become `order` (a soft preference that keeps OpenRouter's fallbacks), never `only`:
+  a hard whitelist breaks the run when the pinned provider is down. A second step then sets `sort`
+  (`none`, `price`, `throughput`, `latency`).
+
+The step writes `provider_routing.models.<model>` only, so a pin for one model never leaks into the
+others, and keys it does not own (`only`, `ignore`, `require_parameters`, `data_collection`) are left
+untouched. It is skipped for non-OpenRouter providers and for models with a single upstream endpoint,
+where there is nothing to choose.
+
 ## Practical Examples
 
 ### Optimize for Cost

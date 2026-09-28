@@ -52,6 +52,7 @@ def test_prompt_toolkit_model_picker_defers_confirmation_off_key_handler(monkeyp
     )
     self_._close_model_picker = _bound(cli_mod.HermesCLI._close_model_picker, self_)
     self_._commit_picker_result = _bound(cli_mod.HermesCLI._commit_picker_result, self_)
+    self_._advance_after_model_pick = _bound(cli_mod.HermesCLI._advance_after_model_pick, self_)
     self_._confirm_and_apply_model_switch_result = (
         lambda *_args: captured.setdefault("ran_inline", True)
     )

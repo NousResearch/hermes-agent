@@ -95,6 +95,62 @@ def test_run_job_inline_teardown_records_drain(tmp_path, monkeypatch):
         release.set()
 
 
+def test_run_job_holder_teardown_emits_only_from_deferred_site(tmp_path, monkeypatch):
+    """The run_one_job path: a holder list defers the teardown to the caller, so run_job's
+    finally must stay SILENT — the agent's clients are still live when run_job returns, and
+    emitting there reports 'drained' early AND logs a second record when the real teardown
+    site emits (review blocker). Exactly one record, only after teardown."""
+    from tests.cron.test_cleanup_timeout import HangingSessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    release = threading.Event()
+    fake_db = HangingSessionDB(release)
+    job = {"id": "drain-holder", "name": "test", "prompt": "hello"}
+    holder: list = []
+    events: list = []
+
+    import cron.scheduler as scheduler_mod
+    real_teardown = scheduler_mod._teardown_cron_agent
+
+    def spy_teardown(agent, job_id, **kw):
+        events.append(job_id)
+        return real_teardown(agent, job_id, **kw)
+
+    try:
+        with patch("cron.scheduler._teardown_cron_agent", side_effect=spy_teardown), \
+             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state_registry.acquire", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=_RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, _final, error = scheduler_mod.run_job(
+                job, defer_agent_teardown=holder, execution_id="exec-holder-1")
+
+            assert success is True and error is None
+            # Agent was handed back, NOT torn down, and no drain record may exist yet —
+            # completion is unproven while delivery is still running.
+            assert events == []
+            assert holder and holder[0] is mock_agent
+            assert worker_drain.drain_status("exec-holder-1")["status"] == "unknown"
+
+            # Caller-side deferred teardown, exactly like run_one_job's _teardown_deferred:
+            # tear the agents down, THEN emit once for this attempt.
+            for deferred in holder:
+                scheduler_mod._teardown_cron_agent(deferred, job["id"])
+            worker_drain.record_drain("exec-holder-1", job_id=job["id"])
+
+        assert events == ["drain-holder"]
+        rows = [json.loads(ln) for ln in _drain_log(tmp_path).read_text().splitlines()]
+        assert [r["execution_id"] for r in rows if r["execution_id"] == "exec-holder-1"] == ["exec-holder-1"]
+    finally:
+        release.set()
+
+
 def test_unknown_ids_and_missing_log_read_as_unknown(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # No log file at all (fresh home / pre-signal install).

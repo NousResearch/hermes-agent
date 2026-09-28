@@ -2589,13 +2589,16 @@ def run_job(
                     defer_agent_teardown.append(agent)
             else:
                 _teardown_cron_agent(agent, job_id)
-            # Inline teardown just completed for THIS attempt: emit the durable
-            # drain signal. The deferred paths emit from their own teardown
-            # sites (run_one_job's post-delivery teardown and the detached
-            # worker's Future callback). Never emitted from the early-return
-            # gates above — those never opened state.db or built an agent.
-            from cron.worker_drain import record_drain
-            record_drain(execution_id or "", job_id=job_id)
+                # Inline teardown just completed for THIS attempt: emit the durable
+                # drain signal. The deferred paths emit from their own teardown
+                # sites (run_one_job's post-delivery teardown and the detached
+                # worker's Future callback) — emitting here on the holder path would
+                # report "drained" while the agent's clients are still live, and log
+                # a second record when the real site emits. Never emitted from the
+                # early-return gates above — those never opened state.db or built an
+                # agent.
+                from cron.worker_drain import record_drain
+                record_drain(execution_id or "", job_id=job_id)
 
 
 def _teardown_cron_agent(

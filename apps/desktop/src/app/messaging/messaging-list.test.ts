@@ -33,9 +33,26 @@ describe('messaging list query', () => {
     })
   })
 
+  it.each(['constructor', '__proto__'])('keeps inherited alias names as literal text: %s', value => {
+    expect(parseMessagingQuery(`status:${value}`)).toEqual({ sort: 'default', status: 'all', text: `status:${value}` })
+    expect(parseMessagingQuery(`sort:${value}`)).toEqual({ sort: 'default', status: 'all', text: `sort:${value}` })
+    expect(filterAndSortMessagingPlatforms(rows, `status:${value}`, label)).toEqual([])
+    expect(filterAndSortMessagingPlatforms(rows, `sort:${value}`, label)).toEqual([])
+  })
+
   it('updates one query operator without destroying free text', () => {
     expect(setMessagingQueryToken('discord status:error', 'status', 'connected')).toBe('discord status:connected')
     expect(setMessagingQueryToken('discord status:error sort:status', 'sort', 'default')).toBe('discord status:error')
+  })
+
+  it('preserves unknown sort and status tokens while changing or resetting a control', () => {
+    expect(setMessagingQueryToken('telegram sort:recent', 'sort', 'name-asc')).toBe('telegram sort:recent sort:name-asc')
+    expect(setMessagingQueryToken('telegram sort:recent sort:name-asc', 'sort', 'default')).toBe('telegram sort:recent')
+    expect(setMessagingQueryToken('telegram status:offline', 'status', 'connected')).toBe('telegram status:offline status:connected')
+    expect(setMessagingQueryToken('telegram status:offline status:connected', 'status', 'all')).toBe('telegram status:offline')
+
+    expect(filterAndSortMessagingPlatforms(rows, 'telegram sort:recent', label)).toEqual([])
+    expect(filterAndSortMessagingPlatforms(rows, 'telegram sort:recent sort:name-asc', label)).toEqual([])
   })
 
   it('classifies platform state into stable user-facing groups', () => {

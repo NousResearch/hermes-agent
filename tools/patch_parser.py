@@ -58,6 +58,14 @@ _OP_MARKERS: list[tuple[OperationType, re.Pattern]] = [
 _HINT_RE = re.compile(r'@@\s*(.+?)\s*@@')
 # Validation-overlay content of a binary file: present, but with no text to edit.
 _BINARY = object()
+_BINARY_TEXT_ERROR = "binary file, cannot be edited as text"
+
+
+def _text_read_error(r: Any) -> Optional[str]:
+    """Why a raw read has no editable text, or None. An image read is binary WITHOUT an
+    error (``read_file_raw`` short-circuits before byte detection), so ``error`` alone
+    would hand back ``""`` as the file's text and an Update would overwrite the image."""
+    return r.error or (_BINARY_TEXT_ERROR if getattr(r, "is_binary", False) else None)
 
 
 def parse_v4a_patch(patch_content: str) -> tuple[list[PatchOperation], Optional[str]]:
@@ -201,13 +209,14 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
     def _read(path: str) -> tuple[Optional[str], Optional[str]]:
         key = _overlay_key(path, file_ops)
         if pending_content.get(key) is _BINARY:
-            return None, "binary file, cannot be edited as text"
+            return None, _BINARY_TEXT_ERROR
         if key in pending_content:
             return pending_content[key], None
         if key in removed_paths:
             return None, "file not found"
         r = file_ops.read_file_raw(path)
-        return (None, r.error) if r.error else (r.content, None)
+        err = _text_read_error(r)
+        return (None, err) if err else (r.content, None)
 
     def _source(path: str, missing: str, *, past_cap_ok: bool = False) -> tuple[Any, Optional[str]]:
         """``(content, error)`` of a Delete/Move source. The text reader refuses a binary file,
@@ -220,10 +229,10 @@ def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> lis
         if key in removed_paths:
             return None, missing
         r = file_ops.read_file_raw(path)
-        if not r.error or (past_cap_ok and getattr(r, "_too_large", False)):
-            return r.content, None
         if getattr(r, "is_binary", False):
             return _BINARY, None
+        if not r.error or (past_cap_ok and getattr(r, "_too_large", False)):
+            return r.content, None
         return None, missing if getattr(r, "not_found", False) else r.error
 
     def _occupied(path: str) -> Optional[str]:
@@ -444,7 +453,7 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> ApplyResult:
 def _apply_delete(op: PatchOperation, file_ops: Any) -> ApplyResult:
     """Delete a file, producing a real unified diff of the removed content."""
     read_result = file_ops.read_file_raw(op.file_path)  # re-read guards validate/apply races
-    binary = bool(read_result.error) and getattr(read_result, "is_binary", False)
+    binary = getattr(read_result, "is_binary", False)
     too_large = getattr(read_result, "_too_large", False)  # exists, just past the read cap: no diff
     if read_result.error and not (binary or too_large):
         return _fail(f"Cannot delete {op.file_path}: file not found")
@@ -487,8 +496,9 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
     """Apply each hunk via fuzzy replace, then write once."""
     from tools.fuzzy_match import boundary_note, fuzzy_find_and_replace, is_already_applied
     read_result = file_ops.read_file_raw(op.file_path)  # raw: no line numbers / truncation
-    if read_result.error:
-        return _fail(f"Cannot read file: {read_result.error}")
+    read_error = _text_read_error(read_result)
+    if read_error:
+        return _fail(f"Cannot read file: {read_error}")
     current_content = new_content = read_result.content
     notes: list[str] = []  # escape-drift corrections, appended by fuzzy_find_and_replace
     strategies: list[str] = []  # the fuzzy strategies that located the hunks

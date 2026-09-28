@@ -315,21 +315,22 @@ def test_cli_undo_counts_friction_only_when_something_was_undone(direct_runtime,
 
 
 def test_context_peak_is_one_row_per_conversation_across_compression_rotation(direct_runtime, tmp_path):
-    """Compression rotates the session id (s1 -> s1c) under one published conversation root: the
+    """Compression hands the session id off (s1 -> s1c): the
     conversation reports its fullest segment once, whatever order the segments close in. A
     delegated child shares the root but is its own (unreported) conversation and holds nothing open."""
     token = set_conversation_context("s1")
     try:
         _turn("s1", "t1", "openrouter", PUBLIC, prompt_tokens=176_000)
         _turn("child", "c1", "openrouter", PUBLIC, prompt_tokens=199_000, parent_session_id="s1")
+        relay_shared_metrics.rotate_segment("s1", "s1c")
         _turn("s1c", "t2", "openrouter", PUBLIC, prompt_tokens=30_000)
     finally:
         reset_conversation_context(token)
     lifecycle.finalize_session(session_id="child")
-    lifecycle.finalize_session(session_id="s1c")
+    lifecycle.finalize_session(session_id="s1")
     _flush()
     assert not _stored_values(tmp_path, "hermes.context_peak.count"), "emitted before the lineage closed"
-    lifecycle.finalize_session(session_id="s1")
+    lifecycle.finalize_session(session_id="s1c")
     _flush()
 
     assert _stored_values(tmp_path, "hermes.context_peak.count") == [

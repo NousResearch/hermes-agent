@@ -97,19 +97,21 @@ def test_collection_off_writes_no_engagement_state(direct_runtime, tmp_path, clo
 
 
 def test_a_compressed_conversation_is_one_session_row_with_its_whole_volume(direct_runtime, tmp_path):
-    """Legacy rotating compaction continues s1 as s1c under one conversation root: one session row,
-    turns / API calls / tool calls / messages summed over both segments, whatever the close order."""
+    """Compression hands s1 off to s1c (the one seam that continues a conversation under a new id): one
+    session row, turns / API calls / tool calls / messages summed over both segments, whatever order
+    the surface closes the two ids in."""
     token = set_conversation_context("s1")
     try:
         _turn("s1", "t1", tools=2)
         _turn("s1", "t2", tools=1)
+        relay_shared_metrics.rotate_segment("s1", "s1c")
         _turn("s1c", "t3", tools=0)
     finally:
         reset_conversation_context(token)
-    lifecycle.finalize_session(session_id="s1c")
+    lifecycle.finalize_session(session_id="s1")
     _flush()
     assert not _stored_values(tmp_path, "hermes.session.count"), "a segment reported on its own"
-    lifecycle.finalize_session(session_id="s1")
+    lifecycle.finalize_session(session_id="s1c")
     _flush()
 
     [(row, value)] = _stored_values(tmp_path, "hermes.session.count")
@@ -118,6 +120,77 @@ def test_a_compressed_conversation_is_one_session_row_with_its_whole_volume(dire
                                 "message_count_bucket")} == {
         "turn_count_bucket": "3_to_5", "model_call_count_bucket": "3_to_5",
         "tool_call_count_bucket": "3_to_5", "message_count_bucket": "6_to_10"}
+
+
+def test_only_compression_joins_segments_and_the_retired_segment_closes_at_hand_off(direct_runtime, tmp_path):
+    """A reset / /new / /branch child shares the conversation root (the Portal attribution id) but is a
+    new conversation: compressed g1 -> g1c, then two resets give 3 rows by the time the last one closes,
+    with nothing left open. A compression mid-turn closes the old segment when that turn ends."""
+    token = set_conversation_context("g1")
+    try:
+        _turn("g1", "t1", platform="telegram")
+        relay_shared_metrics.rotate_segment("g1", "g1c")
+        _turn("g1c", "t2", platform="telegram")
+        relay_shared_metrics.close_session_run("g1c")
+        _turn("g2", "t3", platform="telegram")
+        relay_shared_metrics.close_session_run("g2")
+        _turn("g3", "t4", platform="telegram")
+        relay_shared_metrics.close_session_run("g3")
+        lifecycle.invoke_hook("pre_llm_call", session_id="m1", task_id="t5", platform="cli")
+        relay_shared_metrics.rotate_segment("m1", "m1c")
+        lifecycle.finalize_session(session_id="m1c")  # tip closed while the compression turn still runs
+        relay_shared_metrics.finish_task_run(session_id="m1", task_id="t5", platform="cli", result={"completed": True})
+    finally:
+        reset_conversation_context(token)
+    _flush()
+    rows = sorted((d["platform"], d["turn_count_bucket"], v) for d, v in _stored_values(tmp_path, "hermes.session.count"))
+    assert rows == [("none", "1", 1), ("telegram", "1", 2), ("telegram", "2", 1)]
+    runtime = next(iter(relay_shared_metrics._RUNTIMES.values()))
+    assert not runtime._lineages and not runtime._lineage_of and not runtime._sessions
+
+
+def test_compression_commit_hands_the_segment_off(monkeypatch):
+    """The committed rotation (and a stale agent adopting the live tip) is the hand-off seam."""
+    from types import SimpleNamespace
+
+    from agent import conversation_compression
+
+    calls = []
+    monkeypatch.setattr(relay_shared_metrics, "rotate_segment", lambda old, new: calls.append((old, new)))
+    agent = SimpleNamespace(context_compressor=SimpleNamespace(), platform="cli", _gateway_session_key=None)
+    conversation_compression._notify_context_engine_compression_complete(agent, new_session_id="s1c", old_session_id="s1")
+    assert calls == [("s1", "s1c")]
+
+
+def test_switch_and_undo_right_after_a_rotation_reach_the_conversation(direct_runtime, tmp_path):
+    """/model or /undo on the rotated-to id before it served a turn still sees the conversation."""
+    from hermes_cli.observability.shared_metrics_events import record_model_switch
+
+    _turn("s1", "t1")
+    _turn("s1", "t2")
+    relay_shared_metrics.rotate_segment("s1", "s1c")
+    relay_shared_metrics.record_session_friction("undo", "s1c", {"provider": "openrouter", "model": PUBLIC})
+    record_model_switch(from_provider="openrouter", to_provider="openrouter", surface="cli",
+                        from_model=PUBLIC, session_id="s1c")
+    _flush()
+    assert _stored_values(tmp_path, "hermes.model_switch_after.count") == [
+        ({"model": PUBLIC, "provider": "openrouter", "turns_before_switch_bucket": "2_to_3"}, 1)]
+    [(wasted, _)] = _stored_values(tmp_path, "hermes.wasted_tokens.count")
+    assert wasted["tokens_bucket"] != "unknown"
+
+
+def test_a_background_review_fork_on_the_session_id_adds_no_session_volume(direct_runtime, tmp_path):
+    """Review forks reuse the parent's session id and never fire pre_llm_call: not the user's turns."""
+    _turn("s1", "t1")
+    relay_shared_metrics.start_task_run(session_id="s1", task_id="review", platform="cli")
+    base = {"session_id": "s1", "task_id": "review", "provider": "openrouter", "model": PUBLIC}
+    lifecycle.invoke_hook("pre_api_request", **base, api_request_id="rv-r")
+    lifecycle.invoke_hook("post_api_request", **base, api_request_id="rv-r", usage={"prompt_tokens": 9})
+    relay_shared_metrics.finish_task_run(session_id="s1", task_id="review", platform="cli", result={"completed": True})
+    lifecycle.finalize_session(session_id="s1")
+    _flush()
+    [(row, _)] = _stored_values(tmp_path, "hermes.session.count")
+    assert (row["turn_count_bucket"], row["model_call_count_bucket"], row["message_count_bucket"]) == ("1", "1", "2")
 
 
 def test_turns_before_switch_count_the_model_left_across_rotation(direct_runtime, tmp_path):

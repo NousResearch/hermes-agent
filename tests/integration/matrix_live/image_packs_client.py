@@ -114,6 +114,11 @@ async def prepare(
         await client.close()
 
 
+async def enable_encryption(room: str, bot: str, device: str) -> None:
+    client = await open_room(room, bot, device, encrypted=True)
+    await client.close()
+
+
 async def ask(
     room: str,
     bot: str,
@@ -142,6 +147,7 @@ async def ask(
             },
         )
         sticker = None
+        observed = []
         while True:
             response = await client.sync(timeout=250)
             assert isinstance(response, SyncResponse), response
@@ -153,6 +159,13 @@ async def ask(
                 if event.sender != bot:
                     continue
                 raw = event.source
+                observed.append({
+                    "event_id": event.event_id,
+                    "type": raw.get("type"),
+                    "decrypted": bool(event.decrypted),
+                    "body": raw.get("content", {}).get("body"),
+                    "relation": raw.get("content", {}).get("m.relates_to"),
+                })
                 if raw.get("type") == "m.sticker":
                     assert bool(event.decrypted) is encrypted
                     content = raw["content"]
@@ -178,7 +191,10 @@ async def ask(
                     assert bool(event.decrypted) is encrypted
                     done = True
             if done:
-                assert (sticker is not None) is (sticker_body is not None)
+                assert (sticker is not None) is (sticker_body is not None), {
+                    "expected_sticker": sticker_body,
+                    "observed_bot_events": observed[-20:],
+                }
                 return {"question": question, "sticker": sticker}
     finally:
         await client.close()

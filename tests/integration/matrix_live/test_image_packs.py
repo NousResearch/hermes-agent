@@ -17,17 +17,18 @@ from tests.integration.matrix_live.conftest import (
 
 
 @pytest.mark.parametrize("gateway", ["image-packs"], indirect=True)
-@pytest.mark.parametrize("encrypted", [False, True])
+@pytest.mark.parametrize("transport", ["plain", "encrypted", "transition"])
 def test_current_bot_packs_send_native_sticker_with_thread_and_reply_context(
     gateway: LiveGateway,
     live_room: LiveRoom,
     linux_nio_observer: LinuxNioObserver,
-    encrypted: bool,
+    transport: str,
     record_property: Callable[[str, object], None],
 ) -> None:
     started = time.monotonic()
+    encrypted = transport == "encrypted"
     prefix = (
-        "import asyncio, json\nfrom image_packs_client import prepare, ask, reply_to_sticker\n"
+        "import asyncio, json\nfrom image_packs_client import prepare, ask, reply_to_sticker, enable_encryption\n"
         f"ROOM={live_room.room_id!r}\nBOT={live_room.bot.user_id!r}\nDEVICE={live_room.bot.device_id!r}\n"
         f"BOT_TOKEN={live_room.bot.access_token!r}\nENCRYPTED={encrypted!r}\n"
     )
@@ -114,6 +115,12 @@ def test_current_bot_packs_send_native_sticker_with_thread_and_reply_context(
             if pack["source"] == "account_reference"
             and pack["event_type"] == "m.room.image_pack"
         )
+        if transport == "transition":
+            linux_nio_observer.run_python(
+                prefix
+                + "asyncio.run(asyncio.wait_for(enable_encryption(ROOM, BOT, DEVICE), timeout=15))\n"
+            )
+            prefix += "ENCRYPTED=True\n"
         gateway.model.push(
             ToolCall(
                 "tool_call",
@@ -164,5 +171,28 @@ def test_current_bot_packs_send_native_sticker_with_thread_and_reply_context(
         inbound = requests[-1]["messages"][-1]["content"]
         assert "Referenced fox.png" in json.dumps(inbound)
         assert "Requester private sentinel" not in json.dumps(requests)
+    except Exception as exc:
+        requests = gateway.model.main_requests()
+        latest_tools = [
+            message
+            for message in (requests[-1]["messages"] if requests else [])
+            if message["role"] == "tool"
+        ]
+        gateway_output = (
+            gateway.container
+            .get_wrapped_container()
+            .logs()
+            .decode(errors="replace")[-6000:]
+        )
+        gateway_log = gateway.container.exec([
+            "tail",
+            "-c",
+            "6000",
+            "/opt/data/logs/gateway.log",
+        ]).output.decode(errors="replace")
+        raise AssertionError(
+            f"{exc}\nLatest model tool outputs: {latest_tools!r}\n"
+            f"Gateway log tail:\n{gateway_log}\nGateway output tail:\n{gateway_output}"
+        ) from exc
     finally:
         record_property("body_seconds", round(time.monotonic() - started, 3))

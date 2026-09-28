@@ -344,9 +344,9 @@ class RaftAdapter(BasePlatformAdapter):
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._host, self._port)
         await site.start()
-        bound_port = self._port
-        if bound_port == 0 and site._server and site._server.sockets:
-            bound_port = site._server.sockets[0].getsockname()[1]
+        from gateway.platforms.shared_ingress import bound_listener_port, bound_site_endpoints
+        self._bound_listener_endpoints = bound_site_endpoints(site, self._host, self._port)
+        bound_port = bound_listener_port(self._bound_listener_endpoints, self._port)
         self._mark_connected()
         with _ACTIVE_ADAPTERS_LOCK:
             _ACTIVE_ADAPTERS.add(self)

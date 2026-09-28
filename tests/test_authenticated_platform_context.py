@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import inspect
 import json
 
 import pytest
 
-from gateway.platform_context import AuthenticatedPlatformContext
+from gateway.platform_context import (
+    AuthenticatedPlatformContext,
+    authenticated_platform_context_scope,
+    get_authenticated_platform_context,
+)
 from model_tools import handle_function_call
 from tools.registry import registry
 
@@ -18,7 +24,7 @@ def registered_tool():
     registered = []
 
     def register(handler):
-        registry.register(name, "test", _SCHEMA, handler)
+        registry.register(name, "test", _SCHEMA, handler, is_async=inspect.iscoroutinefunction(handler))
         registered.append(name)
         return handler
 
@@ -79,3 +85,75 @@ def test_context_is_immutable():
 
     with pytest.raises(AttributeError):
         context.user_id = "forged"
+
+
+def test_context_scope_resets_after_exception_and_does_not_use_model_args():
+    trusted = AuthenticatedPlatformContext("telegram", "bot-1", "user-1", "chat-1")
+    assert get_authenticated_platform_context() is None
+    with pytest.raises(RuntimeError):
+        with authenticated_platform_context_scope(trusted):
+            assert get_authenticated_platform_context() is trusted
+            raise RuntimeError("boom")
+    assert get_authenticated_platform_context() is None
+
+
+def test_direct_registry_and_executor_dispatch_receive_context(registered_tool):
+    seen = []
+
+    @registered_tool
+    def handler(args, *, authenticated_platform_context):
+        seen.append(authenticated_platform_context)
+        return json.dumps({"ok": True})
+
+    trusted = AuthenticatedPlatformContext("telegram", "bot-1", "user-1", "chat-1")
+    with authenticated_platform_context_scope(trusted):
+        assert json.loads(registry.dispatch("_test_authenticated_platform_context", {})) == {"ok": True}
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            # The production executor wrapper uses copy_context; this assertion covers the
+            # ContextVar contract independently of tool arguments.
+            import contextvars
+            assert pool.submit(contextvars.copy_context().run, registry.dispatch,
+                              "_test_authenticated_platform_context", {}).result()
+    assert seen == [trusted, trusted]
+
+
+def test_async_registry_dispatch_receives_context(registered_tool):
+    seen = []
+
+    @registered_tool
+    async def handler(args, *, authenticated_platform_context):
+        seen.append(authenticated_platform_context)
+        return json.dumps({"ok": True})
+
+    trusted = AuthenticatedPlatformContext("telegram", "bot-1", "user-1", "chat-1")
+    with authenticated_platform_context_scope(trusted):
+        assert json.loads(registry.dispatch("_test_authenticated_platform_context", {})) == {"ok": True}
+    assert seen == [trusted]
+
+
+def test_tool_call_recursion_keeps_context_out_of_model_arguments(monkeypatch, registered_tool):
+    seen = []
+
+    @registered_tool
+    def handler(args, *, authenticated_platform_context):
+        seen.append((args, authenticated_platform_context))
+        return json.dumps({"ok": True})
+
+    import model_tools
+    bridge_calls = 0
+
+    def bridge(*args, **kwargs):
+        nonlocal bridge_calls
+        bridge_calls += 1
+        return (None, ("_test_authenticated_platform_context", {"value": "model"})) if bridge_calls == 1 else None
+
+    monkeypatch.setattr(
+        model_tools,
+        "_dispatch_bridge_tool",
+        bridge,
+    )
+    trusted = AuthenticatedPlatformContext("telegram", "bot-1", "user-1", "chat-1")
+    with authenticated_platform_context_scope(trusted):
+        result = model_tools.handle_function_call("tool_call", {"calls": []})
+    assert json.loads(result) == {"ok": True}
+    assert seen == [({"value": "model"}, trusted)]

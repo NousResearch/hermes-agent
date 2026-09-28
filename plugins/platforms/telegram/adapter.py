@@ -2928,7 +2928,21 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def handle_message(self, event: MessageEvent) -> None:
         self._accept_update()
-        await super().handle_message(event)
+        source = getattr(event, "source", None)
+        context = None
+        if source is not None and getattr(source, "platform", None) == Platform.TELEGRAM:
+            from gateway.platform_context import AuthenticatedPlatformContext, authenticated_platform_context_scope
+            context = AuthenticatedPlatformContext(
+                platform="telegram",
+                account_id=self._telegram_account_id(),
+                user_id=str(getattr(source, "user_id", "") or ""),
+                chat_id=str(getattr(source, "chat_id", "") or ""),
+                thread_id=(str(source.thread_id) if getattr(source, "thread_id", None) is not None else None),
+            )
+        else:
+            from gateway.platform_context import authenticated_platform_context_scope
+        with authenticated_platform_context_scope(context):
+            await super().handle_message(event)
 
     def _register_handlers(self, app) -> None:
         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""

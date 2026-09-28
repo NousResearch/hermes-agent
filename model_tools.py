@@ -839,7 +839,10 @@ def _execute_tool(function_name: str, function_args: Dict[str, Any], original_ar
     def _dispatch(next_args: Dict[str, Any]) -> Any:
         from tools.connectors import dispatch_connector_call, is_connector_name
         if is_connector_name(function_name):
-            return dispatch_connector_call(function_name, next_args, ids.tool_call_id)
+            return dispatch_connector_call(
+                function_name, next_args, ids.tool_call_id,
+                authenticated_platform_context=authenticated_platform_context,
+            )
         return registry.dispatch(function_name, next_args, **dispatch_kwargs)
 
     with _approval_observability(ids):
@@ -891,6 +894,12 @@ def handle_function_call(
     it (single-fire contract). enabled/disabled_toolsets scope the Tool Search
     bridge catalog to this session's grant (None = unrestricted).
     """
+    if authenticated_platform_context is None:
+        try:
+            from gateway.platform_context import get_authenticated_platform_context
+            authenticated_platform_context = get_authenticated_platform_context()
+        except Exception:
+            authenticated_platform_context = None
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
@@ -919,6 +928,7 @@ def handle_function_call(
                 underlying[1]["calls"], ids, user_task=user_task,
                 enabled_tools=enabled_tools, middleware_trace=trace,
                 enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+                authenticated_platform_context=authenticated_platform_context,
             ), duration_ms=_elapsed_ms(start))
         return handle_function_call(
             *underlying, **asdict(ids), user_task=user_task, enabled_tools=enabled_tools,

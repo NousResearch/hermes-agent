@@ -100,15 +100,14 @@ describe('the current row effort', () => {
 })
 
 describe('the reasoning-effort badge (#51833)', () => {
-  it('renders the effort as its own bordered chip beside the name, never inside it', async () => {
+  it('renders the effort as its own Badge chip beside the name, never inside it', async () => {
     renderMenu({ effort: 'high', model: 'gemini-2.5-flash', provider: 'google' })
 
-    // The effort chip renders exactly "High" in its own element…
+    // The effort chip renders exactly "High" in its own Badge…
     const badge = await screen.findByText('High')
 
     expect(badge.textContent).toBe('High')
-    expect(badge.className).toContain('border')
-    expect(badge.className).toContain('rounded-sm')
+    expect(badge.getAttribute('data-slot')).toBe('badge')
 
     // …as a SIBLING of the truncating model-name span, so it can never read as
     // part of a differently-named model. The `-flash` variant tag is its own

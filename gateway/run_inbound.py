@@ -32,9 +32,9 @@ from gateway.session import (
     SessionSource, build_session_context, is_shared_multi_user_session,
     neutralize_untrusted_inline_text,
 )
+from gateway.bang_shell import is_bang_command, parse_bang_command, USAGE_HINT, run_bang_command
 from gateway.turn_lease import TurnLeaseTimeoutError
 from typing import Any, Dict, List, Optional, Tuple
-
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
     from gateway.run_turn_runner import TurnRunner  # noqa: F401
@@ -644,6 +644,16 @@ class GatewayInboundMixin:
             logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
             self._hm_merge_pending_for_source(source, _quick_key, event)
             return True, None
+
+        # Bang shell on the running-agent fast-path: ``!<command>`` runs directly without
+        # interrupting the agent, never touches the turn, costs zero tokens.
+        if is_bang_command(event.text):
+            _bang_cmd = parse_bang_command(event.text)
+            if _bang_cmd:
+                _result = await run_bang_command(_bang_cmd)
+                return True, _result if _result else ""
+            return True, USAGE_HINT
+
         return False, None
 
     def _hm_busy_telegram_grace_queue(
@@ -1339,6 +1349,16 @@ class GatewayInboundMixin:
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return _reply
+
+        # Bang shell: ``!<command>`` runs directly, never touches the agent, costs zero
+        # tokens and cannot perturb role alternation. Checked here (idle path) and in
+        # ``_hm_busy_slash_or_photo`` (running-agent path) so it short-circuits both.
+        if not is_internal and is_bang_command(event.text):
+            _bang_cmd = parse_bang_command(event.text)
+            if _bang_cmd:
+                _result = await run_bang_command(_bang_cmd)
+                return _result if _result else ""
+            return USAGE_HINT
 
         # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
         self._hm_evict_idle_stale_agent(_quick_key)

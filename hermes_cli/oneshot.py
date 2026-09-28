@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from gateway.session_context import declare_stateless_channel
+from hermes_cli.bang_shell import is_bang_command, parse_bang_command, run_bang_command, USAGE_HINT, resolve_bang_cwd
 from hermes_cli.fallback_config import get_fallback_chain
 
 _ALL_TOOLSETS = {"all", "*"}
@@ -290,6 +291,22 @@ def run_oneshot(
     # stdout at the end.
     real_stdout = sys.stdout
     real_stderr = sys.stderr
+
+    # Bang shell: ``!<command>`` runs directly, never touches the agent, costs zero tokens.
+    # Reuse the CLI's bang shell module (sync execution, sanitized env, approval gate).
+    if is_bang_command(prompt):
+        _bang_cmd = parse_bang_command(prompt)
+        if not _bang_cmd:
+            real_stdout.write(USAGE_HINT + "\n")
+            real_stdout.flush()
+            return 0
+        _exit_code = run_bang_command(
+            _bang_cmd,
+            cwd=resolve_bang_cwd(None),
+            writer=lambda line: real_stdout.write(line + "\n"),
+        )
+        real_stdout.flush()
+        return 0 if _exit_code == 0 else _exit_code
 
     response: Optional[str] = None
     result: dict = {}

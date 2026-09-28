@@ -169,11 +169,14 @@ class TestTrustedPeers:
         monkeypatch.delenv("A2A_ALLOW_ALL_USERS", raising=False)
         assert security.A2ASecurityContext.capture().is_trusted_peer("ip:127.0.0.1") is True
 
-    def test_no_allowlist_trusts_authenticated(self, monkeypatch):
+    def test_no_allowlist_fails_closed_when_exposed(self, monkeypatch, caplog):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")
         monkeypatch.delenv("A2A_ALLOW_ALL_USERS", raising=False)
         monkeypatch.delenv("A2A_TRUSTED_PEERS", raising=False)
-        assert security.A2ASecurityContext.capture().is_trusted_peer("alice") is True
+        with caplog.at_level("ERROR", logger="plugins.platforms.a2a.security"):
+            assert security.A2ASecurityContext.capture().is_trusted_peer("alice") is False
+            assert security.A2ASecurityContext.capture().is_trusted_peer("ip:1.2.3.4") is False
+        assert "A2A_TRUSTED_PEERS" in caplog.text
 
     def test_allowlist_restricts(self, monkeypatch):
         monkeypatch.setenv("A2A_BEARER_TOKEN", "secret")

@@ -411,9 +411,16 @@ async def search_sessions(
                 for tok in re.findall(r'"[^"]*"|\S+', q.strip()))
             # Over-fetch so lineage dedup can still surface `limit` distinct
             # conversations when several hits collapse onto one root.
+            # The sidebar is a person-facing surface: role_filter keeps FTS
+            # hits on user/assistant text only. The index also carries tool
+            # rows (a bounded prefix of each output, for the agent's own
+            # session_search tool) — unfiltered they surface raw JSON,
+            # file paths, and search patterns as "sessions" (#126743).
+            # Same default the discovery tool uses.
             matches = db.search_messages(
                 query=prefix_query, source_filter=include_sources,
                 exclude_sources=exclude_list or None, limit=max(safe_limit * 5, 50),
+                role_filter=["user", "assistant"],
                 fields=("session_id", "role", "snippet", "source", "model", "session_started"))
             for m in matches:
                 if len(seen) >= safe_limit:

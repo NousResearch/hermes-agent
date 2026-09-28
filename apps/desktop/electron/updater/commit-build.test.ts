@@ -42,3 +42,27 @@ describe('one-commit artifacts', (): void => {
     expect(await strategy.apply()).not.toHaveProperty('command')
   })
 })
+
+describe('a packaged Linux install (.deb / AppImage / rpm)', (): void => {
+  // #86987: the .deb lands via dpkg/apt, so the package manager owns the
+  // update loop. The stamp declares 'external' (write-build-stamp.mjs) and
+  // the strategy must never offer an in-place swap the package cannot
+  // honor — check reports the package owner, apply stays manual-only.
+  it('declares an external owner and never self-updates in place', async (): Promise<void> => {
+    const stamp: InstallStamp = { payload: 'bundled', updateMechanism: 'external' } as InstallStamp
+    expect(resolveUpdaterMechanism({ platform: 'linux', updateMechanism: stamp.updateMechanism })).toBe('external')
+
+    const strategy: UpdaterStrategy = new ExternalStrategy(stamp)
+    const status = await strategy.check({ force: true })
+    expect(status).toMatchObject({
+      supported: false,
+      mechanism: 'external',
+      reason: 'bundled-not-appinstaller'
+    })
+
+    const apply = await strategy.apply()
+    expect(apply).toMatchObject({ ok: true, manual: true, mechanism: 'external' })
+    // No handed-off relaunch: the running package is never swapped by the app.
+    expect(apply.handedOff).not.toBe(true)
+  })
+})

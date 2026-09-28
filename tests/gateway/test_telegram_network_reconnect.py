@@ -9,6 +9,7 @@ rather than silently leaving polling dead.
 import ast
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1081,3 +1082,126 @@ async def test_drain_rebuild_does_not_block_loop_or_leak_cleanup_task(monkeypatc
         "stale-client cleanup must finish or abandon its own wedged close "
         "without accumulating a background task"
     )
+
+
+@pytest.mark.asyncio
+async def test_polling_bootstrap_network_error_disarms_ptb(monkeypatch):
+    """Network errors in polling startup must disarm PTB and schedule recovery."""
+    adapter = _make_adapter()
+    disarmed = False
+
+    def _fake_disarm():
+        nonlocal disarmed
+        disarmed = True
+
+    monkeypatch.setattr(adapter, "_disarm_ptb_retry_loop", _fake_disarm)
+    monkeypatch.setattr(adapter, "_handle_polling_network_error", AsyncMock())
+
+    # _looks_like_network_error is type-based, never message-based, so a bare
+    # Exception("httpx.ConnectError: ..") is re-raised instead of recovering.
+    # Simplifying this to a plain Exception silently guts the test.
+    net_error = type("NetworkError", (Exception,), {})(
+        "httpx.ConnectError: All connection attempts failed"
+    )
+    mock_updater = MagicMock()
+    mock_updater.start_polling = AsyncMock(side_effect=net_error)
+    mock_app = MagicMock()
+    mock_app.updater = mock_updater
+    adapter._app = mock_app
+
+    result = await adapter._start_polling_resilient(
+        drop_pending_updates=True,
+        error_callback=lambda error: None,
+        require_progress=False,
+    )
+
+    assert result is False
+    assert disarmed is True
+    pending = [t for t in adapter._background_tasks if not t.done()]
+    assert pending, "expected background network recovery task"
+    for task in pending:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_polling_network_error_callback_disarms_before_scheduling(monkeypatch):
+    """The live polling error_callback disarms PTB synchronously on a network
+    error, then schedules recovery — proving the disarm is wired into the
+    network branch of the callback, not just the helper."""
+    adapter = _make_adapter()
+    adapter.set_fatal_error_handler(AsyncMock())
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    captured = {}
+
+    async def fake_start_polling(**kwargs):
+        captured["error_callback"] = kwargs["error_callback"]
+        # Cold connect requires getUpdates readiness (#67498).
+        adapter._record_polling_progress(adapter._polling_generation)
+
+    stop_event = asyncio.Event()
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=fake_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    setattr(updater, "_Updater__polling_task_stop_event", stop_event)
+    bot = SimpleNamespace(set_my_commands=AsyncMock(), delete_webhook=AsyncMock())
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+    assert ok is True
+
+    net_error = type("NetworkError", (Exception,), {})(
+        "httpx.ConnectError: All connection attempts failed"
+    )
+    assert not stop_event.is_set()
+    captured["error_callback"](net_error)
+    # Synchronous on return — before the scheduled recovery task can run.
+    assert stop_event.is_set(), "callback must disarm PTB synchronously"
+    assert adapter._polling_error_task is not None, "recovery task must be scheduled"
+
+    for _ in range(10):
+        await asyncio.sleep(0)
+    for task in [t for t in adapter._background_tasks if not t.done()]:
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    heartbeat = getattr(adapter, "_polling_heartbeat_task", None)
+    if heartbeat and not heartbeat.done():
+        heartbeat.cancel()
+        try:
+            await heartbeat
+        except (asyncio.CancelledError, Exception):
+            pass
+

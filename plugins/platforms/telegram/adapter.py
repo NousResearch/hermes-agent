@@ -2861,6 +2861,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
         self._send_path_degraded = True
+        self._disarm_ptb_retry_loop()
         logger.warning(
             "[%s] Telegram polling degraded (%s); gateway stays alive and will retry. Error: %s",
             self.name, reason, _redact_telegram_error_text(error),
@@ -4970,12 +4971,18 @@ class TelegramAdapter(BasePlatformAdapter):
                         self._background_tasks.add(self._polling_error_task)
                         self._polling_error_task.add_done_callback(self._background_tasks.discard)
                     elif self._looks_like_network_error(error):
-                        logger.warning("[%s] Telegram network _redact_telegram_error_text(error), scheduling reconnect: %s", self.name, error)
+                        # Synchronously stop PTB's internal network_retry_loop
+                        # BEFORE scheduling async network recovery so PTB does not
+                        # keep retrying concurrently and multiply recovery tasks.
+                        self._disarm_ptb_retry_loop()
+                        safe_error = _redact_telegram_error_text(error)
+                        logger.warning("[%s] Telegram network error, scheduling reconnect: %s", self.name, safe_error)
                         self._polling_error_task = loop.create_task(self._handle_polling_network_error(error))
                         self._background_tasks.add(self._polling_error_task)
                         self._polling_error_task.add_done_callback(self._background_tasks.discard)
                     else:
-                        logger.error("[%s] Telegram polling _redact_telegram_error_text(error): %s", self.name, error, exc_info=True)
+                        safe_error = _redact_telegram_error_text(error)
+                        logger.error("[%s] Telegram polling error: %s", self.name, safe_error, exc_info=True)
 
                 # Store reference for retry use in _handle_polling_conflict
                 self._polling_error_callback_ref = _polling_error_callback

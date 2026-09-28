@@ -66,6 +66,10 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
+import {
+  bridgeMobileTextarea,
+  type MobileTextareaBridge,
+} from "@/lib/pty-mobile-textarea";
 import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-inset";
 import {
   resolvePtyKeyboardShortcut,
@@ -868,6 +872,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // xterm occasionally drops committed dead-key/IME text instead of emitting
     // onData. The compositionend event supplies the authoritative text.
     let sendComposedText: (data: string) => void = () => undefined;
+    // Mobile IME edits xterm drops, replayed from its hidden textarea (#122766).
+    let sendTextareaEdit: (data: string) => void = () => undefined;
+    let mobileTextareaBridge: MobileTextareaBridge | null = null;
     const compositionForwarder = createPtyCompositionForwarder((data) => {
       sendComposedText(data);
     });
@@ -926,9 +933,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
       textarea.addEventListener("beforeinput", markReplacementInput, true);
       textarea.addEventListener("compositionend", markCompositionEnd, true);
+      if (isMobileLike) {
+        mobileTextareaBridge = bridgeMobileTextarea(textarea, (data) => sendTextareaEdit(data));
+      }
       mobileInputCleanup = () => {
         textarea.removeEventListener("beforeinput", markReplacementInput, true);
         textarea.removeEventListener("compositionend", markCompositionEnd, true);
+        mobileTextareaBridge?.dispose();
       };
     }
 
@@ -1559,9 +1570,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // must not consume the mobile replacement window intended for xterm's
       // normal onData path.
       sendComposedText = (data) => forwardPtyData(data, false);
+      // A replayed textarea edit is exact bytes, never a replacement candidate.
+      sendTextareaEdit = (data) => forwardPtyData(data, false);
       onDataDisposable = term.onData((data) => {
         if (!SGR_MOUSE_RE.test(data)) {
           compositionForwarder.noteTerminalData(data);
+          mobileTextareaBridge?.onTerminalData(data);
         }
         // A mobile IME can re-emit just-committed composition text through
         // onData; only the part that is not an echo of that commit is real.

@@ -667,8 +667,27 @@ class TestValidateCronBaseUrl:
     def test_named_custom_matching_host_allowed(self, monkeypatch):
         self._patch_named_legit(monkeypatch)
         assert self._v("custom:legit", "https://legit.example/v1") is None
-        # subdomain of the configured host is still the provider's own endpoint
-        assert self._v("custom:legit", "https://eu.legit.example/v1") is None
+        # Same origin spelled differently: explicit default port, case, trailing dot/slash.
+        assert self._v("custom:legit", "https://LEGIT.example.:443/v1/") is None
+
+    def test_stored_key_only_goes_to_the_configured_origin(self, monkeypatch):
+        # The stored key is bound to the configured origin, not to its hostname: another
+        # scheme, port or subdomain is a different endpoint the operator never configured.
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        reg, known = next((k, p.inference_base_url) for k, p in PROVIDER_REGISTRY.items()
+                          if str(getattr(p, "inference_base_url", "")).startswith("https://"))
+
+        def refused_off_origin(prov, h):
+            for bu in (f"http://{h}/v1", f"http://{h}:443/v1", f"https://{h}:8443/v1",
+                       f"https://eu.{h}/v1",
+                       f"{h}/v1", "http://[::1/v1"):
+                err = self._v(prov, bu)
+                assert err and "not allowed" in err, (prov, bu)
+
+        assert self._v(reg, known) is None  # registry provider arm
+        refused_off_origin(reg, known.split("://", 1)[1].split("/", 1)[0])
+        self._patch_named_legit(monkeypatch)  # named custom provider arm
+        refused_off_origin("custom:legit", "legit.example")
 
     def test_named_custom_lookalike_host_blocked(self, monkeypatch):
         self._patch_named_legit(monkeypatch)

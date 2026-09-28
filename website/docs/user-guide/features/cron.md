@@ -1353,6 +1353,8 @@ If a hand edit leaves `jobs.json` malformed, the scheduler repairs it on the nex
 
 Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
 
+A per-job `base_url` override needs an explicit `provider`. For a provider with a stored key (a named custom provider or a built-in one), the override must have the same origin as that provider's configured endpoint: the same scheme, host and port. Another scheme, port or subdomain is refused, so the stored key is only ever sent where you configured it. A bare `provider: custom` takes any `base_url`, because no stored key goes with it.
+
 The storage uses atomic file writes so interrupted writes do not leave a partially written job file behind.
 
 ## Self-contained prompts still matter

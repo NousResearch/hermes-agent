@@ -59,13 +59,40 @@ def test_entry_forces_utf8_console_decode_before_any_native_capture():
     )
 
     # The pipe direction (PowerShell -> native stdin) is ASCII on 5.1 by
-    # default; same block, same guarantee.
+    # default; same prologue, same guarantee.
     pipe = re.search(r"\$OutputEncoding\s*=\s*New-Object System\.Text\.UTF8Encoding", text)
     assert pipe and abs(pipe.start() - fix.start()) < 400, (
-        "$OutputEncoding should be set in the same guarded block"
+        "$OutputEncoding should be set in the same entry prologue"
     )
 
     block = text[max(0, fix.start() - 200) : fix.start() + 400]
     assert "try {" in block and "catch" in block, (
         "the encoding assignment must be exception-guarded (console-less hosts)"
+    )
+
+
+def test_pipe_and_console_encodings_are_guarded_independently():
+    """The two encoding setters must sit in SEPARATE try blocks.
+
+    [Console]::OutputEncoding throws on a console-less host (redirected CI)
+    while $OutputEncoding (the PowerShell -> native stdin pipe) does not.
+    Under one shared try, the console failure skipped the pipe assignment and
+    a redirected host kept us-ascii on the pipe — the exact host that needs
+    it (review on #124633: reproduced, throw mode left the pipe at us-ascii).
+    """
+    text = _text()
+    console = re.search(
+        r"\[Console\]::OutputEncoding\s*=\s*New-Object System\.Text\.UTF8Encoding", text
+    )
+    pipe = re.search(r"\$OutputEncoding\s*=\s*New-Object System\.Text\.UTF8Encoding", text)
+    assert console and pipe, "both encoding setters must exist"
+
+    lo, hi = sorted((console.start(), pipe.start()))
+    between = text[lo:hi]
+    # A catch closing the first setter's try plus a try opening the second's
+    # between the two assignments proves they cannot share one try block.
+    assert re.search(r"\}\s*catch", between) and re.search(r"try\s*\{", between), (
+        "pipe and console encoding setters must live in separate try blocks: a "
+        "console-less host rejects only the console setter, and a shared try "
+        "drops the pipe fix exactly on that host"
     )

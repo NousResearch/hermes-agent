@@ -994,18 +994,11 @@ export const PluginsTab = memo(function PluginsTab({
         }}
         selectedEntryId={selectedEntryId}
         sourceAction={
-          <div className="flex items-center">
-            <Tip label="Manage marketplaces">
-              <Button aria-label="Manage marketplaces" onClick={() => setManagingSources(true)} size="icon-xs" variant="ghost">
-                <RefreshCw className="size-3" />
-              </Button>
-            </Tip>
-            <Tip label="Add marketplace">
-              <Button aria-label="Add marketplace" onClick={() => setAdding(true)} size="icon-xs" variant="ghost">
-                <Plus className="size-3" />
-              </Button>
-            </Tip>
-          </div>
+          <Tip label="Add marketplace">
+            <Button aria-label="Add marketplace" onClick={() => setAdding(true)} size="icon-xs" variant="ghost">
+              <Plus className="size-3" />
+            </Button>
+          </Tip>
         }
         sourceLabels={sourceLabels}
       />
@@ -1066,6 +1059,14 @@ export const PluginsTab = memo(function PluginsTab({
               <p className="mt-2 text-xs text-destructive">{marketplaceError}</p>
             )}
             <DialogFooter className="mt-4">
+              <Button
+                disabled={marketplaceBusy === 'add'}
+                onClick={() => { setAdding(false); setManagingSources(true) }}
+                type="button"
+                variant="ghost"
+              >
+                Manage marketplaces
+              </Button>
               <Button
                 disabled={marketplaceBusy === 'add'}
                 onClick={() => setAdding(false)}

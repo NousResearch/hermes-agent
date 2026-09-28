@@ -204,6 +204,7 @@ describe('PluginsTab', () => {
     })
     renderPlugins({ profile: 'workbot' })
     await screen.findByRole('button', { name: 'Team Plugins · Unreviewed' })
+    fireEvent.click(screen.getByRole('button', { name: 'Add marketplace' }))
     fireEvent.click(screen.getByRole('button', { name: 'Manage marketplaces' }))
     fireEvent.click(screen.getByRole('button', { name: 'Refresh sources' }))
     await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('plugins.manage',
@@ -797,6 +798,7 @@ describe('PluginsTab catalog UX', () => {
     })
     renderPlugins({ profile: 'workbot' })
     await screen.findByRole('button', { name: 'Team Plugins · Unreviewed' })
+    fireEvent.click(screen.getByRole('button', { name: 'Add marketplace' }))
     fireEvent.click(screen.getByRole('button', { name: 'Manage marketplaces' }))
     fireEvent.click(screen.getByRole('button', { name: 'Refresh sources' }))
     await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('plugins.manage',

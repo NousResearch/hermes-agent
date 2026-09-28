@@ -99,8 +99,36 @@ def test_locally_ahead_switch_still_needs_completion(checkout):
     before = git(root, "rev-parse", "HEAD")
     plan = prepare(root)
     assert plan.commit_count != 0
+    assert plan.switched_without_new_commits
     assert plan.pre_sync_sha == before
     assert git(root, "rev-parse", "HEAD") == tip
+
+
+def test_merge_that_reports_success_without_moving_stale_main_is_refused(checkout, monkeypatch):
+    """Detached on a side commit with a stale local main: the switch moves HEAD, so a baseline
+    taken from the running code (or a bypass for "the switch already moved") would accept a
+    merge that returned 0 but left HEAD on the stale main."""
+    root, old, tip = checkout
+    git(root, "checkout", "-q", "--detach", old)
+    git(root, "commit", "--allow-empty", "-qm", "side")
+    git(root, "branch", "-f", "main", old)
+    plan = prepare(root)
+    assert git(root, "rev-parse", "HEAD") == old
+    real_git_run = update_cmd._git_run
+
+    def merge_is_a_silent_noop(git_cmd, args, *a, **k):
+        if args[:2] == ["merge", "--ff-only"]:
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return real_git_run(git_cmd, args, *a, **k)
+
+    monkeypatch.setattr(update_cmd, "_git_run", merge_is_a_silent_noop)
+    with pytest.raises(SystemExit):
+        update_cmd._pull_updates(
+            ["git"], "main", plan.auto_stash_ref, prompt_for_restore=False,
+            gw_input_fn=None, discard_local_changes=False, keep_stash=False,
+            pre_sync_sha=plan.pre_sync_sha, rollback_branch=plan.rollback_branch,
+        )
+    assert git(root, "rev-parse", "HEAD") == old
 
 
 def test_stale_local_main_can_catch_up_to_original_detached_tip(checkout):

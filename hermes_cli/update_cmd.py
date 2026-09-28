@@ -779,15 +779,16 @@ def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha, *, rollback_branch=N
         print(f"    {line}")
     print()
     if pre_pull_sha:
-        print(f"→ Rolling back to {pre_pull_sha[:10]}...")
-        rollback_args = ["reset", "--hard", pre_pull_sha]
-        if rollback_branch is not None:
-            # Restore the checkout we left, never reset the update branch onto
-            # commits from a parked feature branch (or a detached release).
-            target = pre_pull_sha if rollback_branch == "HEAD" else rollback_branch
-            rollback_args = (
-                ["checkout", "--detach", target] if rollback_branch == "HEAD"
-                else ["checkout", target])
+        # Restore the checkout the update left, never reset the update branch onto commits from
+        # a parked feature branch or a detached checkout.
+        if rollback_branch == "HEAD":
+            rollback_args = ["checkout", "--detach", pre_pull_sha]
+        elif rollback_branch is not None:
+            rollback_args = ["checkout", rollback_branch]
+        else:
+            rollback_args = ["reset", "--hard", pre_pull_sha]
+        target = rollback_branch if rollback_branch not in (None, "HEAD") else pre_pull_sha[:10]
+        print(f"→ Rolling back to {target}...")
         rollback_result = _git_run(git_cmd, rollback_args)
         if rollback_result.returncode == 0:
             print("  ✓ Rollback complete — your install is unchanged.")
@@ -812,6 +813,8 @@ def _update_movement_baseline(git_cmd, pre_pull_sha, pre_sync_sha, rollback_bran
         # the stale/diverged branch tip, not the original detached checkout.
         contains_target = _git_run(
             git_cmd, ["merge-base", "--is-ancestor", target_sha, pre_pull_sha])
+        # rc 128 (a SHA git cannot resolve) falls through to the pre-switch baseline: the worst
+        # case is a loud "did not move" refusal, never a silent success.
         if contains_target.returncode == 1:
             return pre_pull_sha
     return pre_sync_sha or pre_pull_sha
@@ -871,8 +874,7 @@ def _pull_updates(
             git_cmd, branch, movement_baseline, in_place_update=in_place_update,
             _windows_gateway_resume=_windows_gateway_resume)
         _rollback_if_pulled_syntax_error(
-            git_cmd, pre_sync_sha or pre_pull_sha,
-            **({"rollback_branch": rollback_branch} if rollback_branch is not None else {}))
+            git_cmd, pre_sync_sha or pre_pull_sha, rollback_branch=rollback_branch)
         update_succeeded = True
     finally:
         if auto_stash_ref is not None:
@@ -906,6 +908,8 @@ class _CheckoutPlan:
     upstream_checked: bool
     pre_sync_sha: str | None = None
     rollback_branch: str | None = None
+    # The switch changed the running code with no new commits to count (commit_count == -1).
+    switched_without_new_commits: bool = False
 
 
 def _apply_parked_branch_guard(
@@ -1024,10 +1028,12 @@ def _prepare_checkout_for_update(
 
     # Switching away from a locally-ahead commit can change the running tree
     # without adding ancestors. It still needs the post-update pipeline.
+    switched_without_new_commits = False
     if commit_count == 0 and moved_from_sha:
         landed_sha = _capture_head_sha(git_cmd, _m().PROJECT_ROOT)
         if landed_sha and landed_sha != moved_from_sha:
             commit_count = -1
+            switched_without_new_commits = True
 
     # A fork can match origin yet trail upstream, so the sync can move HEAD with
     # commit_count == 0; detect that BEFORE the no-update return so deps, restarts AND the
@@ -1055,7 +1061,8 @@ def _prepare_checkout_for_update(
         auto_stash_ref=auto_stash_ref, commit_count=commit_count, in_place_update=in_place_update,
         parked_branch_switched=parked_branch_switched, prompt_for_restore=prompt_for_restore,
         switch_block_reason=switch_block_reason, upstream_checked=upstream_checked,
-        pre_sync_sha=moved_from_sha, rollback_branch=rollback_branch)
+        pre_sync_sha=moved_from_sha, rollback_branch=rollback_branch,
+        switched_without_new_commits=switched_without_new_commits and commit_count == -1)
 
 
 @dataclass
@@ -1293,7 +1300,7 @@ def _apply_pulled_update(
     git_cmd, branch, pre_pull_sha, _plan, *, _windows_gateway_resume, completion_request: dict) -> None:
     """Post-pull phase: verify HEAD, sync Python/Node/web/Desktop, maintenance, fleet restart."""
     movement_baseline = _plan.pre_sync_sha or pre_pull_sha
-    if getattr(_plan, "rollback_branch", None) is not None:
+    if _plan.rollback_branch is not None:
         target_sha = (_git_run(git_cmd, ["rev-parse", f"origin/{branch}^{{commit}}"]).stdout or "").strip()
         movement_baseline = _update_movement_baseline(
             git_cmd, pre_pull_sha, _plan.pre_sync_sha, _plan.rollback_branch, target_sha)
@@ -1454,6 +1461,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(f"→ Switching to source commit {release_sha[:10]}")
         elif commit_count > 0:
             print(f"→ Found {commit_count} new commit(s)")
+        elif _plan.switched_without_new_commits:
+            print(f"→ Switched the running checkout to {branch} (no new commits to count)")
         else:
             # Shallow, exact count unrecoverable — but the tips differ, so there IS an update.
             print("→ Updates available (commit count unknown on this shallow checkout)")

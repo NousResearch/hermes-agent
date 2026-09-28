@@ -185,6 +185,7 @@ class Selection:
     room_id: str
     requester: str
     session_key: str
+    session_id: str
     expires_at: float
     crypto: Any
     state_store: Any
@@ -203,6 +204,7 @@ class PackRequest:
     room_id: str
     requester: str
     session_key: str
+    session_id: str
     crypto: Any
     state_store: Any
     api: Any
@@ -210,6 +212,7 @@ class PackRequest:
     access_token: str | None
     client_device: str | None
     crypto_store: Any
+    session_store: Any
     admissions: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -225,6 +228,7 @@ class PackRequest:
             room_id,
             requester,
             get_session_env("HERMES_SESSION_KEY"),
+            get_session_env("HERMES_SESSION_ID"),
             getattr(adapter._client, "crypto", None),
             getattr(adapter._client, "state_store", None),
             getattr(adapter._client, "api", None),
@@ -232,6 +236,7 @@ class PackRequest:
             getattr(getattr(adapter._client, "api", None), "token", None),
             getattr(adapter._client, "device_id", None),
             getattr(getattr(adapter._client, "crypto", None), "crypto_store", None),
+            getattr(adapter, "_session_store", None),
         )
 
     def owner_key(self) -> tuple[Any, ...]:
@@ -267,8 +272,16 @@ class PackRequest:
             or get_session_env("HERMES_SESSION_CHAT_ID") != self.room_id
             or get_session_env("HERMES_SESSION_USER_ID") != self.requester
             or get_session_env("HERMES_SESSION_KEY") != self.session_key
+            or not self.session_id
+            or get_session_env("HERMES_SESSION_ID") != self.session_id
+            or getattr(adapter, "_session_store", None) is not self.session_store
         ):
             raise PackError("Matrix image-pack owner or profile changed")
+        if (
+            self.session_store is not None
+            and self.session_store.peek_session_id(self.session_key) != self.session_id
+        ):
+            raise PackError("Matrix image-pack conversation changed; list packs again")
         for room_id, chat_type in self.admissions.items():
             if (
                 room_id not in adapter._joined_rooms
@@ -484,6 +497,7 @@ class Catalog:
                 self.request.room_id,
                 self.request.requester,
                 self.request.session_key,
+                self.request.session_id,
                 time.monotonic() + SELECTION_TTL,
                 self.request.crypto,
                 self.request.state_store,
@@ -630,6 +644,7 @@ async def _send(
         selection.room_id,
         selection.requester,
         selection.session_key,
+        selection.session_id,
         selection.crypto,
         selection.state_store,
         selection.owner_key,
@@ -643,6 +658,7 @@ async def _send(
         request.room_id,
         request.requester,
         request.session_key,
+        request.session_id,
         request.crypto,
         request.state_store,
         request.owner_key(),
@@ -708,40 +724,43 @@ async def _send(
         if not await permissions():
             raise PackError("Matrix room encryption changed")
         wire_type = EventType.ROOM_ENCRYPTED
-    await request.access(request.room_id)
-    if selection.source.room_id and selection.source.room_id != request.room_id:
-        await request.access(selection.source.room_id)
-    final_pack = await request.pack(selection.source)
-    final_images, final_metadata = final_pack.get("images"), final_pack.get("pack", {})
-    if not isinstance(final_images, dict) or not isinstance(final_metadata, dict):
-        raise PackError("Matrix image pack changed; list packs again")
-    final_image = PackImage.parse(
-        selection.image.shortcode,
-        final_images.get(selection.image.shortcode),
-        final_metadata,
-        selection.source.event_type,
-        request.adapter._max_media_bytes,
-    )
-    if final_image is None or final_image.fingerprint != fresh.fingerprint:
-        raise PackError("Matrix image selection changed; list packs again")
-    await request.access(request.room_id)
-    if request.state_store is not None:
+    for _attempt in range(2):
+        await request.access(request.room_id)
+        if selection.source.room_id and selection.source.room_id != request.room_id:
+            await request.access(selection.source.room_id)
+        final_pack = await request.pack(selection.source)
+        final_images, final_metadata = (
+            final_pack.get("images"),
+            final_pack.get("pack", {}),
+        )
+        if not isinstance(final_images, dict) or not isinstance(final_metadata, dict):
+            raise PackError("Matrix image pack changed; list packs again")
+        final_image = PackImage.parse(
+            selection.image.shortcode,
+            final_images.get(selection.image.shortcode),
+            final_metadata,
+            selection.source.event_type,
+            request.adapter._max_media_bytes,
+        )
+        if final_image is None or final_image.fingerprint != fresh.fingerprint:
+            raise PackError("Matrix image selection changed; list packs again")
+        await request.access(request.room_id)
+        if request.state_store is None:
+            break
         current_encryption = await asyncio.wait_for(
             request.state_store.is_encrypted(request.room_id), timeout=10.0
         )
         request.check()
-        if current_encryption and wire_type == EventType.STICKER:
-            if request.crypto is None:
-                raise PackError("Matrix encryption keys are unavailable")
-            wire_content = await request.read(
-                request.client.encrypt(
-                    RoomID(request.room_id), EventType.STICKER, payload
-                )
-            )
-            if not await permissions():
-                raise PackError("Matrix room encryption changed")
-            wire_type = EventType.ROOM_ENCRYPTED
-            await request.access(request.room_id)
+        if not current_encryption or wire_type == EventType.ROOM_ENCRYPTED:
+            break
+        if request.crypto is None:
+            raise PackError("Matrix encryption keys are unavailable")
+        wire_content = await request.read(
+            request.client.encrypt(RoomID(request.room_id), EventType.STICKER, payload)
+        )
+        if not await permissions():
+            raise PackError("Matrix room encryption changed")
+        wire_type = EventType.ROOM_ENCRYPTED
     request.check()
     if _selections(request.adapter).get(selection_id) is not selection:
         raise PackError("Matrix image selection expired; list packs again")

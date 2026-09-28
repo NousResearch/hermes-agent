@@ -2992,6 +2992,7 @@ export interface SessionListParams {
   title?: string | null
   limit?: number | null
   include_hidden?: boolean
+  archived_only?: boolean
 }
 export interface SessionListResult {
   sessions: SessionListRow[]

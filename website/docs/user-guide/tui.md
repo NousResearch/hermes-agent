@@ -121,7 +121,7 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | Command | TUI behavior |
 |---------|--------------|
 | `/help` | Overlay with categorized commands, arrow-key navigable |
-| `/sessions` (alias `/switch`) | Live session switcher — list open TUI sessions, switch between them, close them, or start another one |
+| `/sessions` (alias `/switch`) | Session switcher — manage live and saved sessions, including archived sessions |
 | `/model` | Modal model picker grouped by provider, with cost hints |
 | `/skin` | Live preview — theme change applies as you browse |
 | `/details` | Toggle verbose tool-call details (global or per-section) |
@@ -134,7 +134,7 @@ Every other slash command (including installed skills, quick commands, and perso
 
 ## Live session switcher
 
-Use the live session switcher when you want one terminal to act as a dispatcher for several TUI sessions. It lists only sessions that are currently live in this TUI process; closed sessions remain saved transcripts and can still be reopened with `/resume` or `hermes --tui --resume <id-or-title>`.
+Use the session switcher when you want one terminal to act as a dispatcher for several TUI sessions. The Current view shows live sessions and saved sessions you can resume. Archived sessions are hidden from Current but remain available in the Archived view with their messages intact.
 
 Open it with any of these:
 
@@ -150,10 +150,14 @@ Open it with any of these:
 Inside the switcher:
 
 - `↑` / `↓` move the selection; mouse clicks select rows too.
-- `Enter` switches to the selected live session.
+- `Enter` switches to a live session or resumes a saved session in Current.
 - `Ctrl+D` closes the selected live session.
 - `Ctrl+N` starts a blank live session.
-- `Ctrl+R` refreshes the live-session list.
+- `Ctrl+R` refreshes the selected view.
+- `Shift+Tab` switches between Current and Archived; the view labels are clickable too.
+- On a saved session in Current, press `a` twice to archive it without deleting its messages.
+- On a session in Archived, press `u` to restore it to Current.
+- On a saved session in either view, press `d` twice to permanently delete it and its messages. This is separate from archive.
 - `Esc` closes the switcher.
 - Select `+new`, type a prompt, and press `Enter` to dispatch a new live session. Press `Tab` first if you want to choose a model just for that new session.
 

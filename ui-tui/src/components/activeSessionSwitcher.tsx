@@ -1,5 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import type { SessionListResult, SessionListRow } from '@hermes/shared/gateway-events'
+import type { SessionArchiveResult, SessionListResult, SessionListRow } from '@hermes/shared/gateway-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'
@@ -94,8 +94,19 @@ export const resumeRowContextHintSegments: OrchestratorHintSegment[] = [
   { role: 'text', text: ' ' },
   { role: 'hotkey', text: 'Enter' },
   { role: 'text', text: ' resume · ' },
+  { role: 'hotkey', text: 'a' },
+  { role: 'text', text: ' archive · ' },
   { role: 'hotkey', text: 'd' },
-  { role: 'text', text: ' delete' }
+  { role: 'text', text: ' permanently delete' }
+]
+
+export const archivedRowContextHintSegments: OrchestratorHintSegment[] = [
+  { role: 'label', text: 'Archived:' },
+  { role: 'text', text: ' ' },
+  { role: 'hotkey', text: 'u' },
+  { role: 'text', text: ' restore · ' },
+  { role: 'hotkey', text: 'd' },
+  { role: 'text', text: ' permanently delete' }
 ]
 
 export type OrchestratorHintRole = 'hotkey' | 'label' | 'text'
@@ -131,6 +142,8 @@ export const orchestratorGlobalHotkeyHintSegments: OrchestratorHintSegment[] = [
   { role: 'text', text: ' new · ' },
   { role: 'hotkey', text: 'Ctrl+R' },
   { role: 'text', text: ' refresh · ' },
+  { role: 'hotkey', text: 'Shift+Tab' },
+  { role: 'text', text: ' Current/Archived · ' },
   { role: 'hotkey', text: 'Esc' },
   { role: 'text', text: ' close' }
 ]
@@ -297,6 +310,7 @@ export function ActiveSessionSwitcher({
 }: ActiveSessionSwitcherProps) {
   const [items, setItems] = useState<SessionActiveItem[]>([])
   const [history, setHistory] = useState<SessionListRow[]>([])
+  const [archivedView, setArchivedView] = useState(false)
   const [err, setErr] = useState('')
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -304,13 +318,17 @@ export function ActiveSessionSwitcher({
   const [draftModel, setDraftModel] = useState('')
   const [pickingModel, setPickingModel] = useState(false)
   const [closingId, setClosingId] = useState('')
-  // When non-null, the user pressed `d` on this (history) session and we await
-  // a second `d` to confirm deletion. Tracked by session id (not row index) so
-  // the 1.5s live-status poll re-indexing rows can't redirect the delete to a
-  // different session. Any other key cancels the prompt.
-  const [confirmDelete, setConfirmDelete] = useState<null | string>(null)
+
+  // Confirm by id, not row index: the live-status poll can reorder rows.
+  const [confirmHistoryAction, setConfirmHistoryAction] = useState<null | { id: string; kind: 'archive' | 'delete' }>(
+    null
+  )
+
   const [deleting, setDeleting] = useState(false)
+  const [archivePendingId, setArchivePendingId] = useState('')
   const initialSelectionAppliedRef = useRef(false)
+  const viewRef = useRef(false)
+
   // Holds the RAW `session.list` results (pre-dedupe). The quiet 1.5s poll
   // re-derives the resumable list from this against the latest live set, so a
   // session that was hidden while live reappears in history once it closes —
@@ -336,6 +354,23 @@ export function ActiveSessionSwitcher({
   const total = listLen + 1
   const rowKind = useCallback((index: number) => sessionRowKindAt(index, liveCount), [liveCount])
 
+  const switchView = useCallback((archived: boolean) => {
+    if (archived === viewRef.current) {
+      return
+    }
+
+    viewRef.current = archived
+    rawHistoryRef.current = []
+    initialSelectionAppliedRef.current = false
+    setArchivedView(archived)
+    setItems([])
+    setHistory([])
+    setSel(0)
+    setConfirmHistoryAction(null)
+    setErr('')
+    setLoading(true)
+  }, [])
+
   const load = useCallback(
     // `quiet` skips the loading spinner (used by the live-status poll);
     // `includeHistory` re-queries the resumable DB list (skipped on the 1.5s
@@ -350,11 +385,19 @@ export function ActiveSessionSwitcher({
         // wipe the live-session list: live sessions still render and the
         // resumable history degrades on its own.
         const [liveRes, histRes] = await Promise.allSettled([
-          gw.request<SessionActiveListResponse>('session.active_list', {
-            current_session_id: currentSessionId
-          }),
-          includeHistory ? gw.request<SessionListResult>('session.list', { limit: 200 }) : Promise.resolve(null)
+          archivedView
+            ? Promise.resolve({ sessions: [] })
+            : gw.request<SessionActiveListResponse>('session.active_list', {
+                current_session_id: currentSessionId
+              }),
+          includeHistory
+            ? gw.request<SessionListResult>('session.list', { limit: 200, archived_only: archivedView })
+            : Promise.resolve(null)
         ])
+
+        if (archivedView !== viewRef.current) {
+          return []
+        }
 
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
 
@@ -382,7 +425,7 @@ export function ActiveSessionSwitcher({
               histError = 'invalid response: session.list'
             }
           } else {
-            histError = 'could not load resumable sessions'
+            histError = archivedView ? 'could not load archived sessions' : 'could not load resumable sessions'
           }
         }
 
@@ -397,8 +440,12 @@ export function ActiveSessionSwitcher({
         // grow/shrink between polls, which would otherwise drift a flat index).
         setSel(s => {
           if (initializeSelection) {
-            // Land on the current live session (shifted +1 past the pinned new
-            // row); with no live sessions, start on the new row itself.
+            // Land on the first archived row, or the current live session
+            // (shifted +1 past the pinned new row).
+            if (archivedView && hist.length) {
+              return 1
+            }
+
             return next.length ? Math.min(currentSessionSelectionIndex(next, currentSessionId) + 1, maxSel) : 0
           }
 
@@ -427,13 +474,17 @@ export function ActiveSessionSwitcher({
 
         return next
       } catch (e: unknown) {
+        if (archivedView !== viewRef.current) {
+          return []
+        }
+
         setErr(rpcErrorMessage(e))
         setLoading(false)
 
         return []
       }
     },
-    [currentSessionId, gw]
+    [archivedView, currentSessionId, gw]
   )
 
   useEffect(() => {
@@ -443,10 +494,14 @@ export function ActiveSessionSwitcher({
 
   useEffect(() => {
     void load()
-    const timer = setInterval(() => void load(true, false), 1500)
+    const timer = archivedView ? null : setInterval(() => void load(true, false), 1500)
 
-    return () => clearInterval(timer)
-  }, [load])
+    return () => {
+      if (timer) {
+        clearInterval(timer)
+      }
+    }
+  }, [archivedView, load])
 
   const submitDraft = useCallback(
     (value: string) => {
@@ -533,6 +588,40 @@ export function ActiveSessionSwitcher({
     [deleting, gw, history, items.length]
   )
 
+  const performArchive = useCallback(
+    async (id: string, archived: boolean) => {
+      const target = history.find(h => h.id === id)
+
+      if (!target || archivePendingId) {
+        return
+      }
+
+      setArchivePendingId(id)
+
+      try {
+        const raw = await gw.request<SessionArchiveResult>('session.archive', { session_id: id, archived })
+        const result = asRpcResult<SessionArchiveResult>(raw)
+
+        if (!result || result.archived !== archived || !result.session_key) {
+          setErr('invalid response: session.archive')
+
+          return
+        }
+
+        rawHistoryRef.current = rawHistoryRef.current.filter(h => h.id !== id)
+        setHistory(prev => prev.filter(h => h.id !== id))
+        setSel(s => Math.max(0, Math.min(s, items.length + history.length - 1)))
+        setErr('')
+        await load(true)
+      } catch (e: unknown) {
+        setErr(rpcErrorMessage(e))
+      } finally {
+        setArchivePendingId('')
+      }
+    },
+    [archivePendingId, gw, history, items.length, load]
+  )
+
   const handleRowClick = useCallback(
     (index: number) => (event: { stopImmediatePropagation?: () => void }) => {
       event.stopImmediatePropagation?.()
@@ -548,14 +637,17 @@ export function ActiveSessionSwitcher({
 
       if (kind === 'history') {
         setSel(clamped)
-        onResume(history[index - 1 - items.length]!.id)
+
+        if (!archivedView) {
+          onResume(history[index - 1 - items.length]!.id)
+        }
 
         return
       }
 
       setSel(0)
     },
-    [history, items, onResume, onSelect, rowKind, total]
+    [archivedView, history, items, onResume, onSelect, rowKind, total]
   )
 
   const selectedKind = rowKind(sel)
@@ -563,19 +655,25 @@ export function ActiveSessionSwitcher({
   const draftHasText = Boolean(draft.trim())
 
   useInput((ch, key) => {
-    if (pickingModel || deleting) {
+    if (pickingModel || deleting || archivePendingId) {
       return
     }
 
-    // Two-press history delete: once armed, only a second `d` deletes; any
-    // other key cancels the prompt (mirrors the standalone resume picker).
-    if (confirmDelete !== null) {
-      if (ch?.toLowerCase() === 'd') {
-        const id = confirmDelete
-        setConfirmDelete(null)
-        performDelete(id)
+    // Archive and permanent delete have separate keys and explicit second-press confirmations.
+    if (confirmHistoryAction) {
+      const expected = confirmHistoryAction.kind === 'archive' ? 'a' : 'd'
+
+      if (!key.ctrl && ch?.toLowerCase() === expected) {
+        const { id, kind } = confirmHistoryAction
+        setConfirmHistoryAction(null)
+
+        if (kind === 'archive') {
+          void performArchive(id, true)
+        } else {
+          performDelete(id)
+        }
       } else {
-        setConfirmDelete(null)
+        setConfirmHistoryAction(null)
       }
 
       return
@@ -598,6 +696,12 @@ export function ActiveSessionSwitcher({
       return
     }
 
+    if (key.shift && key.tab) {
+      switchView(!archivedView)
+
+      return
+    }
+
     if (key.tab) {
       if (newSelected) {
         setPickingModel(true)
@@ -614,10 +718,21 @@ export function ActiveSessionSwitcher({
       return
     }
 
-    // `d` arms deletion on a resumable history row. (On the New row `d` is
-    // captured by the prompt's TextInput, so it never reaches here.)
+    if (lower === 'a' && !key.ctrl && selectedKind === 'history' && !archivedView) {
+      setConfirmHistoryAction({ id: history[sel - 1 - items.length]!.id, kind: 'archive' })
+
+      return
+    }
+
+    if (lower === 'u' && !key.ctrl && selectedKind === 'history' && archivedView) {
+      void performArchive(history[sel - 1 - items.length]!.id, false)
+
+      return
+    }
+
+    // `d` is only for permanent deletion of a stored row.
     if (lower === 'd' && !key.ctrl && selectedKind === 'history') {
-      setConfirmDelete(history[sel - 1 - items.length]?.id ?? null)
+      setConfirmHistoryAction({ id: history[sel - 1 - items.length]!.id, kind: 'delete' })
 
       return
     }
@@ -647,7 +762,7 @@ export function ActiveSessionSwitcher({
         return onSelect(items[sel - 1]!.id)
       }
 
-      if (selectedKind === 'history' && history[sel - 1 - items.length]) {
+      if (selectedKind === 'history' && !archivedView && history[sel - 1 - items.length]) {
         return onResume(history[sel - 1 - items.length]!.id)
       }
     }
@@ -691,7 +806,21 @@ export function ActiveSessionSwitcher({
       <Text bold color={t.color.accent}>
         Sessions
       </Text>
-      <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
+      <Box flexDirection="row" gap={2}>
+        <Box onClick={() => switchView(false)}>
+          <Text bold={!archivedView} color={archivedView ? t.color.muted : t.color.accent}>
+            Current
+          </Text>
+        </Box>
+        <Box onClick={() => switchView(true)}>
+          <Text bold={archivedView} color={archivedView ? t.color.accent : t.color.muted}>
+            Archived
+          </Text>
+        </Box>
+      </Box>
+      <Text color={t.color.muted}>
+        {archivedView ? `${history.length} archived` : sessionsCountLabel(items.length, history.length)}
+      </Text>
 
       {err && <Text color={t.color.label}>error: {err}</Text>}
 
@@ -732,7 +861,11 @@ export function ActiveSessionSwitcher({
       </Box>
 
       {offset > 0 && <Text color={t.color.muted}> ↑ {offset} more</Text>}
-      {!listLen && <Text color={t.color.muted}>no other sessions — Enter on +new to start one</Text>}
+      {!listLen && (
+        <Text color={t.color.muted}>
+          {archivedView ? 'no archived sessions' : 'no other sessions — Enter on +new to start one'}
+        </Text>
+      )}
 
       {visibleRows.map(i => {
         const selected = sel === i
@@ -742,13 +875,20 @@ export function ActiveSessionSwitcher({
 
         if (kind === 'history') {
           const h = history[i - 1 - items.length]!
-          const pendingDelete = confirmDelete === h.id
+          const pendingDelete = confirmHistoryAction?.id === h.id && confirmHistoryAction.kind === 'delete'
+          const pendingArchive = confirmHistoryAction?.id === h.id && confirmHistoryAction.kind === 'archive'
 
-          const title = pendingDelete
-            ? 'press d again to delete'
-            : deleting && selected
-              ? 'deleting…'
-              : h.title || h.preview || '(untitled)'
+          let title = h.title || h.preview || '(untitled)'
+
+          if (pendingDelete) {
+            title = 'press d again to permanently delete'
+          } else if (pendingArchive) {
+            title = 'press a again to archive (messages kept)'
+          } else if (deleting && selected) {
+            title = 'deleting…'
+          } else if (archivePendingId === h.id) {
+            title = archivedView ? 'restoring…' : 'archiving…'
+          }
 
           return (
             <Box
@@ -789,7 +929,7 @@ export function ActiveSessionSwitcher({
               <Box flexGrow={1} flexShrink={1} minWidth={0}>
                 <Text
                   bold={selected}
-                  color={pendingDelete ? t.color.label : (rowTextColor ?? t.color.muted)}
+                  color={pendingDelete || pendingArchive ? t.color.label : (rowTextColor ?? t.color.muted)}
                   wrap="truncate-end"
                 >
                   {title}
@@ -861,6 +1001,14 @@ export function ActiveSessionSwitcher({
 
       {offset + VISIBLE < listLen && <Text color={t.color.muted}> ↓ {listLen - offset - VISIBLE} more</Text>}
 
+      {confirmHistoryAction && (
+        <Text color={t.color.label}>
+          {confirmHistoryAction.kind === 'archive'
+            ? 'Press a again to archive this session. Messages stay saved. Any other key cancels.'
+            : 'Press d again to permanently delete this session and its messages. Any other key cancels.'}
+        </Text>
+      )}
+
       {newSelected ? (
         <>
           <Box marginTop={1}>
@@ -882,7 +1030,11 @@ export function ActiveSessionSwitcher({
         <Box flexDirection="column" marginTop={1}>
           <OrchestratorHintText
             segments={
-              selectedKind === 'history' ? resumeRowContextHintSegments : orchestratorContextHintSegments(false)
+              selectedKind === 'history'
+                ? archivedView
+                  ? archivedRowContextHintSegments
+                  : resumeRowContextHintSegments
+                : orchestratorContextHintSegments(false)
             }
             t={t}
           />

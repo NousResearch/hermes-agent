@@ -3,7 +3,7 @@ import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
 import { prepareDefaultNewSession } from '@/app/session/new-session-route'
-import { getProfiles, getSessionMessages } from '@/hermes'
+import { getLatestSessionMessages, getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -340,7 +340,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
                 // back to the launch-profile DB and we would repaint the
                 // transcript from the wrong profile's session (#67603).
                 const profile = await resolveSessionProfile(storedSessionId)
-                const refreshed = await getSessionMessages(storedSessionId, profile)
+                const refreshed = await getLatestSessionMessages(storedSessionId, profile)
 
                 if (Array.isArray(refreshed?.messages)) {
                   updateSessionState(

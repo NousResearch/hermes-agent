@@ -210,6 +210,7 @@ def _run_and_exit_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: object = None,
+    service_tier: Optional[str] = None,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -221,6 +222,7 @@ def _run_and_exit_oneshot(
             toolsets=toolsets,
             skills=skills,
             usage_file=usage_file,
+            service_tier=service_tier,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -2939,6 +2941,7 @@ def _launch_tui(
     checkpoints: bool = False,
     pass_session_id: bool = False,
     max_turns: Optional[int] = None,
+    service_tier: Optional[str] = None,
     accept_hooks: bool = False,
 ):
     """Replace current process with the TUI."""
@@ -2961,6 +2964,9 @@ def _launch_tui(
     os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
+    # Do not let a stale shell variable turn an omitted CLI flag into an
+    # invocation override. Only the current command line may set this bridge.
+    env.pop("HERMES_TUI_SERVICE_TIER", None)
 
     wt_info = None
     if worktree:
@@ -3032,6 +3038,8 @@ def _launch_tui(
         env["HERMES_TUI_PASS_SESSION_ID"] = "1"
     if max_turns is not None:
         env["HERMES_TUI_MAX_TURNS"] = str(max_turns)
+    if service_tier:
+        env["HERMES_TUI_SERVICE_TIER"] = service_tier
     if verbose:
         env["HERMES_TUI_TOOL_PROGRESS"] = "verbose"
     elif quiet:
@@ -3462,6 +3470,7 @@ def cmd_chat(args):
             checkpoints=getattr(args, "checkpoints", False),
             pass_session_id=getattr(args, "pass_session_id", False),
             max_turns=getattr(args, "max_turns", None),
+            service_tier=getattr(args, "service_tier", None),
             accept_hooks=getattr(args, "accept_hooks", False),
         )
 
@@ -12756,6 +12765,7 @@ def _try_fast_chat_launch() -> bool:
             toolsets=getattr(args, "toolsets", None),
             skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
+            service_tier=getattr(args, "service_tier", None),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -12814,6 +12824,7 @@ def _try_termux_fast_cli_launch() -> bool:
             toolsets=getattr(args, "toolsets", None),
             skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
+            service_tier=getattr(args, "service_tier", None),
         )
 
     if (args.resume or args.continue_last) and args.command is None:
@@ -14811,6 +14822,7 @@ def main():
             toolsets=getattr(args, "toolsets", None),
             skills=getattr(args, "skills", None),
             usage_file=getattr(args, "usage_file", None),
+            service_tier=getattr(args, "service_tier", None),
         )
 
     # Handle top-level --resume / --continue as shortcut to chat

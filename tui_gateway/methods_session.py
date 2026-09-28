@@ -4,6 +4,8 @@ Handler bodies are byte-identical to their pre-split server.py form; they
 are rebound onto server.py's globals at install time — see method_ctx.py.
 """
 
+import os
+
 from .method_ctx import HandlerRegistry
 
 _registry = HandlerRegistry()
@@ -69,6 +71,18 @@ def _(rid, params: dict) -> dict:
         create_service_tier_override = (
             "priority" if is_truthy_value(params.get("fast")) else ""
         )
+    else:
+        # ``hermes --tui --service-tier`` is a process-scoped launcher
+        # override. The TUI client does not include CLI flags in every
+        # session.create request, so bridge the value through the launch
+        # environment while preserving an explicit per-session ``fast`` pick.
+        startup_tier = str(
+            os.environ.get("HERMES_TUI_SERVICE_TIER") or ""
+        ).strip().lower()
+        if startup_tier == "fast":
+            create_service_tier_override = "priority"
+        elif startup_tier == "normal":
+            create_service_tier_override = ""
 
     ready = threading.Event()
     now = time.time()

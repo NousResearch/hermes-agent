@@ -32,6 +32,30 @@ from gateway.session_context import declare_stateless_channel
 from hermes_cli.fallback_config import get_fallback_chain
 
 
+def _parse_service_tier(raw: object) -> str | None:
+    """Map the user-facing service-tier spelling to the agent value."""
+    value = str(raw or "").strip().lower()
+    if not value or value in {"normal", "default", "standard", "off", "none"}:
+        return None
+    if value in {"fast", "priority", "on"}:
+        return "priority"
+    return None
+
+
+def _resolve_service_tier(config: dict, override: Optional[str] = None) -> str | None:
+    """Resolve config plus an invocation-scoped service-tier override."""
+    agent_cfg = config.get("agent") if isinstance(config, dict) else None
+    agent_cfg = agent_cfg if isinstance(agent_cfg, dict) else {}
+    tier = _parse_service_tier(agent_cfg.get("service_tier"))
+    if override is None or not str(override).strip():
+        return tier
+    normalized = str(override).strip().lower()
+    if normalized in {"fast", "normal"}:
+        return _parse_service_tier(normalized)
+    logging.warning("Unknown --service-tier '%s', keeping the configured tier", override)
+    return tier
+
+
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     if not toolsets:
         return None
@@ -206,6 +230,7 @@ def run_oneshot(
     toolsets: object = None,
     skills: object = None,
     usage_file: Optional[str] = None,
+    service_tier: Optional[str] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -221,6 +246,9 @@ def run_oneshot(
             cost, token counts, model, api_calls) is written there after the
             run — even when the run fails — so pipelines can account for
             spend per invocation.
+        service_tier: Optional invocation-scoped service tier. ``fast`` maps
+            to the Responses API ``priority`` tier; ``normal`` explicitly
+            clears a configured fast tier for this run.
 
     Returns the exit code.  The caller owns process termination.
     """
@@ -283,6 +311,7 @@ def run_oneshot(
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
                     skills=skills,
+                    service_tier=service_tier,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -361,6 +390,7 @@ def _run_agent(
     toolsets: object = None,
     use_config_toolsets: bool = True,
     skills: object = None,
+    service_tier: Optional[str] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -373,6 +403,7 @@ def _run_agent(
     from run_agent import AIAgent
 
     cfg = load_config()
+    effective_service_tier = _resolve_service_tier(cfg, service_tier)
 
     # Resolve effective model: explicit arg → env var → config.
     model_cfg = cfg.get("model") or {}
@@ -503,6 +534,7 @@ def _run_agent(
             credential_pool=runtime.get("credential_pool"),
             fallback_model=_fb or None,
             ephemeral_system_prompt=skills_prompt,
+            service_tier=effective_service_tier,
             # Interactive callbacks are intentionally NOT wired beyond this
             # one.  In oneshot mode there's no user sitting at a terminal:
             #   - clarify  → returns a synthetic "pick a default" instruction

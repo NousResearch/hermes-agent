@@ -1,12 +1,12 @@
 name: made-shelf
 repo: https://github.com/aydnOktay/hermes-made-shelf
-sha: 75b4a17b05938c0ee1a5e552650299e2d36fced0
-description: Everything Hermes made — cross-session shelf of wrote/patched paths.
+sha: 72f65557a9b9d4e0df3deb26d673fa17a37e8c64
+description: Everything Hermes made - cross-session shelf of wrote/patched paths.
   Full Desktop page, chip, pin. No API keys.
 maintainer: aydnOktay
 tier: community
 category: desktop
-requires_hermes: ">=0.21"
+requires_hermes: ">=0.21.5"
 docs_url: https://github.com/aydnOktay/hermes-made-shelf
 version: "0.1.0"
 platforms: []

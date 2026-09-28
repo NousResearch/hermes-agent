@@ -172,24 +172,6 @@ class UpdateReceipt:
         self.data["post_update"] = _code_identity(refresh=True)
 
 
-def _receipt_post_update_sha(receipt: Any) -> str:
-    """The SHA the completed receipt says the checkout ended on, else ``""``.
-
-    Arming the host restart obligation with an empty SHA leaves a record the reader can
-    never prove discharged (#125952); the receipt carried in the same completion request
-    already names the code a no-op update stood on.
-    """
-    if not isinstance(receipt, dict):
-        return ""
-    post_update = receipt.get("post_update")
-    if isinstance(post_update, dict) and post_update.get("sha"):
-        return str(post_update["sha"])
-    pre_update = receipt.get("pre_update")
-    if isinstance(pre_update, dict) and pre_update.get("sha"):
-        return str(pre_update["sha"])
-    return ""
-
-
 def _receipt_dir() -> Path:
     # ``hermes_constants`` (stdlib-only), never ``hermes_cli.config``: the receipt must be
     # writable from the refused/failed paths where config loading itself may be what broke

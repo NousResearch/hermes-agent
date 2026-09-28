@@ -154,10 +154,6 @@ def obligation_fields() -> Optional[dict[str, str]]:
     if record is None:
         return None
     fields = {"expected_sha": str(record.get("expected_sha") or "")}
-    pid = record.get("pid")
-    if pid is not None:
-        # The arming process, for readers that must not discharge a still-running update.
-        fields["pid"] = str(pid)
     inventory = record.get("inventory")
     if inventory is not None:
         fields["inventory"] = json.dumps(inventory)

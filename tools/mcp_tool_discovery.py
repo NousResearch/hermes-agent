@@ -91,14 +91,36 @@ async def _install_owner_secret_scope():
     and the server parks with zero tools (#113746). ``${VAR}`` refs are interpolated earlier, at
     config load, under :func:`_owner_secret_scope`.
     """
-    from agent.secret_scope import build_profile_secret_scope, set_secret_scope
+    from agent.secret_scope import set_secret_scope
     home = _owner_scope_home()
     if home is None:
         return None
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
     # Off-loop: an external source runs a helper subprocess (once per home, then cached).
-    await asyncio.to_thread(hydrate_profile_secret_sources, home)
-    return set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    return set_secret_scope(await asyncio.to_thread(_owner_secret_mapping, home), profile_home=str(home))
+
+
+_HYDRATE_RETRY_INTERVAL_SEC = 30.0
+_hydrate_retry_after: Dict[str, float] = {}
+
+
+def _owner_secret_mapping(home: Path) -> Dict[str, str]:
+    """The owner's FRESH secret mapping. The launch profile's is ``launch_secret_scope`` (its files
+    over the frozen launch env): a credential injected only by systemd ``Environment=`` /
+    ``op run`` / Compose has no file to rebuild from, so a files-only rebuild dropped it, left the
+    header literal ``${VAR}`` and parked a server that worked. A served profile gets its own ``.env``
+    + external sources only. A source that did not fully hydrate is retried at most once per
+    interval per home: every retry is a helper subprocess, and connect/reconnect loops are tight."""
+    from agent.secret_scope import _is_process_home, build_profile_secret_scope
+    from hermes_cli import env_loader
+    key = str(home.resolve())
+    if time.monotonic() >= _hydrate_retry_after.get(key, 0.0):
+        env_loader.hydrate_profile_secret_sources(home)
+        if key not in env_loader._APPLIED_HOMES:
+            _hydrate_retry_after[key] = time.monotonic() + _HYDRATE_RETRY_INTERVAL_SEC
+    if _is_process_home(home):
+        from tui_gateway.launch_profile_policy import launch_secret_scope
+        return launch_secret_scope(home)
+    return build_profile_secret_scope(home)
 
 
 @contextmanager
@@ -109,14 +131,12 @@ def _owner_secret_scope():
     the resulting ``UnscopedSecretError`` into ``{}``, so an unscoped discover / reconcile / status /
     probe for a routed profile saw ZERO servers — stdio siblings included — before the connect-site
     binding could ever run (#113746). Same owner rule; scope key ``None`` binds nothing."""
-    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
     home = _owner_scope_home()
     if home is None:
         yield
         return
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
-    hydrate_profile_secret_sources(home)
-    token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    token = set_secret_scope(_owner_secret_mapping(home), profile_home=str(home))
     try:
         yield
     finally:

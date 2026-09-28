@@ -178,6 +178,35 @@ def test_connect_renders_remote_headers_under_the_owners_fresh_scope(tmp_path, s
         set_multiplex_active(False)
 
 
+def test_launch_profile_env_only_credential_survives_the_owner_rebuild(spawn_env, monkeypatch):
+    """Red on the salvage: the owner rebuild used ``build_profile_secret_scope`` (files only) for the
+    LAUNCH profile too, so a credential that lives only in the launch env (systemd ``Environment=``,
+    ``op run``, Compose) — present in the ``launch_secret_scope`` mapping the caller bound — vanished,
+    the header stayed the literal ``${VAR}`` and the fail-closed check parked a server that worked."""
+    import os
+    from pathlib import Path
+    from tools import mcp_tool_config as _config
+    from tui_gateway import launch_profile_policy
+    launch_home = Path(os.environ["HERMES_HOME"])  # conftest's per-test process home
+    (launch_home / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setenv(TOKEN_NAME, "tok-from-systemd")
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    launch_profile_policy.activate_multi_profile_hosting()  # freeze the launch env, fail closed, pin the home
+
+    async def _run():
+        with launch_profile_policy.launch_profile_runtime_scope(launch_home):
+            await discovery._connect_server("demo", dict(REMOTE, headers=dict(REMOTE["headers"])))
+            with discovery._owner_secret_scope():  # a later rebuild (reconnect / reconcile) under the same door
+                return _config._interpolate_env_vars(dict(REMOTE["headers"]))
+
+    try:
+        rebuilt = asyncio.run(_run())
+    finally:
+        set_multiplex_active(False)
+    assert spawn_env["config"]["headers"]["Authorization"] == "Bearer tok-from-systemd"
+    assert rebuilt["Authorization"] == "Bearer tok-from-systemd"
+
+
 def test_reconnect_rerenders_remote_headers_under_the_owners_fresh_scope(tmp_path, monkeypatch):
     """Red on base (#119092): the run task re-read config.yaml on every rebuild but rendered it under
     its copied connect-time scope snapshot, so a parked server retried the literal ``${VAR}`` header

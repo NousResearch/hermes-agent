@@ -162,6 +162,42 @@ def test_named_profile_start_all_starts_the_default_host_service(monkeypatch, tm
     assert os.environ["HERMES_HOME"] == str(named)
 
 
+def test_named_profile_restart_all_with_host_down_restarts_the_default_root(monkeypatch, tmp_path):
+    """No live owner: `-p X gateway restart --all` must relaunch the host root, never X's gateway.
+
+    Post-update the host is down, so the ownership refusal cannot fire; the sweep-and-relaunch
+    then ran as X, whose own gateway the run-side named-profile guard refuses (exit 78).
+    """
+    import hermes_constants
+
+    root = tmp_path / "hermes"
+    named = root / "profiles" / "leinad"
+    named.mkdir(parents=True)
+    (root / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (named / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_HOME", str(named))
+    hermes_constants._default_hermes_root_memo = None
+    monkeypatch.setattr(gw, "_host_multiplexer_for_all_verb", lambda: None)
+    monkeypatch.setattr(gw, "_stop_installed_service", lambda system: False)
+    monkeypatch.setattr(gw, "kill_gateway_processes", lambda **k: 0)
+    monkeypatch.setattr(gw, "_wait_for_gateway_exit", lambda **k: True)
+    monkeypatch.setattr(gw, "_wait_for_api_server_port_free", lambda **k: True)
+    monkeypatch.setattr(gw, "_discard_dead_host_record", lambda: False)
+    monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: None)
+
+    started_as = []
+    monkeypatch.setattr(
+        gw, "run_gateway",
+        lambda **k: started_as.append((Path(hermes_constants.get_hermes_home()), k.get("replace"))),
+    )
+
+    gw._restart_all(system=False)
+
+    assert started_as == [(root, True)]
+    assert hermes_constants.get_hermes_home() == named
+
+
 def test_restart_all_refuses_to_sweep_a_host_multiplexer_owned_by_another_profile(
         host_owner, monkeypatch, tmp_path):
     def _never(*a, **k):

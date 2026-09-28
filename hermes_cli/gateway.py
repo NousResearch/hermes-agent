@@ -5281,7 +5281,7 @@ def _print_unfolded_gateway_note(owner) -> None:
 
 
 def _cmd_start(args):
-    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    from hermes_cli.gateway_profile_lifecycle import host_scope_for_all_verb, profile_lifecycle
     if profile_lifecycle("start", args):
         return
     system = getattr(args, "system", False)
@@ -5296,13 +5296,10 @@ def _cmd_start(args):
             print("  One gateway per host serves every profile; nothing to start.")
             _print_unfolded_gateway_note(owner)
             return
-        # `--all` names the ONE host gateway, regardless of which profile invoked the CLI.
-        # Bind the same service-manager scope used by migration so stale-owner cleanup, Windows
-        # task names/launchers, systemd/launchd identity files and raw HERMES_HOME readers all
-        # target the default root.
-        from hermes_cli.gateway_migrate import _home_env
-        from hermes_constants import get_default_hermes_root
-        start_scope = _home_env(get_default_hermes_root())
+        # `--all` names the ONE host gateway, regardless of which profile invoked the CLI: stale-owner
+        # cleanup, Windows task names/launchers, systemd/launchd identity files and raw HERMES_HOME
+        # readers all target the default root (see host_scope_for_all_verb).
+        start_scope = host_scope_for_all_verb(owner)
     else:
         _guard_named_profile_under_multiplexer(force=force)
         if _dispatch_via_service_manager_if_s6("start"):
@@ -5327,7 +5324,7 @@ def _cmd_start(args):
 
 def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
-    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    from hermes_cli.gateway_profile_lifecycle import host_scope_for_all_verb, profile_lifecycle
     if profile_lifecycle("stop", args):
         return
     stop_all = getattr(args, "all", False)
@@ -5354,20 +5351,23 @@ def _cmd_stop(args):
     if not stop_all and _dispatch_via_service_manager_if_s6("stop"):
         return
 
-    service_available = _stop_installed_service(system)
     if stop_all:
+        # Stop the HOST's installed service (a bare pkill under a supervisor is a restart, not a
+        # stop), whichever profile invoked the CLI.
+        with host_scope_for_all_verb(_host_multiplexer_for_all_verb()):
+            service_available = _stop_installed_service(system)
         total = kill_gateway_processes(all_profiles=True) + (1 if service_available else 0)
         if total:
             print(f"✓ Stopped {total} gateway process(es) across all profiles")
         else:
             print("✗ No gateway processes found")
-    elif not service_available:
-        if stop_profile_gateway():
-            print("✓ Stopped gateway for this profile")
-        else:
-            print("✗ No gateway running for this profile")
-    else:
+        return
+    if _stop_installed_service(system):
         print(f"✓ Stopped {get_service_name()} service")
+    elif stop_profile_gateway():
+        print("✓ Stopped gateway for this profile")
+    else:
+        print("✗ No gateway running for this profile")
 
 
 def _stop_host_multiplexer(owner) -> int:
@@ -5394,6 +5394,7 @@ def _discard_dead_host_record() -> bool:
 
 
 def _restart_all(system: bool) -> None:
+    from hermes_cli.gateway_profile_lifecycle import host_scope_for_all_verb
     owner = _host_multiplexer_for_all_verb()
     if owner is not None and not _host_multiplexer_is_ours(owner):
         # `--all` means "restart the ONE host multiplexer" — and this profile does not own it.
@@ -5405,7 +5406,13 @@ def _restart_all(system: bool) -> None:
         print()
         print(f"    hermes -p {owner.profile_label} gateway restart --all")
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+    # No live owner: stop/kill/start as the host root, not as the invoking profile (whose own
+    # gateway the run-side guard would refuse — the host stayed down after a Desktop update).
+    with host_scope_for_all_verb(owner):
+        _restart_all_as_host(owner, system)
 
+
+def _restart_all_as_host(owner, system: bool) -> None:
     service_stopped = _stop_installed_service(system)
     if owner is not None:
         # Stop ONLY the host process: its served set comes back with it, and any per-profile

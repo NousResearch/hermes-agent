@@ -796,7 +796,12 @@ class GatewayAdapterLifecycleMixin:
     def _schedule_planned_restart_replay(self) -> None:
         """Replay the owed planned-restart notice after a reconnect, in the background: notification delivery
         must not hold up adapter recovery or other platforms' reconnects."""
-        from gateway.run import _planned_restart_notification_pending
+        from gateway.run import _planned_restart_notification_pending, _restart_notification_pending
+        if _restart_notification_pending():
+            task = self._retain_background_task(asyncio.create_task(
+                self._send_restart_notification(),
+            ))
+            task.add_done_callback(self._late_failure_callback("restart notification replay failed"))
         if _planned_restart_notification_pending():
             task = self._retain_background_task(asyncio.create_task(
                 self._replay_pending_planned_restart_notification(),

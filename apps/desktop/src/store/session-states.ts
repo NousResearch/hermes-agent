@@ -1160,6 +1160,7 @@ function loadTilesByProfile(): Record<string, StoredTile[]> {
       // never collapse them back into a same-named local profile on reload.
       const separator = profile.lastIndexOf('::')
       const isScopedBucket = profile.startsWith('conn:') && separator > 'conn:'.length
+
       const key =
         profile === BOTS_TILE_BUCKET
           ? BOTS_TILE_BUCKET
@@ -1218,15 +1219,19 @@ const tilesByProfile = loadTilesByProfile()
 // window's primary backend and never changes on a rail switch, so keying on
 // it left the previous profile's tiles registered (phantom "Session" tabs).
 const profileKey = () => normalizeProfileKey($activeGatewayProfile.get())
+
 const tileConnectionScopeId = (connection: ReturnType<typeof $connection.get>) => {
   const id = connection?.connectionId?.trim()
+
   if (id) {
     return id
   }
+
   // Older direct remotes have no registry id. Keep them separate from local
   // and from each other instead of writing into the local profile bucket.
   return connection?.mode === 'remote' ? `url:${connection.baseUrl || 'remote'}` : null
 }
+
 let tileConnectionId = tileConnectionScopeId($connection.get())
 const tileScopeKey = () => backendScopeKey(tileConnectionId, profileKey())
 let visibleTileScope = tileScopeKey()
@@ -1318,17 +1323,21 @@ function saveTileBucket(bucket: string, tiles: SessionTile[]) {
 if (!isSecondaryWindow() && !isBrowserWindow()) {
   const restoreVisibleTiles = () => {
     const nextScope = tileScopeKey()
+
     if (nextScope === visibleTileScope) {
       return
     }
+
     visibleTileScope = nextScope
     $sessionTiles.set([...(tilesByProfile[nextScope] ?? []), ...(tilesByProfile[BOTS_TILE_BUCKET] ?? [])])
   }
+
   $activeGatewayProfile.subscribe(restoreVisibleTiles)
   $connection.subscribe(connection => {
     if (!connection) {
       return
     }
+
     tileConnectionId = tileConnectionScopeId(connection)
     restoreVisibleTiles()
   })

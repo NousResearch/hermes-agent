@@ -84,7 +84,6 @@ vi.mock('@/store/profile', () => ({
 
 const {
   $activeConnectionId,
-  $connectionContextRestore,
   $connectionsRegistry,
   $pendingConnectionId,
   initializeConnectionsRegistry,
@@ -281,7 +280,6 @@ describe('selectConnection', () => {
     expect(api).not.toHaveBeenCalled()
     expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
-    expect($connectionContextRestore.get()).toMatchObject({ connectionId: 'homelab', profile: 'default' })
     expect(wipeSessionListsForGatewaySwitch).toHaveBeenCalledTimes(1)
     expect($newChatProfile.get()).toBe('default')
     expect(refreshActiveProfile).toHaveBeenCalledTimes(1)
@@ -411,7 +409,6 @@ describe('selectConnection', () => {
     expect($activeSessionId.get()).toBe('a93bb39d')
     expect($gatewaySwitching.get()).toBe(false)
     expect(requestFreshSession).not.toHaveBeenCalled()
-    expect($connectionContextRestore.get()).toBeNull()
     expect($newChatProfile.get()).toBeNull()
     expect($pendingConnectionId.get()).toBeNull()
     expect(setLastUsed).not.toHaveBeenCalled()
@@ -598,7 +595,6 @@ describe('selectConnection', () => {
     expect($connection.get()?.connectionId).toBe('work-vps')
     expect(recoverActiveSourceAfterFailedGatewaySwitch).not.toHaveBeenCalled()
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
-    expect($connectionContextRestore.get()).toMatchObject({ connectionId: 'work-vps', profile: 'default' })
     expect(setLastUsed).toHaveBeenCalledTimes(1)
     expect(setLastUsed).toHaveBeenCalledWith('work-vps')
     expect($gatewaySwitching.get()).toBe(false)
@@ -901,7 +897,6 @@ describe('selectConnection', () => {
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
     expect($showAllProfiles.get()).toBe(true)
-    expect($connectionContextRestore.get()).toBeNull()
   })
 
   it('boot restore proceeds after the descriptor wait deadline (bounded wait)', { timeout: 30_000 }, async () => {

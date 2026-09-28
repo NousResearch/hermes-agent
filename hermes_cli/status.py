@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
-from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE
+from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, DEFAULT_VERCEL_IMAGE
 from hermes_cli.models import provider_label
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.vercel_auth import describe_vercel_auth
@@ -178,7 +178,8 @@ def _render_terminal(ctx):
         persist_enabled = (bool(terminal_cfg.get("container_persistent", True)) if persist is None
                            else persist.lower() in {"1", "true", "yes", "on"})
         auth_status = describe_vercel_auth()
-        _kv("Runtime:", os.getenv('TERMINAL_VERCEL_RUNTIME') or terminal_cfg.get('vercel_runtime') or 'node24')
+        _kv("Image:", os.getenv('TERMINAL_VERCEL_RUNTIME') or terminal_cfg.get('vercel_runtime')
+            or os.getenv('TERMINAL_VERCEL_IMAGE') or terminal_cfg.get('vercel_image') or DEFAULT_VERCEL_IMAGE)
         _kv_flag("SDK:", importlib.util.find_spec("vercel") is not None, "installed",
                  "missing (run hermes setup terminal and select Vercel Sandbox, then restart Hermes)")
         _kv("Auth:", f"{check_mark(auth_status.ok)} {auth_status.label}")
@@ -372,30 +373,3 @@ def show_status(args):
                           nous_inference_present=False, nous_account_info=None)
     for render in _SECTIONS:
         render(ctx)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import subprocess  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'format_nous_portal_entitlement_message': ('hermes_cli.nous_account', 'format_nous_portal_entitlement_message'),
-    'get_nous_portal_account_info': ('hermes_cli.nous_account', 'get_nous_portal_account_info'),
-    'get_nous_subscription_features': ('hermes_cli.nous_subscription', 'get_nous_subscription_features'),
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
-    'redact_key': ('hermes_cli.config', 'redact_key'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

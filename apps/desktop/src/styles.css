@@ -706,13 +706,20 @@
      arbitrary native material. Keep the window's single-painter contract for
      shell/sidebar/terminal, then raise only the transcript as a quiet glass
      pane: enough tint for AA text, blur for noisy wallpaper, and one hairline
-     to describe the frame without nesting cards. */
-  :root[data-hermes-glass] [data-chat-transcript-frame] {
+     to describe the frame without nesting cards.
+     Keyed to BOTH translucency modes, because both expose the desktop under
+     this pane: glass rewrites the field surfaces to transparent, clear fades
+     the whole window natively. Covering only `glass` left the transcript bare
+     on the user's wallpaper whenever the app ran in clear mode.  */
+  :root[data-hermes-glass] [data-chat-transcript-frame],
+  :root[data-hermes-clear] [data-chat-transcript-frame] {
     margin: 0.5rem;
     border: 1px solid var(--ui-stroke-tertiary);
     border-radius: var(--radius-xl);
     background: color-mix(in srgb, var(--ui-bg-chrome) 86%, transparent);
-    box-shadow: var(--shadow-nous);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
+      var(--shadow-nous);
     backdrop-filter: blur(1.5rem) saturate(1.08);
     -webkit-backdrop-filter: blur(1.5rem) saturate(1.08);
   }

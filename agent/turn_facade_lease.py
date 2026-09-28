@@ -291,9 +291,10 @@ def admit_durable_turn_lease(
             # the flag alone: the flush heals a row deleted under a live agent (#123583). So does
             # an unknown one: the create is an upsert that never overwrites an existing row.
             agent._session_db_created = True
-        # Reload only a transcript that exists: callers may seed a fresh id in memory before its
+        # Reload only a transcript that may exist: callers may seed a fresh id in memory before its
         # row is written, and reloading an absent row would erase that seed. An unknown row still
-        # reloads after a wait (the holder wrote meanwhile); that read raising ends the turn.
+        # reads the transcript after a wait and adopts it only if it returns rows; that read
+        # raising ends the turn.
         if waited and durable is not False:
             agent._emit_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
@@ -305,15 +306,17 @@ def admit_durable_turn_lease(
             reloaded = db.get_messages_as_conversation(
                 agent.session_id, repair_alternation=True, include_row_ids=True
             )
-            # A follow-up that aborted an earlier wait carries that turn's never-persisted input
-            # only in memory (see carry_unadmitted_user_message); the reload would drop it.
-            from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
-            reloaded.extend(
-                m for m in (conversation_history or [])
-                if isinstance(m, dict) and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
-                and "_row_id" not in m
-            )
+            # Decide on the stored rows alone: an unknown row that reloads nothing keeps the
+            # caller's history, which already holds any carried input below.
             if durable or reloaded:
+                # A follow-up that aborted an earlier wait carries that turn's never-persisted
+                # input only in memory (see carry_unadmitted_user_message); the reload drops it.
+                from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+                reloaded.extend(
+                    m for m in (conversation_history or [])
+                    if isinstance(m, dict) and m.get(_PERSIST_AFTER_ADMISSION_INTERRUPT)
+                    and "_row_id" not in m
+                )
                 admission.conversation_history = reloaded
         lease.build_threads()
     except BaseException:

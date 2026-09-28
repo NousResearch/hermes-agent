@@ -181,8 +181,10 @@ def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
         (False, True, [{"role": "user", "content": "durable latest"}], True, True),
         # The holder deleted the row meanwhile: there is nothing to reload.
         (True, False, [], False, False),
+        # An unreadable row that reloads nothing keeps the caller's history, carried input included.
+        (True, "raises", [], False, False),
     ],
-    ids=["still-fresh", "created-during-wait", "deleted-during-wait"],
+    ids=["still-fresh", "created-during-wait", "deleted-during-wait", "unreadable-empty"],
 )
 def test_waited_admission_uses_the_row_read_after_the_lease(
     monkeypatch, row_before, row_after, reload_rows, expect_reload, expect_row_known,

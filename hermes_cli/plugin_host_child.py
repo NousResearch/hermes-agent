@@ -29,7 +29,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli.plugin_host_wire import (
-    Channel, Opaque, PROTOCOL_VERSION, PluginHostUnsupported, decode, describe_signature, encode, is_async_callable,
+    Channel, Opaque, PROTOCOL_VERSION, PluginHostUnsupported, bind_serving_request, decode, describe_signature,
+    encode, is_async_callable, serving_request,
 )
 
 logger = logging.getLogger("hermes_cli.plugin_host_child")
@@ -60,7 +61,7 @@ class RemoteFacade:
 
     def __init__(self, runtime: "HostRuntime", plugin_key: str, name: str):
         self._runtime, self._plugin_key, self._name = runtime, plugin_key, name
-        self._methods: set = set()
+        self._methods: Dict[str, bool] = {}  # method name -> is a coroutine function in Hermes
 
     def __getattr__(self, attr: str) -> Any:
         if attr.startswith("_"):
@@ -69,8 +70,16 @@ class RemoteFacade:
             value = self._runtime.facade_call(self._plugin_key, self._name, attr, _probe=True)
             if not (isinstance(value, dict) and value.get("__method__")):
                 return value  # a plain attribute (``ctx.state.data_dir``): read fresh every time
-            self._methods.add(attr)
-        return functools.partial(self._runtime.facade_call, self._plugin_key, self._name, attr)
+            self._methods[attr] = bool(value.get("async"))
+        call = functools.partial(self._runtime.facade_call, self._plugin_key, self._name, attr)
+        if not self._methods[attr]:
+            return call
+
+        async def remote(*args: Any, **kwargs: Any) -> Any:  # ``await ctx.llm.acomplete(...)``
+            return await asyncio.to_thread(call, *args, **kwargs)
+
+        remote.__name__ = attr
+        return remote
 
 
 class RemotePluginContext:
@@ -129,6 +138,7 @@ class HostRuntime:
         self.modules: Dict[str, str] = {}
         self.asgi_apps: Dict[str, Any] = {}
         self.profiles: Dict[str, Dict[str, Any]] = {}
+        self.instance_modules: Dict[str, Any] = {}
         self.stopped = threading.Event()
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, name="plugin-host-loop", daemon=True).start()
@@ -159,7 +169,6 @@ class HostRuntime:
         """Method table + attribute plan for a provider object; every method runs here, in the host."""
         methods: Dict[str, Any] = {}
         instance = sorted(k for k in vars(obj) if not k.startswith("_")) if hasattr(obj, "__dict__") else []
-        static: Dict[str, Any] = {}
         live: List[str] = list(instance)
         for name in dir(obj):
             if name.startswith("_") or name in instance:
@@ -172,9 +181,11 @@ class HostRuntime:
             if callable(value):
                 methods[name] = {"async": is_async_callable(value), "sig": describe_signature(value)}
             else:
-                static[name] = encode(value)
+                # Class-level defaults too: an engine that sets ``context_length`` only later in
+                # ``update_model()`` must not read as the base-class default forever in Hermes.
+                live.append(name)
         return {"__object__": self._remember(plugin_key, obj), "methods": methods, "live": live,
-                "static": static, "type": type(obj).__name__}
+                "type": type(obj).__name__}
 
     def resolve_from_parent(self, ref: dict) -> Any:
         if "__handle__" in ref:
@@ -203,7 +214,7 @@ class HostRuntime:
     def spawn(self, coro: Any, *, name: Optional[str] = None) -> Any:
         if not inspect.iscoroutine(coro):
             raise TypeError("spawn_task() requires a coroutine object")
-        return asyncio.run_coroutine_threadsafe(_named(coro), self.loop)
+        return asyncio.run_coroutine_threadsafe(_on_behalf_of(coro, serving_request()), self.loop)
 
     # -- incoming ---------------------------------------------------------------------------------
     def handle(self, method: str, params: Dict[str, Any], _origin: Optional[int]) -> Any:
@@ -213,8 +224,10 @@ class HostRuntime:
         return handler(self, params)
 
     def _run(self, result: Any) -> Any:
+        """Await plugin coroutines on the host loop, still attributed to the request being served
+        (their ``ctx`` calls then run in that caller's session, not a bare context)."""
         if inspect.isawaitable(result):
-            return asyncio.run_coroutine_threadsafe(_await(result), self.loop).result()
+            return asyncio.run_coroutine_threadsafe(_on_behalf_of(result, serving_request()), self.loop).result()
         return result
 
     def _encode_result(self, plugin_key: str, value: Any) -> Any:
@@ -243,7 +256,11 @@ class HostRuntime:
         run ``register(ctx)`` capturing the one ``capture`` registration, else instantiate the first
         subclass of ``base``. Other registrations reach Hermes only when it bound a ctx for them."""
         plugin_key = str(params["plugin_key"])
-        module = _import_plugin(params)
+        # Hermes asks for a fresh instance many times (agent cache, doctor, dashboard); like the
+        # in-process loader, the module body runs once per host and only the instance is new.
+        module = self.instance_modules.get(str(params["path"]))
+        if module is None:
+            module = self.instance_modules[str(params["path"])] = _import_plugin(params)
         self.modules[plugin_key] = module.__name__
         base = _import_base(str(params["base"]))
         capture = str(params["capture"])
@@ -336,9 +353,28 @@ class HostRuntime:
     def op_obj_getattr(self, params: Dict[str, Any]) -> Any:
         obj = self.refs.get(int(params["ref"]))
         name = str(params["name"])
-        if obj is None or name.startswith("_"):
-            raise AttributeError(name)
+        if obj is None:
+            raise LookupError(f"plugin host object {params['ref']} was released")
+        if name.startswith("_") or not hasattr(obj, name):
+            return {"__missing__": name}
         return self._encode_result(self.owners.get(int(params["ref"]), ""), getattr(obj, name))
+
+    def op_release(self, params: Dict[str, Any]) -> None:
+        """Drop objects whose Hermes-side proxies were garbage-collected."""
+        with self._lock:
+            for ref in params.get("refs") or ():
+                self.refs.pop(int(ref), None)
+                self.owners.pop(int(ref), None)
+
+    def op_config_schema(self, params: Dict[str, Any]) -> Any:
+        """A memory provider's ``config_schema.py`` ``CONFIG_SCHEMA`` (user code: it runs here)."""
+        path = Path(str(params["path"]))
+        spec = importlib.util.spec_from_file_location(f"_hermes_memory_config_schema.{path.parent.name}", path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"cannot load {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return encode(getattr(module, "CONFIG_SCHEMA", None))
 
     def op_obj_setattr(self, params: Dict[str, Any]) -> None:
         obj = self.refs.get(int(params["ref"]))
@@ -377,6 +413,7 @@ _HANDLERS: Dict[str, Callable[[HostRuntime, Dict[str, Any]], Any]] = {
     "invoke": HostRuntime.op_invoke,
     "obj_invoke": HostRuntime.op_obj_invoke, "obj_getattr": HostRuntime.op_obj_getattr,
     "obj_setattr": HostRuntime.op_obj_setattr, "unload": HostRuntime.op_unload,
+    "release": HostRuntime.op_release, "config_schema": HostRuntime.op_config_schema,
     "shutdown": HostRuntime.op_shutdown,
 }
 
@@ -412,12 +449,9 @@ def _is_provider_object(value: Any) -> bool:
                                   functools.partial, type)) and type(value).__module__ != "builtins"
 
 
-async def _await(awaitable: Any) -> Any:
+async def _on_behalf_of(awaitable: Any, origin: Optional[int]) -> Any:
+    bind_serving_request(origin)  # this task's context only; tasks it spawns inherit it
     return await awaitable
-
-
-async def _named(coro: Any) -> Any:
-    return await coro
 
 
 def _import_plugin(params: Dict[str, Any]) -> Any:

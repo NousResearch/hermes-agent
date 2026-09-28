@@ -62,7 +62,7 @@ def _home_with_plugins(tmp_path, monkeypatch, plugins: dict, isolation="host"):
     return home
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process semantics (os._exit child)")
+@pytest.mark.platforms("posix")  # os._exit / SIGKILL process semantics
 def test_plugin_runs_out_of_process_with_ctx_round_trips_and_survives_host_crash(tmp_path, monkeypatch):
     from agent import image_gen_registry
     from agent.image_gen_provider import ImageGenProvider
@@ -149,11 +149,105 @@ def test_model_provider_profile_data_is_local_and_overrides_run_in_the_host(tmp_
         assert isinstance(profile, providers.ProviderProfile)
         # Discovery never started a host: data came from the cached, credential-free extraction.
         assert profile.base_url == "https://hostmodel.example/v1" and tuple(profile.env_vars) == ("HOSTMODEL_KEY",)
-        assert list((home / "cache" / "plugin_host" / "model-providers").glob("hostmodel.json"))
+        assert list((home / "cache" / "plugin_host" / "model-providers").glob("hostmodel-*.json"))
         assert not any("hostmodel" in name for name in sys.modules)
         body = profile.build_extra_body(session_id="s1")
         assert body["session_id"] == "s1" and body["pid"] != os.getpid()
     finally:
-        host = plugins_mod.get_plugin_manager()._plugin_host_instance
+        host = getattr(plugins_mod.get_plugin_manager(), "_plugin_host_instance", None)
         if host is not None:
             host.shutdown()
+
+
+ASYNC_PLUGIN = '''
+import asyncio, json
+S = {"type": "object", "properties": {}}
+
+def register(ctx):
+    async def whoami(args, **kw):  # async plugin code calling back into Hermes
+        return json.dumps({"inner": json.loads(ctx.dispatch_tool("session_probe", {})),
+                           "acomplete_awaitable": asyncio.iscoroutinefunction(ctx.llm.acomplete)})
+    ctx.register_tool(name="async_whoami", toolset="asyncprobe", schema={"name": "async_whoami",
+        "description": "d", "parameters": S}, handler=whoami, is_async=True)
+'''
+
+
+def test_async_plugin_code_calls_back_in_the_callers_session(tmp_path, monkeypatch):
+    import contextvars
+    from tools.registry import registry
+
+    session = contextvars.ContextVar("session", default="<unset>")
+    session.set("host-creator")  # whoever first touches the host must not leak into later calls
+    registry.register(name="session_probe", toolset="asyncprobe", schema={"name": "session_probe",
+                      "description": "d", "parameters": {"type": "object", "properties": {}}},
+                      handler=lambda args, **kw: json.dumps({"session": session.get()}))
+    _home_with_plugins(tmp_path, monkeypatch, {"asyncprobe": ASYNC_PLUGIN})
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        def call_as(name):
+            def run():
+                session.set(name)
+                return json.loads(registry.dispatch("async_whoami", {}, scope=manager.scope_key))
+            return contextvars.copy_context().run(run)
+
+        assert call_as("session-B") == {"inner": {"session": "session-B"}, "acomplete_awaitable": True}
+        assert call_as("session-C")["inner"] == {"session": "session-C"}
+    finally:
+        registry.deregister("session_probe")
+        manager.unload()
+        manager._plugin_host().shutdown()
+
+
+MEMORY_PLUGIN = '''
+import os
+from agent.memory_provider import MemoryProvider
+
+class Probe(MemoryProvider):
+    level = 0  # a class-level default the provider changes later
+    @property
+    def name(self): return "memprobe"
+    def is_available(self): return True
+    def initialize(self, session_id, **kw): pass
+    def get_tool_schemas(self): return []
+    def whoami(self):
+        self.level += 1
+        return os.getpid()
+
+def register(ctx):
+    ctx.register_memory_provider(Probe())
+'''
+
+
+@pytest.mark.platforms("posix")  # SIGKILL
+def test_hosted_memory_provider_stays_live_across_a_host_crash(tmp_path, monkeypatch):
+    import signal
+    from plugins.memory import load_memory_provider
+    from plugins.memory.config_schema import get_provider_config_schema
+
+    home = _home_with_plugins(tmp_path, monkeypatch, {})
+    provider_dir = home / "plugins" / "memprobe"
+    provider_dir.mkdir(parents=True)
+    (provider_dir / "__init__.py").write_text(MEMORY_PLUGIN, encoding="utf-8")
+    marker = tmp_path / "schema_pid"
+    (provider_dir / "config_schema.py").write_text(
+        f"import os, pathlib\npathlib.Path({str(marker)!r}).write_text(str(os.getpid()))\nCONFIG_SCHEMA = None\n",
+        encoding="utf-8")
+    host = plugins_mod.get_plugin_manager()._plugin_host()
+    try:
+        provider = load_memory_provider("memprobe")
+        first_pid = provider.whoami()
+        assert first_pid == host.pid != os.getpid()
+        assert provider.level == 1  # read live from the plugin's object, not the class default
+        # The provider's schema file is user code too: it runs in the host, never here.
+        get_provider_config_schema("memprobe")
+        assert int(marker.read_text(encoding="utf-8-sig")) == host.pid
+
+        os.kill(first_pid, signal.SIGKILL)  # windows-footgun: ok — posix-only test (platforms marker)
+        deadline = time.monotonic() + 10
+        while host.alive and time.monotonic() < deadline:
+            time.sleep(0.1)
+        # The proxy Hermes already holds reloads the provider into the new host on next use.
+        assert provider.whoami() not in {first_pid, os.getpid()}
+    finally:
+        host.shutdown()

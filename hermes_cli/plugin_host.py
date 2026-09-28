@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import dataclasses
 import inspect
 import functools
 import importlib
@@ -31,6 +32,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -64,7 +66,11 @@ class PluginHost:
         self._base_context = self._build_base_context()
         self._loading: Optional[str] = None
         self._stopping = False
-        self._restarts: list = []
+        self._deaths: list = []
+        # Bumped per host process: a proxy made for an earlier process must not address this one
+        # (object ids restart at 1, so a stale id would silently land on a different object).
+        self._generation = 0
+        self._releases: list = []
         self.info: Dict[str, Any] = {}
 
     # -- lifecycle ----------------------------------------------------------------------------------
@@ -78,7 +84,9 @@ class PluginHost:
                 and self._proc is not None and self._proc.poll() is None)
 
     def _build_base_context(self) -> contextvars.Context:
-        context = contextvars.copy_context()
+        # A fresh context, not a copy of whichever caller created the host: requests with no
+        # caller (a ``spawn_task`` loop) must not inherit that caller's session or approvals.
+        context = contextvars.Context()
 
         def bind() -> None:
             from hermes_constants import set_hermes_home_override
@@ -115,11 +123,13 @@ class PluginHost:
                                     bufsize=0)
             threading.Thread(target=_pump_stderr, args=(proc, self._home.name), daemon=True,
                              name=f"plugin-host-{proc.pid}-stderr").start()
+            self._generation += 1
             channel = Channel(proc.stdout, proc.stdin, self._handle,  # type: ignore[arg-type]
                               name=f"plugin-host[{proc.pid}]",
-                              on_close=self._on_channel_close,
+                              on_close=functools.partial(self._on_channel_close, self._generation),
                               context_for_origin=self._context_for_origin).start()
             self._proc, self._channel = proc, channel
+            self._releases = []
         try:
             self.info = channel.call("hello", {}, timeout=_START_TIMEOUT_SECS)
         except Exception as exc:
@@ -139,25 +149,30 @@ class PluginHost:
         return (f"the plugin host for this profile exited (code {code}); Hermes restarts it and reloads "
                 f"its plugins automatically" if code is not None else "the plugin host is not running")
 
-    def _on_channel_close(self, reason: str) -> None:
-        if self._stopping:
-            return
-        keys, culprit = [k for k in self._contexts if k != self._loading], self._loading
+    def _on_channel_close(self, generation: int, reason: str) -> None:
+        if self._stopping or generation != self._generation:
+            return  # a deliberate shutdown, or a late close from a host already replaced
+        culprit = self._loading
+        keys = [k for k in self._contexts.copy() if k != culprit and k in self._manager._plugins]
         logger.warning("Plugin host for %s exited (%s)%s", self._home, self._exit_reason(),
                        f" while loading plugin '{culprit}'" if culprit else "")
+        now = time.monotonic()
+        self._deaths = [t for t in self._deaths if now - t < _RESTART_WINDOW_SECS] + [now]
         if keys:
             threading.Thread(target=self._restart, args=(keys,), daemon=True,
                              name="plugin-host-restart").start()
 
+    def _restart_refused(self, what: str) -> bool:
+        if len(self._deaths) <= _RESTART_BUDGET:
+            return False
+        logger.error("Plugin host for %s died %d times in %.0fs; not restarting it again (%s)",
+                     self._home, len(self._deaths), _RESTART_WINDOW_SECS, what)
+        return True
+
     def _restart(self, keys: list) -> None:
-        now = time.monotonic()
-        self._restarts = [t for t in self._restarts if now - t < _RESTART_WINDOW_SECS]
-        if len(self._restarts) >= _RESTART_BUDGET:
-            logger.error("Plugin host for %s died %d times in %.0fs; not restarting it again (plugins: %s)",
-                         self._home, len(self._restarts), _RESTART_WINDOW_SECS, ", ".join(keys))
+        if self._restart_refused("plugins: " + ", ".join(keys)):
             return
-        self._restarts.append(now)
-        time.sleep(0.5 * len(self._restarts))
+        time.sleep(0.5 * len(self._deaths))
         manager = self._manager
         for key in keys:
             loaded = manager._plugins.get(key)
@@ -212,9 +227,32 @@ class PluginHost:
         return str((result or {}).get("module") or module_name or "")
 
     def load_instance(self, plugin_dir: Path, *, module_name: str, base_ref: str, capture: str,
-                      ctx: Any = None) -> Any:
+                      ctx: Any = None, before_reload: Optional[Callable[[], None]] = None) -> Any:
         """Load a category plugin (memory provider, context engine, cron scheduler) in the host and
-        return a proxy that is an instance of ``base_ref``. ``ctx`` receives its other registrations."""
+        return a proxy that is an instance of ``base_ref``. ``ctx`` receives its other registrations.
+
+        The proxy outlives a host crash: its next use loads the plugin into the new host (after
+        ``before_reload``, which drops the registrations the old load forwarded) and carries on."""
+        load = functools.partial(self._load_instance_ref, Path(plugin_dir), module_name=module_name,
+                                 base_ref=base_ref, capture=capture, ctx=ctx)
+        ref = load()
+        if ref is None:
+            return None
+
+        def reload() -> Dict[str, Any]:
+            if self._restart_refused(f"{capture} plugin {Path(plugin_dir).name}"):
+                raise PluginHostUnavailable(self._exit_reason())
+            if before_reload is not None:
+                before_reload()
+            fresh = load()
+            if fresh is None:
+                raise PluginHostUnavailable(f"plugin {Path(plugin_dir).name!r} no longer loads in the plugin host")
+            return fresh
+
+        return self._object_proxy(ref, _import_ref(base_ref), reload=reload)
+
+    def _load_instance_ref(self, plugin_dir: Path, *, module_name: str, base_ref: str, capture: str,
+                           ctx: Any) -> Optional[Dict[str, Any]]:
         channel = self.ensure_started()
         plugin_key = f"{capture}:{Path(plugin_dir).name}"
         if ctx is not None:
@@ -232,9 +270,14 @@ class PluginHost:
             ref = channel.call("load_instance", params)
         finally:
             self._loading = None
-        if ref is None:
-            return None
-        return self._object_proxy(ref, _import_ref(base_ref))
+        if ref is not None:
+            ref["generation"] = self._generation
+        return ref
+
+    def config_schema(self, path: Path) -> Any:
+        """Run a user memory provider's ``config_schema.py`` here and return its ``CONFIG_SCHEMA``."""
+        self.ensure_started()
+        return self._call("config_schema", {"path": str(path)})
 
     def profile_call(self, plugin_dir: str, module_name: str, profile: str, attr: str,
                      args: tuple, kwargs: dict) -> Any:
@@ -261,27 +304,44 @@ class PluginHost:
             logger.warning("Plugin '%s' on_unload callback failed in the plugin host: %s", plugin_key, error)
 
     # -- parent -> host -----------------------------------------------------------------------------
-    def _call(self, method: str, params: Dict[str, Any]) -> Any:
+    def _call(self, method: str, params: Dict[str, Any], *, generation: Optional[int] = None) -> Any:
         channel = self._channel
         try:
             if channel is None:
                 raise PluginHostUnavailable("not started")
+            if generation is not None and generation != self._generation:
+                raise PluginHostUnavailable("this object belonged to a plugin host process that has exited")
+            if self._releases:
+                released, self._releases = self._releases, []
+                channel.call("release", {"refs": released})
             return decode(channel.call(method, params), self._resolve_ref)
         except PluginHostUnavailable as exc:
             raise PluginHostUnavailable(self._exit_reason()) from exc
 
-    def invoke(self, ref: int, args: tuple, kwargs: dict) -> Any:
-        return self._call("invoke", {"ref": ref, "args": encode(list(args)), "kwargs": encode(kwargs)})
+    def _release(self, generation: int, ref: int) -> None:
+        """Finalizer of an object proxy (any thread, GC time): queue only; sent with the next call."""
+        if generation == self._generation:
+            self._releases.append(ref)
 
-    def obj_invoke(self, ref: int, method: str, args: tuple, kwargs: dict) -> Any:
+    def invoke(self, ref: int, args: tuple, kwargs: dict, *, generation: Optional[int] = None) -> Any:
+        return self._call("invoke", {"ref": ref, "args": encode(list(args)), "kwargs": encode(kwargs)},
+                          generation=generation)
+
+    def obj_invoke(self, slot: "_ObjectSlot", method: str, args: tuple, kwargs: dict) -> Any:
+        ref, generation = slot.live()
         return self._call("obj_invoke", {"ref": ref, "method": method, "args": encode(list(args)),
-                                         "kwargs": encode(kwargs)})
+                                         "kwargs": encode(kwargs)}, generation=generation)
 
-    def obj_getattr(self, ref: int, name: str) -> Any:
-        return self._call("obj_getattr", {"ref": ref, "name": name})
+    def obj_getattr(self, slot: "_ObjectSlot", name: str) -> Any:
+        ref, generation = slot.live()
+        value = self._call("obj_getattr", {"ref": ref, "name": name}, generation=generation)
+        if isinstance(value, dict) and set(value) == {"__missing__"}:
+            raise AttributeError(name)
+        return value
 
-    def obj_setattr(self, ref: int, name: str, value: Any) -> None:
-        self._call("obj_setattr", {"ref": ref, "name": name, "value": encode(value)})
+    def obj_setattr(self, slot: "_ObjectSlot", name: str, value: Any) -> None:
+        ref, generation = slot.live()
+        self._call("obj_setattr", {"ref": ref, "name": name, "value": encode(value)}, generation=generation)
 
     # -- host -> parent -----------------------------------------------------------------------------
     def _context_for_origin(self, origin: Optional[int]) -> contextvars.Context:
@@ -333,12 +393,12 @@ class PluginHost:
         if not callable(target):
             return self._encode_for_host(target)
         if params.get("probe"):
-            return {"__method__": True}
+            return {"__method__": True, "async": inspect.iscoroutinefunction(target)}
         args = decode(params.get("args") or [], self._resolve_ref)
         kwargs = decode(params.get("kwargs") or {}, self._resolve_ref)
         result = target(*args, **kwargs)
         if asyncio.iscoroutine(result):
-            result = asyncio.run(result)
+            result = _run_on_gateway_loop(result)
         return self._encode_for_host(result)
 
     def _encode_for_host(self, value: Any) -> Any:
@@ -365,12 +425,13 @@ class PluginHost:
         raise PluginHostUnsupported("registration handles are owned by the plugin host")
 
     def _callable_proxy(self, ref: Dict[str, Any]) -> Callable[..., Any]:
-        ref_id = int(ref["__callable__"])
+        ref_id, generation = int(ref["__callable__"]), self._generation
+
         async def async_proxy(*args: Any, **kwargs: Any) -> Any:
-            return await asyncio.to_thread(self.invoke, ref_id, args, kwargs)
+            return await asyncio.to_thread(self.invoke, ref_id, args, kwargs, generation=generation)
 
         def sync_proxy(*args: Any, **kwargs: Any) -> Any:
-            return self.invoke(ref_id, args, kwargs)
+            return self.invoke(ref_id, args, kwargs, generation=generation)
 
         proxy: Any = async_proxy if ref.get("async") else sync_proxy
         signature = signature_from(ref.get("sig"))
@@ -383,42 +444,109 @@ class PluginHost:
         proxy.__hermes_plugin_host_ref__ = ref_id  # type: ignore[attr-defined]
         return proxy
 
-    def _object_proxy(self, ref: Dict[str, Any], base: type) -> Any:
-        ref_id = int(ref["__object__"])
+    def _object_proxy(self, ref: Dict[str, Any], base: type,
+                      reload: Optional[Callable[[], Dict[str, Any]]] = None) -> Any:
+        """An instance of ``base`` whose methods and public attributes live in the host. Attributes
+        Hermes assigns go to the plugin's object when they can cross; live handles stay local."""
         host = self
-        live = frozenset(ref.get("live") or ())
+        slot = _ObjectSlot(self, ref, reload)
+        live = set(ref.get("live") or ())
         namespace: Dict[str, Any] = {}
         for name, meta in (ref.get("methods") or {}).items():
-            namespace[name] = _method_proxy(host, ref_id, name, meta)
-        for name, value in (ref.get("static") or {}).items():
-            decoded = decode(value, self._resolve_ref)
-            namespace[name] = staticmethod(decoded) if callable(decoded) else decoded
+            namespace[name] = _method_proxy(host, slot, name, meta)
 
         def __getattribute__(self_: Any, name: str) -> Any:  # noqa: N807
             if name in live:
-                return host.obj_getattr(ref_id, name)
+                return host.obj_getattr(slot, name)
             return object.__getattribute__(self_, name)
 
-        def __setattr__(self_: Any, name: str, value: Any) -> None:  # noqa: N807
-            if name in live:
-                host.obj_setattr(ref_id, name, value)
-            else:
-                object.__setattr__(self_, name, value)
+        def __getattr__(self_: Any, name: str) -> Any:  # noqa: N807 — set later inside the plugin
+            if name.startswith("_"):
+                raise AttributeError(name)
+            try:
+                return host.obj_getattr(slot, name)
+            except PluginHostUnavailable as exc:  # ``hasattr``/``getattr(x, n, None)`` probes stay probes
+                raise AttributeError(name) from exc
 
-        namespace.update(__getattribute__=__getattribute__, __setattr__=__setattr__,
-                         __module__=__name__, __hermes_plugin_host_ref__=ref_id,
-                         __repr__=lambda self_: f"<plugin-host {ref.get('type')} #{ref_id}>")
+        def __setattr__(self_: Any, name: str, value: Any) -> None:  # noqa: N807
+            if not name.startswith("_") and not _holds_live_handle(value):
+                host.obj_setattr(slot, name, value)
+                live.add(name)
+                return
+            live.discard(name)
+            object.__setattr__(self_, name, value)
+
+        namespace.update(__getattribute__=__getattribute__, __getattr__=__getattr__, __setattr__=__setattr__,
+                         __module__=__name__, __hermes_plugin_host_ref__=slot,
+                         __repr__=lambda self_: f"<plugin-host {ref.get('type')} #{slot.ref}>")
         cls = type(f"Hosted{ref.get('type') or base.__name__}", (base,), namespace)
         cls.__abstractmethods__ = frozenset()
-        return object.__new__(cls)
+        proxy = object.__new__(cls)
+        slot.track(proxy)
+        return proxy
 
 
-def _method_proxy(host: PluginHost, ref_id: int, name: str, meta: Dict[str, Any]) -> Callable[..., Any]:
+class _ObjectSlot:
+    """Which host object (id + host generation) a proxy addresses; re-resolved after a host restart
+    when the proxy knows how to load its plugin again."""
+
+    def __init__(self, host: PluginHost, ref: Dict[str, Any], reload: Optional[Callable[[], Dict[str, Any]]]):
+        self._host, self._reload = host, reload
+        self.ref, self.generation = int(ref["__object__"]), int(ref.get("generation") or host._generation)
+        self._finalizer: Optional[weakref.finalize] = None
+        self._proxy: Optional[weakref.ref] = None
+
+    def track(self, proxy: Any) -> None:
+        self._proxy = weakref.ref(proxy)
+        self._finalizer = weakref.finalize(proxy, self._host._release, self.generation, self.ref)
+
+    def live(self) -> tuple:
+        if (self.generation != self._host._generation or not self._host.alive) and self._reload is not None:
+            fresh = self._reload()
+            if self._finalizer is not None:
+                self._finalizer.detach()
+            self.ref, self.generation = int(fresh["__object__"]), int(fresh["generation"])
+            proxy = self._proxy() if self._proxy is not None else None
+            if proxy is not None:
+                self.track(proxy)
+        return self.ref, self.generation
+
+
+def _holds_live_handle(value: Any) -> bool:
+    """True when ``value`` would reach the host only as an opaque placeholder (an agent, a client)."""
+    found = False
+
+    def refs(obj: Any) -> Optional[dict]:
+        nonlocal found
+        if callable(obj) or not (dataclasses.is_dataclass(obj) or hasattr(obj, "model_dump")):
+            found = True
+        return None
+
+    encoded = encode(value, refs)
+    return found or (isinstance(encoded, dict) and "__opaque__" in encoded)
+
+
+def _run_on_gateway_loop(coro: Any) -> Any:
+    """A facade coroutine (``platform_actions``) uses adapters bound to the gateway's event loop, so
+    it runs there when a gateway is up; otherwise on a private loop. Always called off-loop (a
+    channel thread), never from the loop itself."""
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+    loop = getattr(runner, "_gateway_loop", None)
+    if loop is not None and loop.is_running() and not loop.is_closed():
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
+    return asyncio.run(coro)
+
+
+def _method_proxy(host: PluginHost, slot: _ObjectSlot, name: str, meta: Dict[str, Any]) -> Callable[..., Any]:
     async def async_method(self_: Any, *args: Any, **kwargs: Any) -> Any:
-        return await asyncio.to_thread(host.obj_invoke, ref_id, name, args, kwargs)
+        return await asyncio.to_thread(host.obj_invoke, slot, name, args, kwargs)
 
     def sync_method(self_: Any, *args: Any, **kwargs: Any) -> Any:
-        return host.obj_invoke(ref_id, name, args, kwargs)
+        return host.obj_invoke(slot, name, args, kwargs)
 
     method: Any = async_method if meta.get("async") else sync_method
     method.__name__ = method.__qualname__ = name

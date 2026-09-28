@@ -1,8 +1,10 @@
 """Wire format for the plugin host: framed JSON-RPC in both directions plus a value codec.
 
 Either side can call the other while a call is in flight (a host tool handler calling
-``ctx.dispatch_tool`` re-enters the parent), so requests are served on a worker pool and every
-outgoing request made while serving one names it as ``origin``. The parent uses that to run a
+``ctx.dispatch_tool`` re-enters the parent), so every request is served on its own thread (nested
+re-entry can go arbitrarily deep; a bounded pool would deadlock) and every outgoing request made
+while serving one names it as ``origin``. The origin is a ContextVar, so it follows the work onto
+event-loop tasks and ``to_thread`` hops. The parent uses that to run a
 nested request in the caller's contextvars (profile home, secret scope, session) instead of the
 reader thread's bare context.
 
@@ -22,7 +24,7 @@ import itertools
 import json
 import logging
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from pathlib import PurePath
 from typing import Any, BinaryIO, Callable, Dict, Optional
 
@@ -178,7 +180,17 @@ def signature_from(spec: Optional[list]):
         return None
 
 
-_serving = threading.local()
+_SERVING: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar("plugin_host_serving", default=None)
+
+
+def serving_request() -> Optional[int]:
+    """The peer request this code is running for (the ``origin`` of any call it makes), if any."""
+    return _SERVING.get()
+
+
+def bind_serving_request(request_id: Optional[int]) -> None:
+    """Mark the current context (an event-loop task) as working for peer request ``request_id``."""
+    _SERVING.set(request_id)
 
 
 class Channel:
@@ -186,7 +198,7 @@ class Channel:
 
     def __init__(self, reader: BinaryIO, writer: BinaryIO,
                  handler: Callable[[str, Dict[str, Any], Optional[int]], Any], *, name: str,
-                 max_workers: int = 32, on_close: Optional[Callable[[str], None]] = None,
+                 on_close: Optional[Callable[[str], None]] = None,
                  context_for_origin: Optional[Callable[[Optional[int]], contextvars.Context]] = None):
         self._reader, self._writer = reader, writer
         self._handler, self._name, self._on_close = handler, name, on_close
@@ -196,7 +208,6 @@ class Channel:
         self._pending: Dict[int, Future] = {}
         self._pending_lock = threading.Lock()
         self._contexts: Dict[int, contextvars.Context] = {}
-        self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"{name}-rpc")
         self._closed_reason: Optional[str] = None
         self._thread = threading.Thread(target=self._read_loop, name=f"{name}-reader", daemon=True)
 
@@ -221,7 +232,7 @@ class Channel:
             self._pending[request_id] = future
         self._contexts[request_id] = contextvars.copy_context()
         message = {"id": request_id, "method": method, "params": params,
-                   "origin": getattr(_serving, "request_id", None)}
+                   "origin": _SERVING.get()}
         try:
             self._send(message)
             return future.result(timeout=timeout)
@@ -254,7 +265,8 @@ class Channel:
                     logger.warning("%s: dropped a malformed frame: %.200r", self._name, line)
                     continue
                 if "method" in message:
-                    self._pool.submit(self._serve, message)
+                    threading.Thread(target=self._serve, args=(message,), daemon=True,
+                                     name=f"{self._name}-rpc").start()
                     continue
                 with self._pending_lock:
                     future = self._pending.get(message.get("id"))
@@ -270,7 +282,7 @@ class Channel:
         context = self._context_for_origin(origin) if self._context_for_origin else None
 
         def run() -> Dict[str, Any]:
-            _serving.request_id = request_id
+            token = _SERVING.set(request_id)
             try:
                 result = self._handler(str(message.get("method")), message.get("params") or {}, origin)
                 return {"id": request_id, "result": result}
@@ -280,9 +292,9 @@ class Channel:
                                    type(exc).__name__)
                 return {"id": request_id, "error": {"type": type(exc).__name__, "message": str(exc)}}
             finally:
-                _serving.request_id = None
+                _SERVING.reset(token)
 
-        reply = context.run(run) if context is not None else run()
+        reply = (context or contextvars.copy_context()).run(run)
         if request_id is None:
             return
         try:
@@ -309,7 +321,6 @@ class Channel:
         for future in pending:
             if not future.done():
                 future.set_exception(PluginHostUnavailable(reason))
-        self._pool.shutdown(wait=False, cancel_futures=True)
         if self._on_close is not None:
             try:
                 self._on_close(reason)

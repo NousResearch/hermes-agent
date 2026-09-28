@@ -56,7 +56,9 @@ def _fingerprint(plugin_dir: Path) -> str:
 
 def _cached_extraction(plugin_dir: Path, module_name: str) -> Dict[str, Any]:
     from hermes_constants import get_hermes_home
-    cache = get_hermes_home() / "cache" / "plugin_host" / "model-providers" / f"{plugin_dir.name}.json"
+    # Keyed by the full path too: a user and a project plugin may share a directory name.
+    path_key = hashlib.sha256(str(plugin_dir.resolve()).encode("utf-8")).hexdigest()[:12]
+    cache = get_hermes_home() / "cache" / "plugin_host" / "model-providers" / f"{plugin_dir.name}-{path_key}.json"
     fingerprint = _fingerprint(plugin_dir)
     try:
         cached = json.loads(cache.read_text(encoding="utf-8-sig"))

@@ -807,23 +807,43 @@ def _mount_hosted_plugin_api(app, plugin: dict, api_file_name: str) -> None:
     """``plugins.isolation: host``: the plugin's router runs in the requesting profile's plugin host;
     this process only forwards each ``/api/plugins/<name>/`` request to it (auth and the profile
     scope still apply here first). Responses are buffered: streaming and websockets need in-process."""
-    name, dashboard_dir = plugin["name"], str(plugin["_dir"])
+    name = plugin["name"]
 
     async def forward(request: Request, path: str = "") -> Response:
-        from hermes_cli.plugins import get_plugin_manager
-        host = get_plugin_manager()._plugin_host()
+        # Resolve the plugin again in the REQUESTING profile (the route is mounted once, from the
+        # launch profile): its own copy, gated by its own plugins.enabled, served by its own host.
+        target = await asyncio.to_thread(_hosted_plugin_for_request, name)
+        if target is None:
+            return JSONResponse({"detail": f"plugin {name!r} is not enabled in this profile"}, status_code=404)
+        host, dashboard_dir, api_file = target
         result = await asyncio.to_thread(
-            host.asgi_request, name, dashboard_dir, api_file_name, request.method, "/" + path,
+            host.asgi_request, name, dashboard_dir, api_file, request.method, "/" + path,
             request.url.query, [(k, v) for k, v in request.headers.items() if k.lower() != "host"],
             await request.body())
-        headers = {k: v for k, v in result["headers"]
-                   if k.lower() not in {"content-length", "transfer-encoding", "connection"}}
-        return Response(content=result["body"], status_code=int(result["status"]), headers=headers)
+        response = Response(content=result["body"], status_code=int(result["status"]))
+        for key, value in result["headers"]:  # a list, so repeated headers (Set-Cookie) all survive
+            if key.lower() not in {"content-length", "transfer-encoding", "connection"}:
+                response.headers.append(key, value)
+        return response
 
     app.add_api_route(f"/api/plugins/{name}/{{path:path}}", forward, include_in_schema=False,
                       methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
                       dependencies=[Depends(_plugin_route_secret_scope)])
     _log.info("Mounted plugin API routes via the plugin host: /api/plugins/%s/", name)
+
+
+def _hosted_plugin_for_request(name: str) -> Optional[tuple]:
+    """``(plugin host, dashboard dir, api file)`` for plugin ``name`` in the active profile, or None
+    when that profile has no enabled user copy of it."""
+    from hermes_cli.plugins import get_plugin_manager
+    from hermes_cli.plugins_cmd import _get_disabled_set, _get_enabled_set
+    for plugin in _discover_dashboard_plugins():
+        if plugin.get("name") != name or not plugin.get("_api_file") or plugin.get("source") != "user":
+            continue
+        if _plugin_api_mount_skip_reason(plugin, _get_enabled_set(), _get_disabled_set()):
+            return None
+        return get_plugin_manager()._plugin_host(), str(plugin["_dir"]), str(plugin["_api_file"])
+    return None
 
 
 def _mount_plugin_api_routes():

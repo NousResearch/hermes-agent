@@ -403,11 +403,15 @@ class _ProviderCollector:
 
         self._hook_source = _hook_source_of(self.name, SimpleNamespace(__file__=str(provider_dir / "__init__.py")))
         manager = self._plugin_context()._manager
-        with manager._discovery_lock:
-            manager._drop_fallback_hooks(self._hook_source)
+
+        def drop_hooks() -> None:  # also before a reload into a restarted host: no stale hook proxies
+            with manager._discovery_lock:
+                manager._drop_fallback_hooks(self._hook_source)
+
+        drop_hooks()
         self.provider = host.load_instance(
             provider_dir, module_name=module_name, capture="register_memory_provider",
-            base_ref="agent.memory_provider:MemoryProvider", ctx=self)
+            base_ref="agent.memory_provider:MemoryProvider", ctx=self, before_reload=drop_hooks)
         return self.provider
 
     def register_hook(self, hook_name, callback):

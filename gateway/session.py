@@ -593,7 +593,8 @@ class SessionEntry:
             result["model_override"] = sanitize_model_override(self.model_override)
         if self.prompt_pin:
             # Same defence-in-depth: routing JSON must never preserve malformed pin state.
-            result["prompt_pin"] = sanitize_prompt_pin(self.prompt_pin)
+            if pin := sanitize_prompt_pin(self.prompt_pin):
+                result["prompt_pin"] = pin
         if self.transport_profile:
             result["transport_profile"] = self.transport_profile
         if self.origin:

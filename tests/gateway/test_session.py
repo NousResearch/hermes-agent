@@ -1520,6 +1520,19 @@ class TestGatewayRoutingTable:
         assert rehydrated.model_override == {"model": "test-model"}
         restarted._db.close()
 
+    def test_malformed_prompt_pin_is_omitted_from_serialized_entry(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+
+        # Defence-in-depth: direct in-memory corruption must not serialize as
+        # "prompt_pin": null into state.db or the sessions.json mirror.
+        entry.prompt_pin = {"version": 1}
+        serialized = entry.to_dict()
+
+        assert "prompt_pin" not in serialized
+        store._db.close()
+
     def test_prompt_pin_survives_restart_and_stale_writer_cannot_cross_reset(self, tmp_path):
         config = GatewayConfig()
         store = SessionStore(sessions_dir=tmp_path, config=config)

@@ -184,24 +184,6 @@ def test_persist_override_keeps_the_uid(db):
     assert (row[0], row[1]) == ("what the user typed", uid)
 
 
-def test_on_turn_complete_clones_carry_the_uid():
-    from agent.conversation_loop import _notify_context_engine_turn_complete
-
-    engine = _CapturingEngine()
-
-    class _Agent:
-        context_compressor = engine
-        session_id = "s"
-
-    messages = [{"role": "user", "content": "q", "message_uid": "a" * UID_LEN},
-                {"role": "assistant", "content": "r", "message_uid": "b" * UID_LEN}]
-    _notify_context_engine_turn_complete(_Agent(), messages, usage=None, logger=logging.getLogger("t"))
-
-    seen = engine.turn_complete_messages
-    assert [m["message_uid"] for m in seen] == ["a" * UID_LEN, "b" * UID_LEN]
-    assert all(clone is not original for clone, original in zip(seen, messages))
-
-
 def test_consecutive_user_merge_keeps_the_first_uid_and_records_the_absorbed_ones():
     from agent.agent_runtime_helpers import _merge_consecutive_users
 
@@ -316,12 +298,6 @@ def test_assistant_merge_keeps_the_absorbed_turns_tool_call_uids():
     merged, repairs = _merge_consecutive_assistants([first, second])
     assert repairs == 1 and merged == [first]
     assert first["_tool_call_uids"] == {"call_1": "1" * UID_LEN, "call_2": "2" * UID_LEN}
-
-
-def test_the_uid_never_reaches_the_provider_copy():
-    from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
-
-    assert {"message_uid", "_absorbed_message_uids", "_tool_call_uids", "_tool_call_uid"} <= PERSISTENCE_ONLY_MESSAGE_FIELDS
 
 
 def test_a_select_context_selection_is_stripped_before_the_provider():

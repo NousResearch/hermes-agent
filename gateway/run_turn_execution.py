@@ -157,7 +157,7 @@ class GatewayTurnExecutionMixin:
 
     async def _run_agent_via_proxy(
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],
-        source: "SessionSource", session_id: str, session_key: str = None,
+        source: "SessionSource", session_id: Optional[str], session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
         scheduled_heartbeat: bool = False,
         input_snapshot: Optional[PreparedInboundMessage] = None,
@@ -337,8 +337,8 @@ class GatewayTurnExecutionMixin:
 
 
     async def _run_agent(
-        self, message: str, context_prompt: str, history: List[Dict[str, Any]],
-        source: SessionSource, session_id: str, **turn_kwargs,
+        self: "GatewayRunner", message: str, context_prompt: str, history: List[Dict[str, Any]],
+        source: SessionSource, session_id: Optional[str], **turn_kwargs,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
         when multiplexing is off)."""
@@ -1409,8 +1409,8 @@ class GatewayTurnExecutionMixin:
 
 
     async def _run_agent_inner(
-        self, message: str, context_prompt: str, history: List[Dict[str, Any]],
-        source: SessionSource, session_id: str, session_key: str = None,
+        self: "GatewayRunner", message: str, context_prompt: str, history: List[Dict[str, Any]],
+        source: SessionSource, session_id: Optional[str], session_key: str = None,
         run_generation: Optional[int] = None, _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,

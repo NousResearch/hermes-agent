@@ -826,8 +826,21 @@ def _pull_updates(
                 # untouched by checkout --detach; an autostash protects dirty files.
                 _park_detached_head(git_cmd, _m().PROJECT_ROOT, branch)
                 _git_run(git_cmd, ["checkout", "--detach", merge_ref], check=True)
-            elif _git_run(git_cmd, ["merge", "--ff-only", merge_ref]).returncode != 0:
-                _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
+            else:
+                merge_result = _git_run(git_cmd, ["merge", "--ff-only", merge_ref])
+                if merge_result.returncode != 0:
+                    ancestry = _git_run(git_cmd, ["merge-base", "--is-ancestor", "HEAD", merge_ref])
+                    if ancestry.returncode != 1:
+                        # A lock or unreadable checkout object can fail a perfectly
+                        # valid fast-forward. Unknown ancestry is not divergence either.
+                        print("✗ Git fast-forward failed; update stopped without resetting.")
+                        if merge_result.stderr.strip():
+                            print(f"  {merge_result.stderr.strip()}")
+                        if ancestry.returncode != 0 and ancestry.stderr.strip():
+                            print(f"  Could not determine Git ancestry: {ancestry.stderr.strip()}")
+                        print("  Resolve the Git error, then re-run `hermes update`.")
+                        sys.exit(1)
+                    _reconcile_diverged_checkout(git_cmd, branch, pre_pull_sha, target_ref=merge_ref)
         except KeyboardInterrupt:
             raise  # Ctrl-C reached git too (same process group): the tree may be torn, keep the marker
         except BaseException:

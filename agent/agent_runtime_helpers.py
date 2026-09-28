@@ -381,8 +381,10 @@ def _is_codex_interim(m: Dict) -> bool:
     )
 
 
-def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
-    """Fold a consecutive assistant ``msg`` into ``prev`` (union tool_calls, concat text)."""
+def _merge_assistant_into(prev: Dict, msg: Dict) -> bool:
+    """Fold a consecutive assistant ``msg`` into ``prev`` (union tool_calls, concat text). Returns whether
+    ``msg``'s text lives on in ``prev``: multimodal (list) content is never joined, so a non-empty ``msg``
+    content beside a list (or a list beside non-empty text) is discarded and must earn no merge witness."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
 
     prev_calls = list(prev.get("tool_calls") or [])
@@ -414,7 +416,9 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     prev_content = prev.get("content")
     new_content = msg.get("content")
     content_rewritten = False
+    text_kept = not new_content  # nothing to lose
     if isinstance(prev_content, str) and isinstance(new_content, str):
+        text_kept = True
         joined = "\n".join(p for p in (prev_content.strip(), new_content.strip()) if p)
         prev["content"] = joined
         # A falsy new_content leaves ``joined`` == prev_content; that is not a rewrite.
@@ -424,6 +428,7 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     elif not prev_content and new_content is not None:
         prev["content"] = new_content
         content_rewritten = new_content != prev_content
+        text_kept = True
     # Carry reasoning_content from the later turn only if the earlier lacks it (strict thinking
     # providers need one on the merged tool-call turn).
     reasoning_carried = False
@@ -451,6 +456,7 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> None:
     # keeps the pre-merge row. The caller recomputes the flush cursor for the surviving sequence.
     if content_rewritten or calls_changed or reasoning_carried:
         prev.pop(_DB_PERSISTED_MARKER, None)
+    return text_kept
 
 
 def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *, folded: bool = True) -> None:
@@ -496,8 +502,7 @@ def _merge_consecutive_assistants(messages: List[Dict]) -> Tuple[List[Dict], int
                 _remember_absorbed_row(msg, prev, folded=False)
                 collapsed[-1] = msg
             else:
-                _merge_assistant_into(prev, msg)
-                _remember_absorbed_row(prev, msg)
+                _remember_absorbed_row(prev, msg, folded=_merge_assistant_into(prev, msg))
             repairs += 1
             continue
         collapsed.append(msg)

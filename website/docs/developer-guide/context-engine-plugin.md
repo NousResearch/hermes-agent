@@ -176,8 +176,9 @@ What the host guarantees:
   the host's fold of `A` and `B` rather than a new message. Merges made while
   restoring a history (`repair_alternation=True`) record the witness the same
   way. A row the host discards rather than folds (a provisional verification
-  candidate superseded by the final answer) is not recorded: the witness
-  names text that lives on in the composite, nothing else.
+  candidate superseded by the final answer, or an assistant turn whose text
+  sits beside multimodal content, which is never joined) is not recorded: the
+  witness names text that lives on in the composite, nothing else.
 - **Engine-authored rows keep the uid the engine sets.** If your `compress()`
   output pre-stamps `message_uid` on a summary carrier (or any row it emits),
   the host writes that value through the commit, both in place and on

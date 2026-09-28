@@ -351,6 +351,24 @@ def test_a_reused_id_merge_survives_rewrite_and_restore(db):
     assert next(m for m in again if m["role"] == "tool")["_tool_call_uid"] == occurrences[1]
 
 
+@pytest.mark.parametrize("kept, dropped", [
+    ([{"type": "text", "text": "kept"}], "UNIQUE-DROPPED-TEXT"),
+    ("kept", [{"type": "text", "text": "UNIQUE-DROPPED-PART"}]),
+    ([{"type": "text", "text": "kept"}], [{"type": "text", "text": "UNIQUE-DROPPED-PART"}]),
+])
+def test_an_assistant_fold_that_discards_the_later_text_is_no_witness(kept, dropped):
+    """Multimodal content is never joined: the later turn's row is retired, but its uid must not be
+    claimed as a constituent of text it does not contain."""
+    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+
+    survivor = {"role": "assistant", "content": kept, "message_uid": "a" * UID_LEN}
+    later = {"role": "assistant", "content": dropped, "message_uid": "b" * UID_LEN, "_row_id": 9}
+    merged, repairs = _merge_consecutive_assistants([survivor, later])
+    assert repairs == 1 and merged == [survivor] and survivor["content"] == kept
+    assert "_absorbed_message_uids" not in survivor
+    assert survivor["_absorbed_row_ids"] == [9]
+
+
 def test_a_select_context_selection_is_stripped_before_the_provider():
     """The request copy is stripped BEFORE ``select_context``; an engine that hands back the
     ``conversation_messages`` clones must not put the ids back on the wire."""

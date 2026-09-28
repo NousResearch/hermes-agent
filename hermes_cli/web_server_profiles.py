@@ -472,5 +472,7 @@ def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
         keys = ("name", "trust_level", "scan_verdict")
         return {entry["identifier"]: {k: entry.get(k) for k in keys}
                 for entry in lock.list_installed() if entry.get("identifier")}
+    except HTTPException:
+        raise  # an unknown profile is the scope's 404, not an unreadable lock file
     except Exception:
         return {}

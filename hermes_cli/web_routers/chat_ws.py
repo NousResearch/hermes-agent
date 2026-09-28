@@ -52,6 +52,29 @@ def _get_event_state(app: "FastAPI"):
 
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
+def _unlink_active_session_file(path: Optional[Path]) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _discard_active_session_file(app: "FastAPI", channel: Optional[str], path: Optional[Path]) -> None:
+    _unlink_active_session_file(path)
+    if not channel or path is None:
+        return
+    try:
+        from hermes_cli.web_server import _get_pty_active_session_files
+        files = _get_pty_active_session_files(app)
+        if files.get(channel) == path:
+            files.pop(channel, None)
+    except Exception:
+        pass
+
+
+
 
 def _ws_auth_mode() -> str:
     """Short label for the active WS auth mode — logged on every connection."""
@@ -464,8 +487,13 @@ async def pty_ws(ws: WebSocket) -> None:
     sidecar_url = _build_sidecar_url(channel) if channel else None
     force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
     active_session_file: Optional[Path] = None
+    marker_preexisting = False
 
     if channel:
+        from hermes_cli.web_server import _get_pty_active_session_files
+        marker_files = _get_pty_active_session_files(ws.app)
+        marker_preexisting = channel in marker_files
+
         active_session_file = _active_session_file_for_channel(ws.app, channel)
         if force_fresh:
             resume = None
@@ -473,6 +501,7 @@ async def pty_ws(ws: WebSocket) -> None:
                 active_session_file.unlink(missing_ok=True)
             except OSError:
                 pass
+            marker_preexisting = False
         elif not resume:
             resume = _read_active_session_file(active_session_file)
             if resume:
@@ -499,9 +528,13 @@ async def pty_ws(ws: WebSocket) -> None:
     try:
         argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
     except HTTPException as exc:  # unknown/invalid profile
+        if not marker_preexisting:
+            _discard_active_session_file(ws.app, channel, active_session_file)
         await _pty_fail(ws, exc)
         return
     except SystemExit as exc:  # _make_tui_argv sys.exit(1)s when node/npm is missing
+        if not marker_preexisting:
+            _discard_active_session_file(ws.app, channel, active_session_file)
         await _pty_fail(ws, exc)
         return
     except InstallError as exc:  # PM could not provide node; its remedy names the fix
@@ -534,10 +567,28 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # Keep-alive path: the PTY outlives this socket; reattach by token.
     try:
-        session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn)
+        session, _created = await PTY_REGISTRY.attach_or_spawn(
+            attach_token,
+            spawn=_spawn,
+            active_session_file=active_session_file,
+        )
     except (PtyUnavailableError, FileNotFoundError, OSError, RegistryFull) as exc:
+        if not marker_preexisting:
+            _discard_active_session_file(ws.app, channel, active_session_file)
         await _pty_fail(ws, exc)
         return
+
+    if _created:
+        # This PTY now owns this marker for its entire keep-alive lifetime.
+        if channel and active_session_file is not None:
+            session.active_session_cleanup = (
+                lambda app=ws.app, ch=channel, path=active_session_file:
+                _discard_active_session_file(app, ch, path)
+            )
+    elif not marker_preexisting:
+        # A different channel attached to an already-existing PTY. The marker
+        # just allocated for this channel is not owned by that PTY.
+        _discard_active_session_file(ws.app, channel, active_session_file)
 
     # A fresh xterm can't rebuild the TUI from an arbitrary tail of alternate-
     # screen differential output; reused PTYs emit a full frame after replay.

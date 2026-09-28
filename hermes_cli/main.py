@@ -2799,7 +2799,8 @@ def cmd_dashboard(args):
     # fail-closed SystemExit unchanged.
     _maybe_setup_dashboard_auth_interactively(args)
     if _headless_backend:
-        from hermes_cli.observability.shared_metrics_process import begin_process; begin_process("serve")
+        from hermes_cli.observability.shared_metrics_process import begin_process
+        begin_process("serve")
 
     # The in-browser Chat tab (embedded TUI over PTY/WebSocket) is always
     # available — desktop and dashboard both rely on `/api/ws` + `/api/pty`.

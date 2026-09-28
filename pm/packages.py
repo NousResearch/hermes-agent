@@ -879,7 +879,14 @@ class CuaDriver(BinaryPackage):
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        return github_release_tags("trycua/cua", strip_prefix="cua-driver-rs-v")
+        # trycua flags EVERY cua-driver-rs-v* release as a GitHub prerelease,
+        # including its stable channel (verified 2026-09-28: all 19
+        # stable-shaped tags carry prerelease=true, and the repo's
+        # /releases/latest points at sandbox releases instead), so the
+        # default filter would return [] and freeze the pin forever. The
+        # nightly-*/sandbox tags still never survive the version-shape
+        # filter in github_release_tags.
+        return github_release_tags("trycua/cua", strip_prefix="cua-driver-rs-v", include_prereleases=True)
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         flatten_single_dir(staged)

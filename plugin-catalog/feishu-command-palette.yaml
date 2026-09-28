@@ -1,7 +1,8 @@
 name: feishu-command-palette
 repo: https://github.com/billzai/hermes-feishu-panel
-sha: ab25e46b57426ea3685c8c7b7ea074ec2df067b1
-version: "1.1.0"
+sha: 9074d3753fc3b8a36262453e9cb497bb523c0bf8
+version: "1.2.0"
+requires_hermes: ">=0.21.0"
 description: "Interactive Feishu/Lark single-card control panel to dispatch Hermes slash commands directly."
 maintainer: billzai
 tier: community

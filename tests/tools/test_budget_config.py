@@ -67,6 +67,7 @@ class TestResolveThreshold:
         result = cfg.resolve_threshold("my_tool")
         assert result == 42
 
+
     @patch("tools.registry.registry")
     def test_registry_value_capped_at_default(self, mock_registry):
         """A scaled-down budget caps an oversized registry value (#23767).
@@ -77,6 +78,7 @@ class TestResolveThreshold:
         mock_registry.get_max_result_size.return_value = 100_000
         cfg = BudgetConfig(default_result_size=30_000)
         assert cfg.resolve_threshold("web_search") == 30_000
+
 
     @patch("tools.registry.registry")
     def test_default_budget_unchanged_for_100k_tool(self, mock_registry):
@@ -121,6 +123,7 @@ class TestBudgetForContextWindow:
         assert budget_for_context_window(0) is DEFAULT_BUDGET
         assert budget_for_context_window(-5) is DEFAULT_BUDGET
 
+
     def test_scaled_budget_constrains_oversized_result(self):
         """A 279K-char result against a 65K model exceeds the scaled per-result
         threshold, so it will be persisted/truncated rather than sent whole."""
@@ -145,10 +148,7 @@ class TestMcpPrefixThreshold:
         assert DEFAULT_BUDGET.resolve_threshold("mcp_composio_search_tools") == DEFAULT_MCP_RESULT_SIZE_CHARS
 
     def test_non_mcp_tools_keep_generic_default(self):
-        assert (
-            DEFAULT_BUDGET.resolve_threshold("some_random_tool")
-            == DEFAULT_RESULT_SIZE_CHARS
-        )
+        assert DEFAULT_BUDGET.resolve_threshold("some_random_tool") == DEFAULT_RESULT_SIZE_CHARS
 
     def test_pinned_wins_over_mcp_prefix(self):
         with patch.dict(PINNED_THRESHOLDS, {"mcp_pinned_tool": float("inf")}):

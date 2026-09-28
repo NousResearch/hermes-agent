@@ -1473,6 +1473,31 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
         _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
 
 
+def adopt_worker_pid(conn: sqlite3.Connection, task_id: str, run_id: int, pid: int) -> bool:
+    """Worker-side half of ``_set_worker_pid``, run by the worker before its first model call.
+
+    A dispatcher killed between spawning the worker and ``_set_worker_pid`` leaves the run with no
+    pid: no liveness check can see the worker, so a TTL expiry reclaims the card and spawns a second
+    worker beside it. The worker fills the missing pid itself (``worker_registered``). False when
+    ``run_id`` is no longer the card's live run: the card was reclaimed before this worker got here,
+    and it must exit without working it."""
+    started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
+    with _kb.write_txn(conn):
+        row = conn.execute("SELECT status, current_run_id, worker_pid, claim_lock FROM tasks WHERE id = ?",
+                           (task_id,)).fetchone()
+        if row is None or row["status"] != "running" or row["current_run_id"] != int(run_id):
+            return False
+        # Liveness checks are host-local: a pid from another host (or pid namespace) proves nothing here.
+        if row["worker_pid"] is None and (row["claim_lock"] or "").startswith(_kb._host_prefix()):
+            conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                         (int(pid), started_at, task_id))
+            conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                         (int(pid), started_at, int(run_id)))
+            _kb._append_event(conn, task_id, "worker_registered", {"pid": int(pid), "started_at": started_at},
+                              run_id=int(run_id))
+    return True
+
+
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
     """Reset the unified consecutive-failures counter.
 
@@ -2015,6 +2040,19 @@ def _dispatch_lane_task(
     profile_exists = _profile_exists_fn()
     if profile_exists is not None and not profile_exists(assignee):
         result.skipped_nonspawnable.append(task_id)
+        # Per-task diagnostic so ``show``/``tail`` name the missing profile instead of leaving
+        # the card in ``ready`` with zero board evidence (#122422). Unlike a respawn guard the
+        # condition never expires on its own, so write it once: a repeat only when something
+        # else happened on the card since (reassign, comment) — not one row per tick forever,
+        # and not one row per foreign home per tick on a shared board (#101015).
+        if not dry_run:
+            with _kb.write_txn(conn):
+                last = conn.execute(
+                    "SELECT kind, payload FROM task_events WHERE task_id = ? "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,)).fetchone()
+                if (last is None or last["kind"] != "skipped_nonspawnable"
+                        or last["payload"] != _kb._json_or_null({"assignee": assignee})):
+                    _kb._append_event(conn, task_id, "skipped_nonspawnable", {"assignee": assignee})
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
     # must not be overwhelmed by a fan-out even with global headroom.
@@ -2448,6 +2486,26 @@ def _module_hermes_argv() -> list[str]:
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
+def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
+    """Put the running install's package root on a module-form worker's path.
+
+    ``_resolve_hermes_argv`` proves ``hermes_cli`` importable in THIS process,
+    where a store-python shim has the repo root on ``sys.path`` in-process;
+    the spawned child runs the bare ``sys.executable`` from the task workspace
+    with a scrubbed ``PYTHONPATH`` and cannot import the package the parent
+    just proved importable — it dies before any work and the board
+    auto-blocks (#122299, #122487, #122500). Same-interpreter child, so the
+    root is version-safe to propagate; ``hermes_cli.main``'s own bootstrap
+    then owns dependency activation as usual. A resolved shim path owns its
+    imports and is left alone. Same pin cron's external worker uses (#112729).
+    """
+    if cmd[1:3] != ["-m", "hermes_cli.main"]:
+        return
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+
+    pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
+
+
 def _absolute_hermes_path(path: str) -> str:
     """Return an absolute filesystem path for a resolved Hermes shim."""
     expanded = os.path.expanduser(path)
@@ -2871,6 +2929,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
+    # The module argv must carry the import context that made it resolvable:
+    # the shim's in-process path injection is invisible to the bare child.
+    _propagate_module_import_root(cmd, env)
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

@@ -18,7 +18,7 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { ackFreeTierNotice, freeTierReadyPending, refreshFreeTierStatus, setFreeTierRoute } from '@/store/free-tier'
 import { setMainModelAssignment } from '@/store/model-assignment'
-import { notify, notifyError } from '@/store/notifications'
+import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { guidedOnboardingActive } from '@/store/onboarding-gate'
 import { captureOnboardingScope, type OnboardingScope } from '@/store/onboarding-scope'
 import type { OAuthProvider, OAuthStartResponse } from '@/types/hermes'
@@ -645,6 +645,7 @@ export function closeManualOnboarding() {
 
 export function completeDesktopOnboarding() {
   clearPoll()
+  dismissNotification('runtime-not-ready')
   writeCachedConfigured(true)
   // A real provider is now connected, so any earlier "choose later" skip is
   // moot — clear it so the flag never lingers in a configured install.
@@ -721,12 +722,11 @@ export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: ()
 
   if (shouldPreserveConfiguredOnFallback(runtime, state)) {
     // Gateway probes timed out but the user was already configured — don't
-    // downgrade to the blocking onboarding overlay. Surface a non-blocking
-    // notification with a stable id so repeated calls during an outage dedup
-    // instead of stacking toasts.
+    // downgrade to the blocking onboarding overlay or claim an error verdict.
+    // Use the temporary informational notice; recovery clears it early.
     notify({
       id: 'runtime-not-ready',
-      kind: 'error',
+      kind: 'info',
       title: 'Runtime not ready',
       message:
         'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
@@ -1038,7 +1038,13 @@ export async function saveOnboardingApiKey(
   // Optional endpoint key — only meaningful for the "Local / custom endpoint"
   // option, whose primary `value` is the base URL. Ignored for plain API-key
   // providers (their key IS `value`).
-  endpointApiKey?: string
+  endpointApiKey?: string,
+  // Optional manual model name — only meaningful for the "Local / custom
+  // endpoint" option when /v1/models discovery returns an empty list (e.g.
+  // Cohere's OpenAI-compatible endpoint, which serves no OpenAI-shaped model
+  // catalog). Mirrors the runtime's `discover_models: false` + explicit
+  // `models:` config path. Ignored for plain API-key providers.
+  modelName?: string
 ) {
   ctx = captureContext(ctx)
   const generation = flowGeneration
@@ -1054,7 +1060,7 @@ export async function saveOnboardingApiKey(
   // base_url + model + api_key), not dropped into .env — runtime resolution
   // ignores OPENAI_BASE_URL.
   if (envKey === 'OPENAI_BASE_URL') {
-    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx)
+    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx, modelName)
   }
 
   // No key validation here on purpose: we previously live-probed the key and
@@ -1099,16 +1105,34 @@ export async function saveOnboardingApiKey(
 // endpoints that gate /v1/models behind auth still enumerate models) and
 // persisted to model.api_key so the runtime can authenticate.
 //
+// If discovery returns no models — common for OpenAI-compatible SaaS that
+// doesn't expose a /v1/models catalog in the OpenAI shape (Cohere's
+// compatibility endpoint, auth-gated gateways, etc.) — we return
+// `{ ok: false, needsModelInput: true, message }` so the wizard can reveal a
+// manual model-name input. The runtime already supports this case via
+// `discover_models: false` + an explicit `models:` list; the wizard was the
+// only layer still hard-failing. A non-empty `modelName` argument is used
+// verbatim instead of the discovered list.
+//
 // We deliberately don't route through completeWithModelConfirm: that path
 // re-assigns the model from /api/model/options WITHOUT a base_url, which would
 // wipe the base_url we just wrote. We have a concrete model already, so we
 // verify the runtime directly and finish.
-export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: string, ctx: OnboardingContext) {
+export async function saveOnboardingLocalEndpoint(
+  baseUrl: string,
+  apiKey: string,
+  ctx: OnboardingContext,
+  // Manual model name from the wizard. When non-empty it is persisted verbatim
+  // — the same semantics as `discover_models: false` + an explicit `models:`
+  // list in config.yaml.
+  modelName?: string
+) {
   ctx = captureContext(ctx)
   const generation = flowGeneration
   flowScope = ctx.scope
   const url = baseUrl.trim()
   const key = apiKey.trim()
+  const manualModel = modelName?.trim() ?? ''
 
   if (!url) {
     return { ok: false, message: 'Enter the endpoint URL first.' }
@@ -1144,10 +1168,21 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     return { ok: false, message: `Could not reach ${url}.` }
   }
 
+  // Prefer the user-supplied model name when present; fall back to discovery.
+  if (manualModel) {
+    model = manualModel
+  }
+
   if (!model) {
+    // Probe succeeded but the endpoint didn't enumerate any models. The
+    // endpoint likely *has* models — we just can't discover them through an
+    // OpenAI-shaped /v1/models response. Signal the wizard to reveal a manual
+    // model-name input rather than hard-failing; `needsModelInput` is the
+    // discriminator the form reads.
     return {
       ok: false,
-      message: `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`
+      needsModelInput: true,
+      message: `Connected to ${url}, but it didn't enumerate any models at /v1/models. Enter a model name below (e.g. command-a-plus-05-2026) to continue.`
     }
   }
 

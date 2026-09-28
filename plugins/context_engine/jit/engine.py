@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger("hermes.plugins.context_engine.jit")
 
 try:
@@ -309,9 +311,9 @@ class JitContextEngine(ContextEngine):
                 capsule = str(res)
                 update_latest_capsule(session_id, capsule, active_scope)
 
-                # Persist human-readable local Markdown state under ~/.hermes/state/context/{session_id}.md
+                # Persist human-readable local Markdown state under $HERMES_HOME/state/context/{session_id}.md
                 try:
-                    state_dir = Path.home() / ".hermes" / "state" / "context"
+                    state_dir = get_hermes_home() / "state" / "context"
                     state_dir.mkdir(parents=True, exist_ok=True)
                     state_file = state_dir / f"{session_id}.md"
                     state_file.write_text(

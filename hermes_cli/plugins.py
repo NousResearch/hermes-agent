@@ -43,7 +43,8 @@ from hermes_cli.plugins_manifest import (  # noqa: F401 — re-exported
 )
 from hermes_cli.plugins_discovery import (  # noqa: F401 — re-exported
     ENTRY_POINTS_GROUP, _get_disabled_plugins, _get_enabled_plugins, collect_directory_manifests,
-    discover_entrypoint_manifests, gate_manifest, resolve_manifest_winners, scan_directory,
+    discover_entrypoint_manifests, gate_manifest, plugin_discovery_suppressed, resolve_manifest_winners,
+    scan_directory,
 )
 from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
@@ -1182,9 +1183,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     """Central manager that discovers, loads, and invokes plugins."""
 
     def __init__(self, scope_key: Optional[str] = None) -> None:
-        # Home is captured immutably: unload may run from another profile context, but every
-        # inverse must target the registration's original scope.
-        self.scope_key = scope_key or hermes_home_key()
+        # Capture the home immutably. Unload can run from a different ambient
+        # profile context, but every inverse must target the registration's
+        # original scope.  Normalize through hermes_home_key so the scope
+        # matches the key the registries store under (normcase on Windows).
+        self.scope_key = hermes_home_key(scope_key)
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
@@ -1300,6 +1303,8 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def discover_and_load(self, force: bool = False) -> None:
         """Scan all plugin sources and load each plugin found; ``force`` unloads first so config
         changes / new bundled backends become visible in long-lived sessions."""
+        if plugin_discovery_suppressed():
+            return  # a config-only read of a profile this process must not load plugins for
         if self._discovered and not force and in_plugin_load_worker():
             # A plugin whose register() re-enters discovery (importing model_tools does) runs on a
             # deadline worker that cannot re-acquire the sweep's RLock; the flag is already set for the
@@ -1602,6 +1607,11 @@ _plugin_manager: Optional[PluginManager] = None
 _plugin_managers_by_home: Dict[Path, PluginManager] = {}
 _plugin_managers_lock = threading.RLock()
 
+# Process-wide messaging-gateway host. A multiplexed gateway owns one scheduler while plugins are
+# isolated in per-profile managers, so every manager in this process must see the same live host.
+_published_gateway_message_injector: tuple[object, Callable] | None = None
+_published_gateway_host_lock = threading.Lock()
+
 # Process-wide Ink TUI / desktop host. Not the messaging-gateway slot. Stamped onto
 # each profile's manager so a multiplexed desktop process does not drop injects
 # aimed at a non-launch profile. ``None`` until the TUI/desktop process installs it.
@@ -1640,6 +1650,36 @@ def _known_plugin_managers() -> list[PluginManager]:
         if _plugin_manager is not None and _plugin_manager not in managers:
             managers.append(_plugin_manager)
     return managers
+
+
+def publish_gateway_message_host(owner: object, injector: Callable[..., bool]) -> None:
+    """Remember the process gateway host and stamp managers that already exist."""
+    global _published_gateway_message_injector
+    # Keep publication + stamping atomic with owner-safe clear. Managers created concurrently are
+    # registered before _attach_published_gateway_host(), which takes this same lock.
+    with _published_gateway_host_lock:
+        _published_gateway_message_injector = (owner, injector)
+        for manager in _known_plugin_managers():
+            manager.set_gateway_message_injector(owner, injector)
+
+
+def clear_published_gateway_message_host(owner: object) -> None:
+    """Forget this owner's process gateway host without clobbering a newer runner."""
+    global _published_gateway_message_injector
+    with _published_gateway_host_lock:
+        if (_published_gateway_message_injector is not None
+                and _published_gateway_message_injector[0] is owner):
+            _published_gateway_message_injector = None
+        for manager in _known_plugin_managers():
+            manager.clear_gateway_message_injector(owner)
+
+
+def _attach_published_gateway_host(manager: PluginManager) -> None:
+    """Give a newly resolved profile manager the live process gateway host, if any."""
+    with _published_gateway_host_lock:
+        host = _published_gateway_message_injector
+        if host is not None and manager._gateway_message_injector is None:
+            manager.set_gateway_message_injector(*host)
 
 
 def publish_tui_message_host(owner: object, injector: Callable[..., bool]) -> None:
@@ -1690,13 +1730,14 @@ def get_plugin_manager() -> PluginManager:
                 manager = PluginManager(scope_key=hermes_home_key(current_home))
                 _plugin_managers_by_home[current_home] = manager
             _plugin_manager = manager
+    _attach_published_gateway_host(manager)
     _attach_published_tui_host(manager)
     return manager
 
 
 def _reset_plugin_managers_for_tests() -> None:
     """Test-only: drop every cached manager and its submodules for a fully clean slate."""
-    global _plugin_manager, _published_tui_message_injector
+    global _plugin_manager, _published_gateway_message_injector, _published_tui_message_injector
     with _plugin_managers_lock:
         managers = list(dict.fromkeys(_plugin_managers_by_home.values()))
         if _plugin_manager is not None and _plugin_manager not in managers:
@@ -1709,6 +1750,8 @@ def _reset_plugin_managers_for_tests() -> None:
                 logger.debug("test plugin-manager unload failed", exc_info=True)
         _plugin_managers_by_home.clear()
         _plugin_manager = None
+    with _published_gateway_host_lock:
+        _published_gateway_message_injector = None
     with _published_tui_host_lock:
         _published_tui_message_injector = None
     # Dashboard-auth providers are persistent and survive a routine unload, so the clean-slate
@@ -1796,7 +1839,7 @@ def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], "set[st
         return live(manager)
     if in_flight:
         with suppress(Exception):
-            blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8"))
+            blob = json.loads(_plugin_toolset_keys_cache_path().read_text(encoding="utf-8-sig"))
             values = blob.get(cache_field) if isinstance(blob, dict) else None
             if isinstance(values, list) and all(isinstance(v, str) for v in values):
                 return set(values)

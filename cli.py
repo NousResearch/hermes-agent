@@ -4,8 +4,9 @@
 # Must be the very first import (UTF-8 stdio on Windows). Missing only mid-``hermes update``.
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    pass
+except ModuleNotFoundError as exc:
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import logging
 import os
@@ -971,18 +972,23 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             return
         self._tirith_security_checked = True
         try:
-            from tools.tirith_security import ensure_installed, is_platform_supported
+            from tools.tirith_security import ensure_installed, is_platform_supported, missing_is_expected
 
             if (
                 ensure_installed(log_failures=False) is None and is_platform_supported()
                 and (self.config.get("security", {}) or {}).get("tirith_enabled", True)
             ):
-                _cprint(
-                    f"  {_DIM}⚠ tirith security scanner enabled but not available "
-                    f"— command scanning will use pattern matching only{_RST}"
-                )
-        except Exception:
-            pass
+                # First launch after install downloads tirith in the background;
+                # warning then would report a fault that resolves itself.
+                if missing_is_expected():
+                    logger.info("tirith not ready (downloading or lazy installs off); pattern matching only")
+                else:
+                    _cprint(
+                        f"  {_DIM}⚠ tirith security scanner enabled but not available "
+                        f"— command scanning will use pattern matching only{_RST}"
+                    )
+        except Exception as exc:
+            logger.debug("tirith availability check failed: %s", exc)
 
     def _show_security_advisories(self):
         """Startup banner for unacked security advisories, on stderr (piped stdout stays clean); 24h rate-limited."""
@@ -1725,6 +1731,15 @@ def main(
     if gateway:
         _run_legacy_gateway()
         return
+
+    if not (list_tools or list_toolsets):
+        from hermes_cli.process_identity import register_self
+        from hermes_cli.shared_profile_warning import shared_profile_warning
+
+        register_self("cli")
+        warning = shared_profile_warning()
+        if warning:
+            print(f"Warning: {warning}", file=sys.stderr)
 
     _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
     query = query or q

@@ -2953,7 +2953,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `shutil` | import | `shutil` |
 | `signal` | import | `signal` |
 | `timezone` | import | `datetime` |
-| `warm_agent_browser_npx_cache` | moved-lazy | `tools.browser_tool_install` |
 | `windows_hide_flags` | moved-lazy | `hermes_cli._subprocess_compat` |
 
 ### `tools.clarify_gateway`

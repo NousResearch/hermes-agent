@@ -105,8 +105,19 @@ vi.mock('@/store/session-removal', async importActual => ({
   $removedSessionIds: { get: () => removed.ids }
 }))
 
+// The settle-grace keep set must be mocked at MODULE scope: the hook imports
+// getRecentlySettledSessionIds as a live ESM binding, so patching a
+// dynamically-imported copy (or a temporary object) never reaches it.
+const settled = vi.hoisted(() => ({ ids: [] as string[] }))
+
+vi.mock('@/store/session-states', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
+  getRecentlySettledSessionIds: () => settled.ids
+}))
+
 beforeEach(() => {
   gatewayScope.epoch = 0
+  settled.ids = []
   getCronJobs.mockReset()
   getCronJobs.mockResolvedValue([])
   listSidebarSessions.mockReset()
@@ -174,6 +185,23 @@ describe('refreshSessions cold-start load error', () => {
     })
 
     expect($sessionsLoadError.get()).toBe(true)
+  })
+
+  it('flags a failed load that carries retry and omits the session list', async () => {
+    listSidebarSessions.mockResolvedValueOnce({
+      cron: { errors: [{ error: 'schema heal exhausted', profile: 'default' }], failed: true, retry: true },
+      errors: [{ error: 'schema heal exhausted', profile: 'default' }],
+      messaging: { errors: [{ error: 'schema heal exhausted', profile: 'default' }], failed: true, retry: true },
+      recents: { errors: [{ error: 'schema heal exhausted', profile: 'default' }], failed: true, retry: true }
+    })
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessionsLoadError.get()).toBe(true)
+    expect($sessions.get()).toEqual([])
   })
 
   it('leaves a corrupt store to its own notice instead of offering retry', async () => {
@@ -283,6 +311,125 @@ describe('refreshSessions identity + loading hygiene', () => {
     })
 
     expect($sessions.get().map(s => s.id)).toEqual(['a'])
+  })
+
+  it('never resurrects a just-archived row the keep set still names (#118156)', async () => {
+    // The archive race: the RPC landed (so the in-flight pin released and the
+    // projects.tree prune dropped the tombstone — hence EMPTY tombstones
+    // here), but the row is still inside the 30s settle grace, so
+    // sessionsToKeep() names it. A refresh whose `previous` still holds the
+    // row must not carry it back through the survivor path. The map from
+    // tombstone→epoch keeps the exclusion alive exactly as long as the
+    // tombstone stood, so it must reproduce with the tombstone still set.
+    removed.ids = new Set(['just-archived'])
+
+    // Seed $sessions with the row still present, as a refresh racing the
+    // optimistic drop would see it.
+    setSessions([row('just-archived'), row('mine')])
+    // And make the settle grace name it: simulate a turn that just ended.
+    settled.ids = ['just-archived']
+
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('mine', { message_count: 3 })] }))
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['mine'])
+  })
+
+  it('drops a doomed row whose tombstone was pruned while the page was in flight (#123685)', async () => {
+    // The observed Windows resurrection: a sidebar refresh STARTS (reads the
+    // page pre-archive-commit), the user archives, the RPC lands, the
+    // projects.tree refresh prunes the tombstone (its snapshot is right —
+    // the id is gone), and THEN the stale page arrives. Membership is empty
+    // by then, so dropTombstoned has nothing to say; only the removal
+    // generation delta still names the row.
+    const pending = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValue(pending.promise)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const refresh = result.current.refreshSessions()
+
+    // The archive lands mid-flight: tombstone armed, RPC resolves, the tree
+    // prune clears membership (the real prune writes the atom directly,
+    // which is exactly why the generation guard is needed).
+    const removals = await import('@/store/session-removal')
+    removals.tombstoneSessions(['doomed'])
+    removed.ids = new Set()
+
+    // The keep set still names the doomed row (settle grace), so the
+    // survivor path would carry it back if the guard were absent.
+    setSessions([row('doomed')])
+    settled.ids = ['doomed']
+
+    await act(async () => {
+      pending.resolve(sidebar({ sessions: [row('doomed', { message_count: 4 }), row('mine')] }))
+      await refresh
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['mine'])
+
+    removals.untombstoneSessions(['doomed'])
+  })
+
+  it('re-admits a row whose archive rolled back mid-flight (release edge)', async () => {
+    // A failed archive untombstones immediately; a page that raced the
+    // rollback must still list the row — the guard only vetoes rows whose
+    // removal lifecycle moved TOWARD removal.
+    const pending = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValue(pending.promise)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const refresh = result.current.refreshSessions()
+
+    const removals = await import('@/store/session-removal')
+    removals.tombstoneSessions(['rollback'])
+    removals.untombstoneSessions(['rollback'])
+    removed.ids = new Set()
+
+    await act(async () => {
+      pending.resolve(sidebar({ sessions: [row('rollback')] }))
+      await refresh
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual(['rollback'])
+  })
+
+  it('matches a pruned-tombstone row by any lineage segment, and filters the cron slice too (#123685)', async () => {
+    // The tombstone was armed on the ROOT id while the page carries the row
+    // under a middle lineage segment (post-compression): the match must go
+    // through _lineage_ids, not just tip + root. Same race shape as above —
+    // the prune has already cleared membership.
+    const pending = deferred<SidebarSessionsResponse>()
+    listSidebarSessions.mockReturnValue(pending.promise)
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    const refresh = result.current.refreshSessions()
+
+    const removals = await import('@/store/session-removal')
+    removals.tombstoneSessions(['root-x'])
+    removed.ids = new Set()
+
+    await act(async () => {
+      pending.resolve(
+        sidebar(
+          { sessions: [row('segment', { _lineage_ids: ['root-x', 'segment', 'tip-x'] } as Partial<SessionInfo>)] },
+          [row('cron-doomed', { source: 'cron', _lineage_root_id: 'root-x' } as Partial<SessionInfo>)]
+        )
+      )
+      await refresh
+    })
+
+    expect($sessions.get().map(s => s.id)).toEqual([])
+    expect($cronSessions.get().map(s => s.id)).toEqual([])
+
+    removals.untombstoneSessions(['root-x'])
   })
 
   it('keeps idle recents when the sidebar returns an empty page plus profile errors', async () => {

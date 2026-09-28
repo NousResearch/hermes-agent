@@ -361,7 +361,7 @@ def _resolve_credentials_data(extra: Optional[dict] = None) -> dict:
     """Load the first credential record containing a private key."""
     for path in _credentials_candidates(extra):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             continue
         if isinstance(data, dict) and _credentials_key(data):
@@ -1238,7 +1238,7 @@ class BuzzAdapter(BasePlatformAdapter):
         try:
             if not (path := self._cursor_path()).exists():
                 return
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             logger.debug("Buzz: could not read channel cursors", exc_info=True)
             return
@@ -1822,12 +1822,17 @@ def _profile_buzz_extra() -> dict:
     if not _profile_scoped():
         return {}
     try:
+        from gateway.config_loader import platform_section
         from hermes_constants import get_hermes_home
         from hermes_cli.config import read_user_config_raw
         cfg = read_user_config_raw(Path(get_hermes_home()) / "config.yaml")
     except Exception:
         return {}
-    buzz = ((cfg.get("gateway") or {}).get("platforms") or {}).get("buzz") if isinstance(cfg, dict) else None
+    if not isinstance(cfg, dict):
+        return {}
+    # Same seam the runtime loader hands this plugin's YAML hook: a nested-only read missed the
+    # documented top-level ``platforms.buzz`` shape and failed configured profiles closed (#125985).
+    buzz, _ = platform_section(cfg, "buzz", (cfg.get("gateway") or {}).get("platforms"))
     extra = buzz.get("extra", buzz) if isinstance(buzz, dict) else None
     return extra if isinstance(extra, dict) else {}
 

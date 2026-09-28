@@ -35,6 +35,33 @@ const completePreviewed = (text: string) =>
     stream.handleEvent({ payload: { text, response_previewed: true }, session_id: SID, type: 'message.complete' })
   )
 
+/** A terminal frame that names the stored rows it settled, as a complete
+ *  `persisted_turn` receipt does in production. */
+const receipt = (finalRowId: number) => ({
+  row_ids: [finalRowId - 1, finalRowId],
+  user_row_id: finalRowId - 1,
+  final_assistant_row_id: finalRowId,
+  complete: true
+})
+
+const completePreviewedWithReceipt = (text: string, finalRowId: number) =>
+  act(() =>
+    stream.handleEvent({
+      payload: { persisted_turn: receipt(finalRowId), response_previewed: true, text },
+      session_id: SID,
+      type: 'message.complete'
+    })
+  )
+
+const completeTransformedWithReceipt = (text: string, finalRowId: number) =>
+  act(() =>
+    stream.handleEvent({
+      payload: { persisted_turn: receipt(finalRowId), response_transformed: true, text },
+      session_id: SID,
+      type: 'message.complete'
+    })
+  )
+
 function getState(): ClientSessionState {
   return stream.state()
 }
@@ -246,6 +273,42 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts).toContain('old interim text')
     expect(texts).toContain('totally new answer')
     expect(texts).toHaveLength(2)
+  })
+
+  // The pinned case above has no receipt, so no durable identity to settle on.
+  // With one, a rewritten final after a chained message.start is the SAME
+  // turn's reply: the interim never carried a rowId of its own, and the frame
+  // names the row it settled — settle onto the interim instead of appending a
+  // second bubble for one stored row (#124128).
+  it('settles a rewritten previewed final onto the display-only interim after a chained message.start', async () => {
+    mountStream()
+    await start()
+    await delta('Checking the lease file now.')
+    await interim('Checking the lease file now.')
+    await start()
+    await completePreviewedWithReceipt('The lease file shows a stale lock.', 8)
+
+    const texts = assistantMessages()
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toBe('The lease file shows a stale lock.')
+    expect(
+      getState()
+        .messages.filter(m => m.role === 'assistant')
+        .at(-1)?.interim
+    ).toBeFalsy()
+  })
+
+  it('settles a rewritten transformed final onto the display-only interim after a chained message.start', async () => {
+    mountStream()
+    await start()
+    await delta('TOKEN_1 holds the stale lock.')
+    await interim('TOKEN_1 holds the stale lock.')
+    await start()
+    await completeTransformedWithReceipt('example-service.internal holds the stale lock.', 8)
+
+    const texts = assistantMessages()
+    expect(texts).toHaveLength(1)
+    expect(texts[0]).toBe('example-service.internal holds the stale lock.')
   })
 
   it('appends a genuinely different final as its own bubble (two real assistant segments)', async () => {

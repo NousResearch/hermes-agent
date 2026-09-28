@@ -66,6 +66,7 @@ _CONTAINER_KEYS = (
     ("docker_env", {}), ("docker_run_as_host_user", False), ("docker_extra_args", []),
     ("docker_shm_size", "1g"), ("docker_network", True), ("docker_persist_across_processes", True),
     ("docker_shared_container_key", ""), ("docker_orphan_reaper", True), ("docker_snap_compat", False),
+    ("docker_image_pinned", False),
 )
 _DOCKER_KWARGS = (
     ("volumes", "docker_volumes", []), ("auto_mount_cwd", "docker_mount_cwd_to_workspace", False),
@@ -73,7 +74,7 @@ _DOCKER_KWARGS = (
     ("run_as_host_user", "docker_run_as_host_user", False), ("network", "docker_network", True),
     ("extra_args", "docker_extra_args", []), ("persist_across_processes", "docker_persist_across_processes", True),
     ("shared_container_key", "docker_shared_container_key", ""), ("shm_size", "docker_shm_size", "1g"),
-    ("snap_compat", "docker_snap_compat", False),
+    ("snap_compat", "docker_snap_compat", False), ("image_pinned", "docker_image_pinned", False),
 )
 
 
@@ -272,7 +273,8 @@ def _check_vercel(config: Dict[str, Any]) -> bool:
         return _reject(f"Vercel Sandbox does not support custom TERMINAL_CONTAINER_DISK={disk}. "
                        "Use the default shared setting (51200 MB).")
     if importlib.util.find_spec("vercel") is None:
-        return _reject("vercel is required for the Vercel Sandbox terminal backend: pip install vercel")
+
+        return _reject("vercel is required for the Vercel Sandbox terminal backend. Run hermes setup terminal and select Vercel Sandbox.")
     from agent.secret_scope import get_secret
     if get_secret("VERCEL_OIDC_TOKEN"):
         return True
@@ -315,7 +317,7 @@ _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
     "singularity": {"binary": (lambda: shutil.which("apptainer") or shutil.which("singularity"), "--version", None)},
     "ssh": {"pre": _ssh_pre},
     "modal": {"pre": _modal_pre,
-              "module": ("modal", "modal is required for direct modal terminal backend: pip install modal")},
+              "module": ("modal", "modal is required for direct modal terminal backend. Run hermes setup terminal and select Modal.")},
     "vercel_sandbox": {"pre": _check_vercel},
     "daytona": {"post": _daytona_post},
 }

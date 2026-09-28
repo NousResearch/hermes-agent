@@ -7,6 +7,8 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
+from hermes_constants import get_hermes_home
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -63,7 +65,7 @@ def get_default_db_path() -> Path:
     env_path = os.environ.get("HERMES_JIT_DB_PATH")
     if env_path:
         return Path(env_path)
-    state_dir = Path.home() / ".hermes" / "state"
+    state_dir = get_hermes_home() / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     return state_dir / "jit_context.db"
 

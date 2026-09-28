@@ -12,22 +12,18 @@ from hermes_cli import nous_subscription
 logger = logging.getLogger("hermes_cli.setup")
 
 
-def _pip_install_tts_package(name: str, pip_args: list, manual_cmd: str) -> bool:
-    """Install a local TTS engine through the canonical uv → pip → ensurepip
-    ladder so pip-less venvs (Ubuntu 25.10 ``python -m venv``, ``uv venv``) work."""
-    from hermes_cli.tools_config import _pip_install
+def _install_tts_extra(extra: str) -> bool:
+    """Record the engine in PM's dependency union; activate it on next launch."""
+    import pm
+
     try:
-        result = _pip_install(pip_args, timeout=300)
-        if result.returncode == 0:
-            _setup.print_success(f"{name} installed successfully")
-            return True
-        err = (result.stderr or "").strip()
-        reason = err[:300] if err else "install failed"
-    except Exception as e:
-        reason = e
-    _setup.print_error(f"Failed to install {name}: {reason}")
-    _setup.print_info(f"Try manually: {manual_cmd}")
-    return False
+        pm.sync_venv([extra], explicit=True)
+    except (pm.InstallError, OSError, ValueError) as exc:
+        _setup.print_error(f"Failed to install {extra}: {exc}")
+        _setup.print_info("Retry with: hermes setup tts")
+        return False
+    _setup.print_success(f"{extra} installed. Restart Hermes to use it.")
+    return True
 
 
 # sys.platform -> (manual install hint, install command); anything else uses "linux".
@@ -40,6 +36,11 @@ _ESPEAK_INSTALL = {
 
 def _install_neutts_deps() -> bool:
     """Install NeuTTS dependencies with user approval. Returns True on success."""
+    from pm.extras import extra_supported
+
+    if not extra_supported("neutts"):
+        _setup.print_error("NeuTTS is not supported by this Python/platform.")
+        return False
     if not (shutil.which("espeak-ng") or shutil.which("espeak")):
         hint, install_cmd = _ESPEAK_INSTALL.get(sys.platform, _ESPEAK_INSTALL["linux"])
         print()
@@ -59,15 +60,13 @@ def _install_neutts_deps() -> bool:
 
     _setup._info(None, "Installing neutts Python package...",
           "This will also download the TTS model (~300MB) on first use.", None)
-    return _pip_install_tts_package("neutts", ["-U", "neutts[all]", "--quiet"], "uv pip install -U 'neutts[all]'")
+    return _install_tts_extra("neutts")
 
 
 def _install_kittentts_deps() -> bool:
     """Install KittenTTS dependencies with user approval. Returns True on success."""
-    wheel_url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl"
     _setup._info(None, "Installing kittentts Python package (~25-80MB model downloaded on first use)...", None)
-    return _pip_install_tts_package(
-        "kittentts", ["-U", wheel_url, "soundfile", "--quiet"], f"uv pip install -U '{wheel_url}' soundfile")
+    return _install_tts_extra("kittentts")
 
 
 def _xai_oauth_logged_in_for_setup() -> bool:
@@ -161,8 +160,15 @@ def _tts_api_key_step(selected: str) -> str:
 
 
 def _tts_local_install_step(selected: str) -> str:
-    """Offer to install a local TTS engine; fall back to edge if declined/failed."""
+    """Offer a local engine install; retain an unsupported explicit selection."""
+    from pm.extras import extra_supported
+
     module, name, lines, question, installer = _TTS_LOCAL_PROVIDERS[selected]
+    if not extra_supported(selected):
+        _setup.print_warning(
+            f"{name} is not supported by this Python/platform. "
+            "Your provider selection is saved, but speech requires a supported engine.")
+        return selected
     if _setup._module_installed(module):
         _setup.print_success(f"{name} is already installed")
         return selected

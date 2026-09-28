@@ -257,13 +257,49 @@ def _moa_client_consumes_prepared_request(client: Any) -> bool:
     return callable(getattr(completions, "prepare", None))
 
 
-def _join_truncated_parts(parts: List[str]) -> str:
-    """Join continuation fragments, adding a newline where two would glue together (#78577)."""
+_MIN_CONTINUATION_OVERLAP = 32
+
+
+def _continuation_overlap_length(previous: str, continuation: str) -> int:
+    """Return the longest continuation prefix that repeats the previous suffix."""
+    if len(previous) < _MIN_CONTINUATION_OVERLAP or len(continuation) < _MIN_CONTINUATION_OVERLAP:
+        return 0
+
+    prefix_lengths = [0] * len(continuation)
+    matched = 0
+    for index in range(1, len(continuation)):
+        while matched and continuation[index] != continuation[matched]:
+            matched = prefix_lengths[matched - 1]
+        if continuation[index] == continuation[matched]:
+            matched += 1
+            prefix_lengths[index] = matched
+
+    matched = 0
+    last_index = len(previous) - 1
+    for index, char in enumerate(previous):
+        while matched and char != continuation[matched]:
+            matched = prefix_lengths[matched - 1]
+        if char == continuation[matched]:
+            matched += 1
+            if matched == len(continuation):
+                if index == last_index:
+                    return matched
+                matched = prefix_lengths[matched - 1]
+    return matched if matched >= _MIN_CONTINUATION_OVERLAP else 0
+
+
+def _join_truncated_parts(parts: List[tuple[str, bool]]) -> str:
+    """Join continuation fragments, deduping only interrupted-stream seams."""
     joined = ""
-    for part in parts:
+    previous_was_partial_stub = False
+    for part, is_partial_stub in parts:
+        if previous_was_partial_stub and joined and part:
+            # Overlap can't exceed len(part): scan only that tail of ``joined``.
+            part = part[_continuation_overlap_length(joined[-len(part):], part):]
         if joined and not joined[-1].isspace() and part and not part[0].isspace():
             joined += "\n"
         joined += part
+        previous_was_partial_stub = is_partial_stub
     return joined
 
 
@@ -682,6 +718,29 @@ def _restore_pinned_tools(agent, session_row) -> list:
     return built_for_this_surface
 
 
+def _refresh_bot_chat_tools(agent) -> None:
+    """Rebuild ``agent.tools`` for a Bot Chat capability refresh through the builder that
+    created the session, so the refreshed set is what a fresh desktop/TUI session gets
+    (#124211). A canonical Bot Chat never forks, so its tools[] is otherwise a fossil of
+    session creation: ``hermes tools enable/disable`` writes ``platform_toolsets`` and the
+    automatic between-turns refresh reuses the build-time selection. Only the desktop/TUI
+    gateway keeps agents alive across turns; every other surface builds a fresh agent whose
+    tools[] already reflects config. No prefix preservation: a disabled toolset must drop,
+    and the prompt rebuild this rides on already breaks the cache."""
+    platform = getattr(agent, "platform", None)
+    if platform not in ("desktop", "tui"):
+        return
+    try:
+        from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        from tui_gateway.server import _load_disabled_toolsets, _load_enabled_toolsets
+        refresh_agent_mcp_tools(
+            agent, enabled_override=_load_enabled_toolsets(platform),
+            disabled_override=_load_disabled_toolsets(), quiet_mode=True, content_aware=True)
+    except Exception as exc:
+        logger.warning("Bot Chat capability refresh kept the previous tools for session %s: %s",
+                       agent.session_id, exc)
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -721,14 +780,18 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 clear_skills_system_prompt_cache(clear_snapshot=True)
             except Exception:
                 pass
+            _refresh_bot_chat_tools(agent)
             agent._cached_system_prompt = agent._build_system_prompt(system_message)
             stage_surface_switch_note(agent, agent._cached_system_prompt, conversation_history)
             # Persist so the NEXT turn restores the new bytes verbatim (cache break is
-            # once per capability change). on_session_start not re-fired: continuation.
+            # once per capability change). Tools re-pin too: without it the next
+            # turn's pin-restore would resurrect the pre-refresh toolset (#124211).
+            # on_session_start not re-fired: continuation.
             _persist_system_prompt(
                 agent,
                 "Session DB update_system_prompt failed after Bot Chat capability refresh "
                 "(session=%s): %s. The refresh will re-fire next turn.",
+                persist_tools=True,
             )
             return
         # Continuing session — reuse the exact system prompt from the
@@ -822,10 +885,13 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     # Model/provider identity, then cwd drift.  A cwd change is a real content change (context
     # files, the workspace snapshot and the coding posture are all resolved from it), so it
     # still rebuilds; the runtime surface does not (agent/surface_switch.py).
+    # The builder omits an empty trailer line, so stored-but-now-empty is a route change too;
+    # the rebuilt prompt then carries no line and matches from the next turn on.  Stored-empty
+    # (pre-trailer prompts) keeps reusing.
     for label, attr in (("Model", "model"), ("Provider", "provider")):
         stored = identity_line_value(prompt, label)
         current = str(getattr(agent, attr, "") or "").strip()
-        if stored and current and stored != current:
+        if stored and stored != current:
             return False
     # A prompt stamped for another session (a /branch child copies its parent's bytes) must not
     # tell the model a foreign Session ID.  Checked only when the trailer is on: with it off, a
@@ -847,11 +913,18 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
 # Named so _is_synthetic_compression_user_turn can recognize a crash-persisted nudge by
 # content (SessionDB projection strips the _length_continuation_nudge tag).
 _LENGTH_CONTINUATION_NETWORK_STUB = (
-    "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
-    "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
+    "[System: The previous response was cut off by a network error mid-stream — a transport "
+    "interruption, NOT a change in your capabilities. Your tools are still fully available; call "
+    "them as normal and ignore any earlier claim that you lack tool access. Continue the task "
+    "from where you left off. Do not restart or repeat prior text.]"
 )
 _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
     "[System: Your previous response was truncated by the output length limit. Continue exactly "
+    "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
+)
+# Pre-#74990 wording; kept so crash-persisted nudges from older sessions are still recognized.
+_LEGACY_LENGTH_CONTINUATION_NETWORK_STUB = (
+    "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
     "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
 )
 # The dropped-tools variant interpolates tool names; matched by prefix.
@@ -866,7 +939,8 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
             "the stream timed out before it could be delivered. Do NOT retry the same tool call "
             "with the same large content. Instead, break the content into multiple smaller tool "
             "calls (e.g. use multiple patch calls or write smaller files). Each tool call's "
-            "arguments must be under ~8K tokens to avoid stream timeouts.]"
+            "arguments must be under ~8K tokens to avoid stream timeouts. The cut was a transport "
+            "interruption, not a capability change — your tools remain fully available.]"
         )
     return _LENGTH_CONTINUATION_NETWORK_STUB if is_partial_stub else _LENGTH_CONTINUATION_OUTPUT_LIMIT
 
@@ -1136,7 +1210,7 @@ def _peel_moa_guidance(messages: List[Dict[str, Any]], guidance: Any) -> List[Di
 def _redecorate_prompt_cache_for_provider(
     agent, api_messages: List[Dict[str, Any]], *, system_message=None,
     moa_prepared: Optional[Dict[str, Any]] = None, tools_for_api: Optional[List[Dict[str, Any]]] = None,
-) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]] | tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     """Strip and re-apply cache_control for the *current* provider policy — failover
     ``continue`` paths reuse ``api_messages`` (#72626). MoA guidance is peeled and rebased."""
     messages: List[Dict[str, Any]] = [dict(m) if isinstance(m, dict) else m for m in (api_messages or [])]
@@ -1182,8 +1256,6 @@ def _redecorate_prompt_cache_for_provider(
         )
         messages, planned_tools = plan.messages, plan.tools
 
-    if tools_for_api is None:
-        return messages, prepared
     return messages, prepared, planned_tools
 
 
@@ -1344,7 +1416,7 @@ class _LoopState:
     restart_count: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
-    truncated_response_parts: List[str] = field(default_factory=list)
+    truncated_response_parts: List[tuple[str, bool]] = field(default_factory=list)
     compression_attempts: int = 0
     _last_preflight_pressure: Optional[int] = None
     # A provider overflow outweighs the rough-estimate calibration that defers preflight after

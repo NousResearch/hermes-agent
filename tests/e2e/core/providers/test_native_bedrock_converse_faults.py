@@ -39,8 +39,6 @@ IAM_DENIAL = ("User: arn:aws:iam::123456789012:user/e2e is not authorized to per
 KNOWN: dict[str, tuple[str, str]] = {
     "validation_retried": (r"^400 ValidationException retried: fake saw [2-9]\d* requests",
                            "#121294 a Bedrock 400 ValidationException is retried and reported as 'temporarily unavailable'"),
-    "eof_before_message_stop": (r"^truncated stream accepted as the answer: requests=1 rows=",
-                                "#109988 a ConverseStream that ends before messageStop is accepted as the answer"),
 }
 
 
@@ -142,10 +140,7 @@ def test_stream_ending_before_message_stop_is_not_accepted(runs: dict[str, Any])
     assert run["requests"] and run["requests"][0]["reply"] == "Drop", run["requests"]
     rows = [r["content"] for r in _assistant_rows(run["nh"])]
     sent = len(run["requests"])
-    # Symptom: the truncated first stream is persisted as the final answer and never retried.
-    with known_gate(KNOWN, "eof_before_message_stop", raises=KnownSymptom):
-        if sent == 1 and rows and FINAL.startswith(rows[-1]) and rows[-1] != FINAL:
-            raise KnownSymptom(f"truncated stream accepted as the answer: requests={sent} rows={rows}")
+    # #109988: a stream cut before messageStop is retried, never persisted as the answer.
     assert (sent, rows) == (2, [FINAL]), f"requests={sent} rows={rows}"
 
 

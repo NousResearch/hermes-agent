@@ -13,13 +13,13 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE
 from hermes_cli.models import provider_label
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
     _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
 from hermes_constants import OPENROUTER_MODELS_URL
-from hermes_constants import is_termux as _is_termux
 
 
 def check_mark(ok: bool) -> str:
@@ -108,8 +108,8 @@ def _estop_status_line():
 # Simple env-driven terminal backends: (label, env var, default, empty-counts-as-unset).
 _TERMINAL_ENV_ROWS = {
     "ssh": (("SSH Host:", "TERMINAL_SSH_HOST", "(not set)", True), ("SSH User:", "TERMINAL_SSH_USER", "(not set)", True)),
-    "docker": (("Docker Image:", "TERMINAL_DOCKER_IMAGE", "python:3.11-slim", False),),
-    "daytona": (("Daytona Image:", "TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20", False),),
+    "docker": (("Docker Image:", "TERMINAL_DOCKER_IMAGE", DEFAULT_SANDBOX_IMAGE, False),),
+    "daytona": (("Daytona Image:", "TERMINAL_DAYTONA_IMAGE", DEFAULT_SANDBOX_IMAGE, False),),
 }
 
 _PLATFORMS = {  # name -> (token env var, home-channel env var or None)
@@ -173,7 +173,7 @@ def _render_terminal(ctx):
         auth_status = describe_vercel_auth()
         _kv("Runtime:", os.getenv('TERMINAL_VERCEL_RUNTIME') or terminal_cfg.get('vercel_runtime') or 'node24')
         _kv_flag("SDK:", importlib.util.find_spec("vercel") is not None, "installed",
-                 "missing (install: pip install 'hermes-agent[vercel]')")
+                 "missing (run hermes setup terminal and select Vercel Sandbox, then restart Hermes)")
         _kv("Auth:", f"{check_mark(auth_status.ok)} {auth_status.label}")
         for line in auth_status.detail_lines:
             _kv("Auth detail:", line)
@@ -240,13 +240,10 @@ def _render_gateway(ctx):
                     _kv(f"  {name}/{platform}:", url)
         if snapshot.has_process_service_mismatch:
             _kv("Service:", "installed but not managing the current running gateway")
-        elif _is_termux() and not snapshot.gateway_pids:
-            _kv("Start with:", "hermes gateway")
-            _kv("Note:", "Android may stop background jobs when Termux is suspended")
         elif snapshot.service_installed and not snapshot.service_running:
             _kv("Service:", "installed but stopped")
     except Exception:
-        platform = "termux" if _is_termux() else "linux" if sys.platform.startswith("linux") else sys.platform
+        platform = "linux" if sys.platform.startswith("linux") else sys.platform
         status_text, manager = _GATEWAY_FALLBACK.get(platform, ("N/A", "(not supported on this platform)"))
         _kv("Status:", color(status_text, Colors.DIM))
         _kv("Manager:", manager)
@@ -296,7 +293,7 @@ def _render_sessions(ctx):
         _kv("Active:", 0)
     else:
         try:
-            data = _load_json(sessions_file)
+            data = _load_json(sessions_file, encoding="utf-8-sig")
             entries = [k for k in data if not str(k).startswith("_")] if isinstance(data, dict) else []
             _kv("Active:", f"{len(entries)} session(s)")
         except Exception:

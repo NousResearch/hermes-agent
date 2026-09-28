@@ -887,6 +887,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
     # so name it even when no fallback entries are configured.
     _pool_exhausted = False
+    _pool = None
     if _explicit and _explicit != "auto":
         with suppress(Exception):
             from agent.credential_pool import load_pool
@@ -901,6 +902,25 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             "credential pool exhausted" if _pool_exhausted else "no usable credentials",
             "; ".join(f"{_p} ({_r})" for _p, _r in _refused_entries) or "none configured",
         )
+    # A fully-exhausted pool is a billing/quota failure, NOT a config problem: name it for EVERY
+    # explicit provider. ``openrouter`` / ``custom`` have no provider-specific missing-credentials
+    # branch, so a burned override pool there fell through to the generic "No LLM provider
+    # configured" setup message even though the config default was fine (#94785). Prefer a billing
+    # verdict (402 / classifier "billing") and fall back to the existing cooldown wording (which
+    # names the 429 reset time, #56810); raise before the missing-credentials branch so a genuine
+    # 402 is never described as a missing key or a transient rate limit.
+    if _pool_exhausted:
+        from agent.auxiliary_unavailable import (
+            ProviderCredentialsExhaustedError,
+            pool_billing_message,
+            pool_cooldown_message,
+        )
+        _exhausted_message = (
+            pool_billing_message(_explicit, model=agent.model, pool=_pool)
+            or pool_cooldown_message(_explicit)
+        )
+        if _exhausted_message:
+            raise ProviderCredentialsExhaustedError(_exhausted_message, provider=_explicit)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
         from agent.auxiliary_unavailable import missing_provider_credentials_message
@@ -973,8 +993,6 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
     agent.api_key = client_kwargs.get("api_key", "")
     agent.base_url = client_kwargs.get("base_url", agent.base_url)
     try:
-        from agent.ssl_guard import verify_ca_bundle
-        verify_ca_bundle()
         agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
         if not agent.quiet_mode:
             print(f"🤖 AI Agent initialized with model: {agent.model}")
@@ -1235,6 +1253,7 @@ def _apply_display_config(agent, _agent_cfg, platform):
             "Invalid model.streaming=%r; expected a boolean. Using streaming (default).",
             _model_section.get("streaming"),
         )
+    agent._stream_5xx_probe_ts = None  # monotonic time of the last streaming-5xx unmask probe
 
     try:
         agent._tool_guardrails = ToolCallGuardrailController(

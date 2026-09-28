@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from tests.e2e.core.dashboard._helpers import Sandbox, make_sandbox
 from tests.e2e.core._pending_fixes import known_gate

@@ -6,7 +6,6 @@ Split out of :mod:`hermes_cli.plugins`; validation warns and never fails a load.
 from __future__ import annotations
 
 import hashlib
-import importlib.metadata
 import importlib.util
 import logging
 import re
@@ -19,7 +18,7 @@ from utils import fast_safe_load
 from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
 
 try:
-    import yaml
+    import hermes_yaml as yaml
 except ImportError:  # pragma: no cover – yaml is optional at import time
     yaml = None  # type: ignore[assignment]
 
@@ -286,7 +285,7 @@ def _read_source_from_origin(origin: Optional[str], limit: int = 8192) -> str:
             origin = importlib.util.source_from_cache(origin)
         if not origin or not origin.endswith(".py"):
             return ""
-        return Path(origin).read_text(encoding="utf-8", errors="replace")[:limit]
+        return Path(origin).read_text(encoding="utf-8-sig", errors="replace")[:limit]
     except Exception:
         return ""
 
@@ -395,17 +394,10 @@ _VERSION_COMPARATOR_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")
 
 
 def running_hermes_version() -> str:
-    """Version of the Hermes code that is running: ``hermes_cli.__version__``. Distribution metadata is only
-    a fallback — on an editable/source install it is frozen at ``pip install -e`` time and drifts from the
-    checkout after every ``git pull`` (dist said 0.21.0 while the code was 0.21.4), so gating on it skipped
-    plugins that required exactly the release the user was running."""
-    try:
-        from hermes_cli import __version__
-        if __version__:
-            return str(__version__)
-    except Exception:
-        pass
-    return importlib.metadata.version("hermes-agent")
+    """Base release version of the Hermes code that is running."""
+    from hermes_cli.version_info import get_version_info
+
+    return get_version_info().base_version
 
 
 _VERSION_SEGMENT_RE = re.compile(r"^\d+")
@@ -444,12 +436,13 @@ def version_satisfies(spec: str, current: str) -> bool:
 
 def requires_hermes_error(manifest: "PluginManifest") -> Optional[str]:
     """Load-blocking reason when the manifest's ``requires_hermes`` rejects the running version."""
-    if not manifest.requires_hermes:
+    spec = manifest.get("requires_hermes", "") if isinstance(manifest, Mapping) else manifest.requires_hermes
+    if not spec:
         return None
     current = running_hermes_version()
-    if version_satisfies(manifest.requires_hermes, current):
+    if version_satisfies(spec, current):
         return None
-    return f"requires hermes {manifest.requires_hermes}, running {current}"
+    return f"requires hermes {spec}, running {current}"
 
 
 def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginManifest:
@@ -480,7 +473,7 @@ def _manifest_kind(data: Mapping, key: str, plugin_dir: Path) -> str:
     init_file = plugin_dir / "__init__.py"
     if kind == "standalone" and "kind" not in data and init_file.exists():
         with suppress(Exception):
-            source_text = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
+            source_text = init_file.read_text(errors="replace", encoding="utf-8-sig")[:8192]
             detected = _detect_kind_from_source(source_text)
             if detected:
                 kind = detected
@@ -494,9 +487,9 @@ def parse_manifest_file(
     """Parse one ``plugin.yaml`` into a :class:`PluginManifest`; ``None`` (warned) on failure."""
     try:
         if yaml is None:
-            logger.warning("PyYAML not installed – cannot load %s", manifest_file)
+            logger.warning("ruamel.yaml not installed – cannot load %s", manifest_file)
             return None
-        data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        data = fast_safe_load(manifest_file.read_text(encoding="utf-8-sig")) or {}
         if not isinstance(data, Mapping):
             logger.warning("Failed to parse %s: top level must be a mapping, got %s (#14066)",
                            manifest_file, type(data).__name__)

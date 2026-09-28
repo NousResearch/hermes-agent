@@ -21,13 +21,10 @@ from __future__ import annotations
 
 import types
 
-
 from hermes_state import SessionDB
-
 
 def _make_db(tmp_path) -> SessionDB:
     return SessionDB(db_path=tmp_path / "state.db")
-
 
 class _MinimalAgent:
     """The narrow slice of AIAgent that ``_apply_persist_user_message_override``
@@ -47,7 +44,6 @@ class _MinimalAgent:
 
     def _ensure_db_session(self):  # pragma: no cover - already created
         return None
-
 
 def test_build_turn_context_stamps_the_platform_message_id_on_the_user_turn():
     """The turn prologue must carry the platform id onto the user turn dict.
@@ -69,7 +65,6 @@ def test_build_turn_context_stamps_the_platform_message_id_on_the_user_turn():
         "drain-interrupted turn is then unrecoverable/undedupable by "
         "has_platform_message_id"
     )
-
 
 def test_persisted_interrupted_turn_is_findable_by_platform_message_id(tmp_path):
     """E2E: flush a turn the way the agent does, then ask the dedup authority.
@@ -101,7 +96,6 @@ def test_persisted_interrupted_turn_is_findable_by_platform_message_id(tmp_path)
         "already ran and will re-dispatch it"
     )
 
-
 def test_platform_message_id_survives_a_persist_content_override(tmp_path):
     """The id must not be lost on the override path.
 
@@ -127,7 +121,6 @@ def test_platform_message_id_survives_a_persist_content_override(tmp_path):
     )
 
     assert db.has_platform_message_id(session_id, "discord-7777")
-
 
 def _build_turn_context_for_test(build_turn_context, agent, **overrides):
     """Construct a minimal build_turn_context call.
@@ -156,7 +149,3 @@ def _build_turn_context_for_test(build_turn_context, agent, **overrides):
     )
     kwargs.update(overrides)
     return build_turn_context(**kwargs)
-
-
-
-

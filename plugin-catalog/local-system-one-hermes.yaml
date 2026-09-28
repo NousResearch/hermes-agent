@@ -1,0 +1,32 @@
+name: local-system-one-hermes
+title: Local System One
+repo: https://github.com/NMTZ-z/system-one-benchmark-lab
+sha: 823aff58d97b989f3468dbd2c2b12526c6e6936e
+subdir: integrations/hermes/local-system-one-hermes
+description: >-
+  Local System One / Laya Typed Decisions control plane for Hermes Agent. Sends task text to a
+  loopback sidecar for reversible OFF/Shadow/Canary routing decisions, with explicit Canary
+  acknowledgement and fail-open behavior. Disclosure — executes nothing and does not start the
+  sidecar. In Shadow/Canary mode it POSTs each turn's task text (last user message up to 4000 chars,
+  or the owned Kanban card title/body) plus up to 2000 chars of recent user/assistant messages to the
+  configured sidecar URL (default loopback 127.0.0.1:8787; user-configurable to any host; no auth
+  header). Its only request mutations, in acknowledged Canary mode on the first provider call of a
+  turn, are removing the web_search/web_extract tools and (off by default) lowering reasoning_effort
+  for gemini-3.8-flash-tiered; plugin state is metadata-only under plugin-data/. The sidecar (same
+  repo, separate pip install, Apple-Silicon MLX/CoreML) is a text classifier that downloads a pinned
+  Hugging Face model.
+maintainer: NMTZ-z
+tier: community
+category: automation
+requires_hermes: ">=0.21.4"
+version: "0.5.2"
+docs_url: https://github.com/NMTZ-z/system-one-benchmark-lab/tree/823aff58d97b989f3468dbd2c2b12526c6e6936e/integrations/hermes/local-system-one-hermes
+readme: true
+platforms: [macos]
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware:
+    - llm_request
+  requires_env: []

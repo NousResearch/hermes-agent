@@ -18,9 +18,9 @@ def _isolate(tmp_path, monkeypatch):
 
 def _write_config(tmp_path, config_dict):
     """Write a config.yaml to the test HERMES_HOME."""
-    import yaml
+    import hermes_yaml as yaml
     config_path = tmp_path / ".hermes" / "config.yaml"
-    config_path.write_text(yaml.dump(config_dict))
+    config_path.write_text(yaml.safe_dump(config_dict))
 
 
 class TestNormalizeVisionProvider:

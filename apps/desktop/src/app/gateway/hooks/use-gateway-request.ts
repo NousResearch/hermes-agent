@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { HermesGateway } from '@/hermes'
 import { resolveDesktopGatewayWsUrl } from '@/lib/gateway-ws-url'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
-import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
+import { $gateway, activeGateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
 import { $gatewayState, setConnection } from '@/store/session'
 
 export function useGatewayRequest() {
@@ -47,13 +47,20 @@ export function useGatewayRequest() {
   )
 
   const ensureGatewayOpen = useCallback(async () => {
-    const existing = gatewayRef.current
+    // The ref is populated by the subscription effect after first render; the
+    // registry is the source of truth when it has not caught up yet.
+    const existing = gatewayRef.current ?? activeGateway()
 
     if (!existing) {
       return null
     }
 
-    if (gatewayStateRef.current === 'open') {
+    // gatewayStateRef mirrors $gatewayState through a render + effect, so it
+    // still reads 'open' for a beat after a socket drop rejected the caller's
+    // in-flight request. Trusting it alone skipped the reconnect and re-sent
+    // on the dead socket ("Hermes gateway is not connected", #121680). Ask the
+    // socket itself.
+    if (gatewayStateRef.current === 'open' && existing.connectionState === 'open') {
       return existing
     }
 
@@ -125,7 +132,7 @@ export function useGatewayRequest() {
 
   const requestGateway = useCallback(
     async <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal) => {
-      const gateway = gatewayRef.current
+      const gateway = gatewayRef.current ?? activeGateway()
 
       if (!gateway) {
         throw new Error('Hermes gateway unavailable')

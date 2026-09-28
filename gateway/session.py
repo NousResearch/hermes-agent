@@ -16,6 +16,7 @@ from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
 from gateway.session_identity import transport_profile_of
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
+from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pin
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
 from gateway.session_transcript import SessionTranscriptMixin
@@ -533,6 +534,9 @@ class SessionEntry:
     # "default" spelled out). The key namespace only says where the turn RUNS; after a restart this is
     # what says which bot may deliver to it. None = unknown (row predates the field, or standalone).
     transport_profile: Optional[str] = None
+    # Exact session-context/channel inputs from the last human turn. Append-only dataclass field so
+    # older positional construction of transport_profile keeps its meaning.
+    prompt_pin: Optional[Dict[str, Any]] = None
 
     # Fields (de)serialized verbatim, in wire order (``from_dict`` reads them with
     # ``data.get(name, <dataclass default>)``), split around the three ISO-datetime/token keys.
@@ -562,6 +566,10 @@ class SessionEntry:
         if self.model_override:
             # Defence-in-depth against an unsanitized dict stored directly.
             result["model_override"] = sanitize_model_override(self.model_override)
+        if self.prompt_pin:
+            # Same defence-in-depth: routing JSON must never preserve malformed pin state.
+            if pin := sanitize_prompt_pin(self.prompt_pin):
+                result["prompt_pin"] = pin
         if self.transport_profile:
             result["transport_profile"] = self.transport_profile
         if self.origin:
@@ -604,6 +612,7 @@ class SessionEntry:
             last_resume_marked_at=_parse_iso(data.get("last_resume_marked_at")),
             active_turn_token=token, active_turn_started_at=started_at,
             model_override=sanitize_model_override(data.get("model_override")),
+            prompt_pin=sanitize_prompt_pin(data.get("prompt_pin")),
             transport_profile=transport_profile if isinstance(transport_profile, str) and transport_profile else None,
             **plain,
         )
@@ -771,6 +780,7 @@ class AsyncSessionStore:
 
 class SessionStore(
     SessionPersistenceMixin, SessionRecoveryMixin, SessionLifecycleMixin, SessionTranscriptMixin,
+    SessionPromptPinMixin,
 ):
     """Session routing index + transcripts: SQLite (SessionDB), legacy JSONL fallback."""
 
@@ -863,6 +873,8 @@ class SessionStore(
                 context, session_key, exc,
             )
             return True
+
+
 
     def has_any_sessions(self) -> bool:
         """Whether any session has ever been created. SQLite is the source of truth (ended sessions
@@ -1191,11 +1203,38 @@ class SessionStore(
                 self._save()
         return len(dropped)
 
+    def remove_by_session_id(self, session_id: str) -> int:
+        """Drop every routing entry pointing at *session_id* (hard delete) and persist the drop.
+
+        The routing index is written back by THIS process, so removing only the state.db rows
+        elsewhere in a delete flow is undone by the next whole-index save: the surviving entry
+        hands the same id to the next inbound message and run_agent's INSERT OR IGNORE
+        re-creates the row — the deleted conversation comes back (#42422). Idempotent; returns
+        the number of entries dropped.
+        """
+        if not session_id:
+            return 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            dropped = [key for key, entry in self._entries.items() if entry.session_id == session_id]
+            for key in dropped:
+                self._entries.pop(key, None)
+            if dropped:
+                hints = getattr(self, "_session_owner_hints", None)
+                if hints is not None:
+                    hints.pop(session_id, None)
+                self._save()
+        if dropped:
+            logger.info("SessionStore removed %d routing entr%s for deleted session %s",
+                        len(dropped), "y" if len(dropped) == 1 else "ies", session_id)
+        return len(dropped)
+
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
     # background compression on an idle session cannot make it look fresh to the
     # restart-resume freshness gate (#85709).
     def switch_session(
         self, session_key: str, target_session_id: str, *, expected_session_id: Optional[str] = None,
+        preserve_prompt_pin: bool = True,
     ) -> Optional[SessionEntry]:
         """Point a session key at an existing session ID (``/resume``): ends the current row and
         reopens the target so resume matches the CLI.
@@ -1203,6 +1242,8 @@ class SessionStore(
         ``expected_session_id`` makes the repoint a compare-and-swap: ``None`` is returned when
         the key no longer points at that session, so a caller that resolved against a snapshot
         across an await (async-delegation re-pin) cannot overwrite a concurrent /new or /resume.
+        Prompt pins follow non-boundary repoints by default; /resume opts out explicitly because it
+        starts a different conversation on the same routing key.
         """
         with self._lock:
             old_entry = self._entry_locked(session_key)
@@ -1219,6 +1260,10 @@ class SessionStore(
             new_entry = self._replace_route_locked(
                 session_key, old_entry, target_session_id, _now(),
                 display_name=old_entry.display_name, model_override=old_entry.model_override,
+                prompt_pin=(
+                    dict(old_entry.prompt_pin)
+                    if preserve_prompt_pin and old_entry.prompt_pin is not None else None
+                ),
             )
 
         if self._db_for_key(session_key) and old_entry.session_id:

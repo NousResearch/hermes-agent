@@ -41,7 +41,7 @@ def _cfg(model=None, providers=None, custom_providers=None) -> dict:
 
 
 def test_load_picker_context_coerces_numeric_yaml_provider():
-    """PyYAML parses unquoted `provider: 2070` as int; picker context must be str.
+    """YAML parses unquoted `provider: 2070` as int; picker context must be str.
 
     Desktop GET /api/model/options crashed when a custom endpoint was named
     after a GPU: current_provider.strip() and providers dict keys .lower().

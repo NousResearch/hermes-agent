@@ -7,13 +7,12 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import os
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
 
-from gateway.platforms._shared import coerce_port as _coerce_int
+from gateway.platforms._shared import coerce_port as _coerce_int, get_scoped_secret as _get_scoped_secret
 
 from . import protocol, security
 
@@ -342,7 +341,8 @@ def _a2a_tools_available() -> bool:
         if cfg.get("a2a_agents"):
             return True
     try:
-        if os.getenv("A2A_PORT"):
+        # Scoped like the platform gate: os.environ is the launch profile's under multiplexing (#122126).
+        if _get_scoped_secret("A2A_PORT"):
             return True
         a2a_cfg = (cfg.get("platforms") or {}).get("a2a") or {}
         return bool(isinstance(a2a_cfg, dict) and a2a_cfg.get("enabled"))

@@ -9,6 +9,8 @@ resident local models once the keep-warm window passes (#118037).
 
 from __future__ import annotations
 
+import shlex
+import subprocess
 import threading
 
 import pytest
@@ -148,31 +150,37 @@ def test_warm_is_noop_for_cloud_provider_without_lazy_sdk(monkeypatch):
     assert result == {"provider": "openai", "warmed": False, "action": "noop"}
 
 
-def test_warm_lazy_sdk_provider_reports_cached_when_installed(monkeypatch):
-    import types
-
-    fake = types.SimpleNamespace(
-        is_available=lambda feature: feature == "tts.edge",
-        ensure=lambda *a, **k: pytest.fail("ensure must not run when the SDK is present"),
-    )
-    monkeypatch.setitem(__import__("sys").modules, "tools.lazy_deps", fake)
-    result = tts_tool_lifecycle.warm_tts_provider({"provider": "edge"})
-    assert result["warmed"] is True
-    assert result["action"] == "cached"
-
-
-def test_warm_lazy_sdk_provider_installs_when_missing(monkeypatch):
-    import types
+@pytest.mark.parametrize("installed", [True, False])
+def test_warm_sdk_uses_pm_availability_and_refuses_inactive_generation(tmp_path, monkeypatch, installed):
+    import pm
+    import pm.client
+    import pm.paths
+    import pm.extras
+    from pm.environments import runtime_facts_path
 
     calls = []
-    fake = types.SimpleNamespace(
-        is_available=lambda feature: False,
-        ensure=lambda feature, prompt: calls.append((feature, prompt)),
-    )
-    monkeypatch.setitem(__import__("sys").modules, "tools.lazy_deps", fake)
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: root)
+    # The real anchor probe sees a real temporary module, or an absent anchor.
+    (tmp_path / "warm_sdk_probe.py").write_text("ready = True\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(pm.extras, "_anchors", lambda extra: ("warm_sdk_probe" if installed else "absent_warm_sdk_probe",))
+    candidate = runtime_facts_path(root).parent / "environments/new/venv"
+    candidate.mkdir(parents=True)
+    (candidate / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
+
+    def prepare(extras):
+        calls.append(extras)
+        pm.Facts(runtime_facts_path(root)).record_state("venv", "new", extras, environment=candidate)
+
+    monkeypatch.setattr(pm.client, "sync_venv", prepare)
     result = tts_tool_lifecycle.warm_tts_provider({"provider": "edge"})
-    assert result["action"] == "installed"
-    assert calls == [("tts.edge", False)]
+    assert result["warmed"] is installed
+    assert result["action"] == ("cached" if installed else "error")
+    assert calls == ([] if installed else [["edge-tts"]])
+    if not installed:
+        assert "restart" in result["error"]
 
 
 # --------------------------------------------------------------------------
@@ -316,6 +324,8 @@ def test_plugin_provider_warm_and_release_follow_the_lease(monkeypatch, timers):
 
 
 def test_command_provider_runs_warm_and_release_commands(monkeypatch, timers):
+    import os
+
     ran: list = []
     done = threading.Event()
 
@@ -341,7 +351,12 @@ def test_command_provider_runs_warm_and_release_commands(monkeypatch, timers):
     tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
     _pending(timers)[0].fire()
     assert done.wait(5)
-    assert ran == ["curl -s localhost:5002/load?model='kokoro v1'", "curl -s localhost:5002/unload"]
+    # The {model} placeholder is unquoted in the template, so the renderer
+    # shell-quotes it for the host platform (list2cmdline on Windows,
+    # shlex.quote elsewhere) — compute the expectation the same way.
+    quote = subprocess.list2cmdline([cfg["providers"]["srv"]["model"]]) if os.name == "nt" \
+        else shlex.quote(cfg["providers"]["srv"]["model"])
+    assert ran == [f"curl -s localhost:5002/load?model={quote}", "curl -s localhost:5002/unload"]
 
 
 # --------------------------------------------------------------------------

@@ -25,8 +25,9 @@ PRs #9850, #9934, #7536):
 """
 
 import asyncio
+import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -660,6 +661,61 @@ async def test_reconnect_reschedule_is_platform_scoped():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
+@pytest.mark.parametrize("aware_marker", [False, True], ids=["naive-local", "aware-utc"])
+async def test_startup_auto_resume_freshness_survives_spring_forward(monkeypatch, aware_marker):
+    """A session marked 20 minutes before boot is inside a 60-minute window even when a DST
+    spring-forward falls between the two (naive wall-clock subtraction read it as 80 minutes)."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="dst-chat")
+    monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
+    original_tz = os.environ.get("TZ")
+    try:
+        os.environ["TZ"] = "America/New_York"
+        time.tzset()
+        # 2026-03-08: clocks jump 02:00 -> 03:00, so 01:50 -> 03:10 is 20 real minutes.
+        marked = datetime(2026, 3, 8, 1, 50)
+        now = datetime(2026, 3, 8, 3, 10)
+        if aware_marker:
+            marked = datetime.fromtimestamp(marked.timestamp(), tz=timezone.utc)
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz is None else datetime.fromtimestamp(now.timestamp(), tz=tz)
+
+        # Freeze both wall clocks the startup path could read.
+        monkeypatch.setattr("gateway.run_startup.datetime", _FrozenDatetime, raising=False)
+        monkeypatch.setattr(time, "time", lambda: now.timestamp())
+        entry = SessionEntry(
+            session_key="agent:main:telegram:dm:dst-chat",
+            session_id="sid-dst",
+            created_at=marked,
+            updated_at=marked,
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            resume_pending=True,
+            resume_reason="restart_interrupted",
+            last_resume_marked_at=marked,
+        )
+        runner.session_store._entries = {entry.session_key: entry}
+        adapter.handle_message = AsyncMock()
+
+        scheduled = runner._schedule_resume_pending_sessions()
+    finally:
+        if original_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original_tz
+        time.tzset()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_served_profile_reconnect_resumes_what_boot_deferred():
     """A served profile's session whose own bot is offline at boot is deferred (never answered from the
     default bot) "for the reconnect watcher" -- which must then resume it through that profile's bot."""
@@ -964,8 +1020,8 @@ async def test_restart_home_channel_notification_not_deduped_across_threads():
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 2
-    assert adapter.sent_calls[0][2] == {"thread_id": "topic-7"}
-    assert adapter.sent_calls[1][2] is None
+    assert adapter.sent_calls[0][2] == {"thread_id": "topic-7", "_interim_send": True}
+    assert adapter.sent_calls[1][2] == {"_interim_send": True}
 
 
 # ---------------------------------------------------------------------------

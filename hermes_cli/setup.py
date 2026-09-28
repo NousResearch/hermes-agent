@@ -94,7 +94,7 @@ def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
           "  hermes config set model.provider custom",
           "  hermes config set model.base_url http://localhost:8080/v1",
           "  hermes config set model.default your-model-name", None,
-          "Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.",
+          "Or set OPENROUTER_API_KEY (OpenRouter) / OPENAI_API_KEY (OpenAI) in your environment.",
           "Run 'hermes setup' in an interactive terminal to use the full wizard.", None)
 
 
@@ -367,7 +367,9 @@ def _print_banner(*lines: str) -> None:
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
 
 
-# ── Section 1: Model & Provider Configuration ──
+# =============================================================================
+# Section 1: Model & Provider Configuration
+# =============================================================================
 
 
 def setup_model_provider(config: dict, *, quick: bool = False):
@@ -399,7 +401,18 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     save_config(config)
 
 
-# ── Section 3: Agent Settings ──
+# =============================================================================
+# Section 1b: TTS Provider Configuration
+
+
+def _check_espeak_ng() -> bool:
+    """Check if espeak-ng is installed."""
+    return shutil.which("espeak-ng") is not None or shutil.which("espeak") is not None
+
+
+# =============================================================================
+# Section 3: Agent Settings
+# =============================================================================
 
 
 def _apply_default_agent_settings(config: dict):

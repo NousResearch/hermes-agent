@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from agent.i18n import t
 from gateway.platforms import base_pending_merge
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, ProcessingOutcome, MessageType
 from gateway.platforms.base_pending import _can_join_pending_event, pending_dispatch_scope, reserve_pending_dispatch, release_pending_dispatch_record
 
 if TYPE_CHECKING:
@@ -73,6 +73,7 @@ class BaseBusyMixin:
                                  self.name, cmd, session_key)
                     await self._dispatch_inline_reply(event)
             except Exception as e:
+                await self._run_processing_hook("on_inline_processing_complete", event, ProcessingOutcome.FAILURE)
                 logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
             return
         # Clarify bypass: while blocked on clarify_tool the next message must reach the
@@ -93,6 +94,7 @@ class BaseBusyMixin:
                 try:
                     await self._dispatch_inline_reply(event)
                 except Exception as e:
+                    await self._run_processing_hook("on_inline_processing_complete", event, ProcessingOutcome.FAILURE)
                     logger.error("[%s] Clarify text-intercept dispatch failed: %s", self.name, e, exc_info=True)
                 return
         reservation = reserve_pending_dispatch(self, session_key, event, accepted=False)

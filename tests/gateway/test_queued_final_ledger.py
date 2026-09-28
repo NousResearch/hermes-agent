@@ -32,6 +32,7 @@ from gateway import delivery_ledger as dl
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
+from gateway.turn_context import TurnContext
 
 SESSION_KEY = "agent:main:telegram:dm:5230977008"
 TOPIC_SESSION_KEY = "agent:main:telegram:group:-1001:topic:7"
@@ -206,7 +207,7 @@ def _chain_runner_and_ctx(followup_return):
     runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     topic = _source(chat_id="-1001", thread_id="7", chat_type="supergroup")
-    turn_ctx = SimpleNamespace(
+    turn_ctx = TurnContext(
         source=topic, session_id="sid", session_key=TOPIC_SESSION_KEY, run_generation=1,
         _interrupt_depth=0, history=[], _status_thread_metadata={"thread_id": "7"},
         context_prompt=None, result_holder=[None])
@@ -234,7 +235,7 @@ async def test_a_chained_queued_turn_carries_its_own_inbound_id():
     runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     topic = _source(chat_id="-1001", thread_id="7", chat_type="supergroup")
-    turn_ctx = SimpleNamespace(
+    turn_ctx = TurnContext(
         source=topic, session_id="sid", session_key=TOPIC_SESSION_KEY, run_generation=1,
         _interrupt_depth=0, history=[], _status_thread_metadata={"thread_id": "7"},
         context_prompt=None, result_holder=[None])

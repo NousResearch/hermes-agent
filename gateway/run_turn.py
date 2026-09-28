@@ -2120,6 +2120,7 @@ class GatewayTurnMixin(GatewayTurnExecutionMixin, GatewayTurnPreparationMixin, G
                 prepared.message_text = event._prepared_inbound.message_text
                 prepared.persist_user_message = event._prepared_inbound.persist_user_message
                 prepared.persist_user_timestamp = event._prepared_inbound.persist_user_timestamp
+            event._processing_state.outcome = ProcessingOutcome.from_agent_result(agent_result)
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
@@ -2175,6 +2176,7 @@ class GatewayTurnMixin(GatewayTurnExecutionMixin, GatewayTurnPreparationMixin, G
             )
 
         except Exception as e:
+            event._processing_state.outcome = ProcessingOutcome.FAILURE
             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)
         finally:
             # Restore session context variables to their pre-handler state

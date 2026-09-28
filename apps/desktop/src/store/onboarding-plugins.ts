@@ -1,10 +1,3 @@
-/**
- * The catalog plugins the onboarding card offers beside the hosted connectors (NS-960 D1, D4).
- *
- * The backend decides which entries are curated (`onboarding: true`) and which this OS runs, and judges
- * each app from the plugin's pinned declaration (`plugins.manage action=onboarding`). The card only
- * orders and draws them. A failed or missing RPC is an empty list: the connectors half still works.
- */
 import type { OnboardingCatalogPlugin } from '@hermes/shared'
 import { useQuery } from '@tanstack/react-query'
 
@@ -16,7 +9,6 @@ import { isSessionOwnerRoute } from '@/store/session-request-router'
 
 export type OnboardingPlugin = OnboardingCatalogPlugin
 
-/** A plugin whose app is not on this machine stays pickable; the row says what is missing (D5). */
 export const pluginNeedsApp = (plugin: OnboardingPlugin): boolean => plugin.app_state === 'missing_app'
 
 async function readOnboardingPlugins(storedId: string): Promise<OnboardingPlugin[]> {
@@ -41,7 +33,6 @@ async function readOnboardingPlugins(storedId: string): Promise<OnboardingPlugin
 
 const pluginsKey = (storedId: null | string) => ['onboarding', 'plugins.manage:onboarding', storedId] as const
 
-/** Started with the guide session, like the connector read. */
 export function prefetchOnboardingPlugins(storedId: string): void {
   void queryClient.prefetchQuery({
     queryFn: () => readOnboardingPlugins(storedId),
@@ -50,7 +41,6 @@ export function prefetchOnboardingPlugins(storedId: string): void {
   })
 }
 
-/** Cached per session like the connector read, so the card's remounts keep the rows. */
 export function useOnboardingPlugins(storedId: null | string): OnboardingPlugin[] {
   const query = useQuery({
     enabled: Boolean(storedId),

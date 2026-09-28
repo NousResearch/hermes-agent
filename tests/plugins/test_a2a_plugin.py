@@ -1175,7 +1175,9 @@ class TestInboundRoundTrip:
     (None, True),                  # urllib's own Host: 127.0.0.1:<port>
     ("localhost", True),
     ("[::1]", True),
-    ("rebound.example", False),    # a page's hostname re-resolved to 127.0.0.1
+    ("localhost.", True),          # absolute form of localhost
+    ("rebound.example", False),
+    ("rebound.example.", False),    # a page's hostname re-resolved to 127.0.0.1
 ])
 def test_no_token_listener_serves_only_loopback_host_names(monkeypatch, host, served):
     """Without a token the listener trusts the loopback socket; a page on a hostname re-resolved to

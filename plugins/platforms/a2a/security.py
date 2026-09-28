@@ -185,7 +185,8 @@ def is_loopback_host_header(host_header: Optional[str]) -> bool:
         parts.port  # noqa: B018 -- raises ValueError on a malformed port
     except ValueError:
         return False
-    return (parts.hostname or "").lower() in _LOOPBACK_HOST_NAMES
+    # ``localhost.`` is the absolute form of ``localhost``; a rebound name stays foreign either way.
+    return (parts.hostname or "").lower().rstrip(".") in _LOOPBACK_HOST_NAMES
 
 
 def is_safe_callback_url(url: str, *, localhost_mode: Optional[bool] = None) -> bool:

@@ -1,6 +1,8 @@
 """Tests for agent/system_prompt.py — context-file cwd wiring."""
 
 import json
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -151,10 +153,42 @@ class TestContextFileCwd:
         with (
             patch("agent.prompt_builder.load_soul_md", return_value=""),
             patch("agent.prompt_builder.build_environment_hints", return_value=""),
-            patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+            patch("agent.system_prompt.resolve_context_cwd", return_value=None),
         ):
             context = build_system_prompt_parts(agent)["context"]
 
+        assert "bundled contributor instructions" not in context
+
+    def test_desktop_launch_artifact_uses_profile_configured_cwd(
+        self, monkeypatch, tmp_path
+    ):
+        import agent.runtime_cwd as runtime_cwd
+
+        launch = tmp_path / "launch"
+        workspace = tmp_path / "workspace"
+        launch.mkdir()
+        workspace.mkdir()
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", launch.resolve())
+        monkeypatch.chdir(launch)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        (launch / "AGENTS.md").write_text("bundled contributor instructions")
+        (workspace / "AGENTS.md").write_text("operator workspace rules")
+
+        token = runtime_cwd.set_session_cwd(str(launch))
+        try:
+            agent = _make_agent(
+                platform="desktop",
+                _context_cwd_is_launch_artifact=True,
+            )
+            with (
+                patch("agent.prompt_builder.load_soul_md", return_value=""),
+                patch("agent.prompt_builder.build_environment_hints", return_value=""),
+            ):
+                context = build_system_prompt_parts(agent)["context"]
+        finally:
+            runtime_cwd.reset_session_cwd(token)
+
+        assert "operator workspace rules" in context
         assert "bundled contributor instructions" not in context
 
     def test_desktop_explicit_install_tree_workspace_still_loads_agents_md(
@@ -447,6 +481,23 @@ class TestNamedProfileHintIntegration:
 
         assert "Active Hermes profile: default." in prompt
         assert f"under {root}/profiles/<name>/." in prompt
+
+
+def test_stable_tier_is_identical_across_homes(tmp_path, monkeypatch):
+    """The profile line names the home path, so it must live outside the stable tier:
+    every home/profile on a host then shares one cacheable stable prefix."""
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    tiers = []
+    for name in ("a", "b"):
+        root = tmp_path / name / ".hermes"
+        root.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda root=root: root.parent)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        with patch("agent.coding_context._coding_mode", return_value="off"):
+            parts = _prompt_parts(_make_agent(valid_tool_names=["read_file"]))
+        assert f"under {root}/profiles/<name>/." in parts["volatile"]
+        tiers.append(parts["stable"])
+    assert tiers[0] == tiers[1]
 
 
 def test_build_system_prompt_records_stable_prefix():
@@ -823,6 +874,31 @@ class TestSessionStartLike:
         )
         start = _session_start_like(agent, now)
         assert start.strftime("%Y-%m-%d") == "2026-01-01"
+
+    @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
+    def test_stamp_from_other_dst_half_keeps_its_own_offset(self):
+        """A naive stamp takes the UTC offset in force at that stamp, not today's:
+        a January 00:30 London session read on a summer day rendered as January 14.
+        Both halves are checked so the test bites whichever season it runs in."""
+        from agent.system_prompt import _session_start_like
+
+        london = ZoneInfo("Europe/London")
+        original_tz = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "Europe/London"
+            time.tzset()
+            for sid, now, expected in (
+                ("20260115_003000_jan", datetime(2026, 7, 16, 9, 0, tzinfo=london), "2026-01-15T00:30:00+00:00"),
+                ("20260715_003000_jul", datetime(2026, 12, 16, 9, 0, tzinfo=london), "2026-07-15T00:30:00+01:00"),
+            ):
+                start = _session_start_like(SimpleNamespace(session_id=sid), now)
+                assert start.isoformat() == expected
+        finally:
+            if original_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = original_tz
+            time.tzset()
 
 
 def test_conversation_start_uses_session_start_not_build_time(monkeypatch):

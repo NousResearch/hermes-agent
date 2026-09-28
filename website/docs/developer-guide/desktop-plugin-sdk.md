@@ -970,6 +970,8 @@ host.toolsets.list(profile?)               // toolsets + enabled state
 host.toolsets.setEnabled(name, on, profile?)// enable/disable a toolset
 host.profiles.list(scope?: ProfileScope)   // the profile list the profile rail reads
 host.pluginDecisions                       // READ-ONLY atom: this window's plugin on/off decisions (frozen copies)
+host.i18n.registerAppLocale(id, { endonym?, rtl?, translations? })  // add a whole UI language (language pack); returns disposer
+host.i18n.languageOptions()                // [{ id, endonym, rtl, source }] — what the language switcher lists
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
@@ -1221,6 +1223,59 @@ JSON.parse(localStorage.getItem(                           host.pluginDecisions.
 localStorage.setItem('hermes.desktop.pluginDecisions.v2')  // declined — host.navigate('/capabilities?tab=plugins')
 row.querySelector('[data-slot="switch"]').click()          // same: the app's Plugins tab owns the toggle
 ```
+
+### Language packs — `host.i18n.registerAppLocale` / `ctx.i18n.registerAppLocale`
+
+`ctx.i18n.register` localizes YOUR plugin's strings. A **language pack** does the
+opposite: it adds (or extends) a language for the WHOLE app — every core label,
+dialog and tip — so a Polish user sees a Polish desktop. Registration is a
+partial catalog merged over the bundled catalog for that id (or English for a
+new language); anything the pack leaves out falls back per key, never to a raw
+key. The switcher lists the language by its endonym at once (no flags — languages
+are not countries), `<html dir>` follows `rtl`, and `display.language` stays
+whatever the user chose: registering is not selecting.
+
+```ts
+export default {
+  id: 'hermes-lang-pl',
+  register(ctx) {
+    // Attributed to this plugin and dropped on unload/disable.
+    ctx.i18n.registerAppLocale('pl', {
+      endonym: 'Polski',
+      englishName: 'Polish',        // search-only
+      rtl: false,
+      translations: {
+        // Nested like en.ts…
+        common: { save: 'Zapisz', cancel: 'Anuluj' },
+        // …or flat dotted keys (what a .desktop.yaml pack flattens to).
+        'catalog.results': '{0} wyników'
+      }
+    })
+  }
+}
+```
+
+```ts
+host.i18n.registerAppLocale(id, { endonym?, englishName?, rtl?, translations? }): () => void
+host.i18n.languageOptions(): LanguageOption[]   // bundled ∪ registered ∪ backend i18n.languages
+```
+
+Where English has a **function** entry (``results: n => `${n} results` ``), a pack
+gives a plain string with POSITIONAL placeholders — `{0}`, `{1}` in argument
+order — and the merge wraps it into the same call shape. The full key set is
+published in `locales/_keys.desktop.json` (regenerate with `npm run i18n:keys`
+in `apps/desktop` and commit it; CI pins the file to `en.ts`), which is what `hermes plugins
+validate` checks a pack's `<lang>.desktop.yaml` against.
+
+`host.i18n.registerAppLocale` is the same call for code with no `ctx` in reach;
+it returns the disposer — hand it to `ctx.onDispose`. Prefer the `ctx` form.
+
+A pack that also ships core (Python) and TUI strings needs **no desktop code**
+at all: declare `provides_locales: [pl]` in `plugin.yaml` with
+`locales/pl.yaml`, `pl.tui.yaml`, `pl.desktop.yaml`, and the gateway serves the
+desktop file over `i18n.catalog {lang, surface: 'desktop'}`; the app pulls it
+into the same registry (source `backend`) when `display.language` names it and
+re-pulls on a profile switch.
 
 ## Data layer — React Query + nanostores
 

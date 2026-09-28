@@ -1187,36 +1187,6 @@ def create_pre_migration_backup(
         hermes_home, _PRE_MIGRATION_PREFIX, max(keep, 0), "pre-migration", "pre-migration backup")
 
 
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def copy_db_and_verify(src: Path, dst: Path) -> bool:
-    """Like :func:`_safe_copy_db` but verifies the destination after copy.
-
-    Returns True only when the copy succeeded AND the destination is valid
-    SQLite (header + integrity check). Verification honours the default
-    size ceiling — a multi-GB destination gets the header + schema probe
-    rather than a full ``PRAGMA integrity_check`` that would page through
-    the whole file.
-    """
-    if not _safe_copy_db(src, dst):
-        return False
-    integrity = verify_sqlite_integrity(dst, run_pragma=True)
-    if not integrity.get("valid"):
-        try:
-            dst.unlink(missing_ok=True)
-        except OSError:
-            pass
-        logger.warning("Backup of %s failed integrity verification: %s", src, integrity.get("message"))
-        return False
-    return True
-
-
-# ---- END PLUGIN-COMPAT ----
-
-
 # ---------------------------------------------------------------------------
 # Quick state snapshots (used by /snapshot slash command and hermes backup --quick)
 # ---------------------------------------------------------------------------

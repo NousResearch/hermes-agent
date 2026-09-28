@@ -166,29 +166,3 @@ __all__ = [
     "log_server_unavailable", "log_timeout", "log_server_error", "log_spawn_failed", "log_skipped_broken", "log_root_excluded", "log_reaped",
     "reset_announce_caches",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-_announced_no_server: set = set()     # keys: (server_id,)
-
-def _announce_once(bucket: set, key: Tuple) -> bool:
-    """Return True if *key* has not been announced for *bucket* yet.
-
-    Atomically marks the key as announced so concurrent callers
-    cannot both win the race and double-log.
-    """
-    with _announce_lock:
-        if key in bucket:
-            return False
-        bucket.add(key)
-        return True
-
-def log_no_server_configured(server_id: str) -> None:
-    """No spawn recipe for this language.  WARNING once."""
-    if _announce_once(_announced_no_server, (server_id,)):
-        _emit(server_id, logging.WARNING, "no server configured")
-# ---- END PLUGIN-COMPAT ----

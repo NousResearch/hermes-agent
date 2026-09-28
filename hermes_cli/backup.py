@@ -15,7 +15,7 @@ import zlib
 from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, _get_platform_default_hermes_home, get_default_hermes_root, get_hermes_home,
@@ -214,13 +214,22 @@ def _backup_operation_lock(hermes_home: Path, timeout_seconds: float = 0.25):
 
 
 @contextmanager
-def _atomic_output_path(final_path: Path):
-    """Yield a hidden sibling path and publish it only after a clean close."""
+def _atomic_output_path(final_path: Path, publish_path: Optional[Callable[[], Optional[Path]]] = None):
+    """Yield a hidden sibling path and publish it only after a clean close.
+
+    ``publish_path`` picks the destination at publish time (default ``final_path``) so a caller
+    can divert an incomplete archive elsewhere without ever touching ``final_path``; returning
+    ``None`` discards the partial instead of publishing it.
+    """
     partial_path = final_path.with_name(f".{final_path.name}.{os.getpid()}-{threading.get_ident()}.partial")
     partial_path.unlink(missing_ok=True)
     try:
         yield partial_path
-        os.replace(partial_path, final_path)
+        destination = publish_path() if publish_path else final_path
+        if destination is None:
+            partial_path.unlink(missing_ok=True)
+        else:
+            os.replace(partial_path, destination)
     except BaseException:
         partial_path.unlink(missing_ok=True)
         raise
@@ -442,6 +451,38 @@ def verify_sqlite_integrity(
     return _done("header check passed", valid=True, size=size)
 
 
+def _discard_failed_zip_members(zf: zipfile.ZipFile, filelist_len: int) -> None:
+    """Drop the member(s) created by a failed write, both from the central directory and the file.
+
+    ZipFile.write finalizes its destination member while unwinding a source-read
+    failure, so the partial bytes can otherwise become a CRC-valid archive member.
+    This runs immediately after that failed write, so the dropped bytes are the tail
+    of the file: truncate at the first dropped local header and rewind start_dir so
+    later members overwrite it. Leaving the bytes (with a valid local header) would
+    still expose a ghost member to streaming readers. Rebuilding NameToInfo from the
+    surviving file list also restores the previous entry when a duplicate name failed.
+    """
+    if len(zf.filelist) <= filelist_len:
+        return
+    offset = zf.filelist[filelist_len].header_offset
+    zf.fp.seek(offset)
+    zf.fp.truncate()
+    zf.start_dir = offset
+    del zf.filelist[filelist_len:]
+    zf.NameToInfo.clear()
+    zf.NameToInfo.update((info.filename, info) for info in zf.filelist)
+
+
+def _write_zip_file(zf: zipfile.ZipFile, path: Path, arcname: str) -> None:
+    """Write one member while keeping a failed partial write out of the central directory."""
+    filelist_len = len(zf.filelist)
+    try:
+        zf.write(path, arcname=arcname)
+    except Exception:
+        _discard_failed_zip_members(zf, filelist_len)
+        raise
+
+
 def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, out_path: Path) -> Optional[int]:
     """Add a WAL-safe snapshot of *abs_path* to *zf*; return its byte size, or None on failure.
 
@@ -452,7 +493,7 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
     try:
         if not _safe_copy_db(abs_path, tmp_db):
             return None
-        zf.write(tmp_db, arcname=str(rel_path))
+        _write_zip_file(zf, tmp_db, str(rel_path))
         return tmp_db.stat().st_size
     finally:
         tmp_db.unlink(missing_ok=True)
@@ -477,7 +518,7 @@ def _write_zip_entries(
                     continue
                 total_bytes += size
             else:
-                zf.write(abs_path, arcname=str(rel_path))
+                _write_zip_file(zf, abs_path, str(rel_path))
                 if track_bytes:
                     total_bytes += abs_path.stat().st_size
         except (PermissionError, OSError, ValueError) as exc:
@@ -596,11 +637,11 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
             zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
             on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"))
-        # External memory-provider state never includes ``.db`` files in practice, so a
-        # straight zf.write is fine.
+        # External memory-provider state never includes ``.db`` files in practice, so no
+        # SQLite snapshot is needed; _write_zip_file still drops a failed partial member.
         for abs_path, arcname in external_to_add:
             try:
-                zf.write(abs_path, arcname=arcname)
+                _write_zip_file(zf, abs_path, arcname)
                 total_bytes += abs_path.stat().st_size
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"{arcname}: {exc}")
@@ -1071,9 +1112,6 @@ def _prune_oldest(newest_first: List[Path], keep: int, remove, what: str) -> int
     return deleted
 
 
-# --- Shared full-zip backup helper ---
-
-
 # --- Pre-update / pre-migration auto-backups ---
 
 _PRE_UPDATE_BACKUPS_DIR = "backups"
@@ -1081,6 +1119,7 @@ _PRE_UPDATE_PREFIX = "pre-update-"
 _PRE_UPDATE_DEFAULT_KEEP = 5
 _PRE_MIGRATION_PREFIX = "pre-migration-"
 _PRE_MIGRATION_DEFAULT_KEEP = 5
+_INCOMPLETE_ZIP_SUFFIX = ".incomplete.zip"
 
 
 def _prune_prefixed_zips(backup_dir: Path, prefix: str, keep: int, what: str) -> int:
@@ -1089,14 +1128,28 @@ def _prune_prefixed_zips(backup_dir: Path, prefix: str, keep: int, what: str) ->
     Only prefix-matched files are touched, so hand-made zips or other backup kinds survive.
     """
     backups = _newest_first(backup_dir, lambda p: p.is_file() and p.name.startswith(prefix)
-                            and p.suffix.lower() == ".zip")
+                            and p.suffix.lower() == ".zip"
+                            and not p.name.lower().endswith(_INCOMPLETE_ZIP_SUFFIX))
     return _prune_oldest(backups, keep, Path.unlink, what)
+
+
+def _prune_incomplete_zips(backup_dir: Path, prefix: str, what: str) -> int:
+    """Keep only the newest ``<prefix>*.incomplete.zip`` salvage archive; return count deleted.
+
+    Salvage archives never count toward normal retention, so repeated failing runs would
+    otherwise pile up without bound.
+    """
+    salvage = _newest_first(backup_dir, lambda p: p.is_file() and p.name.startswith(prefix)
+                            and p.name.lower().endswith(_INCOMPLETE_ZIP_SUFFIX))
+    return _prune_oldest(salvage, 1, Path.unlink, f"incomplete {what}")
 
 
 def _create_prefixed_full_backup(
     hermes_home: Optional[Path], prefix: str, keep: int, what: str, prune_what: str) -> Optional[Path]:
     """Write ``<HERMES_HOME>/backups/<prefix><timestamp>.zip`` and prune older same-prefix zips.
-    Returns the path, or ``None`` if nothing to back up or the write failed. Never raises."""
+    Returns the path, or ``None`` if nothing to back up, the write failed, or the archive is
+    incomplete (kept as ``<prefix><timestamp>.incomplete.zip``, excluded from retention).
+    Never raises."""
     hermes_root = hermes_home or get_default_hermes_root()
     if not hermes_root.is_dir():
         return None
@@ -1108,6 +1161,9 @@ def _create_prefixed_full_backup(
         return None
     out_path = backup_dir / f"{prefix}{datetime.now().strftime('%Y-%m-%d-%H%M%S')}.zip"
     if _write_full_zip_backup(out_path, hermes_root) is None:
+        # Incomplete runs publish straight to ``*.incomplete.zip`` (all-failed runs are discarded);
+        # cap those salvages at one without letting them rotate complete backups out.
+        _prune_incomplete_zips(backup_dir, prefix, prune_what)
         return None
     _prune_prefixed_zips(backup_dir, prefix, keep, prune_what)
     return out_path
@@ -1116,7 +1172,8 @@ def _create_prefixed_full_backup(
 def create_pre_update_backup(
     hermes_home: Optional[Path] = None, keep: int = _PRE_UPDATE_DEFAULT_KEEP) -> Optional[Path]:
     """Full zip backup to ``backups/pre-update-<timestamp>.zip``, auto-pruned; ``None`` if nothing
-    was found or the backup failed. Never raises — ``hermes update`` continues anyway."""
+    was found, the backup failed, or it was incomplete (salvage kept as ``*.incomplete.zip``).
+    Never raises — ``hermes update`` continues anyway."""
     return _create_prefixed_full_backup(hermes_home, _PRE_UPDATE_PREFIX, max(keep, 1), "pre-update", "backup")
 
 
@@ -1124,39 +1181,10 @@ def create_pre_migration_backup(
     hermes_home: Optional[Path] = None, keep: int = _PRE_MIGRATION_DEFAULT_KEEP) -> Optional[Path]:
     """Full zip backup to ``backups/pre-migration-<timestamp>.zip`` before ``hermes claw migrate``
     (same dir as update backups so listings/``hermes import`` find it); ``None`` if nothing was
-    found or the write failed. Never raises."""
+    found, the write failed, or it was incomplete (salvage kept as ``*.incomplete.zip``). Never
+    raises."""
     return _create_prefixed_full_backup(
         hermes_home, _PRE_MIGRATION_PREFIX, max(keep, 0), "pre-migration", "pre-migration backup")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def copy_db_and_verify(src: Path, dst: Path) -> bool:
-    """Like :func:`_safe_copy_db` but verifies the destination after copy.
-
-    Returns True only when the copy succeeded AND the destination is valid
-    SQLite (header + integrity check). Verification honours the default
-    size ceiling — a multi-GB destination gets the header + schema probe
-    rather than a full ``PRAGMA integrity_check`` that would page through
-    the whole file.
-    """
-    if not _safe_copy_db(src, dst):
-        return False
-    integrity = verify_sqlite_integrity(dst, run_pragma=True)
-    if not integrity.get("valid"):
-        try:
-            dst.unlink(missing_ok=True)
-        except OSError:
-            pass
-        logger.warning("Backup of %s failed integrity verification: %s", src, integrity.get("message"))
-        return False
-    return True
-
-
-# ---- END PLUGIN-COMPAT ----
 
 
 # ---------------------------------------------------------------------------
@@ -1978,22 +2006,58 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         logger.warning("Full-zip backup aborted: SQLite snapshot failed for %s", rel_path)
         raise _SQLiteSnapshotError(str(rel_path))
 
+    errors: list[str] = []
+
+    def _capped_errors() -> str:
+        # Cap the logged list: a broken tree can fail thousands of entries in one run.
+        shown = "; ".join(errors[:10])
+        return f"{shown} (+{len(errors) - 10} more)" if len(errors) > 10 else shown
+
+    # Salvage name keeps an incomplete archive out of normal retention (otherwise the next
+    # complete run would prune the last complete backups by count) and, because the partial is
+    # published straight there, never clobbers a previous good backup at ``out_path``. A run where
+    # every entry failed salvages nothing, so its empty archive is discarded rather than kept.
+    salvage_path = out_path.with_name(out_path.stem + _INCOMPLETE_ZIP_SUFFIX)
+
+    published: Optional[Path] = None
+
+    def _publish_path() -> Optional[Path]:
+        # Decide clean/salvage/discard once; the post-publish stat and return reuse it.
+        nonlocal published
+        if not errors:
+            published = out_path
+        elif len(errors) < len(files_to_add):
+            published = salvage_path
+        return published
+
     archive_started = time.monotonic()
     try:
-        with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
+        with _atomic_output_path(out_path, _publish_path) as archive_path, zipfile.ZipFile(
                 archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
             _write_zip_entries(
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
-                on_error=lambda rel, exc: logger.debug("Skipping %s in zip backup: %s", rel, exc),
+                on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
                 on_progress=lambda i: logger.info(
                     "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))
     except (OSError, _SQLiteSnapshotError) as exc:
         # The hidden partial is already gone; ``out_path`` may be a previous valid backup: keep it.
         logger.warning("Full-zip backup: zip write failed: %s", exc)
         return None
+
+    if published is None:
+        logger.warning("Full-zip backup: every entry failed, nothing salvaged: %s", _capped_errors())
+        return None
+    zip_size = published.stat().st_size
+    if published != out_path:
+        logger.warning(
+            "automatic backup phase=archive status=incomplete duration_ms=%.1f files=%d errors=%d "
+            "bytes=%d salvage=%s skipped=%s",
+            (time.monotonic() - archive_started) * 1000, len(files_to_add), len(errors), zip_size,
+            salvage_path, _capped_errors())
+        return None
+
     logger.info("automatic backup phase=archive status=complete duration_ms=%.1f files=%d bytes=%d",
-                (time.monotonic() - archive_started) * 1000, len(files_to_add),
-                out_path.stat().st_size)
+                (time.monotonic() - archive_started) * 1000, len(files_to_add), zip_size)
     return out_path
 
 

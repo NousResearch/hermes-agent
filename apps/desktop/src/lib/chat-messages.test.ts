@@ -173,7 +173,26 @@ describe('toChatMessages', () => {
       }
     ])
 
-    expect(chatMessageText(message)).toBe('@file:tsconfig.tsbuildinfo\n\nwhat is this file')
+    expect(chatMessageText(message)).toBe('what is this file')
+    expect(message.attachmentRefs).toEqual(['@file:tsconfig.tsbuildinfo'])
+  })
+
+  it('lifts the leading attachment block into the chip row, like the live bubble (large paste)', () => {
+    const paste = '@file:/home/u/.hermes/attachments/pasted_content_2026-09-27_21-33-42-827_55e028-2.txt'
+
+    const [captioned, bare] = toChatMessages([
+      {
+        role: 'user',
+        content: `${paste}\n@image:/tmp/shot.png\n\nfix these\n\n--- Attached Context ---\n\n📄 ${paste} (769 tokens)\n\`\`\`\nlog\n\`\`\``,
+        timestamp: 1
+      },
+      { role: 'user', content: `${paste}\n\n--- Attached Context ---\n\n📄 ${paste} (769 tokens)`, timestamp: 2 }
+    ])
+
+    expect(chatMessageText(captioned)).toBe('fix these')
+    expect(captioned.attachmentRefs).toEqual([paste, '@image:/tmp/shot.png'])
+    expect(chatMessageText(bare)).toBe('')
+    expect(bare.attachmentRefs).toEqual([paste])
   })
 
   it('hides a persisted Discord triggering-message note but keeps the reply pointer (#114719)', () => {
@@ -326,7 +345,8 @@ describe('toChatMessages', () => {
       }
     ])
 
-    expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
+    expect(chatMessageText(message)).toBe('look')
+    expect(message.attachmentRefs).toEqual(['@file:foo.ts'])
   })
 
   it('leaves an inline @ ref in place instead of hoisting a duplicate', () => {
@@ -455,6 +475,7 @@ describe('toChatMessages', () => {
     // backend arrives untyped and must disappear the same way — the user never wrote it.
     const legacyWake =
       '[Background process proc_ea2cdb25d899 heartbeat #7 — still running after 7m2s (next in 60s; you will also be told when it exits).\nCommand: zsh -ic hgui\nOutput since last heartbeat:\n(no new output since the last heartbeat)]'
+
     const messages = toChatMessages([
       { role: 'user', content: 'start the dev server', timestamp: 1 },
       { role: 'assistant', content: 'Started on slot 0.', timestamp: 2 },

@@ -103,19 +103,13 @@ native `api:` match, or version literals on unrelated payloads. Documented surfa
 - Compat tests load **frozen plugins through the real discovery path** and assert outcomes — never
   exact registry/catalog counts, source-reading tests, or "a global version literal changed".
 
-## Sep 2026 decomposition compat window (ends 2026-09-14)
+## Internal import paths are not API
 
-PR #102117 moved internals into `<stem>_<topic>` siblings. Old import paths resolve through
-`PLUGIN-COMPAT` `__getattr__` blocks (listed in `COMPAT_MANIFEST.md` / `compat_manifest.json`)
-until `hermes_cli.plugin_compat.COMPAT_REMOVAL_DATE`, when the commit that added them is reverted.
-`hermes_cli/plugin_compat.py` is the single source: `scan_plugin` (AST scan), `compat_report`
-(hits across enabled external plugins, cached to `HERMES_HOME/.plugin-compat-report.json`,
-refreshed by discovery), `removal_in_effect`, `warn_once`. Surfaces: CLI banner notice,
-`hermes plugins compat` (shows affected user plugins), `hermes doctor`, post-update notices, the
-TUI/Desktop `plugins.compat_report` RPC. After the date `PluginManager` skips a hitting plugin
-unless `plugins.allow_deprecated_imports: true`. **In-tree code and tests never use compat paths**
-(`scripts/check_compat_pointers.py` in CI; `-W error::hermes_cli.plugin_compat.HermesPluginCompatWarning`).
-External-plugin compat is handled ONCE here — never add per-PR re-export shims.
+PR #102117 moved internals into `<stem>_<topic>` siblings. The temporary compat layer that kept the
+old import paths alive for external plugins was removed after its 2026-09-14 window; an old path now
+raises `ImportError`, surfaced as the plugin's load error in `hermes plugins list`. Plugins build on
+`ctx` and the documented ABCs. Never add re-export shims for an internal move. `hermes_cli/plugin_compat.py`
+survives only as three inert stubs that already-running pre-removal updaters import.
 
 ## Tests
 

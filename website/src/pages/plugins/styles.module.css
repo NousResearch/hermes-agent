@@ -440,6 +440,7 @@
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-auto-rows: 1fr;
   gap: 0.75rem;
 }
 
@@ -454,8 +455,14 @@
   }
 }
 
+/* Every card in a grid shares one height (grid-auto-rows: 1fr); the column flex lets
+   .cardDetail sink to the bottom edge so install boxes and links line up across a row. */
 .card {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
   border: 1px solid rgba(255, 255, 255, 0.05);
   border-radius: 10px;
   overflow: hidden;
@@ -489,16 +496,45 @@
   opacity: 1;
 }
 
-.cardImage {
+/* Banner slot: the catalog's 2:1 banner ratio (48 of 56 shipped banners are exactly 2:1), so
+   authored images render whole instead of losing their top and bottom to a fixed-height crop.
+   Same width on every card in the grid, so the same height. */
+.cardImage,
+.cardImagePlaceholder {
   display: block;
   width: 100%;
   aspect-ratio: 2 / 1;
-  object-fit: cover;
+  flex: 0 0 auto;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.cardImage {
+  object-fit: cover;
+  object-position: center;
   background: rgba(255, 255, 255, 0.02);
 }
 
+/* No banner: the tier tint (inline gradient) with the category glyph, muted so it reads as a
+   deliberate blank rather than a missing image. */
+.cardImagePlaceholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cardImagePlaceholderIcon {
+  font-size: 3rem;
+  line-height: 1;
+  opacity: 0.45;
+  filter: saturate(0.6);
+  user-select: none;
+}
+
 .cardInner {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   padding: 1rem 1rem 0.85rem 1.15rem;
 }
 
@@ -519,19 +555,25 @@
 
 .cardTitleGroup {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
+  flex-wrap: nowrap;
   gap: 0.5rem;
   flex: 1;
   min-width: 0;
 }
 
+/* One line: a long name gets an ellipsis, the pills never wrap under it. */
 .cardTitle {
   font-size: 0.92rem;
   font-weight: 600;
   line-height: 1.3;
   margin: 0;
-  word-break: break-word;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--ifm-font-color-base);
 }
 
@@ -564,29 +606,58 @@
   margin-top: 0.1rem;
 }
 
+/* Three lines, always: long copy is clamped with an ellipsis (full text in the title attribute),
+   short copy reserves the same three lines so the rows below start at one offset. */
 .cardDesc {
   font-size: 0.82rem;
   line-height: 1.55;
   color: var(--ifm-font-color-secondary, #9a968e);
   margin: 0 0 0.6rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: calc(3 * 1.55em);
 }
 
-
-.cardMeta {
+/* Chip rows stay one line; whatever does not fit fades out at the right edge instead of
+   wrapping or clipping mid-glyph. */
+.cardMeta,
+.chipList {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  min-width: 0;
+  -webkit-mask-image: linear-gradient(to right, #000 85%, transparent);
+  mask-image: linear-gradient(to right, #000 85%, transparent);
 }
 
-/* Added / Updated line from the catalog's git history. */
-.cardDates {
-  display: flex;
-  flex-wrap: wrap;
+.cardMeta {
   gap: 0.35rem;
+  height: 1.5rem;
+}
+
+.cardMeta > * {
+  flex-shrink: 0;
+}
+
+/* Added / Updated line from the catalog's git history. Always one line tall, even when the
+   entry is undated, so the button below sits at the same offset on every card. */
+.cardDates {
+  display: block;
+  height: 1.1rem;
   margin-top: 0.5rem;
   font-size: 0.7rem;
+  line-height: 1.1rem;
   color: var(--ifm-color-emphasis-500);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cardDates > * + * {
+  margin-left: 0.35rem;
 }
 
 .cardDatesSep {
@@ -624,17 +695,24 @@
   border: 1px solid rgba(96, 165, 250, 0.1);
 }
 
+/* Sinks to the card's bottom edge so install boxes and links align across a grid row; the
+   margin on .pickBtn keeps a floor on the gap above it in the tallest card. */
 .cardDetail {
-  margin-top: 0.75rem;
+  margin-top: auto;
   padding-top: 0.7rem;
   border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
 
+/* Fixed-height fact rows (exactly three per card: Maintainer, Pinned, Tools). */
 .metaRow {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 0.5rem;
+  height: 1.4rem;
   margin-bottom: 0.3rem;
+  overflow: hidden;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .metaLabel {
@@ -645,12 +723,20 @@
   color: var(--ifm-font-color-secondary);
   opacity: 0.5;
   min-width: 4.5rem;
-  padding-top: 0.15rem;
+  flex-shrink: 0;
 }
 
 .metaValue {
   font-size: 0.78rem;
   color: var(--ifm-font-color-base);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metaEmpty {
+  opacity: 0.35;
 }
 
 .metaValue code {
@@ -662,9 +748,35 @@
 }
 
 .chipList {
-  display: flex;
-  flex-wrap: wrap;
   gap: 0.3rem;
+  flex: 1;
+}
+
+/* Tool names as one comma-separated run that ellipsizes as a whole, so the "+N" tail stays
+   visible and same-prefix names never degrade into three identical stubs. */
+.toolList {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.66rem;
+  color: rgba(255, 215, 0, 0.6);
+  white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cardMeta .envChip {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* "+N" tail on a capped tool list; hover the row for the full list. */
+.chipList .moreChip {
+  flex-shrink: 0;
+  min-width: 0;
+  color: var(--ifm-font-color-secondary);
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.22);
 }
 
 .shaLink {
@@ -695,13 +807,10 @@
   background: none;
   padding: 0;
   flex: 1;
-  overflow-x: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  scrollbar-width: none;
-}
-
-.installHint code::-webkit-scrollbar {
-  display: none;
 }
 
 .copyBtn {
@@ -1112,6 +1221,7 @@
   display: block;
   width: 100%;
   margin-top: 0.5rem;
+  margin-bottom: 0.75rem;
   padding: 0.45rem 0.75rem;
   border: 1px solid var(--ifm-color-primary);
   border-radius: 8px;
@@ -1249,6 +1359,10 @@ a.pickBtn {
 }
 
 [data-theme="light"] .capChip,
+[data-theme="light"] .toolList {
+  color: var(--ifm-color-primary-darker);
+}
+
 [data-theme="light"] .envChip {
   border-color: rgba(110, 79, 0, 0.28);
   background: rgba(110, 79, 0, 0.06);
@@ -1294,6 +1408,20 @@ a.pickBtn {
   border-color: rgba(110, 79, 0, 0.22);
 }
 
+[data-theme="light"] .cardImage,
+[data-theme="light"] .cardImagePlaceholder {
+  border-bottom-color: rgba(28, 30, 33, 0.1);
+}
+
+[data-theme="light"] .chipList .moreChip {
+  border-color: rgba(28, 30, 33, 0.35);
+  color: #525860;
+}
+
+[data-theme="light"] .metaEmpty {
+  opacity: 0.6;
+}
+
 [data-theme="light"] .copyBtn,
 [data-theme="light"] .copyBtn:hover {
   border-color: rgba(110, 79, 0, 0.35);
@@ -1312,4 +1440,18 @@ a.pickBtn {
 
 [data-theme="light"] .filterPanelOpen {
   border-color: rgba(28, 30, 33, 0.12);
+}
+
+/* Legal footer under the catalog grid. */
+.legalNote {
+  margin: 2.5rem 0 0;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--ifm-font-color-secondary);
+  line-height: 1.6;
+}
+
+.legalNote a {
+  color: inherit;
+  text-decoration: underline;
 }

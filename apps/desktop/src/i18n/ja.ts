@@ -1352,6 +1352,7 @@ export const ja = defineLocale({
       restartFailed: 'バックエンドを再起動できませんでした',
       auxiliaryTitle: '補助モデル',
       resetAllToMain: 'すべてメインにリセット',
+      staleAuxDismiss: '今後表示しない',
       auxiliaryDesc:
         'ヘルパータスクはデフォルトでメインモデルで実行されます。タスクに専用モデルを割り当てることでオーバーライドできます。',
       setToMain: 'メインに設定',
@@ -1845,11 +1846,6 @@ export const ja = defineLocale({
     mcpServers: 'MCP サーバー',
     archivedChats: 'アーカイブ済みチャット',
     sections: { sessions: 'セッション', system: 'システム', usage: '使用状況' },
-    sectionDescriptions: {
-      sessions: 'セッションの検索と管理',
-      system: 'ステータス、ログ、システムアクション',
-      usage: 'トークン、コスト、スキルの活動履歴'
-    },
     nav: {
       newChat: { title: '新しいセッション', detail: '新しいセッションを開始' },
       settings: { title: '設定', detail: 'Hermes デスクトップを設定' },
@@ -1890,6 +1886,7 @@ export const ja = defineLocale({
     actionStartedWaiting: 'アクションが開始されました。ステータスを待機中...',
     loadingStatus: 'ステータスを読み込み中...',
     recentLogs: '最近のログ',
+    logSearchPlaceholder: 'ログ行を検索…',
     noLogs: 'ログはまだ読み込まれていません。',
     days: count => `${count}日`,
     statSessions: 'セッション',
@@ -1913,6 +1910,13 @@ export const ja = defineLocale({
 
   messaging: {
     search: 'メッセージングを検索...',
+    statusFilter: {
+      all: 'すべて',
+      bad: 'エラー',
+      good: '接続済み',
+      muted: '非アクティブ',
+      warn: '要対応'
+    },
     loading: 'メッセージングプラットフォームを読み込み中...',
     loadFailed: 'メッセージングプラットフォームの読み込みに失敗しました',
     states: {
@@ -2182,6 +2186,8 @@ export const ja = defineLocale({
     skillsLabel: 'スキル',
     notSet: '未設定',
     soulDesc: 'このプロファイルに組み込まれたシステムプロンプトとペルソナの指示。',
+    soulMissing:
+      'このプロファイルにはまだ SOUL.md がありません。下に指示を入力して保存すると作成できます。config.yaml のペルソナ設定は別途管理されます。',
     soulOptional: '省略可能',
     soulPlaceholder: mode =>
       `このプロファイルのシステムプロンプト / ペルソナ。\n空欄のままにすると ${mode} のデフォルトを使用します。`,
@@ -2792,6 +2798,8 @@ export const ja = defineLocale({
     restoredDraftNotice: '未送信のメッセージを復元しました',
     restoredDraftUndo: '元に戻す',
     queueEdit: '編集',
+    queueExpand: '展開',
+    queueCollapse: '折りたたむ',
     queueSendNext: '次に送信',
     queueSteer: 'ステア — 現在のターンを今すぐ修正',
     queueSend: '送信',
@@ -2860,6 +2868,7 @@ export const ja = defineLocale({
     goalWaiting: '目標待機中',
     subagents: count => `サブエージェント ${count} 件`,
     todos: (done, total) => `タスク ${done}/${total}`,
+    previousTodos: (done, total) => `以前のタスク ${done}/${total}`,
     running: '実行中',
     stop: '停止',
     dismiss: '閉じる',
@@ -3319,7 +3328,11 @@ export const ja = defineLocale({
     noAuthenticatedProviders: '認証済みプロバイダーがありません。',
     addProvider: 'プロバイダーを追加…',
     addCustomModel: 'カスタムモデルを追加',
-    removeCustomModel: 'カスタムモデルを削除'
+    removeCustomModel: 'カスタムモデルを削除',
+    resetToDefaults: 'デフォルトに戻す',
+    resetConfirm: 'モデルの表示設定をデフォルトに戻しますか？',
+    resetDescription: '表示・非表示の選択が消去され、各プロバイダーのデフォルトの一覧に戻ります。追加したカスタムモデルは残り、表示されます。',
+    resetAction: 'リセット'
   },
 
   shell: {
@@ -3789,8 +3802,9 @@ export const ja = defineLocale({
             `${provider} がサーバーエラーを返しました。しばらくしてから再試行するか、プロバイダーを切り替えてください。`
         },
         timeout: {
-          title: '応答がタイムアウトしました',
-          body: provider => `${provider} から時間内に応答がありませんでした。再試行してもう一度送信してください。`
+          title: 'AI サービスに接続できません',
+          body: provider =>
+            `${provider} に接続できないか、時間内に応答がありませんでした。インターネット接続を確認してから再試行してください。`
         },
         ssl_cert_verification: {
           title: '安全な接続に失敗しました',
@@ -3830,6 +3844,8 @@ export const ja = defineLocale({
       preparingAudio: '音声を準備中...',
       stopReading: '読み上げを停止',
       readAloud: '読み上げ',
+      copyFullResponse: '回答全体をコピー',
+      readAloudFullResponseHint: 'Shiftを押しながらクリック: 回答全体を読み上げ',
       editMessage: 'メッセージを編集',
       stop: '停止',
       restorePrevious: '前のチェックポイントに戻す',
@@ -4202,6 +4218,11 @@ export const ja = defineLocale({
   ui: {
     search: {
       clear: '検索をクリア'
+    },
+    logs: {
+      bottom: 'ログの末尾',
+      search: 'ログを検索…',
+      top: 'ログの先頭'
     },
     pagination: {
       label: 'ページング',

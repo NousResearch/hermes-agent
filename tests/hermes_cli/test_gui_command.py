@@ -1397,13 +1397,13 @@ def test_stop_desktop_processes_locking_build_posix_swap_bypasses_early_return(t
     assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True) == [100]
 
 
-@pytest.mark.platforms("posix")  # Windows must stop the exe-locking ancestor too
-def test_posix_swap_spares_the_desktop_driving_this_update(tmp_path, monkeypatch):
-    """A historical Desktop runs `hermes update` as a piped child and relaunches
-    itself afterwards; stopping it breaks the update's stdout (EPIPE). Its
-    renderer/GPU/zygote helpers run the same exe but are not our ancestors;
-    stopping them leaves a main process that can neither draw nor quit. Only an
-    unrelated Desktop from the same release tree is stopped."""
+def _stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, *, also_posix):
+    """A Desktop's own process tree runs this update (a historical Desktop's piped
+    `hermes update` child, or the launch-time tail its backend runs). Stopping that
+    Desktop kills the update with it. Its renderer/GPU/zygote helpers run the same
+    exe but are not our ancestors; stopping them leaves a main process that can
+    neither draw nor quit. Only an unrelated Desktop from the same release tree is
+    stopped."""
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     live_exe = desktop_dir / "release" / _packaged_exe_rel()
@@ -1449,7 +1449,45 @@ def test_posix_swap_spares_the_desktop_driving_this_update(tmp_path, monkeypatch
 
     monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
 
-    assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True) == [300]
+    assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=also_posix) == [300]
+
+
+@pytest.mark.platforms("posix")
+def test_posix_swap_spares_the_desktop_driving_this_update(tmp_path, monkeypatch):
+    """A historical Desktop runs `hermes update` as a piped child and relaunches
+    itself afterwards; stopping it breaks the update's stdout (EPIPE)."""
+    _stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, also_posix=True)
+
+
+@pytest.mark.platforms("windows")
+@pytest.mark.parametrize("also_posix", [False, True])
+def test_windows_stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, also_posix):
+    """A Desktop's own backend runs the launch-time update tail; stopping that Desktop
+    killed the tail before it could clear its markers, so every launch repeated it
+    (#123499). The pack-time call and the swap alike spare it."""
+    _stop_spares_the_desktop_driving_this_update(tmp_path, monkeypatch, also_posix=also_posix)
+
+
+@pytest.mark.platforms("windows")
+def test_windows_build_under_its_own_desktop_skips_instead_of_killing_it(tmp_path, monkeypatch, capsys):
+    """#123499: a Desktop's backend runs the interrupted-update tail at launch. Packing there
+    can only end in a promotion the Desktop's exe lock refuses, and stopping that Desktop
+    kills the tail first. The build is skipped, so the tail finishes and clears its markers."""
+    desktop_dir = _make_desktop_tree(tmp_path) / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+    backend = types.SimpleNamespace(pid=40, exe=lambda: str(tmp_path / "python.exe"))
+    desktop = types.SimpleNamespace(pid=41, exe=lambda: str(live_exe))
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
+        Process=lambda pid: types.SimpleNamespace(parents=lambda: [backend, desktop])))
+    monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build",
+                        lambda *a, **k: pytest.fail("must not stop the Desktop running this build"))
+    monkeypatch.setattr("pm.progress.run_contained", lambda *a, **k: pytest.fail("must not pack"))
+
+    assert main_desktop.build_prepared_desktop(desktop_dir, source_mode=False, npm="npm", env={}) is None
+    assert "pid 41" in capsys.readouterr().out
+    assert not list(desktop_dir.glob(f"{main_desktop._DESKTOP_STAGING_PREFIX}*"))
 
 
 def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, capsys):

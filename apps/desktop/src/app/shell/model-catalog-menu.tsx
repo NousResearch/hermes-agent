@@ -13,6 +13,7 @@ import {
   useState
 } from 'react'
 
+import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
@@ -27,7 +28,6 @@ import {
   DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
-import { usePointerQuiet } from '@/components/ui/keyboard-first'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -392,9 +392,9 @@ export function ModelCatalogMenu({
   )
 
   const [kbOverride, setKbOverride] = useState<null | number>(null)
-  // A parked cursor is not a cursor in use: until the mouse actually moves,
-  // hover can't take rows out from under the keyboard.
-  const pointerQuiet = usePointerQuiet()
+  // Searchable DropdownMenu rows already cancel Radix's hover-to-focus while
+  // the search owns focus (#53980). Keep rows hit-testable so the first
+  // deliberate click works even before the pointer has moved (#123040).
 
   const rowIsCurrent = (row: KbRow) =>
     row.kind === 'moa'
@@ -540,9 +540,6 @@ export function ModelCatalogMenu({
     }
   }
 
-  // Rows are hover-selectable, so they go inert with the pointer.
-  const quietRows = pointerQuiet && 'pointer-events-none'
-
   return (
     <>
       <DropdownMenuSearch
@@ -600,7 +597,7 @@ export function ModelCatalogMenu({
           {copy.noModels}
         </DropdownMenuItem>
       ) : hasList ? (
-        <div className={cn('max-h-[max(150px,30dvh)] overflow-y-auto py-0.5', quietRows)} ref={listRef}>
+        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" ref={listRef}>
           {groups.map(group => {
             const slug = group.provider.slug
 
@@ -706,12 +703,9 @@ export function ModelCatalogMenu({
                               <HighlightMatches foldSeparators query={search} text={name} />
                             </span>
                             {metaTags.map(chip => (
-                              <span
-                                className="shrink-0 rounded-sm border border-(--ui-stroke-secondary) bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] font-medium uppercase leading-none tracking-wide text-(--ui-text-tertiary)"
-                                key={chip}
-                              >
+                              <Badge className="shrink-0 uppercase tracking-wide" key={chip} size="xs" variant="muted">
                                 {chip}
-                              </span>
+                              </Badge>
                             ))}
                           </span>
                           {loadProgress ? (
@@ -782,7 +776,7 @@ export function ModelCatalogMenu({
       ) : null}
 
       {!hideCatalog && shownMoaPresets.length > 0 ? (
-        <div className={cn(quietRows)}>
+        <div>
           {hasList ? <DropdownMenuSeparator className="mx-0" /> : null}
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
           {shownMoaPresets.map(preset => {
@@ -808,7 +802,7 @@ export function ModelCatalogMenu({
       ) : null}
 
       {customSlug && customProviders.length > 0 ? (
-        <div className={cn(quietRows)}>
+        <div>
           {hasList || shownMoaPresets.length > 0 ? <DropdownMenuSeparator className="mx-0" /> : null}
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copyPicker.customModel}</DropdownMenuLabel>
           {customProviders.map(provider => (

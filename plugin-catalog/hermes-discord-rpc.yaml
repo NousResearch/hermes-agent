@@ -1,6 +1,6 @@
 name: hermes-discord-rpc
 repo: https://github.com/DarRahman/hermes-discord-presence
-sha: 40cbf17fd76a31afad4a7f4e504aef3ac87fd0da
+sha: d95d34efceef72c28d5822c2826cfb3550784ced
 description: >-
   Native Discord Rich Presence (RPC) integration for Hermes Agent — real-time session, model,
   token, and tool tracking with local-only IPC. Disclosure — publishes your most recent session
@@ -9,7 +9,7 @@ description: >-
   Discord processes' environment via psutil to find XDG_RUNTIME_DIR.
 maintainer: DarRahman
 tier: community
-version: "1.2.0"
+version: "1.2.3"
 category: general
 docs_url: https://github.com/DarRahman/hermes-discord-presence/blob/main/README.md
 platforms: []

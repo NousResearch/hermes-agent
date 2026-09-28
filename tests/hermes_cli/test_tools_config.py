@@ -449,35 +449,18 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
             _run_post_setup("camofox")
         ensure.assert_not_called()
 
-    def test_ensure_helper_always_delegates_to_install_cli(self):
-        """MANAGED-FIRST: a browser-use on PATH must not short-circuit the
-        helper — install_cli() owns the managed-copy check and provisions
-        $HERMES_HOME/bin when only side installs exist."""
-        with patch(
-            "hermes_cli.tools_config_post_setup.shutil.which", return_value="/usr/bin/browser-use"
-        ), patch(
-            "tools.browser_use_cli.install_cli",
-            return_value=(True, "browser-use CLI already installed (/managed/bin/browser-use)"),
-        ) as install:
-            from hermes_cli.tools_config import _ensure_browser_use_cli
-
-            _ensure_browser_use_cli()
-        install.assert_called_once()
-
-    def test_ensure_helper_install_failure_is_non_fatal(self):
-        """A failed install must warn and fall back, never raise — the
-        uvx zero-install path and the built-in tools remain available."""
+    def test_ensure_helper_missing_harness_is_non_fatal(self):
+        """A missing harness must warn and point at `hermes update`, never raise — the built-in
+        tools remain available."""
         from hermes_cli.tools_config import _ensure_browser_use_cli
 
-        with patch(
-            "hermes_cli.tools_config_post_setup.shutil.which", return_value=None
-        ), patch(
-            "tools.browser_use_cli.install_cli",
-            return_value=(False, "`uv tool install browser-use` failed:\nboom"),
-        ), patch("hermes_cli.tools_config_post_setup._print_warning") as warn:
+        with patch("tools.browser_use_cli._find_cli", return_value=None), patch(
+            "hermes_cli.tools_config_post_setup._print_warning"
+        ) as warn, patch("hermes_cli.tools_config_post_setup._print_info") as info:
             _ensure_browser_use_cli()  # must not raise
 
-        assert any("failed" in c.args[0] for c in warn.call_args_list)
+        assert any("browser-harness" in c.args[0] for c in warn.call_args_list)
+        assert any("hermes update" in c.args[0] for c in info.call_args_list)
 
 
 class TestImagegenBackendRegistry:

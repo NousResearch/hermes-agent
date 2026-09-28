@@ -500,17 +500,20 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
 
 
 def _hermes_cli() -> str:
-    """hermes CLI beside this interpreter, then ``shutil.which``, then the bare name
-    (service contexts lack PATH, so a bare "hermes" died with ENOENT).
+    """Prefer this install's published launcher, then interpreter/PATH fallbacks.
 
-    The deliver RPC runs on the target gateway, whose process is the venv python — its bin/Scripts directory
-    holds the matching ``hermes`` entrypoint. A bare ``"hermes"`` relies on PATH, which is exactly what
-    service contexts (systemd units, desktop launchers, non-login SSH shells) do not provide, so delivery
-    died with ENOENT there (#93590). When no sibling exists (e.g. running from a source tree without an
-    installed script), a ``shutil.which`` lookup runs next — it honors whatever PATH the process does have —
-    before falling back to the bare name, preserving today's behavior for interactive shells.
+    A long-lived caller can still run in an older dependency generation. Its
+    sibling console script pins that generation, whereas the published launcher
+    selects current dependencies at child start. Keep the historical fallbacks
+    for external/developer installs that have no published launcher (#93590).
     """
-    sibling = Path(sys.executable or "").parent / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    # Do not select batch shims: cmd.exe reinterprets otherwise literal argv
+    # (for example an ampersand in a query-file path), even with shell=False.
+    name = "hermes.exe" if sys.platform == "win32" else "hermes"
+    published = Path(__file__).resolve().parents[1] / ".hermes" / "bin" / name
+    if published.is_file():
+        return str(published)
+    sibling = Path(sys.executable or "").parent / name
     return str(sibling) if sibling.is_file() else shutil.which("hermes") or "hermes"
 
 

@@ -685,6 +685,8 @@ export const deOverrides = {
       'composer.focus': 'Composer fokussieren',
       'composer.modelPicker': 'Modellauswahl öffnen',
       'composer.voice': 'Sprachkonversation starten / stoppen',
+      'composer.reasoningUp': 'Reasoning-Stufe erhöhen',
+      'composer.reasoningDown': 'Reasoning-Stufe senken',
       'view.toggleSidebar': 'Session-Sidebar umschalten',
       'view.cycleSidebarGrouping': 'Session-Gruppierung wechseln',
       'view.toggleRightSidebar': 'Dateibrowser umschalten',
@@ -2053,6 +2055,8 @@ export const deOverrides = {
       provider: 'Anbieter',
       model: 'Modell',
       applying: 'Wird angewendet…',
+      mainAppliedTitle: 'Hauptmodell aktualisiert',
+      mainAppliedMessage: model => `Neue Sitzungen verwenden ${model}.`,
       defaultsLabel: 'Voreinstellungen',
       reasoning: 'Denken',
       reasoningOff: 'Aus',
@@ -2065,6 +2069,7 @@ export const deOverrides = {
       restartFailed: 'Das Backend konnte nicht neu gestartet werden',
       auxiliaryTitle: 'Hilfsmodelle',
       resetAllToMain: 'Alle auf Hauptmodell zurücksetzen',
+      staleAuxDismiss: 'Nicht erneut anzeigen',
       auxiliaryDesc:
         'Hilfsaufgaben laufen standardmäßig auf dem Hauptmodell. Weise einer Aufgabe ein eigenes Modell zu, um das zu überschreiben.',
       setToMain: 'Auf Hauptmodell setzen',
@@ -2810,6 +2815,7 @@ export const deOverrides = {
       serverStates: {
         connected: 'verbunden',
         app_not_running: 'App läuft nicht',
+        hermes_not_connected: 'MCP-Verbindung fehlt',
         endpoint_unavailable: 'Endpunkt nicht verfügbar',
         no_interactive_session: 'keine interaktive Session',
         version_too_old: 'Version zu alt',
@@ -3080,12 +3086,6 @@ export const deOverrides = {
       system: 'System',
       usage: 'Nutzung'
     },
-    sectionDescriptions: {
-      maintenance: 'Diagnose, Backups, Curator und Memory-Daten',
-      sessions: 'Sessions durchsuchen und verwalten',
-      system: 'Status, Logs und Systemaktionen',
-      usage: 'Token-, Kosten- und Skill-Aktivität im Zeitverlauf'
-    },
     nav: {
       newChat: {
         title: 'Neue Session',
@@ -3171,7 +3171,7 @@ export const deOverrides = {
     actions: count => `${count} Aktionen`,
     logFile: 'Logdatei',
     logLevel: 'Stufe',
-    logSearchPlaceholder: 'Logzeilen filtern...',
+    logSearchPlaceholder: 'Logs durchsuchen…',
     maintenance: {
       runOps: 'Diagnose',
       doctor: 'Doctor ausführen',
@@ -3220,6 +3220,13 @@ export const deOverrides = {
   },
   messaging: {
     search: 'Messaging durchsuchen...',
+    statusFilter: {
+      all: 'Alle',
+      bad: 'Fehler',
+      good: 'Verbunden',
+      muted: 'Inaktiv',
+      warn: 'Handlungsbedarf'
+    },
     loading: 'Messaging-Plattformen werden geladen...',
     loadFailed: 'Messaging-Plattformen konnten nicht geladen werden',
     states: {
@@ -4279,6 +4286,8 @@ export const deOverrides = {
     restoredDraftNotice: 'Ihre nicht gesendete Nachricht wurde wiederhergestellt',
     restoredDraftUndo: 'Rückgängig',
     queueEdit: 'Bearbeiten',
+    queueExpand: 'Ausklappen',
+    queueCollapse: 'Einklappen',
     queueSendNext: 'Weiter',
     queueSteer: 'Steuern — laufenden Turn jetzt umleiten',
     queueSend: 'Senden',
@@ -4383,6 +4392,7 @@ export const deOverrides = {
     goalWaiting: 'Ziel wartet',
     subagents: count => `${count} Subagent${count === 1 ? '' : 'en'}`,
     todos: (done, total) => `Aufgaben ${done}/${total}`,
+    previousTodos: (done, total) => `Frühere Aufgaben ${done}/${total}`,
     running: 'Läuft',
     stop: 'Stopp',
     dismiss: 'Verwerfen',
@@ -4974,7 +4984,11 @@ export const deOverrides = {
     noAuthenticatedProviders: 'Keine authentifizierten Anbieter.',
     addProvider: 'Anbieter hinzufügen…',
     addCustomModel: 'Eigenes Modell hinzufügen',
-    removeCustomModel: 'Eigenes Modell entfernen'
+    removeCustomModel: 'Eigenes Modell entfernen',
+    resetToDefaults: 'Auf Standard zurücksetzen',
+    resetConfirm: 'Modellsichtbarkeit auf Standard zurücksetzen?',
+    resetDescription: 'Ihre Auswahl sichtbarer und ausgeblendeter Modelle wird gelöscht, und jeder Anbieter zeigt wieder seine Standardliste. Eigene Modelle bleiben erhalten und werden angezeigt.',
+    resetAction: 'Zurücksetzen'
   },
   shell: {
     windowControls: 'Fenster-Bedienelemente',
@@ -5463,9 +5477,9 @@ export const deOverrides = {
             `${provider} hat einen Serverfehler zurückgegeben. Versuchen Sie es gleich erneut oder wechseln Sie den Anbieter.`
         },
         timeout: {
-          title: 'Die Antwort hat zu lange gebraucht',
+          title: 'Der KI-Dienst ist nicht erreichbar',
           body: provider =>
-            `${provider} hat nicht rechtzeitig geantwortet. Versuchen Sie es erneut, um die Nachricht noch einmal zu senden.`
+            `${provider} war nicht erreichbar oder hat nicht rechtzeitig geantwortet. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.`
         },
         stream_drop: {
           title: 'Die Antwort wurde abgebrochen',
@@ -5604,6 +5618,8 @@ export const deOverrides = {
       preparingAudio: 'Bereitet Audio vor...',
       stopReading: 'Vorlesen stoppen',
       readAloud: 'Vorlesen',
+      copyFullResponse: 'Vollständige Antwort kopieren',
+      readAloudFullResponseHint: 'Umschalt-Klick: vollständige Antwort vorlesen',
       editMessage: 'Nachricht bearbeiten',
       expandMessage: 'Nachricht aufklappen',
       scrollToBottom: 'Nach unten scrollen',
@@ -6094,6 +6110,11 @@ export const deOverrides = {
   ui: {
     search: {
       clear: 'Suche löschen'
+    },
+    logs: {
+      bottom: 'Zum Ende',
+      search: 'Logs durchsuchen…',
+      top: 'Zum Anfang'
     },
     pagination: {
       label: 'Seitennummerierung',

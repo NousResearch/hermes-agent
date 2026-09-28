@@ -261,7 +261,11 @@ class GatewayKanbanWatchersMixin:
         if boot is None:
             return
         _load_config, _kb, kanban_cfg = boot
-        settings = _resolve_dispatcher_settings(kanban_cfg, _kb)
+        try:
+            settings = _resolve_dispatcher_settings(kanban_cfg, _kb)
+        except ValueError as exc:
+            logger.error("kanban dispatcher: invalid pre-spawn config; disabled: %s", exc)
+            return
         interval = settings.interval
 
         # Initial delay so adapters are wired before workers spawn (matches the notifier).

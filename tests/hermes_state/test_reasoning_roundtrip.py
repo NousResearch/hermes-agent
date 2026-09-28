@@ -162,6 +162,13 @@ class TestSharedReasoningStoredOnce:
         assert msg["reasoning_content"] == " "
         assert "reasoning" not in msg
 
+    def test_reasoning_content_alone_does_not_grow_reasoning(self, db):
+        # Tool-call merge / partial-stream stub: non-blank reasoning_content, no reasoning of its own.
+        self._append(db, "s", reasoning_content=self.TEXT)
+        for msg in (_assistant(db.get_messages_as_conversation("s")), _assistant(db.get_messages("s"))):
+            assert msg["reasoning_content"] == self.TEXT
+            assert not msg.get("reasoning")
+
     def test_rows_written_before_the_fix_still_read_back(self, db):
         self._append(db, "s", reasoning="x", reasoning_content="y")
         db._execute_write(lambda conn: conn.execute(

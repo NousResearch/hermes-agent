@@ -150,3 +150,41 @@ async def test_skills_help_lists_all_installed_commands(
         _event("/help skills", platform)
     )
     assert actual == _expected_reply(canonical, platform, installed_skill_commands)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unsupported_slug", ["123-research", "研究"])
+async def test_matrix_help_only_advertises_native_bangs_for_invocable_skill_slugs(
+    unsupported_slug: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from agent.skill_commands import scan_skill_commands
+    from gateway.run import GatewayRunner
+    from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
+
+    home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    for slug in ["research", unsupported_slug]:
+        directory = home / "skills" / slug
+        directory.mkdir(parents=True)
+        (directory / "SKILL.md").write_text(
+            f"---\nname: {slug}\ndescription: Research\n---\n\nResearch.\n",
+            encoding="utf-8",
+        )
+    skills = scan_skill_commands()
+    assert set(skills) == {"/research", f"/{unsupported_slug}"}
+    assert (
+        _normalize_matrix_bang_command(f"!{unsupported_slug}") == f"!{unsupported_slug}"
+    )
+    assert _normalize_matrix_bang_command("!research") == "/research"
+
+    actual = await object.__new__(GatewayRunner)._handle_help_command(
+        _event("/help skills", Platform.MATRIX)
+    )
+    assert actual == "\n".join([
+        t("gateway.help.skill_header", count=len(skills)),
+        *[
+            f"`{'!research' if command == '/research' else command}` — Research"
+            for command in sorted(skills)
+        ],
+    ])

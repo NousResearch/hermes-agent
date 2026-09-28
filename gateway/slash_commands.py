@@ -223,7 +223,7 @@ class GatewaySlashCommandsMixin(
         return self._delivery_adapter_for(event.source), self._session_key_for_source(event.source)
 
     def _telegramized_command_reply(self, event: MessageEvent, text: str) -> str:
-        from gateway.run import _platformize_command_mentions
+        from gateway.run_command_replies import _platformize_command_mentions
         return _platformize_command_mentions(text, getattr(getattr(event, "source", None), "platform", None))
 
     def _checkpoint_manager(self):

@@ -790,7 +790,7 @@ def test_delivery_main_child_env_carries_only_the_argv_author(tmp_path, monkeypa
     assert not dm_file.exists()
 
 
-def test_wrapper_python_prefers_install_venv_sibling(tmp_path):
+def test_wrapper_python_prefers_install_venv_sibling(tmp_path, monkeypatch):
     """The runner must not inherit the sender's interpreter: a managed tools python lacks repo
     deps (ruamel), so admission dies on import and the DM is lost. Pin the venv python beside
     the child hermes entrypoint instead."""
@@ -800,6 +800,8 @@ def test_wrapper_python_prefers_install_venv_sibling(tmp_path):
     hermes.write_text("#!python\n", encoding="utf-8")
     venv_python = venv_bin / ("python.exe" if sys.platform == "win32" else "python3")
     venv_python.write_text("", encoding="utf-8")
+    # The sibling here is a stub file, not a real interpreter: stub the deps probe.
+    monkeypatch.setattr(bot_mode_dm, "_interpreter_has_repo_deps", lambda _p: True)
 
     assert bot_mode_dm._wrapper_python(str(hermes)) == str(venv_python)
 
@@ -815,7 +817,52 @@ def test_wrapper_python_falls_back_without_sibling(tmp_path):
     assert bot_mode_dm._wrapper_python("hermes") == sys.executable
 
 
-def test_delivery_command_runs_runner_under_install_venv_python(tmp_path):
+def test_wrapper_python_rejects_sibling_without_repo_deps(tmp_path, monkeypatch, caplog):
+    """A sibling python that fails the repo-deps probe must not be pinned: fall back to
+    sys.executable loudly rather than launching a wrapper that dies at admission."""
+    venv_bin = tmp_path / "venv" / ("Scripts" if sys.platform == "win32" else "bin")
+    venv_bin.mkdir(parents=True)
+    hermes = venv_bin / ("hermes.exe" if sys.platform == "win32" else "hermes")
+    hermes.write_text("#!python\n", encoding="utf-8")
+    venv_python = venv_bin / ("python.exe" if sys.platform == "win32" else "python3")
+    venv_python.write_text("", encoding="utf-8")
+    monkeypatch.setattr(bot_mode_dm, "_interpreter_has_repo_deps", lambda _p: False)
+
+    with caplog.at_level("WARNING", logger="tools.bot_mode_dm"):
+        chosen = bot_mode_dm._wrapper_python(str(hermes))
+
+    assert chosen == sys.executable
+    assert "failed the repo-deps probe" in caplog.text
+
+
+def test_wrapper_python_no_sibling_falls_back_loudly(tmp_path, caplog):
+    """The no-sibling fallback keeps pre-fix behavior but must be loud: a silent fallback
+    is indistinguishable from a healthy pin until the DM vanishes at admission."""
+    cli_dir = tmp_path / "bin"
+    cli_dir.mkdir()
+    hermes = cli_dir / "hermes"
+    hermes.write_text("#!python\n", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="tools.bot_mode_dm"):
+        chosen = bot_mode_dm._wrapper_python(str(hermes))
+
+    assert chosen == sys.executable
+    assert "no venv python beside" in caplog.text
+
+
+def test_interpreter_deps_probe_caches_and_runs_real_import(tmp_path):
+    """The probe runs a real `import ruamel.yaml` under the candidate interpreter and caches
+    per path. The test-suite interpreter has repo deps (the suite itself imports ruamel via
+    utils), so sys.executable must probe True; a cached False must be served without a
+    subprocess."""
+    bot_mode_dm._wrapper_deps_probe_cache.clear()
+    assert bot_mode_dm._interpreter_has_repo_deps(sys.executable) is True
+    # Second call is served from cache (no subprocess): poison the cache and confirm.
+    bot_mode_dm._wrapper_deps_probe_cache["/nonexistent/python3"] = False
+    assert bot_mode_dm._interpreter_has_repo_deps("/nonexistent/python3") is False
+
+
+def test_delivery_command_runs_runner_under_install_venv_python(tmp_path, monkeypatch):
     """End to end through _delivery_command: argv[0] from _hermes_cli() decides the runner's
     interpreter, so a sender on the managed tools python still launches a working wrapper."""
     venv_bin = tmp_path / "venv" / ("Scripts" if sys.platform == "win32" else "bin")
@@ -824,6 +871,7 @@ def test_delivery_command_runs_runner_under_install_venv_python(tmp_path):
     hermes.write_text("#!python\n", encoding="utf-8")
     venv_python = venv_bin / ("python.exe" if sys.platform == "win32" else "python3")
     venv_python.write_text("", encoding="utf-8")
+    monkeypatch.setattr(bot_mode_dm, "_interpreter_has_repo_deps", lambda _p: True)
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("hi", encoding="utf-8")
 

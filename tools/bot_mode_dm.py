@@ -581,6 +581,31 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         _unlink_dm_file(dm_file)
 
 
+_WRAPPER_PROBE_TIMEOUT_S = 15
+_wrapper_deps_probe_cache: dict[str, bool] = {}
+
+
+def _interpreter_has_repo_deps(python: str) -> bool:
+    """True if ``python`` can import the admission chain's third-party deps.
+
+    The wrapper dies inside ``_admit_live_dm`` on ``import ruamel.yaml`` when the runner
+    interpreter lacks repo deps, so probe exactly that import. Results are cached per
+    interpreter path for the life of the process — one probe per interpreter, not per DM.
+    """
+    cached = _wrapper_deps_probe_cache.get(python)
+    if cached is not None:
+        return cached
+    try:
+        ok = subprocess.run(
+            [python, "-c", "import ruamel.yaml"],
+            capture_output=True, timeout=_WRAPPER_PROBE_TIMEOUT_S, check=False,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    _wrapper_deps_probe_cache[python] = ok
+    return ok
+
+
 def _wrapper_python(child_cli: str) -> str:
     """Interpreter for the delivery runner: the venv python beside the child hermes entrypoint.
 
@@ -590,15 +615,33 @@ def _wrapper_python(child_cli: str) -> str:
     the managed tools python (``~/.hermes/tools/python-*``, no site-packages): the wrapper then
     dies on ``ModuleNotFoundError: ruamel`` inside ``_admit_live_dm`` and the DM is lost.
     The child hermes binary already points at an install with working deps, and its venv keeps
-    the matching python beside it — derive the wrapper interpreter from that path. A bare
-    ``"hermes"`` (PATH fallback in ``_hermes_cli``) has no sibling to read; keep sys.executable.
+    the matching python beside it — derive the wrapper interpreter from that path.
+
+    Derivation is verified, not trusted: the sibling must pass a repo-deps probe before it is
+    pinned. Layouts whose entrypoint has no adjacent venv python (pipx-style shims, venvs
+    exposing only ``python``) and siblings that fail the probe keep the pre-fix
+    ``sys.executable`` fallback — loudly, so a misresolved interpreter surfaces in the log
+    instead of silently losing the DM. A bare ``"hermes"`` (PATH fallback in ``_hermes_cli``)
+    has no sibling to read and stays silent: there the sender's interpreter is the venv python
+    in practice.
     """
     cli = Path(child_cli)
     if cli.is_absolute():
         name = "python.exe" if sys.platform == "win32" else "python3"
         sibling = cli.parent / name
         if sibling.is_file():
-            return str(sibling)
+            if _interpreter_has_repo_deps(str(sibling)):
+                return str(sibling)
+            logger.warning(
+                "Bot-DM delivery wrapper: sibling interpreter %s failed the repo-deps probe; "
+                "falling back to the sender's interpreter (%s)",
+                sibling, sys.executable)
+        else:
+            logger.warning(
+                "Bot-DM delivery wrapper: no venv python beside child entrypoint %s; falling "
+                "back to the sender's interpreter (%s) — if that is the managed tools python, "
+                "admission imports will fail",
+                child_cli, sys.executable)
     return sys.executable
 
 

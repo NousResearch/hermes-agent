@@ -109,9 +109,14 @@ def _request_limited_response(
                 )
             chunks.append(chunk)
 
+        # iter_bytes() already decoded the body. Reusing Content-Encoding would
+        # decode it a second time; the wire length/framing no longer applies.
+        headers = httpx.Headers(response.headers)
+        for name in ("content-encoding", "content-length", "transfer-encoding"):
+            headers.pop(name, None)
         return httpx.Response(
             status_code=response.status_code,
-            headers=response.headers,
+            headers=headers,
             content=b"".join(chunks),
             request=response.request,
         )

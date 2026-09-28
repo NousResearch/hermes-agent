@@ -16,9 +16,12 @@ All HTTP is mocked: nothing here talks to a real IDP.
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import time
 import urllib.parse
+import zlib
+from contextlib import contextmanager
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
@@ -72,6 +75,81 @@ class _FakeStreamResponse:
     def iter_bytes(self, chunk_size: int = 65536):
         _ = chunk_size
         yield from self._chunks
+
+
+class TestLimitedResponse:
+    def test_declared_over_limit_never_iterates_body(self, monkeypatch):
+        response = _FakeStreamResponse(
+            "GET", _ISSUER, chunks=[], headers={"content-length": "11"}
+        )
+        response.iter_bytes = MagicMock(side_effect=AssertionError("body read"))
+        monkeypatch.setattr(oidc_plugin.httpx, "stream", lambda *a, **kw: response)
+        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
+            oidc_plugin._request_limited_response("GET", _ISSUER, body_limit=10)
+        response.iter_bytes.assert_not_called()
+
+    @pytest.mark.parametrize("encoding,compress", [("gzip", gzip.compress), ("deflate", zlib.compress)])
+    @pytest.mark.parametrize("status", [200, 400, 500])
+    def test_decoded_body_and_headers_agree(self, monkeypatch, encoding, compress, status):
+        body = b'{"error":"invalid_grant","padding":"' + b"x" * 1000 + b'"}'
+        response = httpx.Response(
+            status,
+            headers={"content-type": "application/json", "content-encoding": encoding,
+                     "content-length": str(len(compress(body)))},
+            stream=httpx.ByteStream(compress(body)),
+            request=httpx.Request("POST", f"{_ISSUER}/token"),
+        )
+
+        @contextmanager
+        def stream(*args, **kwargs):
+            try:
+                yield response
+            finally:
+                response.close()
+
+        monkeypatch.setattr(oidc_plugin.httpx, "stream", stream)
+        result = oidc_plugin._request_limited_response("POST", f"{_ISSUER}/token", body_limit=len(body))
+        assert result.status_code == status
+        assert result.content == body
+        assert result.json()["error"] == "invalid_grant"
+        assert "content-encoding" not in result.headers
+        assert int(result.headers["content-length"]) == len(body)
+        assert result.url == response.url
+        assert response.is_closed
+
+    def test_compressed_body_is_limited_after_decoding(self, monkeypatch):
+        body = gzip.compress(b"x" * 1000)
+        assert len(body) < 100
+        response = httpx.Response(
+            200, headers={"content-encoding": "gzip", "content-length": str(len(body))},
+            stream=httpx.ByteStream(body), request=httpx.Request("GET", _ISSUER),
+        )
+
+        @contextmanager
+        def stream(*args, **kwargs):
+            try:
+                yield response
+            finally:
+                response.close()
+
+        monkeypatch.setattr(oidc_plugin.httpx, "stream", stream)
+        with pytest.raises(ProviderError, match="exceeds 100 bytes"):
+            oidc_plugin._request_limited_response("GET", _ISSUER, body_limit=100)
+        assert response.is_closed
+
+    @pytest.mark.parametrize("headers", [{}, {"content-length": "invalid"}, {"content-length": "1"}])
+    def test_stream_limit_stops_before_reading_remainder(self, monkeypatch, headers):
+        response = _FakeStreamResponse("GET", _ISSUER, chunks=[], headers=headers)
+
+        def chunks(**kwargs):
+            yield b"x" * 6
+            yield b"y" * 5
+            pytest.fail("read beyond the limit")
+
+        response.iter_bytes = chunks
+        monkeypatch.setattr(oidc_plugin.httpx, "stream", lambda *a, **kw: response)
+        with pytest.raises(ProviderError, match="exceeds 10 bytes"):
+            oidc_plugin._request_limited_response("GET", _ISSUER, body_limit=10)
 
 
 # ---------------------------------------------------------------------------
@@ -386,10 +464,54 @@ class TestDiscoveryRealRedirect:
             def log_message(self, *args):
                 pass
 
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                self.requests.append((self.path, dict(self.headers), urllib.parse.parse_qs(body.decode())))
+                self.do_GET()
+
         _H.routes = routes
+        _H.requests = []
         return _H
 
-    def test_real_same_origin_redirect_succeeds(self):
+    @pytest.mark.parametrize("auth_method", ["client_secret_basic", "client_secret_post"])
+    def test_compressed_grants_and_revoke_preserve_client_auth(self, rsa_keypair, auth_method):
+        provider = _make_provider(rsa_keypair, client_secret="secret", auth_methods=[auth_method])
+        token = _mint_id_token(rsa_keypair)
+        body = gzip.compress(json.dumps({"id_token": token, "token_type": "Bearer"}).encode())
+        httpd, port = self._serve(self._handler({
+            "/token": (200, {"Content-Type": "application/json", "Content-Encoding": "gzip"}, body),
+            "/revoke": (200, {}, b""),
+        }))
+        provider._discovery["token_endpoint"] = f"http://127.0.0.1:{port}/token"
+        provider._discovery["revocation_endpoint"] = f"http://127.0.0.1:{port}/revoke"
+        try:
+            session = provider.complete_login(
+                code="code", state="state", code_verifier="verifier",
+                redirect_uri="https://hermes.example/auth/callback",
+            )
+            assert session.access_token == token
+            refreshed = provider.refresh_session(refresh_token="old-refresh")
+            assert refreshed.access_token == token
+            assert refreshed.refresh_token == "old-refresh"
+            provider.revoke_session(refresh_token="old-refresh")
+            requests = httpd.RequestHandlerClass.requests
+            assert [path for path, _, _ in requests] == ["/token", "/token", "/revoke"]
+            assert requests[0][2]["code_verifier"] == ["verifier"]
+            assert requests[1][2]["grant_type"] == ["refresh_token"]
+            assert requests[2][2]["token"] == ["old-refresh"]
+            for _, headers, data in requests:
+                if auth_method == "client_secret_basic":
+                    assert _decode_basic(headers["Authorization"]) == (_CLIENT_ID, "secret")
+                    assert "client_secret" not in data
+                else:
+                    assert data["client_secret"] == ["secret"]
+                    assert "Authorization" not in headers
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    @pytest.mark.parametrize("compressed", [False, True])
+    def test_real_same_origin_redirect_succeeds(self, compressed):
         httpd, port = self._serve(self._handler({}))
         try:
             issuer = f"http://127.0.0.1:{port}"
@@ -399,16 +521,21 @@ class TestDiscoveryRealRedirect:
                 "token_endpoint": f"{issuer}/token",
                 "jwks_uri": f"{issuer}/jwks",
             }).encode()
+            headers = {"Content-Type": "application/json"}
+            if compressed:
+                doc = gzip.compress(doc)
+                headers["Content-Encoding"] = "gzip"
             httpd.RequestHandlerClass.routes = {
                 "/.well-known/openid-configuration": (
                     302, {"Location": f"{issuer}/canonical"}, b""),
-                "/canonical": (200, {"Content-Type": "application/json"}, doc),
+                "/canonical": (200, headers, doc),
             }
             p = oidc_plugin.SelfHostedOIDCProvider(issuer=issuer, client_id=_CLIENT_ID)
             disco = p._fetch_discovery()
             assert disco["issuer"] == issuer
         finally:
             httpd.shutdown()
+            httpd.server_close()
 
     def test_real_redirect_to_other_origin_rejected(self):
         """A 302 to a different origin (here: another loopback port) serving a

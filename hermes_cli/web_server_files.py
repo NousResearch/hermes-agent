@@ -178,7 +178,9 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
     return {"root": locked_root, "locked_root": locked_root, "can_change_path": policy.can_change_path}
 
 
-def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, Any]:
+def _managed_file_entry(
+    policy: ManagedFilesPolicy, target: Path, *, skip_missing: bool = False
+) -> Dict[str, Any] | None:
     try:
         resolved = target.resolve()
     except (OSError, RuntimeError):
@@ -188,6 +190,14 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
 
     try:
         st = resolved.stat()
+    except FileNotFoundError as exc:
+        # A directory listing must tell "this entry is gone" apart from a real
+        # I/O failure, or one dead entry costs it every sibling (#47154). The
+        # single-object callers keep the 500, so their error contract is
+        # unchanged.
+        if skip_missing:
+            return None
+        raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
 

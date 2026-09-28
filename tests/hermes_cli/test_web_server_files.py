@@ -351,13 +351,94 @@ def test_sensitive_env_files_hidden_from_listing(forced_files_client):
     assert ".env.prod" not in names
 
 
+def test_listing_survives_an_entry_that_vanishes_during_the_scan(forced_files_client):
+    """#47154: one dead entry must not take the whole directory with it.
+
+    ``_managed_file_entry`` turns a failed ``stat()`` into a 500, and the listing
+    loop used to let that abort every sibling. Steam recreates ``linux32/steam``
+    on runtime promotion, so a real listing can hit an entry that was live
+    during readdir and is gone a microsecond later.
+    """
+    from pathlib import Path
+
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "visible.txt").write_text("i exist")
+    vanished = root / "steam"
+    vanished.write_text("live during readdir only")
+
+    real_entry = _rt_files._managed_file_entry
+
+    def racing_entry(policy, target, **kwargs):
+        if Path(target).name == vanished.name:
+            Path(target).unlink(missing_ok=True)
+        return real_entry(policy, target, **kwargs)
+
+    # The router imported the helper by name, so its own binding is the seam the
+    # production call site reads.
+    _rt_files._managed_file_entry = racing_entry
+    try:
+        response = client.get("/api/files", params={"path": str(root)})
+    finally:
+        _rt_files._managed_file_entry = real_entry
+
+    assert response.status_code == 200, response.text
+    assert [e["name"] for e in response.json()["entries"]] == ["visible.txt"]
+
+    # Reading the now-absent file directly is still a 404, not a 500.
+    assert client.get("/api/files/read", params={"path": str(vanished)}).status_code == 404
 
 
+def test_write_result_keeps_its_json_500_when_the_entry_vanishes(forced_files_client):
+    """#47154: only the listing may skip a missing entry.
+
+    The helper is shared with the write path, so tolerating a missing entry there
+    would turn a JSON ``{"detail": ...}`` 500 into a bare 500 escaping the ASGI
+    app as text/plain. The scan opts in via ``skip_missing``; this caller must not.
+    """
+    from pathlib import Path
+
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / "victim.txt"
+    target.write_text("old")
+
+    real_entry = _rt_files._managed_file_entry
+
+    def vanishing_entry(policy, t, **kwargs):
+        assert "skip_missing" not in kwargs, "write path must not opt into skipping"
+        if Path(t) == target:
+            Path(t).unlink(missing_ok=True)
+        return real_entry(policy, t, **kwargs)
+
+    _rt_files._managed_file_entry = vanishing_entry
+    try:
+        response = client.post(
+            "/api/files/upload",
+            json={"path": str(target), "data_url": "data:text/plain;base64,aGVsbG8="},
+        )
+    finally:
+        _rt_files._managed_file_entry = real_entry
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    assert "Could not stat path" in response.json()["detail"]
 
 
+@pytest.mark.require_symlinks
+def test_listing_skips_a_dangling_symlink(forced_files_client):
+    """#47154: a symlink whose target is gone is skipped; siblings survive.
 
+    The link target stays inside the managed root on purpose — a link escaping
+    the root is a 403 containment decision, a different case.
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "visible.txt").write_text("i exist")
+    (root / "broken").symlink_to(root / "never-created")
 
-
+    response = client.get("/api/files", params={"path": str(root)})
+    assert response.status_code == 200, response.text
 
 
 

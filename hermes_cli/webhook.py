@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import logging
 import re
 import secrets
 import threading
@@ -16,6 +17,7 @@ from hermes_constants import display_hermes_home
 from utils import atomic_json_write
 from hermes_cli.config import cfg_get
 
+logger = logging.getLogger(__name__)
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
 _SUBSCRIPTIONS_FILE_MODE = 0o600
@@ -57,7 +59,15 @@ def _load_subscriptions_unlocked() -> Dict[str, dict]:
         data = json.loads(raw.decode("utf-8-sig"))
     except ValueError:
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    # A non-object route (hand edit) is no subscription: every reader indexes routes as mappings,
+    # so one would crash `webhook list`/`subscribe`/`test` and the dashboard for all of them.
+    junk = sorted(name for name, route in data.items() if not isinstance(route, dict))
+    if junk:
+        logger.warning("%s: ignoring non-object route(s) %s (dropped on the next save)",
+                       _SUBSCRIPTIONS_FILENAME, ", ".join(junk))
+    return {name: route for name, route in data.items() if isinstance(route, dict)}
 
 
 def _load_subscriptions() -> Dict[str, dict]:

@@ -2013,6 +2013,14 @@ class BasePlatformAdapter(ABC):
         fall back to ``send`` + ``edit_message`` when False or ``send_draft`` raises."""
         return False
 
+    def prefers_buffered_reply(self, chat_id: str) -> bool:
+        """Whether this chat's final reply must bypass progressive text streaming."""
+        return False
+
+    def reply_chunks(self, content: str, chat_id: str) -> list[str]:
+        """Completed conversational reply chunks; generic/tool/cron sends do not use this."""
+        return [content]
+
     def prefers_fresh_final_streaming(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Whether the stream consumer should finalize with a *fresh* final message (best-effort
         deleting the preview) instead of final-editing it (Telegram: keeps rich rendering)."""
@@ -4295,8 +4303,12 @@ class BasePlatformAdapter(ABC):
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
         if obligation_id is not None:
             await self._release_turn_marker(event)  # the ledger now owns the crash recovery
-        result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+        from gateway.platforms.reply_delivery import send_reply_chunks
+        result = await send_reply_chunks(
+            delivery_adapter, event.source.chat_id, text_content,
+            reply_to=reply_to, metadata=metadata, obligation_id=obligation_id,
+            split=not event.internal and not is_ephemeral_response and not str(event.text or "").lstrip().startswith(
+                ("/", self.typed_command_prefix or "!")))
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
         return result, delivery_adapter

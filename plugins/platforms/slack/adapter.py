@@ -2454,6 +2454,15 @@ class SlackAdapter(BasePlatformAdapter):
         "not_allowed", "missing_scope", "feature_not_enabled", "invalid_method", "unknown_method",
         "method_deprecated", "not_authed", "streaming_not_allowed")
 
+    def prefers_buffered_reply(self, chat_id: str) -> bool:
+        return self.config.extra.get("dm_reply_bursts") is True and chat_id.startswith("D")
+
+    def reply_chunks(self, content: str, chat_id: str) -> list[str]:
+        if not self.prefers_buffered_reply(chat_id):
+            return [content]
+        from .reply_bursts import reply_chunks
+        return reply_chunks(content)
+
     def supports_draft_streaming(
         self, chat_type: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Return whether Slack's native stream can preserve configured behavior."""

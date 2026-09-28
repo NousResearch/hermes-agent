@@ -311,6 +311,14 @@ def mark_attempting(obligation_id: str) -> None:
     _update_state(obligation_id, "attempting")
 
 
+def replace_remaining_content(obligation_id: str, content: str) -> None:
+    """Checkpoint a split reply after an accepted message, before sending its tail."""
+    with _DB_LOCK, _transaction() as conn:
+        conn.execute(
+            "UPDATE delivery_obligations SET content=?, updated_at=? WHERE obligation_id=?",
+            (content, time.time(), obligation_id))
+
+
 def mark_delivered(obligation_id: str) -> None:
     _update_state(obligation_id, "delivered")
 

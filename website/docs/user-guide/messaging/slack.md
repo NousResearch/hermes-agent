@@ -540,6 +540,34 @@ display:
 |-----|---------|-------------|
 | `display.live_status` | `"full"` | Live per-tool status line. `full` shows verb + argument preview; `verb` shows the verb only (keeps file paths and commands out of shared channels); `off` restores the static text. Requires the `assistant:write` scope, same as the static status line. |
 
+### Short DM reply bursts
+
+Set `platforms.slack.extra.dm_reply_bursts: true` to send completed conversational
+DM replies as separate paragraph messages, one second apart. DM text streaming
+is buffered automatically; channel replies keep their normal streaming behavior.
+This does not rewrite the answer: ask for short thoughts separated by blank lines
+in your SOUL or skill if you want a conversational style.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      dm_reply_bursts: true
+      reply_in_thread: false
+```
+
+Existing threads retain their thread destination. Plain paragraphs and fenced
+code blocks become separate messages; replies containing loose lists, reference
+links, indented code or alternative fences stay together to preserve structure.
+The setting defaults to false. Generic sends (including cron reports and cards),
+internal notifications and slash-command replies keep their existing shape.
+
+The delivery ledger checkpoints the remaining text after each accepted bubble.
+If a later send fails, recovery sends only the unsent tail (which may be joined
+into one message). Cancellation stops pending sends; the ledger retains the tail
+for normal recovery. As with ordinary Slack sends, a lost acknowledgement or a
+crash between Slack accepting a message and its checkpoint remains ambiguous.
+
 ### Native Streaming (live-typing replies)
 
 Slack's [Agents & AI Apps](https://docs.slack.dev/ai/) feature ships a native

@@ -107,10 +107,7 @@ test('never matches a process outside the venv, even with hermes in the cmdline'
 })
 
 test('sibling-dir and boundary safety for the external selector', () => {
-  assert.equal(
-    isExternalVenvHolder('C:\\Hermes\\venv\\ScriptsX\\hermes.exe', 'hermes gateway run', SCRIPTS),
-    false
-  )
+  assert.equal(isExternalVenvHolder('C:\\Hermes\\venv\\ScriptsX\\hermes.exe', 'hermes gateway run', SCRIPTS), false)
   assert.equal(isExternalVenvHolder(null, 'hermes gateway run', SCRIPTS), false)
   assert.equal(isExternalVenvHolder('C:\\Hermes\\venv\\Scripts\\hermes.exe', null, SCRIPTS), false)
 })

@@ -14,6 +14,23 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 _SKILLS_BLOCK_RE = re.compile(r"<available_skills>.*?</available_skills>", re.DOTALL)
 _SUBAGENT_TOOL_NAMES = frozenset({"delegate_task"})
 
+# A category at zero tokens is dropped from the payload, which reads as "not
+# configured" - true for MCP, memory and skills, and false for the
+# conversation. Every session has one, so hiding the row at zero makes an empty
+# transcript indistinguishable from a breakdown that never measured it (#87903).
+#
+# The membership rule, stated so a later addition argues from the same
+# principle rather than from "this one felt important": a category belongs
+# here when zero is a MEASUREMENT of something every session has, not the
+# ABSENCE of something optional. "conversation" qualifies because a session
+# cannot not have a transcript, so zero means "nothing said yet" and is worth
+# showing. "mcp", "memory", "skills" and "subagent_definitions" do not: zero
+# there means the user configured none, which is what dropping the row already
+# communicates, and a permanent 0-token row would be noise on most hosts.
+# "system_prompt" and "tool_definitions" are always present too but are never
+# zero in practice, so adding them would buy nothing.
+_ALWAYS_REPORTED = frozenset({"conversation"})
+
 # id -> (label, dashboard color, /context glyph); declaration order is display order.
 _CATEGORIES = {
     "system_prompt": ("System prompt", "var(--context-usage-system)", "■"),
@@ -172,7 +189,7 @@ def compute_session_context_breakdown(agent: Any, messages: Optional[List[dict]]
         "categories": [
             {"color": color, "id": category_id, "label": label, "tokens": tokens_by_id[category_id]}
             for category_id, (label, color, _glyph_) in _CATEGORIES.items()
-            if tokens_by_id[category_id] > 0
+            if tokens_by_id[category_id] > 0 or category_id in _ALWAYS_REPORTED
         ],
         "context_max": context_max,
         "context_percent": max(0, min(100, round(context_used / context_max * 100))) if context_max else 0,

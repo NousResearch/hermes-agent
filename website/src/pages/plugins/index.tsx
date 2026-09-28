@@ -13,6 +13,7 @@ import {
   SUBMIT_PLUGIN_URL,
   TIER_CONFIG,
   authorPagePath,
+  capToolChips,
   categoryOf,
   desktopInstallLink,
   formatDate,
@@ -82,6 +83,12 @@ function PluginCard({
   const toolCount = caps.providesTools?.length || 0;
   const hookCount = caps.providesHooks?.length || 0;
   const middlewareCount = caps.providesMiddleware?.length || 0;
+  const toolChips = capToolChips(caps.providesTools);
+  const description = plugin.description || "No description available.";
+  // A broken banner URL swaps to the placeholder instead of collapsing, so the card keeps its
+  // height (every card in a grid row shares one height; see .grid in styles.module.css).
+  const [imageBroken, setImageBroken] = useState(false);
+  const showImage = Boolean(plugin.image) && !imageBroken;
   const pagePath = pluginPagePath(plugin.name);
   const history = useHistory();
   const pageHref = useBaseUrl(pagePath); // <Link> adds baseUrl itself; history.push does not
@@ -105,7 +112,7 @@ function PluginCard({
     >
       <div className={styles.cardAccent} style={{ background: tier.color }} />
 
-      {plugin.image && (
+      {showImage ? (
         <img
           className={styles.cardImage}
           src={plugin.image}
@@ -113,34 +120,27 @@ function PluginCard({
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"
-          onError={(e) => { e.currentTarget.style.display = "none"; }}
+          onError={() => setImageBroken(true)}
         />
+      ) : (
+        <div
+          className={styles.cardImagePlaceholder}
+          aria-hidden="true"
+          style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${tier.color} 12%, transparent), transparent 70%)` }}
+        >
+          <span className={styles.cardImagePlaceholderIcon}>{category.icon}</span>
+        </div>
       )}
 
       <div className={styles.cardInner}>
         <div className={styles.cardTop}>
           <span className={styles.cardIcon} title={category.label}>{category.icon}</span>
           <div className={styles.cardTitleGroup}>
-            <h3 className={styles.cardTitle}>
+            <h3 className={styles.cardTitle} title={plugin.name}>
               <Link className={styles.cardTitleLink} to={pagePath} onClick={(e) => e.stopPropagation()}>
                 {highlightMatch(plugin.name, query)}
               </Link>
             </h3>
-            <span
-              className={styles.tierPill}
-              style={{
-                color: tier.color,
-                background: tier.bg,
-                borderColor: tier.border,
-              }}
-            >
-              {tier.icon} {tier.label}
-            </span>
-            {plugin.version && (
-              <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
-                v{plugin.version.replace(/^v/i, "")}
-              </span>
-            )}
             {typeof plugin.stars === "number" && (
               <a
                 className={styles.starPill}
@@ -156,11 +156,26 @@ function PluginCard({
           </div>
         </div>
 
-        <p className={styles.cardDesc}>
-          {highlightMatch(plugin.description || "No description available.", query)}
+        <p className={styles.cardDesc} title={description}>
+          {highlightMatch(description, query)}
         </p>
 
         <div className={styles.cardMeta}>
+          <span
+            className={styles.tierPill}
+            style={{
+              color: tier.color,
+              background: tier.bg,
+              borderColor: tier.border,
+            }}
+          >
+            {tier.icon} {tier.label}
+          </span>
+          {plugin.version && (
+            <span className={styles.versionPill} title={`Version ${plugin.version} at ${plugin.sha}`}>
+              v{plugin.version.replace(/^v/i, "")}
+            </span>
+          )}
           <button
             className={styles.categoryChip}
             onClick={(e) => {
@@ -198,22 +213,23 @@ function PluginCard({
           ))}
         </div>
 
-        {/* Updated is omitted while it equals Added: a fresh entry has nothing to say yet. */}
-        {plugin.addedAt && (
-          <div className={styles.cardDates}>
+        {/* Always rendered (empty when undated) so every card keeps the same row layout.
+            Updated is omitted while it equals Added: a fresh entry has nothing to say yet. */}
+        <div className={styles.cardDates}>
+          {plugin.addedAt && (
             <span title={`Added to the catalog ${formatDate(plugin.addedAt)}`}>
               Added {formatRelativeTime(plugin.addedAt) ?? formatDate(plugin.addedAt)}
             </span>
-            {plugin.updatedAt && plugin.updatedAt !== plugin.addedAt && (
-              <>
-                <span aria-hidden="true" className={styles.cardDatesSep}>·</span>
-                <span title={`Last catalog change ${formatDate(plugin.updatedAt)}`}>
-                  Updated {formatRelativeTime(plugin.updatedAt) ?? formatDate(plugin.updatedAt)}
-                </span>
-              </>
-            )}
-          </div>
-        )}
+          )}
+          {plugin.addedAt && plugin.updatedAt && plugin.updatedAt !== plugin.addedAt && (
+            <>
+              <span aria-hidden="true" className={styles.cardDatesSep}>·</span>
+              <span title={`Last catalog change ${formatDate(plugin.updatedAt)}`}>
+                Updated {formatRelativeTime(plugin.updatedAt) ?? formatDate(plugin.updatedAt)}
+              </span>
+            </>
+          )}
+        </div>
 
         {onPick ? (
           <button
@@ -238,55 +254,56 @@ function PluginCard({
 
         {
           <div className={styles.cardDetail}>
-            {plugin.maintainer && (
-              <div className={styles.metaRow}>
-                <span className={styles.metaLabel}>Maintainer</span>
-                <span className={styles.metaValue}>
-                  {plugin.maintainerSlug ? (
-                    <Link to={authorPagePath(plugin.maintainerSlug)} onClick={(e) => e.stopPropagation()}>
-                      {plugin.maintainer}
-                    </Link>
-                  ) : (
-                    plugin.maintainer
-                  )}
-                </span>
-              </div>
-            )}
-            {plugin.requiresHermes && (
-              <div className={styles.metaRow}>
-                <span className={styles.metaLabel}>Requires</span>
-                <span className={styles.metaValue}>
-                  <code>hermes {plugin.requiresHermes}</code>
-                </span>
-              </div>
-            )}
+            {/* Exactly three fixed-height fact rows so the install box and links land on the same
+                edge in every card: Maintainer, Pinned (+ Requires), Tools (capped, or a dash). */}
+            <div className={styles.metaRow}>
+              <span className={styles.metaLabel}>Maintainer</span>
+              <span className={styles.metaValue} title={plugin.maintainer || undefined}>
+                {plugin.maintainerSlug ? (
+                  <Link to={authorPagePath(plugin.maintainerSlug)} onClick={(e) => e.stopPropagation()}>
+                    {plugin.maintainer}
+                  </Link>
+                ) : (
+                  plugin.maintainer || <span className={styles.metaEmpty}>—</span>
+                )}
+              </span>
+            </div>
             <div className={styles.metaRow}>
               <span className={styles.metaLabel}>Pinned</span>
-              <span className={styles.metaValue}>
+              <span
+                className={styles.metaValue}
+                title={plugin.requiresHermes ? `${plugin.sha} · requires hermes ${plugin.requiresHermes}` : plugin.sha}
+              >
                 <a
                   href={pinUrl(plugin)}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
                   className={styles.shaLink}
-                  title={plugin.sha}
                 >
                   <code>{plugin.version ? `${plugin.version} @ ${plugin.shaShort}` : plugin.shaShort}</code> ↗
                 </a>
+                {plugin.requiresHermes && (
+                  <>
+                    <span aria-hidden="true" className={styles.cardDatesSep}> · </span>
+                    <code>hermes {plugin.requiresHermes}</code>
+                  </>
+                )}
               </span>
             </div>
-            {caps.providesTools?.length ? (
-              <div className={styles.metaRow}>
-                <span className={styles.metaLabel}>Tools</span>
-                <span className={styles.chipList}>
-                  {caps.providesTools.map((t) => (
-                    <code key={t} className={styles.envChip}>
-                      {t}
-                    </code>
-                  ))}
+            <div className={styles.metaRow}>
+              <span className={styles.metaLabel}>Tools</span>
+              {toolChips.shown.length ? (
+                <span className={styles.chipList} title={caps.providesTools?.join(", ")}>
+                  <code className={styles.toolList}>{toolChips.shown.join(", ")}</code>
+                  {toolChips.hidden > 0 && (
+                    <code className={`${styles.envChip} ${styles.moreChip}`}>+{toolChips.hidden}</code>
+                  )}
                 </span>
-              </div>
-            ) : null}
+              ) : (
+                <span className={`${styles.metaValue} ${styles.metaEmpty}`}>—</span>
+              )}
+            </div>
             <div className={styles.installHint}>
               <code>{plugin.installCommand}</code>
               <CopyButton text={plugin.installCommand} />
@@ -808,6 +825,11 @@ export default function PluginCatalogPage() {
               </button>
             </div>
           )}
+          <p className={styles.legalNote}>
+            The Plugin Catalog is subject to our{" "}
+            <a href="https://portal.nousresearch.com/terms" target="_blank" rel="noopener noreferrer">Terms of Service</a> and{" "}
+            <a href="https://portal.nousresearch.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>.
+          </p>
         </main>
       </div>
     </Layout>

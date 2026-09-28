@@ -943,6 +943,24 @@
       }
     },
     {
+      "name": "display.switchSandboxImage",
+      "summary": "Decide the pending default sandbox image switch for this profile; refused when none is pending.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/DisplaySwitchSandboxImageParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/DisplaySwitchSandboxImageResult"
+        }
+      }
+    },
+    {
       "name": "display.thumbnail",
       "summary": "One JPEG grab of the bot's screen; read-only, never changes the lease.",
       "params": [
@@ -2973,6 +2991,24 @@
         "name": "result",
         "schema": {
           "$ref": "#/components/schemas/SessionActiveListResult"
+        }
+      }
+    },
+    {
+      "name": "session.archive",
+      "summary": "Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionArchiveParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionArchiveResult"
         }
       }
     },
@@ -8042,7 +8078,7 @@
       },
       "CompleteSlashParams": {
         "additionalProperties": false,
-        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills).",
+        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills);\n``profile`` scopes a session-less request (a new-chat draft).",
         "properties": {
           "text": {
             "anyOf": [
@@ -8067,6 +8103,18 @@
             ],
             "default": null,
             "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
           }
         },
         "title": "CompleteSlashParams",
@@ -12049,6 +12097,31 @@
         "title": "DispatchType",
         "type": "string"
       },
+      "DisplayImageSwitch": {
+        "additionalProperties": false,
+        "description": "A persisted Docker sandbox kept on the previous default image; the user decides the switch.",
+        "properties": {
+          "current_image": {
+            "title": "Current Image",
+            "type": "string"
+          },
+          "target_image": {
+            "title": "Target Image",
+            "type": "string"
+          },
+          "containers": {
+            "title": "Containers",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "current_image",
+          "target_image",
+          "containers"
+        ],
+        "title": "DisplayImageSwitch",
+        "type": "object"
+      },
       "DisplayInstallDonePayload": {
         "additionalProperties": false,
         "properties": {
@@ -12456,6 +12529,22 @@
             "default": null,
             "title": "Memory Limit Mb"
           },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "lease": {
             "$ref": "#/components/schemas/DisplayLease"
           },
@@ -12619,6 +12708,22 @@
             "default": null,
             "title": "Memory Limit Mb"
           },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "lease": {
             "$ref": "#/components/schemas/DisplayLease"
           },
@@ -12765,6 +12870,22 @@
             ],
             "default": null,
             "title": "Memory Limit Mb"
+          },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "lease": {
             "$ref": "#/components/schemas/DisplayLease"
@@ -12944,6 +13065,22 @@
             "default": null,
             "title": "Memory Limit Mb"
           },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "lease": {
             "$ref": "#/components/schemas/DisplayLease"
           },
@@ -12968,6 +13105,198 @@
           "stopped"
         ],
         "title": "DisplayStopResult",
+        "type": "object"
+      },
+      "DisplaySwitchSandboxImageParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "approve": {
+            "default": true,
+            "title": "Approve",
+            "type": "boolean"
+          }
+        },
+        "title": "DisplaySwitchSandboxImageParams",
+        "type": "object"
+      },
+      "DisplaySwitchSandboxImageResult": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          },
+          "installed": {
+            "title": "Installed",
+            "type": "boolean"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          },
+          "pid": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pid"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "socket": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Socket"
+          },
+          "geometry": {
+            "title": "Geometry",
+            "type": "string"
+          },
+          "install_command": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Install Command"
+          },
+          "browser": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Browser"
+          },
+          "blocker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Blocker"
+          },
+          "memory_available_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Available Mb"
+          },
+          "memory_limit_mb": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Memory Limit Mb"
+          },
+          "placement": {
+            "default": "gateway",
+            "title": "Placement",
+            "type": "string"
+          },
+          "image_switch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DisplayImageSwitch"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "lease": {
+            "$ref": "#/components/schemas/DisplayLease"
+          },
+          "profile_key": {
+            "title": "Profile Key",
+            "type": "string"
+          },
+          "docker_image": {
+            "title": "Docker Image",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile",
+          "supported",
+          "installed",
+          "missing",
+          "running",
+          "geometry",
+          "lease",
+          "profile_key",
+          "docker_image"
+        ],
+        "title": "DisplaySwitchSandboxImageResult",
         "type": "object"
       },
       "DisplayThumbnailResult": {
@@ -13090,6 +13419,72 @@
           "retryable"
         ],
         "title": "ErrorSurface",
+        "type": "object"
+      },
+      "FailedDelegation": {
+        "additionalProperties": false,
+        "description": "``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation.",
+        "properties": {
+          "delegation_id": {
+            "title": "Delegation Id",
+            "type": "string"
+          },
+          "task_index": {
+            "default": 0,
+            "title": "Task Index",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "goal": {
+            "default": "",
+            "title": "Goal",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "dispatched_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Dispatched At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Completed At"
+          }
+        },
+        "required": [
+          "delegation_id",
+          "status"
+        ],
+        "title": "FailedDelegation",
         "type": "object"
       },
       "FileAttachParams": {
@@ -21112,6 +21507,7 @@
         "enum": [
           "connected",
           "app_not_running",
+          "hermes_not_connected",
           "endpoint_unavailable",
           "no_interactive_session",
           "version_too_old",
@@ -21600,6 +21996,21 @@
             ],
             "default": null,
             "title": "Python Dependencies"
+          },
+          "known_issues": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Known Issues"
           },
           "after_install_path": {
             "anyOf": [
@@ -24554,6 +24965,18 @@
             ],
             "default": null,
             "title": "Lineage Ids"
+          },
+          "continuation_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Continuation Kind"
           },
           "profile": {
             "anyOf": [
@@ -27665,6 +28088,74 @@
         "title": "SessionActiveListResult",
         "type": "object"
       },
+      "SessionArchiveParams": {
+        "additionalProperties": false,
+        "description": "``session_id`` (or its ``session_key`` alias) is a live runtime id first, else a stored id / key / title.",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Id"
+          },
+          "session_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Session Key"
+          },
+          "archived": {
+            "default": true,
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "SessionArchiveParams",
+        "type": "object"
+      },
+      "SessionArchiveResult": {
+        "additionalProperties": false,
+        "properties": {
+          "archived": {
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "session_key": {
+            "title": "Session Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "archived",
+          "session_key"
+        ],
+        "title": "SessionArchiveResult",
+        "type": "object"
+      },
       "SessionBranchParams": {
         "additionalProperties": false,
         "properties": {
@@ -30160,6 +30651,11 @@
             "default": false,
             "title": "Close On Disconnect",
             "type": "boolean"
+          },
+          "inline_images": {
+            "default": true,
+            "title": "Inline Images",
+            "type": "boolean"
           }
         },
         "required": [
@@ -31895,7 +32391,7 @@
       },
       "SkillsReloadParams": {
         "additionalProperties": false,
-        "description": "``session_id`` binds the rescan to that session's profile and workspace (project skills).",
+        "description": "``session_id`` binds the rescan to that session's profile and workspace (project skills);\n``profile`` scopes a session-less rescan.",
         "properties": {
           "session_id": {
             "anyOf": [
@@ -31908,6 +32404,18 @@
             ],
             "default": null,
             "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
           }
         },
         "title": "SkillsReloadParams",
@@ -32863,7 +33371,7 @@
       },
       "SubagentListResult": {
         "additionalProperties": false,
-        "description": "``delegations`` is reserved for async delegation records and is currently always empty.",
+        "description": "``delegations``: recently failed async delegation tasks for the session (durable store), newest first.",
         "properties": {
           "subagents": {
             "items": {
@@ -32874,8 +33382,7 @@
           },
           "delegations": {
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/FailedDelegation"
             },
             "title": "Delegations",
             "type": "array"
@@ -38179,7 +38686,7 @@
     },
     {
       "name": "projects.changed",
-      "summary": "projects.db moved; refetch the Projects sidebar.",
+      "summary": "projects.db moved; refetch the project list + tree.",
       "params": [
         {
           "name": "payload",

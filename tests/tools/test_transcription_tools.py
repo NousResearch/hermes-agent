@@ -1087,6 +1087,131 @@ class TestExtractTranscriptText:
 
         assert result == "The user literally said <asr_text> while reading markup."
 
+    def test_structured_error_object_raises_instead_of_repr(self):
+        """#78098: a provider error object must not be stringified into its repr."""
+        from tools.transcription_common import STTResponseError
+        from tools.transcription_cloud import _extract_transcript_text
+
+        transcription = types.SimpleNamespace(
+            text=None, logprobs=None, usage=None, error="Transcription failed",
+        )
+
+        with pytest.raises(STTResponseError, match="Transcription failed") as excinfo:
+            _extract_transcript_text(transcription)
+
+        assert "text=None" not in str(excinfo.value)
+
+    def test_structured_error_body_raises_instead_of_repr(self):
+        from tools.transcription_common import STTResponseError
+        from tools.transcription_cloud import _extract_transcript_text
+
+        with pytest.raises(STTResponseError, match="Transcription failed"):
+            _extract_transcript_text({"text": None, "error": "Transcription failed"})
+
+    def test_structured_response_without_text_or_error_raises(self):
+        """Neither text nor a provider error: still an error, never ``str(obj)``."""
+        from tools.transcription_common import STTResponseError
+        from tools.transcription_cloud import _extract_transcript_text
+
+        with pytest.raises(STTResponseError, match="no text"):
+            _extract_transcript_text(types.SimpleNamespace(text=None, error=None))
+        with pytest.raises(STTResponseError, match="no text"):
+            _extract_transcript_text({"text": None})
+
+    def test_text_bearing_responses_still_normalize(self):
+        from tools.transcription_cloud import _extract_transcript_text
+
+        assert _extract_transcript_text(types.SimpleNamespace(text=" hello ")) == "hello"
+        assert _extract_transcript_text({"text": " hello "}) == "hello"
+        # Silence stays non-fatal: an empty *string* text is a valid empty transcript.
+        assert _extract_transcript_text(types.SimpleNamespace(text="", error=None)) == ""
+        assert _extract_transcript_text({"text": ""}) == ""
+
+
+class TestStructuredTranscriptionErrors:
+    """#78098: every provider path surfaces a structured error as a failure envelope
+    instead of reporting the response's repr as a successful transcript."""
+
+    @staticmethod
+    def _error_object():
+        return types.SimpleNamespace(
+            text=None, logprobs=None, usage=None, error="Transcription failed",
+        )
+
+    def test_openai_error_object_returns_failure_envelope(self, sample_wav):
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = self._error_object()
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(sample_wav, "gpt-4o-transcribe", api_key="sk-test")
+
+        assert result["success"] is False
+        assert result["transcript"] == ""
+        assert result["error"] == "Transcription failed"
+        assert "text=None" not in result["error"]
+
+    def test_openai_text_object_still_succeeds(self, sample_wav):
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = types.SimpleNamespace(
+            text="hello world", logprobs=None, usage=None, error=None,
+        )
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(sample_wav, "gpt-4o-transcribe", api_key="sk-test")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello world"
+
+    def test_groq_error_object_returns_failure_envelope(self, monkeypatch, sample_wav):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = self._error_object()
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import _transcribe_groq
+            result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        assert result["success"] is False
+        assert result["transcript"] == ""
+        assert result["error"] == "Transcription failed"
+
+    def test_mistral_error_object_returns_failure_envelope(
+        self, monkeypatch, sample_ogg, mock_mistral_module
+    ):
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        mock_result = MagicMock()
+        mock_result.text = None
+        mock_result.error = "Transcription failed"
+        mock_mistral_module.audio.transcriptions.complete.return_value = mock_result
+
+        from tools.transcription_tools import _transcribe_mistral
+        result = _transcribe_mistral(sample_ogg, "voxtral-mini-latest")
+
+        assert result["success"] is False
+        assert result["transcript"] == ""
+        assert result["error"] == "Transcription failed"
+        assert "text=None" not in result["error"]
+
+    def test_elevenlabs_error_body_returns_failure_envelope(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test-key")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": None, "error": "Transcription failed"}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is False
+        assert result["transcript"] == ""
+        assert result["error"] == "Transcription failed"
+
 
 # Shell safety — shlex.split on auto-detected templates
 # ============================================================================

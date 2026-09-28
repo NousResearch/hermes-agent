@@ -17,13 +17,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.compression_marker import (
     ELISION_MARKER_MAX_LEN,
-    _COMPRESSION_MARKER_PREFIX,
-    _COMPRESSION_MARKER_TEMPLATE,
     _elision_marker,
     elide,
     elide_middle,
 )
 from agent.auxiliary_client import (
+    CODEX_STREAM_STALL_MARKER,
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
     _is_connection_error,
@@ -744,16 +743,20 @@ def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
     """
     status = _exc_status_code(e)
     err = str(e).lower()
+    # #124077: only the Codex aux stream guard's mid-stream stall is a retry-ladder timeout; real
+    # transport timeouts and the guard's no-progress/hard-ceiling timeouts stay terminal
+    # network failures (#29559/#94448).
+    stall = isinstance(e, TimeoutError) and CODEX_STREAM_STALL_MARKER in str(e)
     return _SummaryFailureKind(
         # Permanent-looking error on a distinct summary model: fall back to main instead of cooldown.
         model_not_found=status in {404, 503}
         or any(m in err for m in ("model_not_found", "does not exist", "no available channel")),
-        timeout=status in {408, 429, 502, 504} or "timeout" in err or "timed out" in err,
+        timeout=stall or status in {408, 429, 502, 504} or "timeout" in err or "timed out" in err,
         # Malformed/non-JSON bodies (HTML 502 as application/json) surface as JSONDecodeError or
         # APIResponseValidationError "expecting value"; treat as transient.
         json_decode=isinstance(e, json.JSONDecodeError) or "expecting value" in err,
         # httpx premature-close errors are transient; treat like a timeout, not a 60s cooldown.
-        streaming_closed=_is_connection_error(e),
+        streaming_closed=_is_connection_error(e) and not stall,
         # HTTP 200 with empty body from a degraded provider, plus the sibling "no usable response"
         # shapes from _validate_llm_response.
         empty_content=isinstance(e, RuntimeError) and any(
@@ -1563,53 +1566,6 @@ def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
     return pruned
 
 
-def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args).
-
-    Only leaves where the replacement is a net reduction are changed (``head_chars`` plus the
-    marker, ~420 chars); the input string is returned unchanged when nothing was replaced.
-    """
-    try:
-        parsed = json.loads(args)
-    except (ValueError, TypeError):
-        return args
-
-    changed = False
-
-    def _shrink(obj: Any) -> Any:
-        nonlocal changed
-        if isinstance(obj, str):
-            # Already marked: the compressor writes the head and the marker as the whole tail, so
-            # key on that shape. A substring/prefix test alone would exempt a leaf that merely
-            # quotes the marker — including the imitation #83714 is about — from shrinking forever.
-            marked = obj.startswith(_COMPRESSION_MARKER_PREFIX, head_chars) and obj.endswith("⟫")
-            if len(obj) <= head_chars or marked:
-                return obj
-            marker = _COMPRESSION_MARKER_TEMPLATE.format(
-                omitted=len(obj) - head_chars, total=len(obj)
-            )
-            # Only replace when it reclaims bytes: for a leaf just over the cap the marker is
-            # longer than what it replaces.
-            if head_chars + len(marker) >= len(obj):
-                return obj
-            changed = True
-            return obj[:head_chars] + marker
-        if isinstance(obj, dict):
-            return {k: _shrink(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_shrink(v) for v in obj]
-        return obj
-
-    shrunken = _shrink(parsed)
-    # Re-serialising alone would rewrite the caller's bytes (compact wire JSON gains spaces),
-    # which the callers read as "this message changed" and count as reclaimed pressure.
-    if not changed:
-        return args
-    # ensure_ascii=False keeps CJK/emoji from bloating into \uXXXX
-    out = json.dumps(shrunken, ensure_ascii=False)
-    return out if len(out) < len(args) else args
-
-
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image", "image"})
 
 
@@ -1991,8 +1947,12 @@ _SECTION_INSTRUCTIONS: Dict[bool, Dict[str, str]] = {
             "Write the summary in the same language the user was using in the "
             "conversation — do not translate or switch to English. "
         ),
-        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
-input verbatim — the exact words they used. This includes:
+        "historical_task": """[THE SINGLE MOST IMPORTANT FIELD. Identify the user's most recent unfulfilled
+input precisely, but summarize it in your own words rather than copying long
+passages from the transcript. The compressor inserts a bounded, redacted
+snapshot of the real latest user turn after generation, so the model must not
+reproduce it.
+This includes:
 - Explicit task assignments ("<specific user task>")
 - Questions awaiting an answer ("<specific user question>")
 - Decisions awaiting input ("<option A or B?>")
@@ -2004,14 +1964,14 @@ rare case where the last exchange was fully resolved and the user said
 something like "thanks, that's all".
 If multiple items are outstanding, list only the ones NOT yet completed.
 This historical snapshot must identify the latest unresolved user input precisely. Examples:
-"User asked: '<exact latest user request>'"
-"User asked: '<exact latest user question>' — needs investigation + answer"
+"User asked for <specific task and constraints>"
+"User asked <specific question> — needs investigation + answer"
 "User chose <option>; awaiting implementation of <specific next step>"
 If the user's most recent message was a reverse signal (stop, undo, roll
 back, never mind, just verify, change of topic) that supersedes earlier
-work, write the reverse signal verbatim and DO NOT carry forward the
-cancelled task. Example: "User asked: '<exact reverse signal>' — earlier
-in-flight work is cancelled."
+work, describe the reverse signal accurately and DO NOT carry forward the
+cancelled task.
+Example: "User asked to stop the prior task — earlier work is cancelled."
 If no outstanding task exists, write "None."]""",
         "goal": "[What the user is trying to accomplish overall]",
         "constraints": (
@@ -3126,22 +3086,6 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return pruned
 
     @staticmethod
-    def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
-        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
-        msg = result[idx]
-        if msg.get("role") != "assistant" or not msg.get("tool_calls"):
-            return False
-        new_tcs = []
-        for tc in msg["tool_calls"]:
-            args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
-            new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
-            new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
-        modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
-        if modified:
-            result[idx] = {**msg, "tool_calls": new_tcs}
-        return modified
-
-    @staticmethod
     def _demote_tool_result_at(
         result: List[Dict[str, Any]], idx: int, call_id_to_tool: Dict[str, tuple[str, str]],
         min_prune_chars: int, protected_skills: Optional[set[str]] = None,
@@ -3186,10 +3130,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self, result: List[Dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
         call_id_to_tool: Dict[str, tuple[str, str]], min_prune_chars: int, spared: range,
     ) -> int:
-        """Pass 4: demote inside the protected tail when it alone exceeds the soft budget (#61932).
-        Keeps a short recent floor and the ``spared`` pending tool round verbatim; overrides the skill guard
-        (else the dead-end recurs). Returns the number of tool results demoted (arg truncations are logged
-        but not counted)."""
+        """Pass 4: demote tool-result bodies inside the protected tail when it alone exceeds the soft
+        budget (#61932). Keeps a short recent floor and the ``spared`` pending tool round verbatim; overrides
+        the skill guard (else the dead-end recurs). Tool-call arguments stay byte-exact. Returns the number of
+        tool results demoted."""
         soft_ceiling = self._tail_soft_ceiling(protect_tail_tokens)
         demote_end = len(result) - min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
         start = max(0, prune_boundary)
@@ -3197,18 +3141,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         def _protected_region_tokens() -> int:
             return sum(_estimate_msg_budget_tokens(result[i]) for i in range(start, len(result)))
 
-        demoted = pressure_hits = 0
+        demoted = 0
 
         def _shrink_at(i: int) -> None:
-            # Each helper no-ops on the other role, so both may run unconditionally.
-            nonlocal demoted, pressure_hits
+            nonlocal demoted
             if i in spared:
                 return
             if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
                 demoted += 1
-                pressure_hits += 1
-            if self._truncate_tool_call_args_at(result, i):
-                pressure_hits += 1
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
             return 0
@@ -3228,12 +3168,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 and _protected_region_tokens() > soft_ceiling
             ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
                 demoted += 1
-                pressure_hits += 1
-        if pressure_hits and not self.quiet_mode:
+        if demoted and not self.quiet_mode:
             logger.info(
                 "Pre-compression pressure demotion: reclaimed protected-tail tool output (%d change(s); "
                 "protected region now ~%s tokens, soft ceiling %s)",
-                pressure_hits, f"{_protected_region_tokens():,}", f"{soft_ceiling:,}",
+                demoted, f"{_protected_region_tokens():,}", f"{soft_ceiling:,}",
             )
         return demoted
 
@@ -3252,8 +3191,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None, min_prune_chars: int = _PRUNE_MIN_CHARS,
     ) -> tuple[List[Dict[str, Any]], int]:
-        """Old tool results -> 1-line summaries; dedup, arg truncation, pressure demotion. Returns ``(messages, count)``.
-        Token budget (when given) takes priority over the message-count floor."""
+        """Project old tool-result bodies to bounded summaries without rewriting tool-call arguments.
+        Returns ``(messages, count)``; token budget (when given) takes priority over the
+        message-count floor."""
         if not messages:
             return messages, 0
         result = [m.copy() for m in messages]
@@ -3270,15 +3210,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # Without this, a skill loaded moments before a compaction can be demoted to metadata while the
         # model still believes its instructions are in context. See #32106.
         protected_skills = _collect_protected_skill_names(result, prune_boundary)
-        # Pass 2: summarize old tool results. Pass 3: shrink large tool_call arguments INSIDE the parsed JSON so
-        # the result stays valid; otherwise providers 400 on every turn until the call leaves the window.
+        # Pass 2: summarize old tool results. Tool-call arguments are canonical execution
+        # records and are never rewritten; summary input is bounded separately by
+        # _render_tool_call_for_summary().
         pruned += sum(
             self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars, protected_skills)
             for i in range(max(0, prune_boundary))
         )
-        for i in range(max(0, prune_boundary)):
-            self._truncate_tool_call_args_at(result, i)
-        # Pass 3.5: retire image payloads inside the protected tail; re-sent embeds otherwise make
+        # Pass 3: retire image payloads inside the protected tail; re-sent embeds otherwise make
         # compression look ineffective and trip anti-thrash. Newest frames stay live.
         # Newest frames stay live for follow-up QA; unread spared results stay live too. See #92699.
         pruned += _retire_stale_tool_result_images(result, spared=spared)
@@ -3460,6 +3399,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             fn = getattr(tc, "function", None)
             return f"  {getattr(fn, 'name', '?') if fn else '?'}(...)"
         fn = tc.get("function", {})
+        # Redact the FULL args before cutting: delimited secrets (PEM BEGIN…END) only match whole, so a
+        # pre-redaction cut would leave a key body straddling the cut unredacted in the persisted summary.
         args = _redact_compaction_text(fn.get("arguments", ""))
         if len(args) > self._TOOL_ARGS_MAX:
             args = args[:self._TOOL_ARGS_HEAD] + "..."
@@ -5299,11 +5240,16 @@ Write only the summary body. Do not include any preamble or prefix."""
         telemetry["failure_class"] = "summary_overload_degraded" if self._last_summary_overload_degraded else (
             telemetry.get("failure_class") or ("feasibility_skip" if feasibility_skip else "summary_generation_failed")
         )
-        return self._build_static_fallback_summary(
+        summary = self._build_static_fallback_summary(
             turns_to_summarize,
             # A stale error from an earlier failure must not be embedded in a feasibility-skip fallback.
             reason=None if feasibility_skip else self._last_summary_error,
         )
+        # The fallback row replaces the older handoff in the transcript, and the next compaction drops
+        # handoff rows from its window as "already folded into _previous_summary". Publish it like a
+        # real summary so its anchors reach the next summarizer instead of the stale in-memory one.
+        self._previous_summary = self._strip_summary_prefix(summary)
+        return summary
 
     def _assemble_tail(
         self, messages: List[Dict[str, Any]], compress_end: int, tail_start: int, summary_indices: set,
@@ -5439,8 +5385,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         self, messages: List[Dict[str, Any]], current_tokens: Optional[int] = None, focus_topic: Optional[str] = None,
         force: bool = False, memory_context: str = "", bypass_cooldown: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Summarize the middle turns: prune tool results and blank echoes (survives an abort), protect head and a
-        token-budget tail, summarize, clean orphaned tool pairs. ``force`` clears the failure cooldown and bypasses
+        """Summarize the middle turns: prune tool-result bodies (tool-call args untouched), protect head and a
+        token-budget tail from the pruned copy, summarize, then clean orphaned tool pairs. ``force`` clears the failure cooldown and bypasses
         the feasibility skip; ``bypass_cooldown`` runs the summary LLM without clearing the cooldown.
 
         Args: focus_topic: Optional focus string for guided compression. When provided, the summariser will
@@ -5470,6 +5416,9 @@ Write only the summary body. Do not include any preamble or prefix."""
             return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
         spare_pending_images = bool(self._spared_pending_tool_round(messages))
+        # Unpruned copy for no-op/abort returns (history stays lossless) and finalize; head/tail are
+        # assembled and measured from the pruned copy (#61932).
+        canonical_messages = self._drop_blank_echoes(messages)
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
@@ -5478,7 +5427,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
         messages = self._drop_blank_echoes(messages)
         n_messages = len(messages)
-        # Phase 2: Determine boundaries
+        # Phase 2: Determine boundaries (on the pruned copy so a pressure-demoted tail can compress, #61932)
         compress_start, compress_end = self._compress_window(messages)
         if compress_start >= compress_end:
             self._record_compression_regions(
@@ -5488,7 +5437,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 telemetry, "no_compressible_window",
                 f"compress_start ({compress_start}) >= compress_end ({compress_end}) - transcript fits within tail budget",
             )
-            return messages
+            return canonical_messages
         turns_to_summarize = messages[compress_start:compress_end]
         # Lean mode demotes stale tail tool results before summary generation so stubs exist even if it aborts.
         if getattr(self, "tail_mode", "lean") == "lean":
@@ -5506,7 +5455,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 telemetry, "empty_post_handoff_window",
                 f"window {compress_start}-{compress_end} holds only already-summarized handoffs",
             )
-            return messages
+            return canonical_messages
         if not self.quiet_mode:
             self._log_compression_start(
                 display_tokens, compress_start, compress_end, len(turns_to_summarize), n_messages - scan.tail_start,
@@ -5528,19 +5477,20 @@ Write only the summary body. Do not include any preamble or prefix."""
             if not summary and self._abort_on_summary_failure(
                 telemetry, compress_end - compress_start, scan.previous_summary_before,
             ):
-                return messages
+                return canonical_messages
         if not summary:
             summary = self._fallback_summary_for_window(
                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,
             )
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
-        return self._finalize_compressed(compressed, messages, n_messages, spare_pending_images)
+        return self._finalize_compressed(compressed, canonical_messages, n_messages, spare_pending_images)
 
     def _assemble_compressed(
         self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int, scan: "_HandoffScan", summary: str,
     ) -> List[Dict[str, Any]]:
-        """Head + summary row (or merged carrier) + tail, with alternation-safe summary placement."""
+        """Head + summary + tail from the pruned copy: its tool-result demotions are what let an oversized
+        head/tail compress at all (#61932); tool-call arguments are never rewritten by pruning."""
         compressed = self._assemble_head(messages, compress_start)
         tail_messages = self._assemble_tail(messages, compress_end, scan.tail_start, scan.summary_indices)
         summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx = (

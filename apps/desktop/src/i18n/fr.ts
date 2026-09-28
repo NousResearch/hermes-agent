@@ -684,6 +684,8 @@ export const frOverrides = {
       'composer.focus': 'Mettre le focus sur le compositeur',
       'composer.modelPicker': 'Ouvrir le sélecteur de modèle',
       'composer.voice': 'Démarrer / arrêter la conversation vocale',
+      'composer.reasoningUp': 'Augmenter le niveau de raisonnement',
+      'composer.reasoningDown': 'Réduire le niveau de raisonnement',
       'view.toggleSidebar': 'Basculer la barre latérale des sessions',
       'view.cycleSidebarGrouping': 'Changer le regroupement des sessions',
       'view.toggleRightSidebar': "Basculer l'explorateur de fichiers",
@@ -710,6 +712,15 @@ export const frOverrides = {
       'view.findInPage': 'Rechercher dans la page',
       'view.findNext': 'Rechercher la correspondance suivante',
       'view.findPrevious': 'Rechercher la correspondance précédente',
+      'view.tabSlot.1': "Basculer vers l'onglet 1",
+      'view.tabSlot.2': "Basculer vers l'onglet 2",
+      'view.tabSlot.3': "Basculer vers l'onglet 3",
+      'view.tabSlot.4': "Basculer vers l'onglet 4",
+      'view.tabSlot.5': "Basculer vers l'onglet 5",
+      'view.tabSlot.6': "Basculer vers l'onglet 6",
+      'view.tabSlot.7': "Basculer vers l'onglet 7",
+      'view.tabSlot.8': "Basculer vers l'onglet 8",
+      'view.tabSlot.9': "Basculer vers l'onglet 9",
       'appearance.toggleMode': 'Basculer clair / sombre',
       'profile.default': 'Basculer vers le profil par défaut',
       'profile.switch.1': 'Basculer vers le profil 1',
@@ -2048,6 +2059,8 @@ export const frOverrides = {
       provider: 'Fournisseur',
       model: 'Modèle',
       applying: 'Application...',
+      mainAppliedTitle: 'Modèle principal mis à jour',
+      mainAppliedMessage: model => `Les nouvelles sessions utiliseront ${model}.`,
       defaultsLabel: 'Par défaut',
       reasoning: 'Raisonnement',
       reasoningOff: 'Désactivé',
@@ -2810,6 +2823,7 @@ export const frOverrides = {
       serverStates: {
         connected: 'connecté',
         app_not_running: 'application non lancée',
+        hermes_not_connected: 'connexion MCP manquante',
         endpoint_unavailable: 'point de terminaison indisponible',
         no_interactive_session: 'aucune session interactive',
         version_too_old: 'version trop ancienne',
@@ -4079,6 +4093,7 @@ export const frOverrides = {
       backgroundRunning: 'Tâche en arrière-plan en cours',
       draftSession: 'Brouillon — aucun message envoyé',
       handoffOrigin: platform => `Transférée depuis ${platform}`,
+      continuationOrigin: 'Continuation automatique — cette conversation a été compressée puis poursuivie',
       ownedByProfile: profile => `Profil : ${profile}`,
       renamed: 'Renommée',
       renameFailed: 'Échec du renommage',
@@ -4385,6 +4400,7 @@ export const frOverrides = {
     goalWaiting: 'Objectif en attente',
     subagents: count => `${count} sous-agent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tâches ${done}/${total}`,
+    previousTodos: (done, total) => `Tâches précédentes ${done}/${total}`,
     running: 'En cours',
     stop: 'Arrêter',
     dismiss: 'Rejeter',
@@ -5466,8 +5482,9 @@ export const frOverrides = {
             `${provider} a renvoyé une erreur serveur. Réessayez dans un instant ou changez de fournisseur.`
         },
         timeout: {
-          title: 'Délai de réponse dépassé',
-          body: provider => `${provider} n'a pas répondu à temps. Réessayez pour renvoyer le message.`
+          title: 'Service d’IA injoignable',
+          body: provider =>
+            `${provider} est injoignable ou n'a pas répondu à temps. Vérifiez votre connexion internet, puis réessayez.`
         },
         stream_drop: {
           title: 'La réponse a été interrompue',
@@ -5604,6 +5621,8 @@ export const frOverrides = {
       preparingAudio: "Préparation de l'audio…",
       stopReading: 'Arrêter la lecture',
       readAloud: 'Lire à voix haute',
+      copyFullResponse: 'Copier la réponse complète',
+      readAloudFullResponseHint: 'Maj+clic : lire la réponse complète',
       editMessage: 'Modifier le message',
       expandMessage: 'Développer le message',
       scrollToBottom: 'Défiler vers le bas',

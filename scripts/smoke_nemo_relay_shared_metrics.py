@@ -302,13 +302,16 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         by_name.setdefault(counter["name"], []).append(counter)
     if set(by_name) != {
         "hermes.client.active",
+        "hermes.context_peak.count",
         "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.model_route.count",
         "hermes.model_tokens.sum",
+        "hermes.model_tool_quality.count",
         "hermes.session.count",
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
+        "hermes.startup.latency",
         "hermes.task_run.finished",
         "hermes.task_run.started",
         "hermes.tool.usage.count",
@@ -395,6 +398,17 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     tokens = {c["dimensions"]["token_type"]: c["value"] for c in by_name["hermes.model_tokens.sum"]}
     if tokens != {"input": 20, "output": 2}:
         raise AssertionError(f"Unexpected token sums: {by_name['hermes.model_tokens.sum']}")
+    [quality] = by_name["hermes.model_tool_quality.count"]
+    if quality["dimensions"] != {"call_role": "primary", "issue": "none", "model": "custom", "provider": "custom"}:
+        raise AssertionError(f"Unexpected tool-call quality: {quality}")
+    [peak] = by_name["hermes.context_peak.count"]
+    if (peak["dimensions"]["provider"], peak["dimensions"]["model"], peak["dimensions"]["limit_hit"]) != (
+        "custom", "custom", "no",
+    ):
+        raise AssertionError(f"Unexpected context peak: {peak}")
+    [startup] = by_name["hermes.startup.latency"]
+    if startup["dimensions"]["surface"] != "cli":
+        raise AssertionError(f"Unexpected startup latency: {startup}")
     milestones = {c["dimensions"]["milestone"] for c in by_name["hermes.install.milestone"]}
     if not {"first_task_started", "first_task_success", "first_tool_success"} <= milestones:
         raise AssertionError(f"Missing install milestones: {sorted(milestones)}")
@@ -502,13 +516,16 @@ def _validate_packages(
             metrics.setdefault(metric["name"], []).append(metric)
     if set(metrics) != {
         "hermes.client.active",
+        "hermes.context_peak.count",
         "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.model_route.count",
         "hermes.model_tokens.sum",
+        "hermes.model_tool_quality.count",
         "hermes.session.count",
         "hermes.skill.lifecycle.count",
         "hermes.skill.load.count",
+        "hermes.startup.latency",
         "hermes.task_run.finished",
         "hermes.task_run.started",
         "hermes.tool.usage.count",

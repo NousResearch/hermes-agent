@@ -362,6 +362,24 @@ _title_in_flight: set = set()
 _title_in_flight_lock = threading.Lock()
 
 
+def _is_technical_user_message(m: dict) -> bool:
+    """Detect injected non-semantic role=user history records."""
+    if not isinstance(m, dict):
+        return False
+    if m.get("meta", {}).get("injected"):
+        return True
+    content = m.get("content")
+    if isinstance(content, str):
+        s = content.strip()
+        if (
+            s.startswith("[CONTEXT COMPACTION")
+            or s.startswith("[IMPORTANT: Background process")
+            or s.startswith("[The user attached an image:")
+        ):
+            return True
+    return False
+
+
 def maybe_auto_title(
     session_db,
     session_id: str,
@@ -375,26 +393,21 @@ def maybe_auto_title(
 ) -> None:
     """Fire-and-forget title generation.
 
-    Generates a title for any session that does not have one yet, using the
-    persisted title as the single source of truth instead of a first-exchange
-    message-count heuristic. The count heuristic assumed every
-    ``role="user"`` history entry is a real user turn, but gateway/desktop
-    histories persist system-injected markers with ``role="user"`` —
-    context-compaction placeholders, background-process notifications,
-    image-attachment descriptions, and replay duplicates. Once any of those
-    appeared before the first clean response, the session was permanently
-    left untitled with no log line and no retry (#76842).
-
-    A process-local in-flight guard (``_title_in_flight``) prevents a second
-    worker from being spawned for the same session while one is running.
-    The worker re-checks the DB title itself, so a manual ``/title`` set
-    after this guard still wins (see ``auto_title_session``).
-
-    ``conversation_history`` is kept in the signature for backward
-    compatibility with existing callers but is deliberately not used as a
-    first-exchange heuristic.
+    Generates a title on the first 1-2 semantic exchanges for any session that
+    does not have one yet. Technical/injected role="user" records (context compaction,
+    background notifications, image attachments) are excluded so they do not
+    prematurely exhaust the exchange budget (#76842).
     """
     if not session_db or not session_id or not user_message or not assistant_response:
+        return
+
+    # Count semantic user messages in history to retain the first-exchange constraint.
+    # Exclude technical/injected markers (compaction, background notifications, etc. #76842)
+    semantic_user_count = sum(
+        1 for m in (conversation_history or [])
+        if m.get("role") == "user" and not _is_technical_user_message(m)
+    )
+    if semantic_user_count > 2:
         return
 
     with _title_in_flight_lock:

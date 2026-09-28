@@ -207,6 +207,23 @@ class TestMaybeAutoTitle:
             maybe_auto_title(db, "sess-1", "third", "response 3", history)
             mock_auto.assert_not_called()
 
+    def test_skips_when_more_than_two_semantic_user_turns_and_untitled(self):
+        """Conversations beyond the first 1-2 semantic exchanges are not auto-titled,
+        even if the session is currently untitled. Regression for #76842 review."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [
+            {"role": "user", "content": "turn 1"},
+            {"role": "assistant", "content": "answer 1"},
+            {"role": "user", "content": "turn 2"},
+            {"role": "assistant", "content": "answer 2"},
+            {"role": "user", "content": "turn 3"},
+            {"role": "assistant", "content": "answer 3"},
+        ]
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-untitled-turn3", "turn 3", "answer 3", history)
+            mock_auto.assert_not_called()
+
     def test_fires_despite_technical_user_entries(self):
         """Regression for #76842: technical role=user markers (compaction
         placeholders, background notifications, image attachments) must not

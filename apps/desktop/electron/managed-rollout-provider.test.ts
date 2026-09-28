@@ -765,6 +765,126 @@ test('hydrates an authorized running journal record as recoverable unknown witho
   }
 })
 
+test.each([
+  { phase: 'stopped', attemptPhase: 'failed', stopRequested: true, archived: false },
+  { phase: 'completed', attemptPhase: 'updated', stopRequested: false, archived: false },
+  { phase: 'stopped', attemptPhase: 'refused', stopRequested: true, archived: true }
+] as const)('recovers a restarted $phase rollout whose installation fence is still unresolved', async ({ phase, attemptPhase, stopRequested, archived }) => {
+  const { dependencies, journalDirectory } = makeDependencies()
+  const rolloutId = '88888888-8888-4888-8888-888888888888'
+  const correlationId = '99999999-9999-4999-8999-999999999999'
+
+  try {
+    dependencies.journal.create({
+      schemaVersion: 1,
+      id: rolloutId,
+      revision: 0,
+      createdAt: NOW_ISO,
+      updatedAt: NOW_ISO,
+      finishedAt: NOW_ISO,
+      retryOf: null,
+      archivedAt: archived ? NOW_ISO : null,
+      target: TARGET,
+      phase,
+      activeWave: 0,
+      concurrency: 1,
+      promotionPolicy: 'manual',
+      canaryApproved: false,
+      continuationRequired: false,
+      attempts: [{
+        identity: {
+          connectionId: CONNECTION_ID,
+          installId: INSTALL_ID,
+          aliasConnectionIds: [],
+          label: INSTALL_ID,
+          displayAddress: CONNECTION_ID,
+          installationFingerprint: INSTALLATION_FINGERPRINT,
+          sourceFingerprint: SOURCE_FINGERPRINT,
+          admittedSha: ADMITTED_SHA
+        },
+        correlationId,
+        wave: 0,
+        phase: attemptPhase,
+        launchState: 'observed',
+        requiredScopeIds: ['scope-main'],
+        skipReason: null,
+        reprobes: 0,
+        receipt: null,
+        health: null,
+        recoveryRequired: true,
+        reasons: []
+      }],
+      eventCount: 0
+    } as any, {
+      metadata: {
+        schema: 1,
+        queueGeneration: 0,
+        currentWave: 0,
+        phase,
+        policy: 'manual',
+        canaryApproved: false,
+        continuationRequired: false,
+        stopRequested,
+        plan: BASE_PLAN
+      },
+      events: [],
+      ...(archived ? { archive: { at: NOW_ISO, actor: 'local-operator' as const, reason: 'retained for test evidence' } } : {}),
+      unresolved: [{
+        key: `managed-rollout:${rolloutId}:${INSTALL_ID}:${correlationId}`,
+        rolloutId, installId: INSTALL_ID, correlationId,
+        reason: 'remote-launch-settlement-required', recordedAt: NOW_ISO
+      }]
+    })
+
+    const freshJournal = createManagedRolloutJournal({ directory: journalDirectory, clock: () => NOW_ISO })
+
+    const freshDependencies: ManagedRolloutProviderDependencies = {
+      ...dependencies,
+      journal: freshJournal,
+      observe: {
+        ...dependencies.observe,
+        reprobe: async authorization => ({ correlationId: authorization.correlationId, outcome: 'unverified' as const, terminal: false }),
+        recover: async authorization => ({
+          correlationId: authorization.correlationId,
+          clearanceProved: true,
+          clearance: RECOVERY_CLEARANCE
+        })
+      }
+    }
+
+    const provider = createManagedRolloutProvider(freshDependencies)
+    const before = await provider.get(rolloutId) as Record<string, unknown>
+
+    // A stopped rollout whose fence outlived it returns to attention on
+    // restart; a completed one keeps its terminal phase while the fence
+    // stays recoverable.
+    const expectedPhase = phase === 'stopped' ? 'attention-required' : 'completed'
+
+    assert.equal(before.phase, expectedPhase)
+
+    const recovered = await provider.command({
+      id: rolloutId,
+      expectedRevision: before.revision as number,
+      requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      action: 'recover',
+      kind: 'recover',
+      installId: INSTALL_ID,
+      reason: null,
+      promotionPolicy: null
+    } as any) as Record<string, unknown>
+
+    assert.equal(recovered.ok, true)
+    const record = freshJournal.read(rolloutId)
+
+    assert.equal(record.unresolved.length, 0)
+    assert.equal(record.snapshot.phase, expectedPhase)
+    assert.equal((record.snapshot.attempts[0] as any).phase, attemptPhase)
+    assert.ok(record.facts.some(item => item.kind === 'recovery-cleared'))
+  } finally {
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
 test('refuses retry while the prior rollout fence is unresolved and permits it after settlement evidence', async () => {
   const { dependencies, journalDirectory } = makeDependencies()
 

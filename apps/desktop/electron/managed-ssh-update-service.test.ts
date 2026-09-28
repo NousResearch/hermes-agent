@@ -701,6 +701,99 @@ test('recovery wins admission over a duplicate update and releases only its own 
   assert.equal(service.gate.owner('homelab'), null)
 })
 
+test('durable recovery restores scopes once the selected remote re-proves the recorded installation', async () => {
+  let restored = 0
+  let completed = 0
+
+  const service = createManagedSshUpdateService(
+    deps({
+      resolveInstallationId: async () => EXPECTED_SOURCE.installId,
+      readRecoveryRecords: () => [{
+        connectionId: 'homelab', correlationId: CORRELATION, installationId: EXPECTED_SOURCE.installId,
+        phase: 'launching', scopes: [{ key: 'scope-main', kind: 'legacy', profile: 'default' }], source: source('homelab')
+      }],
+      restoreRecoveryScope: async () => { restored += 1 },
+      completeRecovery: async () => { completed += 1 }
+    })
+  )
+
+  await service.resumeRecoveries()
+
+  assert.equal(restored, 1)
+  assert.equal(completed, 1)
+})
+
+test('durable recovery refuses to restore a record whose selected remote is a different installation', async () => {
+  let restored = 0
+  let completed = 0
+
+  const service = createManagedSshUpdateService(
+    deps({
+      // The selected remote resolves to another installation than the one the
+      // durable record was created against.
+      resolveInstallationId: async () => 'd'.repeat(32),
+      readRecoveryRecords: () => [{
+        connectionId: 'homelab', correlationId: CORRELATION, installationId: EXPECTED_SOURCE.installId,
+        phase: 'launching', scopes: [{ key: 'scope-main', kind: 'legacy', profile: 'default' }], source: source('homelab')
+      }],
+      restoreRecoveryScope: async () => { restored += 1 },
+      completeRecovery: async () => { completed += 1 }
+    })
+  )
+
+  await service.resumeRecoveries()
+
+  assert.equal(restored, 0)
+  assert.equal(completed, 0)
+  // The durable obligation remains: the connection stays fenced against a
+  // foreign claimant until a recovery actually proves clearance.
+  assert.equal(service.gate.claim('homelab', OTHER_CORRELATION), false)
+})
+
+test('durable recovery keeps the obligation pending when the selected remote cannot prove its installation', async () => {
+  let restored = 0
+  let completed = 0
+
+  const service = createManagedSshUpdateService(
+    deps({
+      resolveInstallationId: async () => null,
+      readRecoveryRecords: () => [{
+        connectionId: 'homelab', correlationId: CORRELATION, installationId: EXPECTED_SOURCE.installId,
+        phase: 'launching', scopes: [{ key: 'scope-main', kind: 'legacy', profile: 'default' }], source: source('homelab')
+      }],
+      restoreRecoveryScope: async () => { restored += 1 },
+      completeRecovery: async () => { completed += 1 }
+    })
+  )
+
+  await service.resumeRecoveries()
+
+  assert.equal(restored, 0)
+  assert.equal(completed, 0)
+})
+
+test('durable recovery keeps the obligation pending when installation identity resolution fails', async () => {
+  let restored = 0
+  let completed = 0
+
+  const service = createManagedSshUpdateService(
+    deps({
+      resolveInstallationId: async () => { throw new Error('transport unavailable') },
+      readRecoveryRecords: () => [{
+        connectionId: 'homelab', correlationId: CORRELATION, installationId: EXPECTED_SOURCE.installId,
+        phase: 'launching', scopes: [{ key: 'scope-main', kind: 'legacy', profile: 'default' }], source: source('homelab')
+      }],
+      restoreRecoveryScope: async () => { restored += 1 },
+      completeRecovery: async () => { completed += 1 }
+    })
+  )
+
+  await service.resumeRecoveries()
+
+  assert.equal(restored, 0)
+  assert.equal(completed, 0)
+})
+
 test('service captures, restores, closes owned transport, and releases admission in order', async () => {
   const events: string[] = []
   let persistedInstallationId: string | null = null

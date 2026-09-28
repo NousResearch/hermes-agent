@@ -2,7 +2,7 @@ import { randomInt, randomUUID } from 'node:crypto'
 
 import { validateHealthEvidence } from '../src/lib/managed-rollout-contract'
 
-import type { ManagedRolloutState } from './managed-rollout-coordinator'
+import type { ManagedRolloutAuthorization, ManagedRolloutState } from './managed-rollout-coordinator'
 import { buildHealthEvidence, runEvidenceSweep, type SweepProbeContext } from './managed-rollout-evidence'
 import { canonicalRepositoryId, installationFingerprint, sourceFingerprint } from './managed-rollout-identity'
 import { createManagedRolloutJournal, type ManagedRolloutJournal, type RecoveryClearance } from './managed-rollout-journal'
@@ -760,7 +760,7 @@ async function reprobeRemote(options: ManagedRolloutMainIntegrationOptions, jour
   }
 }
 
-async function recoverRemote(options: ManagedRolloutMainIntegrationOptions, authorization: any) {
+async function recoverRemote(options: ManagedRolloutMainIntegrationOptions, authorization: ManagedRolloutAuthorization) {
   if (!options.recoverManagedSsh || !options.readRecoveryRecord) {
     return { correlationId: authorization.correlationId, clearanceProved: false }
   }
@@ -771,7 +771,12 @@ async function recoverRemote(options: ManagedRolloutMainIntegrationOptions, auth
     !record || record.connectionId !== authorization.connectionId ||
     record.correlationId !== authorization.correlationId ||
     record.source?.id !== authorization.connectionId || record.source.kind !== 'ssh' ||
-    !Array.isArray(record.scopes) || !['prepared', 'launching'].includes(record.phase)
+    !Array.isArray(record.scopes) || !['prepared', 'launching'].includes(record.phase) ||
+    // The durable record must belong to the exact installation the
+    // authorization pinned. A record that carries another installation's
+    // identity — or none at all — cannot prove this installation's obligation
+    // was cleared.
+    record.installationId !== authorization.installId
   ) {
     return { correlationId: authorization.correlationId, clearanceProved: false }
   }
@@ -801,6 +806,24 @@ async function recoverRemote(options: ManagedRolloutMainIntegrationOptions, auth
       return { correlationId: typeof receipt?.correlationId === 'string' ? receipt.correlationId : '', clearanceProved: false }
     }
 
+    // Clear markers are only evidence about the machine that reported them.
+    // The selected target must re-prove it is the pinned installation —
+    // identity, fingerprints, code root, and repository — before its clear
+    // markers may clear this installation's obligation.
+    const inspection = await inspectConnectedSource(options, record.source, transport.target)
+
+    if (!inspection) {return { correlationId: authorization.correlationId, clearanceProved: false }}
+    const installation = installationFingerprint(inspection)
+    const fingerprint = sourceFingerprint({ ...inspection.source, installationFingerprint: installation })
+
+    if (inspection.installId !== authorization.installId ||
+        installation !== authorization.installationFingerprint ||
+        fingerprint !== authorization.sourceFingerprint ||
+        inspection.codeRoot !== authorization.reviewedSource?.repositoryRoot ||
+        inspection.repositoryId !== canonicalRepositoryId(authorization.reviewedSource?.originUrl || '')) {
+      return { correlationId: authorization.correlationId, clearanceProved: false }
+    }
+
     await options.recoverManagedSsh(record)
 
     // The service may return after a blocked or incomplete restoration. Only
@@ -808,6 +831,16 @@ async function recoverRemote(options: ManagedRolloutMainIntegrationOptions, auth
     const remaining = options.readRecoveryRecord(authorization.connectionId, authorization.correlationId)
 
     if (remaining !== null) {return { correlationId: authorization.correlationId, clearanceProved: false }}
+
+    // Restoration runs with the markers already clear, so another mutator can
+    // claim the installation between that observation and this release. The
+    // release gate re-observes the remote markers and refuses clearance when
+    // they are no longer clear; a stale pre-restoration observation alone
+    // never releases the fence.
+    const release: any = await observeManagedRemoteUpdate(transport.target, authorization.correlationId)
+    const released = ['absent', 'dead'].includes(release.marker) && ['absent', 'dead'].includes(release.launchIntent)
+
+    if (!released) {return { correlationId: authorization.correlationId, clearanceProved: false }}
 
     // The proved clearance carries the structured artifact the durable
     // journal revalidates before the fence may be released.

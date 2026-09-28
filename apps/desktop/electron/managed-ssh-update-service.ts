@@ -695,6 +695,19 @@ export function createManagedSshUpdateService<
       try {
         transport = await deps.openTransport(record.source as TSource)
 
+        // A durable recovery may only mutate the installation its record was
+        // created against. The selected remote must re-prove the recorded
+        // identity before any clearance wait or scope restore; a mismatched
+        // or unprovable installation leaves the obligation pending for a
+        // later attempt instead of restating scopes on a different machine.
+        if (record.installationId !== undefined) {
+          const observedInstallId = await deps.resolveInstallationId(record.source as TSource, transport.target)
+
+          if (!validInstallationId(observedInstallId) || observedInstallId !== record.installationId) {
+            throw new Error('The selected SSH target no longer resolves to the recorded installation.')
+          }
+        }
+
         const results = await recoverManagedSshScopes({
           scopes: record.scopes,
           awaitClearance: async () => {

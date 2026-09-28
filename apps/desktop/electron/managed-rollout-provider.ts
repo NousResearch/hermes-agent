@@ -1246,7 +1246,17 @@ export function createManagedRolloutProvider(
 
   const hydrateRuntimes = (): void => {
     for (const summary of deps.journal.history({ limit: MAX_PROVIDER_PAGE_SIZE }).items) {
-      if (!activePhase(summary.phase) || summary.archived) {continue}
+      const fenced = summary.unresolvedInstallIds.length > 0
+
+      // A rollout can reach a terminal phase while its installation still
+      // carries an unresolved fence (a stopped rollout whose launch was never
+      // settled, or a completed record whose settlement write failed), and
+      // archiving never erases that fence. Recovery is the only path that can
+      // clear the installation-level obligation, so a fenced record still
+      // receives its runtime after a restart regardless of phase or archive;
+      // skipping it would strand the fence forever. Records that are settled
+      // and fence-free still hydrate only while they are active.
+      if (!fenced && (summary.archived || !activePhase(summary.phase))) {continue}
 
       try {
         const record = deps.journal.read(summary.id)

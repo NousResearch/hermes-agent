@@ -1,6 +1,6 @@
 import { readVerifiedHostKeyFingerprint } from './managed-rollout-host-key'
 import { readInstallId, verifyManagedRolloutSelectedTarget } from './managed-rollout-main-integration'
-import { recoverManagedSshScopes, type RemoteUpdateTarget } from './managed-ssh-update'
+import type { RemoteUpdateTarget } from './managed-ssh-update'
 import { createManagedSshUpdateService } from './managed-ssh-update-service'
 
 // The desktop shell owns the maps, gate, pool, and transport. This runtime
@@ -404,74 +404,14 @@ export function createManagedSshLifecycleRuntime(deps: any) {
     return managedSshUpdateService.request(source.id, { correlationId })
   }
 
-  async function recoverManagedSshUpdate(record) {
-    const connectionId = record.connectionId
-
-    if (managedConnectionRecoveries.has(connectionId) || managedConnectionUpdates.has(connectionId)) {
-      return
-    }
-
-    const recoveryCorrelation = record.correlationId
-
-    if (!managedConnectionUpdateGate.claim(connectionId, recoveryCorrelation)) {
-      return
-    }
-
-    const operation = (async () => {
-      let transport: null | { close: () => Promise<void>; target: RemoteUpdateTarget } = null
-
-      try {
-        transport = await openManagedSshUpdateTransport(record.source)
-
-        const results = await recoverManagedSshScopes<any>({
-          scopes: record.scopes,
-          awaitClearance: () =>
-            waitForManagedRemoteClearance(transport!.target, record.correlationId, {
-              requireTerminal: record.phase === 'launching'
-            }),
-          afterClearance: async () => {
-            await transport!.close()
-            transport = null
-          },
-          restoreScope: scope =>
-            scope.kind === 'primary'
-              ? restoreManagedPrimarySshBackend(record.source, scope.profile, recoveryCorrelation)
-              : scope.kind === 'legacy'
-                ? ensureManagedSshBackendAtKey(record.source, scope.profile, scope.key, recoveryCorrelation, 'profile')
-                : ensureManagedSshBackend(record.source, scope.profile, recoveryCorrelation),
-          completeRecovery: async () => clearManagedSshRecovery(connectionId, record.correlationId)
-        })
-
-        if (results.every(result => result.status === 'fulfilled')) {
-          sshRememberLog(
-            `[ssh-update] restored ${record.scopes.length} scope(s) from durable recovery for ${connectionId}`
-          )
-        } else {
-          const failures = results.filter(result => result.status === 'rejected').length
-          sshRememberLog(
-            `[ssh-update] durable recovery for ${connectionId} left ${failures} scope(s) pending; will retry next launch`
-          )
-        }
-      } catch (error: any) {
-        sshRememberLog(
-          `[ssh-update] durable recovery for ${connectionId} remains pending: ${String(error?.message || error)}`
-        )
-      } finally {
-        if (transport) {
-          await transport.close().catch(() => undefined)
-        }
-
-        managedConnectionUpdateGate.release(connectionId, recoveryCorrelation)
-        managedConnectionRecoveries.delete(connectionId)
-      }
-    })()
-
-    managedConnectionRecoveries.set(connectionId, operation)
-    await operation
-  }
-
+  // Startup crash-recovery delegates to the single service-owned recovery
+  // implementation below. It shares this runtime's gate, live operation maps,
+  // transport, and scope machinery, and it re-proves the recorded installation
+  // against the selected remote before any clearance wait or scope restore —
+  // a duplicate local copy here would bypass that identity gate and could
+  // restate scopes on a different machine.
   async function resumeManagedSshRecoveries() {
-    await Promise.allSettled(readManagedSshRecoveryRecords().map(record => recoverManagedSshUpdate(record)))
+    await managedSshUpdateService.resumeRecoveries()
   }
 
   // Fleet dispatch borrows the same gate, operation maps, recovery journal, and

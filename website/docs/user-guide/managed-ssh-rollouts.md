@@ -101,14 +101,19 @@ does not guess whether the remote update happened.
 An unresolved fence remains until evidence for the same installation and
 correlation is validated — a receipt-backed settlement or proved recovery
 clearance, each bound to the rollout that owns the obligation and never
-accepted as a bare claim. Proved recovery clearance carries the structured
-`remote-original-obligation-clearance` artifact (clear update marker and
-launch intent, the original durable obligation removed, and — when a receipt
-was found — proof that the receipt's requested and post-update SHAs equal the
-pinned target), which the durable journal revalidates before release.
-Archiving or pruning a record does not erase that fence. This prevents a
-restart, stale screen, or local success-looking message from turning an
-uncertain remote state into a second mutation.
+accepted as a bare claim. Recovery re-proves the recorded installation
+against the selected remote before restoring anything, and re-observes the
+remote update marker and launch intent at release time, so a stale
+pre-restoration observation cannot clear the fence. Proved recovery clearance
+carries the structured `remote-original-obligation-clearance` artifact —
+`markerClear`, `launchIntentClear`, and `originalRecordRemoved` (all
+`true`), plus `receiptRequired` and `receiptProvedRequest` recording whether
+a receipt was found and whether its `requestedSha` and `postSha` proved the
+pinned target — which the durable journal revalidates before release.
+Archiving or pruning a record does not erase that fence; a rollout that
+reaches a terminal phase with an unresolved fence still offers recover after
+a restart. This prevents a restart, stale screen, or local success-looking
+message from turning an uncertain remote state into a second mutation.
 
 ## What is available now?
 

@@ -198,26 +198,33 @@ recovery-required attempts. Its result must carry the attempt's exact correlatio
 ID. A non-terminal result deliberately leaves the state unchanged. `recover` is
 admissible for every attempt that can still carry an unresolved obligation —
 unverified and recovery-required, plus settled failed, refused, updated, and
-already-current attempts whose fence still needs proved clearance. A mismatched
-correlation or unproved clearance is refused. For a launched attempt, the
-receipt found during recovery must itself prove the reviewed request — its
-recorded requested and post-update SHAs must equal the pinned target — before
-clearance can be proved; a receipt that never recorded which request it
-answered, or answered a different one, leaves clearance unproved. A prepared
-pre-launch record may correctly have no receipt; there the durable scope
-record and clear remote markers govern. Recovery does not mark an update
+already-current attempts whose fence still needs proved clearance, and
+terminal records whose fence outlived them. A mismatched correlation or
+unproved clearance is refused. Recovery re-proves the recorded installation
+against the selected remote — installation identity, fingerprints, code root,
+and repository — before any clearance wait or scope restore, and re-observes
+the remote update marker and launch intent at release time, so neither a
+foreign machine nor a stale pre-restoration observation can clear the fence.
+For any record where a receipt is found — a launched attempt, or a prepared
+record whose phase never advanced — the receipt must itself prove the reviewed
+request: its recorded requested and post-update SHAs must equal the pinned
+target, before clearance can be proved; a receipt that never recorded which
+request it answered, or answered a different one, leaves clearance unproved. A
+prepared pre-launch record may correctly have no receipt; there the durable
+scope record and clear remote markers govern. Recovery does not mark an update
 successful, does not relabel a failed/refused outcome, and does not issue a new
 launch capability. Proved clearance releases the installation's durable fence
 and is recorded as its own `recovery-cleared` evidence kind, carrying the
-structured clearance artifact (clear markers, removal of the original durable
-obligation, and whether the launched request was proved) that the durable
-journal revalidates before release; it does not clear the attempt's own
-recovery state — an unverified attempt remains unverified and may still report
-`recoveryRequired`, because recovery does not settle the launch.
+structured clearance artifact (`markerClear`, `launchIntentClear`,
+`originalRecordRemoved`, `receiptRequired`, `receiptProvedRequest`) that the
+durable journal revalidates before release; it does not clear the attempt's
+own recovery state — an unverified attempt remains unverified and may still
+report `recoveryRequired`, because recovery does not settle the launch.
 
-For the single-install service, durable recovery reopens the transport, waits
-for the required restore clearance, closes the transport, and restores each
-recorded scope. Failed scope restores remain pending for a later launch. Primary
+For the single-install service, durable recovery reopens the transport,
+re-proves the recorded installation against the selected remote, waits for the
+required restore clearance, closes the transport, and restores each recorded
+scope. Failed scope restores remain pending for a later launch. Primary
 routing cannot be mutated while an update, preparation, recovery, restore owner,
 or durable recovery record remains active.
 
@@ -234,7 +241,9 @@ evidence kinds recorded for the same rollout ID, correlation ID, and
 installation: `settlement-validated`, a receipt-backed success whose requested
 and post-update SHAs equal the reviewed target, or `recovery-cleared`, proved
 recovery clearance of the original durable scope obligation, which must carry
-the structured clearance artifact and can never be a bare assertion. A fence
+the structured clearance artifact — `markerClear`, `launchIntentClear`,
+`originalRecordRemoved`, `receiptRequired`, `receiptProvedRequest` — and can
+never be a bare assertion. A fence
 also never accepts a foreign tag: fence evidence is bound to the rollout that
 owns the obligation, and a fence tagged for another rollout cannot be added to
 a record or released by that record's facts. Recovery clearance never asserts
@@ -261,7 +270,10 @@ a deliberate bound, not a claim that every earlier wave is re-probed. Earlier
 waves are revalidated against their recorded settlement evidence — each
 attempt's persisted receipt correlation, requested SHA, post-update SHA, health,
 and scope proof must still match the in-memory attempt, so a legacy receipt that
-never recorded its requested SHA cannot carry a wave forward — and any
+never recorded its requested SHA cannot carry a wave forward, and a
+`settlement-validated` evidence fact bound to exactly that rollout,
+installation, and correlation must be present, so a success-shaped snapshot
+without its durable settlement attestation cannot either — and any
 unresolved fence, or a persisted attempt whose recorded scope proof no longer
 covers its required scope set, blocks promotion. That earlier-wave check is a
 comparison of persisted local evidence: it does not re-probe earlier waves

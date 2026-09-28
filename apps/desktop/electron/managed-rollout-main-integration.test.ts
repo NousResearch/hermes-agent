@@ -241,6 +241,31 @@ async function reprobeFixture(
   }
 }
 
+async function recoverFixture(
+  extra: Record<string, unknown> = {}
+) {
+  const fixture = makeIntegration(TARGET_SHA, { readRecoveryRecord: () => null, ...extra })
+  const inventory = await fixture.integration.adapters.inventoryReader.capture()
+  const observed: any = inventory!.observations.find(row => row.installId === INSTALL_ID)!
+  const installation = installationFingerprint({ installId: INSTALL_ID, codeRoot: ROOT, repositoryId: REPOSITORY_ID })
+  const row = attempt(observed.computedSourceFingerprint, installation)
+
+  return {
+    ...fixture,
+    authorization: {
+      rolloutId: ROLLOUT_ID,
+      installId: row.installId,
+      connectionId: row.connectionId,
+      installationFingerprint: row.installationFingerprint,
+      sourceFingerprint: row.sourceFingerprint,
+      targetSha: row.targetSha,
+      reviewedSource: row.reviewedSource,
+      correlationId: row.correlationId,
+      queueGeneration: 1
+    }
+  }
+}
+
 async function promotionFixture(
   headSha = TARGET_SHA,
   includeThirdWave = false,
@@ -456,6 +481,7 @@ describe('managed rollout main integration', () => {
     let durableRecord: any = {
       connectionId: CONNECTION_ID,
       correlationId: CORRELATION_ID,
+      installationId: INSTALL_ID,
       phase: 'launching',
       scopes: [durableScope],
       source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
@@ -820,7 +846,7 @@ describe('managed rollout main integration', () => {
   test('Recover refuses clearance without the original durable scope record', async () => {
     const recoverManagedSsh = vi.fn(async () => undefined)
 
-    const { integration } = makeIntegration(TARGET_SHA, {
+    const { integration, authorization } = await recoverFixture({
       readRecoveryRecord: () => null,
       recoverManagedSsh
     })
@@ -831,24 +857,122 @@ describe('managed rollout main integration', () => {
       receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
     } as any)
 
-    await expect((integration.observe as any).recover({
-      connectionId: CONNECTION_ID,
-      correlationId: CORRELATION_ID
-    })).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
+    await expect((integration.observe as any).recover(authorization)).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
     expect(recoverManagedSsh).not.toHaveBeenCalled()
+  })
+
+  test('Recover refuses a durable record bound to a different installation', async () => {
+    let record: any = {
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID,
+      installationId: NEXT_INSTALL_ID,
+      phase: 'launching',
+      scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
+      source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
+    }
+
+    const recoverManagedSsh = vi.fn(async () => {record = null})
+
+    const { integration, authorization } = await recoverFixture({
+      readRecoveryRecord: () => record,
+      recoverManagedSsh
+    })
+
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent',
+      launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
+    } as any)
+
+    // The durable record must belong to the exact installation the
+    // authorization pinned; a foreign record cannot prove this one cleared.
+    await expect((integration.observe as any).recover(authorization)).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
+    expect(recoverManagedSsh).not.toHaveBeenCalled()
+  })
+
+  test('Recover refuses when the selected remote target belongs to a different installation', async () => {
+    let record: any = {
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID,
+      installationId: INSTALL_ID,
+      phase: 'launching',
+      scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
+      source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
+    }
+
+    const recoverManagedSsh = vi.fn(async () => {record = null})
+
+    const { integration, authorization, target } = await recoverFixture({
+      readRecoveryRecord: () => record,
+      recoverManagedSsh
+    })
+
+    const baseExec = target.ssh.exec
+
+    target.ssh.exec = vi.fn(async (command: string) =>
+      command.includes('if [ -f') ? NEXT_INSTALL_ID : baseExec(command)
+    )
+
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent',
+      launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
+    } as any)
+
+    // Clear markers on a foreign machine prove nothing about this
+    // installation; the selected target must re-prove its identity first.
+    await expect((integration.observe as any).recover(authorization)).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
+    expect(recoverManagedSsh).not.toHaveBeenCalled()
+  })
+
+  test('Recover refuses to release clearance when the remote markers are claimed during restoration', async () => {
+    let record: any = {
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID,
+      installationId: INSTALL_ID,
+      phase: 'launching',
+      scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
+      source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
+    }
+
+    const recoverManagedSsh = vi.fn(async () => {record = null})
+
+    const { integration, authorization } = await recoverFixture({
+      readRecoveryRecord: () => record,
+      recoverManagedSsh
+    })
+
+    let observations = 0
+
+    vi.mocked(observeManagedRemoteUpdate).mockImplementation(async () => {
+      observations += 1
+
+      return observations === 1
+        ? {
+            marker: 'absent', launchIntent: 'absent',
+            receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
+          } as any
+        : { marker: 'live', launchIntent: 'absent', receipt: null } as any
+    })
+
+    // Another updater can claim the installation while scopes are being
+    // restored; the release gate must re-observe the markers and refuse.
+    await expect((integration.observe as any).recover(authorization)).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
+    expect(recoverManagedSsh).toHaveBeenCalled()
   })
 
   test('Recover leaves clearance unproved while an original scope remains pending', async () => {
     const record = {
       connectionId: CONNECTION_ID,
       correlationId: CORRELATION_ID,
+      installationId: INSTALL_ID,
       phase: 'launching',
       scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
       source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
     }
     const recoverManagedSsh = vi.fn(async () => undefined)
 
-    const { integration } = makeIntegration(TARGET_SHA, {
+    const { integration, authorization } = await recoverFixture({
       readRecoveryRecord: () => record,
       recoverManagedSsh
     })
@@ -859,11 +983,7 @@ describe('managed rollout main integration', () => {
       receipt: { correlationId: CORRELATION_ID, outcome: 'updated', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
     } as any)
 
-    await expect((integration.observe as any).recover({
-      connectionId: CONNECTION_ID,
-      correlationId: CORRELATION_ID,
-      targetSha: TARGET_SHA
-    })).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
+    await expect((integration.observe as any).recover(authorization)).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
     expect(recoverManagedSsh).toHaveBeenCalledWith(record)
   })
 
@@ -871,13 +991,15 @@ describe('managed rollout main integration', () => {
     let record: any = {
       connectionId: CONNECTION_ID,
       correlationId: CORRELATION_ID,
+      installationId: INSTALL_ID,
       phase: 'prepared',
       scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
       source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
     }
 
     const recoverManagedSsh = vi.fn(async () => {record = null})
-    const { integration } = makeIntegration(TARGET_SHA, {
+
+    const { integration, authorization } = await recoverFixture({
       readRecoveryRecord: () => record,
       recoverManagedSsh
     })
@@ -886,10 +1008,13 @@ describe('managed rollout main integration', () => {
       marker: 'absent', launchIntent: 'absent', receipt: null
     } as any)
 
-    await expect((integration.observe as any).recover({
-      connectionId: CONNECTION_ID,
-      correlationId: CORRELATION_ID
-    })).resolves.toMatchObject({ correlationId: CORRELATION_ID, clearanceProved: true })
+    const result: any = await (integration.observe as any).recover(authorization)
+
+    expect(result).toMatchObject({ correlationId: CORRELATION_ID, clearanceProved: true })
+    // A prepared record with no receipt at all is judged by the durable scope
+    // record and clear markers alone; the artifact records that no receipt
+    // proof was required rather than asserting one.
+    expect(result.clearance).toMatchObject({ receiptRequired: false, receiptProvedRequest: null })
     expect(recoverManagedSsh).toHaveBeenCalledWith(expect.objectContaining({
       phase: 'prepared', scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }]
     }))
@@ -899,6 +1024,7 @@ describe('managed rollout main integration', () => {
     let record: any = {
       connectionId: CONNECTION_ID,
       correlationId: CORRELATION_ID,
+      installationId: INSTALL_ID,
       phase: 'prepared',
       scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
       source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
@@ -906,7 +1032,7 @@ describe('managed rollout main integration', () => {
 
     const recoverManagedSsh = vi.fn(async () => {record = null})
 
-    const { integration } = makeIntegration(TARGET_SHA, {
+    const { integration, authorization } = await recoverFixture({
       readRecoveryRecord: () => record,
       recoverManagedSsh
     })
@@ -920,11 +1046,7 @@ describe('managed rollout main integration', () => {
     // A receipt on a prepared record is evidence a launch was attempted, so
     // it must prove the recorded request: a correlated receipt that never
     // recorded which request it answered leaves clearance unproved.
-    await expect((integration.observe as any).recover({
-      connectionId: CONNECTION_ID,
-      correlationId: CORRELATION_ID,
-      targetSha: TARGET_SHA
-    })).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
+    await expect((integration.observe as any).recover(authorization)).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
     expect(recoverManagedSsh).not.toHaveBeenCalled()
   })
 
@@ -935,13 +1057,15 @@ describe('managed rollout main integration', () => {
     let record: any = {
       connectionId: CONNECTION_ID,
       correlationId: CORRELATION_ID,
+      installationId: INSTALL_ID,
       phase: 'launching',
       scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
       source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
     }
 
     const recoverManagedSsh = vi.fn(async () => {record = null})
-    const { integration } = makeIntegration(TARGET_SHA, {
+
+    const { integration, authorization } = await recoverFixture({
       readRecoveryRecord: () => record,
       recoverManagedSsh
     })
@@ -959,11 +1083,7 @@ describe('managed rollout main integration', () => {
     // obligation before its fence may be cleared: a receipt that never
     // recorded the reviewed request, or answered a different one, leaves
     // clearance unproved even though the remote markers are clear.
-    await expect((integration.observe as any).recover({
-      connectionId: CONNECTION_ID,
-      correlationId: CORRELATION_ID,
-      targetSha: TARGET_SHA
-    })).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
+    await expect((integration.observe as any).recover(authorization)).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
     expect(recoverManagedSsh).not.toHaveBeenCalled()
   })
 
@@ -971,12 +1091,14 @@ describe('managed rollout main integration', () => {
     let record: any = {
       connectionId: CONNECTION_ID,
       correlationId: CORRELATION_ID,
+      installationId: INSTALL_ID,
       phase: 'launching',
       scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
       source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
     }
     const recoverManagedSsh = vi.fn(async () => {record = null})
-    const { integration } = makeIntegration(TARGET_SHA, {
+
+    const { integration, authorization } = await recoverFixture({
       readRecoveryRecord: () => record,
       recoverManagedSsh
     })
@@ -987,11 +1109,7 @@ describe('managed rollout main integration', () => {
       receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
     } as any)
 
-    const result: any = await (integration.observe as any).recover({
-      connectionId: CONNECTION_ID,
-      correlationId: CORRELATION_ID,
-      targetSha: TARGET_SHA
-    })
+    const result: any = await (integration.observe as any).recover(authorization)
 
     expect(result.clearanceProved).toBe(true)
     // The proved clearance must carry the structured artifact the fence

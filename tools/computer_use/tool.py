@@ -353,6 +353,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     try:
         backend = call.enter_context(_backend_for_call(session_id))
     except Exception as e:
+        logger.exception("computer_use backend unavailable")
         return json.dumps({"error": f"computer_use backend unavailable: {e}",
                            "hint": "If the cua-driver binary is missing, run `hermes computer-use install`. "
                                    "If a Python dependency is missing, the error above shows the exact install command."})

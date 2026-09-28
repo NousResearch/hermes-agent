@@ -113,3 +113,66 @@ def test_clear_noop_on_non_repo(tmp_path: Path) -> None:
 
 def test_clear_noop_with_no_locks(repo: Path) -> None:
     assert clear_stale_git_locks(repo) == []
+
+
+# ---- Partial-clone pack-objects fetch crash (#124272) ----
+#
+# On a partial clone (tree:0 filter) git 2.53/2.54 crashes EVERY fetch: index-pack's
+# repack_local_links feeds pack-objects --exclude-promisor-objects-best-effort and
+# pack-objects BUG()s (SIGABRT) on a legitimately missing promisor object. The crash is
+# deterministic, so the recovery is one retry with the promisor machinery disabled (the
+# reporter's verified workaround). These pin the recognizer against look-alike failures
+# and the retry contract: retry exactly once, only on this crash, args untouched.
+
+from subprocess import CompletedProcess  # noqa: E402
+
+from hermes_cli.gitlock import (  # noqa: E402
+    fetch_with_partial_clone_recovery,
+    is_partial_clone_pack_objects_crash,
+)
+
+_CRASH_STDERR = (
+    "remote: Enumerating objects: 12, done.\n"
+    "BUG: builtin/pack-objects.c:4842: should_include_obj should only be called on existing objects\n"
+    "error: pack-objects died of signal 6\n"
+    "fatal: could not finish pack-objects to repack local links\n"
+    "fatal: index-pack failed\n"
+)
+
+# Git for Windows 2.54 field evidence (#124293): no signal line — the BUG()
+# assertion is followed directly by the repack fatal and index-pack failure.
+_CRASH_STDERR_WINDOWS = (
+    "remote: Enumerating objects: 12, done.\n"
+    "BUG: builtin/pack-objects.c:4967: should_include_obj should only be called on existing objects\n"
+    "fatal: could not finish pack-objects to repack local links\n"
+    "fatal: index-pack failed\n"
+)
+
+
+def test_crash_recognizer_rejects_unrelated_failures():
+    assert not is_partial_clone_pack_objects_crash(
+        "fatal: Authentication failed for 'https://github.com/example.git'")
+    assert not is_partial_clone_pack_objects_crash(
+        "error: pack-objects died of signal 6")  # one marker alone is not the crash
+    assert not is_partial_clone_pack_objects_crash(
+        "BUG: builtin/pack-objects.c:4842: should_include_obj should only be called on existing objects\n"
+        "fatal: index-pack failed\n")  # fingerprint without either terminator: not this crash
+    assert not is_partial_clone_pack_objects_crash("")
+    assert not is_partial_clone_pack_objects_crash(None)
+
+
+@pytest.mark.parametrize("crash_stderr", [_CRASH_STDERR, _CRASH_STDERR_WINDOWS], ids=["posix", "windows"])
+def test_recovery_retries_once_with_promisor_disabled(crash_stderr):
+    calls = []
+
+    def runner(git_cmd, args):
+        calls.append((list(git_cmd), list(args)))
+        if len(calls) == 1:
+            return CompletedProcess(git_cmd + args, 1, stdout="", stderr=crash_stderr)
+        return CompletedProcess(git_cmd + args, 0, stdout="", stderr="")
+
+    result = fetch_with_partial_clone_recovery(runner, ["git"], ["fetch", "origin", "main"])
+
+    assert [args for _, args in calls] == [["fetch", "origin", "main"]] * 2
+    assert calls[1][0] == ["git", "-c", "remote.origin.promisor="]
+    assert result.returncode == 0

@@ -74,11 +74,48 @@ class TurnContextUpdate:
     channel_state: Optional[Dict[str, Any]]
 
 
+class _ProcessingPhase(Enum):
+    PENDING = "pending"
+    DEFERRED = "deferred"
+    RUNNING = "running"
+    COMPLETED = "completed"
+
+
 @dataclass
 class _ProcessingState:
-    deferred: bool = False
-    completed: bool = False
+    phase: _ProcessingPhase = _ProcessingPhase.PENDING
     outcome: Optional[ProcessingOutcome] = None
+    receipt_message_id: Optional[str] = None
+    initial_receipt_message_id: Optional[str] = None
+    receipt_input: Optional["MessageEvent"] = None
+
+    def defer(self) -> None:
+        self.phase = _ProcessingPhase.DEFERRED
+
+    def take_pending_input(self) -> Optional["MessageEvent"]:
+        event = self.receipt_input
+        if event is None:
+            return None
+        self.receipt_input = None
+        self.receipt_message_id = self.initial_receipt_message_id
+        return event
+
+    def start(self) -> None:
+        self.phase = _ProcessingPhase.RUNNING
+        self.outcome = None
+        self.initial_receipt_message_id = self.receipt_message_id
+        self.receipt_input = None
+
+    def complete(self) -> bool:
+        if self.phase in {_ProcessingPhase.DEFERRED, _ProcessingPhase.COMPLETED}:
+            return False
+        self.phase = _ProcessingPhase.COMPLETED
+        return True
+
+    def complete_inline(self) -> bool:
+        if self.phase is not _ProcessingPhase.PENDING:
+            return False
+        return self.complete()
 
 
 @dataclass
@@ -141,9 +178,7 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
-    # Latest native input covered by this turn; independent of its reply anchor and ledger id.
-    read_receipt_message_id: Optional[str] = None
-    # Dispatch rewrites copy the event, but acknowledgement still belongs to the same input.
+    # dataclasses.replace shares this mutable state with the adapter's original event.
     _processing_state: _ProcessingState = field(default_factory=_ProcessingState, repr=False, compare=False)
     # Deliver this external event as a new turn when its session is busy.
     defer_until_idle: bool = False
@@ -197,9 +232,15 @@ class MessageEvent:
 
     def absorb_turn_input(self, other: "MessageEvent") -> None:
         self.absorb_reply_expected(other)
-        receipt_id = other.read_receipt_message_id or other.message_id
+        receipt_id = other.receipt_message_id
         if receipt_id:
-            self.read_receipt_message_id = receipt_id
+            self._processing_state.receipt_message_id = receipt_id
+            if self._processing_state is not other._processing_state:
+                self._processing_state.receipt_input = other
+
+    @property
+    def receipt_message_id(self) -> Optional[str]:
+        return self._processing_state.receipt_message_id or self.message_id
 
     def _command_text(self) -> str:
         """Return the message text with leading Desktop attachment refs stripped.

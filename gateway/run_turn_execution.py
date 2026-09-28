@@ -692,18 +692,22 @@ class GatewayTurnExecutionMixin:
         """Track this agent as running for the session (interrupt support) once it is created — only
         if this run is still current, else leave the newer run's slot alone."""
         session_key, run_generation, agent_holder = turn_ctx.session_key, turn_ctx.run_generation, turn_ctx.agent_holder
-        while agent_holder[0] is None:
-            await asyncio.sleep(0.05)
         if not session_key:
             return
-        if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
+        run_still_current = self._run_still_current_fn(session_key, run_generation)
+        if not run_still_current():
             logger.info(
                 "Skipping stale agent promotion for %s — generation %s is no longer current",
                 session_key or "", run_generation,
             )
             return
         turn_state = self._session_state(session_key).turn
-        turn_state.agent, turn_state.ctx = agent_holder[0], turn_ctx
+        turn_state.ctx, turn_state.processing_event = turn_ctx, turn_ctx.processing_event
+        while agent_holder[0] is None:
+            await asyncio.sleep(0.05)
+        if not run_still_current():
+            return
+        turn_state.agent = agent_holder[0]
         if self._draining:
             self._update_runtime_status("draining")
 

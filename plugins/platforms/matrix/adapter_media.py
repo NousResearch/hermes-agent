@@ -166,7 +166,7 @@ class MatrixMediaMixin(BasePlatformAdapter):
             metadata={"matrix_mention_claimed": True} if mention_claimed else {})
         if msg_event is not None:
             if receipt_event_id:
-                msg_event.read_receipt_message_id = receipt_event_id
+                msg_event._processing_state.receipt_message_id = receipt_event_id
             return await self._admit(msg_event)
 
 

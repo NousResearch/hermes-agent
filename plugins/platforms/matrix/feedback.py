@@ -25,8 +25,8 @@ class MatrixFeedbackMixin:
                 self._pending_reactions[(room_id, msg_id)] = reaction_event_id
 
     def _send_processing_read_receipt(self: MatrixAdapter, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        msg_id, room_id = event.message_id, event.source.chat_id
-        receipt_id = event.read_receipt_message_id or msg_id
+        room_id = event.source.chat_id
+        receipt_id = event.receipt_message_id
         if self._read_receipts_mode.should_send_on_completion(outcome) and receipt_id and room_id:
             self._background_read_receipt(room_id, receipt_id)
 

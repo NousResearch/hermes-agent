@@ -416,7 +416,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayPluginInjectionMixi
             return
         merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
         event._gateway_accepted = True
-        event._processing_state.deferred = True
+        event._processing_state.defer()
 
     async def _hm_busy_slash_or_photo(
         self, event: MessageEvent, source: SessionSource, _quick_key: str
@@ -547,7 +547,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayPluginInjectionMixi
             self._queue_or_replace_pending_event(_quick_key, event)
             return None
 
-        event._processing_state.deferred = True
+        event._processing_state.defer()
         effective_busy_input_mode = self._effective_busy_input_mode(source)
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None if event._gateway_accepted else self._pending_queue_refusal(event)
@@ -563,7 +563,6 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayPluginInjectionMixi
             return None if event._gateway_accepted else self._pending_queue_refusal(event)
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
-            event._processing_state.deferred = queue_during_drain
             if queue_during_drain:
                 if not self._queue_or_replace_pending_event(_quick_key, event):
                     return self._pending_queue_refusal(event)
@@ -1226,7 +1225,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayPluginInjectionMixi
         if _active_session_lease is not None:
             _claim_state.turn.lease = _active_session_lease
         _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
-        _claim_state.turn.event = event
+        _claim_state.turn.event = _claim_state.turn.processing_event = event
         _claim_state.turn.started_ts = time.time()
         from hermes_cli.observability.shared_metrics_gateway import start_reply_clock
         start_reply_clock(source, internal=is_internal)

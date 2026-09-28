@@ -11,7 +11,7 @@ import pytest
 
 from agent import secret_scope
 from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
-from gateway.run import GatewayRunner, _profile_runtime_scope
+from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL, _profile_runtime_scope
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.platforms.base import ExecApprovalPrompt, SendResult
 from gateway.turn_context import TurnContext
@@ -495,8 +495,9 @@ async def test_inline_command_receipt_is_independent_of_the_active_turn(
     ],
 )
 @pytest.mark.parametrize("outcome", list(ProcessingOutcome))
+@pytest.mark.parametrize("rewritten", [False, True])
 async def test_injected_turn_receipts_cover_the_latest_accepted_input(
-    monkeypatch, mode, route, outcome
+    monkeypatch, mode, route, outcome, rewritten
 ):
     adapter, receipts, sender = _intake_adapter(monkeypatch, mode)
     adapter._text_batch_delay_seconds = 0
@@ -512,10 +513,18 @@ async def test_injected_turn_receipts_cover_the_latest_accepted_input(
     started, release = asyncio.Event(), asyncio.Event()
     opening = []
 
+    async def rewrite_hook(*args, **kwargs):
+        return [{"action": "rewrite", "text": "rewritten opening"}]
+
+    monkeypatch.setattr("hermes_cli.lifecycle.ainvoke_hook", rewrite_hook)
+
     async def respond(event):
+        if rewritten:
+            event = await runner._hm_pre_gateway_dispatch_hook(event, event.source)
+            assert event is not None
         opening.append(event)
         turn = runner._session_state(adapter._event_session_key(event)).turn
-        turn.agent, turn.event = receiver, event
+        turn.agent, turn.event, turn.processing_event = receiver, event, event
         turn.ctx = TurnContext(
             event_message_id=event.message_id, inbound_message_id=event.message_id
         )
@@ -599,6 +608,280 @@ async def test_injected_turn_receipts_cover_the_latest_accepted_input(
             call(room, event_id) for event_id in expected_ids
         ]
         assert [event.message_id for event in opening] == ["$opening"]
+    finally:
+        release.set()
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["immediate", "after_processing", "disabled"])
+@pytest.mark.parametrize("command", ["queue", "steer", "steer-fallback", "late-steer"])
+@pytest.mark.parametrize("completion", ["success", "task-cancel", "cooperative"])
+@pytest.mark.parametrize("delayed_ack", [False, True])
+async def test_inline_agent_work_is_acknowledged_only_after_its_processing(
+    monkeypatch, mode, command, completion, delayed_ack
+):
+    adapter, receipts, _sender = _intake_adapter(monkeypatch, mode)
+    adapter._text_batch_delay_seconds = 0
+    runner = _busy_runner(monkeypatch, adapter, "queue")
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(
+        side_effect=lambda **kwargs: kwargs["event"].text
+    )
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    receiver = MagicMock()
+    receiver.steer.return_value = command != "steer-fallback"
+    receiver._active_children = []
+    started, release, followup_started = (
+        asyncio.Event(),
+        asyncio.Event(),
+        asyncio.Event(),
+    )
+    followup_release = asyncio.Event()
+    ack_started, ack_release = asyncio.Event(), asyncio.Event()
+    opening = []
+    work_task = None
+
+    async def send(chat_id, content, **kwargs):
+        if delayed_ack and "queued" in content.lower():
+            ack_started.set()
+            await ack_release.wait()
+        return SendResult(success=True, message_id="$reply")
+
+    _sender.side_effect = send
+
+    async def followup(**kwargs):
+        followup_started.set()
+        await followup_release.wait()
+        return {
+            "final_response": "followup done",
+            "messages": [],
+            "interrupted": completion == "cooperative",
+        }
+
+    monkeypatch.setattr(runner, "_run_agent", followup)
+
+    async def respond(event):
+        if event.is_command():
+            assert runner._session_key_for_source(
+                event.source
+            ) == adapter._event_session_key(event)
+            reply = await runner._handle_message(event)
+            assert "queued" in str(reply).lower(), reply
+            return reply
+        opening.append(event)
+        key = adapter._event_session_key(event)
+        turn = runner._session_state(key).turn
+        turn.agent, turn.event, turn.processing_event = receiver, event, event
+        if command == "steer-fallback":
+            turn.agent = _AGENT_PENDING_SENTINEL
+        ctx = TurnContext(
+            source=event.source,
+            session_key=key,
+            session_id="command-receipt",
+            processing_event=event,
+            event_message_id=event.message_id,
+            inbound_message_id=event.message_id,
+        )
+        turn.ctx = ctx
+        started.set()
+        await release.wait()
+        if command == "steer":
+            if completion == "cooperative":
+                event._processing_state.outcome = ProcessingOutcome.CANCELLED
+            return "done"
+        result = {"final_response": "opening done", "messages": []}
+        if command == "late-steer":
+            result["pending_steer"] = "work"
+        pending, payload = await runner._run_agent_drain_pending(
+            result, adapter, event.source, key, processing_event=event
+        )
+        if pending is None and payload is None:
+            return "done"
+        result = await runner._run_agent_queued_followup(
+            ctx, adapter, payload, pending, result, result, None
+        )
+        return result["final_response"]
+
+    adapter.set_message_handler(respond)
+    room = "!room:example.org"
+    try:
+        await _text_input(adapter, "$opening", "opening")
+        await asyncio.wait_for(started.wait(), 2)
+        work_task = asyncio.create_task(
+            _text_input(
+                adapter,
+                "$work",
+                "/" + ("queue" if command == "queue" else "steer") + " work",
+            )
+        )
+        if delayed_ack:
+            await asyncio.wait_for(ack_started.wait(), 2)
+        else:
+            await asyncio.wait_for(work_task, 2)
+        arrivals = [call(room, "$opening"), call(room, "$work")]
+        assert receipts.call_args_list == (arrivals if mode == "immediate" else [])
+        if command != "steer":
+            release.set()
+            await asyncio.wait_for(followup_started.wait(), 2)
+            assert (
+                receipts.call_args_list
+                == {
+                    "immediate": arrivals,
+                    "after_processing": [call(room, "$opening")],
+                    "disabled": [],
+                }[mode]
+            )
+        ack_release.set()
+        await asyncio.wait_for(work_task, 2)
+        assert (
+            receipts.call_args_list
+            == {
+                "immediate": arrivals,
+                "after_processing": [call(room, "$opening")]
+                if command != "steer"
+                else [],
+                "disabled": [],
+            }[mode]
+        )
+        if completion == "task-cancel":
+            await adapter.cancel_session_processing(
+                adapter._event_session_key(opening[0])
+            )
+        else:
+            release.set()
+            followup_release.set()
+            await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), 2)
+        completed_ids = ["$opening"] if command != "steer" else []
+        if completion == "success":
+            completed_ids.append("$work")
+        assert (
+            receipts.call_args_list
+            == {
+                "immediate": arrivals,
+                "after_processing": [
+                    call(room, event_id) for event_id in completed_ids
+                ],
+                "disabled": [],
+            }[mode]
+        )
+    finally:
+        release.set()
+        followup_release.set()
+        ack_release.set()
+        await adapter.cancel_background_tasks()
+        if work_task is not None:
+            await asyncio.wait_for(work_task, 2)
+
+
+@pytest.mark.asyncio
+async def test_late_steer_preserves_the_completed_batch_receipt(monkeypatch):
+    adapter, receipts, _sender = _intake_adapter(monkeypatch, "after_processing")
+    source = SessionSource(
+        platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="dm"
+    )
+    opening = MessageEvent(text="first", message_id="$first", source=source)
+    batched = MessageEvent(text="second", message_id="$second", source=source)
+    steer = MessageEvent(text="steering", message_id="$steer", source=source)
+    opening.absorb_turn_input(batched)
+    await adapter._run_processing_hook("on_processing_start", opening)
+    opening.absorb_turn_input(steer)
+    pending = opening._processing_state.take_pending_input()
+    await adapter._run_processing_hook(
+        "on_processing_complete", opening, ProcessingOutcome.SUCCESS
+    )
+    assert (pending, opening.message_id, receipts.call_args_list) == (
+        steer,
+        "$first",
+        [call(source.chat_id, batched.message_id)],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route", ["redirect", "steer", "priority-redirect", "priority-steer"]
+)
+async def test_recursive_turn_corrections_do_not_update_the_completed_ancestor(
+    monkeypatch, route
+):
+    adapter, receipts, _sender = _intake_adapter(monkeypatch, "after_processing")
+    adapter._text_batch_delay_seconds = 0
+    runner = _busy_runner(
+        monkeypatch, adapter, "interrupt" if "redirect" in route else "steer"
+    )
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(
+        side_effect=lambda **kwargs: kwargs["event"].text
+    )
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    receiver = MagicMock(_supports_active_turn_redirect=True)
+    receiver.redirect.return_value = receiver.steer.return_value = True
+    receiver._active_children = []
+    started, release = asyncio.Event(), asyncio.Event()
+    events = [
+        MessageEvent(
+            text=text,
+            message_id="$" + text,
+            source=SessionSource(
+                platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="dm"
+            ),
+        )
+        for text in ("opening", "queued", "correction")
+    ]
+    key = adapter._event_session_key(events[0])
+
+    async def track(event):
+        ctx = TurnContext(
+            source=event.source,
+            session_key=key,
+            session_id="recursive-receipt",
+            processing_event=event,
+            event_message_id=event.message_id,
+            inbound_message_id=event.message_id,
+            agent_holder=[receiver],
+        )
+        await runner._run_agent_track_agent(ctx)
+        return ctx
+
+    async def followup(**kwargs):
+        await track(kwargs["processing_event"])
+        started.set()
+        await release.wait()
+        return {"final_response": "queued done", "messages": []}
+
+    monkeypatch.setattr(runner, "_run_agent", followup)
+
+    async def respond(event):
+        runner._session_state(key).turn.event = event
+        ctx = await track(event)
+        result = {"final_response": "opening done", "messages": []}
+        return (
+            await runner._run_agent_queued_followup(
+                ctx, adapter, events[1].text, events[1], result, result, None
+            )
+        )["final_response"]
+
+    adapter.set_message_handler(respond)
+    try:
+        await adapter.handle_message(events[0])
+        await asyncio.wait_for(started.wait(), 2)
+        assert receipts.call_args_list == [
+            call(events[0].source.chat_id, events[0].message_id)
+        ]
+        if route == "priority-redirect":
+            await runner._hm_busy_interrupt(events[2], events[2].source, receiver, key)
+        elif route == "priority-steer":
+            runner._hm_busy_steer(events[2], receiver, key)
+        else:
+            await runner._handle_active_session_busy_message(events[2], key)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), 2)
+        assert receipts.call_args_list == [
+            call(event.source.chat_id, event.message_id)
+            for event in (events[0], events[2])
+        ]
+        assert [
+            (event.message_id, event._processing_state.receipt_message_id)
+            for event in events[:2]
+        ] == [("$opening", None), ("$queued", "$correction")]
     finally:
         release.set()
         await adapter.cancel_background_tasks()

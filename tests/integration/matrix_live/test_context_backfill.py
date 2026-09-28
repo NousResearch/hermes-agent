@@ -185,6 +185,14 @@ def test_room_catch_up_shows_edits_and_redactions_to_model(
                 "m.relates_to": {"rel_type": "m.replace", "event_id": edited_target},
             })
             assert isinstance(replacement, RoomSendResponse), replacement
+            withdrawn_edit = await client.room_send(live_room.room_id, "m.room.message", {
+                "msgtype": "m.text", "body": "* Withdrawn edited room decision",
+                "m.new_content": {"msgtype": "m.text", "body": "Withdrawn edited room decision"},
+                "m.relates_to": {"rel_type": "m.replace", "event_id": edited_target},
+            })
+            assert isinstance(withdrawn_edit, RoomSendResponse), withdrawn_edit
+            edit_redaction = await client.room_redact(live_room.room_id, withdrawn_edit.event_id)
+            assert isinstance(edit_redaction, RoomRedactResponse), edit_redaction
 
             redacted_target = await _send(client, live_room.room_id, "Withdrawn room decision")
             redaction = await client.room_redact(live_room.room_id, redacted_target)
@@ -202,6 +210,7 @@ def test_room_catch_up_shows_edits_and_redactions_to_model(
             assert "[redacted]" in prompt
             assert "Draft room decision" not in prompt
             assert "Withdrawn room decision" not in prompt
+            assert "Withdrawn edited room decision" not in prompt
         finally:
             await client.close()
 

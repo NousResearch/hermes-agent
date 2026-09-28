@@ -179,9 +179,9 @@ async def fetch_thread_entries(
         for event_id, entry in zip(entry_ids, entries)
     ]
     return [
-        replace(entry, reactions=by_id[event_id].reactions, reactions_truncated=by_id[event_id].truncated,
+        cache.recheck(room_id, replace(entry, reactions=by_id[event_id].reactions, reactions_truncated=by_id[event_id].truncated,
                 reaction_keys_missing=bool(by_id[event_id].missing_keys),
-                reactions_unavailable=bool(by_id[event_id].error))
+                reactions_unavailable=bool(by_id[event_id].error)))
         if event_id in by_id and not entry.redacted else entry
         for event_id, entry in zip(entry_ids, entries)
     ]

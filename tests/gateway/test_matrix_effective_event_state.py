@@ -612,20 +612,16 @@ async def test_bounded_read_rechecks_redaction_after_reactions(kind: str, replac
         result = await pending
 
     expected = {
-        "event_id": "$target", "sender": SENDER, "body": "before" if replacement else "[redacted]",
-        "msgtype": "m.text" if replacement else None,
+        "event_id": "$target", "sender": SENDER, "body": "[event content unavailable]" if replacement else "[redacted]",
+        "msgtype": None,
         "thread_id": "$root" if kind == "thread" else None,
         "timestamp": None, "sender_authorized": True,
     }
-    if replacement:
-        expected["reactions"] = [{
-            "event_id": "$reaction", "sender": SENDER, "emoji": "👍",
-            "target_event_id": "$target", "sender_authorized": True,
-        }]
-        expected["reactions_truncated"] = True
-    else:
+    if not replacement:
         expected["redacted"] = True
-    assert result == {"events": [expected], "errors": []}
+    assert result == {"events": [expected], "errors": [
+        {"event_id": "$target", "error": "replacement was redacted"},
+    ] if replacement else []}
 
 
 @pytest.mark.asyncio
@@ -778,6 +774,8 @@ async def test_redacting_effective_replacement_invalidates_original_and_recovers
         earlier["unsigned"]["m.relations"]["m.replace"]["event_id"] = "$earlier"
         raw.clear()
         raw.update(earlier)
+    else:
+        raw.pop("unsigned")
     await adapter._on_redaction(SimpleNamespace(room_id=ROOM, redacts="$edit"))
     after = await cache.resolve(adapter._client, ROOM, target)
 
@@ -786,3 +784,252 @@ async def test_redacting_effective_replacement_invalidates_original_and_recovers
         MatrixEventContext(SENDER, "remaining valid edit" if remaining_edit else "before", event_id=target,
                            replacement_id="$earlier" if remaining_edit else None),
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["event", "room", "thread"])
+@pytest.mark.parametrize("recovery", ["earlier", "stale", "failure", "keys", "inspection"])
+async def test_replacement_redaction_during_read_requires_current_bundle(kind: str, recovery: str):
+    started, release = asyncio.Event(), asyncio.Event()
+    raw = _edited(_original("$target", "initial draft", root="$root" if kind == "thread" else None), "withdrawn secret")
+    earlier = _edited(_original("$target", "initial draft", root="$root" if kind == "thread" else None), "surviving edit")
+    earlier["unsigned"]["m.relations"]["m.replace"]["event_id"] = "$earlier"
+    if recovery == "inspection":
+        raw["type"] = "m.room.encrypted"
+        replacement = raw["unsigned"]["m.relations"]["m.replace"]
+        replacement["type"] = "m.room.encrypted"
+        replacement["content"].update(session_id="latest", ciphertext="fake")
+    if recovery == "keys":
+        earlier["type"] = "m.room.encrypted"
+        earlier["unsigned"]["m.relations"]["m.replace"]["type"] = "m.room.encrypted"
+    invalidated = False
+
+    async def request(_method, path, **_kwargs):
+        if "/event/" in path:
+            if kind == "thread" and path.endswith(quote("$root", safe="")):
+                return _original("$root", "thread root")
+            if invalidated and recovery == "failure":
+                raise RuntimeError("recovery unavailable")
+            if invalidated and recovery == "stale":
+                replacement = raw["unsigned"]["m.relations"]["m.replace"]
+                return {**raw, "unsigned": {"m.relations": {"m.replace": {
+                    **replacement, "unsigned": {"redacted_because": {"event_id": "$redaction"}},
+                }}}}
+            return earlier if invalidated and recovery in {"earlier", "keys", "inspection"} else raw
+        if "/messages" in path or "/m.thread" in path:
+            return {"chunk": [raw]}
+        if path.endswith(f"/relations/{quote('$target', safe='')}/m.annotation"):
+            started.set()
+            await release.wait()
+        return {"chunk": []}
+
+    async def missing_session(_room, _session):
+        started.set()
+        await release.wait()
+        raise RuntimeError("decryption keys unavailable")
+
+    client = SimpleNamespace(
+        api=SimpleNamespace(request=AsyncMock(side_effect=request)),
+        sync_store=SimpleNamespace(get_next_batch=AsyncMock(return_value="boundary")),
+        crypto=SimpleNamespace(crypto_store=SimpleNamespace(get_group_session=missing_session)),
+    )
+    adapter = _adapter(client)
+    async def decrypt(_client, event):
+        if event["event_id"] == "$earlier":
+            return None, {"event_id": "$earlier", "error": "missing decryption keys"}
+        return SimpleNamespace(content=event["content"]), None
+
+    with patch("plugins.platforms.matrix.effective_event._decrypt", side_effect=decrypt):
+        pending = asyncio.create_task(read_matrix_context(
+            adapter, kind, ROOM, "$root" if kind == "thread" else "$target", 2, requester=SENDER,
+        ))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+            invalidated = True
+            adapter._event_context_cache.redact(ROOM, "$edit")
+        finally:
+            release.set()
+            result = await pending
+
+    recovered = recovery in {"earlier", "inspection"}
+    target = {
+        "event_id": "$target", "sender": SENDER,
+        "body": "surviving edit" if recovered else "[event content unavailable]",
+        "msgtype": "m.text" if recovered else None,
+        "thread_id": "$root" if kind == "thread" else None,
+        "timestamp": None, "sender_authorized": True,
+    }
+    if recovered:
+        target["edited"] = True
+    events = [target]
+    if kind == "thread":
+        events.insert(0, {
+            "event_id": "$root", "sender": SENDER, "body": "thread root", "msgtype": "m.text",
+            "thread_id": None, "timestamp": None, "sender_authorized": True,
+        })
+    assert result == {
+        "events": events,
+        "errors": ([] if recovered else [{"event_id": "$earlier", "error": "missing decryption keys"}]
+                   if recovery == "keys" else [{"event_id": "$target", "error": "replacement was redacted"}]),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quote_kind", ["plain", "html"])
+@pytest.mark.parametrize("failure", ["request", "keys", "invalidate"])
+async def test_inline_reply_after_replacement_redaction_validates_and_retries(quote_kind: str, failure: str):
+    from tests.gateway.test_matrix import _make_adapter
+    from plugins.platforms.matrix.reply_context import MatrixReplyContext
+
+    adapter = _make_adapter()
+    cache = adapter._event_context_cache
+    cache.store(ROOM, "$target", MatrixEventContext(SENDER, "withdrawn secret", replacement_id="$edit"))
+    cache.redact(ROOM, "$edit")
+    if failure == "invalidate":
+        cache.invalidate(ROOM, "$target")
+    earlier = _edited(_original("$target", "initial draft"), "surviving edit")
+    earlier["unsigned"]["m.relations"]["m.replace"]["event_id"] = "$earlier"
+    if failure == "keys":
+        earlier["type"] = "m.room.encrypted"
+        replacement = earlier["unsigned"]["m.relations"]["m.replace"]
+        replacement["type"] = "m.room.encrypted"
+        replacement["content"].update(session_id="earlier", ciphertext="fake")
+    adapter._client = SimpleNamespace(
+        api=SimpleNamespace(request=AsyncMock(side_effect=[
+            RuntimeError("recovery unavailable") if failure != "keys" else earlier, earlier,
+        ])),
+        crypto=SimpleNamespace(crypto_store=_edit_store({"m.new_content": {
+            "msgtype": "m.text", "body": "surviving edit",
+        }})),
+    )
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    body = f"> <{SENDER}> withdrawn secret\n\nquestion" if quote_kind == "plain" else "question"
+    formatted_body = "<mx-reply><blockquote>withdrawn secret</blockquote></mx-reply>question" if quote_kind == "html" else None
+    keys_available = False
+
+    async def decrypt(_client, event):
+        if event["event_id"] == "$earlier" and not keys_available:
+            return None, {"event_id": "$earlier", "error": "missing decryption keys"}
+        return SimpleNamespace(content=event["content"]), None
+
+    replies = []
+    with patch("plugins.platforms.matrix.effective_event._decrypt", side_effect=decrypt):
+        for _ in range(2):
+            replies.append(await adapter._extract_reply_context(
+                ROOM, body, {"m.in_reply_to": {"event_id": "$target"}}, sender=SENDER, chat_type="group",
+                formatted_body=formatted_body,
+            ))
+            if not keys_available:
+                assert cache.history_entry(ROOM, "$target") == MatrixEventContext(
+                    SENDER, "[event content unavailable]", event_id="$target",
+                    state_error="replacement was redacted", replacement_id="$edit",
+                )
+            keys_available = True
+
+    assert replies == [
+        MatrixReplyContext("question", "$target", None, SENDER, "Alice", False, True),
+        MatrixReplyContext("question", "$target", "surviving edit", SENDER, "Alice", False, True),
+    ]
+    assert cache.history_entry(ROOM, "$target") == MatrixEventContext(
+        SENDER, "surviving edit", event_id="$target", replacement_id="$earlier",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["event", "room", "thread"])
+@pytest.mark.parametrize("boundary", ["read", "format"])
+async def test_reaction_redaction_filters_its_own_event_id(scope: str, boundary: str):
+    from plugins.platforms.matrix.room_context import format_history_context
+
+    started, release = asyncio.Event(), asyncio.Event()
+    target = "$root" if scope == "thread" else "$target"
+    raw = _original(target, "retained text")
+
+    async def request(_method, path, **_kwargs):
+        if "/context/" in path:
+            return {"start": "boundary"}
+        if "/event/" in path:
+            return raw
+        if "/messages" in path:
+            return {"chunk": [raw]}
+        if "/m.thread" in path:
+            return {"chunk": []}
+        if "/m.annotation" in path:
+            if boundary == "read":
+                started.set()
+                await release.wait()
+            return {"chunk": [{
+                "type": "m.reaction", "event_id": "$reaction", "sender": SENDER,
+                "content": {"m.relates_to": {"rel_type": "m.annotation", "event_id": target, "key": "withdrawn reaction"}},
+            }]}
+        raise AssertionError(path)
+
+    async def display_name(_room, _sender):
+        started.set()
+        await release.wait()
+        return "Alice"
+
+    client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)))
+    adapter = _adapter(client)
+    adapter._get_display_name = display_name
+    cache = adapter._event_context_cache
+
+    async def read_and_format():
+        if scope == "event":
+            return await read_matrix_context(adapter, scope, ROOM, target, 1, requester=SENDER)
+        entries = (await fetch_room_entries(client, cache, ROOM, "$current", limit=1) if scope == "room"
+                   else await fetch_thread_entries(client, cache, ROOM, target, limit=1, before_event_id="$current"))
+        if boundary == "format":
+            return await format_history_context(adapter, ROOM, entries, "History")
+        return entries
+
+    if scope == "event" and boundary == "format":
+        cache.redact(ROOM, "$reaction")
+        result = await read_and_format()
+    else:
+        pending = asyncio.create_task(read_and_format())
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+            cache.redact(ROOM, "$reaction")
+        finally:
+            release.set()
+            result = await pending
+
+    if scope == "event":
+        assert result == {"events": [{
+            "event_id": target, "sender": SENDER, "body": "retained text", "msgtype": "m.text",
+            "thread_id": None, "timestamp": None, "sender_authorized": True,
+        }], "errors": []}
+    elif boundary == "format":
+        assert result == "[History]\n[Alice] retained text"
+    else:
+        assert result == [MatrixEventContext(SENDER, "retained text", event_id=target)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["event", "room", "thread"])
+async def test_bounded_read_observed_original_redaction_invalidates_shared_reply(kind: str):
+    target = "$root" if kind == "thread" else "$target"
+    raw = _edited(_original(target, "withdrawn secret"), "withdrawn edit")
+    raw["unsigned"]["redacted_because"] = {"event_id": "$redaction"}
+
+    async def request(_method, path, **_kwargs):
+        if "/event/" in path:
+            return raw
+        return {"chunk": [raw] if "/messages" in path else []}
+
+    client = SimpleNamespace(
+        api=SimpleNamespace(request=AsyncMock(side_effect=request)),
+        sync_store=SimpleNamespace(get_next_batch=AsyncMock(return_value="boundary")),
+    )
+    adapter = _adapter(client)
+    cache = adapter._event_context_cache
+    cache.store(ROOM, target, MatrixEventContext(SENDER, "withdrawn edit", replacement_id="$edit"))
+    result = await read_matrix_context(adapter, kind, ROOM, target, 1, requester=SENDER)
+    reply = await cache.resolve(client, ROOM, target)
+
+    assert (result, reply) == ({"events": [{
+        "event_id": target, "sender": SENDER, "body": "[redacted]", "msgtype": None,
+        "thread_id": None, "timestamp": None, "sender_authorized": True, "redacted": True,
+    }], "errors": []}, None)

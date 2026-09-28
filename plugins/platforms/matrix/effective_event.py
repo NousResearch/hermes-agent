@@ -105,32 +105,45 @@ async def effective_event(
         or replacement.get("sender") != raw.get("sender")
         or replacement.get("type") != raw.get("type")
         or not isinstance(replacement_id, str) or not replacement_id
-        or (is_redacted is not None and is_redacted(replacement_id))
         or "state_key" in replacement or "state_key" in raw
         or not isinstance(relation, dict)
         or relation.get("rel_type") != "m.replace"
         or relation.get("event_id") != raw.get("event_id")
-        or (isinstance(replacement.get("unsigned"), dict)
-            and replacement["unsigned"].get("redacted_because"))
     ):
+        return MatrixEffectiveEvent(content, original_content)
+
+    unavailable = MatrixEffectiveEvent(
+        {"body": "[event content unavailable]"}, original_content,
+        error={"event_id": str(raw.get("event_id") or ""), "error": "replacement was redacted"},
+        replacement_id=replacement_id,
+    )
+    if is_redacted is not None and is_redacted(replacement_id):
+        return unavailable
+    if (isinstance(replacement.get("unsigned"), dict)
+            and replacement["unsigned"].get("redacted_because")):
         return MatrixEffectiveEvent(content, original_content)
 
     if replacement.get("type") == "m.room.encrypted":
         _, error = await _decrypt(client, replacement)
+        if is_redacted is not None and is_redacted(replacement_id):
+            return unavailable
         if error is not None:
             return MatrixEffectiveEvent(content, original_content, error=error)
         try:
             # Mautrix's typed edit serializer synthesises m.new_content even when the payload omitted it.
             revised_content = await _encrypted_replacement_content(client, replacement)
         except Exception:
+            if is_redacted is not None and is_redacted(replacement_id):
+                return unavailable
             return MatrixEffectiveEvent(content, original_content, error={
                 "event_id": replacement.get("event_id"),
                 "error": "encrypted replacement could not be inspected",
             })
     else:
         revised_content = event_content(replacement).get("m.new_content")
-    if (not isinstance(revised_content, dict)
-            or (is_redacted is not None and is_redacted(replacement_id))):
+    if is_redacted is not None and is_redacted(replacement_id):
+        return unavailable
+    if not isinstance(revised_content, dict):
         return MatrixEffectiveEvent(content, original_content)
 
     original_relation = content.get("m.relates_to")

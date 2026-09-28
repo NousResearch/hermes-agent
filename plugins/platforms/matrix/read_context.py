@@ -39,9 +39,11 @@ async def _visible_event(
         is_redacted=lambda target: adapter._event_context_cache.is_redacted(room_id, target),
     )
     content = state.content
+    if state.redacted and isinstance(event_id, str):
+        adapter._event_context_cache.redact(room_id, event_id)
     if content is None:
         return None, state.error, None
-    if not state.redacted and not content.get("msgtype"):
+    if not state.redacted and not content.get("msgtype") and not state.error:
         return None, None, None
     body = content.get("body")
     if not isinstance(body, str):
@@ -57,7 +59,7 @@ async def _visible_event(
         "event_id": event_id,
         "sender": sender,
         "body": body,
-        "msgtype": None if state.redacted else str(content.get("msgtype")),
+        "msgtype": None if state.redacted or not content.get("msgtype") else str(content.get("msgtype")),
         "thread_id": relation.thread_root,
         "timestamp": raw.get("origin_server_ts"),
         "sender_authorized": authorized,
@@ -120,19 +122,19 @@ async def read_matrix_context(
 
     events: list[dict] = []
     errors: list[dict] = []
-    resolved: list[tuple[dict, dict, str | None]] = []
+    resolved: list[tuple[dict, dict, str | None, dict | None]] = []
     for raw in ([root] if root is not None else []) + chunk[:limit - bool(root)]:
         if not isinstance(raw, dict):
             continue
         visible, error, replacement_id = await _visible_event(adapter, raw, room_id, chat_type)
-        if error is not None:
-            errors.append(error)
         if visible is None:
+            if error is not None:
+                errors.append(error)
             continue
         if kind == "thread" and visible["event_id"] != event_id and visible["thread_id"] != event_id:
             continue
         events.append(visible)
-        resolved.append((raw, visible, replacement_id))
+        resolved.append((raw, visible, replacement_id, error))
 
     targets = [event for event in events if isinstance(event["event_id"], str) and not event.get("redacted")]
     snapshots = await fetch_reactions_for_events(
@@ -142,13 +144,25 @@ async def read_matrix_context(
     by_id = {event["event_id"]: snapshot for event, snapshot in zip(targets, snapshots)}
     events = []
     dependencies: dict[str, str | None] = {}
-    for raw, visible, replacement_id in resolved:
+    for raw, visible, replacement_id, error in resolved:
         if replacement_id and adapter._event_context_cache.is_redacted(room_id, replacement_id):
+            try:
+                path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(visible['event_id'], safe='')}"
+                fresh = _raw_event(await asyncio.wait_for(client.api.request(Method.GET, path), timeout=10.0))
+            except Exception:
+                fresh = {}
+            if fresh.get("event_id") == visible["event_id"] and fresh.get("room_id", room_id) == room_id:
+                raw = fresh
             visible, error, replacement_id = await _visible_event(adapter, raw, room_id, chat_type)
-            if error is not None:
-                errors.append(error)
             if visible is None:
+                if error is not None:
+                    errors.append(error)
                 continue
+            if error is not None:
+                visible.update(body="[event content unavailable]", msgtype=None)
+                visible.pop("edited", None)
+        if error is not None:
+            errors.append(error)
         events.append(visible)
         dependencies[visible["event_id"]] = replacement_id
 
@@ -156,14 +170,18 @@ async def read_matrix_context(
         snapshot = by_id.get(event["event_id"])
         if snapshot is None:
             continue
-        if snapshot.reactions:
+        reactions = [
+            reaction for reaction in snapshot.reactions
+            if not adapter._event_context_cache.is_redacted(room_id, reaction.event_id)
+        ]
+        if reactions:
             event["reactions"] = [
                 reaction.to_dict(sender_authorized=(
                     reaction.sender == adapter._user_id or adapter._is_sender_authorized(
                         reaction.sender, chat_type=chat_type, chat_id=room_id,
                     ) is True
                 ))
-                for reaction in snapshot.reactions
+                for reaction in reactions
             ]
         if snapshot.truncated:
             event["reactions_truncated"] = True
@@ -182,7 +200,9 @@ async def read_matrix_context(
         if redacted:
             event["redacted"] = True
         if replacement_redacted and not redacted:
-            errors.append({"event_id": event["event_id"], "error": "replacement was redacted"})
+            error = {"event_id": event["event_id"], "error": "replacement was redacted"}
+            if error not in errors:
+                errors.append(error)
         event.pop("edited", None)
         event.pop("reactions", None)
         event.pop("reactions_truncated", None)

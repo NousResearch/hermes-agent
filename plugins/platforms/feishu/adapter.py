@@ -32,6 +32,7 @@ import logging
 import mimetypes
 import os
 import re
+import secrets
 import threading
 import time
 import uuid
@@ -447,7 +448,9 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # builder resolves each placeholder into an ``at`` element carrying the mapped open_id. With no map
 # configured the rendered payload is unchanged.
 
-_MENTION_PLACEHOLDER_RE_OUT = re.compile(r"@_mention_(\d+)")
+# Placeholders are namespaced with a per-message token: only tokens this adapter generated are
+# resolved, so a literal ``@_mention_<n>`` in the author's own text stays plain text.
+_MENTION_PLACEHOLDER_RE_OUT = re.compile(r"@_mention_([0-9a-f]{8})_(\d+)")
 
 
 def _parse_bot_mention_map(raw: Any) -> Dict[str, str]:
@@ -496,18 +499,26 @@ def _split_mention_row(
     """Split a post row at outbound mention placeholders into mixed elements.
 
     A real mention must be an ``at`` element (``{"tag": "at", "user_id": <open_id>}``); the
-    surrounding markdown stays in ``md`` elements so rendering is preserved.
+    surrounding markdown stays in ``md`` elements so rendering is preserved. Only placeholders
+    carrying this message's token are resolved — a literal ``@_mention_<n>`` in the author's text
+    (or a token from another message) stays plain text, and an out-of-range index keeps its
+    literal too, so nothing is silently dropped.
     """
     if not mention_ids:
         return [{"tag": "md", "text": segment}]
+    matches = list(_MENTION_PLACEHOLDER_RE_OUT.finditer(segment))
+    if not matches:
+        return [{"tag": "md", "text": segment}]
+    token = matches[0].group(1)
     parts: List[Dict[str, str]] = []
     pos = 0
-    for match in _MENTION_PLACEHOLDER_RE_OUT.finditer(segment):
+    for match in matches:
+        idx = int(match.group(2))
+        if match.group(1) != token or not (0 <= idx < len(mention_ids)):
+            continue
         if match.start() > pos:
             parts.append({"tag": "md", "text": segment[pos : match.start()]})
-        idx = int(match.group(1))
-        if 0 <= idx < len(mention_ids):
-            parts.append({"tag": "at", "user_id": mention_ids[idx]})
+        parts.append({"tag": "at", "user_id": mention_ids[idx]})
         pos = match.end()
     if pos < len(segment):
         parts.append({"tag": "md", "text": segment[pos:]})
@@ -3711,6 +3722,7 @@ class FeishuAdapter(BasePlatformAdapter):
         pattern = re.compile(
             r"@(" + "|".join(re.escape(name) for name in names) + r")(?![\w\u4e00-\u9fff])"
         )
+        token = secrets.token_hex(4)  # namespaces this message's placeholders
         mention_ids: List[str] = []
         mention_names: List[str] = []
 
@@ -3719,7 +3731,7 @@ class FeishuAdapter(BasePlatformAdapter):
             name = match.group(1)
             mention_ids.append(mentions[name])
             mention_names.append(name)
-            return f"@_mention_{idx}"
+            return f"@_mention_{token}_{idx}"
 
         return pattern.sub(_sub, content), mention_ids, mention_names
 
@@ -3733,9 +3745,18 @@ class FeishuAdapter(BasePlatformAdapter):
         ``@Name`` spelling rather than shipping a raw ``@_mention_0``.
         """
         text = _strip_markdown_to_plain_text(chunk)
-        for idx, name in enumerate(mention_names):
-            text = text.replace(f"@_mention_{idx}", f"@{name}")
-        return text
+        matches = list(_MENTION_PLACEHOLDER_RE_OUT.finditer(text))
+        if not matches:
+            return text
+        token = matches[0].group(1)
+
+        def _restore(match: "re.Match[str]") -> str:
+            idx = int(match.group(2))
+            if match.group(1) != token or not (0 <= idx < len(mention_names)):
+                return match.group(0)
+            return f"@{mention_names[idx]}"
+
+        return _MENTION_PLACEHOLDER_RE_OUT.sub(_restore, text)
 
     def _build_outbound_payload(
         self, content: str, *, prefer_post: bool = False, mention_ids: Optional[List[str]] = None,

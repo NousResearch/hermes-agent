@@ -14,6 +14,7 @@ configured every outbound payload is byte-identical to the previous rendering.
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -38,6 +39,14 @@ def _bare():
 
 def _extract(content: str):
     return _bare()._extract_mentions(content)
+
+
+_PLACEHOLDER = re.compile(r"@_mention_[0-9a-f]{8}_(\d+)")
+
+
+def _norm(text: str) -> str:
+    """Drop the per-message token so assertions read as the stable ``@_mention_N`` form."""
+    return _PLACEHOLDER.sub(r"@_mention_\1", text)
 
 
 def _at_ids(payload_str: str) -> list[str]:
@@ -88,7 +97,7 @@ class TestParseBotMentionMap:
 class TestExtractMentions:
     def test_configured_name_becomes_a_placeholder(self):
         out, ids, names = _extract("@GameDev 请确认收到")
-        assert out == "@_mention_0 请确认收到"
+        assert _norm(out) == "@_mention_0 请确认收到"
         assert ids == ["ou_1657test00000000000000000000"]
         assert names == ["GameDev"]
 
@@ -105,23 +114,58 @@ class TestExtractMentions:
 
     def test_longest_name_wins(self):
         out, ids, names = _extract("前缀 @Default Hermes 后缀")
-        assert out == "前缀 @_mention_0 后缀"
+        assert _norm(out) == "前缀 @_mention_0 后缀"
         assert names == ["Default Hermes"]
 
     def test_multiple_names_get_distinct_placeholders(self):
         out, ids, names = _extract("同时 @GameDev 和 @Default Hermes")
-        assert out == "同时 @_mention_0 和 @_mention_1"
+        assert _norm(out) == "同时 @_mention_0 和 @_mention_1"
         assert len(ids) == 2 and len(names) == 2
 
     def test_markdown_surrounding_the_name_is_kept(self):
         out, ids, _ = _extract("**加粗标题** @GameDev 内容")
-        assert out == "**加粗标题** @_mention_0 内容"
+        assert _norm(out) == "**加粗标题** @_mention_0 内容"
         assert ids
 
     def test_no_map_configured_is_a_no_op(self):
         adapter = make_adapter_skeleton()
         adapter._bot_mention_map = {}
         assert adapter._extract_mentions("@GameDev 保持纯文本") == ("@GameDev 保持纯文本", [], [])
+
+
+# --- Literal placeholders in the author's own text ---------------------------
+
+
+class TestLiteralPlaceholdersInAuthorText:
+    """A literal ``@_mention_<n>`` the author typed is not a mention this adapter produced.
+
+    It must survive byte-for-byte: neither dropped (out-of-range index) nor upgraded into a
+    second ``at`` element (in-range index).
+    """
+
+    _ID = "ou_1657test00000000000000000000"
+
+    def test_out_of_range_literal_survives_next_to_a_real_mention(self):
+        adapter = _bare()
+        content, ids, _ = adapter._extract_mentions("@GameDev 报告 @_mention_5 索引已丢失")
+        msg_type, payload = adapter._build_outbound_payload(content, mention_ids=ids)
+        assert msg_type == "post"
+        assert _at_ids(payload) == [self._ID]
+        assert "@_mention_5" in payload
+
+    def test_in_range_literal_is_not_upgraded_to_a_second_mention(self):
+        adapter = _bare()
+        content, ids, _ = adapter._extract_mentions("日志片段 @_mention_0 然后 @GameDev 确认")
+        _, payload = adapter._build_outbound_payload(content, mention_ids=ids)
+        assert _at_ids(payload) == [self._ID]
+        assert "@_mention_0" in payload
+
+    def test_text_fallback_renders_only_its_own_placeholder(self):
+        adapter = _bare()
+        content, ids, names = adapter._extract_mentions("日志 @_mention_0 然后 @GameDev 确认")
+        restored = adapter._restore_mention_text(content, ids, names)
+        assert "日志 @_mention_0" in restored
+        assert restored.endswith("然后 @GameDev 确认")
 
 
 # --- Post payload rendering -------------------------------------------------

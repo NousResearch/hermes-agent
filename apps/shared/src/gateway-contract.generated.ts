@@ -4470,6 +4470,7 @@ export interface PersistedTurn {
 export interface StatusUpdatePayload {
   kind: string
   text: string
+  timestamp?: number | null
 }
 /** ``server._start_usage_ticker``. */
 export interface SessionUsagePayload {

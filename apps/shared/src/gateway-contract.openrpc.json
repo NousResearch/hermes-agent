@@ -32975,6 +32975,18 @@
           "text": {
             "title": "Text",
             "type": "string"
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timestamp"
           }
         },
         "required": [

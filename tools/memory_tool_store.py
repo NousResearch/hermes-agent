@@ -5,6 +5,7 @@ in ``tools.memory_tool`` and is read lazily."""
 
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -21,6 +22,39 @@ MEMORY_BLOCK_HEADERS = {
     "memory": "MEMORY (your personal notes)", "user": "USER PROFILE (who the user is)"}
 
 ENTRY_DELIMITER = "\n§\n"
+
+# ---- Chain documents (#116564) ----
+# MEMORY.md is an ANCHOR: an entry that mentions ``@doc:<name>`` chains the separate
+# document ``memories/docs/<name>.md``. Chain docs are first-class memory for the tool
+# (read / add / replace / remove) but are NOT injected into the system prompt and carry
+# NO char limit — the anchor's cap is the only budget the prompt pays for, and the model
+# reads a chain doc on demand. The anchor's reference is what makes a doc memory: writes
+# to an unreferenced doc are refused.
+DOCS_SUBDIR = "docs"
+DOC_TARGET_PREFIX = "doc:"
+_DOC_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+DOC_REF_PATTERN = re.compile(r"@doc:([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def doc_name(raw: str) -> Optional[str]:
+    """Bare chain-doc name for *raw* (a ``doc:`` prefix and a ``.md`` suffix are accepted),
+    or None when unsafe. Bare filenames only — no separators — so a doc name can never
+    escape ``memories/docs/``."""
+    name = (raw or "").strip()
+    name = name[len(DOC_TARGET_PREFIX):] if name.startswith(DOC_TARGET_PREFIX) else name
+    if name.endswith(".md"):
+        name = name[:-3]
+    return name if _DOC_NAME_RE.match(name) else None
+
+
+def doc_target(name: str) -> str:
+    """Store target addressing the chain document *name*."""
+    return f"{DOC_TARGET_PREFIX}{name}"
+
+
+def chain_doc_names(entries: List[str]) -> List[str]:
+    """Chain-doc names referenced by anchor *entries*, in reference order (deduped)."""
+    return list(dict.fromkeys(n for e in entries for m in DOC_REF_PATTERN.findall(e) if (n := doc_name(m))))
 
 
 def _scan_memory_content(content: str) -> Optional[str]:
@@ -100,6 +134,8 @@ class MemoryStore:
                  memory_enabled: bool = True, user_profile_enabled: bool = True):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
+        # Chain-doc entry lists, keyed by doc name (loaded on demand by read/mutate).
+        self._doc_entries: Dict[str, List[str]] = {}
         self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
@@ -109,6 +145,35 @@ class MemoryStore:
     # reset_consolidation_failures() (#42405).
     def target_enabled(self, target: str) -> bool:
         return self.user_profile_enabled if target == "user" else self.memory_enabled
+
+    @staticmethod
+    def _doc(target: str) -> Optional[str]:
+        """Chain-doc name for a ``doc:<name>`` store target, else None (anchor/profile)."""
+        return doc_name(target) if target.startswith(DOC_TARGET_PREFIX) else None
+
+    def chain_docs(self) -> List[str]:
+        """Chain-doc names the anchor (MEMORY.md) references, in reference order."""
+        return chain_doc_names(self.memory_entries)
+
+    def doc_stats(self, name: str) -> Dict[str, Any]:
+        """Entry count / char count of chain doc *name* as stored on disk."""
+        entries = self._read_file(self._path_for(doc_target(name)))
+        return {"name": name, "entries": len(entries), "chars": len(ENTRY_DELIMITER.join(entries))}
+
+    def orphan_doc_names(self) -> List[str]:
+        """Chain docs on disk that the anchor no longer references.
+
+        Editing the anchor entry that named a doc leaves the file behind: nothing deletes
+        ``memories/docs/*.md``, so the doc keeps its entries and stays readable, while the
+        chain line no longer mentions it and every write to it is refused by the gate. That
+        makes an anchor read the only place the model can learn they exist.
+        """
+        docs_dir = self._path_for("memory").parent / DOCS_SUBDIR
+        if not docs_dir.is_dir():
+            return []
+        referenced = set(chain_doc_names(self._read_file(self._path_for("memory"))))
+        return sorted(name for p in docs_dir.glob("*.md")
+                      if (name := doc_name(p.stem)) and name not in referenced)
 
     def reset_consolidation_failures(self) -> None:
         """Call at turn start."""
@@ -157,7 +222,7 @@ class MemoryStore:
             # External writers (MCP bridges, hand edits) can exceed the cap; the limit only fires on
             # add/replace, so the oversized block would silently ride in the prompt while every later
             # add is refused with no visible cause (#10877). Warn; never truncate a user's memories.
-            if (count := self._char_count(target)) > (limit := self._char_limit(target)):
+            if (limit := self._char_limit(target)) is not None and (count := self._char_count(target)) > limit:
                 logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
                                "further additions are blocked until it is back under the limit.",
                                path.name, count, limit)
@@ -209,25 +274,39 @@ class MemoryStore:
     @staticmethod
     def _path_for(target: str) -> Path:
         from tools import memory_tool  # get_memory_dir is monkeypatched there
+        if (name := MemoryStore._doc(target)) is not None:
+            return memory_tool.get_memory_dir() / DOCS_SUBDIR / f"{name}.md"
         return memory_tool.get_memory_dir() / ("USER.md" if target == "user" else "MEMORY.md")
 
     def _entries_for(self, target: str) -> List[str]:
+        if (name := self._doc(target)) is not None:
+            return self._doc_entries.get(name, [])
         return self.user_entries if target == "user" else self.memory_entries
 
     def _set_entries(self, target: str, entries: List[str]):
+        if (name := self._doc(target)) is not None:
+            self._doc_entries[name] = entries
+            return
         setattr(self, "user_entries" if target == "user" else "memory_entries", entries)
 
     def _char_count(self, target: str) -> int:
         return len(ENTRY_DELIMITER.join(self._entries_for(target)))
 
-    def _char_limit(self, target: str) -> int:
+    def _char_limit(self, target: str) -> Optional[int]:
+        """None = uncapped: chain docs grow without a limit, so the anchor's cap is the only
+        budget the prompt pays for (the anchor is the only file injected)."""
+        if self._doc(target) is not None:
+            return None
         return self.user_char_limit if target == "user" else self.memory_char_limit
 
     def _usage(self, target: str) -> str:
-        return f"{self._char_count(target):,}/{self._char_limit(target):,}"
+        limit = self._char_limit(target)
+        return f"{self._char_count(target):,}/{limit:,}" if limit is not None else f"{self._char_count(target):,}/uncapped"
 
     def _usage_pct(self, target: str, current: int) -> str:
         limit = self._char_limit(target)
+        if limit is None:
+            return f"{current:,} chars (chain doc — uncapped)"
         return f"{min(100, int((current / limit) * 100)) if limit > 0 else 0}% — {current:,}/{limit:,} chars"
 
     def _failure_with_entries(self, target: str, message: str) -> Dict[str, Any]:
@@ -254,6 +333,8 @@ class MemoryStore:
         returns is passed through verbatim and nothing is persisted: error dicts, or the
         success payload of a read-only closure (``resolve_entry``, ``resolve_batch_entries``)."""
         path = self._path_for(target)
+        if (gate := self._anchor_gate(target)) is not None:
+            return gate
         with self._file_lock(path):
             raw, read_ok = self._read_raw_checked(path)
             if not read_ok:
@@ -273,6 +354,52 @@ class MemoryStore:
             extra_fields = result[2] if len(result) > 2 else {}
             return self._success_response(target, result[1], **extra_fields)
 
+    def _anchor_gate(self, target: str) -> Optional[Dict[str, Any]]:
+        """Refuse a write to a chain doc the anchor (MEMORY.md) does not reference: that
+        reference is what makes the doc memory rather than a stray file, and it is the only
+        way the model learns the doc exists. No-op for the anchor and the profile.
+
+        The refusal is also where two dead ends get named rather than left to be discovered:
+        an already-written doc whose anchor entry was edited away (re-link it, or delete the
+        file — a read still returns its entries), and an anchor with no headroom for the
+        reference entry it is being asked to add (#116564)."""
+        name = self._doc(target)
+        if name is None or name in chain_doc_names(self._read_file(self._path_for("memory"))):
+            return None
+        path = self._path_for(target)
+        if path.exists():
+            return _error(
+                f"Chain doc '{name}' exists at {path} but MEMORY.md no longer references it, so writes "
+                f"are refused (reads still work). Re-link it with an entry naming '@doc:{name}', or "
+                f"delete the file if the doc is no longer wanted.", target=target)
+        hint = ""
+        limit = self.memory_char_limit
+        if limit is not None and self._char_count("memory") >= limit:
+            hint = (f" MEMORY.md is at its limit ({self._usage('memory')}), and the reference entry itself "
+                    f"costs anchor budget: free space FIRST — fold an existing anchor entry into a chain "
+                    f"doc or shorten entries — then add the '@doc:{name}' reference, then write this doc.")
+        return _error(
+            f"Chain doc '{name}' is not referenced by MEMORY.md. Add an entry to memory naming it "
+            f"(e.g. \"Dated memory chain: @doc:{name}\"), then retry." + hint, target=target)
+
+    def read(self, target: str) -> Dict[str, Any]:
+        """Entries of *target* as stored on disk (read-only: no gate, no drift guard, no write).
+        Reading the anchor also reports the chain docs it references, with sizes."""
+        path = self._path_for(target)
+        raw, read_ok = self._read_raw_checked(path)
+        if not read_ok:
+            return _read_failed_error(path)
+        entries = list(dict.fromkeys(self._parse_entries(raw)))
+        self._set_entries(target, entries)
+        response: Dict[str, Any] = {
+            "success": True, "target": target, "entries": entries,
+            "usage": self._usage_pct(target, self._char_count(target))}
+        if target == "memory":
+            response["chain_docs"] = [self.doc_stats(n) for n in chain_doc_names(entries)]
+            if orphans := self.orphan_doc_names():
+                response["orphan_docs"] = [self.doc_stats(n) for n in orphans]
+        return response
+
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
@@ -284,7 +411,7 @@ class MemoryStore:
         def _add(entries, limit):
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
-            if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
+            if limit is not None and len(ENTRY_DELIMITER.join(entries + [content])) > limit:
                 return self._failure_with_entries(target, (
                     f"Memory at {self._char_count(target):,}/{limit:,} chars. Adding this entry "
                     f"({len(content)} chars) would exceed the limit. Consolidate now: use 'replace' to merge "
@@ -352,7 +479,7 @@ class MemoryStore:
             if new_content is None:
                 return replaced, "Entry removed.", {"removed_entry": entries[idx]}
             new_total = len(ENTRY_DELIMITER.join(replaced))
-            if new_total > limit:
+            if limit is not None and new_total > limit:
                 return self._failure_with_entries(target, (
                     f"Replacement would put memory at {new_total:,}/{limit:,} chars. Shorten the new content, "
                     f"or 'remove' other stale or less important entries to make room (see current_entries "
@@ -441,7 +568,7 @@ class MemoryStore:
                     f"entries into a shorter one instead of removing the last one. To delete the "
                     f"final entry deliberately, use single remove() calls."))
             new_total = len(ENTRY_DELIMITER.join(working))  # budget check against the FINAL state only
-            if new_total > limit:
+            if limit is not None and new_total > limit:
                 return self._batch_failure(target, (
                     f"After applying all {len(operations)} operations, memory would be at "
                     f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
@@ -480,13 +607,24 @@ class MemoryStore:
                 **extra,
                 "note": "Write saved. This update is complete — do not repeat it."}
 
+    def _chain_line(self, target: str) -> str:
+        """Anchor-only: one line naming the chain docs MEMORY.md references, so the model
+        knows they exist while their contents stay out of the prompt (read on demand)."""
+        if target != "memory":
+            return ""
+        stats = [self.doc_stats(n) for n in chain_doc_names(self._entries_for("memory"))]
+        if not stats:
+            return ""
+        return ('\nChain docs (read on demand: memory(action="read", doc="<name>")): '
+                + ", ".join(f"{s['name']} ({s['chars']:,} chars)" for s in stats))
+
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """System prompt block: header + usage indicator + entries ("" when empty)."""
+        """System prompt block: header + usage indicator + chain line + entries ("" when empty)."""
         if not entries:
             return ""
         content, sep = ENTRY_DELIMITER.join(entries), "═" * 46
         title = MEMORY_BLOCK_HEADERS["user" if target == "user" else "memory"]
-        return f"{sep}\n{title} [{self._usage_pct(target, len(content))}]\n{sep}\n{content}"
+        return f"{sep}\n{title} [{self._usage_pct(target, len(content))}]{self._chain_line(target)}\n{sep}\n{content}"
 
     @staticmethod
     def _read_raw_checked(path: Path) -> Tuple[str, bool]:
@@ -532,8 +670,9 @@ class MemoryStore:
         round-trip mismatch, or one entry over the whole-file limit (no tool-written
         entry can be — an external writer appended free-form text)."""
         parsed = self._parse_entries(raw)
+        limit = self._char_limit(target)  # None for chain docs: nothing to outgrow
         if not raw.strip() or (raw.strip() == ENTRY_DELIMITER.join(parsed)
-                               and max(map(len, parsed), default=0) <= self._char_limit(target)):
+                               and (limit is None or max(map(len, parsed), default=0) <= limit)):
             return None
         path = self._path_for(target)
         bak_path = path.with_suffix(path.suffix + f".bak.{int(time.time())}")

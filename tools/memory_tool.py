@@ -41,7 +41,8 @@ def get_memory_dir() -> Path:
 
 
 from tools.memory_tool_store import (  # noqa: E402,F401  (re-exports)
-    ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content)
+    DOC_TARGET_PREFIX, ENTRY_DELIMITER, MEMORY_BLOCK_HEADERS, MemoryStore, _scan_memory_content,
+    doc_name, doc_target)
 
 
 def load_on_disk_store() -> "MemoryStore":
@@ -204,22 +205,45 @@ def _background_delete_gate(store, action, operations, target="memory", content=
             "batch); 'add' is still available.", success=False)
 
 
+def _resolve_target(target: str, doc: Optional[str]) -> Tuple[str, Optional[str]]:
+    """``(store target, error)``. ``doc`` addresses a chain document hung off the MEMORY.md
+    anchor (#116564): chain docs live in ``memories/docs/<name>.md``, are reached ONLY through
+    ``target='memory'`` + ``doc='<name>'``, and their name is a bare filename (no separators),
+    so a doc can never escape the memories dir."""
+    if not doc:
+        return target, None
+    if target != "memory":
+        return target, ("Chain docs hang off the MEMORY.md anchor: pass target='memory' together "
+                        "with doc='<name>' (the 'user' profile has no chain).")
+    name = doc_name(doc)
+    if name is None:
+        return target, (f"Invalid chain doc name {doc!r}. Use a bare filename — letters, digits, "
+                        "'.', '_', '-' — e.g. doc='conventions-2026-09'.")
+    return doc_target(name), None
+
+
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,
                 new_text: str = None, operations: Optional[List[Dict[str, Any]]] = None,
-                store: Optional[MemoryStore] = None) -> str:
+                doc: str = None, store: Optional[MemoryStore] = None) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``
     aliases ``content`` -- for 'replace' both mean the COMPLETE new entry (the
-    whole matched entry is overwritten; old_text only locates it)."""
+    whole matched entry is overwritten; old_text only locates it). ``doc`` addresses
+    a MEMORY.md chain document (read/add/replace/remove)."""
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
     if content is None and new_text is not None:
         content = new_text
     # Strict providers send JSON null for optional fields; treat as omitted.
     target = "memory" if target is None else target
+    target, doc_error = _resolve_target(target, doc)
+    if doc_error is not None:
+        return tool_error(doc_error, success=False)
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return json.dumps(target_error)
+    if action == "read":
+        return json.dumps(store.read(target), ensure_ascii=False)
     if operations:
         if not isinstance(operations, list):
             return tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
@@ -272,6 +296,11 @@ def check_memory_requirements() -> bool:
 
 def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str, Any]]:
     """Return a shared validation error for an invalid or disabled target."""
+    if target.startswith(DOC_TARGET_PREFIX):  # chain doc: gated with the memory store it hangs off
+        if store.target_enabled("memory"):
+            return None
+        return {"success": False, "error": "Built-in MEMORY.md writes are disabled in memory config.",
+                "target": target}
     if target not in {"memory", "user"}:
         from tools.registry import _bound_error_text
         return {"success": False,
@@ -322,6 +351,11 @@ MEMORY_SCHEMA = {
         "stay small.\n\n"
         "IF FULL: an add is rejected with the current entries shown. Reissue as ONE batch that "
         "removes or shortens enough stale entries and adds the new one together.\n\n"
+        "CHAIN DOCS: MEMORY.md is an ANCHOR — an entry mentioning '@doc:<name>' chains the "
+        "document memories/docs/<name>.md, which has NO char limit (the anchor's limit is the "
+        "only budget injected into the prompt). Read a chain doc with action='read', doc='<name>'; "
+        "write one with target='memory' + doc='<name>' — writes are refused until MEMORY.md "
+        "references it. Use chain docs for the long tail of dated notes and keep the anchor small.\n\n"
         "TARGETS: 'user' = who the user is (name, role, preferences, style). 'memory' = your "
         "notes (environment, conventions, tool quirks, lessons).\n\n"
         "SKIP: trivial/obvious info, easily re-discovered facts, raw data dumps, task progress, "
@@ -333,8 +367,10 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform (single-op shape). Omit when using 'operations'."
+                "enum": ["add", "replace", "remove", "read"],
+                "description": ("The action to perform (single-op shape). Omit when using 'operations'. "
+                                "'read' returns stored entries without changing anything — with "
+                                "doc='<name>' it reads that chain document.")
             },
             "target": {
                 "type": "string",
@@ -348,6 +384,14 @@ MEMORY_SCHEMA = {
             "old_text": {
                 "type": "string",
                 "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring IDENTIFYING the existing entry to modify -- it locates the entry, it is not spliced out. Omit only for 'add'."
+            },
+            "doc": {
+                "type": "string",
+                "description": ("Chain document hung off the MEMORY.md anchor (target must be 'memory'): "
+                                "a bare name whose document lives at memories/docs/<name>.md. Its entries "
+                                "are uncapped and NOT injected into the prompt; read one with "
+                                "action='read'. A write is refused until an entry of MEMORY.md mentions "
+                                "'@doc:<name>'.")
             },
             "new_text": {
                 "type": "string",
@@ -409,7 +453,8 @@ registry.register(
     toolset="memory",
     schema=MEMORY_SCHEMA,
     handler=lambda args, **kw: memory_tool(
-        action=args.get("action", ""), target=args.get("target", "memory"), store=kw.get("store"),
+        action=args.get("action", ""), target=args.get("target", "memory"), doc=args.get("doc"),
+        store=kw.get("store"),
         **{k: args.get(k) for k in ("content", "old_text", "new_text", "operations")}),
     check_fn=check_memory_requirements,
     emoji="🧠",

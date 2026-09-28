@@ -255,6 +255,7 @@ function makeDependencies(options: { origin?: string; plan?: RolloutPlan } = {})
         receipt: {
           correlationId: input.correlationId,
           outcome: 'updated',
+          requestedSha: TARGET_SHA,
           startedAt: NOW_ISO,
           finishedAt: NOW_ISO,
           preSha: ADMITTED_SHA,
@@ -442,9 +443,9 @@ test('runs an injected trusted rollout without exposing the launch capability', 
     assert.ok(facts.includes('terminal-receipt'))
 
     const settled = await provider.get(started.id as string) as any
-    // The remote receipt carried no requested SHA here. The projection must
-    // record null rather than back-fill the local target as remote evidence.
-    assert.equal(settled.attempts[0].receipt.requestedSha, null)
+    // The remote receipt recorded its own requested SHA; the projection must
+    // carry that remote value rather than back-filling the local target.
+    assert.equal(settled.attempts[0].receipt.requestedSha, TARGET_SHA)
     assert.ok(facts.includes('settlement-validated'))
     const snapshot = await provider.get(started.id as string) as Record<string, unknown>
     assert.equal(snapshot?.phase, 'completed')
@@ -659,6 +660,7 @@ test('hydrates an authorized running journal record as recoverable unknown witho
           recoveryRecordClear: true,
           receipt: {
             correlationId: authorization.correlationId, outcome: 'updated',
+            requestedSha: TARGET_SHA,
             startedAt: NOW_ISO, finishedAt: NOW_ISO, preSha: ADMITTED_SHA, postSha: TARGET_SHA
           },
           health: health()
@@ -1030,12 +1032,72 @@ test('never projects a remote receipt whose recorded requested SHA contradicts t
     await provider.waitForIdle()
 
     // The remote reported a request for a different SHA: the projection records
-    // no receipt at all rather than presenting the mismatch as this attempt's
-    // proof.
+    // no receipt at all, the attempt must not settle as success, and no
+    // settlement fact may be recorded — a mismatch is refused, not merely
+    // hidden from display.
     const settled = await provider.get(started.id) as any
+    const record = dependencies.journal.read(started.id)
 
     assert.equal(settled.attempts[0].receipt, null)
+    assert.equal(settled.phase, 'attention-required')
+    assert.equal(settled.attempts[0].phase, 'unverified')
+    assert.equal(settled.attempts[0].recoveryRequired, true)
+    assert.equal(record.facts.some(item => item.kind === 'settlement-validated'), false)
     assert.equal(JSON.stringify(settled).includes('d'.repeat(40)), false)
+  } finally {
+    fs.rmSync(journalDirectory, { recursive: true, force: true })
+  }
+})
+
+test('refuses to settle success when the receipt never recorded which request it answered', async () => {
+  const { dependencies, journalDirectory } = makeDependencies()
+  dependencies.managedSshUpdateService = {
+    ...dependencies.managedSshUpdateService,
+    requestCoordinator: (connectionId, input) => ({
+      admitted: true as const,
+      operation: Promise.resolve({
+        connectionId: String(connectionId),
+        correlationId: input.correlationId,
+        ok: true, updateOk: true, restoreOk: true,
+        outcome: 'updated' as const,
+        exitCode: 0,
+        receipt: {
+          correlationId: input.correlationId,
+          outcome: 'updated',
+          startedAt: NOW_ISO,
+          finishedAt: NOW_ISO,
+          preSha: ADMITTED_SHA,
+          postSha: TARGET_SHA
+        },
+        scopes: []
+      })
+    })
+  }
+
+  try {
+    const provider = createManagedRolloutProvider(dependencies)
+    await provider.resolveTarget({ connectionIds: [CONNECTION_ID], inventoryRevision: INVENTORY.inventoryRevision, retryOf: null })
+    const preflight = await provider.preflight({
+      inventoryRevision: INVENTORY.inventoryRevision,
+      targetResolutionId: RESOLUTION.id,
+      waves: [[INSTALL_ID]], concurrency: 1, promotionPolicy: 'auto-if-healthy', retryOf: null
+    }) as { token: string; requestId: string }
+    const started = await provider.start(preflight) as { id: string }
+
+    await provider.waitForIdle()
+
+    // The injected adapter's health claims success, but the receipt itself
+    // never recorded which request it answered. A settlement that releases
+    // the installation fence must be provable from the receipt, not from a
+    // cooperating adapter, so the provider refuses it and keeps the
+    // obligation.
+    const settled = await provider.get(started.id) as any
+    const record = dependencies.journal.read(started.id)
+
+    assert.equal(settled.phase, 'attention-required')
+    assert.equal(settled.attempts[0].phase, 'unverified')
+    assert.equal(settled.attempts[0].recoveryRequired, true)
+    assert.equal(record.facts.some(item => item.kind === 'settlement-validated'), false)
   } finally {
     fs.rmSync(journalDirectory, { recursive: true, force: true })
   }

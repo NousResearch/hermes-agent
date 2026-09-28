@@ -190,7 +190,7 @@ because the process restarted.
 | Operation | Purpose | May apply the update? | Successful result |
 |---|---|---:|---|
 | **Recheck / reprobe** | Read-only observation of the existing correlation. | No | A terminal observation may settle the original attempt; a non-terminal observation leaves it unverified. |
-| **Recover** | Re-establish restore/clearance for an unverified or recovery-required attempt. | No | Exact correlation plus positive clearance; recovery state is cleared only when proved. |
+| **Recover** | Re-establish restore/clearance for an attempt whose fence still needs proved clearance. | No | Exact correlation plus positive clearance; recovery state is cleared only when proved. |
 | **New pinned rollout** | A separately admitted reviewed target. | Yes | A new authorization, not a retry of an unknown launch. |
 
 `reprobe` is admissible only for authorized, observed, unverified, or
@@ -229,9 +229,13 @@ successful receipt whose requested and post-update SHAs equal the reviewed SHA.
 The live sweep is bounded to the current and next wave: the 240-probe budget is
 a deliberate bound, not a claim that every earlier wave is re-probed. Earlier
 waves are revalidated against their recorded settlement evidence — each
-attempt's persisted receipt correlation, post-update SHA, health, and scope
-proof must still match the in-memory attempt — and any unresolved fence or
-changed required scope set blocks promotion.
+attempt's persisted receipt correlation, requested SHA, post-update SHA, health,
+and scope proof must still match the in-memory attempt, so a legacy receipt that
+never recorded its requested SHA cannot carry a wave forward — and any
+unresolved fence, or a persisted attempt whose recorded scope proof no longer
+covers its required scope set, blocks promotion. That earlier-wave check is a
+comparison of persisted local evidence: it does not re-probe earlier waves
+remotely.
 
 ## Current support limits
 

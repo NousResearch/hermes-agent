@@ -267,6 +267,11 @@ function priorWaveLocalClear(state: ManagedRolloutState, record: ReturnType<Mana
         !['updated', 'already-current'].includes(attempt.state) ||
         !['updated', 'already-current'].includes(persisted.phase) ||
         persisted.recoveryRequired || persisted.receipt?.correlationId !== attempt.correlationId ||
+        // A prior wave is promoted onward on its own recorded proof, so that
+        // proof must include the request it answered: a legacy receipt that
+        // never recorded a requested SHA has not proved the reviewed request
+        // and cannot carry an earlier wave forward.
+        persisted.receipt?.requestedSha !== attempt.targetSha ||
         persisted.receipt?.postSha !== attempt.targetSha) {return false}
 
     let health
@@ -509,17 +514,32 @@ async function observeHealth(
     // the pinned SHA. A receipt that omits or contradicts the pinned request
     // is not success evidence this gate accepts — the projection never
     // back-fills the local target in its place.
+    //
+    // When an earlier service receipt and a fresh live observation both exist,
+    // neither may shadow the other: each is a separate observation of the same
+    // transaction, and a live contradiction invalidates the success proof just
+    // as a contradiction in the service receipt would.
+    const successOutcomes = ['success', 'updated', 'already-current']
+
     const claimedSuccess = Boolean(
-      raw.receipt && ['success', 'updated', 'already-current'].includes(raw.receipt.outcome) &&
+      raw.receipt && successOutcomes.includes(raw.receipt.outcome) &&
       (!expectedReceipt || expectedReceipt.outcome === raw.receipt.outcome)
     )
-    const receiptSucceeded = Boolean(claimedSuccess && receipt?.requestedSha === authorization.targetSha)
+    const receiptSucceeded = Boolean(
+      claimedSuccess &&
+      receipt?.requestedSha === authorization.targetSha &&
+      (!expectedReceipt || raw.receipt?.requestedSha === authorization.targetSha)
+    )
 
     // A success-shaped receipt whose recorded post-update SHA or observed HEAD
     // contradicts the reviewed target is an inconsistent observation, not a
     // success: refuse it whether or not its requested SHA matched, so a moved
-    // checkout can never be recorded as this attempt's proof.
-    if (claimedSuccess && (receipt?.postSha !== authorization.targetSha || inspection.headSha !== authorization.targetSha)) {
+    // checkout can never be recorded as this attempt's proof. The live
+    // observation's own post SHA is checked even when an earlier service
+    // receipt also exists, for the same shadowing reason as above.
+    if (claimedSuccess && (receipt?.postSha !== authorization.targetSha ||
+        (expectedReceipt && raw.receipt?.postSha !== authorization.targetSha) ||
+        inspection.headSha !== authorization.targetSha)) {
       throw new Error('observed-target-head-mismatch')
     }
 

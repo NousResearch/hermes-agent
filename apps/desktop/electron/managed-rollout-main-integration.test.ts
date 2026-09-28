@@ -146,7 +146,7 @@ function rolloutState(rows: ManagedRolloutAttempt[], currentWave = 0): ManagedRo
 function seedJournal(
   integration: ReturnType<typeof createManagedRolloutMainIntegration>,
   state: ManagedRolloutState,
-  options: { priorHealthy?: boolean; fencePrior?: boolean; requiredScopeIds?: string[]; admittedSha?: string } = {}
+  options: { priorHealthy?: boolean; fencePrior?: boolean; requiredScopeIds?: string[]; admittedSha?: string; legacyPriorReceipt?: boolean } = {}
 ): void {
   integration.journal.create({
     schemaVersion: 1,
@@ -167,7 +167,10 @@ function seedJournal(
       phase: row.state,
       requiredScopeIds: options.requiredScopeIds ?? [],
       receipt: options.priorHealthy && row.wave < state.currentWave
-        ? { correlationId: row.correlationId, postSha: TARGET_SHA, outcome: 'updated' }
+        ? {
+            correlationId: row.correlationId, postSha: TARGET_SHA, outcome: 'updated',
+            ...(options.legacyPriorReceipt ? {} : { requestedSha: TARGET_SHA })
+          }
         : null,
       health: options.priorHealthy && row.wave < state.currentWave
         ? buildHealthEvidence({
@@ -228,7 +231,7 @@ async function promotionFixture(
   headSha = TARGET_SHA,
   includeThirdWave = false,
   currentWave = 0,
-  localOptions: { priorHealthy?: boolean; fencePrior?: boolean } = {}
+  localOptions: { priorHealthy?: boolean; fencePrior?: boolean; legacyPriorReceipt?: boolean } = {}
 ) {
   const additional = [{
     source: { id: NEXT_CONNECTION_ID, kind: 'ssh', label: 'next-source' },
@@ -379,6 +382,17 @@ describe('managed rollout main integration', () => {
     expect(clearProof.nextAdmissionInstallIds).toEqual(['e'.repeat(32)])
   })
 
+  test('refuses promotion when an earlier wave persisted a legacy receipt without its requested SHA', async () => {
+    const { integration, state } = await promotionFixture(TARGET_SHA, true, 1, { priorHealthy: true, legacyPriorReceipt: true })
+    const proof = await integration.evidence.sweep(state)
+
+    // A migrated older wave whose settled receipt never recorded which request
+    // it answered cannot be promoted onward on local evidence alone: its
+    // requested SHA must be re-established, so the local gate refuses it.
+    expect(proof.valid).toBe(false)
+    expect(proof.reason).toBe('prior-wave-local-proof-missing')
+  })
+
   test('rejects a next-wave target with a live update marker', async () => {
     const { integration, state } = await promotionFixture()
     vi.mocked(observeManagedRemoteUpdate).mockImplementation(async (_target, correlationId) => ({
@@ -483,6 +497,43 @@ describe('managed rollout main integration', () => {
       receipt,
       health: { receiptSucceeded: true, receiptCorrelated: true, dependencyReady: true }
     })
+  })
+
+  test('refuses a live observation that contradicts the earlier service receipt requested SHA', async () => {
+    const { integration, authorization } = await reprobeFixture()
+    const expected = { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: 'd'.repeat(40) },
+      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    // The live observation reports a different request than the earlier
+    // service receipt. Neither receipt may shadow the other: the contradiction
+    // must invalidate the success proof rather than being excused by the
+    // service receipt that happens to record the reviewed target.
+    const observed: any = await (integration.observe as any).observe({
+      authorization,
+      update: { ok: true, updateOk: true, restoreOk: true, receipt: expected, scopes: [] }
+    })
+
+    expect(observed.health.receiptSucceeded).toBe(false)
+    expect(observed.health.installReady).toBe(false)
+  })
+
+  test('refuses a live observation whose post-update SHA contradicts the earlier service receipt', async () => {
+    const { integration, authorization } = await reprobeFixture()
+    const expected = { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'success', postSha: 'd'.repeat(40), requestedSha: TARGET_SHA },
+      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    await expect((integration.observe as any).observe({
+      authorization,
+      update: { ok: true, updateOk: true, restoreOk: true, receipt: expected, scopes: [] }
+    })).resolves.toMatchObject({ outcome: 'unverified', health: null })
   })
 
   test('Recheck can clear a real B-to-C update after the original admitted SHA differs from the target', async () => {

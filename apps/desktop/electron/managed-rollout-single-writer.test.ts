@@ -69,6 +69,10 @@ function launch(appDirectory: string, mode: string, generation: number, userData
   // virtual display prefix; both mirror the portal-session and Playwright
   // fixtures that run on the hosted lane.
   const [command, ...prefixArguments] = [...(displayPrefix ?? []), executable]
+  // On POSIX the fixture is started as its own process group (detached) so the
+  // stop path can signal the wrapper and every descendant together; on a
+  // headless Linux lane the direct child is `xvfb-run`, not Electron, and
+  // signalling only the wrapper leaves the Electron lock holder running.
   const child = spawn(command, [
     ...prefixArguments,
     appDirectory,
@@ -77,7 +81,8 @@ function launch(appDirectory: string, mode: string, generation: number, userData
   ], {
     env: environment,
     stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true
+    windowsHide: true,
+    detached: process.platform !== 'win32'
   })
 
   let output = ''
@@ -125,9 +130,22 @@ async function resultOf(process: FixtureProcess, filename: string, windowMs = 15
  * the catch would swallow — the process then reads as dead while it is alive.
  */
 function processAlive(fixture: FixtureProcess): boolean {
-  if (fixture.child.exitCode !== null || fixture.child.signalCode !== null) {return false}
-
   if (fixture.child.pid === undefined) {return false}
+
+  if (process.platform !== 'win32') {
+    // The fixture owns a detached process group on POSIX; the group is what
+    // must be gone. A wrapper can exit while its Electron descendant keeps
+    // the single-instance lock and the userData directory open.
+    try {
+      process.kill(-fixture.child.pid, 0)
+
+      return true
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'EPERM'
+    }
+  }
+
+  if (fixture.child.exitCode !== null || fixture.child.signalCode !== null) {return false}
 
   try {
     process.kill(fixture.child.pid, 0)
@@ -138,12 +156,41 @@ function processAlive(fixture: FixtureProcess): boolean {
   }
 }
 
+/**
+ * Signal the fixture's whole process tree. On Windows the fixture is the
+ * Electron process itself and child.kill maps to TerminateProcess. On POSIX
+ * the fixture was spawned detached as a process group, so the group signal
+ * reaches `xvfb-run`, the Electron main process, and Electron's helpers —
+ * killing only the wrapper PID can leave the actual lock holder running.
+ */
+function signalFixture(fixture: FixtureProcess, signal: NodeJS.Signals = 'SIGTERM'): void {
+  const pid = fixture.child.pid
+
+  if (pid === undefined) {return}
+
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-pid, signal)
+
+      return
+    } catch {
+      // The group is already gone or not signalable; fall back below.
+    }
+  }
+
+  try {
+    fixture.child.kill(signal)
+  } catch {
+    // The process is already gone; the liveness checks decide the outcome.
+  }
+}
+
 async function stopOwnedProcess(fixture: FixtureProcess): Promise<void> {
   if (!processAlive(fixture)) {return}
 
   const pid = fixture.child.pid
 
-  fixture.child.kill()
+  signalFixture(fixture)
 
   for (let attempt = 0; attempt < 200; attempt += 1) {
     if (!processAlive(fixture)) {
@@ -154,7 +201,7 @@ async function stopOwnedProcess(fixture: FixtureProcess): Promise<void> {
     }
 
     // Escalate once the polite signal has had ~4s; on Windows this maps to TerminateProcess.
-    if (attempt === 40) {fixture.child.kill('SIGKILL')}
+    if (attempt === 40) {signalFixture(fixture, 'SIGKILL')}
 
     await delay(100)
   }

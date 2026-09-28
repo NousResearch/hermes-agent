@@ -1177,8 +1177,12 @@ export function createManagedRolloutProvider(
 
           const requiredScopeIds = runtime.plan.rows.find(row => row.installId === authorization.installId)?.requiredScopeIds ?? []
           const receiptCorrelated = observation.receipt?.correlationId === authorization.correlationId
+
+          const receiptProvesTarget = receiptCorrelated &&
+            observation.receipt?.requestedSha === authorization.targetSha &&
+            observation.receipt?.postSha === authorization.targetSha
           const successProved = SUCCESSFUL_OUTCOMES.has(observation.outcome) && observation.recoveryRecordClear === true &&
-            receiptCorrelated && successfulHealth(observation.health ?? null, authorization, requiredScopeIds)
+            receiptProvesTarget && successfulHealth(observation.health ?? null, authorization, requiredScopeIds)
           const failureProved = (observation.outcome === 'failed' || observation.outcome === 'refused') && receiptCorrelated
           const result = observation.terminal && !successProved && !failureProved
             ? { ...observation, outcome: 'unverified' as const, terminal: false, receipt: null, health: null }
@@ -1397,9 +1401,16 @@ export function createManagedRolloutProvider(
           }
           const requiredScopeIds = runtime.plan.rows.find(row => row.installId === installId)?.requiredScopeIds ?? []
 
+          // A settlement that releases the installation fence must be provable
+          // from the receipt itself, not from a cooperating adapter: the
+          // remote's recorded requested and post-update SHAs must both equal
+          // the reviewed target. A receipt that answered a different request —
+          // or recorded no request at all — never settles as success.
           if (SUCCESSFUL_OUTCOMES.has(observation.outcome) && (
             !update.ok || !update.updateOk || !update.restoreOk ||
             !observation.receipt || observation.receipt.correlationId !== authorization.correlationId ||
+            observation.receipt.requestedSha !== authorization.targetSha ||
+            observation.receipt.postSha !== authorization.targetSha ||
             !successfulHealth(observation.health, authorization, requiredScopeIds)
           )) {
             throw new Error('successful-observation-not-proven')
@@ -1679,7 +1690,12 @@ export function createManagedRolloutProvider(
           })
           facts.push(fact('terminal-receipt', runtime.id, parsed.installId, authorization.correlationId, isoNow(now), 'read-only recheck found the correlated terminal receipt'))
 
-          if (SUCCESSFUL_OUTCOMES.has(observation.outcome) && observation.recoveryRecordClear === true) {
+          // A recheck that clears the fence must prove the request it settled:
+          // the receipt's recorded requested and post-update SHAs must both be
+          // the reviewed target, exactly as the normal settlement path demands.
+          if (SUCCESSFUL_OUTCOMES.has(observation.outcome) && observation.recoveryRecordClear === true &&
+              observation.receipt.requestedSha === authorization.targetSha &&
+              observation.receipt.postSha === authorization.targetSha) {
             const ownedFence = liveRecord.unresolved.find(item =>
               item.key === `managed-rollout:${runtime.id}:${parsed.installId}:${authorization.correlationId}` &&
               item.rolloutId === runtime.id && item.installId === parsed.installId &&

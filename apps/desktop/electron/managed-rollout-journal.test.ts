@@ -658,6 +658,58 @@ test('refuses to release a fence whose stored tag names another rollout', () => 
   })
 })
 
+test('refuses a same-key fence replacement that drops the old obligation without matching evidence', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory)
+    const original = fence()
+    instance.create(snapshot(ROLLOUT_A, { phase: 'attention-required' }), { unresolved: [original] })
+
+    const replacement = fence(ROLLOUT_A, INSTALL_A, { correlationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' })
+
+    // The replacement reuses the original fence's key for a different
+    // correlation: the original obligation is not retained by identity, so
+    // swapping it in without a matching fact is a release and must be refused.
+    assert.throws(
+      () =>
+        instance.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-same-key-replacement',
+          payload: { action: 'fence' },
+          snapshot: snapshot(ROLLOUT_A, { phase: 'attention-required' }),
+          unresolved: { add: [replacement] }
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'fence-release-unproven'
+    )
+    assert.equal(instance.hasUnresolvedInstall(INSTALL_A), true)
+    assert.equal(instance.read(ROLLOUT_A).unresolved[0].correlationId, original.correlationId)
+
+    // The same replacement is accepted once the original obligation's release
+    // is proved by a matching validated settlement fact.
+    instance.record({
+      id: ROLLOUT_A,
+      expectedRevision: 1,
+      requestId: 'request-same-key-replacement-proved',
+      payload: { action: 'fence' },
+      snapshot: snapshot(ROLLOUT_A, { phase: 'attention-required' }),
+      facts: [
+        {
+          kind: 'settlement-validated',
+          rolloutId: ROLLOUT_A,
+          correlationId: original.correlationId,
+          installId: INSTALL_A,
+          observedAt: '2026-09-21T00:00:01.000Z',
+          basis: 'validated terminal receipt and restored scope'
+        }
+      ],
+      unresolved: { add: [replacement] }
+    })
+    const after = instance.read(ROLLOUT_A)
+    assert.equal(after.unresolved.length, 1)
+    assert.equal(after.unresolved[0].correlationId, replacement.correlationId)
+  })
+})
+
 test('a legacy recovery-cleared fact without the clearance artifact can never release a persisted fence', () => {
   withTempDirectory(directory => {
     const instance = journal(directory)

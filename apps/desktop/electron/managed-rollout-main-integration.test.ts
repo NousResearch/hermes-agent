@@ -146,7 +146,7 @@ function rolloutState(rows: ManagedRolloutAttempt[], currentWave = 0): ManagedRo
 function seedJournal(
   integration: ReturnType<typeof createManagedRolloutMainIntegration>,
   state: ManagedRolloutState,
-  options: { priorHealthy?: boolean; fencePrior?: boolean; requiredScopeIds?: string[]; admittedSha?: string; legacyPriorReceipt?: boolean } = {}
+  options: { priorHealthy?: boolean; fencePrior?: boolean; requiredScopeIds?: string[]; admittedSha?: string; legacyPriorReceipt?: boolean; priorSettlementAttested?: boolean } = {}
 ): void {
   integration.journal.create({
     schemaVersion: 1,
@@ -183,14 +183,28 @@ function seedJournal(
       recoveryRequired: false
     })),
     eventCount: 0
-  }, options.fencePrior ? { unresolved: [{
-    key: `${state.id}:${INSTALL_ID}`,
-    rolloutId: state.id,
-    installId: INSTALL_ID,
-    correlationId: CORRELATION_ID,
-    reason: 'authorization not cleared',
-    recordedAt: '2026-09-21T00:00:00.000Z'
-  }] } : {})
+  }, {
+    ...(options.fencePrior ? { unresolved: [{
+      key: `${state.id}:${INSTALL_ID}`,
+      rolloutId: state.id,
+      installId: INSTALL_ID,
+      correlationId: CORRELATION_ID,
+      reason: 'authorization not cleared',
+      recordedAt: '2026-09-21T00:00:00.000Z'
+    }] } : {}),
+    ...(options.priorHealthy && options.priorSettlementAttested !== false
+      ? { facts: Object.values(state.attempts)
+          .filter(row => row.wave < state.currentWave)
+          .map(row => ({
+            kind: 'settlement-validated' as const,
+            rolloutId: state.id,
+            correlationId: row.correlationId,
+            installId: row.installId,
+            observedAt: '2026-09-21T00:00:00.000Z',
+            basis: 'validated terminal receipt and restored scope'
+          })) }
+      : {})
+  })
 }
 
 async function reprobeFixture(
@@ -231,7 +245,7 @@ async function promotionFixture(
   headSha = TARGET_SHA,
   includeThirdWave = false,
   currentWave = 0,
-  localOptions: { priorHealthy?: boolean; fencePrior?: boolean; legacyPriorReceipt?: boolean } = {}
+  localOptions: { priorHealthy?: boolean; fencePrior?: boolean; legacyPriorReceipt?: boolean; priorSettlementAttested?: boolean } = {}
 ) {
   const additional = [{
     source: { id: NEXT_CONNECTION_ID, kind: 'ssh', label: 'next-source' },
@@ -389,6 +403,16 @@ describe('managed rollout main integration', () => {
     // A migrated older wave whose settled receipt never recorded which request
     // it answered cannot be promoted onward on local evidence alone: its
     // requested SHA must be re-established, so the local gate refuses it.
+    expect(proof.valid).toBe(false)
+    expect(proof.reason).toBe('prior-wave-local-proof-missing')
+  })
+
+  test('refuses promotion when an earlier wave has no attested settlement fact', async () => {
+    const { integration, state } = await promotionFixture(TARGET_SHA, true, 1, { priorHealthy: true, priorSettlementAttested: false })
+    const proof = await integration.evidence.sweep(state)
+
+    // The earlier wave shows healthy snapshot evidence but no durable
+    // settlement attestation: local state alone cannot promote it onward.
     expect(proof.valid).toBe(false)
     expect(proof.reason).toBe('prior-wave-local-proof-missing')
   })
@@ -552,6 +576,47 @@ describe('managed rollout main integration', () => {
     expect(observed.outcome).toBe('unverified')
     expect(observed.health.receiptSucceeded).toBe(false)
     expect(observed.health.installReady).toBe(false)
+  })
+
+  test('does not project success when a required scope was never observed', async () => {
+    const { integration, authorization } = await reprobeFixture(TARGET_SHA, {}, ['ssh:profile:default'])
+    const receipt = { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent', receipt,
+      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    // The attempt requires a scope, but the live capture observed none: a
+    // "complete" capture of zero scopes is not success evidence for a
+    // scope-bearing attempt, so the projection must stay unknown.
+    const observed: any = await (integration.observe as any).observe({
+      authorization,
+      update: { ok: true, updateOk: true, restoreOk: true, receipt, scopes: [] }
+    })
+
+    expect(observed.outcome).toBe('unverified')
+    expect(observed.health.scopes).toHaveLength(0)
+  })
+
+  test('does not project success when the earlier service receipt answers a foreign correlation', async () => {
+    const { integration, authorization } = await reprobeFixture()
+    const foreign = { correlationId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
+    const receipt = { correlationId: CORRELATION_ID, outcome: 'success', postSha: TARGET_SHA, requestedSha: TARGET_SHA }
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent', launchIntent: 'absent', receipt,
+      coordinatorReady: { correlationId: CORRELATION_ID, pid: 1 }
+    } as any)
+
+    // The service receipt names a different correlation, so correlation
+    // evidence is negative: the projection must not contradict its own
+    // health record by labeling the attempt updated.
+    const observed: any = await (integration.observe as any).observe({
+      authorization,
+      update: { ok: true, updateOk: true, restoreOk: true, receipt: foreign, scopes: [] }
+    })
+
+    expect(observed.health.receiptCorrelated).toBe(false)
+    expect(observed.outcome).toBe('unverified')
   })
 
   test('does not project success when coordinator readiness is not proven', async () => {
@@ -828,6 +893,39 @@ describe('managed rollout main integration', () => {
     expect(recoverManagedSsh).toHaveBeenCalledWith(expect.objectContaining({
       phase: 'prepared', scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }]
     }))
+  })
+
+  test('Recover refuses a prepared record whose unexpected receipt never proved the recorded request', async () => {
+    let record: any = {
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID,
+      phase: 'prepared',
+      scopes: [{ key: 'ssh:profile:default', kind: 'registry', profile: 'default' }],
+      source: { id: CONNECTION_ID, kind: 'ssh', label: 'original-host' }
+    }
+
+    const recoverManagedSsh = vi.fn(async () => {record = null})
+
+    const { integration } = makeIntegration(TARGET_SHA, {
+      readRecoveryRecord: () => record,
+      recoverManagedSsh
+    })
+
+    vi.mocked(observeManagedRemoteUpdate).mockResolvedValue({
+      marker: 'absent',
+      launchIntent: 'absent',
+      receipt: { correlationId: CORRELATION_ID, outcome: 'failed', postSha: TARGET_SHA }
+    } as any)
+
+    // A receipt on a prepared record is evidence a launch was attempted, so
+    // it must prove the recorded request: a correlated receipt that never
+    // recorded which request it answered leaves clearance unproved.
+    await expect((integration.observe as any).recover({
+      connectionId: CONNECTION_ID,
+      correlationId: CORRELATION_ID,
+      targetSha: TARGET_SHA
+    })).resolves.toEqual({ correlationId: CORRELATION_ID, clearanceProved: false })
+    expect(recoverManagedSsh).not.toHaveBeenCalled()
   })
 
   test.each([

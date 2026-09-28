@@ -85,20 +85,30 @@ does not guess whether the remote update happened.
   admissible for an unverified or recovery-required attempt, and also for a
   settled failed, refused, updated, or already-current attempt whose fence
   still needs proved clearance. It does not launch another update, does not
-  relabel the outcome, and does not declare the target successful. For a
-  launched attempt the receipt must prove the reviewed request before
-  clearance is accepted. Proved clearance releases the installation's
-  unfinished-attempt fence; it does not change the attempt's own state, so an
-  unverified attempt stays unverified.
+  relabel the outcome, and does not declare the target successful. If a
+  receipt is found — on a launched attempt, or on a prepared record whose
+  phase never advanced — it must prove the reviewed request before clearance
+  is accepted: the receipt's own recorded requested SHA and post-update SHA
+  must each equal the pinned target. A receipt that never recorded which
+  request it answered, or answered a different one, leaves clearance
+  unproved; only a prepared record with no receipt at all is judged by the
+  durable scope record and the clear remote markers. Proved clearance releases
+  the installation's unfinished-attempt fence; it does not change the
+  attempt's own state, so an unverified attempt stays unverified.
 - A new update is a new pinned admission, not an automatic retry of an unknown
   launch.
 
 An unresolved fence remains until evidence for the same installation and
 correlation is validated — a receipt-backed settlement or proved recovery
 clearance, each bound to the rollout that owns the obligation and never
-accepted as a bare claim. Archiving or pruning a record does not erase that
-fence. This prevents a restart, stale screen, or local success-looking message
-from turning an uncertain remote state into a second mutation.
+accepted as a bare claim. Proved recovery clearance carries the structured
+`remote-original-obligation-clearance` artifact (clear update marker and
+launch intent, the original durable obligation removed, and — when a receipt
+was found — proof that the receipt's requested and post-update SHAs equal the
+pinned target), which the durable journal revalidates before release.
+Archiving or pruning a record does not erase that fence. This prevents a
+restart, stale screen, or local success-looking message from turning an
+uncertain remote state into a second mutation.
 
 ## What is available now?
 

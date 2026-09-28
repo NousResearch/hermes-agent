@@ -49,13 +49,16 @@ const THIRD_CONNECTION_ID = '33333333-3333-4333-8333-333333333333'
 // The structured clearance artifact a proved recovery produces. The durable
 // journal validates this shape before a recovery-cleared fact can release a
 // fence, so fixtures must carry the same evidence the composed path records.
+// A launched attempt's clearance must include the request proof; only a
+// prepared pre-launch obligation with no receipt at all may carry
+// receiptRequired=false.
 const RECOVERY_CLEARANCE: RecoveryClearance = {
   kind: 'remote-original-obligation-clearance',
   markerClear: true,
   launchIntentClear: true,
   originalRecordRemoved: true,
-  receiptRequired: false,
-  receiptProvedRequest: null
+  receiptRequired: true,
+  receiptProvedRequest: true
 }
 
 function assuranceEnvelope(fingerprint: string = SOURCE_FINGERPRINT): Uint8Array {

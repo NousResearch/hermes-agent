@@ -1253,10 +1253,17 @@ export class ManagedRolloutJournal {
     nextFacts: JournalEvidenceFact[],
     nextUnresolved: UnresolvedFence[]
   ): void {
-    const retained = new Set(nextUnresolved.map(fence => fence.key))
+    // Retention is identity-bound, not key-bound: an incoming fence that
+    // reuses a key for a different rollout/install/correlation replaces the
+    // original obligation and is therefore a release of it, which must be
+    // proved like any other removal.
+    const retained = new Map(nextUnresolved.map(fence => [fence.key, fence]))
 
     for (const fence of current.unresolved) {
-      if (retained.has(fence.key)) {continue}
+      const kept = retained.get(fence.key)
+
+      if (kept && kept.rolloutId === fence.rolloutId && kept.installId === fence.installId &&
+          kept.correlationId === fence.correlationId) {continue}
 
       // Receipt-backed settlement and proved recovery clearance are distinct
       // evidence kinds: both prove the fence's obligation is cleared, and

@@ -272,7 +272,14 @@ function priorWaveLocalClear(state: ManagedRolloutState, record: ReturnType<Mana
         // never recorded a requested SHA has not proved the reviewed request
         // and cannot carry an earlier wave forward.
         persisted.receipt?.requestedSha !== attempt.targetSha ||
-        persisted.receipt?.postSha !== attempt.targetSha) {return false}
+        persisted.receipt?.postSha !== attempt.targetSha ||
+        // Snapshot fields are the projection of a settlement, not its
+        // evidence: the durable record must also carry the validated
+        // settlement attestation for exactly this attempt, or the earlier
+        // wave was never proved to have settled.
+        !record.facts.some(fact => fact.kind === 'settlement-validated' &&
+          fact.rolloutId === state.id && fact.installId === attempt.installId &&
+          fact.correlationId === attempt.correlationId)) {return false}
 
     let health
 
@@ -598,22 +605,28 @@ async function observeHealth(
   }
 }
 
-async function observeRemote(options: ManagedRolloutMainIntegrationOptions, input: any) {
+async function observeRemote(options: ManagedRolloutMainIntegrationOptions, journal: ManagedRolloutJournal, input: any) {
   try {
     const observed = await observeHealth(options, input.authorization, input.update.receipt, input.authorization.correlationId, input.update.scopes || [])
 
     // A success projection must be backed by the complete live health
     // evidence itself: a receipt that proved the reviewed target, a ready
     // installation with clear markers, coordinator readiness for this
-    // correlation, a complete scope capture, and every scope restored with a
-    // verified process identity at the reviewed SHA. When any part of that
-    // proof is missing or contradicted, the outcome stays unknown instead of
-    // echoing the earlier service receipt's flags, and an unproved
-    // success-shaped receipt (including already-current) never projects as
-    // success. A known-bad service outcome keeps its own classification.
+    // correlation, a complete scope capture covering the attempt's required
+    // scope set, and every scope restored with a verified process identity at
+    // the reviewed SHA. When any part of that proof is missing or
+    // contradicted, the outcome stays unknown instead of echoing the earlier
+    // service receipt's flags, and an unproved success-shaped receipt
+    // (including already-current) never projects as success. A known-bad
+    // service outcome keeps its own classification.
+    const required = requiredReprobeScopes(journal, input.authorization)
+
+    const scopeSetProved = required !== null &&
+      sameScopeIds(required.scopes, observed.health.scopes.map(scope => scope.scopeId))
+
     const successProved = observed.health.receiptSucceeded && observed.health.installReady &&
-      observed.health.markerClear && observed.health.dependencyReady && observed.health.recoveryClear &&
-      observed.health.scopeCapture === 'complete' &&
+      observed.health.receiptCorrelated && observed.health.markerClear && observed.health.dependencyReady &&
+      observed.health.recoveryClear && observed.health.scopeCapture === 'complete' && scopeSetProved &&
       observed.health.scopes.every(scope =>
         scope.restored && scope.ready && scope.processIdentityVerified && scope.codeSha === input.authorization.targetSha)
 
@@ -770,19 +783,21 @@ async function recoverRemote(options: ManagedRolloutMainIntegrationOptions, auth
     const receipt = raw.receipt
     const correlated = receipt?.correlationId === authorization.correlationId
     const clear = ['absent', 'dead'].includes(raw.marker) && ['absent', 'dead'].includes(raw.launchIntent)
-    const receiptRequired = record.phase === 'launching'
 
-    // A launched attempt's receipt must prove the reviewed request before its
-    // obligation can be cleared: the receipt's own recorded requested and
-    // post-update SHAs must both be the pinned target. A receipt that never
-    // recorded the request, or answered a different one, leaves clearance
-    // unproved. A prepared record was persisted before launch: it may
-    // correctly have no receipt, and the durable scope record and clear
-    // remote markers govern recovery.
+    // A found receipt is evidence a launch was attempted — on a launched
+    // record that is the expectation, and on a prepared record it contradicts
+    // the durable phase. Either way the receipt must prove the recorded
+    // request before the obligation may be cleared: its own recorded requested
+    // and post-update SHAs must both be the pinned target. A receipt that
+    // never recorded the request, or answered a different one, leaves
+    // clearance unproved. Only a prepared record with no receipt at all is
+    // judged by the durable scope record and clear remote markers alone.
+    const receiptRequired = record.phase === 'launching' || Boolean(receipt)
+
     const receiptProvedRequest = Boolean(correlated &&
       receipt?.requestedSha === authorization.targetSha && receipt?.postSha === authorization.targetSha)
 
-    if (!clear || (receiptRequired && !receiptProvedRequest) || (!receiptRequired && receipt && !correlated)) {
+    if (!clear || (receiptRequired && !receiptProvedRequest)) {
       return { correlationId: typeof receipt?.correlationId === 'string' ? receipt.correlationId : '', clearanceProved: false }
     }
 
@@ -841,7 +856,7 @@ export function createManagedRolloutMainIntegration(options: ManagedRolloutMainI
     evidence: evidenceAdapter(options, journal, processGeneration),
     processGeneration,
     observe: {
-      observe: (input: any) => observeRemote(options, input),
+      observe: (input: any) => observeRemote(options, journal, input),
       reprobe: (authorization: any) => reprobeRemote(options, journal, authorization),
       recover: (authorization: any) => recoverRemote(options, authorization)
     }

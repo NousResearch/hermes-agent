@@ -56,7 +56,7 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/sessions')).toBe(true)
     expect(getOverlayState().sessions).toBe(true)
     expect(ctx.session.guardBusySessionSwitch).not.toHaveBeenCalled()
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 
   it('blocks immediate resume-by-id while a turn is busy', () => {
@@ -81,14 +81,14 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/grid-test 6x4')).toBe(true)
     expect(getOverlayState().widget).toMatchObject({ appId: 'grid-test' })
     expect(getOverlayState().widget?.state).toMatchObject({ cols: 6, nested: false, rows: 4, streams: false })
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 
   it('handles /redraw locally without slash worker fallback', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/redraw')).toBe(true)
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 
   it('opens the editor locally for /prompt without slash worker fallback', () => {
@@ -96,7 +96,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/prompt')).toBe(true)
     expect(ctx.composer.openEditor).toHaveBeenCalledTimes(1)
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 
   it('routes /compose to the editor and seeds inline text', () => {
@@ -112,7 +112,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/quit')).toBe(true)
     expect(ctx.session.die).toHaveBeenCalledTimes(1)
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 
   it('keeps hosted dashboard chat alive for /exit', () => {
@@ -121,7 +121,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/exit')).toBe(true)
     expect(ctx.session.die).not.toHaveBeenCalled()
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
     expect(ctx.transcript.sys).toHaveBeenCalledWith(t('slashCmd.core.quit.dashboardDisabled'))
   })
 
@@ -144,7 +144,7 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/update')).toBe(true)
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
 
     // Advance past the 100ms setTimeout
     vi.advanceTimersByTime(150)
@@ -160,7 +160,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/update')).toBe(true)
     expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
     expect(ctx.transcript.sys).toHaveBeenCalledWith(t('slashCmd.core.update.dashboardDisabled'))
 
     vi.advanceTimersByTime(150)
@@ -176,7 +176,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/status')).toBe(true)
     expect(rpc).toHaveBeenCalledWith('session.status', { session_id: 'sid-abc' })
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
     await vi.waitFor(() => {
       expect(ctx.transcript.page).toHaveBeenCalledWith('Hermes TUI Status', t('slashCmd.core.status.pageTitle'))
     })
@@ -383,7 +383,7 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/skills')).toBe(true)
     expect(getOverlayState().skillsHub).toBe(true)
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 
   it('routes /skills install <name> to skills.manage without opening overlay', () => {
@@ -402,7 +402,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/pet list')).toBe(true)
     expect(getOverlayState().petPicker).toBe(true)
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
 
     resetOverlayState()
     expect(createSlashHandler(ctx)('/pet')).toBe(true)
@@ -478,7 +478,7 @@ describe('createSlashHandler', () => {
     getOverlayState().confirm?.onConfirm()
 
     expect(ctx.session.newSession).toHaveBeenCalledWith(t('slashCmd.core.clear.newSessionStarted'), undefined)
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 
   it('keeps visible scrollback when branching a TUI session', async () => {
@@ -520,7 +520,7 @@ describe('createSlashHandler', () => {
         expect.objectContaining({ canon: { '/new-skill': '/new-skill' }, pairs: [['/new-skill', 'demo']] })
       )
     })
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 
   // Regressions from Copilot review on #19835: /voice output + frontend
@@ -632,7 +632,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)(command)).toBe(true)
     expect(rpc).toHaveBeenCalledWith(method, params)
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 
   it('renders browser connect progress messages from the gateway', async () => {
@@ -668,7 +668,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/rollback')).toBe(true)
     expect(rpc).toHaveBeenCalledWith('rollback.list', { session_id: 'sid-abc' })
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 
   it('hot-swaps the live indicator when /indicator <style> succeeds', async () => {
@@ -807,7 +807,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/stat')).toBe(true)
     expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringMatching(/\/status\b.*\/statusbar/))
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 
   it('falls through to command.dispatch for skill commands, sending the body but showing the invocation', async () => {
@@ -962,7 +962,7 @@ describe('createSlashHandler', () => {
     expect(body).toContain('hi there')
     expect(body).toContain('test')
     expect(body).not.toContain('ignore me')
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
   })
 
   it('/history reports empty state without paging', () => {
@@ -992,7 +992,7 @@ describe('createSlashHandler', () => {
 
     createSlashHandler(ctx)('/save')
 
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
     expect(rpc).toHaveBeenCalledWith('session.save', { session_id: 'sid-abc' })
 
     await vi.waitFor(() => {
@@ -1006,7 +1006,7 @@ describe('createSlashHandler', () => {
 
     createSlashHandler(ctx)('/save')
 
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
     expect(rpc).not.toHaveBeenCalled()
     expect(ctx.transcript.sys).toHaveBeenCalled()
   })
@@ -1084,7 +1084,7 @@ describe('createSlashHandler', () => {
     createSlashHandler(ctx)('/title my title')
 
     expect(rpc).toHaveBeenCalledWith('session.title', { session_id: 'sid-abc', title: 'my title' })
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('my title'))
     })
@@ -1098,7 +1098,7 @@ describe('createSlashHandler', () => {
     createSlashHandler(ctx)('/title')
 
     expect(rpc).toHaveBeenCalledWith('session.title', { session_id: 'sid-abc' })
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(gatewayWork(ctx)).toEqual([])
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('demo title'))
     })
@@ -1125,6 +1125,12 @@ const buildComposer = () => ({
   selection: { copySelection: vi.fn(async () => '') },
   setInput: vi.fn()
 })
+
+// Gateway traffic other than the fire-and-forget shared_metrics.slash_command every typed command reports.
+const gatewayWork = (ctx: { gateway: { gw: { request: unknown } } }) =>
+  vi
+    .mocked(ctx.gateway.gw.request as (method: string) => unknown)
+    .mock.calls.filter(([method]) => method !== 'shared_metrics.slash_command')
 
 const buildGateway = () => ({
   gw: {

@@ -242,7 +242,9 @@ describe('useMessageStream interim text sealing', () => {
     mountStream()
     await start()
 
-    const final = 'This long response contains enough context to identify the same streamed reply. '.repeat(12).trimEnd()
+    const final = 'This long response contains enough context to identify the same streamed reply. '
+      .repeat(12)
+      .trimEnd()
     const streamed = final.replace('streamed', 'stremed').replace('response', 'respose')
 
     await interim(streamed)

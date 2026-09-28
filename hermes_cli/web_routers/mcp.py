@@ -109,6 +109,7 @@ async def list_mcp_servers(profile: Optional[str] = None):
 
 @router.post("/api/mcp/servers")
 async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
+    from hermes_cli.mcp_catalog import record_mcp_install
     from hermes_cli.mcp_config import _get_mcp_servers, _save_bearer_auth_token, _save_mcp_server
 
     try:
@@ -116,7 +117,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    def _run():
+    def _save() -> bool:
         # _save_mcp_server does its own load→mutate→save; the duplicate-name
         # check sits under the same lock span so a concurrent add can't slip
         # between check and save.
@@ -133,10 +134,18 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
                 raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
             if bearer_token is not None:
                 server_config["headers"] = _save_bearer_auth_token(name, bearer_token)
-            if not _save_mcp_server(name, server_config):
-                raise HTTPException(
-                    status_code=400, detail=f"Server '{name}' rejected: suspicious command/args configuration",
-                )
+            return _save_mcp_server(name, server_config)
+
+    def _run():
+        saved = _save()
+        # Outside the config mutation lock: a cold first metric call costs imports + catalog loads.
+        with _profile_scope(body.profile or profile):
+            record_mcp_install("url" if server_config.get("url") else "local", None,
+                               "success" if saved else "failed")
+        if not saved:
+            raise HTTPException(
+                status_code=400, detail=f"Server '{name}' rejected: suspicious command/args configuration",
+            )
 
     try:
         await asyncio.to_thread(_run)

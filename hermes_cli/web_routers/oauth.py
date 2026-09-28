@@ -107,7 +107,31 @@ def _drop_oauth_session(sid: str) -> None:
 
 
 def _start_poller(target, sid: str, prefix: str = "oauth-poll") -> None:
-    threading.Thread(target=target, args=(sid,), daemon=True, name=f"{prefix}-{sid[:6]}").start()
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(sid)
+
+    def run() -> None:
+        try:
+            target(sid)
+        finally:  # the session's status is final once its poller returns
+            from hermes_cli.observability.shared_metrics_setup import settle_oauth_setup
+            settle_oauth_setup(sess)
+
+    threading.Thread(target=run, daemon=True, name=f"{prefix}-{sid[:6]}").start()
+
+
+def _track_oauth_setup(flow, session_id: str) -> None:
+    """Hand the setup flow to its session; settle it now if the poller already ended."""
+    from hermes_cli.observability.shared_metrics_setup import (
+        attach_oauth_setup, finish_provider_setup, settle_oauth_setup,
+    )
+    with _oauth_sessions_lock:
+        sess = _oauth_sessions.get(session_id)
+    if sess is None:  # cancelled before the start response even returned
+        finish_provider_setup(flow, "failed", "cancelled")
+        return
+    attach_oauth_setup(sess, flow)
+    settle_oauth_setup(sess)
 
 
 def _device_session_started(
@@ -776,15 +800,45 @@ async def start_oauth_login(provider_id: str, request: Request, profile: Optiona
         raise HTTPException(status_code=400, detail=f"Unknown provider {provider_id}")
     if catalog_entry["flow"] == "external":
         raise HTTPException(400, f"{provider_id} uses an external CLI; run `{catalog_entry['cli_command']}` manually")
+    if catalog_entry["flow"] != "device_code":
+        raise HTTPException(status_code=400, detail="Unsupported flow")
+    flow = await _begin_oauth_setup_metric(provider_id, profile)
     try:
-        if catalog_entry["flow"] == "device_code":
-            return await _start_device_code_flow(provider_id, profile=profile)
-    except HTTPException:
-        raise
+        body = await _start_device_code_flow(provider_id, profile=profile)
     except Exception as e:
+        await _end_oauth_setup_metric(flow, e)
+        if isinstance(e, HTTPException):
+            raise
         _log.exception("oauth/start %s failed", provider_id)
         raise HTTPException(status_code=500, detail=str(e))
-    raise HTTPException(status_code=400, detail="Unsupported flow")
+    if flow is not None:
+        await asyncio.get_running_loop().run_in_executor(None, _track_oauth_setup, flow, body["session_id"])
+    return body
+
+
+async def _begin_oauth_setup_metric(provider_id: str, profile: Optional[str]):
+    """Start the provider-setup metric off the event loop (a cold metrics runtime blocks); None when the
+    owning profile does not collect. Never raises: the start route's own validation owns errors."""
+    from hermes_cli.observability.shared_metrics_setup import begin_oauth_setup, collection_enabled
+    try:
+        profile_name = _oauth_profile_name(profile)
+        home = _resolve_profile_dir(profile_name) if profile_name else None
+        if not collection_enabled(home):
+            return None
+        return await asyncio.get_running_loop().run_in_executor(None, begin_oauth_setup, provider_id, home)
+    except Exception:
+        return None
+
+
+async def _end_oauth_setup_metric(flow, exc: Exception) -> None:
+    if flow is None:
+        return
+    from hermes_cli.observability.shared_metrics_setup import finish_provider_setup, setup_failure_class
+    with contextlib.suppress(Exception):
+        # A 401/403 from the start route is the provider refusing this account/client.
+        refused = isinstance(exc, HTTPException) and exc.status_code in {401, 403}
+        failure = "auth" if refused else setup_failure_class(exc)
+        await asyncio.get_running_loop().run_in_executor(None, finish_provider_setup, flow, "failed", failure)
 
 
 @router.post("/api/providers/oauth/{provider_id}/submit")

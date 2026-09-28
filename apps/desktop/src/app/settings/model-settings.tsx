@@ -159,18 +159,20 @@ export function staleAuxAssignments(
     return []
   }
 
-  return tasks
-    .filter(entry => {
-      const p = (entry.provider ?? '').toLowerCase()
+  return (
+    tasks
+      .filter(entry => {
+        const p = (entry.provider ?? '').toLowerCase()
 
-      // 'main' is a backend alias meaning "follow the current main provider"
-      // (auxiliary_client._normalize_aux_provider), so it can never be a stale pin.
-      return p && p !== 'auto' && p !== 'main' && p !== main && !entry.local_endpoint
-    })
-    // base_url rides along for the dismissal fingerprint (see
-    // stale-aux-dismissal.ts): repointing a pin at a different endpoint changes
-    // the billing surface and must re-arm an acknowledged banner.
-    .map(entry => ({ base_url: entry.base_url, task: entry.task, provider: entry.provider, model: entry.model }))
+        // 'main' is a backend alias meaning "follow the current main provider"
+        // (auxiliary_client._normalize_aux_provider), so it can never be a stale pin.
+        return p && p !== 'auto' && p !== 'main' && p !== main && !entry.local_endpoint
+      })
+      // base_url rides along for the dismissal fingerprint (see
+      // stale-aux-dismissal.ts): repointing a pin at a different endpoint changes
+      // the billing surface and must re-arm an acknowledged banner.
+      .map(entry => ({ base_url: entry.base_url, task: entry.task, provider: entry.provider, model: entry.model }))
+  )
 }
 
 interface StaleAuxWarningProps {
@@ -602,9 +604,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // re-arms the warning. Seeded lazily at first render (before the data can
   // paint, so an acknowledged banner never flashes); the panel stays mounted
   // across profile switches, so re-read when the scope changes.
-  const [dismissedStaleAux, setDismissedStaleAux] = useState<null | string>(() =>
-    readStaleAuxDismissal(scopeProfile)
-  )
+  const [dismissedStaleAux, setDismissedStaleAux] = useState<null | string>(() => readStaleAuxDismissal(scopeProfile))
 
   useEffect(() => {
     setDismissedStaleAux(readStaleAuxDismissal(scopeProfile))
@@ -677,7 +677,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     setError('')
 
     try {
-      await setEnvVar(keyEnv, apiKeyDraft.trim(), scopeProfile)
+      await setEnvVar(keyEnv, apiKeyDraft.trim(), scopeProfile, { providerSetup: true })
       setApiKeyDraft('')
 
       // Pick a sensible default for the freshly-activated provider (mirrors
@@ -1084,24 +1084,22 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
             </Button>
           </div>
           <p className="mb-2 text-xs text-muted-foreground">{m.auxiliaryDesc}</p>
-          {(switchStaleAux.length === 0 || !showMain) &&
-            persistentStaleAux.length > 0 &&
-            !staleAuxDismissed && (
-              <div className="mb-2.5">
-                <StaleAuxWarning
-                  applying={applying}
-                  onDismiss={() => {
-                    const mainProvider = mainModel?.provider ?? ''
+          {(switchStaleAux.length === 0 || !showMain) && persistentStaleAux.length > 0 && !staleAuxDismissed && (
+            <div className="mb-2.5">
+              <StaleAuxWarning
+                applying={applying}
+                onDismiss={() => {
+                  const mainProvider = mainModel?.provider ?? ''
 
-                    dismissStaleAux(scopeProfile, mainProvider, persistentStaleAux)
-                    setDismissedStaleAux(staleAuxFingerprint(mainProvider, persistentStaleAux))
-                  }}
-                  onReset={() => void resetAuxiliaryModels()}
-                  slots={persistentStaleAux}
-                  taskLabel={auxiliaryTaskLabel}
-                />
-              </div>
-            )}
+                  dismissStaleAux(scopeProfile, mainProvider, persistentStaleAux)
+                  setDismissedStaleAux(staleAuxFingerprint(mainProvider, persistentStaleAux))
+                }}
+                onReset={() => void resetAuxiliaryModels()}
+                slots={persistentStaleAux}
+                taskLabel={auxiliaryTaskLabel}
+              />
+            </div>
+          )}
           <div className="grid gap-1">
             {AUX_TASKS.map(meta => {
               const copy = m.tasks[meta.key] ?? { label: meta.key, hint: meta.key }

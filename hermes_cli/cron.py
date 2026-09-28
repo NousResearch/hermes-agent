@@ -300,6 +300,9 @@ def _job_warnings(job: Dict[str, Any]) -> List[str]:
 def cron_tick():
     """Run due jobs once and exit."""
     from cron.scheduler import CronTickYielded, tick
+    from hermes_cli.observability.shared_metrics_process import begin_process
+
+    begin_process("cron")
     try:
         tick(verbose=True)
     except CronTickYielded as exc:

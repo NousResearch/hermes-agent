@@ -36,6 +36,18 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_unset = config_subparsers.add_parser("unset", help="Remove a configuration value")
     config_unset.add_argument("key", nargs="?", help="Configuration key to remove")
 
+    config_diff = config_subparsers.add_parser(
+        "diff", help="Show how config.yaml differs from the built-in defaults",
+        description="Tree diff of DEFAULT_CONFIG vs the effective user config "
+        "(~ changed from default, + not defined by the schema)")
+    config_diff.add_argument(
+        "key", nargs="?",
+        help="Scope the diff to a subtree (e.g. agent, display.sections)")
+    add_json_flag(config_diff, "Print diff as JSON (changed/user_only maps of dotted keys)")
+    config_diff.add_argument(
+        "--raw", action="store_true",
+        help="Print credential values unmasked (default masks api_key/token/secret-shaped values)")
+
     config_subparsers.add_parser("path", help="Print config file path")
     config_subparsers.add_parser("env-path", help="Print .env file path")
     config_subparsers.add_parser("check", help="Check for missing/outdated config")

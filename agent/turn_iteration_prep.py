@@ -380,6 +380,14 @@ def begin_iteration(
             )
         return _verdict("break")
 
+    turn_resource_budget = getattr(agent, "turn_resource_budget", None)
+    if getattr(agent, "_turn_resource_budget_unavailable", False):
+        _turn_exit_reason = "tool_execution_budget_unavailable"
+        return _verdict("break")
+    if turn_resource_budget is not None and turn_resource_budget.exhausted:
+        _turn_exit_reason = "tool_execution_budget_exhausted"
+        return _verdict("break")
+
     api_call_count += 1
     agent._api_call_count = api_call_count
     agent._touch_activity(f"starting API call #{api_call_count}")

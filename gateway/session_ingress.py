@@ -10,6 +10,12 @@ from hermes_state_runtime import RuntimeStoreError
 
 admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
+_admission_resource_budget = ContextVar('admission_resource_budget', default=None)
+
+
+def current_admission_resource_budget():
+    """Exact One Gateway admission fence for the currently executing local turn."""
+    return _admission_resource_budget.get()
 
 
 async def admit_message(authority, event):
@@ -102,6 +108,10 @@ async def execute_admission(authority, ref, row):
     captured = {}
     result_token = execution_result.set(captured)
     token = executing_admission.set(True)
+    budget_token = _admission_resource_budget.set({
+        'db': authority.db, 'epoch': authority.epoch,
+        'admission_id': row['admission_id'], 'generation': row['generation'],
+    })
     try:
         with scope:
             if is_api:
@@ -133,6 +143,7 @@ async def execute_admission(authority, ref, row):
                     await deliver_response(adapter, event, live.route, response)
             return response
     finally:
+        _admission_resource_budget.reset(budget_token)
         executing_admission.reset(token)
         execution_result.reset(result_token)
         api_execution.reset(api_token)

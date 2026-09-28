@@ -177,6 +177,18 @@ def run_tool_round(
                     agent.stream_delta_callback(None)
         return _verdict("break")
 
+    turn_resource_budget = getattr(agent, "turn_resource_budget", None)
+    if getattr(agent, "_turn_resource_budget_unavailable", False):
+        _turn_exit_reason = "tool_execution_budget_unavailable"
+        agent._session_messages = messages
+        agent._touch_activity("turn tool budget unavailable; preparing final synthesis")
+        return _verdict("break")
+    if turn_resource_budget is not None and turn_resource_budget.exhausted:
+        _turn_exit_reason = "tool_execution_budget_exhausted"
+        agent._session_messages = messages
+        agent._touch_activity("turn tool budget exhausted; preparing final synthesis")
+        return _verdict("break")
+
     # Reset per-turn retry counters so one truncation can't poison the turn.
     truncated_tool_call_retries = 0
     # Defer the paragraph break: _fire_stream_delta() prepends one "\n\n" when real

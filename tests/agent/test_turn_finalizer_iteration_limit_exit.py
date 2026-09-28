@@ -45,11 +45,17 @@ class _LimitAgent:
         self.valid_tool_names = []
         self.persisted_messages = None
         self._handle_max_iterations_called = False
+        self._handle_max_iterations_kwargs = {}
         self._completion_explainer = completion_explainer
+        self.turn_resource_budget = None
 
-    def _handle_max_iterations(self, messages, api_call_count):
+    def _handle_max_iterations(self, messages, api_call_count, **kwargs):
         self._handle_max_iterations_called = True
+        self._handle_max_iterations_kwargs = kwargs
         return "summary from extra call"
+
+    def _emit_diagnostic_status(self, *_args, **_kwargs):
+        pass
 
     def _emit_status(self, *_args, **_kwargs):
         pass
@@ -115,17 +121,64 @@ def _finalize(
 
 
 
+def test_tool_execution_budget_uses_one_bounded_synthesis_call(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent(budget_remaining=60)
+    snapshot = SimpleNamespace(
+        used_tool_executions=3,
+        max_tool_executions=3,
+        exhausted=True,
+    )
+    agent.turn_resource_budget = SimpleNamespace(
+        exhausted=True,
+        snapshot=lambda: snapshot,
+    )
+
+    result = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="tool_execution_budget_exhausted",
+        api_call_count=5,
+    )
+
+    assert result["final_response"] == "summary from extra call"
+    assert result["turn_exit_reason"] == "tool_execution_budget_exhausted(3/3)"
+    assert result["failed"] is False
+    assert result["completed"] is True
+    assert agent._handle_max_iterations_called is True
+    assert agent._handle_max_iterations_kwargs == {
+        "tool_execution_budget": (3, 3),
+    }
 
 
+def test_tool_execution_budget_authority_failure_still_synthesizes_without_tools(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent(budget_remaining=60)
+    snapshot = SimpleNamespace(
+        used_tool_executions=2,
+        max_tool_executions=8,
+        exhausted=False,
+    )
+    agent.turn_resource_budget = SimpleNamespace(
+        exhausted=False,
+        snapshot=lambda: snapshot,
+    )
 
+    result = _finalize(
+        agent,
+        final_response=None,
+        exit_reason="tool_execution_budget_unavailable",
+        api_call_count=5,
+    )
 
-
-
-
-
-
-
-
+    assert result["final_response"] == "summary from extra call"
+    assert result["turn_exit_reason"] == "tool_execution_budget_unavailable"
+    assert result["failed"] is False
+    assert result["completed"] is True
+    assert agent._handle_max_iterations_kwargs == {
+        "tool_execution_budget": (2, 8),
+        "tool_execution_budget_unavailable": True,
+    }
 
 
 @pytest.mark.parametrize(

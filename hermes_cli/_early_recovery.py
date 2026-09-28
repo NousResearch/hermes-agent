@@ -611,6 +611,10 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
         print("hermes: dependency environment repaired", file=sys.stderr)
         return True
     except Exception as exc:
+        from pm.environments import install_state_permission_message
+
+        if isinstance(exc, PermissionError) and install_state_permission_message(root, exc):
+            raise  # The bootstrap or PM CLI reports the access error once.
         for marker in markers:
             _count_failed_attempt(marker)
         print(f"hermes: dependency repair failed: {exc}; run `hermes pm repair`", file=sys.stderr)

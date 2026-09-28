@@ -50,7 +50,7 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
 import { sessionApprovalRequest } from '@/store/prompts'
-import { $showReasoning } from '@/store/reasoning-disclosure'
+import { $showToolActivity } from '@/store/tool-activity'
 import { $toolInlineDiff } from '@/store/tool-diffs'
 import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import {
@@ -1045,7 +1045,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   endIndex,
   startIndex
 }) => {
-  const showReasoning = useStore($showReasoning)
+  const showToolActivity = useStore($showToolActivity)
 
   // Joined rather than returned as an array: assistant-ui compares selector
   // results with `Object.is` and re-runs them on every store update, so a
@@ -1067,10 +1067,10 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   const items = useMemo(() => splitRunItems(toolNameKey.split('\u0000')), [toolNameKey])
   const rows = Children.toArray(children)
 
-  // Answer-only skips the run scaffold ("Explored N files"). Children still
-  // mount so clarify, diffs, and failed calls can render on their own.
-  // reasoning_effort is not a display switch.
-  if (!showReasoning) {
+  // The run scaffold ("Explored N files") is part of the tool feed and follows
+  // display.tool_progress. Children still mount so clarify, diffs, and failed
+  // calls can render on their own.
+  if (!showToolActivity) {
     return children
   }
 

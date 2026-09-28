@@ -13,11 +13,14 @@ from typing import TYPE_CHECKING, Any, Callable, List, Optional
 if TYPE_CHECKING:
     from gateway.inbound_context import PreparedInboundMessage
 
+from gateway.platforms.event import MessageEvent
+
 
 @dataclass
 class TurnContext:
     # read-only turn identity / wiring
     source: Any = None
+    processing_event: Optional[MessageEvent] = None
     reply_expected: Optional[bool] = None
     # Scheduled heartbeats are proactive work, not replies to the source message that
     # registered the watch.  Their routine delivery surfaces stay quiet.

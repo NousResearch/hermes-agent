@@ -346,14 +346,16 @@ class TestWatcherAttentionEscalation:
             lambda platform, **kw: status_writes.append((platform, kw)),
         )
 
+        from tests.gateway.test_platform_reconnect import StubAdapter
+        runner._create_adapter = MagicMock(return_value=StubAdapter(succeed=False))
+        runner._wire_adapter_handlers = MagicMock()
         threshold = 10
         _set_attention_after(threshold)
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": PlatformConfig(enabled=True, token="test"),
             "attempts": 40,
-            # Not yet due for a retry — escalation must not depend on the
-            # backoff schedule lining up.
-            "next_retry": time.monotonic() + 300,
+            # Escalation follows a completed failure, never queue age alone.
+            "next_retry": 0,
             "queued_at": time.monotonic() - threshold - 10,
         }
 
@@ -389,12 +391,15 @@ class TestWatcherAttentionEscalation:
             lambda platform, **kw: status_writes.append((platform, kw)),
         )
 
+        from tests.gateway.test_platform_reconnect import StubAdapter
+        runner._create_adapter = MagicMock(return_value=StubAdapter(succeed=False))
+        runner._wire_adapter_handlers = MagicMock()
         threshold = 10
         _set_attention_after(threshold)
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": PlatformConfig(enabled=True, token="test"),
             "attempts": 40,
-            "next_retry": time.monotonic() + 300,
+            "next_retry": 0,
             "queued_at": time.monotonic() - threshold - 10,
         }
 

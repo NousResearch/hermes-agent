@@ -78,7 +78,7 @@ declare global {
       // a running subagent's session.
       openSessionWindow: (
         sessionId: string,
-        opts?: { profile?: null | string; watch?: boolean }
+        opts?: { connectionId?: null | string; profile?: null | string; watch?: boolean }
       ) => Promise<{ ok: boolean; error?: string }>
       // Resume this session in the user's own terminal emulator (`hermes --tui
       // --resume <id>`) — the external terminal, not the in-app pane.
@@ -433,8 +433,9 @@ declare global {
       desktopPluginsRoot?: () => Promise<string>
       /** Refresh unified packages' desktop halves and return the touched paths. */
       reconcileDesktopPlugins?: () => Promise<string[]>
-      /** LOCAL `<HERMES_HOME>/logs` (profile-aware) — error card "Open Logs". */
-      logsRoot?: () => Promise<string>
+      /** LOCAL `<HERMES_HOME>/logs` of `profile` (default: the active Desktop
+       *  profile) — error card "Open Logs". */
+      logsRoot?: (profile?: string) => Promise<string>
       // Local AGENT-plugin root (<HERMES_HOME>/plugins), same Electron-local
       // resolution. The disk door also scans it for `<name>/desktop/plugin.js`
       // so one agent-plugin package can ship a desktop UI half. Optional:

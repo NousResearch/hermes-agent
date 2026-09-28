@@ -204,7 +204,7 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
-import { formatDesktopLogLine } from './desktop-log-line'
+import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
   createDesktopProfilePreferences,
   DESKTOP_PROFILE_NAME_RE,
@@ -2038,8 +2038,8 @@ function rememberLog(chunk) {
   }
 
   // One timestamp per chunk: lines arriving in the same event happened
-  // at the same moment.  ISO-8601 UTC, matching agent.log/gateway.log.
-  const stamp = new Date().toISOString()
+  // at the same moment.  Local time, same shape as agent.log/gui.log.
+  const stamp = formatLogStamp(new Date())
   const lines = text.split(/\r?\n/).map(line => formatDesktopLogLine(line, stamp))
   hermesLog.push(...lines)
 
@@ -13601,10 +13601,11 @@ function focusWindow(win) {
 }
 
 function spawnSecondaryWindow({
+  connectionId,
   sessionId,
   profile,
   watch
-}: { sessionId?: string; profile?: null | string; watch?: boolean } = {}) {
+}: { connectionId?: null | string; sessionId?: string; profile?: null | string; watch?: boolean } = {}) {
   const icon = getAppIconPath()
 
   const win = new BrowserWindow({
@@ -13673,6 +13674,7 @@ function spawnSecondaryWindow({
   loadWindowUrl(
     win,
     buildSessionWindowUrl(sessionId, {
+      connectionId,
       devServer: DEV_SERVER,
       profile,
       rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
@@ -13685,8 +13687,8 @@ function spawnSecondaryWindow({
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId, { profile = null, watch = false } = {}) {
-  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ sessionId, profile, watch }))
+function createSessionWindow(sessionId, { connectionId = null, profile = null, watch = false } = {}) {
+  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ connectionId, sessionId, profile, watch }))
 }
 
 // Popped-out in-app Browser: same webview + address bar as a docked Browser
@@ -15469,6 +15471,7 @@ ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   }
 
   createSessionWindow(sessionId.trim(), {
+    connectionId: typeof opts?.connectionId === 'string' ? opts.connectionId : null,
     profile: typeof opts?.profile === 'string' ? opts.profile : null,
     watch: opts?.watch === true
   })

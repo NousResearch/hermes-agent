@@ -18865,6 +18865,40 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
     assert payload["messages"] == history
 
 
+
+def test_session_save_lands_in_the_sessions_own_profile_a_b_a(monkeypatch, tmp_path):
+    """/save writes under the SESSION's profile home, launch -> secondary -> launch under multiplexing:
+    the RPC runs unscoped, so get_hermes_home() alone names the launch profile (#125241)."""
+    from agent.secret_scope import set_multiplex_active
+    launch_home = tmp_path / ".hermes"
+    work_home = launch_home / "profiles" / "s6probe-work"
+    work_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    set_multiplex_active(True)
+    parents = []
+    try:
+        for i, home in enumerate((None, work_home, None)):
+            sid = f"save-profile-sid-{i}"
+            server._sessions[sid] = {
+                "agent": types.SimpleNamespace(model="hermes-test", session_id="s1", session_start=None,
+                                               _cached_system_prompt=""),
+                "session_key": sid, "profile_home": str(home) if home else None,
+                "history": [{"role": "user", "content": "hi"}], "history_lock": threading.Lock(),
+            }
+            try:
+                resp = server._methods["session.save"]("1", {"session_id": sid})
+            finally:
+                server._sessions.pop(sid, None)
+            assert "result" in resp, resp
+            parents.append(Path(resp["result"]["file"]).parent)
+    finally:
+        set_multiplex_active(False)
+
+    saved = launch_home / "sessions" / "saved"
+    assert parents == [saved, work_home / "sessions" / "saved", saved]
+    assert len(list((work_home / "sessions" / "saved").glob("hermes_conversation_*.json"))) == 1
+
+
 def test_session_save_proxies_to_compute_host_history(monkeypatch):
     """Isolated turns own history in the host; /save must not export the stale parent mirror."""
     sid = "save-host-sid"

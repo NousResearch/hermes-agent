@@ -99,3 +99,26 @@ async def test_secondary_whatsapp_served_by_default_is_not_warned(monkeypatch, c
 
     assert not [r for r in caplog.records if r.levelno == logging.WARNING and "not being served" in r.getMessage()]
     assert [r for r in caplog.records if r.levelno == logging.INFO and "not served" in r.getMessage()]
+
+
+@pytest.mark.asyncio
+async def test_boot_replays_the_launch_ledger_before_secondaries_and_watchers(monkeypatch, tmp_path):
+    """The gateway's idle notification loop (``_async_delegation_watcher``, spawned after this phase)
+    reads ``completion_queue`` directly, so the launch profile's durable completions must already
+    be queued by the boot hook — in the LAUNCH scope, before any secondary is bound (#123265)."""
+    from tools import async_delegation, process_registry as pr_mod
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    monkeypatch.setattr(pr_mod.process_registry, "_completions_restored", False)
+    order = []
+    monkeypatch.setattr(async_delegation, "restore_undelivered_completions",
+                        lambda q: order.append(("restore", async_delegation._db_path())) or 0)
+    runner = _runner()
+
+    async def secondaries():
+        order.append(("secondaries", None))
+        return 0
+
+    runner._start_secondary_profile_adapters = secondaries
+    runner._unserved_shared_ingress_warnings = lambda: []
+    assert await runner._start_secondary_profiles(0, []) == (False, 0)
+    assert order == [("restore", tmp_path / "launch" / "state.db"), ("secondaries", None)]

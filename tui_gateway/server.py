@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone  # noqa: F401  (timezone: split modules)
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
 
@@ -1108,7 +1108,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
         return
     # A lazy watch session spectating an in-flight child must stay lazy so the subagent live-mirror keeps
     # flowing (it bails once agent is set); incidental RPCs via _sess() would upgrade it mid-stream.
-    if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+    if session.get("lazy") and _child_run_active(
+            str(session.get("session_key") or ""), session.get("profile_home") or None):
         return
     with session.setdefault("agent_build_lock", threading.Lock()):
         if ready.is_set() or session.get("agent_build_started"):
@@ -1500,16 +1501,6 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     return model, None
 
 
-# Bare billing buckets are not routable provider identities; restoring one as a session provider override
-# breaks resume. ``openrouter`` is deliberately NOT in this set (fully routable; agent_init's gate is a different set).
-# (agent_init's fail-fast gate is a DIFFERENT set that also skips "openrouter" — there it means "default
-# route, don't fail fast", not "unroutable".) ``openrouter`` is deliberately excluded here — it is a fully
-# routable provider with its own API key and base_url. Sessions that used OpenRouter store
-# ``billing_provider="openrouter"``; dropping it forces resume to the current global model (e.g. a custom
-# endpoint), which is the wrong provider for the stored model. See #57588.
-from hermes_state import _BARE_BILLING_PROVIDERS
-
-
 def _is_routable_provider(provider: str) -> bool:
     with contextlib.suppress(Exception):
         from hermes_cli.runtime_provider import is_routable_provider
@@ -1570,15 +1561,13 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if room_plumbing or (_row_follows_profile(row) and not composer_profile_matches):
         return {}
     overrides: dict = {}
-    field = lambda k: str(model_config.get(k) or "").strip()
     model = str(row.get("model") or model_config.get("model") or "").strip()
-    # ``billing_provider`` is only the billing bucket — for a custom endpoint the bare class "custom", which
-    # agent_init treats as non-routable. Only restore an explicit provider; else resume uses the configured default.
-    provider = field("provider")
-    billing_provider = str(model_config.get("billing_provider") or row.get("billing_provider") or "").strip()
-    if not provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
-        provider = billing_provider
-    base_url, api_mode, service_tier = field("base_url"), field("api_mode"), field("service_tier")
+    # Canonical route reader shared with CLI --resume: nested ``gateway_runtime`` (the route the messaging
+    # gateway last ran) before the TUI's top-level keys, then a routable ``billing_provider`` (#125942).
+    from hermes_state import SessionDB
+    route = SessionDB.session_gateway_runtime(row)
+    provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
+    service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
     from hermes_cli.runtime_provider import is_foreign_provider_endpoint
     if is_foreign_provider_endpoint(provider, base_url):

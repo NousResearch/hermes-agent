@@ -13,7 +13,7 @@ import { squashTextNodesToSegments, type StyledSegment } from './squash-text-nod
 import type { Color } from './styles.js'
 import { isXtermJs } from './terminal.js'
 import { widestLine } from './widest-line.js'
-import wrapText from './wrap-text.js'
+import wrapText, { wrapTextWithTrim } from './wrap-text.js'
 
 const MAX_SCROLL_GEOMETRY = 1_000_000_000
 const MAX_YOGA_DIMENSION = 100_000_000
@@ -362,12 +362,16 @@ function applyStylesToWrappedText(
  * Truncate modes never add newlines (cli-truncate is whole-string) so
  * they fall through with softWrap undefined — no tracking, no behavior
  * change from the pre-softWrap path.
+ *
+ * Per-line marks are tri-state: 0 = hard break, 1 = soft continuation,
+ * 2 = continuation whose separator space wrap-trim dropped from the
+ * screen (selection.ts re-inserts one space when joining those rows).
  */
 function wrapWithSoftWrap(
   plainText: string,
   maxWidth: number,
   textWrap: Parameters<typeof wrapText>[2]
-): { wrapped: string; softWrap: boolean[] | undefined } {
+): { wrapped: string; softWrap: number[] | undefined } {
   if (textWrap !== 'wrap' && textWrap !== 'wrap-char' && textWrap !== 'wrap-trim') {
     return {
       wrapped: wrapText(plainText, maxWidth, textWrap),
@@ -377,14 +381,15 @@ function wrapWithSoftWrap(
 
   const origLines = plainText.split('\n')
   const outLines: string[] = []
-  const softWrap: boolean[] = []
+  const softWrap: number[] = []
 
   for (const orig of origLines) {
-    const pieces = wrapText(orig, maxWidth, textWrap).split('\n')
+    const entry = wrapTextWithTrim(orig, maxWidth, textWrap)
+    const pieces = entry.text.split('\n')
 
     for (let i = 0; i < pieces.length; i++) {
       outLines.push(pieces[i]!)
-      softWrap.push(i > 0)
+      softWrap.push(i === 0 ? 0 : entry.trimmed[i - 1]! ? 2 : 1)
     }
   }
 
@@ -400,7 +405,7 @@ function wrapWithSoftWrap(
 function applyPaddingToText(
   node: DOMElement,
   text: string,
-  softWrap: boolean[] | undefined,
+  softWrap: number[] | undefined,
   maxOffsetX: number,
   maxOffsetY: number
 ): string {
@@ -424,9 +429,9 @@ function applyPaddingToText(
     text = '\n'.repeat(offsetY) + indentString(text, offsetX)
 
     if (softWrap && offsetY > 0) {
-      // Prepend `false` for each padding line so indices stay aligned
+      // Prepend 0 for each padding line so indices stay aligned
       // with text.split('\n'). Mutate in place — caller owns the array.
-      softWrap.unshift(...Array<boolean>(offsetY).fill(false))
+      softWrap.unshift(...Array<number>(offsetY).fill(0))
     }
   }
 
@@ -671,7 +676,7 @@ function renderNodeToOutput(
         const needsWrapping = widestLine(plainText) > maxWidth
 
         let text: string
-        let softWrap: boolean[] | undefined
+        let softWrap: number[] | undefined
 
         if (needsWrapping && segments.length === 1) {
           // Single segment: wrap plain text first, then apply styles to each line

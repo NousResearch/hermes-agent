@@ -13,9 +13,18 @@ const ELLIPSIS = '…'
 // is pure of (text, maxWidth, wrapType), so memoize it. LRU-bounded so long
 // sessions don't accrete unbounded cache.
 const WRAP_CACHE_LIMIT = 4096
-const wrapCache = new Map<string, string>()
 
-function memoizedWrap(text: string, maxWidth: number, wrapType: Styles['textWrap']): string {
+/** Memoized wrap result. `trimmed[i]` is true when the newline before output
+ *  line i+1 is a soft-wrap boundary where wrap-trim dropped the single
+ *  separator space (hard mid-word splits and hard `\n` are false). The
+ *  selection copier re-inserts exactly those spaces so drag-copy round-trips
+ *  the source text. Aligned with `text.split('\n')`: line i+1 reads
+ *  `trimmed[i]` (empty for modes that add no newlines). */
+export type WrapEntry = { text: string; trimmed: boolean[] }
+
+const wrapCache = new Map<string, WrapEntry>()
+
+function memoizedEntry(text: string, maxWidth: number, wrapType: Styles['textWrap']): WrapEntry {
   // Key folds maxWidth + wrapType into the prefix so the same text re-wrapped
   // at a different width doesn't collide. Width prefix bounded by viewport
   // (~10 distinct widths in a session); wrapType bounded by enum (~6 values).
@@ -30,7 +39,7 @@ function memoizedWrap(text: string, maxWidth: number, wrapType: Styles['textWrap
     return cached
   }
 
-  const result = computeWrap(text, maxWidth, wrapType)
+  const result = computeEntry(text, maxWidth, wrapType)
 
   if (wrapCache.size >= WRAP_CACHE_LIMIT) {
     wrapCache.delete(wrapCache.keys().next().value!)
@@ -77,62 +86,93 @@ function truncate(text: string, columns: number, position: 'start' | 'middle' | 
   return sliceFit(text, 0, columns - 1) + ELLIPSIS
 }
 
-function trimSoftWrapBoundaries(text: string, maxWidth: number): string {
-  return text
-    .split('\n')
-    .map(line => {
-      const pieces = wrapAnsi(line, maxWidth, { trim: false, hard: true }).split('\n')
+/** Wrap one source line, recording per-boundary trim flags. `trimmed[i]` is
+ *  true exactly when the old loop dropped the single separator space between
+ *  piece i and i+1 (a hard mid-word split records false, so the copier keeps
+ *  it glued). The mutation order matches the old loop exactly. */
+function splitTrimWrap(line: string, maxWidth: number): WrapEntry {
+  const pieces = wrapAnsi(line, maxWidth, { trim: false, hard: true }).split('\n')
+  const trimmed: boolean[] = []
 
-      if (pieces.length === 1) {
-        return pieces[0]!
-      }
+  for (let index = 0; index < pieces.length - 1; index++) {
+    const current = pieces[index]!
+    const next = pieces[index + 1]!
 
-      for (let index = 0; index < pieces.length - 1; index++) {
-        const current = pieces[index]!
-        const next = pieces[index + 1]!
+    if (/\s$/.test(current)) {
+      pieces[index] = current.replace(/\s$/, '')
+      trimmed.push(true)
+    } else if (/^\s/.test(next)) {
+      pieces[index + 1] = next.replace(/^\s/, '')
+      trimmed.push(true)
+    } else {
+      trimmed.push(false)
+    }
+  }
 
-        if (/\s$/.test(current)) {
-          pieces[index] = current.replace(/\s$/, '')
-        } else if (/^\s/.test(next)) {
-          pieces[index + 1] = next.replace(/^\s/, '')
-        }
-      }
-
-      return pieces.join('\n')
-    })
-    .join('\n')
+  return { text: pieces.join('\n'), trimmed }
 }
 
-function computeWrap(text: string, maxWidth: number, wrapType: Styles['textWrap']): string {
+function computeEntry(text: string, maxWidth: number, wrapType: Styles['textWrap']): WrapEntry {
   if (wrapType === 'wrap') {
-    return wrapAnsi(text, maxWidth, { trim: false, hard: true })
+    const pieces = wrapAnsi(text, maxWidth, { trim: false, hard: true }).split('\n')
+
+    return { text: pieces.join('\n'), trimmed: Array<boolean>(pieces.length - 1).fill(false) }
   }
 
   if (wrapType === 'wrap-char') {
-    return wrapAnsi(text, maxWidth, { trim: false, hard: true, wordWrap: false })
+    const pieces = wrapAnsi(text, maxWidth, { trim: false, hard: true, wordWrap: false }).split('\n')
+
+    return { text: pieces.join('\n'), trimmed: Array<boolean>(pieces.length - 1).fill(false) }
   }
 
   if (wrapType === 'wrap-trim') {
-    return trimSoftWrapBoundaries(text, maxWidth)
+    const out: string[] = []
+    const trimmed: boolean[] = []
+
+    for (const line of text.split('\n')) {
+      const entry = splitTrimWrap(line, maxWidth)
+
+      if (out.length > 0) {
+        // Hard source newline, never a trimmed soft boundary.
+        trimmed.push(false)
+      }
+
+      out.push(entry.text)
+      trimmed.push(...entry.trimmed)
+    }
+
+    return { text: out.join('\n'), trimmed }
   }
 
   if (wrapType!.startsWith('truncate')) {
     const position: 'end' | 'middle' | 'start' =
       wrapType === 'truncate-middle' ? 'middle' : wrapType === 'truncate-start' ? 'start' : 'end'
 
-    return truncate(text, maxWidth, position)
+    return { text: truncate(text, maxWidth, position), trimmed: [] }
   }
 
-  return text
+  return { text, trimmed: [] }
 }
 
 export default function wrapText(text: string, maxWidth: number, wrapType: Styles['textWrap']): string {
   // Skip cache for trivial inputs (faster than Map lookup).
   if (!text || maxWidth <= 0) {
-    return computeWrap(text, maxWidth, wrapType)
+    return computeEntry(text, maxWidth, wrapType).text
   }
 
-  return memoizedWrap(text, maxWidth, wrapType)
+  return memoizedEntry(text, maxWidth, wrapType).text
+}
+
+/** Memoized wrap that also reports per-boundary trim flags (see WrapEntry).
+ *  Shares one cache lookup with wrapText: a miss wraps once, not twice.
+ *  // ponytail: flags ride the existing wrap cache; split the caches if
+ *  profiling shows flag-only callers polluting string-hit rates. */
+export function wrapTextWithTrim(text: string, maxWidth: number, wrapType: Styles['textWrap']): WrapEntry {
+  if (!text || maxWidth <= 0) {
+    return computeEntry(text, maxWidth, wrapType)
+  }
+
+  return memoizedEntry(text, maxWidth, wrapType)
 }
 
 export function wrapCacheSize(): number {

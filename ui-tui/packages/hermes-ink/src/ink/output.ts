@@ -65,13 +65,13 @@ type WriteOperation = {
   y: number
   text: string
   /**
-   * Per-line soft-wrap flags, parallel to text.split('\n'). softWrap[i]=true
-   * means line i is a continuation of line i-1 (the `\n` before it was
-   * inserted by word-wrap, not in the source). Index 0 is always false.
-   * Undefined means the producer didn't track wrapping (e.g. fills,
+   * Per-line soft-wrap marks, parallel to text.split('\n'). Tri-state:
+   * 0 = hard break, 1 = soft continuation, 2 = continuation whose
+   * separator space wrap-trim dropped from the screen. Index 0 is always
+   * 0. Undefined means the producer didn't track wrapping (e.g. fills,
    * raw-ansi) — the screen's per-row bitmap is left untouched.
    */
-  softWrap?: boolean[]
+  softWrap?: number[]
 }
 
 type ClipOperation = {
@@ -241,7 +241,7 @@ export default class Output {
     this.operations.push({ type: 'noSelect', region })
   }
 
-  write(x: number, y: number, text: string, softWrap?: boolean[]): void {
+  write(x: number, y: number, text: string, softWrap?: number[]): void {
     if (!text) {
       return
     }
@@ -505,7 +505,7 @@ export default class Output {
               // need the clipped previous line's content end so
               // screen.softWrap[lineY] correctly records the join point
               // even though that line's cells were never written.
-              if (softWrap && from > 0 && softWrap[from] === true) {
+              if (softWrap && from > 0 && softWrap[from]) {
                 prevContentEnd = x + stringWidth(lines[from - 1]!)
               }
 
@@ -536,9 +536,14 @@ export default class Output {
             // See Screen.softWrap docstring for the encoding. contentEnd
             // from writeLineToScreen is tab-expansion-aware, unlike
             // x+stringWidth(line) which treats tabs as width 0.
+            // Sign carries the wrap-trim flag: a 2-mark stores the negated
+            // content end so the copier can re-insert the dropped space.
+            // ponytail: -0 collapses to 0, so an empty prev fragment falls
+            // back to -1 (continuation preserved; the clamp is unused on
+            // empty rows since they have no selectable cells).
             if (softWrap) {
-              const isSW = softWrap[swFrom + offsetY] === true
-              swBits[lineY] = isSW ? prevContentEnd : 0
+              const flag = softWrap[swFrom + offsetY]!
+              swBits[lineY] = !flag ? 0 : flag === 2 ? -prevContentEnd || -1 : prevContentEnd
               prevContentEnd = contentEnd
             }
 

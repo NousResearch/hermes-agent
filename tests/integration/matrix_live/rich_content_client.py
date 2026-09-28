@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import json
 from urllib.parse import quote
 
 import aiohttp
@@ -88,8 +89,17 @@ async def assert_native(
 
 
 async def next_reply(
-    client, room_id: str, bot_user: str, expected: str, *, encrypted: bool
+    client,
+    room_id: str,
+    bot_user: str,
+    expected: str,
+    *,
+    encrypted: bool,
+    reply_target: str | None = None,
+    thread_root: str | None = None,
+    count: int = 1,
 ):
+    seen: set[str] = set()
     while True:
         response = await client.sync(
             timeout=250, full_state=room_id not in client.rooms
@@ -99,13 +109,40 @@ async def next_reply(
         if joined is None:
             continue
         for event in joined.timeline.events:
+            if isinstance(event, RoomMessageText) and event.sender == bot_user:
+                print(
+                    json.dumps({
+                        "observed_bot_reply": event.event_id,
+                        "body": event.body,
+                        "relation": event.source["content"].get("m.relates_to"),
+                        "decrypted": bool(event.decrypted),
+                    }),
+                    flush=True,
+                )
             if (
                 isinstance(event, RoomMessageText)
                 and event.sender == bot_user
                 and event.body == expected
             ):
+                if reply_target is not None:
+                    target = (
+                        event
+                        .source["content"]
+                        .get("m.relates_to", {})
+                        .get("m.in_reply_to", {})
+                        .get("event_id")
+                    )
+                    if target != reply_target:
+                        continue
                 assert bool(event.decrypted) is encrypted
-                return event
+                if thread_root is not None:
+                    assert reply_target is not None
+                    assert event.source["content"]["m.relates_to"] == relation(
+                        thread_root, reply_target
+                    )
+                seen.add(event.event_id)
+                if len(seen) == count:
+                    return event
 
 
 def relation(root: str, reply: str) -> dict:
@@ -188,9 +225,71 @@ async def paused_sticker(room_id: str, root: str, url: str, *, encrypted: bool) 
         await client.close()
 
 
-async def withdrawn_reply(room_id: str, bot_user: str, *, encrypted: bool) -> None:
+async def withdrawn_reply(
+    room_id: str,
+    bot_user: str,
+    *,
+    encrypted: bool,
+    reply_target: str | None = None,
+    thread_root: str | None = None,
+    count: int = 1,
+) -> None:
     client = open_encrypted_client()
     try:
-        await next_reply(client, room_id, bot_user, "ok", encrypted=encrypted)
+        await next_reply(
+            client,
+            room_id,
+            bot_user,
+            "ok",
+            encrypted=encrypted,
+            reply_target=reply_target,
+            thread_root=thread_root,
+            count=count,
+        )
+    finally:
+        await client.close()
+
+
+async def paused_emote(room_id: str, root: str, *, encrypted: bool) -> str:
+    client = open_encrypted_client()
+    try:
+        response = await client.sync(timeout=0, full_state=True)
+        assert isinstance(response, SyncResponse), response
+        content = {
+            "msgtype": "m.emote",
+            "body": "Waits for follow-ups @matrix-live:pause",
+            "m.relates_to": relation(root, root),
+        }
+        event_id = await send(client, room_id, "m.room.message", content)
+        await assert_native(
+            client, room_id, event_id, "m.room.message", content, encrypted=encrypted
+        )
+        return event_id
+    finally:
+        await client.close()
+
+
+async def queued_stickers(
+    room_id: str, root: str, url: str, bot_user: str, *, encrypted: bool
+) -> list[str]:
+    client = open_encrypted_client()
+    try:
+        response = await client.sync(timeout=0, full_state=True)
+        assert isinstance(response, SyncResponse), response
+        event_ids = []
+        for description in ("Retained queued sticker", "Withdrawn queued sticker"):
+            content = {
+                "body": f"{bot_user} {description}",
+                "url": url,
+                "info": {"mimetype": "image/png", "size": len(PNG), "w": 1, "h": 1},
+                "m.mentions": {"user_ids": [bot_user]},
+                "m.relates_to": relation(root, root),
+            }
+            event_id = await send(client, room_id, "m.sticker", content)
+            await assert_native(
+                client, room_id, event_id, "m.sticker", content, encrypted=encrypted
+            )
+            event_ids.append(event_id)
+        return event_ids
     finally:
         await client.close()

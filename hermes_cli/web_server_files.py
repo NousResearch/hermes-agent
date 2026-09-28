@@ -204,12 +204,14 @@ def _managed_file_entry(
         resolved = target.resolve()
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Invalid path")
-    # Classify a dangling symlink before the boundary check: it is a directory
-    # entry of this directory, not an escape attempt. Only a listing opts in;
-    # every other caller still gets the 403/500.
-    if skip_missing and _dangling_symlink(target, resolved):
-        return None
+    # Classify a dangling symlink before the boundary check rejects it: a
+    # dangling link resolves to its missing target's path, which can sit outside
+    # the managed root, so containment would 403 a genuine entry of this
+    # directory. Only the listing opts in, and only on the escaping path, so the
+    # common in-root entry costs no extra syscall.
     if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
+        if skip_missing and _dangling_symlink(target, resolved):
+            return None
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 
     try:

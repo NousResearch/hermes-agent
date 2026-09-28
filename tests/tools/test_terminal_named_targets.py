@@ -10,7 +10,7 @@ from tools import terminal_tool as tt
 from tools.registry import registry
 from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
 
-pytestmark = pytest.mark.linux_only
+pytestmark = pytest.mark.platforms("linux")
 
 
 @pytest.fixture

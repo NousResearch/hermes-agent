@@ -1,15 +1,25 @@
-import { act, cleanup, render, screen, within } from '@testing-library/react'
-import { useEffect, useState } from 'react'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection } from '@/api/client'
 import { PLUGIN_SETTINGS_AREA } from '@/contrib/plugin-settings'
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { registry } from '@/contrib/registry'
+import { queryClient } from '@/lib/query-client'
 import type { PluginSettingsContributionProps } from '@/sdk'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 
+import { parseCatalog } from '../catalog/catalog-data'
+import { $catalogCardView } from '../catalog/store'
+
 import { PluginsTab } from './plugins-tab'
+
+// The Plugins tab reads the public catalog through react-query.
+const QueryWrapper = ({ children }: { children: ReactNode }) => (
+  <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+)
 
 const requestGateway = vi.fn(async () => ({ plugins: [] }))
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
@@ -17,11 +27,16 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
 }))
 const dispose: (() => void)[] = []
 beforeEach(() => {
+  // List/detail layout: the package row (and its switches) lives in the detail pane.
+  $catalogCardView.set(false)
+  // No public catalog: the installed rows are the whole list.
+  queryClient.setQueryData(['public-catalog', 'plugins'], parseCatalog('plugins', []))
   $pluginRecords.set({ demo: { id: 'demo', name: 'Demo', kind: 'disk', status: 'loaded' } })
   $agentPlugins.set([])
   $agentPluginsStatus.set('ready')
 })
 afterEach(() => {
+  queryClient.clear()
   cleanup()
   dispose.splice(0).forEach(fn => fn())
   setApiRequestConnection(null)
@@ -43,7 +58,7 @@ it('uses the actual REST connection tag for a named default selection and follow
     })
   )
   setApiRequestConnection('source-a')
-  const view = render(<PluginsTab profile="work" />)
+  const view = render(<PluginsTab profile="work" />, { wrapper: QueryWrapper })
   await act(async () => {})
   expect(screen.getByText('Settings source-a/work')).toBeTruthy()
   await act(async () => {
@@ -80,7 +95,7 @@ it('mounts optional settings inside the owning package row with its selected sco
     })
   )
   await act(async () => {
-    render(<PluginsTab profile={{ connectionId: 'remote-a', profile: 'work' }} />)
+    render(<PluginsTab profile={{ connectionId: 'remote-a', profile: 'work' }} />, { wrapper: QueryWrapper })
   })
   const row = screen.getByRole('switch', { name: 'Desktop: Demo' }).closest('[role="row"]')!
   expect(within(row as HTMLElement).getByRole('button', { name: 'Settings for remote-a/work' })).toBeTruthy()
@@ -114,8 +129,16 @@ it('isolates settings to exact loaded plugin ownership and removes them on unloa
     })
   )
   await act(async () => {
-    render(<PluginsTab profile={{ connectionId: 'local', profile: 'work' }} />)
+    render(<PluginsTab profile={{ connectionId: 'local', profile: 'work' }} />, { wrapper: QueryWrapper })
   })
+
+  // List/detail layout: only the selected package's row renders; visit each.
+  for (const name of ['Disabled', 'Broken']) {
+    fireEvent.click(screen.getByRole('button', { name, pressed: false }))
+    expect(screen.queryByText(/^Settings /)).toBeNull()
+  }
+
+  fireEvent.click(screen.getByRole('button', { name: 'Demo', pressed: false }))
   expect(screen.getAllByText(/^Settings /).map(el => el.textContent)).toEqual(['Settings plugin:demo'])
   act(() => dispose[0]())
   expect(screen.queryByText(/^Settings /)).toBeNull()
@@ -155,7 +178,7 @@ it('remounts scoped dialogs and retires old async work when the selected connect
     registry.register({ id: 'dialog', source: 'plugin:demo', area: PLUGIN_SETTINGS_AREA, data: { render: Settings } })
   )
   const selected = { connectionId: 'remote-a', profile: 'work' }
-  const view = render(<PluginsTab profile={selected} />)
+  const view = render(<PluginsTab profile={selected} />, { wrapper: QueryWrapper })
   await act(async () => {})
   await act(async () => {
     view.rerender(<PluginsTab profile={{ connectionId: 'remote-b', profile: 'work' }} />)
@@ -195,7 +218,7 @@ it('contains a throwing contribution without losing sibling settings or the enab
       ])
     )
     await act(async () => {
-      render(<PluginsTab profile={{ connectionId: 'local', profile: 'work' }} />)
+      render(<PluginsTab profile={{ connectionId: 'local', profile: 'work' }} />, { wrapper: QueryWrapper })
     })
     expect(screen.getByText('Healthy settings')).toBeTruthy()
     expect(screen.getByRole('switch', { name: 'Desktop: Demo' })).toBeTruthy()
@@ -220,7 +243,9 @@ it('withholds settings for implicit or incomplete scopes without inventing a loc
       }
     })
   )
-  const view = render(<PluginsTab profile={{ connectionId: 'unknown-remote', profile: 'work' }} />)
+  const view = render(<PluginsTab profile={{ connectionId: 'unknown-remote', profile: 'work' }} />, {
+    wrapper: QueryWrapper
+  })
   await act(async () => {})
   expect(screen.getByText('Settings unknown-remote/work')).toBeTruthy()
 

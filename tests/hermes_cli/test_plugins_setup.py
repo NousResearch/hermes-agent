@@ -3,9 +3,16 @@ import os
 from pathlib import Path
 
 import pytest
-import yaml
 
 from hermes_cli import plugins_cmd as cmd
+
+
+def _seed_plugin_sets(enabled, disabled):
+    """Write the allow/deny lists directly: fixture state, not an admitted selection."""
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    config.setdefault("plugins", {}).update(enabled=sorted(enabled), disabled=sorted(disabled))
+    save_config(config)
 
 
 @pytest.fixture
@@ -61,7 +68,7 @@ def test_every_enable_surface_refuses_unconsented_setup(native, monkeypatch, sur
         with pytest.raises(SystemExit):
             cmd.cmd_enable("native-fixture", allow_tool_override=False)
     elif surface == "composite":
-        cmd._persist_plugin_selection(["native-fixture"], {0}, set())
+        cmd._persist_plugin_selection(["native-fixture"], {0}, set(), set())
     elif surface == "rpc":
         from tui_gateway import server
         response = server.handle_request({"id": 1, "method": "plugins.manage",
@@ -160,7 +167,7 @@ def test_management_never_loads_runtime_and_manifest_keeps_setup_metadata(native
 def test_setup_failure_preserves_exact_enablement(native, monkeypatch, mode, was_enabled):
     from hermes_cli import plugins_setup
     home, plugin = native
-    cmd._save_plugin_sets({"other", *( ["native-fixture"] if was_enabled else [])}, {"disabled-other"})
+    _seed_plugin_sets({"other", *( ["native-fixture"] if was_enabled else [])}, {"disabled-other"})
     before = (home / "config.yaml").read_bytes()
     consent = cmd.dashboard_set_agent_plugin_enabled("native-fixture", enabled=True)["consent"]
     source = (plugin / "setup.py").read_text()
@@ -215,11 +222,11 @@ def test_rpc_consent_is_bound_to_real_selected_profile(native, tmp_path, monkeyp
 def test_composite_refusal_preserves_unseen_enablement(native, monkeypatch):
     home, _ = native
     monkeypatch.setattr(cmd, "_is_tty", lambda: False)
-    cmd._save_plugin_sets({"unseen-plugin"}, {"disabled-plugin"})
+    _seed_plugin_sets({"unseen-plugin"}, {"disabled-plugin"})
     before = (home / "config.yaml").read_bytes()
-    changed, enabled = cmd._persist_plugin_selection(["native-fixture"], {0}, {"disabled-plugin"})
-    assert not changed
-    assert enabled == {"unseen-plugin"}
+    turned_on, turned_off = cmd._persist_plugin_selection(["native-fixture"], {0}, {"disabled-plugin"}, set())
+    assert (turned_on, turned_off) == ([], [])
+    assert cmd._get_enabled_set() == {"unseen-plugin"}
     assert (home / "config.yaml").read_bytes() == before
 
 
@@ -281,7 +288,7 @@ def test_profile_lock_serializes_consented_setup_processes(native):
 
 
 @pytest.mark.live_system_guard_bypass
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_timeout_retires_setup_descendants_before_returning(native, monkeypatch):
     import psutil
     from hermes_cli import plugins_setup

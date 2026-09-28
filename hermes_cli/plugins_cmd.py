@@ -644,6 +644,19 @@ def _plugin_setup_lock():
     return _FileLock(get_hermes_home() / ".plugin-enable.lock")
 
 
+def _setup_lock_for(name: str):
+    """:func:`_plugin_setup_lock` when *name* declares native setup, else a no-op context.
+
+    The lock serializes a consented setup with the enable it gates. Plugins without setup keep
+    the admission transaction's own optimistic concurrency (a stale selection is refused)."""
+    import contextlib
+    key = _resolve_plugin_key(name)
+    entry = next((entry for entry in _discover_all_plugins() if entry[5] == key), None) if key else None
+    if entry is not None and entry[4] and "setup" in _read_manifest(Path(entry[4])):
+        return _plugin_setup_lock()
+    return contextlib.nullcontext()
+
+
 def _setup_refusal(name: str, setup_consent=None) -> Optional[dict]:
     """Run a plugin's consented native setup; a refusal dict, or None when ready.
 
@@ -680,10 +693,11 @@ def _setup_gate_cli(key, console, setup_consent=None) -> Optional[dict]:
 def _enable_plugin_cli(key, console, setup_consent=None):
     """CLI consent is separate from selecting enable; default is always No.
 
-    Setup and the enable admission run under one profile lock hold. Admission refusals raise
-    :class:`AdmissionRefused` exactly like ``_activate_key``; setup refusals return a dict."""
+    Setup and the enable admission run under one profile lock hold (plugins that declare setup).
+    Admission refusals raise :class:`AdmissionRefused` exactly like ``_activate_key``; setup
+    refusals return a dict."""
     def attempt(consent):
-        with _plugin_setup_lock():
+        with _setup_lock_for(key):
             refusal = _setup_refusal(key, consent)
             if refusal:
                 return refusal
@@ -975,7 +989,7 @@ def dashboard_set_agent_plugin_enabled(
     """
     from hermes_cli.plugins_admission import AdmissionRefused
 
-    with _plugin_setup_lock():
+    with _setup_lock_for(name):
         key = _resolve_plugin_key(name)
         if key is None:
             return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}

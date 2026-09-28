@@ -592,7 +592,7 @@ def dashboard_install_plugin(
 
         # Native setup runs only with the exact reviewed consent, under the same profile lock as
         # the enable it gates; a refusal keeps the files installed and the plugin disabled.
-        with _pc()._plugin_setup_lock():
+        with _pc()._setup_lock_for(installed_name):
             refusal = _pc()._setup_refusal(installed_name, setup_consent)
             if refusal:
                 return {**refusal, "installed": True, "plugin_name": installed_name, "python_dependencies": deps}

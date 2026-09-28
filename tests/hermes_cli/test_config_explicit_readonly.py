@@ -41,7 +41,7 @@ def test_explicit_readonly_home_is_canonical_isolated_and_does_not_initialize(tm
 
 def test_explicit_readonly_rejects_corrupt_cached_fallback_without_writing(tmp_path):
     import pytest
-    import yaml
+    import hermes_yaml as yaml
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
     home = tmp_path / "profile"

@@ -38,7 +38,7 @@ def local_files(tmp_path, monkeypatch):
         env.cleanup()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("tool", ["search_files", "read_file"])
 def test_registered_file_calls_run_through_real_prefix(local_files, tmp_path, monkeypatch, tool):
     rg = shutil.which("rg")
@@ -90,7 +90,7 @@ def test_registered_file_calls_run_through_real_prefix(local_files, tmp_path, mo
         remove_session_execution_context(sid)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("tool", ["search_files", "read_file"])
 def test_unregistered_file_calls_keep_native_fast_path(local_files, monkeypatch, tool):
     task = "ordinary-file-task"

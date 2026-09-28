@@ -34,7 +34,7 @@ def test_stderr_reader_closes_its_pipe_on_eof_or_decode_error(output):
         process.stderr.close()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("boundary", ["stop", "early_exit", "readiness_error", "thread_start_error",
                                      "stop_error", "timeout", "inherited_writer", "early_exit_stop_error"])
 def test_lifecycle_reaps_owned_child_and_drains_diagnostics(tmp_path, monkeypatch, boundary):

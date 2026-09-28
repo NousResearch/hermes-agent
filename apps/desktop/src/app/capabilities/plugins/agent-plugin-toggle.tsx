@@ -17,10 +17,14 @@ interface AgentPluginToggleProps {
   profile: string | null
   label: string
   busy: boolean
+  /** Switch size; the catalog card uses the compact one. */
+  size?: 'default' | 'xs'
+  /** Also called on every flip (the card switch drives the Desktop half with it). */
+  onToggle?: (enable: boolean) => void
 }
 
 /** Setup consent belongs to this scoped row, never the recovering live socket. */
-export function AgentPluginToggle({ row, profile, label, busy }: AgentPluginToggleProps) {
+export function AgentPluginToggle({ row, profile, label, busy, size, onToggle }: AgentPluginToggleProps) {
   const { t } = useI18n()
   const p = t.settings.plugins.agent
   const { requestGateway, gateway } = useGatewayRequest()
@@ -49,11 +53,13 @@ export function AgentPluginToggle({ row, profile, label, busy }: AgentPluginTogg
             return
           }
 
+          onToggle?.(enable)
           triggerHaptic('selection')
           void toggleAgentPlugin(request, key, enable, failMessage, profile, {
             onSetupRequired: review => setSetup({ review, request, profile })
           })
         }}
+        size={size}
       />
       {setup && key && (
         <ConfirmDialog

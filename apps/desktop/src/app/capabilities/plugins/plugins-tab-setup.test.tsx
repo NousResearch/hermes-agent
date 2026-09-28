@@ -1,4 +1,6 @@
+import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const { requestGateway, rawGateway } = vi.hoisted(() => ({
@@ -11,6 +13,7 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
 }))
 
 import { $pluginRecords } from '@/contrib/plugins-store'
+import { queryClient } from '@/lib/query-client'
 import {
   $agentPluginBusy,
   $agentPlugins,
@@ -20,12 +23,21 @@ import {
 } from '@/store/agent-plugins'
 import { $activeGatewayProfile } from '@/store/profile'
 
+import { parseCatalog } from '../catalog/catalog-data'
+import { $catalogCardView } from '../catalog/store'
+
 import { PluginsTab } from './plugins-tab'
+
+// The Plugins tab reads the public catalog through react-query.
+const QueryWrapper = ({ children }: { children: ReactNode }) => (
+  <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+)
 
 const row: AgentPluginRow = {
   name: 'Native fixture',
   key: 'native-fixture',
-  version: '1',
+  // Distinct from the consent revisions ('v1'/'v2') the dialog displays.
+  version: '1.0.0',
   description: 'An opt-in bundled native plugin',
   source: 'bundled',
   default_enabled: false,
@@ -47,6 +59,10 @@ const reviewError = (revision = 'v1', message = 'Review setup') =>
   Object.assign(new Error(message), { data: proposal(revision) })
 
 beforeEach(() => {
+  // List/detail layout: the package row (and its switches) lives in the detail pane.
+  $catalogCardView.set(false)
+  // No public catalog: the installed rows are the whole list.
+  queryClient.setQueryData(['public-catalog', 'plugins'], parseCatalog('plugins', []))
   requestGateway.mockReset()
   // The replacement page loads its inventory on mount; keep that read
   // separate from the reviewed mutation (unlike the removed settings screen).
@@ -61,12 +77,13 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  queryClient.clear()
   cleanup()
   vi.restoreAllMocks()
 })
 
 const renderPlugins = async (profile: string | null = null) => {
-  const view = render(<PluginsTab profile={profile} />)
+  const view = render(<PluginsTab profile={profile} />, { wrapper: QueryWrapper })
   await act(async () => undefined)
 
   return view

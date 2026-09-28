@@ -17,7 +17,7 @@ def _routing_context(api, **kwargs):
         command_prefix=("/usr/bin/env", "--"), **kwargs)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_backend_paths_require_a_routing_prefix_and_absolute_values():
     """Declaring a far-side path without routing is a contradiction, not a default."""
     api = importlib.import_module("hermes_cli.session_execution")
@@ -30,7 +30,7 @@ def test_backend_paths_require_a_routing_prefix_and_absolute_values():
     assert _routing_context(api, backend_cwd="/home/guest").backend_cwd == "/home/guest"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_local_backend_keeps_session_state_where_commands_actually_run(tmp_path, monkeypatch):
     """The snapshot must live on the routed filesystem, not the host's temp dir."""
     api = importlib.import_module("hermes_cli.session_execution")
@@ -52,7 +52,7 @@ def test_local_backend_keeps_session_state_where_commands_actually_run(tmp_path,
     assert host_temp != "/guest-tmp"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_routed_session_starts_in_the_far_sides_directory(tmp_path, monkeypatch):
     """A host cwd fallback would make the wrapper's ``cd`` fail on the far side.
 
@@ -103,7 +103,7 @@ def test_routed_session_starts_in_the_far_sides_directory(tmp_path, monkeypatch)
         api.remove_session_execution_context("routed-session")
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_per_command_cwd_ignores_an_unobserved_record_when_routed():
     """``_resolve_command_cwd`` builds the ``cd`` the routed shell actually runs.
 
@@ -138,7 +138,7 @@ def test_per_command_cwd_ignores_an_unobserved_record_when_routed():
         terminal_tool.clear_session_cwd("routed-cmd")
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_unrouted_sessions_keep_the_configured_host_directory(tmp_path, monkeypatch):
     """The far-side fallback must not reach sessions that route nowhere."""
     terminal_tool = importlib.import_module("tools.terminal_tool")

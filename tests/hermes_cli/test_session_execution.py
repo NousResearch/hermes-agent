@@ -34,7 +34,7 @@ def test_immutable_context_aliases_revocation_and_conflicting_owners(tmp_path, m
         api.remove_session_execution_context("b")
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_desktop_context_validates_private_endpoint_and_rejects_dead_context(tmp_path, monkeypatch, request):
     import socket
     import tempfile
@@ -91,7 +91,7 @@ def test_desktop_context_validates_private_endpoint_and_rejects_dead_context(tmp
         api.remove_session_execution_context("desktop")
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_prefix_and_runtime_validation_fail_closed(tmp_path):
     import sys
     from hermes_cli import session_execution as api
@@ -123,7 +123,7 @@ def test_prefix_and_runtime_validation_fail_closed(tmp_path):
         api.remove_session_execution_context('runtime')
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("kind", ["runtime", "desktop"])
 @pytest.mark.parametrize("operation", ["identity", "construction", "registration", "lease", "resolution"])
 def test_ownership_capability_loss_fails_closed(monkeypatch, request, kind, operation):
@@ -182,7 +182,7 @@ def test_ownership_capability_loss_fails_closed(monkeypatch, request, kind, oper
         api.remove_session_execution_context("generic")
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("kind", ["runtime", "desktop"])
 def test_windows_rejects_private_ownership_but_allows_generic_execution(tmp_path, monkeypatch, kind):
     from hermes_cli import session_execution as api

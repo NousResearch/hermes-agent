@@ -71,7 +71,7 @@ elif verb == 'mcp':
 '''
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_private_standard_context_reaches_all_transports_and_restricts_targets(tmp_path, monkeypatch, grant_computer_use_approvals):
     from tools.computer_use.tool import handle_computer_use, release_computer_use_session, _get_backend
     from hermes_cli.session_execution import resolve_session_execution_context
@@ -183,7 +183,7 @@ def test_private_standard_context_reaches_all_transports_and_restricts_targets(t
             sock.close()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize('boundary', ['queued', 'recovery', 'revival'])
 @pytest.mark.parametrize('denial', ['paused', 'invalid', 'revoked'])
 def test_mcp_send_revalidates_live_policy(tmp_path, monkeypatch, boundary, denial):
@@ -289,7 +289,7 @@ def test_typed_mcp_policy_denial_never_enters_transport_recovery(monkeypatch):
         bridge.stop()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_context_invalidated_during_mcp_startup_is_policy_denied(tmp_path, monkeypatch):
     import asyncio
     import threading
@@ -339,7 +339,7 @@ def test_context_invalidated_during_mcp_startup_is_policy_denied(tmp_path, monke
             remove_session_execution_context('startup-boundary')
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_private_runtime_stages_exact_approved_manifest(tmp_path):
     from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
     from hermes_cli.session_execution import resolve_session_execution_context
@@ -363,7 +363,7 @@ def test_private_runtime_stages_exact_approved_manifest(tmp_path):
         assert not staged.exists()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize('session_id', [None, 'rotated-owner'])
 def test_registry_task_alias_uses_private_transport_without_moving_approvals(tmp_path, monkeypatch, session_id):
     import tools.computer_use_tool  # real tool registration
@@ -474,7 +474,7 @@ def test_registry_task_alias_denies_before_backend_start(monkeypatch, session_id
         remove_session_execution_context('other-owner')
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize('invalid', ['driver', 'validation', 'missing-launch', 'shared-daemon', 'other-backend'])
 def test_invalid_launch_context_is_non_retry_policy_denial(tmp_path, monkeypatch, invalid):
     import tools.computer_use_tool  # real tool registration

@@ -70,7 +70,7 @@ def shell_probe(tmp_path, monkeypatch):
     remove_session_execution_context("background-routing")
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("use_pty", [False, True], ids=["pipe", "pty"])
 @pytest.mark.parametrize("operation", ["set", "unset", "unregistered"])
 @pytest.mark.parametrize("readonly", [False, True], ids=["mutable", "readonly"])
@@ -109,7 +109,7 @@ def test_startup_routing_restores_or_aborts_before_user_command(
     assert session.command == command
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("use_pty", [False, True], ids=["pipe", "pty"])
 @pytest.mark.parametrize("registered", [False, True], ids=["unregistered", "registered"])
 def test_background_routing_preserves_signal_delivery_and_exit_status(

@@ -13,7 +13,7 @@ from hermes_cli.session_execution import (
 from tools.terminal_tool import terminal_tool
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_local_foreground_background_pty_and_snapshot_are_session_isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.setenv("ROUTING_VALUE", "host")
@@ -64,7 +64,7 @@ def test_local_foreground_background_pty_and_snapshot_are_session_isolated(tmp_p
             remove_session_execution_context(sid)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize('mode', ['snapshot', 'login-fallback', 'nonlogin-fallback'])
 def test_foreground_routing_wins_after_shell_startup(tmp_path, monkeypatch, mode):
     from hermes_cli.session_execution import resolve_session_execution_context
@@ -106,7 +106,7 @@ def test_foreground_routing_wins_after_shell_startup(tmp_path, monkeypatch, mode
         remove_session_execution_context('shell-startup')
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize('operation', ['set', 'unset'])
 def test_readonly_startup_routing_fails_before_user_command(tmp_path, monkeypatch, operation):
     from hermes_cli.session_execution import resolve_session_execution_context
@@ -133,7 +133,7 @@ def test_readonly_startup_routing_fails_before_user_command(tmp_path, monkeypatc
         remove_session_execution_context('readonly-routing')
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize('replaced', [False, True], ids=['invalid', 'replaced-invalid'])
 @pytest.mark.parametrize('backend,override', [
     ('local', 'none'), ('local', 'raw-cwd'), ('local', 'collapsed-cwd'),
@@ -211,7 +211,7 @@ def test_host_local_ignores_execution_lease_without_losing_task_routing(
         reset_terminal_scope(token)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_host_local_keeps_raw_cache_and_approval_boundaries(tmp_path, monkeypatch):
     from hermes_cli.session_execution import resolve_session_execution_context
     from tools import terminal_tool as tt
@@ -269,7 +269,7 @@ def test_host_local_keeps_raw_cache_and_approval_boundaries(tmp_path, monkeypatc
             env.cleanup()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize('background,pty', [(False, False), (True, False), (True, True)])
 def test_invalid_context_never_falls_back_to_host(tmp_path, monkeypatch, background, pty):
     monkeypatch.setenv('TERMINAL_ENV', 'local')

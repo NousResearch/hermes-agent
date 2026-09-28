@@ -32,7 +32,6 @@ import {
   loadAgentPlugins,
   removeAgentPlugin,
   saveAgentPluginSettings,
-  toggleAgentPlugin,
   updateAgentPlugin
 } from '@/store/agent-plugins'
 import { confirm } from '@/store/confirm'
@@ -724,22 +723,31 @@ export const PluginsTab = memo(function PluginsTab({
   const packageSwitch = (pkg: PluginPackage) => {
     const { agent, desktop } = pkg
 
-    const setEnabled = (enable: boolean) => {
-      if (agent?.key) {
-        void toggleAgentPlugin(requestGateway, agent.key, enable, p.toggleFailed(agent.name), scope)
-      }
-
+    const setDesktopEnabled = (enable: boolean) => {
       if (desktop) {
         void setPluginEnabled(desktop.id, enable)
       }
     }
 
+    // The agent half always goes through the reviewed setup-consent toggle.
+    if (agent) {
+      return (
+        <AgentPluginToggle
+          busy={agentBusy(agent)}
+          label={pkg.name}
+          onToggle={setDesktopEnabled}
+          profile={scope}
+          row={agent}
+          size="xs"
+        />
+      )
+    }
+
     return (
       <Switch
         aria-label={pkg.name}
-        checked={agent ? agent.status === 'enabled' : desktop?.status !== 'disabled'}
-        disabled={agent ? !agent.key || agentBusy(agent) : false}
-        onCheckedChange={setEnabled}
+        checked={desktop?.status !== 'disabled'}
+        onCheckedChange={setDesktopEnabled}
         size="xs"
       />
     )

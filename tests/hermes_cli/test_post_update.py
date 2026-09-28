@@ -137,8 +137,13 @@ def test_successful_migration_prunes_stale_env_backups(tmp_path, monkeypatch):
 
     assert result["ok"] is True
     # The migration's own copy survives (it is the newest), the rest are pruned.
-    assert len(_env_backups(tmp_path)) == post_update.ENV_BACKUP_KEEP
-    assert ".env.bak-* must stay in the home root"  # path contract unchanged
+    survivors = _env_backups(tmp_path)
+    assert len(survivors) == post_update.ENV_BACKUP_KEEP
+    # The bound's path contract: every survivor is one of the migration's
+    # own stamp-shaped copies, still sitting in the home root — never a
+    # hand-named sibling relocated or renamed.
+    assert all(post_update._ENV_BAK_STAMP_RE.fullmatch(p.name) for p in survivors)
+    assert all(p.parent == tmp_path for p in survivors)
 
 
 def test_failed_migration_prunes_stale_env_backups(tmp_path, monkeypatch):
@@ -254,6 +259,50 @@ def test_prune_counts_same_second_indexed_stamp_siblings(tmp_path, monkeypatch):
         ".env.bak-20250101T120000Z.5",
     ]
     assert env_path.read_text(encoding="utf-8") == "SECRET=current\n"
+
+
+def test_prune_continues_after_an_undeletable_copy(tmp_path, monkeypatch):
+    """One un-deletable copy must not abort the remaining deletions.
+
+    A copy that cannot be unlinked (live handle, AV scan, read-only
+    attribute, network home) is ordinary. The loop walks the expired
+    copies newest-of-expired first; a failure on the FIRST attempted
+    unlink is the discriminating case — under a single ``try`` around the
+    loop it aborts before deleting anything, and the plaintext backups
+    would accumulate one per migration again. Every other expired copy
+    must still be pruned.
+    """
+    env_path = tmp_path / ".env"
+    env_path.write_text("SECRET=current\n", encoding="utf-8")
+    keep = post_update.ENV_BACKUP_KEEP
+    names = [f".env.bak-20250101T00000{i}Z" for i in range(keep + 4)]
+    for name in names:
+        (tmp_path / name).write_text("SECRET=ancient\n", encoding="utf-8")
+
+    # ``stale[keep:]`` is reverse-stamped, so ``names[keep]`` is the first
+    # copy the prune loop attempts.
+    stuck = tmp_path / names[keep]
+
+    real_unlink = Path.unlink
+
+    def failing_unlink(self, *args, **kwargs):
+        if self == stuck:
+            raise OSError(13, "Permission denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    post_update._prune_stale_env_backups(env_path)
+
+    survivors = _env_backups(tmp_path)
+    # The bound still holds: the three newest copies and the one
+    # un-deletable copy survive; every other expired copy was pruned.
+    assert len(survivors) == keep + 1
+    assert stuck.is_file()
+    for name in names[:keep]:
+        assert not (tmp_path / name).exists(), name
+    for name in names[keep:]:
+        assert (tmp_path / name).is_file(), name
 
 
 # ── step_state_db_guard ──────────────────────────────────────────────

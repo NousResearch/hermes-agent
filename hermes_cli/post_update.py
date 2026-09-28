@@ -96,10 +96,23 @@ def _prune_stale_env_backups(env_path: Path, keep: int = ENV_BACKUP_KEEP) -> Non
             key=lambda p: p.name,
             reverse=True,  # newest first; the stamp sorts lexicographically
         )
-        for expired in stale[keep:]:
-            expired.unlink(missing_ok=True)
     except OSError as exc:
-        logger.debug("could not prune stale %s backups: %s", env_path.name, exc)
+        logger.warning("could not list stale %s backups: %s", env_path.name, exc)
+        return
+    for expired in stale[keep:]:
+        try:
+            expired.unlink(missing_ok=True)
+        except OSError as exc:
+            # One un-deletable copy (live handle, AV scan, read-only
+            # attribute, network home) is ordinary; it must not abort the
+            # remaining deletions, or the bound silently breaks and the
+            # plaintext copies accumulate one per migration again.
+            logger.warning(
+                "could not prune stale %s backup %s: %s",
+                env_path.name,
+                expired.name,
+                exc,
+            )
 
 
 def step_migrate_config() -> dict:

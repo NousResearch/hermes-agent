@@ -345,7 +345,7 @@ async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
     from tools.skill_usage import (
-        _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
+        _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
 
     def _run():
         with _profile_scope(profile):
@@ -357,7 +357,7 @@ async def get_skills(profile: Optional[str] = None):
             # without a per-skill manifest read): hub > bundled > agent, where
             # "agent" covers agent-authored AND local hand-made skills — the ones
             # the user may edit/delete from the UI.
-            bundled_names = _read_bundled_manifest_names()
+            bundled_names = _read_bundled_names()
             hub_names = _read_hub_installed_names()
         for s in skills:
             s["enabled"] = s["name"] not in disabled
@@ -402,7 +402,7 @@ async def get_skill_content(name: str, profile: Optional[str] = None):
         if not skill_md.exists():
             raise HTTPException(status_code=404, detail=f"Skill '{name}' has no SKILL.md.")
         try:
-            content = skill_md.read_text(encoding="utf-8")
+            content = skill_md.read_text(encoding="utf-8-sig")
         except OSError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         return {"name": name, "content": content, "path": str(skill_md)}

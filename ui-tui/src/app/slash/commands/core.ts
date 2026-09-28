@@ -683,6 +683,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['s'],
     help: 'inject a message after the next tool call (no interrupt)',
     name: 'steer',
     run: (arg, ctx) => {
@@ -712,7 +713,9 @@ export const coreCommands: SlashCommand[] = [
                 `steer queued — arrives after next tool call: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
               )
             } else {
-              ctx.transcript.sys('steer rejected')
+              // The turn ended before the steer landed (#64578): keep the words as the next turn.
+              ctx.composer.enqueue(payload)
+              ctx.transcript.sys('steer rejected — no active turn, queued for next turn')
             }
           })
         )

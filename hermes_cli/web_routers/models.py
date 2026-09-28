@@ -5,6 +5,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 """
 
 import asyncio
+import concurrent.futures
 import logging
 from typing import Optional
 
@@ -12,11 +13,13 @@ from fastapi import APIRouter, HTTPException
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
-    _AUX_TASK_SLOTS, _apply_model_assignment_sync, _dashboard_code_skew_guard,
+    _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
+    _prepare_main_assignment,
 )
+from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
-from hermes_cli.web_routers._common import http_failure
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, config_write_scope, http_failure
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -48,6 +51,41 @@ def _load_config_scoped(profile: Optional[str]) -> dict:
         return load_config()
 
 
+# Blocking budget for /api/model/info's context-length resolution. The resolver
+# chain (agent.model_metadata.get_model_context_length) runs several sequential
+# provider probes, each with its own multi-second timeout, so an unreachable or
+# blackholed model.base_url can hold this response for tens of seconds — and the
+# Desktop Model Settings page waits on it (#63214).
+_MODEL_INFO_PROBE_BUDGET_S = 5.0
+
+
+def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> int:
+    """``get_model_context_length`` with the route's blocking budget.
+
+    On timeout the abandoned probe keeps running in its worker thread (bounded
+    by its own per-request timeouts) while the response degrades to
+    ``auto_context_length = 0`` ("auto-detected: unknown").
+    """
+    from agent.model_metadata import get_model_context_length
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-info-probe")
+    try:
+        return pool.submit(
+            get_model_context_length, model=model, base_url=base_url, provider=provider,
+            config_context_length=None
+        ).result(timeout=_MODEL_INFO_PROBE_BUDGET_S)
+    except concurrent.futures.TimeoutError:
+        _log.warning(
+            "GET /api/model/info: context-length probe for %r at %s exceeded %.1fs — returning unknown",
+            model, base_url or "<default>", _MODEL_INFO_PROBE_BUDGET_S,
+        )
+        return 0
+    finally:
+        # wait=False: never block the response (or interpreter exit) on the
+        # abandoned probe.
+        pool.shutdown(wait=False)
+
+
 @router.get("/api/model/info")
 def get_model_info(profile: Optional[str] = None):
     """Resolved metadata for the configured model: auto-detected vs configured
@@ -63,10 +101,10 @@ def get_model_info(profile: Optional[str] = None):
             return dict(_EMPTY_MODEL_INFO, provider=provider)
 
         try:
-            from agent.model_metadata import get_model_context_length
-            # config_context_length=None: ignore the override — we want the auto value
-            auto_ctx = get_model_context_length(model=model_name, base_url=base_url, provider=provider,
-                                                config_context_length=None)
+            # config_context_length=None: ignore the override — we want the auto value.
+            # Bounded: the resolver's provider probes can hang for tens of seconds
+            # when model.base_url is unreachable (#63214).
+            auto_ctx = _bounded_context_length_probe(model_name, base_url, provider)
         except Exception:
             auto_ctx = 0
 
@@ -130,35 +168,12 @@ async def get_model_options(
 
 
 def _nous_recommended_default() -> dict:
-    from hermes_cli import models as m
-    from hermes_cli import models_pricing as mp
-    from hermes_cli.auth import get_provider_auth_state
-
-    model_ids = m.get_curated_nous_model_ids()
-    pricing = mp.get_pricing_for_provider("nous") or {}
-    free_tier = m.check_nous_free_tier(force_fresh=True)
-
-    try:
-        portal_url = (get_provider_auth_state("nous") or {}).get("portal_base_url", "") or ""
-    except Exception:
-        portal_url = ""
-
-    # This endpoint picks the model a user lands on without choosing it, so an unreachable
-    # one is worse than in a picker. Narrow to policy BEFORE the tier split, so a rescued
-    # id still has to pass the free/paid predicate.
-    policy_allowed = mp.nous_policy_allowed_ids()
-    union = m.union_with_portal_free_recommendations if free_tier else m.union_with_portal_paid_recommendations
-    model_ids, pricing = union(model_ids, pricing, portal_url)
-    model_ids = mp.restrict_to_nous_policy(model_ids, policy_allowed, rescue_empty=True)
-    if free_tier:
-        model_ids, _unavailable = m.partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
-
-    model = m.pick_silent_default_model(model_ids, provider="nous")
-    return {"provider": "nous", "model": model, "free_tier": bool(free_tier)}
+    from hermes_cli.models import recommended_nous_default_model
+    return recommended_nous_default_model()
 
 
 @router.get("/api/model/recommended-default")
-def get_recommended_default_model(provider: str = ""):
+def get_recommended_default_model(provider: str = "", profile: Optional[str] = None):
     """Recommended default model for a freshly-authenticated provider, mirroring
     ``hermes model``'s curation so GUI onboarding lands on a sensible default.
     Nous honors the user's free/paid tier. Any other provider gets the preferred
@@ -180,7 +195,10 @@ def get_recommended_default_model(provider: str = ""):
         from hermes_cli.inventory import build_models_payload, load_picker_context
         from hermes_cli.models import pick_silent_default_model
 
-        payload = build_models_payload(load_picker_context())
+        # build_models_payload -> list_authenticated_providers -> _save_discovered_models_to_config:
+        # this GET lazily PERSISTS discovered custom-provider models, so it needs the scope too.
+        with _config_profile_scope(profile):
+            payload = build_models_payload(load_picker_context())
         for row in payload.get("providers", []):
             if str(row.get("slug", "")).lower() == slug:
                 models = [str(m) for m in (row.get("models") or [])]
@@ -206,9 +224,13 @@ def get_auxiliary_models(profile: Optional[str] = None):
         tasks = []
         for slot in _AUX_TASK_SLOTS:
             slot_cfg = aux_cfg.get(slot, {}) if isinstance(aux_cfg.get(slot), dict) else {}
+            base_url = str(slot_cfg.get("base_url", "") or "")
             tasks.append({
                 "task": slot, "provider": str(slot_cfg.get("provider", "auto") or "auto"),
-                "model": str(slot_cfg.get("model", "") or ""), "base_url": str(slot_cfg.get("base_url", "") or ""),
+                "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
+                "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
+                # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
+                "local_endpoint": is_local_endpoint(base_url),
             })
 
         model, provider = _main_model_fields(cfg.get("model", {}))
@@ -228,7 +250,7 @@ def get_moa_models(profile: Optional[str] = None):
 
 _MOA_PRESET_FIELDS = (
     "reference_temperature", "aggregator_temperature", "reference_timeout",
-    "degraded_reference_policy", "max_tokens", "reference_max_tokens", "fanout", "enabled",
+    "degraded_reference_policy", "fanout", "enabled",
 )
 
 
@@ -252,7 +274,10 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     with http_failure("PUT /api/model/moa failed", 500, detail="Failed to save MoA config"):
         from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
 
-        with _profile_scope(body.profile or profile):
+        # load→mutate→save runs on a worker thread (sync-def endpoint); the
+        # desktop's debounced PUT /api/config autosave races it, so the whole
+        # span holds _CONFIG_MUTATION_LOCK or one of the two saves is dropped.
+        with config_write_scope(body.profile or profile):
             cfg = load_config()
             if body.presets:
                 raw = {
@@ -273,9 +298,13 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 raise HTTPException(status_code=422, detail="Invalid MoA config: " + "; ".join(problems))
             normalized = normalize_moa_config(raw)
             # Merge, don't overwrite: hand-edited keys not in MoaConfigPayload (save_traces, trace_dir) survive.
-            # See issue #58819.
-            cfg.setdefault("moa", {}).update(normalized)
-            save_config(cfg)
+            # See issue #58819. Write ONLY the moa section (merge_existing deep-merges it over the
+            # on-disk raw file): saving the whole default-expanded ``cfg`` snapshot re-persisted
+            # every other section too, so a Desktop MoA autosave could wipe a chain another
+            # surface wrote meanwhile (#89184, ``fallback_providers: []``).
+            moa_section = dict(cfg.get("moa") or {})
+            moa_section.update(normalized)
+            save_config({"moa": moa_section}, merge_existing=True)
             return {"ok": True, **normalized}
 
 
@@ -307,8 +336,19 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                 return {"ok": False, "scope": scope, "provider": provider, "model": model,
                         "confirm_required": True, "confirm_message": warning.message}
 
+        reasoning_effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else _UNSET
+
         def _apply_assignment():
+            # Same RMW span as PUT /api/config: applyMainModel fires this while the
+            # settings-page autosave is in flight — hold the mutation lock. switch_model's
+            # catalog fetches / endpoint probes are network I/O, so they run BEFORE the lock;
+            # only load→apply→save holds it.
             with _profile_scope(body.profile or profile):
-                return _apply_model_assignment_sync(scope, provider, model, task, base_url, api_key)
+                prepared = (_prepare_main_assignment(load_config(), provider, model, base_url, api_key)
+                            if scope == "main" else None)
+                with _CONFIG_MUTATION_LOCK:
+                    return _apply_model_assignment_sync(
+                        scope, provider, model, task, base_url, api_key,
+                        reasoning_effort=reasoning_effort, prepared=prepared)
 
         return await asyncio.to_thread(_apply_assignment)

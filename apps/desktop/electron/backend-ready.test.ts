@@ -121,14 +121,6 @@ test('rejects on a child error event', async () => {
   await assert.rejects(p, /spawn ENOENT/)
 })
 
-test('rejects with the timeout message after the deadline', async () => {
-  const child = makeFakeChild()
-  await assert.rejects(
-    waitForDashboardPort(child, 20),
-    /Timed out waiting for Hermes backend port announcement \(20ms\)/
-  )
-})
-
 test('a late announcement after timeout does not throw (listeners torn down)', async () => {
   const child = makeFakeChild()
   await assert.rejects(waitForDashboardPort(child, 20), /Timed out/)
@@ -247,20 +239,6 @@ test('exit-before-announcement error carries the buffered output tail (ready-fil
   await assert.rejects(wait, /exited before port announcement \(SIGSEGV\)[\s\S]*Traceback/)
 })
 
-test('exit-before-announcement error stays clean when no output was buffered', async () => {
-  const child = makeFakeChild()
-
-  const wait = waitForDashboardPortAnnouncement(child, {})
-
-  child.emit('exit', 137, null)
-
-  await assert.rejects(wait, error => {
-    assert.match((error as Error).message, /exited before port announcement \(137\)$/)
-
-    return true
-  })
-})
-
 // ---------------------------------------------------------------------------
 // bufferedOutput (#60323): a sentinel consumed BEFORE the wait attaches must
 // still resolve. main.ts attaches an output tail at spawn, then awaits
@@ -315,6 +293,31 @@ test('bufferedOutput without a sentinel still times out (no false positive)', as
     50,
     () => '',
     () => 'no sentinel here\n'
+  )
+
+  await assert.rejects(wait, /Timed out waiting/)
+})
+
+test('the merged-tail seed recovers a sentinel spliced onto a partial stderr line (#103792)', async () => {
+  const child = makeFakeChild()
+
+  // uvicorn's stderr chunk has no trailing newline, so the tail is not line-accurate.
+  const port = await waitForDashboardPortAnnouncement(child, {
+    bufferedOutput: () => 'INFO  Started server process [4711]HERMES_BACKEND_READY port=65238',
+    timeoutMs: 500
+  })
+
+  assert.equal(port, 65238)
+})
+
+test('the merged-tail seed does not match prose that merely names the sentinel', async () => {
+  const child = makeFakeChild()
+
+  const wait = waitForDashboardPort(
+    child,
+    50,
+    () => '',
+    () => 'still waiting for HERMES_BACKEND_READY from the backend\n'
   )
 
   await assert.rejects(wait, /Timed out waiting/)

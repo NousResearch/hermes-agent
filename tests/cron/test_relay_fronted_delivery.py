@@ -102,6 +102,7 @@ class TestConfigHomeChannelFallback:
             "platform": "discord",
             "chat_id": "1517373704248758474",
             "thread_id": None,
+            "_resolved_from": "home",
         }]
 
 
@@ -137,7 +138,7 @@ class TestRelayDeliveryGate:
 
         router = MagicMock()
 
-        async def _deliver_to_platform(target, content, metadata):
+        async def _deliver_to_platform(target, content, metadata, transport=None):
             return {"success": True, "raw_response": None}
 
         router._deliver_to_platform = _deliver_to_platform

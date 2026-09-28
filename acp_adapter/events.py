@@ -8,13 +8,17 @@ thread-safely onto the loop.
 
 import asyncio
 import logging
+import uuid
 from collections import deque
 from typing import Any, Callable, Deque, Dict
 
 import acp
 from acp.schema import AgentPlanUpdate, PlanEntry
 
-from .tools import _json_loads_maybe, build_tool_complete, build_tool_start, coerce_tool_args, make_tool_call_id
+from .tools import (
+    _json_loads_maybe, build_tool_abandoned, build_tool_complete, build_tool_start, coerce_tool_args,
+    make_tool_call_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,19 +75,71 @@ def _upgrade_queue(tool_call_ids: Dict[str, Deque[str]], name: str) -> Deque[str
     return queue
 
 
+def close_tool_call(
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
+    tool_call_meta: Dict[str, Dict[str, Any]], name: str, result: Any = None, is_error: bool = False,
+) -> str | None:
+    """Close the oldest open ACP tool call for ``name``; returns its id, or None when none is open."""
+    queue = _upgrade_queue(tool_call_ids, name)
+    if not queue:
+        return None
+    tc_id = queue.popleft()
+    meta = tool_call_meta.pop(tc_id, {})
+    _send_update(conn, session_id, loop, build_tool_complete(
+        tc_id, name, result=str(result) if result is not None else None,
+        function_args=meta.get("args"), snapshot=meta.get("snapshot"), is_error=is_error,
+    ))
+    if not queue:
+        tool_call_ids.pop(name, None)
+    return tc_id
+
+
+def flush_open_tool_calls(
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
+    tool_call_meta: Dict[str, Dict[str, Any]],
+) -> int:
+    """Close every tool call still open at the end of a turn, and report how many there were.
+
+    A tool blocked by scope, guardrail or an editor permission prompt never
+    projects ``tool.completed``, so without this its bubble stays ``in_progress``
+    forever and clients read the turn as one that never ran a tool."""
+    open_calls = [(name, list(queue)) for name, queue in list(tool_call_ids.items()) if queue]
+    flushed = 0
+    for name, ids in open_calls:
+        for tc_id in ids:
+            tool_call_meta.pop(tc_id, None)
+            _send_update(conn, session_id, loop, build_tool_abandoned(tc_id, name))
+            flushed += 1
+        tool_call_ids.pop(name, None)
+    if flushed:
+        logger.debug("Flushed %d ACP tool call(s) left open at turn end", flushed)
+    return flushed
+
+
 def make_tool_progress_cb(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
     tool_call_meta: Dict[str, Dict[str, Any]],
     edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None = None,
+    turn_state: Dict[str, Any] | None = None,
 ) -> Callable:
     """Create a ``tool_progress_callback`` for AIAgent.
 
     Signature: ``tool_progress_callback(event_type, name, preview, args, **kwargs)``.
     Emits ``ToolCallStart`` for ``tool.started`` and tracks IDs in a FIFO per tool
     name so parallel same-name calls complete against the right ACP tool call.
-    Other event types (``tool.completed``, ``reasoning.available``) are ignored."""
+    ``tool.completed`` closes that call with its own result — the step callback
+    only fires on the *next* step, which leaves a turn's last tools open."""
 
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
+        if event_type == "tool.completed" and name:
+            if turn_state is not None:
+                turn_state["saw_completion"] = True
+            # The executor's verdict: a cancelled/errored tool may return plain text the heuristic misses.
+            close_tool_call(
+                conn, session_id, loop, tool_call_ids, tool_call_meta, name, kwargs.get("result"),
+                is_error=bool(kwargs.get("is_error")),
+            )
+            return
         if event_type != "tool.started":
             return
         args = coerce_tool_args(args)
@@ -121,27 +177,84 @@ def make_tool_progress_cb(
     return _tool_progress
 
 
-def _make_text_cb(conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, wrap: Callable[[str], Any]) -> Callable:
-    def _cb(text: str) -> None:
+# ------------------------------------------------------------------
+# Assistant message identity
+# ------------------------------------------------------------------
+
+
+class AssistantMessageIdAllocator:
+    """Allocates stable per-message ids for streamed assistant chunks.
+
+    ACP clients group streamed ``agent_message_chunk`` / ``agent_thought_chunk``
+    deltas into one assistant reply by ``messageId`` and use a NEW id to start
+    the next reply (root-reply replacement semantics). Without ids, a client
+    that replaces "the current assistant message" on each chunk collapses
+    separate autonomous turns into one bubble.
+
+    One allocator lives per ACP session; a contiguous run of deltas shares
+    ``current()`` and ``close()`` marks the message finished so the next delta
+    allocates a fresh id. Ids are UUID4 strings because the ACP schema requires
+    UUID-format message ids, and a fresh UUID can never collide with an earlier
+    turn's id.
+    """
+
+    def __init__(self) -> None:
+        self._active: str | None = None
+        self._last: str | None = None
+
+    def current(self) -> str:
+        """Return the active message id, allocating one if none is open."""
+        if self._active is None:
+            self._active = self._last = str(uuid.uuid4())
+        return self._active
+
+    def last(self) -> str | None:
+        """Return the most recently allocated id (open or closed)."""
+        return self._last
+
+    def close(self) -> None:
+        """End the active message; the next chunk starts a new id."""
+        self._active = None
+
+
+def _make_text_cb(
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, wrap: Callable[[str], Any],
+    message_ids: AssistantMessageIdAllocator | None = None,
+) -> Callable:
+    # ``None`` is the flush sentinel Hermes core sends between assistant messages
+    # (before tool execution / at end of stream): it closes the active messageId so
+    # the next delta opens a new bubble instead of merging into the previous one.
+    def _cb(text: str | None) -> None:
         if text:
-            _send_update(conn, session_id, loop, wrap(text))
+            update = wrap(text)
+            if message_ids is not None:
+                update.message_id = message_ids.current()
+            _send_update(conn, session_id, loop, update)
+        elif text is None and message_ids is not None:
+            message_ids.close()
 
     return _cb
 
 
-def make_thinking_cb(conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop) -> Callable:
+def make_thinking_cb(
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop,
+    message_ids: AssistantMessageIdAllocator | None = None,
+) -> Callable:
     """Create a ``thinking_callback`` for AIAgent."""
-    return _make_text_cb(conn, session_id, loop, acp.update_agent_thought_text)
+    return _make_text_cb(conn, session_id, loop, acp.update_agent_thought_text, message_ids)
 
 
-def make_message_cb(conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop) -> Callable:
+def make_message_cb(
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop,
+    message_ids: AssistantMessageIdAllocator | None = None,
+) -> Callable:
     """Create a callback that streams agent response text to the editor."""
-    return _make_text_cb(conn, session_id, loop, acp.update_agent_message_text)
+    return _make_text_cb(conn, session_id, loop, acp.update_agent_message_text, message_ids)
 
 
 def make_step_cb(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]],
+    tool_call_meta: Dict[str, Dict[str, Any]], turn_state: Dict[str, Any] | None = None,
 ) -> Callable:
     """Create a ``step_callback(api_call_count: int, prev_tools: list)`` for AIAgent."""
 
@@ -152,26 +265,34 @@ def make_step_cb(
             tool_name = result = function_args = None
             if isinstance(tool_info, dict):
                 tool_name = tool_info.get("name") or tool_info.get("function_name")
-                result = tool_info.get("result") or tool_info.get("output")
+                # Key presence, not truthiness: "", 0 and False are real results (#10845).
+                result = tool_info.get("result") if "result" in tool_info else tool_info.get("output")
                 function_args = tool_info.get("arguments") or tool_info.get("args")
             elif isinstance(tool_info, str):
                 tool_name = tool_info
 
             if not tool_name:
                 continue
-            queue = _upgrade_queue(tool_call_ids, tool_name)
-            if not queue:
-                continue
-            tc_id = queue.popleft()
-            meta = tool_call_meta.pop(tc_id, {})
-            _send_update(conn, session_id, loop, build_tool_complete(
-                tc_id, tool_name, result=str(result) if result is not None else None,
-                function_args=function_args or meta.get("args"), snapshot=meta.get("snapshot"),
-            ))
+            # ``tool.completed`` already closed this call with its own result;
+            # this callback is the fallback for runtimes that never project one.
+            if not (turn_state or {}).get("saw_completion"):
+                queue = _upgrade_queue(tool_call_ids, tool_name)
+                if not queue:
+                    continue
+                tc_id = queue.popleft()
+                meta = tool_call_meta.pop(tc_id, {})
+                # ``prev_tools`` carries the wire ``arguments`` JSON *string*; the content
+                # builders index it as a dict, so an uncoerced string raised inside this
+                # (swallowed) callback and the bubble never closed.
+                _send_update(conn, session_id, loop, build_tool_complete(
+                    tc_id, tool_name, result=str(result) if result is not None else None,
+                    function_args=coerce_tool_args(function_args) if function_args else meta.get("args"),
+                    snapshot=meta.get("snapshot"),
+                ))
+                if not queue:
+                    tool_call_ids.pop(tool_name, None)
             if tool_name == "todo" and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
                 _send_update(conn, session_id, loop, plan_update)
-            if not queue:
-                tool_call_ids.pop(tool_name, None)
 
     return _step
 

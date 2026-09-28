@@ -96,6 +96,7 @@ def _make_source(path: Path) -> dict[str, int]:
         # These are derived transition markers and must not reach the new DB.
         db.set_meta("fts_rebuild_high_water", "999")
         db.set_meta("fts_rebuild_progress", "500")
+        db.set_meta("fts_tool_full_content_high_water", "7")
     finally:
         db.close()
     return {"sessions": 3, "messages": 21}
@@ -739,6 +740,25 @@ def test_recovery_copies_delivery_obligations(tmp_path: Path) -> None:
     ]
 
 
+def test_recovery_regenerates_rather_than_copies_derived_fts_meta(tmp_path: Path) -> None:
+    """Derived FTS markers (including the retired tool high-water key) never reach the new DB."""
+
+    source = tmp_path / "state.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    assert report["complete"] is True
+
+    conn = sqlite3.connect(str(output))
+    try:
+        keys = {row[0] for row in conn.execute("SELECT key FROM state_meta")}
+    finally:
+        conn.close()
+    assert "goal:recovery-session-0" in keys
+    assert not keys & {"fts_rebuild_high_water", "fts_rebuild_progress", "fts_tool_full_content_high_water"}
+
+
 def test_recovery_without_delivery_ledger_is_not_lossy(tmp_path: Path) -> None:
     """CLI-only stores never created the lazy table; that is not data loss."""
 
@@ -834,3 +854,84 @@ def test_lost_and_found_direct_copy_creates_lazy_delivery_ledger(tmp_path: Path)
         lf_conn.close()
         dest.close()
     assert rows == [("ob-1", "pending", None), ("ob-2", "failed", "boom")]
+
+
+
+def test_partial_recovery_skips_phantom_row_rejected_by_destination_schema(
+    tmp_path: Path,
+) -> None:
+    """#102240: a phantom ``sessions`` row with NULL ``started_at`` must be reported as a skipped
+    singleton, not abort the whole ``--allow-partial`` run at the exact-lookup boundary."""
+    source = tmp_path / "phantom-state.db"
+    output = tmp_path / "phantom-recovered.db"
+    _make_source(source)
+
+    # Relax the source's NOT NULL in place (schema text only, the pages stay identical) so the
+    # source can hold a row the destination's canonical schema rejects.
+    with sqlite3.connect(str(source), isolation_level=None) as conn:
+        conn.execute("PRAGMA writable_schema=ON")
+        conn.execute(
+            "UPDATE sqlite_master SET sql = replace(sql, 'started_at REAL NOT NULL', 'started_at REAL') "
+            "WHERE type = 'table' AND name = 'sessions'"
+        )
+        version = conn.execute("PRAGMA schema_version").fetchone()[0]
+        conn.execute(f"PRAGMA schema_version={version + 1}")
+        conn.execute("PRAGMA writable_schema=OFF")
+    with sqlite3.connect(str(source), isolation_level=None) as conn:
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at, title) VALUES ('phantom', 'cli', NULL, 'Phantom')"
+        )
+        assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 4
+
+    report = recover_session_database(source, output, work_dir=tmp_path, chunk_size=16, allow_partial=True)
+
+    copied = report["copy"]["sessions"]
+    assert copied["status"] == "partial"
+    assert copied["copied_rows"] == 3
+    assert copied["destination_rejected_rows"] == 1
+    assert [item["error"] for item in copied["skipped_rowid_ranges"]] == [
+        "destination constraint rejected row: NOT NULL constraint failed: sessions.started_at",
+    ]
+    assert report["verified"] is True
+    with sqlite3.connect(str(output)) as conn:
+        assert conn.execute("SELECT count(*) FROM sessions WHERE id = 'phantom'").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 21
+
+
+
+def test_salvage_bounds_damaged_low_edge_from_the_aggregate_not_the_int64_domain(
+    tmp_path: Path,
+) -> None:
+    """#98050: with the leftmost leaf damaged, ``ORDER BY rowid ASC LIMIT 1`` fails while
+    ``min(rowid)`` still answers via the covering index. Bisecting from INT64_MIN burned the
+    whole 10,000-query budget and lost every row; the aggregate must seed the bound instead."""
+    source = tmp_path / "low-edge.db"
+    sessions_root = _make_many_sessions_source(source, session_count=180)
+    page_size, leaf_pages = _btree_leaf_pages(source, sessions_root)
+    assert len(leaf_pages) >= 3
+    first_leaf = leaf_pages[0]
+    data = bytearray(source.read_bytes())
+    header_offset = (first_leaf - 1) * page_size
+    assert data[header_offset] == 0x0D
+    data[header_offset + 3 : header_offset + 5] = b"\xff\xff"
+    source.write_bytes(data)
+
+    conn = sqlite3.connect(str(source))
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            conn.execute('SELECT rowid FROM "sessions" ORDER BY rowid ASC LIMIT 1').fetchone()
+        bounds = session_recovery._salvage_rowid_bounds(conn, "sessions")
+        assert bounds["low"] == 1 and bounds["high"] == 180
+        assert bounds["fallback_edges"] == []
+
+        destination = sqlite3.connect(":memory:")
+        destination.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL)")
+        result = session_recovery._copy_table_salvage(
+            conn, destination, "sessions", chunk_size=16, progress_cb=None, source_rows=180,
+        )
+    finally:
+        conn.close()
+    assert result["query_limit_reached"] is False
+    assert result["range_queries"] < 200
+    # Only the rows on the damaged leaf are lost; everything behind it is recovered.
+    assert result["copied_rows"] >= 180 - 60

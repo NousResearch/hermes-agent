@@ -54,6 +54,37 @@ print(json.dumps({{"prefix": sys.prefix, "yaml": importlib.util.find_spec("ruame
     assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
+def test_pm_runtime_staging_survives_ambient_mirror_indexes(tmp_path, monkeypatch):
+    """A user's mirror index must not veto the staged PM runtime (#125657).
+
+    pm.index_config forwards ambient index settings into the stage's uv
+    sync. Under --locked uv treated the lock's official-PyPI origins as a
+    "missing remote index" on mirrored networks, re-resolved against the
+    mirror, and rejected the shipped lock ("needs to be updated"). The stage
+    installs frozen from the lock's own pinned URLs, so even an unreachable
+    mirror cannot fail the bootstrap.
+    """
+    from pm.runtime_stage import stage_runtime
+
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is required for the real dependency-runtime test")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(home / "tools"))
+    monkeypatch.setenv("UV_DEFAULT_INDEX", "http://127.0.0.1:9/simple")
+    monkeypatch.setenv("PIP_INDEX_URL", "http://127.0.0.1:9/simple")
+    python = stage_runtime(Path(uv), Path(sys.executable), tmp_path / "runtime")
+    checked = subprocess.run(
+        [str(python), "-I", "-B", "-c",
+         "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
 def test_cold_worker_bootstrap_reuses_the_requests_cache(tmp_path, monkeypatch):
     import pm
     from hermes_constants import get_default_hermes_root

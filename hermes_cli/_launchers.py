@@ -91,14 +91,52 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
                  or _committed_environment_command(root)
                  or _sibling_generation_entry(root))
         if entry is not None:
-            prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
-            return [str(entry), *prefix, *args]
+            if module == "hermes_cli.main":
+                return [str(entry), *args]
+            # Only the minted repo shim implements ``--run-module`` (its body
+            # in _launcher_script); a venv console script parses the flag's
+            # VALUE as a subcommand (exit 2) and a bare interpreter rejects
+            # the flag outright — so a non-default module rides the
+            # environment's own interpreter via ``-m`` instead (#125051
+            # review).
+            carrier = _module_carrier_command(entry, module, args)
+            if carrier is not None:
+                return carrier
+            # Script-only environment layout: fall through to the bootstrap
+            # form below, which carries any module and fails at activation
+            # with the actionable ``pm repair`` message rather than a
+            # deferred, silent exec failure.
     # No published launcher (#125043), or one whose tree cannot activate and
     # no owner record resolves: the interpreter bootstrap form — the same
     # shape the launcher itself wraps. Where the tree genuinely has no
     # committed environment this fails at activation with the actionable
     # ``pm repair`` message instead of a deferred, silent exec failure.
     return runtime_command(root, args, module=module, python=python, home=home)
+
+
+def _module_carrier_command(entry: Path, module: str, args) -> list[str] | None:
+    """A command carrying *module* that the artifact at *entry* understands.
+
+    ``--run-module`` exists only in the repo shim's body; the environment's
+    console script is wired to ``hermes_cli.main:main`` and cannot select a
+    non-default module at all. The console script's sibling interpreter
+    already has the dependency environment on ``sys.path``, so it takes the
+    module directly via ``-m``; an interpreter entry (the script-less venv
+    fallback of ``_committed_environment_command``) carries it itself.
+    ``None`` when no carrier artifact exists — callers fall through to the
+    bootstrap form.
+    """
+    python_names = (("python.exe", "python3.exe") if _is_windows()
+                    else ("python", "python3"))
+    if entry.name in python_names:
+        return [str(entry), "-I", "-m", module, *args]
+    hermes_names = ("hermes.exe",) if _is_windows() else ("hermes",)
+    if entry.name in hermes_names:
+        for name in python_names:
+            interpreter = entry.parent / name
+            if interpreter.is_file():
+                return [str(interpreter), "-I", "-m", module, *args]
+    return None
 
 
 def _recorded_venv_for_root(root: Path) -> Path | None:

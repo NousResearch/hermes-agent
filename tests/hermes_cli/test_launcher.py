@@ -100,6 +100,7 @@ def test_installation_command_workspace_without_facts_resolves_owner_entry(monke
     script = venv / "bin" / "hermes"
     script.write_text("#!/bin/sh\n", encoding="utf-8")
     script.chmod(0o755)
+    (venv / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
 
     # The checkout carries the committed facts; the workspace does not.
     from pm.environments import runtime_facts_path
@@ -122,9 +123,13 @@ def test_installation_command_workspace_without_facts_resolves_owner_entry(monke
     assert command[-2:] == ["gateway", "run"]
     assert str(shim) not in command
 
-    # Module form keeps the --run-module flag.
+    # Module form: the console script cannot carry a non-default module
+    # (its entry point is hermes_cli.main:main, and --run-module is a
+    # shim-only switch it would parse as a subcommand) — the module rides
+    # the environment's own interpreter instead.
     module_cmd = _launchers.installation_command(workspace, module="gateway.cgroup_cleanup")
-    assert module_cmd[:2] == [str(script), "--run-module"]
+    assert module_cmd == [str(venv / "bin" / "python"), "-I", "-m",
+                          "gateway.cgroup_cleanup"]
 
     # With facts of its own, the workspace keeps its published launcher.
     runtime_facts_path(workspace).parent.mkdir(parents=True, exist_ok=True)
@@ -171,6 +176,7 @@ def test_installation_command_generation_workspace_last_resort_uses_sibling_venv
     script = venv / "bin" / "hermes"
     script.write_text("#!/bin/sh\n", encoding="utf-8")
     script.chmod(0o755)
+    (venv / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
 
     monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: Path("/usr/bin/python3"))
     monkeypatch.setattr(_launchers, "_facts_owner_root", lambda root: tmp_path / "nowhere")
@@ -179,9 +185,18 @@ def test_installation_command_generation_workspace_last_resort_uses_sibling_venv
     assert command[0] == str(script), "sibling venv console script, not a workspace-bound interpreter form"
     assert command[-2:] == ["gateway", "run"]
 
-    # Module form keeps the --run-module flag.
+    # Module form: sibling console script + interpreter -m carrier (never
+    # --run-module on a console script — only the repo shim implements it).
     module_cmd = _launchers.installation_command(workspace, module="gateway.cgroup_cleanup")
-    assert module_cmd[:2] == [str(script), "--run-module"]
+    assert module_cmd == [str(venv / "bin" / "python"), "-I", "-m",
+                          "gateway.cgroup_cleanup"]
+
+    # A script-less sibling venv cannot carry a non-default module at all:
+    # fall through to the interpreter bootstrap form (actionable activation
+    # error), not a command that fails differently per artifact.
+    (venv / "bin" / "hermes").unlink()
+    no_script_cmd = _launchers.installation_command(workspace, module="gateway.cgroup_cleanup")
+    assert no_script_cmd[0] == "/usr/bin/python3" and no_script_cmd[1:3] == ["-I", "-c"]
 
     # A plain directory named "workspace" without the generation layout (no
     # sibling venv/pyvenv.cfg) must NOT resolve a bogus entry — the

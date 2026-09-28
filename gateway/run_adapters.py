@@ -25,6 +25,7 @@ from gateway.platforms.helpers import carry_inbound_dedup, inbound_dedup_caches
 from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
+from hermes_cli.observability.shared_metrics_gateway import record_platform_connect, record_platform_disconnect
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -174,6 +175,15 @@ class GatewayAdapterLifecycleMixin:
         ``initial`` selects the capped cold-start budget for platforms whose full connect budget is too long
         to spend before the gateway reaches ``running`` (#85993 — Telegram's 180s).
         """
+        try:
+            ok = await self._connect_adapter_bounded(adapter, platform, is_reconnect=is_reconnect, initial=initial)
+        except Exception as exc:
+            record_platform_connect(adapter, platform, is_reconnect=is_reconnect, ok=False, exc=exc)
+            raise
+        record_platform_connect(adapter, platform, is_reconnect=is_reconnect, ok=bool(ok))
+        return ok
+
+    async def _connect_adapter_bounded(self, adapter, platform, *, is_reconnect: bool, initial: bool) -> bool:
         timeout = self._platform_connect_timeout_secs(platform, initial=initial)
         if timeout <= 0:
             return await adapter.connect(is_reconnect=is_reconnect)
@@ -340,6 +350,7 @@ class GatewayAdapterLifecycleMixin:
             error_message=adapter.fatal_error_message,
         )
         if existing is adapter:
+            record_platform_disconnect(adapter)
             # Claim for teardown BEFORE awaiting disconnect(), else a second fatal disconnects it twice.
             self.adapters.pop(adapter.platform, None)
             self.delivery_router.adapters = self.adapters
@@ -473,7 +484,7 @@ class GatewayAdapterLifecycleMixin:
         """Process pending CLI→gateway session handoffs from ``state.db``: claim atomically (pending
         → running), re-bind the home channel to the CLI session_id, dispatch a synthetic event, mark
         ``completed``/``failed``."""
-        from gateway.run import _async_profile_runtime_scope, _handoff_watch_scopes, _reclaim_stale
+        from gateway.run import _async_profile_runtime_scope, _reclaim_stale, _resolve_handoff_watch_scopes
         from gateway.run_idle_gates import off_loop_gate, profile_has_pending_handoff
         await asyncio.sleep(5)  # let platforms connect before dispatching through them
         # Does _process_handoff accept the profile argument? Test stand-ins bind a one-arg callable.
@@ -534,14 +545,16 @@ class GatewayAdapterLifecycleMixin:
         def _scope(profile_home):  # local: tests bind this watcher onto bare SimpleNamespace runners
             return GatewayAdapterLifecycleMixin._async_scope_or_null(_async_profile_runtime_scope, profile_home)
 
-        for _pname, _phome in _handoff_watch_scopes(self):
+        # Multiplex scope resolution walks the filesystem (profiles_to_serve) off the loop, so a
+        # stalled walk cannot trip the liveness probe — startup reclaim and every tick alike.
+        for _pname, _phome in await _resolve_handoff_watch_scopes(self):
             with _log_suppressed(logging.DEBUG, "Stale-handoff reclaim failed", exc_info=True):
                 async with _scope(_phome):
                     await _reclaim_stale(self)
         try:
             while self._running:
                 try:
-                    for profile_name, profile_home in _handoff_watch_scopes(self):
+                    for profile_name, profile_home in await _resolve_handoff_watch_scopes(self):
                         # Idle gate (run_idle_gates): skip the scope entry when the profile's store
                         # holds no pending handoff. The root poll (None) is unscoped and stays cheap.
                         if profile_home is not None and not await off_loop_gate(
@@ -1497,6 +1510,9 @@ class GatewayAdapterLifecycleMixin:
             )
             return
         profile_map.pop(platform, None)
+        # The notification may arrive outside the profile's scope: the row is that profile's.
+        if (profile_home := self._routed_profile_home(profile_name)) is not UNRESOLVED_PROFILE_HOME:
+            record_platform_disconnect(adapter, hermes_home=profile_home)
         await self._safe_adapter_disconnect(adapter, platform)
         if not self._running:
             return

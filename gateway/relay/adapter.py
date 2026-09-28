@@ -228,6 +228,12 @@ class RelayAdapter(BasePlatformAdapter):
         """The chat's underlying platform as seen inbound, else the primary's."""
         return self._platform_by_chat.get(str(chat_id)) or self.descriptor.platform
 
+    def _metrics_platform(self, chat_id: str) -> Optional[str]:
+        """The platform a chat's shared metrics carry: the inbound's, else the primary's only when this
+        socket fronts one platform (a multi-platform connector's unknown chat stays unlabelled)."""
+        fronted = {p for p, _ in (getattr(self._transport, "_identities", None) or ())}
+        return self._platform_by_chat.get(str(chat_id)) or (self.descriptor.platform if len(fronted) <= 1 else None)
+
     def warning_notifications_enabled(self, logical_platform=None, *, chat_id=None, metadata=None) -> bool:
         platform = (logical_platform or (metadata or {}).get("_relay_logical_platform")
                     or self._chat_platform(chat_id))
@@ -2401,11 +2407,3 @@ _PROMPT_RESOLVERS = {
     "slash_confirm": RelayAdapter._resolve_slash_confirm,
     "clarify": RelayAdapter._resolve_clarify,
 }
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import cast  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

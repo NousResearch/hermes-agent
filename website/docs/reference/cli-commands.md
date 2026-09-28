@@ -1227,6 +1227,7 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 | `gateway` | `gateway.log` | Messaging gateway activity — platform connections, message dispatch, webhook events |
 | `gui` | `gui.log` | Dashboard / TUI-gateway / PTY-bridge / websocket events |
 | `desktop` | `desktop.log` | Electron desktop app — boot, backend spawn output, and recent Python tracebacks |
+| `mcp` | `mcp-stderr.log` | stderr of every stdio MCP server, one `starting MCP server` banner per launch |
 
 ### Options
 
@@ -1239,6 +1240,8 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 | `--session <ID>` | Filter lines containing a session ID substring. |
 | `--since <TIME>` | Show lines from a relative time ago: `30m`, `1h`, `2d`, etc. Supports `s` (seconds), `m` (minutes), `h` (hours), `d` (days). |
 | `--component <NAME>` | Filter by component: `gateway`, `agent`, `tools`, `cli`, `cron`. |
+
+A line without its own timestamp, such as a traceback frame or the rest of a multi-line message, is shown or hidden together with the timestamped line above it.
 
 ### Examples
 
@@ -1760,6 +1763,7 @@ Subcommands:
 | `optimize-storage` | Migrate the full-text search index to the compact v23 external-content layout; on large databases this reclaims a large fraction of `state.db`. |
 | `repair` | Repair a malformed `state.db` schema (e.g. `table messages_fts already exists`) so hidden sessions reappear; a backup is made first. |
 | `repair-routing` | Re-attach gateway conversations stranded in session rows that lost their routing identity (a chat "jumping back in time" after a restart). Dry-run by default; `--apply` performs the adoptions (stop the gateway first); `--max-gap-seconds N` tunes the contiguity window. Only unambiguous cases are repaired. See [Sessions → Repair Stranded Gateway Sessions](../user-guide/sessions.md#repair-stranded-gateway-sessions). |
+| `repair-prompts` | Report stored system prompts provably degraded by the pre-#122822 maintenance-compaction bug. Report-only by default; `--apply` clears verified rows so the next turn rebuilds them, `--json` is machine-readable (and non-interactive when combined with `--apply`), and an explicit `session_id` is a destructive override that can clear even a healthy prompt. Rows without a readable tools[] pin, or with a memory-only pin, are reported as unverifiable and left unchanged by the scan (a resumed memory-only session re-pins its full tool surface, after which a scan can clear it). Restart a running gateway after `--apply` so repaired rows take effect. See [Sessions → Repair Degraded Stored Prompts](../user-guide/sessions.md#repair-degraded-stored-prompts). |
 | `repair-profiles` | Settle session, routing, Telegram-topic and voice-mode state that landed under the wrong profile (rows in another profile's store, labels disagreeing with the session key, parent links crossing profiles, index rows for deleted profiles). Dry-run by default; `--apply` performs the repairs after snapshotting every store (stop the gateway first); `--legacy-main rekey\|move` decides what `agent:main` rows inside a named profile's store are; `--json` for automation. See [Sessions → Repair State Crossed Between Profiles](../user-guide/sessions.md#repair-state-crossed-between-profiles). |
 | `recover` | Offline, non-destructive recovery of a damaged `state.db` into a separate clean database. |
 | `retitle-skills` | Regenerate titles for sessions opened with a `/skill`, using what the user actually typed; lists changes unless `--apply` is passed. |

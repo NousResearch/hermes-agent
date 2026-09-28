@@ -38,6 +38,15 @@ export interface GatewayClientOptions {
 
 const ANY = '*'
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
+// `approval.respond` rides the SAME deadline the backend grants the user to
+// answer: tools/approval_context.py reads `approvals.timeout` (default 300s —
+// gateway push notifications may not be seen for minutes). A shorter client
+// timeout races that window: answer at t=130s and the frontend has already
+// rejected its own RPC while the backend happily applies the decision — the
+// desktop shows "request timed out" and freezes on a card that is actually
+// resolved (#60654). Match the backend default so the client only gives up
+// when the backend itself fails the approval closed.
+export const APPROVAL_RESPOND_TIMEOUT_MS = 300_000
 
 const isGatewayReady = (event: GatewayEvent): event is GatewayEvent<'gateway.ready'> => event.type === 'gateway.ready'
 // Replay fetch after reconnect: bounded so a wedged backend can't hold the

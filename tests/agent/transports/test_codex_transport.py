@@ -35,6 +35,26 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    @pytest.mark.parametrize("model", ["gpt-6-astra", "openai/gpt-6-astra"])
+    @pytest.mark.parametrize("effort, expected", [
+        ("low", "low"), ("medium", "medium"), ("high", "high"),
+        ("xhigh", "xhigh"), ("max", "max"), ("ultra", "max"),
+        ("minimal", "low"), ("none", None),
+    ])
+    def test_astra_copilot_forwards_configured_reasoning(self, transport, model, effort, expected):
+        from agent.reasoning_params import ReasoningParamsMixin
+        from hermes_constants import resolve_reasoning_config
+
+        reasoning = resolve_reasoning_config({"agent": {"reasoning_effort": effort}}, model)
+        agent = SimpleNamespace(model=model, reasoning_config=reasoning)
+        kw = transport.build_kwargs(
+            model=model, messages=[{"role": "user", "content": "Hi"}],
+            provider="github-copilot", is_github_responses=True,
+            reasoning_config=reasoning,
+            github_reasoning_extra=ReasoningParamsMixin._github_models_reasoning_extra_body(agent),
+        )
+        assert kw.get("reasoning") == ({"effort": expected} if expected else None)
+
     def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
         kw = transport.build_kwargs(
             model="gpt-6-astra",
@@ -96,6 +116,45 @@ class TestCodexBuildKwargs:
 
         assert kw["reasoning"]["effort"] == "none"
         assert kw["temperature"] == 0.4
+
+    @pytest.mark.parametrize(
+        "base_url,is_codex",
+        [
+            ("https://api.openai.com/v1", False),
+            ("https://chatgpt.com/backend-api/codex", True),
+            ("https://responses.example.com/v1", False),
+        ],
+    )
+    def test_prompt_cache_options_dropped_from_overrides(
+        self, transport, monkeypatch, caplog, base_url, is_codex
+    ):
+        """``prompt_cache_options`` has no Responses.create() kwarg, so a top-level copy
+        from request_overrides raises TypeError before any request is sent — on the
+        official API, the Codex backend, and custom Responses endpoints alike. The
+        ``extra_body`` escape hatch the warning points to still reaches the wire, and
+        the warning fires once per process rather than every turn."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_PROMPT_CACHE_OPTIONS_DROP_WARNED", False)
+        caplog.set_level("WARNING", logger=codex_mod.logger.name)
+        for _ in range(2):
+            kw = transport.build_kwargs(
+                model="gpt-6-astra",
+                messages=[{"role": "user", "content": "Hi"}],
+                tools=[],
+                base_url=base_url,
+                is_codex_backend=is_codex,
+                request_overrides={
+                    "prompt_cache_options": {"ttl": "30m"},
+                    "store": True,
+                    "extra_body": {"prompt_cache_options": {"ttl": "30m"}},
+                },
+            )
+            assert "prompt_cache_options" not in kw
+            assert kw["store"] is True
+            assert kw["extra_body"]["prompt_cache_options"] == {"ttl": "30m"}
+        assert caplog.text.count("Dropped prompt_cache_options") == 1
+        assert "extra_body" in caplog.text
 
     def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
         """``-900k`` large-context picker variants are Hermes-side aliases —

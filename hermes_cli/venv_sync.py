@@ -273,7 +273,13 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     python = resolve_store_python(root)
     if python is None:
         raise RuntimeError("source update has no managed Python; run `hermes pm install`")
-    if not current or python.absolute() != Path(sys.executable).absolute():
+    # Lexical identity, never resolve(): PM spells the store path through
+    # HERMES_HOME (which may carry '..') while sys.executable arrives
+    # normalized, so a raw compare re-execs every child forever (#122513). A
+    # venv interpreter symlinked to the same binary is still a different
+    # interpreter (its own sys.prefix) and must re-exec once.
+    same = os.path.normcase(os.path.abspath(python)) == os.path.normcase(os.path.abspath(sys.executable))
+    if not current or not same:
         publish_launchers(root)
         return python
     return None

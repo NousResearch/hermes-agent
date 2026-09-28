@@ -1,7 +1,9 @@
+import { compactNumber } from '@hermes/shared'
 import { useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { fmtDateTime, relativeTime } from '@/lib/time'
@@ -44,8 +46,8 @@ export function CatalogHeaderMeta({ entry }: { entry: CatalogEntry }) {
       )}
       {entry.stars !== null && entry.stars > 0 && (
         <span className="flex shrink-0 items-center gap-0.5 text-[0.65rem] text-(--ui-text-tertiary)">
-          <span aria-hidden>★</span>
-          {entry.stars.toLocaleString()}
+          <Codicon name="star-full" size="0.65rem" />
+          {compactNumber(entry.stars)}
         </span>
       )}
     </span>

@@ -11,7 +11,7 @@ import { EventEmitter } from 'node:events'
 
 import { test } from 'vitest'
 
-import { type ExternalOpenDeps, openExternalUrl } from './external-open'
+import { type ExternalOpenDeps, openExternalUrl, reportPreOpenStatFailure } from './external-open'
 
 function makeDeps(overrides: Partial<ExternalOpenDeps> = {}) {
   const calls = {
@@ -133,4 +133,41 @@ test('wsl: falls back to openExternal and notifies when cmd.exe fails to spawn',
 
   assert.deepEqual(calls.opened, ['https://example.com/'])
   assert.deepEqual(calls.notified, [['https://example.com/', 'xdg-open missing']])
+})
+
+test('guard: missing-file error is reported once and classified as a miss', () => {
+  const reported: Array<[string, string]> = []
+  const logged: string[] = []
+
+  const error = Object.assign(new Error('This file does not exist: /tmp/gone.html'), { code: 'missing-file' })
+
+  const isMiss = reportPreOpenStatFailure(error, 'file:///tmp/gone.html', {
+    log: line => logged.push(line),
+    reportMissing: (url, message) => reported.push([url, message])
+  })
+
+  assert.equal(isMiss, true)
+  assert.deepEqual(reported, [['file:///tmp/gone.html', 'This file does not exist: /tmp/gone.html']])
+  assert.equal(logged.length, 0)
+})
+
+test('guard: a non-missing stat failure is logged and classified as proceed-to-OS', () => {
+  const reported: Array<[string, string]> = []
+  const logged: string[] = []
+
+  for (const code of ['EACCES', 'ELOOP', 'EPERM', 'ENAMETOOLONG']) {
+    const error = Object.assign(new Error(`${code}: stat failed`), { code })
+
+    const isMiss = reportPreOpenStatFailure(error, 'file:///srv/locked/report.html', {
+      log: line => logged.push(line),
+      reportMissing: (url, message) => reported.push([url, message])
+    })
+
+    assert.equal(isMiss, false, code)
+  }
+
+  // Nothing was fabricated as a miss, and every failure left a log line.
+  assert.equal(reported.length, 0)
+  assert.equal(logged.length, 4)
+  assert.ok(logged.every(line => line.includes('[file] pre-open stat failed')))
 })

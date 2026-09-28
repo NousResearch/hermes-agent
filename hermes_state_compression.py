@@ -49,6 +49,10 @@ _CHAIN_STEP_SQL = f"""
                     """
 
 
+# Turn-lease rows expired longer than this are swept by the next acquisition of any conversation.
+_TURN_LEASE_SWEEP_GRACE_S = 86400.0
+
+
 def _cooldown_row(exists: bool, cooldown_until, error) -> Dict[str, Any]:
     return {"session_exists": exists,
             "cooldown_until": float(cooldown_until) if cooldown_until is not None else None, "error": error}
@@ -308,7 +312,7 @@ class SessionCompressionMixin:
                 "WHERE id = ? AND ended_at IS NULL", (time.time(), parent_session_id))
             if updated.rowcount != 1:
                 raise RuntimeError(f"Compression parent changed during publication: {parent_session_id}")
-        self._execute_write(_do)
+        self._execute_transcript_write(_do, messages)
 
     def _write_sql_logged(self, op: str, session_id: str, sql: str, params) -> None:
         """``_write_sql`` that logs (never raises) on ``sqlite3.Error``."""
@@ -436,6 +440,27 @@ class SessionCompressionMixin:
             normalized = 0.0
         self._write_session_column("compression_recovery_deadline", session_id, normalized or None)
 
+    def get_compression_overload_streak(self, session_id: str) -> int:
+        """Return the persisted sustained-overload abort streak (#123167)."""
+        return self._read_session_number("compression_overload_streak", session_id, int, 0)
+
+    def set_compression_overload_streak(self, session_id: str, streak: int) -> None:
+        """Persist the sustained-overload abort streak for one session."""
+        if session_id:
+            self._write_session_column("compression_overload_streak", session_id, max(0, int(streak)))
+
+    def increment_compression_overload_streak(self, session_id: str) -> Optional[int]:
+        """Atomically bump the overload streak and return the new value (None when no row).
+        One UPDATE ... RETURNING, so concurrent agents on one session cannot lose a strike."""
+        if not session_id:
+            return None
+        def _do(conn):
+            row = conn.execute(
+                "UPDATE sessions SET compression_overload_streak = compression_overload_streak + 1"
+                " WHERE id = ? RETURNING compression_overload_streak", (session_id,)).fetchone()
+            return None if row is None else int(row[0])
+        return self._execute_write(_do)
+
     def refresh_compression_lock(self, session_id: str, holder: str, ttl_seconds: float = 300.0) -> bool:
         """Extend the compression lock lease if ``holder`` still owns it. Ownership is decided by ``holder``
         alone, deliberately NOT ``expires_at``: a live owner whose refresher stalled past its TTL must be
@@ -534,6 +559,12 @@ class SessionCompressionMixin:
         now = time.time()
         expires_at = now + max(0.1, float(ttl_seconds))
         def _do(conn):
+            # Sweep rows that expired long ago: a holder that died without releasing leaves its row
+            # behind, and nothing else revisits a conversation nobody resumes. The grace keeps the
+            # recent expiries a still-live owner can renew from a starved refresher; it is also the
+            # longest a suspended holder can go unrefreshed and still keep its lease.
+            conn.execute("DELETE FROM session_turn_leases WHERE expires_at < ?",
+                         (now - _TURN_LEASE_SWEEP_GRACE_S,))
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             return _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,

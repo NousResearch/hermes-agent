@@ -14,6 +14,7 @@ import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
 import { profileScopeForSessionOwner, refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
+import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
@@ -207,8 +208,8 @@ export function useSessionTileDelegate({
       deleteSession: async storedSessionId => {
         await removeSession(storedSessionId)
       },
-      executeSlash: async (rawCommand, sessionId) => {
-        await executeSlashCommand(rawCommand, { sessionId })
+      executeSlash: async (rawCommand, sessionId, options) => {
+        await executeSlashCommand(rawCommand, { sessionId, ...options })
       },
       // Gateway reconnect (sleep/wake, backend respawn): every stored→runtime
       // binding recorded pre-reconnect points at a runtime id the respawned
@@ -487,6 +488,8 @@ export function useSessionTileDelegate({
           ? <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) =>
               requestForStoredSession<T>(storedSessionId, method, params ?? {}, timeoutMs)
           : requestGateway
+
+        noteMessageSent($sessionTiles.get().find(tile => tile.runtimeId === runtimeId)?.workspaceMode ?? 'sessions')
 
         await withSessionNotFoundResume(
           runtimeId,

@@ -16,7 +16,7 @@
  */
 
 import { getOlderSessionMessages, type ProfileScope } from '@/hermes'
-import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
   recordTranscriptBackfillPage,
   tailStateFromPage,
@@ -138,6 +138,72 @@ function durableRowIds(messages: ChatMessage[]): Set<number> {
   return new Set(messages.flatMap(message => (message.rowId === undefined ? [] : [message.rowId])))
 }
 
+/** A text-only refresh can omit the live tool bubble after the turn settles. */
+function retainCompletedTurnTools(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  const previousFinalIndex = previous.findLastIndex(
+    message => message.role === 'assistant' && message.rowId !== undefined && Boolean(chatMessageText(message).trim())
+  )
+
+  if (previousFinalIndex < 0) {
+    return messages
+  }
+
+  const previousFinal = previous[previousFinalIndex]
+
+  const finalIndex = messages.findIndex(
+    message => message.role === 'assistant' && message.rowId === previousFinal.rowId
+  )
+
+  if (finalIndex < 0 || chatMessageText(messages[finalIndex]).trim() !== chatMessageText(previousFinal).trim()) {
+    return messages
+  }
+
+  const previousUserIndex = previous.findLastIndex(
+    (message, index) => index < previousFinalIndex && message.role === 'user'
+  )
+
+  const userIndex = messages.findLastIndex((message, index) => index < finalIndex && message.role === 'user')
+
+  if (
+    previousUserIndex < 0 ||
+    userIndex < 0 ||
+    previous[previousUserIndex].rowId === undefined ||
+    previous[previousUserIndex].rowId !== messages[userIndex].rowId
+  ) {
+    return messages
+  }
+
+  const existingIds = new Set(
+    messages
+      .slice(userIndex + 1, finalIndex + 1)
+      .flatMap(message => message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : [])))
+  )
+
+  const missing = previous.slice(previousUserIndex + 1, previousFinalIndex + 1).flatMap(message =>
+    message.parts.filter(part => {
+      if (part.type !== 'tool-call' || (part.result === undefined && part.completedAt === undefined)) {
+        return false
+      }
+
+      if (existingIds.has(part.toolCallId)) {
+        return false
+      }
+
+      existingIds.add(part.toolCallId)
+
+      return true
+    })
+  )
+
+  if (!missing.length) {
+    return messages
+  }
+
+  return messages.map((message, index) =>
+    index === finalIndex ? { ...message, parts: [...missing, ...message.parts] } : message
+  )
+}
+
 function sharesDurableRow(first: ChatMessage[], second: ChatMessage[]): boolean {
   const rowIds = durableRowIds(first)
 
@@ -231,11 +297,27 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
     previous.slice(0, anchor).every(message => message.rowId === undefined || message.rowId < anchorRowId)
 
   if (anchor === 0) {
-    return refreshedTail
+    return retainCompletedTurnTools(refreshedTail, previous)
   }
 
   if (prefixIsEarlier) {
-    return [...previous.slice(0, anchor), ...refreshedTail]
+    // A page-local tool fold can sit in front of the anchor on BOTH sides: the
+    // window's copy was hydrated from the same page, and the refreshed page
+    // re-emits that row with the same id. Keeping both copies makes the graft
+    // non-idempotent — the refreshed window comes back one row longer than the
+    // local window on every read, so `messagesIfTranscriptBehind` reports
+    // "behind" forever: the send is refused before `prompt.submit` runs and a
+    // duplicate accumulates per retry. Drop only the prefix copies the page
+    // already carries. Every durable prefix row keeps travelling in front of
+    // the refreshed tail, and so does an unstored row the page has no copy of
+    // (it can only have come from an older page).
+    const refreshedIds = new Set(refreshedTail.map(message => message.id))
+
+    const prefix = previous
+      .slice(0, anchor)
+      .filter(message => message.rowId !== undefined || !refreshedIds.has(message.id))
+
+    return retainCompletedTurnTools(prefix.length ? [...prefix, ...refreshedTail] : refreshedTail, previous)
   }
 
   const refreshedIds = new Set(refreshedTail.map(message => message.id))
@@ -244,10 +326,10 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
   // tail really did cover. Take the page. This is what keeps a finished reply
   // through a long tool turn.
   if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
-    return refreshedTail
+    return retainCompletedTurnTools(refreshedTail, previous)
   }
 
-  return mergeOverlappingTail(previous, refreshedTail)
+  return retainCompletedTurnTools(mergeOverlappingTail(previous, refreshedTail), previous)
 }
 
 const REFRESH_OVERLAP_PAGE_LIMIT = 4

@@ -1,6 +1,39 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
+  sharedMetrics: {
+    consentTitle: 'هل تساعد في تحسين Hermes؟',
+    consentBody:
+      'تحتوي المقاييس المشتركة على عدّادات محدودة فقط، ولا تتضمن أبدًا المطالبات أو الملفات أو المسارات أو نصوص الأخطاء. الجمع محلي، وإرسالها إلى Nous موافقة منفصلة.',
+    whatIsCollected: 'ما الذي يُجمع',
+    collectedIntro: 'عدّادات محدودة فقط:',
+    collectedActivity: 'النشاط وطول الجلسات والنتائج وفئات الأخطاء',
+    collectedModels: 'مسارات النماذج وإجمالي الرموز',
+    collectedNames: 'أسماء الأدوات والأوامر وعناصر الفهرس المدمجة',
+    collectedMilestones: 'أعداد الإعداد ضمن فئات',
+    collectedReliability: 'نتائج التحديث ومدته، والأعطال، وسرعة البدء والرد، وحالة منصات المراسلة',
+    collectedUsage: 'كيفية استخدام Hermes: دقة الوكيل وكفاءته (نجاح التعديلات، الحلقات، التعافي من الأخطاء، الرموز واستدعاءات الأدوات لكل مهمة، انقطاعات الذاكرة المؤقتة)، وقت النشاط لكل واجهة ووضع في تطبيق سطح المكتب، أقسام التطبيق وإجراءاته وإعداداته التي تُستخدم أو تُغلق بسرعة أو تُعطَّل، ونتائج إعداد المزوّدين',
+    collectedMachine: 'معلومات عامة عن الجهاز: نطاق الذاكرة، نوع وحدة الرسوميات، عمر إصدار Hermes وقناته، عدد التحديثات المتأخرة، واستخدام خادم نماذج محلي',
+    installId:
+      'يرفع الإرسال كل حزمة يومية إلى خدمة القياس عن بُعد لدى Nous. تحمل الحزم معرّف التثبيت لهذا الملف الشخصي: معرّف UUID عشوائي ثابت بلا معلومات شخصية، ويُعاد تعيينه بحذف مجلد المقاييس المشتركة.',
+    consentWindow:
+      'لا تُرسل إلا الحزم التي تقع فترة جمعها كاملة داخل نافذة موافقة مسجلة — تبقى البيانات السابقة لموافقتك، أو من أي فترة كان الإرسال فيها متوقفًا، على هذا الجهاز. يمكن إيقاف الإرسال مجددًا في أي وقت.',
+    readDocs: 'اقرأ التفاصيل الكاملة',
+    share: 'الجمع والإرسال إلى Nous',
+    local: 'الجمع محليًا فقط',
+    off: 'لا، شكرًا',
+    changeLater: 'يمكنك تغيير ذلك في أي وقت من الإعدادات ← الأمان.',
+    saveFailed: 'تعذّر حفظ اختيارك',
+    collectLabel: 'جمع إحصاءات الاستخدام',
+    collectDesc: 'عدّادات محدودة تُحفظ على هذا الجهاز. دون مطالبات أو ملفات أو مسارات أو نصوص أخطاء.',
+    sendLabel: 'إرسال إحصاءات الاستخدام إلى Nous',
+    sendDesc:
+      'رفع كل حزمة يومية إلى خدمة القياس عن بُعد لدى Nous. لا تُرسل إلا بيانات نافذة الموافقة. يتطلب تفعيل الجمع.',
+    unavailable: 'حدّث واجهة Hermes الخلفية لتغيير هذا الإعداد.',
+    stripBody: 'عدّادات محدودة فقط، دون أي مطالبات أو ملفات.',
+    stripChoices: { share: 'إرسال إلى Nous', local: 'محليًا فقط', off: 'لا، شكرًا' },
+    stripDetails: 'التفاصيل'
+  },
   externalOpenFailed: {
     title: 'تعذّر فتح هذا الرابط',
     message: 'لا يوجد متصفح مسجل لفتح هذا العنوان. انسخ الرابط وافتحه يدويًا.',
@@ -385,6 +418,8 @@ export const ar = defineLocale({
       'composer.modelPicker': 'فتح منتقي النموذج',
       'composer.voice': 'بدء / إيقاف المحادثة الصوتية',
       'composer.dictate': 'بدء / إيقاف الإملاء',
+      'composer.reasoningUp': 'رفع مستوى التفكير',
+      'composer.reasoningDown': 'خفض مستوى التفكير',
       'view.toggleSidebar': 'تبديل الشريط الجانبي للجلسات',
       'view.toggleRightSidebar': 'تبديل متصفح الملفات',
       'view.toggleReview': 'تبديل لوحة المراجعة',
@@ -724,6 +759,8 @@ export const ar = defineLocale({
       textDirection: { auto: 'تلقائي', rtl: 'من اليمين إلى اليسار', ltr: 'من اليسار إلى اليمين' },
       introSplashTitle: 'شاشة المقدمة',
       introSplashDesc: 'الشعار النصي والعبارة التمهيدية في محادثة فارغة.',
+      modelPricingTitle: 'أسعار النماذج',
+      modelPricingDesc: 'عرض أسعار الإدخال والإخراج وقراءة ذاكرة التخزين المؤقت لكل مليون رمز في منتقي النماذج.',
       reactionsTitle: 'تفاعلات الرسائل',
       reactionsDesc: 'تفاعلات إيموجي بأسلوب iMessage — تفاعل مع الرسائل، ويمكن لـ Hermes التفاعل مع رسائلك.',
       tipsTitle: 'نصائح داخل التطبيق',
@@ -734,7 +771,9 @@ export const ar = defineLocale({
       toursDesc:
         'دع Hermes يرشدك في التطبيق مع إبراز كل خطوة. تُعطّل الجولات تلقائيًا بعد أول 30 يومًا من الاستخدام، ويمكنك تفعيلها مجددًا.',
       composerPopoutTitle: 'محرر عائم',
-      composerPopoutDesc: 'السماح بسحب محرر الرسائل خارج موضعه. عطّل هذا الخيار لإبقائه مثبتًا في الأسفل.',
+      composerPopoutDesc: 'السماح بسحب محرر الرسائل خارج موضعه. عند إيقاف الخيار، يبقى مثبتًا في الأسفل.',
+      fileBrowserTitle: 'مستعرض الملفات',
+      fileBrowserDesc: 'عرض مستعرض الملفات بجانب المحادثة عند فتح مساحة عمل. يغيّر زر شريط العنوان هذا الخيار أيضًا.',
       vibeHeartsTitle: 'قلوب المزاج',
       vibeHeartsDesc: 'قلوب عائمة عند قول شكراً أو أحبك أو good bot أو إرسال قلب. منفصلة عن تفاعلات الرسائل أعلاه.',
       embedsTitle: 'التضمينات المضمّنة',
@@ -1157,6 +1196,7 @@ export const ar = defineLocale({
       restartFailed: 'تعذر إعادة تشغيل الخلفية',
       auxiliaryTitle: 'النماذج المساعدة',
       resetAllToMain: 'إعادة تعيين الكل إلى النموذج الرئيسي',
+      staleAuxDismiss: 'عدم الإظهار مجددًا',
       auxiliaryDesc: 'تعمل المهام المساعدة على النموذج الرئيسي افتراضيا. عيّن نموذجا مخصصا لأي مهمة لتجاوز ذلك.',
       setToMain: 'ضبط على الرئيسي',
       change: 'تغيير',
@@ -1447,11 +1487,6 @@ export const ar = defineLocale({
       system: 'النظام',
       usage: 'الاستخدام'
     },
-    sectionDescriptions: {
-      sessions: 'البحث في الجلسات وإدارتها',
-      system: 'الحالة والسجلات وإجراءات النظام',
-      usage: 'نشاط الرموز والتكلفة والمهارات عبر الزمن'
-    },
     nav: {
       newChat: {
         title: 'جلسة جديدة',
@@ -1516,6 +1551,7 @@ export const ar = defineLocale({
     actionStartedWaiting: 'بدأ الإجراء، جار الانتظار...',
     loadingStatus: 'جار تحميل الحالة',
     recentLogs: 'السجلات الأخيرة',
+    logSearchPlaceholder: 'البحث في سطور السجل...',
     noLogs: 'لا توجد سجلات',
     days: count => `${count} يوم`,
     statSessions: 'الجلسات',
@@ -1538,6 +1574,13 @@ export const ar = defineLocale({
   },
   messaging: {
     search: 'بحث',
+    statusFilter: {
+      all: 'الكل',
+      bad: 'أخطاء',
+      good: 'متصل',
+      muted: 'غير نشط',
+      warn: 'يحتاج انتباهًا'
+    },
     loading: 'جار التحميل...',
     loadFailed: 'فشل التحميل',
     states: {
@@ -1832,6 +1875,8 @@ export const ar = defineLocale({
     skillsLabel: 'المهارات',
     notSet: 'غير مضبوط',
     soulDesc: 'الموجّه (prompt) النظامي وتعليمات الشخصية المضمّنة في هذا الملف الشخصي.',
+    soulMissing:
+      'لا يوجد ملف SOUL.md لهذا الملف الشخصي بعد. أضف التعليمات أدناه واحفظ لإنشائه. تُدار إعدادات الشخصية في config.yaml بشكل منفصل.',
     soulOptional: 'اختياري',
     soulPlaceholder: mode =>
       `الموجّه (prompt) النظامي / الشخصية لهذا الملف الشخصي.\nاتركه فارغا للإبقاء على افتراضي ${mode}.`,
@@ -1981,6 +2026,8 @@ export const ar = defineLocale({
     nameLabel: 'الاسم',
     namePlaceholder: 'مثال: الملخص الصباحي',
     promptLabel: 'الرسالة',
+    scriptLabel: 'البرنامج النصي',
+    scriptBadge: 'برنامج نصي',
     promptPlaceholder: 'ماذا تريد من Hermes أن يفعل؟',
     frequencyLabel: 'التكرار',
     deliverLabel: 'التسليم',
@@ -2225,6 +2272,7 @@ export const ar = defineLocale({
       ownedByProfile: profile => `مملوكة للملف الشخصي ${profile}`,
       untitledChat: id => `محادثة ${id}`,
       handoffOrigin: platform => `قادمة من ${platform}`,
+      continuationOrigin: 'متابعة تلقائية — تم ضغط هذه المحادثة ومتابعتها',
       renamed: 'تمت إعادة التسمية',
       renameFailed: 'فشلت إعادة التسمية',
       renameTitle: 'إعادة تسمية الجلسة',
@@ -2373,12 +2421,17 @@ export const ar = defineLocale({
     restoredDraftNotice: 'تمت استعادة رسالتك غير المُرسلة',
     restoredDraftUndo: 'تراجع',
     queueEdit: 'تحرير الرسالة المجدولة',
+    queueExpand: 'توسيع',
+    queueCollapse: 'طي',
     queueSendNext: 'إرسالها تاليا',
     queueSteer: 'توجيه — تصحيح الدور الجاري فورا',
     queueSend: 'إرسالها الآن',
     queueDelete: 'حذف من الطابور',
     queueStuckTitle: 'لم تُرسل الرسالة في قائمة الانتظار',
     queueStuckBody: 'ظل دور في قائمة الانتظار يفشل في الإرسال. ما زال في قائمة الانتظار — حاول إرساله مرة أخرى.',
+    queueDroppedTitle: 'تم إسقاط عنصر قائمة الانتظار',
+    queueDroppedBody:
+      'أُسقط هذا العنصر في الخلفية لأن جلسته تعذّر استئنافها بعد محاولات متكررة. بقية قائمة الانتظار لم تتأثر.',
     previewUnavailable: 'المعاينة غير متاحة',
     previewLabel: label => `معاينة ${label}`,
     couldNotPreview: label => `تعذرت معاينة ${label}`,
@@ -2434,6 +2487,7 @@ export const ar = defineLocale({
     goalWaiting: 'الهدف قيد الانتظار',
     subagents: count => `${count} ${count === 1 ? 'وكيل فرعي' : 'وكيل فرعي'}`,
     todos: (done, total) => `المهام ${done}/${total}`,
+    previousTodos: (done, total) => `المهام السابقة ${done}/${total}`,
     running: 'قيد التشغيل',
     stop: 'إيقاف',
     dismiss: 'تجاهل',
@@ -2656,6 +2710,7 @@ export const ar = defineLocale({
     updateNow: 'التحديث الآن',
     maybeLater: 'ربما لاحقا',
     moreChanges: count => `+ ${count} تغيير${count === 1 ? '' : 'ات'} إضافي مُضمَّن.`,
+    copyFullLog: 'نسخ سجل التغييرات الكامل',
     manualTitle: 'التحديث من الطرفية',
     manualUnavailableTitle: 'لا يمكن التحديث من هنا',
     manualBody: 'لقد ثبّتت Hermes من سطر الأوامر، لذا تُجرى التحديثات من هناك أيضا. الصق هذا في طرفيتك:',
@@ -2862,7 +2917,11 @@ export const ar = defineLocale({
     noAuthenticatedProviders: 'لا يوجد مزوّدون مصادق عليهم.',
     addProvider: 'إضافة مزوّد…',
     addCustomModel: 'إضافة نموذج مخصص',
-    removeCustomModel: 'إزالة النموذج المخصص'
+    removeCustomModel: 'إزالة النموذج المخصص',
+    resetToDefaults: 'إعادة التعيين إلى الافتراضي',
+    resetConfirm: 'إعادة إعدادات ظهور النماذج إلى الافتراضي؟',
+    resetDescription: 'ستُمسح اختياراتك للنماذج الظاهرة والمخفية وتعود قائمة كل مزوّد الافتراضية. تُحفظ النماذج المخصصة التي أضفتها وتظهر.',
+    resetAction: 'إعادة التعيين'
   },
   shell: {
     windowControls: 'تحكم النافذة',
@@ -2874,7 +2933,11 @@ export const ar = defineLocale({
       editModels: 'تحرير النماذج',
       followDefault: 'استخدام الافتراضي من الإعدادات',
       refreshModels: 'تحديث النماذج',
-      fast: 'سريع'
+      fast: 'سريع',
+      free: 'مجاني',
+      cacheRead: 'قراءة من الذاكرة المؤقتة',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `الإدخال ${input}/Mtok · الإخراج ${output}/Mtok` + (cache ? ` · قراءة من الذاكرة المؤقتة ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'لا توجد خيارات لهذا النموذج',
@@ -3252,6 +3315,8 @@ export const ar = defineLocale({
       preparingAudio: 'جار تجهيز الصوت',
       stopReading: 'إيقاف القراءة',
       readAloud: 'قراءة بصوت عال',
+      copyFullResponse: 'نسخ الرد الكامل',
+      readAloudFullResponseHint: 'انقر مع الضغط على Shift: قراءة الرد الكامل بصوت عال',
       editMessage: 'تحرير الرسالة',
       scrollToBottom: 'التمرير إلى الأسفل',
       stop: 'إيقاف',
@@ -3668,6 +3733,11 @@ export const ar = defineLocale({
   ui: {
     search: {
       clear: 'مسح البحث'
+    },
+    logs: {
+      bottom: 'أسفل السجل',
+      search: 'البحث في السجلات…',
+      top: 'أعلى السجل'
     },
     pagination: {
       label: 'ترقيم الصفحات',

@@ -896,14 +896,3 @@ registry.register(
     is_async=False,   # sync fal_client API to avoid "Event loop is closed" in gateway
     emoji="🎨", dynamic_schema_overrides=_build_dynamic_image_schema,
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def is_krea_model(model_id: Optional[str]) -> bool:
-    """True when ``model_id`` is a native Krea plugin id (``krea-2-*``)."""
-    return _normalize_krea_model(model_id) is not None
-# ---- END PLUGIN-COMPAT ----

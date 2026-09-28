@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
 
 __all__ = [
@@ -28,10 +29,12 @@ __all__ = [
     "bounded_git_probe",
     "bounded_probe_run",
     "selected_git_env",
+    "expose_pm_git",
     "noninteractive_git_env",
     "NO_DRIVER_DIFF_FLAGS",
     "NO_LAZY_FETCH_ENV",
     "pid_is_hermes",
+    "pid_exists_stdlib",
 ]
 
 # Flags that neutralize *attribute-scoped* diff drivers on any diff-rendering git command. A
@@ -371,6 +374,35 @@ def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
         return env
 
 
+def expose_pm_git(project_root: Path) -> None:
+    """Put PM's git on PATH, and in PM's facts, for a Windows git checkout.
+
+    install.ps1 stages the pinned Git for Windows into PM's store for its own
+    process only, and PM's facts never record it, so every later bare ``git``
+    (``hermes update``, the source-completion stamp, plugin installs, doctor)
+    died with ``[WinError 2]``. A git found under PM's store is that unrecorded
+    copy inherited from the installer, so it is recorded too. Callers are
+    explicit user actions (like ``ensure_tools_for_sync``), so acquire PM's git
+    outright; children inherit the PATH. The machine's own git, and a git-less
+    ZIP install that never runs git, are untouched. Raises what ``pm.ensure``
+    raises.
+    """
+    if sys.platform != "win32" or not (Path(project_root) / ".git").exists():
+        return
+    from hermes_platform.resolver import locate_command
+    from pm.paths import store_root
+
+    found = locate_command("git").command
+    if found and not Path(found[0]).resolve().is_relative_to(store_root()):
+        return
+    from pm import ensure
+
+    env = ensure("git", explicit=True).env
+    path = next((value for key, value in env.items() if key.upper() == "PATH"), None)
+    if path:
+        os.environ["PATH"] = path
+
+
 def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str, str]:
     """Environment for *internal* git invocations that must never prompt.
 
@@ -432,6 +464,73 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
         env[f"GIT_CONFIG_KEY_{idx}"] = key
         env[f"GIT_CONFIG_VALUE_{idx}"] = value
     return env
+
+
+def posix_is_zombie(pid: int) -> bool:
+    """Zombie via ``/proc/<pid>/stat`` field 3, or ``ps -o state=`` without /proc (macOS/BSD)."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            stat_fields = fh.read().split()
+        return len(stat_fields) > 2 and stat_fields[2] == "Z"
+    except FileNotFoundError:
+        try:
+            r = subprocess.run(
+                ["ps", "-o", "state=", "-p", str(pid)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+            )
+            return r.returncode == 0 and r.stdout.strip().startswith("Z")
+        except Exception:
+            pass
+    except (IndexError, PermissionError, OSError):
+        pass
+    return False
+
+
+def win32_pid_exists(pid: int) -> bool:
+    """psutil-free Windows liveness probe via OpenProcess/WaitForSingleObject."""
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        # Pin restypes: default c_int mangles WAIT_* DWORDs into negatives.
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint
+        kernel32.GetLastError.restype = ctypes.c_uint
+        PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE = 0x1000, 0x100000  # SYNCHRONIZE: for Wait*
+        WAIT_TIMEOUT, ERROR_ACCESS_DENIED = 0x00000102, 5
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
+        if not handle:
+            # ERROR_INVALID_PARAMETER (87): PID definitely gone. ACCESS_DENIED: exists
+            # but owned by another user/session. Any other error: conservative False.
+            return kernel32.GetLastError() == ERROR_ACCESS_DENIED
+        try:
+            # WAIT_TIMEOUT = still running; anything else = gone.
+            return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
+    except (OSError, AttributeError):
+        return False
+
+
+def pid_exists_stdlib(pid: int) -> bool:
+    """Stdlib-only "is this PID alive" check that never signals the target (zombies report dead).
+
+    For code that must run without the dependency environment: the detached gateway restart
+    watcher is started by whatever interpreter the updater runs on (the bare store Python after
+    the package-manager handoff), so it cannot import ``gateway.status`` (``utils`` pulls in
+    ``ruamel``). ``gateway.status._pid_exists`` prefers psutil and falls back to this.
+    """
+    pid = int(pid)
+    if IS_WINDOWS:
+        return win32_pid_exists(pid)
+    if posix_is_zombie(pid):  # a zombie still answers os.kill(pid, 0)
+        return False
+    try:
+        os.kill(pid, 0)  # windows-footgun: ok — POSIX-only branch (Windows returned above)
+    except PermissionError:
+        return True  # Exists but we can't signal it.
+    except OSError:  # ProcessLookupError included
+        return False
+    return True
 
 
 def _process_start_time(pid: int) -> int | None:

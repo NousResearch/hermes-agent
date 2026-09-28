@@ -59,11 +59,45 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
+  sharedMetrics: {
+    consentTitle: string
+    consentBody: string
+    whatIsCollected: string
+    collectedIntro: string
+    collectedActivity: string
+    collectedModels: string
+    collectedNames: string
+    collectedMilestones: string
+    collectedReliability: string
+    collectedUsage: string
+    collectedMachine: string
+    installId: string
+    consentWindow: string
+    readDocs: string
+    share: string
+    local: string
+    off: string
+    changeLater: string
+    saveFailed: string
+    collectLabel: string
+    collectDesc: string
+    sendLabel: string
+    sendDesc: string
+    unavailable: string
+    stripBody: string
+    stripChoices: { share: string; local: string; off: string }
+    stripDetails: string
+  }
   externalOpenFailed: {
     title: string
     message: string
     copyUrl: string
     close: string
+    missing: {
+      title: string
+      message: string
+    }
   }
   intro: {
     stock: Record<string, string[]>
@@ -988,6 +1022,8 @@ export interface Translations {
       textDirection: { auto: string; rtl: string; ltr: string }
       introSplashTitle: string
       introSplashDesc: string
+      modelPricingTitle: string
+      modelPricingDesc: string
       reactionsTitle: string
       reactionsDesc: string
       tipsTitle: string
@@ -997,6 +1033,8 @@ export interface Translations {
       toursDesc: string
       composerPopoutTitle: string
       composerPopoutDesc: string
+      fileBrowserTitle: string
+      fileBrowserDesc: string
       vibeHeartsTitle: string
       vibeHeartsDesc: string
       embedsTitle: string
@@ -1508,6 +1546,8 @@ export interface Translations {
       provider: string
       model: string
       applying: string
+      mainAppliedTitle: string
+      mainAppliedMessage: (model: string) => string
       defaultsLabel: string
       reasoning: string
       reasoningOff: string
@@ -1519,6 +1559,7 @@ export interface Translations {
       restartFailed: string
       auxiliaryTitle: string
       resetAllToMain: string
+      staleAuxDismiss: string
       auxiliaryDesc: string
       setToMain: string
       change: string
@@ -2107,11 +2148,15 @@ export interface Translations {
       emptyHint: string
       loadFailed: string
       toggleFailed: (name: string) => string
+      toolsetOn: (name: string, profile: string) => string
+      toolsetOff: (name: string, profile: string) => string
+      toolsetToggleFailed: (name: string) => string
       legacyBackend: string
       portableBadge: string
       serverStates: {
         connected: string
         app_not_running: string
+        hermes_not_connected: string
         endpoint_unavailable: string
         no_interactive_session: string
         version_too_old: string
@@ -2361,7 +2406,6 @@ export interface Translations {
     mcpServers: string
     archivedChats: string
     sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
-    sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
     nav: Record<'newChat' | 'settings' | 'capabilities' | 'messaging' | 'artifacts', { title: string; detail: string }>
     sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
@@ -2462,6 +2506,7 @@ export interface Translations {
 
   messaging: {
     search: string
+    statusFilter: Record<'all' | 'bad' | 'good' | 'muted' | 'warn', string>
     loading: string
     loadFailed: string
     states: Record<string, string>
@@ -2717,6 +2762,7 @@ export interface Translations {
     skillsLabel: string
     notSet: string
     soulDesc: string
+    soulMissing: string
     soulOptional: string
     soulPlaceholder: (mode: string) => string
     soulPlaceholderCloned: string
@@ -2835,6 +2881,8 @@ export interface Translations {
     nameLabel: string
     namePlaceholder: string
     promptLabel: string
+    scriptLabel: string
+    scriptBadge: string
     promptPlaceholder: string
     frequencyLabel: string
     deliverLabel: string
@@ -3109,6 +3157,7 @@ export interface Translations {
       backgroundRunning: string
       draftSession: string
       handoffOrigin: (platform: string) => string
+      continuationOrigin: string
       ownedByProfile: (profile: string) => string
       renamed: string
       renameFailed: string
@@ -3208,6 +3257,8 @@ export interface Translations {
     restoredDraftNotice: string
     restoredDraftUndo: string
     queueEdit: string
+    queueExpand: string
+    queueCollapse: string
     queueSendNext: string
     queueSend: string
     queueSteer: string
@@ -3216,6 +3267,8 @@ export interface Translations {
     queueResumeTip: string
     queueStuckTitle: string
     queueStuckBody: string
+    queueDroppedTitle: string
+    queueDroppedBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
@@ -3293,6 +3346,7 @@ export interface Translations {
     goalWaiting: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
+    previousTodos: (done: number, total: number) => string
     running: string
     stop: string
     dismiss: string
@@ -3462,6 +3516,7 @@ export interface Translations {
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
+    copyFullLog: string
     manualTitle: string
     manualUnavailableTitle: string
     manualBody: string
@@ -3818,6 +3873,10 @@ export interface Translations {
     addProvider: string
     addCustomModel: string
     removeCustomModel: string
+    resetToDefaults: string
+    resetConfirm: string
+    resetDescription: string
+    resetAction: string
   }
 
   shell: {
@@ -3831,6 +3890,9 @@ export interface Translations {
       followDefault: string
       refreshModels: string
       fast: string
+      free: string
+      cacheRead: string
+      priceTitle: (input: string, output: string, cache: string) => string
     }
     modelOptions: {
       noOptions: string
@@ -4305,6 +4367,8 @@ export interface Translations {
       preparingAudio: string
       stopReading: string
       readAloud: string
+      copyFullResponse: string
+      readAloudFullResponseHint: string
       editMessage: string
       expandMessage: string
       scrollToBottom: string
@@ -4354,6 +4418,7 @@ export interface Translations {
       lateAnswer: (question: string, choice: string) => string
       lateAnswerTip: string
       lateAnswerHint: string
+      notDelivered: string
     }
     catalogInstall: {
       preparing: string
@@ -4614,6 +4679,11 @@ export interface Translations {
   ui: {
     search: {
       clear: string
+    }
+    logs: {
+      bottom: string
+      search: string
+      top: string
     }
     pagination: {
       label: string

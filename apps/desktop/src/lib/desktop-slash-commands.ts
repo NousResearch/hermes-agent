@@ -178,7 +178,7 @@ const rpc = (
  */
 const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // Local client actions
-  { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset'], surface: action('new') },
+  { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset', '/clear'], surface: action('new') },
   {
     name: '/stop',
     description: 'Stop the active turn and background processes',

@@ -250,3 +250,24 @@ async def test_read_policy_is_current_after_identity_resolution(
         else "Matrix room is not allowed or joined"
     )
     assert (result, identity.await_count) == ({"error": error}, 1)
+
+
+
+@pytest.mark.asyncio
+async def test_thread_read_stops_after_root_fetch_changes_client():
+    client = _client(event=_message("$root", "start"))
+    adapter = _adapter(client)
+
+    async def request(_method, _path, **_kwargs):
+        adapter._client = None
+        return _message("$root", "start")
+
+    client.api.request.side_effect = request
+
+    result = await read_matrix_context(
+        adapter, "thread", "!room:server", "$root", 5, requester="@alice:server",
+    )
+
+    assert (result, client.api.request.await_count) == (
+        {"error": "Matrix client ownership changed"}, 1,
+    )

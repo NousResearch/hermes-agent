@@ -441,7 +441,7 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-Hermes has one Matrix-specific agent tool, `matrix_read`, in the `matrix_read` toolset. It reads recent messages in the current room, one thread, or one event, and returns at most 50 events. It also reads the current room's state, joined members, permissions and pins. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session. Each message in the result lists its reactions with their sender and target event.
+Hermes has two Matrix-specific agent tools: `matrix_read` in the `matrix_read` toolset and `matrix_thread_create` in the `matrix_threads` toolset. It reads recent messages in the current room, one thread, or one event, and returns at most 50 events. It also reads the current room's state, joined members, permissions and pins. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session. Each message in the result lists its reactions with their sender and target event.
 
 The agent can also list joined rooms and joined Spaces, or search the homeserver's
 user directory. Discovery applies the configured room and requester policy
@@ -452,7 +452,13 @@ requester, so the results do not reveal which other users the bot can see.
 Each discovery request examines at most 50 of the bot's joined rooms, and
 results report truncation and errors.
 
-The `matrix_read` toolset is enabled for Matrix sessions. Turn it off in the Matrix checklist of `hermes tools`, or run `hermes tools disable matrix_read --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before this toolset existed does not include it; run `hermes tools enable matrix_read --platform matrix` to add it.
+`matrix_thread_create` encrypts messages in encrypted rooms through the same live gateway session.
+
+`matrix_thread_create` explicitly creates a thread in the current room. Supply visible root text for a new main-timeline message, or an existing main-timeline event ID, plus the first thread message. Matrix has no separate thread name: a supplied label is part of the visible root text. Thread replies, edits and withdrawn events cannot become roots. The action does not join or create rooms.
+
+Success includes the room, root and initial reply event IDs. If the root was delivered but the first reply failed, the result reports partial delivery and the root ID for recovery. A root alone does not create a visible thread. Encryption and homeserver permission failures are reported without a plaintext retry. The current turn stays in its original session; a later user reply in the new thread starts a separate thread conversation.
+
+Both toolsets are enabled for Matrix sessions. Turn either off in the Matrix checklist of `hermes tools`, or run `hermes tools disable matrix_read --platform matrix` or `hermes tools disable matrix_threads --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before a toolset existed does not include it; run `hermes tools enable <toolset> --platform matrix` to add it.
 
 Hermes has no agent tools for room creation, invites or redaction. The agent otherwise interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
 

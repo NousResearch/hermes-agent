@@ -36,7 +36,7 @@ from testcontainers.core.labels import LABEL_SESSION_ID, SESSION_ID
 from testcontainers.core.network import Network
 
 from hermes_platform.host import facts
-from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+from tests.fakes.fake_llm_provider import FakeLLMServer, Response, Text, write_hermes_home
 from tests.integration.matrix_live.image_build import REPO_ROOT, build_command
 
 
@@ -292,7 +292,7 @@ async def _register(url: str, localpart: str) -> MatrixAccount:
 
 
 @pytest.fixture
-def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
+def live_room(synapse: tuple[DockerContainer, str, Network], request: pytest.FixtureRequest) -> LiveRoom:
     _, url, _ = synapse
 
     async def create() -> LiveRoom:
@@ -302,6 +302,16 @@ def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
         try:
             response = await client.room_create(name="Matrix live test", invite=[bot.user_id])
             assert isinstance(response, RoomCreateResponse), response
+            if getattr(request, "param", None) == "group":
+                spectator = await _register(url, "spectator")
+                await client.room_invite(response.room_id, spectator.user_id)
+                spectator_client = spectator.client(url)
+                try:
+                    from nio import JoinResponse
+                    joined = await spectator_client.join(response.room_id)
+                    assert isinstance(joined, JoinResponse), joined
+                finally:
+                    await spectator_client.close()
             return LiveRoom(url, response.room_id, bot, alice)
         finally:
             await client.close()
@@ -405,7 +415,7 @@ def gateway(
     home = tmp_path / "hermes"
     home.mkdir()
     route = _host_route(network)
-    script = [] if mode == "inspection" else [Text(settings.reply)]
+    script: list[Response] = [] if mode == "inspection" else [Text(settings.reply)]
     with FakeLLMServer(
         script, bind_host=route.bind_host, default_text=settings.reply if mode == "inspection" else "ok",
     ) as model:
@@ -418,10 +428,12 @@ def gateway(
                 + ("    thread_require_mention: true\n" if mode == "pause-context" or resolution_pause else "")
                 + (f"    free_response_rooms:\n      - {room_id!r}\n" if resolution_pause else "")
                 + "updates:\n  check: false\n"
+                + "display:\n"
+                + ("  busy_input_mode: queue\n  busy_ack_enabled: false\n"
+                   if mode == "pause-queued-context" else "")
+                + "  platforms:\n    matrix:\n      tool_progress: \"off\"\n"
                 + ("auxiliary:\n  title_generation:\n    model_upgrade_enabled: false\n"
                    if mode == "inspection" else "")
-                + ("display:\n  busy_input_mode: queue\n  busy_ack_enabled: false\n"
-                   if mode == "pause-queued-context" else "")
                 + ("plugins:\n  enabled:\n    - matrix-live-context\n"
                    if context_pause else "")
                 + ("plugins:\n  enabled:\n    - matrix-live-resolution\n" if resolution_pause else "")

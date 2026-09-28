@@ -62,7 +62,7 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   // they don't belong to. Under a green accent it stays emerald.
   unread: {
     ariaLabel: r => r.finishedUnread,
-    className: `${DOT_SIZE} rounded-[1px] bg-(--ui-success)`,
+    className: `${DOT_SIZE} rounded-full bg-(--ui-success)`,
     role: 'status',
     title: r => r.finishedUnread
   },

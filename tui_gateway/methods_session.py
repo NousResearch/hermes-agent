@@ -2368,7 +2368,7 @@ def _(rid, params: dict) -> dict:
     started_at, label = params.get("started_at"), str(params.get("label") or "")
     finished_at = float(params.get("finished_at") or time.time())
     d = _spawn_tree_session_dir(session_id or "default")
-    path = d / f"{datetime.utcfromtimestamp(finished_at).strftime('%Y%m%dT%H%M%S')}.json"
+    path = d / f"{datetime.fromtimestamp(finished_at, timezone.utc).strftime('%Y%m%dT%H%M%S')}.json"
     meta = {"session_id": session_id, "started_at": float(started_at) if started_at else None,
             "finished_at": finished_at, "label": label}
     try:

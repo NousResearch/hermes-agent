@@ -195,7 +195,8 @@ def _session_start_like(agent: Any, now: Any) -> Any:
     def _to_display_tz(dt: Any) -> Any:
         if dt.tzinfo is None:
             try:
-                dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                # The offset in force at dt, not today's: a stamp from the other DST half differs by an hour.
+                dt = dt.astimezone()
             except (ValueError, OSError):
                 pass
         if getattr(now, "tzinfo", None) is not None and dt.tzinfo is not None:

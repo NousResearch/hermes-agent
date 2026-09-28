@@ -9477,7 +9477,7 @@ def _slash_skill_fixtures(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "agent.skill_commands.get_skill_commands",
+        "agent.skill_commands.scan_skill_commands",
         lambda: {
             "/work": {"description": "Fresh worktree"},
             "/research": {"description": "Look it up"},

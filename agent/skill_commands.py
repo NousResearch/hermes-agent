@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import threading
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -353,12 +354,24 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
 
 
+@lru_cache(maxsize=1024)
+def _parsed_skill_command_file(path: str, signature: tuple) -> tuple:
+    """Reuse parsing only; scope-dependent eligibility is reevaluated on every scan.
+
+    The absolute path and shared stat signature distinguish profile files and
+    replacements. Read failures are not cached, so a later scan can recover.
+    """
+    from tools.skills_tool import _parse_frontmatter
+    return _parse_frontmatter(Path(path).read_text(encoding='utf-8-sig'))
+
+
 def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]]) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
-    from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
+    from tools.skills_tool import skill_matches_apps, skill_matches_platform, skill_matches_environment
+    from utils import file_signature
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
         return
-    frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8-sig'))
+    frontmatter, body = _parsed_skill_command_file(str(skill_md.absolute()), file_signature(skill_md.stat()))
     # OS gate is hard; environment gate (kanban/docker/s6) is offer-time only.
     if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
         return

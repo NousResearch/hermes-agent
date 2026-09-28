@@ -347,6 +347,30 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
+def _is_pm_lease_path(entry: str) -> bool:
+    """True for a PATH entry owned by a package-manager activation environment.
+
+    ``pm.environments.activate_dependencies`` prepends
+    ``installs/<key>/environments/<env>/venv/bin`` to the *invoking shell's* PATH. That directory is a
+    lease: it is regenerated per activation and its ``workspace`` belongs to one generation, so
+    persisting it into a service definition pins the supervisor to a tree a later activation already
+    replaced. A bare ``hermes`` resolves through it to another install key than the running one, whose
+    checkout then fails dependency lookup and the gateway crash-loops. The systemd generator already
+    excludes these ("dependency executable paths are selected at boot, not persisted"); launchd must
+    match. Fails open if ``pm`` is unavailable — the entry is then kept, i.e. today's behavior.
+    """
+    try:
+        from pm.environments import installs_root
+        root = installs_root().resolve()
+    except Exception:
+        return False
+    try:
+        Path(entry).resolve().relative_to(root)
+    except (ValueError, OSError):
+        return False
+    return True
+
+
 def generate_launchd_plist() -> str:
     from html import escape
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
@@ -358,9 +382,11 @@ def generate_launchd_plist() -> str:
 
     # launchd's default PATH misses Homebrew, nvm, cargo…; prepend venv/bin + node dirs (as in the
     # systemd unit) so node stays resolvable even if the shell PATH changes, then the shell PATH.
+    # PM activation leases are excluded: they are volatile and would poison the persisted PATH.
     priority_dirs = _gw()._build_service_path_dirs()
     _gw()._append_node_dir_for_service(priority_dirs)
-    sane_path = ":".join(dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]))
+    shell_path = [p for p in os.environ.get("PATH", "").split(":") if p and not _is_pm_lease_path(p)]
+    sane_path = ":".join(dict.fromkeys(priority_dirs + shell_path))
 
     # ProgramArguments (incl. --profile); the stderr wrapper keeps launchd restart semantics while timestamping
     # stderr; the osascript wrapper gives the job a Local Network identity (see launchd_program_arguments).

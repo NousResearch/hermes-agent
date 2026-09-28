@@ -73,7 +73,7 @@ class TestCredentialExclusion:
         (profile_dir / "config.yaml").write_text("model: gpt-4\n")
         (profile_dir / "platforms" / "keep.json").write_text("{}")
         stores = {".op.env", "npmrc", "google_chat_user_token.json", "google_chat_user_oauth_pending",
-                  "workspace/meetings/node_token.json", *PROFILE_CREDENTIAL_PATHS}
+                  "workspace/meetings/node_token.json", "honcho.json", *PROFILE_CREDENTIAL_PATHS}
         for rel in stores:
             is_dir = "." not in rel.rsplit("/", 1)[-1] and rel != "npmrc"  # token dirs vs single files
             target = profile_dir / rel / "store" if is_dir else profile_dir / rel
@@ -103,6 +103,51 @@ class TestCredentialExclusion:
         assert {"testprofile/config.yaml", "testprofile/platforms/keep.json"} <= names
         leaked = sorted(r for r in stores if any(n == f"testprofile/{r}" or n.startswith(f"testprofile/{r}/") for n in names))
         assert not leaked, leaked
+
+    @pytest.mark.parametrize("shipped_file", ["platforms", "platforms/whatsapp"])
+    @pytest.mark.parametrize("declare_owned", [False, True])
+    def test_update_shipping_a_file_over_a_store_directory_changes_nothing(
+            self, tmp_path, monkeypatch, shipped_file, declare_owned):
+        """An update whose payload ships a FILE where the profile has a directory holding
+        credential stores is refused before anything is written: the installer's stores
+        survive and no other payload file has been replaced."""
+        from pathlib import Path
+
+        from hermes_cli.profile_distribution import (
+            DistributionError, DistributionManifest, install_distribution, write_manifest,
+        )
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        (tmp_path / ".hermes").mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        owned = ["SOUL.md", "platforms"] if declare_owned else []
+
+        def stage(label, soul):
+            staged = tmp_path / label
+            staged.mkdir()
+            (staged / "SOUL.md").write_text(soul)
+            write_manifest(staged, DistributionManifest(name="dist", version="0.1.0", distribution_owned=owned))
+            return staged
+
+        first = stage("v1", "v1")
+        (first / "platforms").mkdir()
+        (first / "platforms" / "keep.json").write_text("{}")
+        installed = install_distribution(str(first), name="dist").target_dir
+        stores = [installed / "platforms" / "pairing" / "approved.json",
+                  installed / "platforms" / "whatsapp" / "session" / "creds.json"]
+        for store in stores:
+            store.parent.mkdir(parents=True)
+            store.write_text("installer-credential")
+
+        second = stage("v2", "v2")
+        target = second / shipped_file
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("not a directory")
+        with pytest.raises(DistributionError):
+            install_distribution(str(second), name="dist", force=True)
+
+        assert [s.read_text() for s in stores] == ["installer-credential"] * 2
+        assert (installed / "SOUL.md").read_text() == "v1"
 
     def test_export_ships_no_recovery_copy_hermes_writes_of_a_store(self, tmp_path, monkeypatch):
         """Every copy Hermes' own writers leave in a profile home (pre-update zip, update snapshot,

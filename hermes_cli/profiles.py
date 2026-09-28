@@ -160,6 +160,7 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "google_chat_user_tokens", "google_chat_user_client_secret.json", "google_chat_user_oauth_pending.json",
     "google_chat_user_token.json", "google_chat_user_oauth_pending",  # legacy single-user layouts
     "slack_tokens.json",
+    "honcho.json",                  # Honcho apiKey + OAuth grant (oauth.refreshToken)
     "webhook_subscriptions.json",   # per-route HMAC secrets
     "mcp-tokens",                   # MCP OAuth tokens
     "vault",                        # vault.key + vault.json.enc

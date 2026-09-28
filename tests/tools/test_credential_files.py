@@ -552,6 +552,24 @@ class TestToAgentVisiblePathPerBackend:
         from tools.credential_files import to_agent_visible_cache_path
         assert to_agent_visible_cache_path("/etc/hosts") == "/etc/hosts"
 
+    def test_symlinked_home_maps_resolved_path(self, tmp_path, monkeypatch):
+        """#103147: ``@file:`` expansion resolves the staged path, but the mount roots
+        keep HERMES_HOME's symlinked spelling; the resolved path must still map."""
+        real_home = tmp_path / "real-hermes"
+        (real_home / "attachments").mkdir(parents=True)
+        link_home = tmp_path / ".hermes"
+        link_home.symlink_to(real_home, target_is_directory=True)
+        monkeypatch.setenv("HERMES_HOME", str(link_home))
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        staged = link_home / "attachments" / "paste.txt"
+        staged.write_text("x", encoding="utf-8")
+        from tools.credential_files import to_agent_visible_cache_path
+        assert to_agent_visible_cache_path(str(staged.resolve())) == "/root/.hermes/attachments/paste.txt"
+        assert to_agent_visible_cache_path(str(staged)) == "/root/.hermes/attachments/paste.txt"
+        # A sibling outside the mounted dirs still passes through.
+        outside = real_home / "notes.txt"
+        assert to_agent_visible_cache_path(str(outside)) == str(outside)
+
 
 class TestIterCacheFiles:
     """Tests for iter_cache_files()."""

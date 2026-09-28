@@ -76,7 +76,8 @@ def _matches_filters(
     since: Optional[datetime] = None,
     component_prefixes: Optional[Sequence[str]] = None,
 ) -> bool:
-    """Whether a line passes all active filters (lines without a timestamp/level pass those)."""
+    """Whether one line passes all active filters (a line without a timestamp/level passes those);
+    ``_LineFilter`` decides for unstamped continuation lines."""
     if since is not None:
         ts = _parse_line_timestamp(line)
         if ts is not None and ts < since:
@@ -88,6 +89,24 @@ def _matches_filters(
     if session_filter is not None and session_filter not in line:
         return False
     return component_prefixes is None or _line_matches_component(line, component_prefixes)
+
+
+class _LineFilter:
+    """Stateful ``_matches_filters`` over consecutive lines of one file. A line with no stamp continues
+    the record above it (traceback frames, multi-line messages), so it takes that record's verdict."""
+
+    def __init__(self, **filters):
+        self._filters = filters
+        self._carry: Optional[bool] = None
+
+    def __call__(self, line: str) -> bool:
+        if _parse_line_timestamp(line) is not None:
+            self._carry = _matches_filters(line, **self._filters)
+        elif self._carry is None:
+            # Before the first stamp: this record's time and level are unknown.
+            timed = self._filters.get("since") is not None or self._filters.get("min_level") is not None
+            return not timed and _matches_filters(line, **self._filters)
+        return self._carry
 
 
 def tail_log(
@@ -170,7 +189,8 @@ def _read_tail(path: Path, num_lines: int, *, has_filters: bool = False, **filte
         return _read_last_n_lines(path, num_lines)
     # Over-read so enough lines survive filtering.
     raw_lines = _read_last_n_lines(path, max(num_lines * 20, 2000))
-    return [l for l in raw_lines if _matches_filters(l, **filters)][-num_lines:]
+    keep = _LineFilter(**filters)
+    return [l for l in raw_lines if keep(l)][-num_lines:]
 
 
 def _read_all_lines(path: Path) -> list:
@@ -211,6 +231,7 @@ def _read_last_n_lines(path: Path, n: int) -> list:
 
 def _follow_log(path: Path, **filters) -> None:
     """Poll a log file for new content and print matching lines."""
+    keep = _LineFilter(**filters)
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         # Seek to end
         f.seek(0, 2)
@@ -218,7 +239,7 @@ def _follow_log(path: Path, **filters) -> None:
             line = f.readline()
             if not line:
                 time.sleep(0.3)
-            elif _matches_filters(line, **filters):
+            elif keep(line):
                 print(line, end="")
                 sys.stdout.flush()
 

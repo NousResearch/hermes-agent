@@ -1428,7 +1428,7 @@ export function useSessionActions({
               }
 
               if (usage) {
-                setCurrentUsage(current => ({ ...current, ...usage }))
+                setCurrentUsage(current => ({ ...current, ...usage, compressions: usage.compressions }))
               }
 
               publishDegradedWarmCache()

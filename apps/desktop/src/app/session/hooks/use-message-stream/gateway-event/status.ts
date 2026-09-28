@@ -1,6 +1,5 @@
 import { isSessionNotOwnedError } from '@/app/session/hooks/use-prompt-actions/utils'
-import { translateNow, TRANSLATIONS } from '@/i18n'
-import { getRuntimeI18nLocale } from '@/i18n/runtime'
+import { runtimeTranslations, translateNow } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
 import { coerceGatewayText } from '@/lib/chat-runtime'
 import type { ErrorSurface } from '@/lib/error-surface'
@@ -301,7 +300,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     // pre-turn failures — agent init, resume, cancelled-before-ready), and
     // burying it under a generic "couldn't finish" gloss would hide the one
     // instruction the user needs.
-    const card = surface ? errorCardText(TRANSLATIONS[getRuntimeI18nLocale()].assistant.thread, surface) : null
+    const card = surface ? errorCardText(runtimeTranslations().assistant.thread, surface) : null
     const toastMessage = card ? `${card.title}. ${card.body}` : errorMessage
 
     // A turn that errors out has also ended — drop any open blocking prompt

@@ -531,15 +531,3 @@ def _parse_duration(raw: str) -> Optional[float]:
 
 if __name__ == "__main__":  # pragma: no cover — subprocess entry point
     sys.exit(run_bot())
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import json  # noqa: F401,E402
-
-SAY_PCM_FILENAME = "speaker.pcm"
-
-SAY_QUEUE_FILENAME = "say_queue.jsonl"
-# ---- END PLUGIN-COMPAT ----

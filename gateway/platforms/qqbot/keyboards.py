@@ -14,7 +14,16 @@ APPROVAL_BUTTON_PREFIX = "approve:"
 UPDATE_PROMPT_PREFIX = "update_prompt:"
 
 # session_key may itself contain colons (agent:main:qqbot:c2c:OPENID): greedy group, decision trails.
+# Legacy (pre-#124974) format, parse by its old contract — session is EVERYTHING between the
+# prefix and the trailing decision, even when its final component happens to be 32 lowercase hex
+# (QQ openids are): `approve:agent:main:qqbot:dm:<32-hex-user>:allow-once` must keep the full
+# session, not split the hex tail off as a request ID, or the authorization predicate rejects
+# the truncated key and strands the card.
 _APPROVAL_DATA_RE = re.compile(r"^approve:(.+):(allow-once|allow-always|deny)$")
+# New (request-scoped) format is explicitly versioned — `v2` — so the two encodings can never
+# collide: `approve:v2:<session_key>:<request_id>:<decision>` with a 32-hex request_id. Parsing
+# never guesses from an identity's shape (andrexibiza F2).
+_APPROVAL_DATA_V2_RE = re.compile(r"^approve:v2:(.+):([0-9a-f]{32}):(allow-once|allow-always|deny)$")
 _UPDATE_PROMPT_RE = re.compile(r"^update_prompt:(y|n)$")
 
 def _to_dict(value: Any) -> Any:
@@ -77,9 +86,21 @@ class InlineKeyboard(_Serializable):
     content: KeyboardContent = field(default_factory=KeyboardContent)
 
 
-def parse_approval_button_data(button_data: str) -> Optional[tuple[str, str]]:
-    """Parse approval ``button_data`` into ``(session_key, decision)`` or ``None``."""
-    return m.groups() if (m := _APPROVAL_DATA_RE.match(button_data or "")) else None
+def parse_approval_button_data(button_data: str) -> Optional[tuple[str, str, str]]:
+    """Parse approval ``button_data`` into ``(session_key, request_id, decision)``; ``request_id``
+    is ``""`` on cards minted before request-scoped resolution (#124974). The request-scoped
+    encoding is versioned (``approve:v2:…``) so it can never be confused with a legacy key
+    whose final identity component happens to look like a request ID."""
+    if m := _APPROVAL_DATA_V2_RE.match(button_data or ""):
+        return m.group(1), m.group(2), m.group(3)
+    data = button_data or ""
+    if data.startswith(f"{APPROVAL_BUTTON_PREFIX}v2:"):
+        # The versioned namespace is reserved: a malformed v2 payload is rejected outright,
+        # never re-parsed as a legacy session that happens to start with "v2:".
+        return None
+    if not (m := _APPROVAL_DATA_RE.match(data)):
+        return None
+    return m.group(1), "", m.group(2)
 
 
 def parse_update_prompt_button_data(button_data: str) -> Optional[str]:
@@ -96,10 +117,14 @@ def _single_row_keyboard(group_id: str, *buttons: tuple) -> InlineKeyboard:
     return InlineKeyboard(content=KeyboardContent(rows=[row]))
 
 
-def build_approval_keyboard(session_key: str, *, allow_permanent: bool = True) -> InlineKeyboard:
+def build_approval_keyboard(session_key: str, *, allow_permanent: bool = True,
+                            request_id: str = "") -> InlineKeyboard:
     """Build ``[✅ 允许一次] [⭐ 始终允许] [❌ 拒绝]`` (one group, so a click greys the rest). ⭐ is hidden when
-    persistent scope is unavailable; *session_key* rides in ``button_data`` so the decision routes correctly."""
-    prefix = f"{APPROVAL_BUTTON_PREFIX}{session_key}"
+    persistent scope is unavailable; *session_key* (+ the optional *request_id*) rides in ``button_data`` so the
+    decision routes to the right pending approval instead of the FIFO-oldest one (#124974). The request-scoped
+    form is explicitly versioned (``v2``) so it can never collide with a legacy key ending in a hex identity."""
+    prefix = (f"{APPROVAL_BUTTON_PREFIX}v2:{session_key}:{request_id}" if request_id
+              else f"{APPROVAL_BUTTON_PREFIX}{session_key}")
     buttons = [("allow", "✅ 允许一次", "已允许", f"{prefix}:allow-once", 1)]
     if allow_permanent:
         buttons.append(("always", "⭐ 始终允许", "已始终允许", f"{prefix}:allow-always", 1))
@@ -126,6 +151,7 @@ class ApprovalRequest:
     severity: str = ""
     timeout_sec: int = 120
     allow_permanent: bool = True
+    request_id: str = ""  # gateway approval queue entry this card belongs to (#124974)
 
 
 _SEVERITY_ICONS = {"critical": "🔴", "info": "🔵"}
@@ -240,7 +266,7 @@ class ApprovalSender:
         :returns: ``True`` on success, ``False`` on failure.
         """
         text = build_approval_text(req)
-        keyboard = build_approval_keyboard(req.session_key)
+        keyboard = build_approval_keyboard(req.session_key, request_id=req.request_id)
 
         logger.info(
             "[%s] Sending approval request to %s:%s (session=%.20s…)",

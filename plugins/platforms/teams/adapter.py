@@ -646,9 +646,20 @@ class TeamsAdapter(BasePlatformAdapter):
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message("Unknown action.")
+        request_id = str(data.get("request_id") or "") or None
         if not has_blocking_approval(session_key):
             return self._invoke_card([TextBlock(text="⚠️ Approval already resolved or expired.", wrap=True)])
-        resolve_gateway_approval(session_key, choice)
+        # Resolve FIRST, render after: a tap whose own request already settled (count == 0 —
+        # expired or withdrawn while ANOTHER request is still pending in the session) must not
+        # show the success label. The resolver's result, not the preflight session predicate,
+        # authorizes the acknowledgement — same resolve-then-ack order as Telegram/Slack/Discord.
+        try:
+            count = resolve_gateway_approval(session_key, choice, request_id=request_id)
+        except Exception as exc:
+            logger.error("Failed to resolve gateway approval from Teams card action: %s", exc)
+            count = 0
+        if not count:
+            return self._invoke_card([TextBlock(text="⚠️ Approval already resolved or expired.", wrap=True)])
         body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
         body.append(TextBlock(text=_APPROVAL_LABELS[choice], wrap=True, weight="Bolder"))
         return self._invoke_card(body)
@@ -683,7 +694,10 @@ class TeamsAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
         # Button data carries a truncated cmd — just enough to reconstruct the card body.
-        btn_data_base = {"session_key": prompt.session_key, "cmd": _truncate(prompt.command, 200), "desc": prompt.description}
+        btn_data_base = {
+            "session_key": prompt.session_key, "cmd": _truncate(prompt.command, 200),
+            "desc": prompt.description, "request_id": prompt.request_id or "",
+        }
         actions = []
         for label, choice, style in prompt.actions:
             kw = {"style": self._EA_CARD_STYLES[style]} if style else {}

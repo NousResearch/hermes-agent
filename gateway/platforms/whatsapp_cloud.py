@@ -404,10 +404,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     # ------------------------------------------------------------------ interactive messages
     async def _send_interactive(
         self, chat_id: str, interactive: Dict[str, Any], metadata: Optional[Dict[str, Any]],
-        state: "OrderedDict[str, str]", state_id: str, session_key: str,
+        state: "OrderedDict[str, Any]", state_id: str, session_key: Any,
     ) -> SendResult:
         """POST an ``interactive`` message (caller supplies ``type``/``body``/``action``) and, on
-        success, remember ``state_id → session_key`` for the tap. Free-form interactives need no
+        success, remember ``state_id → session_key`` (for approvals: ``(session_key, request_id)``)
+        for the tap. Free-form interactives need no
         Meta approval but are only valid inside the 24h window — fine, all senders here reply to a user."""
         result = await self._post_message_result(
             self._outbound_payload(chat_id, "interactive", interactive, _reply_to_from(metadata)),
@@ -480,7 +481,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._truncate_body(prompt.text),
             (f"appr:{approval_id}:approve", "✅ Approve"), (f"appr:{approval_id}:deny", "❌ Deny"))
         return await self._send_interactive(
-            prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id, prompt.session_key)
+            prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id,
+            (prompt.session_key, prompt.request_id or ""))
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
@@ -812,8 +814,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     @staticmethod
     def _pop_tap_state(
-        state: "OrderedDict[str, str]", key: str, stale_log: str, choice: str = "", valid: tuple = (),
-    ) -> Optional[str]:
+        state: "OrderedDict[str, Any]", key: str, stale_log: str, choice: str = "", valid: tuple = (),
+    ) -> Optional[Any]:
         """Pop the session_key for a tapped prompt. None (info-logged) when nothing is live — likely
         a stale tap; an unrecognised ``choice`` keeps the prompt live and also yields None."""
         session_key = state.pop(key, None)
@@ -868,17 +870,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _handle_approval_tap(self, to: str, inner: Dict[str, Any], parts: list) -> bool:
         _, approval_id, choice = parts
-        session_key = self._pop_tap_state(
+        state = self._pop_tap_state(
             self._exec_approval_state, approval_id,
             "[whatsapp_cloud] approval tap with no matching state (approval_id=%s) — likely stale; falling back to text",
             choice, ("approve", "deny"),
         )
-        if not session_key:
+        if not state:
             return False
+        session_key, request_id = state
         approval = _optional_module("tools.approval", "[whatsapp_cloud] approval resolver unavailable")
         if approval is None:
             return False
-        count = approval.resolve_gateway_approval(session_key, choice)
+        count = approval.resolve_gateway_approval(session_key, choice, request_id=request_id or None)
         # A tap after the wait timed out (count == 0) must not claim approval:
         # the command was already denied fail-closed.
         if count:

@@ -630,7 +630,15 @@ class TestApprovalButtonData:
     def test_parse_allow_once(self):
         from gateway.platforms.qqbot.keyboards import parse_approval_button_data
         result = parse_approval_button_data("approve:agent:main:qqbot:c2c:UID:allow-once")
-        assert result == ("agent:main:qqbot:c2c:UID", "allow-once")
+        assert result == ("agent:main:qqbot:c2c:UID", "", "allow-once")  # (session_key, request_id, decision)
+
+    def test_parse_with_request_id(self):
+        from gateway.platforms.qqbot.keyboards import parse_approval_button_data
+        rid = "ab" * 16
+        # Request-scoped payloads are versioned (v2); the unversioned form stays legacy
+        # because a session identity may itself end in 32-hex (andrexibiza F2).
+        result = parse_approval_button_data(f"approve:v2:sess:{rid}:deny")
+        assert result == ("sess", rid, "deny")
 
 
     def test_parse_empty_returns_none(self):
@@ -853,7 +861,7 @@ class TestDefaultInteractionDispatch:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -882,7 +890,7 @@ class TestDefaultInteractionDispatch:
         adapter = self._make_adapter()
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -974,7 +982,7 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -1002,7 +1010,7 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
@@ -1030,7 +1038,7 @@ class TestProfileNamespaceApprovalAuthz:
 
         resolve_calls = []
 
-        def fake_resolve(session_key, choice, resolve_all=False):
+        def fake_resolve(session_key, choice, resolve_all=False, request_id=None):
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 

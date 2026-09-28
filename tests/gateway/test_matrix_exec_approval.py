@@ -20,7 +20,7 @@ class TestMatrixExecApprovalReactions:
         adapter._approval_prompts_by_event["$target"] = _MatrixApprovalPrompt(
             session_key="sess-1", chat_id="!room:example.org", message_id="$target"
         )
-        adapter._approval_prompt_by_session["sess-1"] = "$target"
+        adapter._approval_prompt_by_session["sess-1"] = {"$target"}
 
         content = {"m.relates_to": {"event_id": "$target", "key": "✅"}}
         event = types.SimpleNamespace(
@@ -33,6 +33,6 @@ class TestMatrixExecApprovalReactions:
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
             await adapter._on_reaction(event)
 
-        mock_resolve.assert_called_once_with("sess-1", "once")
+        mock_resolve.assert_called_once_with("sess-1", "once", request_id=None)
         assert "$target" not in adapter._approval_prompts_by_event
         assert "sess-1" not in adapter._approval_prompt_by_session

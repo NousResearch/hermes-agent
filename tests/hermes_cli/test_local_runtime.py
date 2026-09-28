@@ -915,11 +915,9 @@ def test_ensure_local_runtime_serializes_racing_callers(tmp_path, monkeypatch):
         def start(self, timeout_s=120):
             spawns.append(1)
             _time.sleep(0.3)  # widen the window the other caller races into
-            path = sup_mod.state_path()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps({
-                "base_url": self.base_url, "api_key": self.api_key, "pid": os.getpid(),
-            }), encoding="utf-8")
+            # Legacy (pid-only) records are no longer adopted (65ff3ad353); publish the modern
+            # shape the real supervisor writes so the loser can adopt this caller's server.
+            _write_current_process_state(sup_mod.state_path(), base_url=self.base_url, api_key=self.api_key)
 
     monkeypatch.setattr(sup_mod, "LlamaServerSupervisor", _FakeSupervisor)
 

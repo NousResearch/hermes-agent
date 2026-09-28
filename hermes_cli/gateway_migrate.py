@@ -204,16 +204,30 @@ class MigrationPlan:
 def _home_env(home: Path) -> Iterator[None]:
     """Run service-manager helpers as if ``home`` were the active HERMES_HOME. Both the contextvar
     override (``get_hermes_home``) and ``os.environ`` (``gateway.status`` identity files, unit
-    generation) are switched, then restored."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    generation) are switched, then restored.
+
+    The process keeps its LAUNCH identity while swapped (``pin_process_hermes_home``): ``os.environ``
+    still holds the launch profile's ``.env``, so a child spawned in here for ``home`` must see it as
+    a routed home and take only ``home``'s own secrets — with the env var swapped, the routed-home
+    checks read ``home`` as the launch profile and handed the launch profile's credentials to the
+    default gateway."""
+    from hermes_constants import (
+        get_routing_process_hermes_home, pin_process_hermes_home, process_hermes_home_is_pinned,
+        reset_hermes_home_override, set_hermes_home_override,
+    )
     import hermes_constants
     previous = os.environ.get("HERMES_HOME")
+    pinned_here = not process_hermes_home_is_pinned()
+    if pinned_here:
+        pin_process_hermes_home(get_routing_process_hermes_home())
     token = set_hermes_home_override(str(home))
     os.environ["HERMES_HOME"] = str(home)
     hermes_constants._default_hermes_root_memo = None
     try:
         yield
     finally:
+        if pinned_here:
+            pin_process_hermes_home(None)
         reset_hermes_home_override(token)
         if previous is None:
             os.environ.pop("HERMES_HOME", None)
@@ -352,14 +366,13 @@ def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: 
             # load-bearing for the whole host — and `restart` on a disabled unit succeeds, so a
             # reboot came up with no gateway while the migration reported success (#124922).
             # launchd (RunAtLoad plist) and the Windows logon task are their own enablement and the
-            # migration never removes the survivor's. Best-effort with a loud line: failing here
-            # would trigger a rollback that cannot do any better.
+            # migration never removes the survivor's.
             if kind != "systemd":
                 return
             enabled = gw._run_systemctl(["enable", gw.get_service_name()], system=system, check=False, timeout=30)
             if getattr(enabled, "returncode", 0) != 0:
-                print(f"⚠ could not enable {gw.get_service_name()} at boot "
-                      f"(systemctl enable exited {enabled.returncode}); a reboot may come up with no gateway")
+                raise RuntimeError(f"could not enable {gw.get_service_name()} at boot (systemctl enable "
+                                   f"exited {enabled.returncode}); a reboot would come up with no gateway")
             return
         gw._service_call(kind, verb, system)
 
@@ -906,17 +919,24 @@ def _restart_default(
     return f"{verb} the default gateway (detached; no service manager was in use)"
 
 
-def _enable_default_at_boot(plan: MigrationPlan) -> None:
+def _enable_default_at_boot(plan: MigrationPlan) -> Optional[str]:
     """Make the survivor boot-startable BEFORE anything is removed. Every secondary unit the fold
     uninstalls takes its boot enablement with it, and the pre-existing default unit may have been
     disabled all along; ``restart`` on a disabled unit succeeds, so the old order (remove, then
     restart) turned N boot-startable gateways into 0 and reported success (#124922). ``enable``
     never starts the unit, so doing it first cannot double-bind a platform while secondaries run,
     and an apply interrupted anywhere after it still leaves a host that comes back after a reboot.
+    Returns the failure line, or None: a fresh apply refuses on it (nothing has been removed yet),
+    a resume reports it and converges anyway (rollback could do no better).
     """
-    if plan.default.service is not None:
-        kind, system = plan.default.service
+    if plan.default.service is None:
+        return None
+    kind, system = plan.default.service
+    try:
         _service_op(kind, system, "enable", plan.default_home)
+    except RuntimeError as exc:
+        return f"default: {exc}"
+    return None
 
 
 def _remove_secondary_gateways(plan: MigrationPlan) -> None:
@@ -1023,11 +1043,14 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
         # Re-running this command IS the recovery.
         print(f"  ↻ resuming the migration recorded in {_manifest_path(plan.default_home)}")
         _print(_resume_findings(plan, target, run_as_user))
+        enable_failure = _enable_default_at_boot(plan)
+        if enable_failure is not None:
+            print(f"  ⚠ {enable_failure} — resuming anyway")
     else:
         if plan.blocked:
             _print(["✗ Migration refused:", *[f"  • {b}" for b in plan.blockers]])
             return False
-        blocker = _preflight_apply(plan, target, run_as_user)
+        blocker = _preflight_apply(plan, target, run_as_user) or _enable_default_at_boot(plan)
         if blocker is not None:
             _print(["✗ Migration refused before changing anything:", f"  • {blocker}"])
             return False
@@ -1043,7 +1066,6 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
     try:
         _write_multiplex_flag(plan.default_home, True)
         print(f"  ✓ default: gateway.multiplex_profiles: true ({plan.default_home / 'config.yaml'})")
-        _enable_default_at_boot(plan)
         _remove_secondary_gateways(plan)  # on resume: whatever an apply killed mid-removal left installed
         print(f"  ✓ {_restart_default(plan.default, target, plan.default_home, run_as_user=run_as_user)}")
     except Exception as exc:

@@ -26,10 +26,16 @@ def remove_system_systemd_unit() -> bool:
         print(f"⚠ System service {svc_name} remains at {unit}; it will restart the removed profile at boot.")
         print(f"  Remove it with: sudo systemctl disable --now {svc_name} && sudo rm {unit} && sudo systemctl daemon-reload")
         return False
-    for cmd in (["disable", svc_name], ["stop", svc_name]):
-        subprocess.run(["systemctl", *cmd], capture_output=True, check=False, timeout=30)
+    subprocess.run(["systemctl", "disable", svc_name], capture_output=True, check=False, timeout=30)
+    stopped = subprocess.run(["systemctl", "stop", svc_name], capture_output=True, check=False, timeout=30)
     unit.unlink(missing_ok=True)
     subprocess.run(["systemctl", "daemon-reload"], capture_output=True, check=False, timeout=30)
+    if getattr(stopped, "returncode", 0) != 0:
+        # The unit file is gone (it must not resurrect the removed profile at boot), but the
+        # gateway it supervised may still be running under the old name.
+        print(f"⚠ System service {svc_name} unit removed, but `systemctl stop` exited {stopped.returncode}; "
+              f"its gateway may still be running. Stop it with: sudo systemctl stop {svc_name}")
+        return True
     print(f"✓ System service {svc_name} removed")
     return True
 

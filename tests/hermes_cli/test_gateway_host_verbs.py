@@ -167,6 +167,10 @@ def test_named_profile_restart_all_with_host_down_restarts_the_default_root(monk
 
     Post-update the host is down, so the ownership refusal cannot fire; the sweep-and-relaunch
     then ran as X, whose own gateway the run-side named-profile guard refuses (exit 78).
+
+    And it must relaunch the root as a DETACHED child carrying only the root's own secrets: X's
+    CLI already loaded X's ``.env`` into ``os.environ``, and an in-process ``run_gateway`` served the
+    default profile with X's credentials.
     """
     import hermes_constants
 
@@ -175,6 +179,12 @@ def test_named_profile_restart_all_with_host_down_restarts_the_default_root(monk
     named.mkdir(parents=True)
     (root / "config.yaml").write_text("{}\n", encoding="utf-8")
     (named / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (root / ".env").write_text("DISCORD_BOT_TOKEN=root-discord\n", encoding="utf-8")
+    (named / ".env").write_text("TELEGRAM_BOT_TOKEN=leinad-telegram\nOPENAI_API_KEY=leinad-openai\n",
+                                encoding="utf-8")
+    # The CLI startup already loaded leinad's .env into this process.
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "leinad-telegram")
+    monkeypatch.setenv("OPENAI_API_KEY", "leinad-openai")
 
     monkeypatch.setenv("HERMES_HOME", str(named))
     hermes_constants._default_hermes_root_memo = None
@@ -185,17 +195,27 @@ def test_named_profile_restart_all_with_host_down_restarts_the_default_root(monk
     monkeypatch.setattr(gw, "_wait_for_api_server_port_free", lambda **k: True)
     monkeypatch.setattr(gw, "_discard_dead_host_record", lambda: False)
     monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: None)
+    monkeypatch.setattr(gw, "run_gateway",
+                        lambda **k: pytest.fail("the root ran IN the named profile's process"))
+    monkeypatch.setattr(gw, "get_python_path", lambda: sys.executable)
 
-    started_as = []
-    monkeypatch.setattr(
-        gw, "run_gateway",
-        lambda **k: started_as.append((Path(hermes_constants.get_hermes_home()), k.get("replace"))),
-    )
+    spawned: list[tuple[list[str], dict]] = []
+    monkeypatch.setattr(gw.subprocess, "Popen",
+                        lambda cmd, **kw: spawned.append((cmd, kw)) or SimpleNamespace())
 
     gw._restart_all(system=False)
 
-    assert started_as == [(root, True)]
+    assert len(spawned) == 1
+    cmd, kwargs = spawned[0]
+    assert cmd[-3:] == ["gateway", "run", "--replace"]
+    assert "--profile" not in cmd
+    env = kwargs["env"]
+    assert Path(env["HERMES_HOME"]) == root
+    assert env.get("DISCORD_BOT_TOKEN") == "root-discord"
+    assert "TELEGRAM_BOT_TOKEN" not in env and "OPENAI_API_KEY" not in env, \
+        "the host child inherited the named profile's credentials"
     assert hermes_constants.get_hermes_home() == named
+    assert not hermes_constants.process_hermes_home_is_pinned()
 
 
 def test_restart_all_refuses_to_sweep_a_host_multiplexer_owned_by_another_profile(

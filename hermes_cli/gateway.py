@@ -3656,7 +3656,10 @@ def systemd_install(
             # ever enabling, so even the migration's install path was no enablement guarantee
             # (#124922).
             if enable_on_startup:
-                _run_systemctl(["enable", get_service_name()], system=system, check=False, timeout=30)
+                enabled = _run_systemctl(["enable", get_service_name()], system=system, check=False, timeout=30)
+                if getattr(enabled, "returncode", 0) != 0:
+                    print_warning(f"could not enable {get_service_name()} at boot "
+                                  f"(systemctl enable exited {enabled.returncode}); a reboot may come up with no gateway")
         # Same post-install guarantee as a fresh install: a repaired user unit must survive logout too.
         configured_user = _read_systemd_user_from_unit(unit_path) if system else None
         if configured_user:
@@ -5449,12 +5452,23 @@ def _restart_all_as_host(owner, system: bool) -> None:
     print("Starting gateway...")
     # Even without a registered task, gateway_windows.start() uses the detached launcher.
     kind = _installed_service_kind_for(is_windows)
-    if kind is None:
-        # replace=True: if the old owner is still draining (a long drain, an ineffective SIGKILL, a
-        # foreign-home owner the scan never saw), take the host over instead of attaching to it.
-        run_gateway(verbose=0, replace=True)
-    else:
+    if kind is not None:
         _service_call(kind, "start", system)
+        return
+    from hermes_constants import get_routing_process_hermes_home, named_profile_home
+    if named_profile_home(get_routing_process_hermes_home()) is not None:
+        # A named profile's CLI never runs the root IN this process: os.environ holds that profile's
+        # .env and the root's dotenv load does not clear inherited keys, so the host served the
+        # default profile with the named profile's credentials. The detached child starts from the
+        # scrubbed host env (the root's own secrets only); `--replace` is part of its argv.
+        if not _spawn_detached_gateway():
+            print_error("Failed to start the host gateway as a background process.")
+            sys.exit(1)
+        print("✓ Started the host gateway as a background process")
+        return
+    # replace=True: if the old owner is still draining (a long drain, an ineffective SIGKILL, a
+    # foreign-home owner the scan never saw), take the host over instead of attaching to it.
+    run_gateway(verbose=0, replace=True)
 
 
 def _cmd_restart(args):

@@ -18,6 +18,9 @@ import pytest
 import hermes_constants
 from hermes_cli import gateway_migrate as gm
 
+# Captured before any fixture fakes the seam: the one test that drives the real service leg.
+_REAL_SERVICE_OP = gm._service_op
+
 
 @pytest.fixture
 def fleet(tmp_path, monkeypatch):
@@ -906,6 +909,31 @@ def test_migrate_enables_the_survivor_before_it_removes_anything(fleet, capsys):
     # A reboot has exactly one gateway: the survivor, and none of the folded secondaries.
     assert fleet.enabled == {("default", "systemd", False)}
     assert fleet.ops[-1] == ("default", "restart") and "serves 3 profiles" in capsys.readouterr().out
+
+
+def test_migrate_refuses_when_the_survivor_cannot_be_enabled(fleet, monkeypatch, capsys):
+    """A failed `systemctl enable` is a preflight refusal, not a ⚠ line: continuing removed every
+    boot-startable secondary and reported ✓ Migrated over a host that comes back with no gateway."""
+    from hermes_cli import gateway as gw
+    fleet.services["default"] = ("systemd", False)
+    fake_op = gm._service_op
+    monkeypatch.setattr(gw, "_run_systemctl", lambda args, **kw: SimpleNamespace(returncode=1))
+
+    def _op(kind, system, verb, home, *, run_as_user=None):
+        if verb == "enable":  # the real leg, over a systemctl that fails
+            return _REAL_SERVICE_OP(kind, system, verb, home, run_as_user=run_as_user)
+        fake_op(kind, system, verb, home, run_as_user=run_as_user)
+
+    monkeypatch.setattr(gm, "_service_op", _op)
+
+    with pytest.raises(SystemExit) as exc:
+        gm.cmd_migrate(SimpleNamespace(multiplex=True, dry_run=False, yes=True))
+
+    assert exc.value.code == 1
+    assert not any(op[1] in ("stop", "uninstall") for op in fleet.ops), "refusal must precede every removal"
+    assert fleet.pids == {"coder": 4101, "ops": 4102} and _config_flag(fleet.root) is None
+    assert not gm._manifest_path(fleet.root).exists()
+    assert "refused before changing anything" in capsys.readouterr().out
 
 
 def test_plan_names_every_process_it_will_sigterm_before_it_signals_anything(fleet, capsys):

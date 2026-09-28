@@ -10,7 +10,7 @@ Python dependency commands on this page use a
 [PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
 After a dependency change, reactivate the checkout and restart Hermes.
 
-Hermes Agent integrates with Matrix, the open, federated messaging protocol. Matrix lets you run your own homeserver or use a public one like matrix.org — either way, you keep control of your communications. The bot connects via the `mautrix` Python SDK, processes messages through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, file attachments, images, audio, video, and optional end-to-end encryption (E2EE).
+Hermes Agent integrates with Matrix, the open, federated messaging protocol. Matrix lets you run your own homeserver or use a public one like matrix.org — either way, you keep control of your communications. The bot connects via the `mautrix` Python SDK, processes messages through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, location shares, file attachments, images, audio, video, and optional end-to-end encryption (E2EE).
 
 Hermes works with any Matrix homeserver — Synapse, Conduit, Dendrite, or matrix.org.
 
@@ -1075,6 +1075,29 @@ Always set `MATRIX_ALLOWED_USERS` and, for shared/private deployments, `MATRIX_A
 :::
 
 For more information on securing your Hermes Agent deployment, see the [Security Guide](../security.md).
+
+## Location shares
+
+Native [`m.location` messages][matrix-location] provide the agent with latitude
+and longitude, plus altitude and uncertainty in metres when present. For example,
+`geo:51.5,-0.1,12;u=35` becomes
+`📍 Location: 51.5, -0.1; altitude: 12.0 m; uncertainty: 35.0 m`.
+Hermes accepts [RFC 5870][geo-uri] URIs in WGS-84 and ignores malformed URIs or
+unsupported coordinate reference systems.
+
+The [MSC3488][msc3488-location] `org.matrix.msc3488.location.uri` field takes
+precedence over `geo_uri`. Hermes uses `geo_uri` when the MSC URI field is absent.
+An invalid MSC URI causes the message to be dropped without using the legacy
+coordinates. The optional MSC description supplies the label, with the legacy
+`body` as a fallback.
+
+The usual sender, room, thread and mention rules apply. A mention in the MSC
+description does not target the bot. Hermes supports incoming location messages;
+live-location tracking and outgoing location shares are not supported.
+
+[matrix-location]: https://spec.matrix.org/v1.16/client-server-api/#mlocation
+[geo-uri]: https://www.rfc-editor.org/rfc/rfc5870.html
+[msc3488-location]: https://github.com/matrix-org/matrix-spec-proposals/blob/matthew/location/proposals/3488-location.md
 
 ## Notes
 

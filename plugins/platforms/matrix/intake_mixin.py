@@ -8,6 +8,7 @@ from typing import Any
 
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
+from plugins.platforms.matrix.location import format_location_content
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 from plugins.platforms.matrix.sync_transport import DurableSyncStore, SyncDispatch
@@ -73,13 +74,20 @@ class MatrixIntakeMixin(BasePlatformAdapter):
         from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
 
         body = source_content.get("body", "") or ""
-        if not body:
+        location_text = None
+        if source_content.get("msgtype") == "m.location":
+            location_text = format_location_content(source_content)
+            if location_text is None:
+                return
+            if not isinstance(body, str):
+                body = ""
+        if not body and location_text is None:
             return
         reply_target = MatrixRelation.from_content(relates_to).reply_target
         reply_parent = reply_parent or (self._event_context_cache.retain(room_id, reply_target) if reply_target else None)
         # Dict lookup first: the mention regexes only run when a voice is parked or being gated
         # (both only happen under require_mention).
-        if (self._parked_voices.pending(room_id, sender)
+        if (location_text is None and self._parked_voices.pending(room_id, sender)
                 and not self._strip_mention(body).strip() and self._content_mentions_bot(body, source_content)):
             limit = self._parked_voices.mark()  # never claim a voice sent after this mention
             await self._parked_voices.settle(room_id, sender)  # same-/sync-batch voice still gating
@@ -96,6 +104,9 @@ class MatrixIntakeMixin(BasePlatformAdapter):
             reply_parent=reply_parent, event_ts=event_ts)
         if msg_event is None:
             return
+        if location_text is not None:
+            msg_event.text = location_text
+            msg_event.message_type = MessageType.TEXT
         self._event_context_cache.store(room_id, event_id, MatrixEventContext(sender, msg_event.text))
         return await self._admit_text_event(msg_event)
 

@@ -2252,7 +2252,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
             return await self._handle_media_message(
                 room_id, sender, event_id, event_ts, source_content, relates_to, msgtype,
                 reply_parent=reply_parent)
-        elif msgtype in ("m.text", "m.notice"):
+        elif msgtype in ("m.text", "m.notice", "m.location"):
             return await self._handle_text_message(
                 room_id, sender, event_id, event_ts, source_content, relates_to,
                 reply_parent=reply_parent)
@@ -2260,43 +2260,6 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
             return await self._handle_emote_message(
                 room_id, sender, event_id, event_ts, source_content, relates_to,
                 reply_parent=reply_parent)
-        elif msgtype == "m.location":
-            # Forward Matrix location as a text message with coordinates.
-            geo_uri = source_content.get("geo_uri", "")
-            body = source_content.get("body", "")
-
-            # Also check MSC3488 location (newer standard)
-            msc_location = source_content.get("org.matrix.msc3488.location", {})
-            description = (
-                msc_location.get("description", "")
-                if isinstance(msc_location, dict)
-                else ""
-            )
-
-            # Parse coordinates from geo:lat,lon[;crs=...][;u=...]
-            lat = lon = None
-            if isinstance(geo_uri, str) and geo_uri.startswith("geo:"):
-                coords_part = geo_uri[4:].split(";")[0]
-                parts = coords_part.split(",")
-                if len(parts) >= 2:
-                    try:
-                        lat = float(parts[0].strip())
-                        lon = float(parts[1].strip())
-                    except (ValueError, TypeError):
-                        pass
-
-            if lat is not None and lon is not None:
-                text = f"📍 Location: {lat}, {lon}"
-                if description:
-                    text += f" ({description})"
-                elif body and body not in ("Location", "Posizione", ""):
-                    text += f" — {body}"
-
-                loc_content = dict(source_content)
-                loc_content["body"] = text
-                await self._handle_text_message(
-                    room_id, sender, event_id, event_ts, loc_content, relates_to
-                )
 
     async def _resolve_message_context(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
@@ -2336,7 +2299,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
                 self._thread_require_mention if in_bot_thread else self._require_mention
             )
             if self._require_mention and not is_free_room and not in_bot_thread:
-                is_command = source_content.get("msgtype") not in {"m.emote", "m.sticker"} and body.startswith("/")
+                is_command = source_content.get("msgtype") not in {"m.emote", "m.sticker", "m.location"} and body.startswith("/")
                 if not is_mentioned and not is_command:
                     if voice_gate is not None:  # parkable voice: a bare @mention may follow (Element X)
                         self._parked_voices.park(room_id, sender, voice_gate, event_id, source_content, relates_to)

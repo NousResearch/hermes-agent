@@ -1764,9 +1764,12 @@ DEFAULT_CONFIG = {
         "approval": {"transport": "builtin", "transport_fallback": "deny"},
         # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/.cursorrules, project-local
         # .hermes config) always need human approval, even under yolo. Extra patterns are fnmatch
-        # globs on the basename (e.g. "*.mdc").
+        # globs on the basename (e.g. "*.mdc"). Exempt patterns are fnmatch globs on the full
+        # normalized path (e.g. "**/.hermes/environment.json") opting user-chosen paths OUT of the
+        # always-ask gate while every other protected file stays gated.
         "protected_instruction_files": True,
         "protected_instruction_extra_patterns": [],
+        "protected_instruction_exempt_patterns": [],
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,

@@ -918,6 +918,103 @@ class TestProtectedInstructionFiles:
 
         assert rendered["choices"] == ["once", "deny"]
 
+    # ---- exempt patterns (security.protected_instruction_exempt_patterns) ----
+
+    def test_exempt_pattern_skips_gate(self, tmp_path, monkeypatch, approvals):
+        """A user-configured full-path exempt pattern opts that exact path out of the
+        ALWAYS-ask gate: the write proceeds with NO approval prompt."""
+        import tools.file_tools_write_guards as ft
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config",
+            lambda: (True, [], ["**/.hermes/environment.json"]),
+        )
+        repo = tmp_path / "repo"
+        (repo / ".hermes").mkdir(parents=True)
+        target = repo / ".hermes" / "environment.json"
+
+        assert ft._protected_instruction_reason(str(target)) is None
+        res = self._write(target, '{"version": 1}\n')
+        assert "error" not in res
+        assert target.read_text() == '{"version": 1}\n'
+        assert approvals["calls"] == []
+
+    def test_exempt_pattern_leaves_others_gated(self, tmp_path, monkeypatch, approvals):
+        """The exempt pattern is exact-shape: sibling protected files under the same
+        .hermes dir stay gated (fail-closed, unwritten, one denied prompt)."""
+        import tools.file_tools_write_guards as ft
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config",
+            lambda: (True, [], ["**/.hermes/environment.json"]),
+        )
+        repo = tmp_path / "repo"
+        (repo / ".hermes").mkdir(parents=True)
+        target = repo / ".hermes" / "config.yaml"
+
+        assert ft._protected_instruction_reason(str(target))
+        res = self._write(target, "gate: off\n")
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not target.exists()
+        assert len(approvals["calls"]) == 1
+
+    def test_exempt_pattern_matches_realpath(self, tmp_path, monkeypatch, approvals):
+        """A symlinked .hermes dir cannot escape or dodge the exempt decision: matching
+        runs on the realpath too, so a pattern naming the REAL path exempts a write made
+        through the link."""
+        import tools.file_tools_write_guards as ft
+        real = tmp_path / "real" / ".hermes"
+        real.mkdir(parents=True)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".hermes").symlink_to(real)
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config",
+            lambda: (True, [], [str(real / "environment.json")]),
+        )
+        target = repo / ".hermes" / "environment.json"
+
+        assert ft._protected_instruction_reason(str(target)) is None
+        res = self._write(target, '{"version": 1}\n')
+        assert "error" not in res
+        assert (real / "environment.json").read_text() == '{"version": 1}\n'
+        assert approvals["calls"] == []
+
+    def test_exempt_basename_rule_also_honored(self, tmp_path, monkeypatch, approvals):
+        """The single exempt knob sits ahead of BOTH protected rules: an explicit
+        full-path pattern can exempt an AGENTS.md basename too."""
+        import tools.file_tools_write_guards as ft
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        target = repo / "AGENTS.md"
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config",
+            lambda: (True, [], [str(target)]),
+        )
+
+        assert ft._protected_instruction_reason(str(target)) is None
+        res = self._write(target, "# notes\n")
+        assert "error" not in res
+        assert approvals["calls"] == []
+
+    def test_exempt_config_error_fails_closed(self, tmp_path, monkeypatch, approvals):
+        """A broken config read must NOT silently exempt anything: the real
+        ``_protected_instruction_config`` swallows the error into gate-ON with an
+        empty exempt list."""
+        import tools.file_tools_write_guards as ft
+        import hermes_cli.config as hermes_config
+
+        def _boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(hermes_config, "load_config", _boom)
+        repo = tmp_path / "repo"
+        (repo / ".hermes").mkdir(parents=True)
+        target = repo / ".hermes" / "environment.json"
+
+        assert ft._protected_instruction_reason(str(target))
+        res = self._write(target, '{"version": 1}\n')
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not target.exists()
+
 
 class TestProfileHomeExemptsHermesRoot:
     """issue #60: under ``hermes -p <name>`` (``HERMES_HOME=<root>/profiles/<name>``)

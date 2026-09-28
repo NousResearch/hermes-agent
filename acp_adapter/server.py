@@ -450,6 +450,8 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         if self._conn:
             for name, reason in failures:
                 display_name = " ".join(name.split())[:200] or "unknown"
+                # Bound client transcript output after redaction, so truncation cannot expose a credential tail.
+                reason = reason if len(reason) <= 1000 else reason[:999] + "…"
                 await self._send(
                     state.session_id,
                     acp.update_agent_message_text(

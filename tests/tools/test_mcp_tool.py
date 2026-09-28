@@ -1597,6 +1597,10 @@ class TestSanitizeError:
             ("key sk-sp-ABCDEFGH12345678.abcdefgh_XYZ-0987.", "key [REDACTED]."),
             ("Authorization: Bearer eyJabc123def", "Authorization: [REDACTED]"),
             ("url?token=secret123", "url?[REDACTED]"),
+            ("https://user:p%40ss@example.test/mcp", "https://[REDACTED]@example.test/mcp"),
+            ("http://user:pass@[::1]:9000/mcp", "http://[REDACTED]@[::1]:9000/mcp"),
+            ("https://token@example.test/mcp", "https://[REDACTED]@example.test/mcp"),
+            ("https://example.test/a@b", "https://example.test/a@b"),
         ):
             assert _sanitize_error(text) == expected, text
 

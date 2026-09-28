@@ -1307,6 +1307,8 @@ def restore_primary_runtime(agent) -> bool:
             agent._use_prompt_caching = False
             agent._use_native_cache_layout = False
         _rebuild_primary_client(agent, rt, reason="restore_primary")
+        from agent.agent_init import refresh_compressor_output_reservation
+        refresh_compressor_output_reservation(agent)
         agent.context_compressor.update_model(
             model=rt["compressor_model"], context_length=rt["compressor_context_length"],
             base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
@@ -2214,6 +2216,8 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             agent.model, base_url=agent.base_url, api_key=ctx_api_key, provider=agent.provider,
             config_context_length=effective_context_length, custom_providers=custom_providers,
         )
+        from agent.agent_init import refresh_compressor_output_reservation
+        refresh_compressor_output_reservation(agent)
         agent.context_compressor.update_model(
             model=agent.model,
             context_length=new_context_length,

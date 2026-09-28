@@ -359,16 +359,22 @@ def _gateway_ready(log: str, room_id: str) -> bool:
 
 
 @pytest.fixture
+def gateway_home(tmp_path: Path) -> Path:
+    home = tmp_path / "hermes"
+    home.mkdir()
+    return home
+
+
+@pytest.fixture
 def gateway(
-    tmp_path: Path,
+    gateway_home: Path,
     gateway_image: str,
     synapse: tuple[DockerContainer, str, Network],
     live_room: LiveRoom,
 ) -> Iterator[LiveGateway]:
     _, _, network = synapse
     room_id = live_room.room_id
-    home = tmp_path / "hermes"
-    home.mkdir()
+    home = gateway_home
     route = _host_route(network)
     with FakeLLMServer([Text("Matrix live reply")], bind_host=route.bind_host) as model:
         write_hermes_home(

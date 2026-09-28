@@ -572,6 +572,12 @@ Hermes only normalizes `!command` when the command is known to the gateway, a
 registered plugin command, or an installed skill command. Ordinary exclamations
 such as `!important` remain normal chat messages.
 
+Native bang commands accept ASCII letters, digits, underscores and hyphens, and
+must start with a letter. A skill slug that starts with a digit or includes
+non-ASCII characters remains listed with its slash spelling. To invoke that skill
+from a client that intercepts slash commands, give the skill an ASCII name that
+starts with a letter.
+
 The generated directory includes every gateway-compatible built-in command and alias
 plus installed skill commands. Registered plugin commands can also be invoked with
 `!command` when installed, but they are not currently enumerated by `!commands`.

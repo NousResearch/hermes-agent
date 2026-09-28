@@ -240,7 +240,7 @@ async def test_commands_keeps_slash_prefix_on_non_matrix_gateway(monkeypatch):
 
 
 def test_matrix_command_rendering_preserves_paths_and_multi_backtick_code():
-    from gateway.run import _platformize_command_mentions
+    from gateway.run_command_replies import _platformize_command_mentions
 
     source = (
         "Use `/tmp` and `/tmp/file`; keep ``/commands`` and "
@@ -250,5 +250,3 @@ def test_matrix_command_rendering_preserves_paths_and_multi_backtick_code():
     )
 
     assert _platformize_command_mentions(source, Platform.MATRIX) == source
-
-

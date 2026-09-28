@@ -70,9 +70,6 @@ _USER_BOUNDARY_END_REASONS = ("session_reset", "user_exit", "session_switch", "n
 _STALL_NOTIFY_SEND_TIMEOUT_SECONDS = 15.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
-_MATRIX_CODE_COMMAND_RE = re.compile(
-    r"^/([A-Za-z0-9][A-Za-z0-9_-]*)(?=\s|$)"
-)
 _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -897,79 +894,6 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
         return f"/{sanitized}" if sanitized else match.group(0)
 
     return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
-
-
-def _platformize_command_mentions(text: str, platform: Any) -> str:
-    """Render command mentions using syntax the target client can send.
-
-    Dispatch remains slash-based internally. Telegram receives its existing
-    name sanitization; Matrix receives bang-prefixed command tokens because
-    Element clients may reserve slash commands locally.
-    """
-    rendered = _telegramize_command_mentions(text, platform)
-    platform_value = getattr(platform, "value", platform)
-    if platform_value != "matrix":
-        return rendered
-
-    from agent.skill_commands import get_skill_commands
-    from hermes_cli.commands import is_gateway_known_command
-
-    skill_command_names = {
-        str(command).removeprefix("/") for command in get_skill_commands()
-    }
-
-    def _replace_single_backtick_spans(line: str) -> str:
-        parts: list[str] = []
-        cursor = 0
-        while cursor < len(line):
-            opening = line.find("`", cursor)
-            if opening < 0:
-                parts.append(line[cursor:])
-                break
-            parts.append(line[cursor:opening])
-            run_end = opening
-            while run_end < len(line) and line[run_end] == "`":
-                run_end += 1
-            delimiter = line[opening:run_end]
-            closing = line.find(delimiter, run_end)
-            if closing < 0:
-                parts.append(line[opening:])
-                break
-
-            content = line[run_end:closing]
-            match = _MATRIX_CODE_COMMAND_RE.match(content)
-            if len(delimiter) == 1 and match:
-                command_name = match.group(1)
-                if (
-                    is_gateway_known_command(command_name)
-                    or command_name in skill_command_names
-                ):
-                    content = f"!{command_name}{content[match.end():]}"
-            parts.extend((delimiter, content, delimiter))
-            cursor = closing + len(delimiter)
-        return "".join(parts)
-
-    lines: list[str] = []
-    fence: tuple[str, int] | None = None
-    for line in rendered.splitlines(keepends=True):
-        stripped = line.lstrip(" \t")
-        if fence is not None:
-            lines.append(line)
-            marker, minimum_length = fence
-            marker_length = len(stripped) - len(stripped.lstrip(marker))
-            if marker_length >= minimum_length and not stripped[marker_length:].strip():
-                fence = None
-            continue
-
-        opening_fence = re.match(r"(`{3,}|~{3,})", stripped)
-        if opening_fence:
-            marker = opening_fence.group(1)
-            fence = (marker[0], len(marker))
-            lines.append(line)
-            continue
-        lines.append(_replace_single_backtick_spans(line))
-
-    return "".join(lines)
 
 
 # Auto-continue interrupted turns only while fresh, else stale tool-tail/resume_pending markers revive an old

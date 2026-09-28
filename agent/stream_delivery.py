@@ -6,7 +6,7 @@ Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO
 import logging
 import re
 import threading
-from typing import Any, Dict, List
+from typing import Any
 
 from agent.memory_manager import sanitize_context
 from agent.message_content import flatten_message_text
@@ -173,21 +173,17 @@ class StreamDeliveryMixin:
                 self._delivered_interim_texts = set()
             self._delivered_interim_texts.add(normalized)
 
-    def _deliver_interim(self, visible: str, *, already_streamed: bool, record: list[str]) -> bool:
-        """Hand ``visible`` to ``interim_assistant_callback`` and mark ``record`` delivered.
-
-        Returns True when the callback accepted the delivery."""
+    def _deliver_interim(self, visible: str, *, already_streamed: bool, record: list[str]) -> None:
+        """Hand ``visible`` to ``interim_assistant_callback`` and mark ``record`` delivered; swallows callback errors."""
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None:
-            return False
+            return
         try:
             cb(visible, already_streamed=already_streamed)
             for part in record:
                 self._record_delivered_interim_text(part)
-            return True
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
-            return False
 
     def _fire_streamed_codex_commentary(self, text: str) -> None:
         """Deliver a completed live Codex commentary message immediately."""
@@ -198,17 +194,12 @@ class StreamDeliveryMixin:
             return
         self._deliver_interim(visible, already_streamed=False, record=[visible])
 
-    def _emit_interim_assistant_message(self, assistant_msg: dict[str, Any]) -> bool:
+    def _emit_interim_assistant_message(self, assistant_msg: dict[str, Any]) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer. Does NOT set
         ``_response_was_previewed`` ("the final response was shown") — the CLI would then suppress a
-        different final summary.
-
-        Returns whether the visible content was already delivered or accepted by the callback.
-        Messaging gateways can disable interim messages entirely, so callers that care about
-        user-visible delivery need this distinction."""
-        cb = getattr(self, "interim_assistant_callback", None)
+        different final summary."""
         if not isinstance(assistant_msg, dict):
-            return False
+            return
         commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
         # Dedup within this message and against earlier deliveries, first occurrence wins.
         pending: dict[str, str] = {}
@@ -219,15 +210,10 @@ class StreamDeliveryMixin:
         undelivered_parts = list(pending.values())
         visible = "\n\n".join(undelivered_parts).strip() if commentary_parts else self._interim_assistant_visible_text(assistant_msg)
         if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
-            return self._interim_content_was_streamed(visible) if visible else False
-        already_streamed = self._interim_content_was_streamed(visible)
+            return
+        already_streamed = self._interim_content_fully_streamed(visible)
         self._enqueue_stream_hook("on_interim_message", text=visible, already_streamed=already_streamed)
-        if cb is None:
-            return already_streamed
-        delivered = self._deliver_interim(
-            visible, already_streamed=already_streamed, record=undelivered_parts or [visible]
-        )
-        return delivered or already_streamed
+        self._deliver_interim(visible, already_streamed=already_streamed, record=undelivered_parts or [visible])
 
     def _ensure_stream_writer_state(self) -> None:
         """Lazily create the single-writer guard fields (#65991).

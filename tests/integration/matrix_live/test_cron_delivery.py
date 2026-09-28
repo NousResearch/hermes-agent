@@ -17,7 +17,8 @@ from nio import (
 )
 from testcontainers.core.container import DockerContainer
 
-from tests.integration.matrix_live.conftest import LiveRoom
+from tests.integration.matrix_live.conftest import LiveRoom, _wait_for
+from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 
 
 _DELIVER = """
@@ -200,3 +201,185 @@ def test_cron_alias_and_home_thread_delivery(
             await client.close()
 
     asyncio.run(asyncio.wait_for(observe(), timeout=15))
+
+
+_CONTINUE = """
+import asyncio
+import json
+import signal
+from cron.scheduler_delivery import _deliver_result
+from gateway.config import load_gateway_config
+from gateway.run import GatewayRunner
+
+async def main():
+    config = load_gateway_config()
+    config.multiplex_profiles = False
+    runner = GatewayRunner(config)
+    assert await runner.start(), 'Gateway start failed'
+    try:
+        loop = asyncio.get_running_loop()
+        stopped = asyncio.Event()
+        loop.add_signal_handler(signal.SIGTERM, stopped.set)
+        error = await asyncio.to_thread(
+            _deliver_result,
+            {'id': 'alias-continuation', 'deliver': TARGET, 'attach_to_session': True},
+            BRIEF, runner.adapters, loop,
+        )
+        assert error is None, error
+        print(json.dumps({'cron_ready': True}), flush=True)
+        await stopped.wait()
+    finally:
+        await runner.stop()
+
+asyncio.run(main())
+"""
+
+
+def test_alias_thread_reply_receives_seeded_cron_brief(
+    gateway_image, synapse, live_room: LiveRoom, tmp_path: Path
+):
+    async def create():
+        client = live_room.observer.client(live_room.homeserver)
+        try:
+            room = await client.room_create(
+                alias="cron-continuation",
+                name="Cron continuation",
+                preset=RoomPreset.public_chat,
+            )
+            assert isinstance(room, RoomCreateResponse), room
+            root = await client.room_send(
+                room.room_id,
+                "m.room.message",
+                {"msgtype": "m.notice", "body": "External thread root"},
+            )
+            assert isinstance(root, RoomSendResponse), root
+            return room.room_id, root.event_id
+        finally:
+            await client.close()
+
+    room_id, root_id = asyncio.run(asyncio.wait_for(create(), timeout=15))
+    alias = "#cron-continuation:matrix.test"
+    brief = "The cron-only launch code is basil-otter-47."
+    home = tmp_path / "continuation-home"
+    _, _, network = synapse
+    with FakeLLMServer([Text("Continuation reply")], bind_host="0.0.0.0") as model:
+        write_hermes_home(
+            home,
+            f"http://host.docker.internal:{model.port}/v1",
+            extra_config=(
+                "cron:\n  wrap_response: false\n"
+                "updates:\n  check: false\n"
+                "platforms:\n  matrix:\n    enabled: true\n"
+                "    extra:\n      e2ee_mode: 'off'\n      require_mention: false\n"
+                "      auto_thread: false\n      reactions: false\n"
+            ),
+        )
+        with (home / ".env").open("a", encoding="utf-8") as stream:
+            stream.write(
+                "MATRIX_HOMESERVER=http://synapse:8008\n"
+                f"MATRIX_ACCESS_TOKEN={live_room.bot.access_token}\n"
+                f"MATRIX_ALLOWED_USERS={live_room.observer.user_id}\n"
+            )
+        code = (
+            f"TARGET = {f'matrix:{alias}/{root_id}'!r}\nBRIEF = {brief!r}\n" + _CONTINUE
+        )
+        with (
+            DockerContainer(
+                gateway_image,
+                network=network,
+                entrypoint="/opt/hermes/.venv/bin/python",
+                working_dir="/opt/hermes",
+                extra_hosts={"host.docker.internal": "host-gateway"},
+            )
+            .with_command(["-c", code])
+            .with_volume_mapping(home, "/opt/data", "rw") as sender
+        ):
+
+            def logs():
+                return sender.get_wrapped_container().logs().decode(errors="replace")
+
+            _wait_for(
+                lambda: '{"cron_ready": true}' in logs(),
+                "cron delivery and seed",
+                timeout=120,
+                details=lambda: logs()[-6000:],
+            )
+
+            async def exchange():
+                client = live_room.observer.client(live_room.homeserver)
+                try:
+                    response = await client.sync(timeout=0)
+                    reports = [
+                        event
+                        for event in response.rooms.join[room_id].timeline.events
+                        if isinstance(event, RoomMessageText) and event.body == brief
+                    ]
+                    assert len(reports) == 1
+                    report = reports[0]
+                    assert (
+                        report.sender,
+                        report.source["content"]["m.relates_to"],
+                    ) == (
+                        live_room.bot.user_id,
+                        {
+                            "rel_type": "m.thread",
+                            "event_id": root_id,
+                            "is_falling_back": True,
+                            "m.in_reply_to": {"event_id": root_id},
+                        },
+                    )
+                    question = "What was the launch code in your scheduled brief?"
+                    sent = await client.room_send(
+                        room_id,
+                        "m.room.message",
+                        {
+                            "msgtype": "m.text",
+                            "body": question,
+                            "m.relates_to": {
+                                "rel_type": "m.thread",
+                                "event_id": root_id,
+                                "is_falling_back": False,
+                                "m.in_reply_to": {"event_id": report.event_id},
+                            },
+                        },
+                    )
+                    assert isinstance(sent, RoomSendResponse), sent
+                    while True:
+                        response = await client.sync(timeout=250)
+                        joined = response.rooms.join.get(room_id)
+                        if not joined:
+                            continue
+                        for event in joined.timeline.events:
+                            if (
+                                isinstance(event, RoomMessageText)
+                                and event.sender == live_room.bot.user_id
+                                and event.body == "Continuation reply"
+                            ):
+                                assert event.source["content"]["m.relates_to"] == {
+                                    "rel_type": "m.thread",
+                                    "event_id": root_id,
+                                    "m.in_reply_to": {"event_id": sent.event_id},
+                                    "is_falling_back": False,
+                                }
+                                requests = model.main_requests()
+                                assert len(requests) == 1
+                                messages = requests[0]["messages"]
+                                assert any(
+                                    message.get("role") == "user"
+                                    and "[Cron delivery: alias-continuation]"
+                                    in str(message.get("content"))
+                                    and brief in str(message.get("content"))
+                                    for message in messages
+                                ), messages
+                                assert question in json.dumps(messages)
+                                return
+                finally:
+                    await client.close()
+
+            try:
+                asyncio.run(asyncio.wait_for(exchange(), timeout=15))
+            except asyncio.TimeoutError:
+                pytest.fail(
+                    "No continuation reply after 15 seconds. Gateway logs:\n"
+                    + logs()[-6000:]
+                )

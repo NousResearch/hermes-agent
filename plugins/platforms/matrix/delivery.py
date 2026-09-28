@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol
+from typing import Any, Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from gateway.session import SessionSource
 
 
 class _RoomIdentityInvalidator(Protocol):
@@ -18,6 +21,18 @@ class MatrixDeliveryMixin:
     _e2ee_mode: str
     _invalidate_room_identities: _RoomIdentityInvalidator
     _refresh_dm_cache: Callable[[], Awaitable[None]]
+    _is_dm_room: Callable[[str], Awaitable[bool]]
+
+    async def resolve_delivery_target(self, source: SessionSource) -> SessionSource:
+        """Resolve the room and reply session shape through this authenticated client."""
+        from gateway.session_identity import replace_source
+
+        room_id = await self._resolve_send_target(source.chat_id)
+        return replace_source(
+            source,
+            chat_id=room_id,
+            chat_type="dm" if await self._is_dm_room(room_id) else "group",
+        )
 
     async def _resolve_send_target(self, chat_id: str) -> str:
         from plugins.platforms.matrix.adapter import RoomID

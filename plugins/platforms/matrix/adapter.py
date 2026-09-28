@@ -1448,9 +1448,9 @@ class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
-        target = chat_id
+        target = (metadata or {}).get("_original_target", chat_id)
         try:
-            chat_id = await self._resolve_send_target(target)
+            chat_id = await self._resolve_send_target(chat_id)
             await self._check_room_encryption(chat_id)
         except Exception as exc:
             return SendResult(success=False, error=f"Matrix target '{target}': {exc}")
@@ -1826,9 +1826,9 @@ class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
         is_voice: bool = False, voice_metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if len(data) > self._max_media_bytes:
             return self._media_too_large(len(data))
-        target = room_id
+        target = (metadata or {}).get("_original_target", room_id)
         try:
-            room_id = await self._resolve_send_target(target)
+            room_id = await self._resolve_send_target(room_id)
             encrypted = await self._check_room_encryption(room_id)
         except Exception as exc:
             return SendResult(success=False, error=f"Matrix target '{target}': {exc}")

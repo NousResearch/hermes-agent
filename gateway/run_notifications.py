@@ -22,7 +22,7 @@ from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
-from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
+from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -49,16 +49,6 @@ def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_
     """
     return _notice_target_key(
         platform_value if profile is None else f"{profile}:{platform_value}", chat_id, thread_id)
-
-
-def _delivery_target_key(platform_value: str, chat_id, thread_id, *, profile: Optional[str] = None) -> tuple:
-    """Dedupe shared chats across profiles, but not Telegram bot-private conversations."""
-    # Telegram private chat IDs identify the user, not the conversation with a particular bot.
-    # Groups have negative IDs and remain one shared destination across served profiles.
-    chat = str(chat_id)
-    if platform_value == "telegram" and chat.isdecimal() and int(chat) > 0:
-        return _served_notice_target_key(profile, platform_value, chat_id, thread_id)
-    return _notice_target_key(platform_value, chat_id, thread_id)
 
 
 def _safe_delivery_transport(platform, config, adapters, *, profile: Optional[str] = None):

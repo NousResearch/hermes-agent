@@ -471,7 +471,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundContextMixi
         """Steer mode: inject text mid-run via ``agent.steer()``, else fall back to queue semantics."""
         steer_text = (event.text or "").strip()
         steered = False
-        if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
+        if (
+            self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer")
+            and not self._running_turn_finished(_quick_key)
+        ):
             try:
                 input_text = self._steer_text_with_origin(steer_text, event)
                 steered = self._steer_running_agent(running_agent, input_text)
@@ -491,6 +494,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundContextMixi
     ) -> None:
         """Interrupt path: redirect text-only corrections when supported, else ``agent.interrupt()``."""
         from gateway.run_inbound_media import _build_media_placeholder
+        if self._running_turn_finished(_quick_key):
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return
         # Text-only corrections redirect the live turn (preserving displayed context) when the
         # runtime supports it; media/voice and older runtimes use the interrupt path below.
         from gateway.platforms.base_pending import pending_dispatch_withdrawn, release_pending_dispatch
@@ -516,10 +522,13 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundContextMixi
         # — that copy was never consumed and grew unbounded.
         if pending_dispatch_withdrawn(adapter, _quick_key, event):
             return
+        if self._running_turn_finished(_quick_key):
+            self._queue_or_replace_pending_event(_quick_key, event)
+            return
         running_agent.interrupt(_interrupt_text)
 
     async def _hm_handle_running_session_message(
-        self, event: MessageEvent, source: SessionSource, _quick_key: str
+        self: GatewayRunner, event: MessageEvent, source: SessionSource, _quick_key: str
     ) -> Optional[str]:
         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
@@ -1118,7 +1127,7 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundContextMixi
             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
             return event, source, is_internal
 
-    async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+    async def _handle_message(self: "GatewayRunner", event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
         from gateway.run import _AGENT_PENDING_SENTINEL

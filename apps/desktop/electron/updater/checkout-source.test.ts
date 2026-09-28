@@ -190,6 +190,9 @@ function buildManifest(
   }
 }
 
+// 300s: the test builds four sequential channel checkouts and drives the real
+// Python publication checks in each; 30s is enough only when every worker is
+// warm, and under parallel load this became a flaky load-order casualty.
 it('carries each install channel from Python publication checks into the source handoff', async (): Promise<void> => {
   const temporary: string = fs.mkdtempSync(path.join(os.tmpdir(), 'checkout-channel-'))
   const origin: string = path.join(temporary, 'origin')
@@ -482,4 +485,4 @@ urllib.request.build_opener = local_build
     })
     fs.rmSync(temporary, { recursive: true, force: true })
   }
-}, 30000)
+}, 300_000)

@@ -2,6 +2,12 @@ import { EventEmitter } from 'node:events'
 
 import { expect, test, vi } from 'vitest'
 
+// The tray host is the Linux D-Bus StatusNotifier watcher. The production
+// module builds the bus address from process.getuid() (line 11 of tray-host.ts),
+// which does not exist on Windows, so both specs need the mocked bus to run —
+// they exercise Linux-only plumbing by construction.
+const linuxOnly = process.platform !== 'win32'
+
 const createClient = vi.hoisted(() => vi.fn())
 vi.mock('dbus-native', () => ({ createClient }))
 
@@ -22,7 +28,7 @@ function bus(hostRegistered: boolean) {
   return instance
 }
 
-test('a registered host is required, and losing its owner reports loss exactly once', async () => {
+test.skipIf(!linuxOnly)('a registered host is required, and losing its owner reports loss exactly once', async () => {
   const instance = bus(true)
   const lost = vi.fn()
   const dispose = await watchLinuxTrayHost(lost)
@@ -40,7 +46,7 @@ test('a registered host is required, and losing its owner reports loss exactly o
   dispose()
 })
 
-test('a missing host and a failed query reject without leaving an open bus connection', async () => {
+test.skipIf(!linuxOnly)('a missing host and a failed query reject without leaving an open bus connection', async () => {
   const lost = vi.fn()
   const absent = bus(false)
   await expect(watchLinuxTrayHost(lost)).rejects.toThrow('No system tray host')

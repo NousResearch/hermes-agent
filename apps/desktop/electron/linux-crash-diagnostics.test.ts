@@ -9,7 +9,9 @@ import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnosti
 // shared fatal-handler address and no launcher kept the FATAL message. The
 // fix is not a guess at the cause; it is making the next crash legible.
 
-test('on linux, fatal Chromium output lands in a file under the Hermes logs dir', () => {
+test.skipIf(process.platform === 'win32')('on linux, fatal Chromium output lands in a file under the Hermes logs dir', () => {
+  // path.dirname normalizes to backslashes on a Windows host; the POSIX-path
+  // expectation below is only literal on a POSIX filesystem.
   const plan = linuxCrashDiagnostics('/home/u/.hermes/logs', 'linux')
 
   assert.ok(plan)

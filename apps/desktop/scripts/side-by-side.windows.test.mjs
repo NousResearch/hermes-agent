@@ -11,7 +11,12 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
-const { test } = await import(process.env.VITEST ? 'vitest' : 'node:test')
+// Import the package's ESM entry explicitly: under the vitest worker the
+// importing file sits in apps/desktop (no local vitest install), so a bare
+// 'vitest' resolves relative to the importer and throws ERR_MODULE_NOT_FOUND.
+// The repo-root install is what both runners put on the resolution path; pin
+// the exports-map entry instead of relying on main-field heuristics.
+const { test } = await import(pathToFileURL(path.join(repo, 'node_modules', 'vitest', 'dist', 'index.js')).href)
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', windowsHide: true, ...options })
@@ -48,7 +53,7 @@ async function nativeProof() {
     'apps/desktop/product-identity.cjs', 'apps/desktop/electron-builder.config.cjs',
     'apps/desktop/package.json', 'apps/desktop/update-feed.cjs',
     'apps/desktop/assets/msix-manifest.xml',
-    ...['before-build', 'gen-msix-manifest', 'mac-sign', 'payload-digests', 'write-build-stamp', 'utils']
+    ...['before-build', 'gen-msix-manifest', 'mac-sign', 'payload-digests', 'write-build-stamp', 'bundle-env', 'utils']
       .map(name => `apps/desktop/scripts/${name}.mjs`),
     'scripts/msix-shared.mjs', 'scripts/release-content-types.json', 'scripts/build/python.mjs',
     'scripts/bundles/desktop_prepare.py', 'hermes_cli/release_channels.py', 'hermes_cli/__init__.py',

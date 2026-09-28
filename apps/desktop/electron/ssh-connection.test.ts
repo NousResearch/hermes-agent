@@ -657,7 +657,9 @@ test('exec() does not classify a signal death with empty stderr as unreachable',
   )
 })
 
-test('forward() does not classify a signal death with empty stderr as unreachable', async () => {
+test.skipIf(process.platform === 'win32')('forward() does not classify a signal death with empty stderr as unreachable', async () => {
+  // Mux lane: the default muxes off on Windows, so without the gate this runs
+  // the no-mux tunnel path instead of the mux -O forward it was written for.
   const spawnFn = scriptedSpawn([{ signal: 'SIGPIPE', stderr: '' }])
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
 
@@ -667,7 +669,8 @@ test('forward() does not classify a signal death with empty stderr as unreachabl
   )
 })
 
-test('close() does not report a signal-killed -O exit with empty stderr as unreachable', async () => {
+test.skipIf(process.platform === 'win32')('close() does not report a signal-killed -O exit with empty stderr as unreachable', async () => {
+  // Mux lane: same reason as the forward() gate directly above.
   const logs: string[] = []
 
   const spawnFn = scriptedSpawn(args => {

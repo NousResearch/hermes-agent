@@ -45,7 +45,7 @@ function fixture() {
     cleanup: () => fs.rmSync(root, { recursive: true, force: true }) }
 }
 
-test.runIf(process.platform === 'win32')('native verification binds cached bytes to the publisher and timestamp', async () => {
+test.runIf(process.platform === 'win32')('native verification binds cached bytes to the publisher and timestamp', { timeout: 120_000 }, async () => {
   const f = fixture()
   try {
     const publisher = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',

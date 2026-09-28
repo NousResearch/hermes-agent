@@ -48,12 +48,6 @@ export function watchFirstBuild(sessionId: string, profile: string): void {
   build = { checkedInAt: 0, profile, sessionId, tools: 0 }
 }
 
-export function resetFirstBuildForTests(): void {
-  build = null
-  token = 0
-  $setupCheckIn.set(null)
-}
-
 /** Called from the gateway stream on tool.complete. */
 export function reportFirstBuildToolComplete(sessionId: null | string | undefined): void {
   if (!build || build.sessionId !== sessionId) {

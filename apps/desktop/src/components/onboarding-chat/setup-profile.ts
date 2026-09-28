@@ -110,11 +110,6 @@ export function requestSetupHandoff(task: string, brief: string, plan: HandoffPl
   return true
 }
 
-export function resetSetupHandoffForTests(): void {
-  $setupHandoff.set(null)
-  $setupSession.set(null)
-}
-
 export function firstTaskTitle(task: string): string {
   const trimmed = task.trim()
 

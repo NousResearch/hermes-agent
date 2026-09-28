@@ -75,8 +75,8 @@ let previousLayout: {
 } | null = null
 
 /** The guide's shape, all at once: the solo layout and the small centred
- *  window. Called on the tick the guide is owed (film ended, or a boot that
- *  finds the guide queued) so no full-size frame paints in between. */
+ *  window. Called on the tick the guide is owed (a boot that finds the guide
+ *  queued) so no full-size frame paints in between. */
 export function takeGuideShape(): void {
   if ($chatOnboardingSolo.get()) {
     return

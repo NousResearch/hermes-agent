@@ -4,12 +4,11 @@ import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { readKey, writeKey } from '@/lib/storage'
 
 import { $gateway } from './gateway'
-import { $introReveal, hasSeenIntroReveal, markIntroRevealSeen } from './intro-reveal'
 import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
 
 const PHASE_KEY = 'hermes-onboarding-phase-v1'
 
-export const ONBOARDING_PHASES = ['idle', 'cinematic', 'guided', 'skipped', 'handoff', 'done'] as const
+export const ONBOARDING_PHASES = ['idle', 'pending', 'guided', 'skipped', 'handoff', 'done'] as const
 
 export type OnboardingPhase = (typeof ONBOARDING_PHASES)[number]
 
@@ -30,15 +29,15 @@ function loadGate(): OnboardingGateState {
 
   const phase = isOnboardingEnabled() && isOnboardingPhase(saved) ? saved : 'idle'
 
-  // Two phases owe a kickoff at boot. `cinematic` with the film already seen
-  // is the film-to-guide seam. `guided` is a relaunch mid-guide: without a
+  // Two phases owe a kickoff at boot. `pending` is a launch that quit before
+  // the guide started. `guided` is a relaunch mid-guide: without a
   // kickoff the normal app boots around the persisted solo layout (the
   // connected splash, the stock composer and model picker, a small window
   // whose sidebars cannot open) while the gate still says the guide is on.
   // The kickoff adopts the existing guide chat by title, so nothing is lost.
   return {
     phase,
-    guideQueued: (phase === 'cinematic' && hasSeenIntroReveal()) || phase === 'guided',
+    guideQueued: phase === 'pending' || phase === 'guided',
     guideKickoff: 'idle'
   }
 }
@@ -47,12 +46,9 @@ export const $onboardingGate = atom<OnboardingGateState>(loadGate())
 
 let guideKickoff: GuideKickoff = { status: 'idle' }
 export const $guideOpening = computed(
-  [$onboardingGate, $introReveal],
-  (gate, intro) =>
-    isOnboardingEnabled() &&
-    (gate.phase === 'cinematic' || gate.phase === 'guided') &&
-    intro.phase === 'hidden' &&
-    gate.guideKickoff !== 'started'
+  $onboardingGate,
+  gate =>
+    isOnboardingEnabled() && (gate.phase === 'pending' || gate.phase === 'guided') && gate.guideKickoff !== 'started'
 )
 
 function setGuideKickoff(state: GuideKickoff): void {
@@ -72,43 +68,18 @@ function setPhase(phase: OnboardingPhase): void {
 export function guidedOnboardingActive(): boolean {
   const { phase } = $onboardingGate.get()
 
-  return isOnboardingEnabled() && (phase === 'cinematic' || phase === 'guided' || phase === 'handoff')
+  return isOnboardingEnabled() && (phase === 'pending' || phase === 'guided' || phase === 'handoff')
 }
 
-export function beginOnboardingFlow(): void {
-  if (isOnboardingEnabled() && $onboardingGate.get().phase === 'idle' && !hasSeenIntroReveal()) {
-    setPhase('cinematic')
-  }
-}
-
-/** The guided first launch without its intro film (HERMES_SKIP_INTRO). Same
- * eligibility as the film path minus the film itself: the film is recorded as
- * watched and the film-to-guide seam fires immediately, instead of waiting
- * for a completion that never comes. */
-export function beginOnboardingFlowWithoutIntro(firstRunSkipped: boolean): void {
-  if (!isOnboardingEnabled() || firstRunSkipped) {
+/** Owes the guide on a first launch. Any phase past `idle` already had its
+ *  turn, and a user who dismissed first-run setup is not owed one. */
+export function beginOnboardingFlow(firstRunSkipped: boolean): void {
+  if (!isOnboardingEnabled() || firstRunSkipped || $onboardingGate.get().phase !== 'idle') {
     return
   }
 
-  beginOnboardingFlow()
-
-  // A prior launch quit mid-film and left the phase at cinematic; the guide
-  // is owed directly. Everything else (guided/skipped/handoff/done) already
-  // had its turn and must not re-queue.
-  if ($onboardingGate.get().phase !== 'cinematic') {
-    return
-  }
-
-  markIntroRevealSeen()
-  queueGuideAfterIntro()
-}
-
-export function queueGuideAfterIntro(): void {
-  const state = $onboardingGate.get()
-
-  if (isOnboardingEnabled() && state.phase === 'cinematic' && !state.guideQueued && hasSeenIntroReveal()) {
-    $onboardingGate.set({ ...state, guideQueued: true })
-  }
+  setPhase('pending')
+  $onboardingGate.set({ ...$onboardingGate.get(), guideQueued: true })
 }
 
 /** The kickoff returns true only after the guided session's seed is durable. */
@@ -137,7 +108,7 @@ export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolea
       started => {
         setGuideKickoff({ status: started ? 'started' : 'idle' })
 
-        if (started && $onboardingGate.get().phase === 'cinematic') {
+        if (started && $onboardingGate.get().phase === 'pending') {
           setPhase('guided')
         }
 
@@ -173,7 +144,7 @@ export function completeOnboardingFlow(): void {
 export function skipGuide(): void {
   const { phase } = $onboardingGate.get()
 
-  if (isOnboardingEnabled() && (phase === 'cinematic' || phase === 'guided')) {
+  if (isOnboardingEnabled() && (phase === 'pending' || phase === 'guided')) {
     setPhase('skipped')
   }
 }

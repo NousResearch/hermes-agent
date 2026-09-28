@@ -30,6 +30,9 @@ import { visibleClarifyCard } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import {
   bareChoice,
+  choiceDescription,
+  choiceLabel,
+  type ClarifyChoice,
   type ClarifyQuestion,
   type ClarifyRequest,
   clearClarifyRequest,
@@ -50,9 +53,9 @@ import { parseMaybeObject } from './tool/fallback-model/format'
 
 interface ClarifyArgs {
   question?: string
-  choices?: string[] | null
+  choices?: ClarifyChoice[] | null
   multiSelect?: boolean
-  questions?: { question: string; choices?: string[] | null; multiSelect?: boolean }[]
+  questions?: { question: string; choices?: ClarifyChoice[] | null; multiSelect?: boolean }[]
 }
 
 interface ClarifyResult {
@@ -169,11 +172,12 @@ const letterFor = (index: number): string => String.fromCharCode(65 + index)
 
 // The backend tags the agent's preferred option (`mark_recommended`); the card
 // renders the label in tertiary text so the option itself still reads first.
-function ChoiceLabel({ choice }: { choice: string }) {
+function ChoiceLabel({ choice }: { choice: ClarifyChoice }) {
+  const label = typeof choice === 'string' ? choice : choice.label
   const bare = bareChoice(choice)
 
-  if (bare === choice) {
-    return <>{choice}</>
+  if (bare === label) {
+    return <>{label}</>
   }
 
   return (
@@ -245,7 +249,8 @@ function KeyBadge({
 
 /** A letter-badged option row. Shared by the live pending card (where a click
  * selects an answer) and the settled skip card (where a click drafts a
- * follow-up), so both stay visually identical. */
+ * follow-up), so both stay visually identical. Structured choices render
+ * their description as a subtitle under the label. */
 function ChoiceButton({
   active = false,
   char,
@@ -258,7 +263,7 @@ function ChoiceButton({
 }: {
   active?: boolean
   char: string
-  choice: string
+  choice: ClarifyChoice
   disabled?: boolean
   keyShortcuts?: string
   onClick: () => void
@@ -273,6 +278,8 @@ function ChoiceButton({
   // `active` is the keyboard cursor on the live card (arrow-key navigation);
   // it highlights the row and previews its key badge. The settled skip card
   // never passes it, so its rows stay plain.
+  const description = choiceDescription(choice)
+
   return (
     <Tip label={title}>
       <button
@@ -294,6 +301,9 @@ function ChoiceButton({
         <KeyBadge char={char} preview={active} selected={Boolean(selected)} />
         <span className="flex-1 wrap-anywhere">
           <ChoiceLabel choice={choice} />
+          {description ? (
+            <span className="block text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">{description}</span>
+          ) : null}
         </span>
       </button>
     </Tip>
@@ -370,15 +380,19 @@ function ClarifyToolSingleSettled({ args, result }: ToolCallMessagePartProps) {
       ) : null}
       {skipped && choices.length > 0 ? (
         <div className="grid gap-px" data-clarify-late-choices="" role="group">
-          {choices.map((choice, index) => (
-            <ChoiceButton
-              char={letterFor(index)}
-              choice={choice}
-              key={`${index}-${choice}`}
-              onClick={() => followUp(choice)}
-              title={copy.lateAnswerTip}
-            />
-          ))}
+          {choices.map((choice, index) => {
+            const label = choiceLabel(choice)
+
+            return (
+              <ChoiceButton
+                char={letterFor(index)}
+                choice={choice}
+                key={`${index}-${label}`}
+                onClick={() => followUp(label)}
+                title={copy.lateAnswerTip}
+              />
+            )
+          })}
           <p className="px-1.5 pt-0.5 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">{copy.lateAnswerHint}</p>
         </div>
       ) : null}
@@ -665,11 +679,12 @@ function ClarifyToolSinglePending({
 
   const activateActive = useCallback(() => {
     const choice = choices[activeIndex]
+    const label = choice === undefined ? undefined : choiceLabel(choice)
 
     // Multi-select Enter toggles the highlighted choice. The user confirms the
     // staged set explicitly with Continue so this path never submits a scalar.
-    if (multiSelect && choice) {
-      selectChoice(choice, activeIndex)
+    if (multiSelect && label) {
+      selectChoice(label, activeIndex)
 
       return
     }
@@ -683,8 +698,8 @@ function ClarifyToolSinglePending({
 
     // Otherwise act on the highlighted row: a choice responds immediately, and
     // the trailing "Other" row focuses the free-text field.
-    if (choice) {
-      void respond(choice)
+    if (label) {
+      void respond(label)
 
       return
     }
@@ -765,7 +780,7 @@ function ClarifyToolSinglePending({
 
         if (index < choices.length) {
           event.preventDefault()
-          selectChoice(choices[index], index)
+          selectChoice(choiceLabel(choices[index]), index)
         } else if (index === choices.length) {
           event.preventDefault()
           setActiveIndex(index)
@@ -786,7 +801,7 @@ function ClarifyToolSinglePending({
 
         if (index < choices.length) {
           event.preventDefault()
-          selectChoice(choices[index], index)
+          selectChoice(choiceLabel(choices[index]), index)
         } else if (index === choices.length) {
           event.preventDefault()
           setActiveIndex(index)
@@ -854,18 +869,22 @@ function ClarifyToolSinglePending({
 
         {hasChoices ? (
           <div className="grid gap-px" role="group">
-            {choices.map((choice, index) => (
-              <ChoiceButton
-                active={!undelivered && activeIndex === index}
-                char={letterFor(index)}
-                choice={choice}
-                disabled={submitting || !ready}
-                key={`${index}-${choice}`}
-                keyShortcuts={`${letterFor(index)} ${index + 1}`}
-                onClick={() => selectChoice(choice, index)}
-                selected={selectedChoices.includes(choice)}
-              />
-            ))}
+            {choices.map((choice, index) => {
+              const label = choiceLabel(choice)
+
+              return (
+                <ChoiceButton
+                  active={!undelivered && activeIndex === index}
+                  char={letterFor(index)}
+                  choice={choice}
+                  disabled={submitting || !ready}
+                  key={`${index}-${label}`}
+                  keyShortcuts={`${letterFor(index)} ${index + 1}`}
+                  onClick={() => selectChoice(label, index)}
+                  selected={selectedChoices.includes(label)}
+                />
+              )
+            })}
             <label
               className={cn(
                 OPTION_ROW_CLASS,
@@ -1025,16 +1044,20 @@ function BatchQuestionBlock({
 
       {choices.length > 0 ? (
         <div className="grid gap-px" role="group">
-          {choices.map((choice, index) => (
-            <ChoiceButton
-              char={letterFor(index)}
-              choice={choice}
-              disabled={disabled}
-              key={`${index}-${choice}`}
-              onClick={() => onToggle(choice)}
-              selected={staged.choices.includes(choice)}
-            />
-          ))}
+          {choices.map((choice, index) => {
+            const label = choiceLabel(choice)
+
+            return (
+              <ChoiceButton
+                char={letterFor(index)}
+                choice={choice}
+                disabled={disabled}
+                key={`${index}-${label}`}
+                onClick={() => onToggle(label)}
+                selected={staged.choices.includes(label)}
+              />
+            )
+          })}
           <label className={cn(OPTION_ROW_CLASS, 'items-center')}>
             <KeyBadge char={letterFor(choices.length)} disabled={disabled} selected={Boolean(staged.draft.trim())} />
             <Textarea
@@ -1149,7 +1172,10 @@ function ClarifyToolBatchPending({
           }
         }
 
-        const matchedChoices = options.filter(choice => replayedAnswers.includes(bareChoice(choice)))
+        const matchedChoices = options
+          .filter(choice => replayedAnswers.includes(bareChoice(choice)))
+          .map(choice => bareChoice(choice))
+
         next[question.qid] =
           matchedChoices.length > 0 ? { choices: matchedChoices, draft: '' } : { choices: [], draft: answer }
       }

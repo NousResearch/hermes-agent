@@ -2,6 +2,7 @@
   "/agents": null,
   "/approvals": null,
   "/approve": "messaging",
+  "/auth": null,
   "/battery": null,
   "/bg": null,
   "/blueprint": null,

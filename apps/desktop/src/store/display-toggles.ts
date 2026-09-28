@@ -25,7 +25,7 @@
 import type { ReadableAtom } from 'nanostores'
 
 import { readKey } from '@/lib/storage'
-import { $gateway, activeGateway } from '@/store/gateway'
+import { $gateway, activeGatewayProfileKey, requestGatewayForProfile } from '@/store/gateway'
 
 interface Mirror {
   configKey: string
@@ -36,9 +36,13 @@ interface Mirror {
 const mirrors: Mirror[] = []
 
 function push(mirror: Mirror): void {
-  void activeGateway()
-    ?.request('config.set', { key: mirror.configKey, value: mirror.read() ? 'true' : 'false' })
-    .catch(() => {
+  // Routed by profile: `config.set` is `@_profile_scoped`, and on the
+  // shared-primary route an unscoped write edits the LAUNCH profile's
+  // config.yaml instead of the viewed one (#125969 class).
+  void requestGatewayForProfile(activeGatewayProfileKey(), 'config.set', {
+    key: mirror.configKey,
+    value: mirror.read() ? 'true' : 'false'
+  }).catch(() => {
       // Not connected, or a gateway too old to know the key. The next toggle
       // and the next connection both try again.
     })

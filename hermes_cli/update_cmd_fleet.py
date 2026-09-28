@@ -36,7 +36,10 @@ _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 _FLEET_PROBE_SETTLE_TIMEOUT_SECONDS = 120.0
 
 _SYSTEMD_SCOPES = (("user", ["systemctl", "--user"]), ("system", ["systemctl"]))
-_LIST_GATEWAY_UNITS = ["list-units", "hermes-gateway*", "hermes-serve*", "--plain", "--no-legend", "--no-pager"]
+_LIST_GATEWAY_UNITS = [
+    "list-units", "hermes-gateway*", "hermes-serve*", "hermes-dashboard*",
+    "--plain", "--no-legend", "--no-pager",
+]
 
 
 def _write_gateway_update_exit_code(ok: bool) -> None:
@@ -797,6 +800,11 @@ def _is_hermes_gateway_unit(unit: str) -> bool:
         or unit.startswith("hermes-gateway-")
         or unit == "hermes-serve.service"
         or unit.startswith("hermes-serve-")
+        # #125297: ``hermes-dashboard*`` units are systemd-supervised dashboard backends — the
+        # same fleet this pass restarts. Leaving them out meant a successful update reported
+        # the dashboard ``deferred`` (still on pre-update code) while nothing ever restarted it.
+        or unit == "hermes-dashboard.service"
+        or unit.startswith("hermes-dashboard-")
     )
 
 
@@ -1905,7 +1913,10 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     # Restart a managed dashboard via systemd or stop stale manual ones (raw-killing
     # a systemd-owned PID reads as clean stop and leaves the Cloudflare origin dead).
     # Already-restarted units aren't redone.
-    _refresh_dashboard_after_update(already_restarted_units=set(restart.restarted_services))
+    # A dashboard it stopped and could not bring back is a promised restart that did not happen.
+    _dashboards_down = _refresh_dashboard_after_update(already_restarted_units=set(restart.restarted_services))
+    if _dashboards_down:
+        restart.incomplete = True
 
     # Success-path twin of the abort-recovery probe: the restart phase only touches
     # units, so a unit-less `hermes serve` keeps stale sys.modules. Runs AFTER
@@ -1988,6 +1999,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                     if _stale_serve_rows is not None
                     else None
                 ),
+                failed_respawn_pids=_dashboards_down,
             )
             from dataclasses import asdict
             from hermes_cli.update_serve_obligations import defer_manual_serve

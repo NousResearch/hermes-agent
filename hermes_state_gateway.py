@@ -776,9 +776,9 @@ class SessionGatewayMixin:
     def session_gateway_runtime(session_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         """Read the persisted runtime route off a session row dict (``model_config`` as
         JSON string or parsed dict). Precedence: nested ``gateway_runtime`` (gateway sync /
-        CLI ``/model``), then top-level ``provider``/``base_url``/``api_mode`` (TUI), then
-        ``billing_provider`` so sessions that never ran ``/model`` still restore the
-        provider that served them. Empty dict on parse failure — resume uses ambient config."""
+        CLI ``/model``), then top-level ``provider``/``base_url``/``api_mode`` (TUI), with
+        ``billing_provider`` filling a missing provider so sessions that never ran ``/model``
+        still restore the provider that served them. Empty dict on parse failure — resume uses ambient config."""
         from hermes_state import _BARE_BILLING_PROVIDERS
         raw = (session_meta or {}).get("model_config")
         if isinstance(raw, str):
@@ -794,14 +794,14 @@ class SessionGatewayMixin:
         if isinstance(runtime, dict) and runtime.get("provider"):
             return {k: v for k, v in runtime.items() if v is not None}
         top_level = {key: raw.get(key) for key in ("provider", "base_url", "api_mode") if raw.get(key)}
-        if top_level:
-            return top_level
         # billing_provider is COALESCE-written on the first accounted API call — the only durable
         # record for sessions that never ran /model. Bare buckets ("auto"/"custom") are not
         # routable identities; filter them so resume falls back to the ambient default.
         billing_provider = str((session_meta or {}).get("billing_provider") or "").strip()
         if billing_provider and billing_provider.lower() not in _BARE_BILLING_PROVIDERS:
-            return {"provider": billing_provider}
+            top_level.setdefault("provider", billing_provider)
+        if top_level:
+            return top_level
         if not isinstance(runtime, dict):
             return {}
         return {k: v for k, v in runtime.items() if v is not None}

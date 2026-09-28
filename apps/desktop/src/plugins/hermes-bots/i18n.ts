@@ -394,6 +394,11 @@ type BotsMessages = {
     autoOpenOffToast: (name: string) => string
     stoppedTitle: string
     stoppedBody: string
+    placementSandbox: (backend: string) => string
+    imageSwitchTitle: string
+    imageSwitchBody: (current: string, target: string) => string
+    imageSwitchApprove: string
+    imageSwitchKeep: string
     start: string
     attaching: string
     streamLost: string
@@ -828,6 +833,11 @@ const en: BotsMessages = {
     autoOpenOffToast: name => `${name}’s Screen stays closed until you open it`,
     stoppedTitle: 'Screen is off',
     stoppedBody: 'Start this bot\u2019s desktop to watch what it does and take over when it needs you.',
+    placementSandbox: backend => `Screen runs inside the ${backend} sandbox, with the terminal`,
+    imageSwitchTitle: 'New sandbox image available',
+    imageSwitchBody: (current, target) => `Your sandbox still runs ${current}, which has no desktop. Switching to ${target} recreates the container the next time the bot uses its terminal: files in /root and /workspace stay on this machine, packages installed inside the container are reinstalled on demand.`,
+    imageSwitchApprove: 'Switch image',
+    imageSwitchKeep: 'Keep current image',
     start: 'Start screen',
     attaching: 'Connecting to the screen\u2026',
     streamLost: 'Screen stream ended',
@@ -1262,6 +1272,11 @@ const ja: BotsMessages = {
     autoOpenOffToast: name => `${name} の Screen は手動で開くまで閉じたままです`,
     stoppedTitle: '画面はオフです',
     stoppedBody: 'このボットのデスクトップを起動すると、動作を見守り、必要なときに操作を引き継げます。',
+    placementSandbox: backend => `画面は ${backend} サンドボックス内（ターミナルと同じ場所）で動作します`,
+    imageSwitchTitle: '新しいサンドボックスイメージがあります',
+    imageSwitchBody: (current, target) => `サンドボックスはまだ ${current} で動作しており、デスクトップがありません。${target} に切り替えると、ボットが次にターミナルを使うときにコンテナが再作成されます。/root と /workspace のファイルはこのマシンに残り、コンテナ内にインストールしたパッケージは必要に応じて再インストールされます。`,
+    imageSwitchApprove: 'イメージを切り替える',
+    imageSwitchKeep: '現在のイメージを使い続ける',
     start: '画面を起動',
     attaching: '画面に接続中…',
     streamLost: '画面ストリームが終了しました',
@@ -1680,6 +1695,11 @@ const zh: BotsMessages = {
     autoOpenOffToast: name => `${name} 的屏幕将保持关闭，直到你手动打开`,
     stoppedTitle: '屏幕已关闭',
     stoppedBody: '启动此机器人的桌面，观看它的操作，并在需要时接管。',
+    placementSandbox: backend => `屏幕运行在 ${backend} 沙箱内，与终端同处`,
+    imageSwitchTitle: '有新的沙箱镜像',
+    imageSwitchBody: (current, target) => `沙箱仍在运行 ${current}，其中没有桌面。切换到 ${target} 后，机器人下次使用终端时会重建容器：/root 和 /workspace 中的文件保留在本机，容器内安装的软件包会按需重新安装。`,
+    imageSwitchApprove: '切换镜像',
+    imageSwitchKeep: '保留当前镜像',
     start: '启动屏幕',
     attaching: '正在连接屏幕…',
     streamLost: '屏幕流已结束',
@@ -2098,6 +2118,11 @@ const zhHant: BotsMessages = {
     autoOpenOffToast: name => `${name} 的螢幕將保持關閉，直到你手動開啟`,
     stoppedTitle: '螢幕已關閉',
     stoppedBody: '啟動此機器人的桌面，觀看它的操作，並在需要時接手。',
+    placementSandbox: backend => `畫面在 ${backend} 沙箱內執行，與終端同處`,
+    imageSwitchTitle: '有新的沙箱映像',
+    imageSwitchBody: (current, target) => `沙箱仍在執行 ${current}，其中沒有桌面。切換到 ${target} 後，機器人下次使用終端時會重建容器：/root 和 /workspace 中的檔案保留在本機，容器內安裝的套件會按需重新安裝。`,
+    imageSwitchApprove: '切換映像',
+    imageSwitchKeep: '保留目前映像',
     start: '啟動螢幕',
     attaching: '正在連線至螢幕…',
     streamLost: '螢幕串流已結束',

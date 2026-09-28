@@ -16,6 +16,7 @@ import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import { isBotChatReadProtected } from './bot-chat-read-protection'
 import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
@@ -1561,7 +1562,7 @@ export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
   }
 
   // ...and the persisted watermark flag, when the row carried one.
-  if (id) {
+  if (id && !isBotChatReadProtected(id)) {
     void clearUnreadOnOpen(id)
   }
 }
@@ -1572,7 +1573,7 @@ export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
  *  re-lit. Must be callable before any focus short-circuit (openSession top)
  *  so re-clicking an already-visible session still clears its dot. */
 export const markSessionRead = (storedSessionId: string | null | undefined) => {
-  if (!storedSessionId) {
+  if (!storedSessionId || isBotChatReadProtected(storedSessionId)) {
     return
   }
 

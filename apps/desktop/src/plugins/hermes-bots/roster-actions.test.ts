@@ -33,6 +33,9 @@ vi.mock('@hermes/plugin-sdk', async () => {
 
   return {
     ackStoredSessionId: vi.fn(),
+    afterSuccessfulBotChatRefresh: (_ids: readonly string[], action: () => void) => action(),
+    protectBotChatRead: vi.fn(),
+    markSessionRead: vi.fn(),
     atom,
     haptic: vi.fn(),
     host: hostMock,

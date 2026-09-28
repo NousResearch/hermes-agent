@@ -8,7 +8,7 @@
  * them can own an action the others call without importing a sibling surface.
  */
 
-import { ackStoredSessionId, atom, haptic, host, markSessionRead, markSessionUnreadFinished } from '@hermes/plugin-sdk'
+import { ackStoredSessionId, afterSuccessfulBotChatRefresh, atom, haptic, host, markSessionRead, markSessionUnreadFinished, protectBotChatRead } from '@hermes/plugin-sdk'
 
 import {
   $openBotChat,
@@ -58,6 +58,10 @@ export function setActivityToasts(enabled: boolean) {
  *  bot, or another machine never touch this window's live turn edge either. */
 export function trackInboundActivity(roster: RosterRow[]) {
   for (const bot of roster) {
+    // Canonical chats can paint from cache before a refresh. Register both
+    // lineage identities before polling/selection listeners can ack them.
+    protectBotChatRead(bot.canonical_session?.id)
+    protectBotChatRead(bot.canonical_session?.resolved_id)
     const key = botSelectionKey(bot)
     const activity = botActivitySession(bot)
     const ts = activity?.last_active || 0
@@ -199,8 +203,10 @@ function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowW
   const run = openBotCanonicalChat(bot, { background: true, openingStillCurrent: stillCurrent })
     .then(opened => {
       if (opened && stillCurrent() && opened.registryId === String(bot.canonical_session?.id) && opened.openedId === focused) {
-        markSessionRead(focused)
-        ackStoredSessionId(focused, bot.name)
+        afterSuccessfulBotChatRefresh([focused], () => {
+          markSessionRead(focused)
+          ackStoredSessionId(focused, bot.name)
+        })
       }
 
       return opened
@@ -394,7 +400,10 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       // A failed source lookup/open leaves the persisted marker intact so
       // Retry still tells the truth. The owner hint is required because a bot
       // open deliberately leaves the gateway on the launch profile.
-      ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
+      afterSuccessfulBotChatRefresh([opened.openedId, opened.registryId], () => {
+        markSessionRead(opened.openedId)
+        ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
+      })
       settlePendingBotOpen(generation)
 
       return true

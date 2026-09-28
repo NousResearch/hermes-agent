@@ -4,6 +4,7 @@ import { readKey } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import type { SessionInfo } from '@/types/hermes'
 
+import { isBotChatReadProtected } from './bot-chat-read-protection'
 import {
   $cronSessions,
   $messagingSessions,
@@ -269,7 +270,7 @@ function ackSessionRow(row: SessionInfo): void {
  *  session can be opened without the gateway ever moving onto its profile,
  *  which would otherwise ack a bucket that never held the marker. */
 export function ackStoredSessionId(storedSessionId: null | string, profileHint?: null | string): void {
-  if (!storedSessionId) {
+  if (!storedSessionId || isBotChatReadProtected(storedSessionId)) {
     return
   }
 
@@ -384,7 +385,7 @@ function ingestRows(rows: readonly SessionInfo[]): void {
     const durableId = sessionPinId(row)
     const bucket = next?.[profile] ?? seen[profile]
 
-    if (profile === selectedProfile && isSelected(row, selected)) {
+    if (profile === selectedProfile && isSelected(row, selected) && !isBotChatReadProtected(row.id)) {
       if (bucket?.[durableId] !== row.message_count) {
         write(profile, durableId, row.message_count)
       }
@@ -471,7 +472,7 @@ function recomputeUnread(): void {
   // by row id, so dotting a same-id row from another profile would just put a
   // dot on the session you have open.
   for (const row of rowsFor([$sessions.get(), $cronSessions.get()])) {
-    if (isSelected(row, selected)) {
+    if (isSelected(row, selected) && !isBotChatReadProtected(row.id)) {
       continue
     }
 
@@ -488,7 +489,7 @@ function recomputeUnread(): void {
 
   // Messaging rows: explicit (live-edge) markers only — see header comment.
   for (const row of $messagingSessions.get()) {
-    if (!isSelected(row, selected) && isMarked(row, sessionPinId(row))) {
+    if ((!isSelected(row, selected) || isBotChatReadProtected(row.id)) && isMarked(row, sessionPinId(row))) {
       unread.push(row.id)
     }
   }
@@ -497,7 +498,7 @@ function recomputeUnread(): void {
   const loadedRows = rowsFor([$sessions.get(), $cronSessions.get(), $messagingSessions.get()])
 
   for (const id of $unreadFinishedSessionIds.get()) {
-    if (id !== selected && !unread.includes(id) && !loadedRows.some(row => sessionMatchesStoredId(row, id))) {
+    if ((id !== selected || isBotChatReadProtected(id)) && !unread.includes(id) && !loadedRows.some(row => sessionMatchesStoredId(row, id))) {
       unread.push(id)
     }
   }

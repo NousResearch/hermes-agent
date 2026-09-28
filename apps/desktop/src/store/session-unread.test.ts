@@ -194,6 +194,54 @@ describe('persisted unread (session-unread)', () => {
     expect($unreadFinishedSessionIds.get()).toEqual(['fresh'])
   })
 
+  it('keeps a cached hidden chat unread through selection and list refresh until hydration succeeds', async () => {
+    const { protectBotChatRead, afterSuccessfulBotChatRefresh } = await import('./bot-chat-read-protection')
+    const { ackStoredSessionId } = await import('./session-unread')
+    const { markSessionRead } = await import('./session')
+    const id = 'cached-hidden-chat'
+    protectBotChatRead(id)
+    markSessionUnreadFinished(id)
+    setSelectedStoredSessionId(id)
+    setSessions([session({ id: 'ordinary', message_count: 2 })])
+    expect($unreadFinishedSessionIds.get()).toContain(id)
+    expect($unreadFinishedMarkers.get().default).toContain(id)
+
+    // A failed read has no acknowledgement. Further polls must keep the dot.
+    setSessions([session({ id: 'ordinary', message_count: 3 })])
+    expect($unreadFinishedSessionIds.get()).toContain(id)
+    afterSuccessfulBotChatRefresh([id], () => {
+      markSessionRead(id)
+      ackStoredSessionId(id)
+    })
+    expect($unreadFinishedSessionIds.get()).not.toContain(id)
+    expect($unreadFinishedMarkers.get().default ?? []).not.toContain(id)
+  })
+
+  it('limits a hydration acknowledgement to its own chat and preserves ordinary focus-to-read', async () => {
+    const { protectBotChatRead, afterSuccessfulBotChatRefresh } = await import('./bot-chat-read-protection')
+    const { ackStoredSessionId } = await import('./session-unread')
+    const { markSessionRead } = await import('./session')
+
+    for (const id of ['hydrated-chat', 'still-cached-chat']) {
+      protectBotChatRead(id)
+      markSessionUnreadFinished(id)
+    }
+
+    afterSuccessfulBotChatRefresh(['hydrated-chat'], () => {
+      markSessionRead('hydrated-chat')
+      ackStoredSessionId('hydrated-chat')
+      // Store listeners can run synchronously during an acknowledgement.
+      markSessionRead('still-cached-chat')
+      ackStoredSessionId('still-cached-chat')
+    })
+    expect($unreadFinishedSessionIds.get()).toEqual(['still-cached-chat'])
+    expect($unreadFinishedMarkers.get().default).toEqual(['still-cached-chat'])
+    markSessionUnreadFinished('ordinary-chat')
+    setSelectedStoredSessionId('ordinary-chat')
+    expect($unreadFinishedSessionIds.get()).toEqual(['still-cached-chat'])
+    expect($unreadFinishedMarkers.get().default).toEqual(['still-cached-chat'])
+  })
+
   it('forgets a deleted session’s persisted unread, per profile', () => {
     $sessionSeenCounts.set({ alpha: { root: 3, other: 1 }, beta: { root: 9 } })
     $unreadFinishedMarkers.set({ alpha: ['root', 'keep'], beta: ['root'] })

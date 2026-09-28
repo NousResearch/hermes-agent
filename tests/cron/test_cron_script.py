@@ -830,3 +830,169 @@ class TestScriptTimeoutTreeKill:
                     psutil.Process(gpid).kill()
                 except psutil.NoSuchProcess:
                     pass
+
+
+class TestScriptArguments:
+    """Regression tests for #20300 / #43: a ``script`` value may carry arguments.
+
+    The scheduler resolved the ENTIRE value as one filename, so
+    ``script="job.py expire"`` failed every fire with
+    ``Script not found: <HERMES_HOME>/scripts/job.py expire`` — an error that
+    reads like a missing file and hides the real cause. Verified in the wild:
+    job ``7310788ca09c`` ran broken from 2026-09-17 until 2026-09-28.
+    """
+
+    def test_script_arguments_are_passed_through(self, cron_env):
+        """``script="job.py expire"`` runs job.py WITH argv=['expire']."""
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "job.py"
+        script.write_text(
+            "import sys\n"
+            "print('argv=' + ','.join(sys.argv[1:]))\n"
+        )
+
+        success, output = _run_job_script("job.py expire")
+        assert success is True, output
+        assert "argv=expire" in output
+
+    def test_multiple_arguments_and_flags(self, cron_env):
+        """Several args, including flags and values, all arrive in order."""
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "job.py"
+        script.write_text(
+            "import sys\n"
+            "print('argv=' + ','.join(sys.argv[1:]))\n"
+        )
+
+        success, output = _run_job_script("job.py --report-only --limit 5 expire")
+        assert success is True, output
+        assert "argv=--report-only,--limit,5,expire" in output
+
+    def test_shell_script_arguments_are_passed_through(self, cron_env):
+        """The same holds for .sh scripts (bash receives the argv)."""
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "job.sh"
+        script.write_text('#!/bin/bash\necho "args=$*"\n')
+
+        success, output = _run_job_script("job.sh status --alert")
+        assert success is True, output
+        assert "args=status --alert" in output
+
+    def test_quoted_argument_stays_one_token(self, cron_env):
+        """A quoted argument containing spaces is a single argv entry."""
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "job.py"
+        script.write_text(
+            "import sys\n"
+            "print('n=' + str(len(sys.argv[1:])))\n"
+            "print('a0=' + (sys.argv[1] if len(sys.argv) > 1 else ''))\n"
+        )
+
+        success, output = _run_job_script('job.py "hello world"')
+        assert success is True, output
+        assert "n=1" in output
+        assert "a0=hello world" in output
+
+    def test_missing_script_with_arguments_names_the_real_problem(self, cron_env):
+        """A genuinely missing script must not blame the arguments."""
+        from cron.scheduler_script import _run_job_script
+
+        success, output = _run_job_script("nope.py expire")
+        assert success is False
+        assert "Script not found" in output
+        assert "nope.py" in output
+        # The old message echoed the whole value, which is what made this
+        # confusing; the resolved PATH must be what is reported.
+        assert "nope.py expire" not in output
+
+    def test_bare_filename_with_spaces_still_resolves(self, cron_env):
+        """Legacy support: an actual file whose NAME contains a space must keep working.
+
+        A naive shlex split would break these, which is precisely what the
+        earlier Windows-path report (#62148) was about.
+        """
+        from cron.scheduler_script import _run_job_script
+
+        script = cron_env / "scripts" / "my job.py"
+        script.write_text('print("spaced filename ran")\n')
+
+        success, output = _run_job_script("my job.py")
+        assert success is True, output
+        assert "spaced filename ran" in output
+
+    def test_scripts_dir_containment_still_enforced(self, cron_env, tmp_path):
+        """Parsing must not weaken the path-traversal guard."""
+        from cron.scheduler_script import _run_job_script
+
+        outside = tmp_path / "outside.py"
+        outside.write_text('print("escaped")\n')
+
+        success, output = _run_job_script(f"{outside} expire")
+        assert success is False
+        assert "outside the scripts directory" in output or "Blocked" in output
+
+    def test_guard_and_scheduler_resolve_the_same_script(self, cron_env):
+        """The security guard must scan the file the scheduler actually runs.
+
+        Both modules resolved the ``script`` value themselves, so once arguments
+        were supported a naive fix could leave the guard pointing at
+        ``scripts/job.py expire`` (nonexistent -> nothing scanned) while the
+        scheduler ran ``scripts/job.py``. That is a scan bypass, not a cosmetic
+        mismatch: a job could execute an unscanned script.
+        """
+        from cron.lifecycle_guard import _resolve_script_path as guard_resolve
+        from cron.scheduler_script import _resolve_script_path as sched_resolve
+
+        script = cron_env / "scripts" / "job.py"
+        script.write_text('print("ran")\n')
+
+        guard_path = guard_resolve("job.py expire")
+        sched_path, err = sched_resolve("job.py")
+
+        assert err is None
+        assert guard_path is not None, "guard resolved nothing -> script would go unscanned"
+        assert guard_path == sched_path, (
+            f"guard scans {guard_path} but scheduler runs {sched_path}"
+        )
+
+    def test_guard_still_resolves_a_spaced_filename(self, cron_env):
+        """The guard keeps up with the scheduler's spaced-filename fallback."""
+        from cron.lifecycle_guard import _resolve_script_path as guard_resolve
+
+        script = cron_env / "scripts" / "my job.py"
+        script.write_text('print("spaced")\n')
+
+        assert guard_resolve("my job.py") == script.resolve()
+
+    def test_split_round_trips_through_a_stored_value(self, cron_env):
+        """Splitting is idempotent: re-parsing a stored value keeps the same shape.
+
+        The dashboard re-quotes arguments when it persists the value, and the
+        scheduler re-splits it on every fire. If those two disagree, an argument
+        containing a space silently becomes two arguments. A naive
+        ``" ".join(path, *args)`` did exactly that (caught by this round trip).
+        """
+        import shlex
+
+        from cron.scheduler_script import _split_script_command
+
+        for stored in ('job.py expire', 'job.py "hello world"', "job.py --limit 5 expire"):
+            path_part, args, err = _split_script_command(stored)
+            assert err is None
+            # Re-quote as the dashboard does, then re-split.
+            requoted = " ".join([path_part, *(shlex.quote(a) for a in args)]) if args else path_part
+            p2, a2, err2 = _split_script_command(requoted)
+            assert err2 is None
+            assert (p2, a2) == (path_part, args), f"round trip changed {stored!r} -> {requoted!r}"
+
+    def test_unbalanced_quote_is_reported_not_guessed(self, cron_env):
+        """A malformed value is an error, not a filename."""
+        from cron.scheduler_script import _run_job_script
+
+        success, output = _run_job_script('job.py "unclosed')
+        assert success is False
+        assert "Could not parse script value" in output

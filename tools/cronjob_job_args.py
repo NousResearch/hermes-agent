@@ -364,12 +364,38 @@ def _validate_cron_base_url(
 
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     """Scripts must be relative paths within HERMES_HOME/scripts/ (absolute / ~ / drive-letter
-    rejected — prompt-injection guard). Error string if blocked, else None; empty = clear."""
+    rejected — prompt-injection guard). Error string if blocked, else None; empty = clear.
+
+    The value may carry arguments (``"job.py expire"``); only the PATH part is validated against
+    the scripts dir, and the arguments are parsed with the same splitter the scheduler uses, so
+    create-time validation and fire-time execution agree (#20300 / #43).
+
+    Validating here matters: this runs at CREATE time, which is the only place a bad value can be
+    reported cheaply. It previously accepted an argument-bearing value silently (treating the
+    whole string as a filename that happened to be missing), so the failure surfaced on every
+    later fire as "Script not found" — an error that reads like a deleted file.
+    """
     if not script or not script.strip():
         return None
 
     from hermes_constants import get_hermes_home
-    raw = script.strip()
+
+    # Split path from arguments exactly as cron.scheduler_script does. A parse error is reported
+    # here rather than stored, so an unbalanced quote never becomes a permanently-failing job.
+    try:
+        from cron.scheduler_script import _split_script_command
+
+        raw, _args, split_err = _split_script_command(script)
+        if split_err:
+            return split_err
+    except Exception:
+        # Never let a scheduler import problem block job creation; fall back to the raw value,
+        # which preserves the pre-existing (stricter) behaviour.
+        raw = script.strip()
+
+    raw = (raw or "").strip()
+    if not raw:
+        return f"Script value {script!r} names no script file."
     scripts_dir = get_hermes_home() / "scripts"
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
         return (

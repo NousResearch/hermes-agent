@@ -879,7 +879,12 @@ class CuaDriver(BinaryPackage):
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        return github_release_tags("trycua/cua", strip_prefix="cua-driver-rs-v")
+        # Cua marks stable releases as prereleases to preserve its monorepo's
+        # repository-wide Latest pointer. Only plain driver SemVer is stable.
+        return github_release_tags(
+            "trycua/cua", strip_prefix="cua-driver-rs-v", include_prereleases=True,
+            tag_pattern=r"cua-driver-rs-v[0-9]+\.[0-9]+\.[0-9]+",
+        )
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         flatten_single_dir(staged)

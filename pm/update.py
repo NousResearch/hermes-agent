@@ -324,22 +324,29 @@ def llama_app_bucket_versions() -> list[str]:
     return [str(v) for v in versions]
 
 
-def github_release_tags(repo: str, *, strip_prefix: str = "") -> list[str]:
+def github_release_tags(
+    repo: str, *, strip_prefix: str = "", include_prereleases: bool = False,
+    tag_pattern: str | None = None,
+) -> list[str]:
     """Newest-first release tag names for a GitHub repo (releases, not all
     tags — no drafts/prereleases, and a rolling 'latest' pseudo-release is
     skipped). ``strip_prefix`` removes a tag prefix (e.g. 'v', 'b'). Only
     version-shaped tags survive the strip — cua-driver's repo also tags
     sandbox/experimental builds (cua-driver-rs-vsandbox-v0.4.3) that must
-    never appear as update candidates."""
+    never appear as update candidates. Monorepo packages whose stable releases
+    carry GitHub's prerelease flag can opt in and restrict the full, unstripped
+    tag with ``tag_pattern``. Drafts are always excluded."""
     tags = []
     for page in range(1, 4):  # up to 90 releases — far beyond any cadence
         data = _get_json(f"https://api.github.com/repos/{repo}/releases?per_page=30&page={page}")
         if not data:
             break
         for release in data:
-            if release.get("draft") or release.get("prerelease"):
+            if release.get("draft") or (release.get("prerelease") and not include_prereleases):
                 continue
             tag = release.get("tag_name", "")
+            if tag_pattern is not None and re.fullmatch(tag_pattern, tag) is None:
+                continue
             if tag == "latest":
                 continue
             if strip_prefix and tag.startswith(strip_prefix):

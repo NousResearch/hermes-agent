@@ -73,19 +73,43 @@ export function productOutput(source, out, inputs) {
   return { source: src, out: dest }
 }
 
+// Windows/AV hardening: a directory rename can transiently fail with EPERM/EACCES
+// while antivirus or the indexer holds a handle inside freshly written files
+// (observed 4/4 under install.ps1 on one Windows/AV setup, 0/2 standalone).
+// Retry with backoff before giving up; a genuinely locked path still throws
+// after the budget. `rename` is a parameter so tests can inject transient
+// failures without monkey-patching a read-only ESM binding.
+export function renameSyncRetry(from, to, { attempts = 6, delayMs = 250, rename = renameSync } = {}) {
+  let lastError
+  for (let i = 0; i < attempts; i++) {
+    try {
+      rename(from, to)
+      return
+    } catch (error) {
+      lastError = error
+      if (error && (error.code === 'EPERM' || error.code === 'EACCES' || error.code === 'ENOTEMPTY')) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs * (i + 1))
+        continue
+      }
+      throw error
+    }
+  }
+  throw lastError
+}
+
 // Never delete the last successful product before a compiler succeeds. The
 // staging and backup directories are siblings so publication stays on one FS.
-export function publishDirectory(staged, out, { source } = {}) {
+export function publishDirectory(staged, out, { source, rename } = {}) {
   // The destination may have been occupied while the compiler was running.
   requireOwnedOutput(out, source)
   writeFileSync(path.join(staged, productMarker), productOwner)
   const backup = `${staged}.previous`
   const previous = existsSync(out)
-  if (previous) renameSync(out, backup)
+  if (previous) renameSyncRetry(out, backup, { rename })
   try {
-    renameSync(staged, out)
+    renameSyncRetry(staged, out, { rename })
   } catch (error) {
-    if (previous) renameSync(backup, out)
+    if (previous) renameSyncRetry(backup, out, { rename })
     throw error
   }
   if (previous) rmSync(backup, { recursive: true, force: true })

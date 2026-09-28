@@ -25,11 +25,6 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
   const gate = useStore($onboardingGate)
   const opening = useStore($guideOpening)
 
-  // A guide is owed the moment the renderer knows it (a first launch, or a
-  // relaunch mid-guide). Take the solo shape before first paint and before the
-  // gateway opens. Otherwise the normal shell paints at full size for the
-  // seconds the backend takes to come up, and then snaps down to the guide.
-  // Once, on mount: first-launch eligibility is a boot fact, not a live signal.
   useLayoutEffect(() => {
     beginOnboardingFlow($desktopOnboarding.get().firstRunSkipped)
 
@@ -43,9 +38,6 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
       return
     }
 
-    // The guide is the free tier's introduction. Ack the one-time notice as
-    // soon as it takes the screen, or a readiness round mid-guide raises the
-    // ready screen over the conversation.
     const ack = () => {
       clearFreeTierIntro()
       void ackFreeTierNotice(requestGateway).then(acked => {

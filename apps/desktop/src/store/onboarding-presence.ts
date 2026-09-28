@@ -1,6 +1,3 @@
-/** Keeps ambient UI from covering onboarding without importing the
- *  guided-chat dependency chain into leaf stores. */
-
 import { atom } from 'nanostores'
 
 export type OnboardingSurface = 'solo-chat'

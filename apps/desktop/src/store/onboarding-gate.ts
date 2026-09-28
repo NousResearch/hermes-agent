@@ -29,12 +29,6 @@ function loadGate(): OnboardingGateState {
 
   const phase = isOnboardingEnabled() && isOnboardingPhase(saved) ? saved : 'idle'
 
-  // Two phases owe a kickoff at boot. `pending` is a launch that quit before
-  // the guide started. `guided` is a relaunch mid-guide: without a
-  // kickoff the normal app boots around the persisted solo layout (the
-  // connected splash, the stock composer and model picker, a small window
-  // whose sidebars cannot open) while the gate still says the guide is on.
-  // The kickoff adopts the existing guide chat by title, so nothing is lost.
   return {
     phase,
     guideQueued: phase === 'pending' || phase === 'guided',
@@ -61,18 +55,12 @@ function setPhase(phase: OnboardingPhase): void {
   $onboardingGate.set({ ...$onboardingGate.get(), phase, guideQueued: false })
 }
 
-/** The guided first launch is on screen or mid-handoff. Ambient chrome that
- *  would send the user elsewhere (the provider picker, the free-tier chip)
- *  yields to it: the free tier IS the provider for those phases, and the
- *  guide's ready screen is where sign-in is offered. */
 export function guidedOnboardingActive(): boolean {
   const { phase } = $onboardingGate.get()
 
   return isOnboardingEnabled() && (phase === 'pending' || phase === 'guided' || phase === 'handoff')
 }
 
-/** Owes the guide on a first launch. Any phase past `idle` already had its
- *  turn, and a user who dismissed first-run setup is not owed one. */
 export function beginOnboardingFlow(firstRunSkipped: boolean): void {
   if (!isOnboardingEnabled() || firstRunSkipped || $onboardingGate.get().phase !== 'idle') {
     return
@@ -82,7 +70,6 @@ export function beginOnboardingFlow(firstRunSkipped: boolean): void {
   $onboardingGate.set({ ...$onboardingGate.get(), guideQueued: true })
 }
 
-/** The kickoff returns true only after the guided session's seed is durable. */
 export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolean> {
   if (!isOnboardingEnabled()) {
     return Promise.resolve(false)
@@ -100,8 +87,6 @@ export function runGuideKickoff(kickoff: () => Promise<boolean>): Promise<boolea
     return Promise.resolve(false)
   }
 
-  // Defer the callback until the shared promise is installed, including for
-  // callers that re-enter synchronously while starting the session.
   const promise = Promise.resolve()
     .then(kickoff)
     .then(
@@ -134,7 +119,6 @@ export function beginOnboardingHandoff(): void {
   }
 }
 
-/** Called when the handoff receipt is accepted. */
 export function completeOnboardingFlow(): void {
   if (isOnboardingEnabled() && $onboardingGate.get().phase === 'handoff') {
     setPhase('done')
@@ -149,7 +133,6 @@ export function skipGuide(): void {
   }
 }
 
-/** Resets the backend's setup profile in place, then the local flow state. */
 export async function devResetOnboardingFlow(): Promise<void> {
   if (!import.meta.env.DEV) {
     return

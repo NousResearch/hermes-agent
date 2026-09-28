@@ -27,6 +27,13 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
         yield test_client
 
 
+@pytest.fixture()
+def transcripts_on() -> None:
+    from hermes_constants import get_hermes_home
+
+    (get_hermes_home() / "config.yaml").write_text("kanban:\n  api_expose_transcripts: true\n")
+
+
 def _create(client: TestClient, **overrides) -> dict:
     payload = {
         "title": "External operation",
@@ -523,7 +530,7 @@ def test_patch_edits_notify_observers_like_the_dashboard(
 
 
 def test_transcript_streams_worker_session_while_running(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, transcripts_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from hermes_cli import profiles as profiles_mod
     from hermes_state import SessionDB
@@ -542,7 +549,7 @@ def test_transcript_streams_worker_session_while_running(
         assert run is not None
         # Before the worker links its session: run known, nothing to show yet.
         pending = client.get(f"/api/plugins/kanban/v1/tasks/{task_id}/transcript").json()
-        assert pending["run_status"] == "running" and pending["session_id"] is None
+        assert pending["run_status"] == "running" and pending["messages"] == []
         assert kanban_db.set_run_worker_session(conn, run.id, task_id, "sess-1")
         # First writer wins (background review / delegated agents).
         assert not kanban_db.set_run_worker_session(conn, run.id, task_id, "sess-2")
@@ -604,7 +611,7 @@ def test_agent_init_links_kanban_run_session(
 
 
 def test_transcript_latest_returns_newest_steps(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, transcripts_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from hermes_cli import profiles as profiles_mod
     from hermes_state import SessionDB
@@ -636,7 +643,7 @@ def test_transcript_latest_returns_newest_steps(
 
 
 def test_transcript_ignores_caller_supplied_metadata_session(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, transcripts_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from hermes_cli import profiles as profiles_mod
     from hermes_state import SessionDB
@@ -656,4 +663,11 @@ def test_transcript_ignores_caller_supplied_metadata_session(
             conn, task_id, summary="done", metadata={"worker_session_id": "private-chat"})
 
     body = client.get(f"/api/plugins/kanban/v1/tasks/{task_id}/transcript").json()
-    assert body["session_id"] is None and body["messages"] == []
+    assert body["messages"] == [] and "session_id" not in body
+
+
+def test_transcript_is_off_by_default(client: TestClient) -> None:
+    task_id = _create(client, idempotency_key="transcript-off")["task"]["id"]
+    assert client.get(f"/api/plugins/kanban/v1/tasks/{task_id}/transcript").status_code == 404
+    caps = client.get("/api/plugins/kanban/v1/capabilities").json()
+    assert "transcript" not in caps["observability"]

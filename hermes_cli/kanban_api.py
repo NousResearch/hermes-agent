@@ -3,7 +3,8 @@
 The dashboard plugin mounts this router at ``/api/plugins/kanban/v1``.  The
 adapter intentionally exposes workflow/task concepts rather than SQLite rows:
 private task bodies, results, comments, workspace paths, claims, process data,
-profile internals, and raw event payloads are never serialized.
+profile internals, and raw event payloads are never serialized. The one
+exception, the run transcript, is off unless ``kanban.api_expose_transcripts``.
 """
 
 from __future__ import annotations
@@ -288,7 +289,8 @@ def capabilities() -> dict[str, Any]:
         "tasks": {"read": True, "create": True, "update": True},
         "actions": ["comment", "complete", "block", "unblock", "archive"],
         "links": {"create": True, "delete": True},
-        "observability": ["events", "runs", "sanitized_log_excerpt", "transcript"],
+        "observability": ["events", "runs", "sanitized_log_excerpt"]
+        + (["transcript"] if _transcripts_enabled() else []),
         "task_statuses": sorted(kanban_db.VALID_STATUSES),
         "block_kinds": sorted(kanban_db.VALID_BLOCK_KINDS),
         "idempotent_task_creation": True,
@@ -629,6 +631,13 @@ def task_log(
     }
 
 
+def _transcripts_enabled() -> bool:
+    """Opt-in: transcripts carry the task body and worker output that the rest of ``/v1`` withholds."""
+    from hermes_cli.config import cfg_get, load_config
+
+    return cfg_get(load_config(), "kanban", "api_expose_transcripts", default=False) is True
+
+
 def _transcript_text(value: Any, cap: int) -> tuple[Optional[str], bool]:
     """Sanitize + cap one transcript field; multimodal parts keep text only."""
     if value is None:
@@ -736,7 +745,10 @@ def task_transcript(
     replies, sanitized like the log excerpt. Poll with ``after_id`` =
     ``next_after_id`` for near-live progress while the run is going, or with
     ``latest=true`` for the newest ``limit`` steps (``has_more`` then means
-    older steps exist; ``after_id`` is ignored)."""
+    older steps exist; ``after_id`` is ignored). 404 unless
+    ``kanban.api_expose_transcripts`` is on."""
+    if not _transcripts_enabled():
+        raise HTTPException(status_code=404, detail="transcripts are disabled")
     with _connection(board) as conn:
         task = _require_task(conn, task_id)
         if run_id is None:
@@ -769,7 +781,6 @@ def task_transcript(
         "task_id": task_id,
         "run_id": run.id if run else None,
         "run_status": run.status if run else None,
-        "session_id": session_id,
         "messages": messages,
         "next_after_id": next_after_id,
         "has_more": has_more,

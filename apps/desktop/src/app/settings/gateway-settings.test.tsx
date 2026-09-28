@@ -537,7 +537,7 @@ describe('GatewaySettings', () => {
     })
   })
 
-  it('focuses the custom SSH host input on the first "Custom" selection', async () => {
+  it('opens a focused, typeable custom SSH host input on the first "Custom" selection', async () => {
     getConnectionConfig.mockResolvedValue({
       ...localConnection,
       mode: 'ssh',
@@ -554,16 +554,22 @@ describe('GatewaySettings', () => {
     render(<GatewaySettings />)
 
     // With ~/.ssh/config aliases available the host field is a dropdown.
-    const trigger = await screen.findByRole('combobox')
-    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('combobox'))
     fireEvent.click(screen.getByRole('option', { name: 'Custom (enter manually)…' }))
 
-    // The dropdown is swapped for a free-text input that must be focused and
-    // immediately typeable on the FIRST selection (no round-trip through
-    // another option) — Radix's deferred focus restoration must not steal it.
+    // The FIRST pick swaps the dropdown for a free-text input, no round-trip
+    // through another option needed.
     const hostRow = screen.getByText('Host').closest('.grid') as HTMLElement
     const input = within(hostRow).getByRole('textbox') as HTMLInputElement
 
     await waitFor(() => expect(document.activeElement).toBe(input))
+    fireEvent.change(input, { target: { value: 'build-box' } })
+    expect(input.value).toBe('build-box')
+
+    // Clearing it and leaving the field backs out of Custom to the dropdown.
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.blur(input)
+    expect(await within(hostRow).findByRole('combobox')).toBeTruthy()
+    expect(within(hostRow).queryByRole('textbox')).toBeNull()
   })
 })

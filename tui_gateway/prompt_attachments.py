@@ -83,9 +83,51 @@ def _session_home_dir(session: dict, name: str) -> Path:
     """``<session home>/<name>``, anchored on the session's stored ``profile_home``: attach
     RPCs run BEFORE ``prompt.submit`` installs the profile HERMES_HOME override, while
     the sandbox mounts and the vision host-read allowlist resolve the *session profile's*
-    dirs at run time — writing anywhere else means the agent can never see the file."""
+    dirs at run time — writing anywhere else means the agent can never see the file.
+
+    ``attachments`` instead follows the session workspace when the profile's config opts
+    in via ``attachments.storage: workspace`` (#110662): staging then lands inside the
+    allowed ref root, so the ``@file:`` ref stays workspace-relative."""
     profile_home = session.get("profile_home")
+    if name == "attachments" and _profile_attachments_storage(profile_home) == "workspace":
+        if workspace := _session_attachments_workspace(session):
+            return workspace / ".hermes" / "attachments"
     return (Path(profile_home) if profile_home else _hermes_home) / name
+
+
+def _profile_attachments_storage(profile_home) -> str:
+    """The session profile's ``attachments.storage`` ("" unless it opts into "workspace").
+
+    Read from THAT profile's config.yaml — ``file.attach`` runs before ``prompt.submit``
+    installs the profile scope, so the process config still belongs to the launch profile
+    (same reason as ``_profile_configured_cwd``)."""
+    import contextlib as _contextlib
+    home = Path(profile_home) if profile_home else _hermes_home
+    with _contextlib.suppress(Exception):
+        from hermes_cli.config_effective import load_user_config_effective
+        cfg_path = home / "config.yaml"
+        if cfg_path.exists():
+            attachments_cfg = load_user_config_effective(cfg_path).get("attachments")
+            if isinstance(attachments_cfg, dict):
+                return str(attachments_cfg.get("storage") or "").strip().lower()
+    return ""
+
+
+def _session_attachments_workspace(session: dict) -> Path | None:
+    """The session workspace when ``attachments.storage: workspace`` can actually write to it.
+
+    Only a workspace on THIS host can hold gateway-staged files: an ssh-profile cwd lives
+    on the remote execution host and a cwd that doesn't exist locally can't be vouched
+    for, so both keep the bind-mounted ``<profile home>/attachments`` that container and
+    remote backends receive (#76577)."""
+    import contextlib as _contextlib
+    if _cwd_is_remote(session.get("profile_home")):
+        return None
+    with _contextlib.suppress(Exception):
+        workspace = Path(_session_cwd(session)).resolve()
+        if workspace.is_dir():
+            return workspace
+    return None
 
 
 def _session_images_dir(session: dict) -> Path:

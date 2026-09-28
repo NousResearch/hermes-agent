@@ -87,24 +87,22 @@ describe('KEYBIND_ACTIONS', () => {
   })
 })
 
-describe('profile.switch.N vs view.tabSlot.N (#92569)', () => {
-  it('profile switchers claim ⌘1…⌘9; tab-slot actions ship unbound', () => {
-    // The bug: the profile handler dispatched tab-first, so open session
-    // tabs silently ate ⌘1…⌘9 and rebinding the chord could not change the
-    // semantics. The contract now: profile.switch.N owns the mod+N defaults
-    // unconditionally, and positional tab switching is its own action with
-    // no default chord.
+describe('view.tabSlot.N layers over profile.switch.N on ⌘1…⌘9 (#92569)', () => {
+  it('both actions ship on mod+N; the tab slot passes through, the profile switch does not', () => {
+    // Over a tab strip the chord is "tab N"; with no eligible strip the tab
+    // action declines and the same chord is "profile N". Two actions, one
+    // chord: rebinding either changes only that one.
     for (let slot = 1; slot <= 9; slot += 1) {
-      expect(defaultBindings()[`profile.switch.${slot}`]).toContain(`mod+${slot}`)
-      expect(keybindAction(`view.tabSlot.${slot}`)).toMatchObject({ category: 'view', defaults: [] })
-      expect(defaultBindings()[`view.tabSlot.${slot}`]).toEqual([])
+      expect(defaultBindings()[`view.tabSlot.${slot}`]).toEqual([`mod+${slot}`])
+      expect(defaultBindings()[`profile.switch.${slot}`]).toEqual([`mod+${slot}`])
+      expect(keybindAction(`view.tabSlot.${slot}`)).toMatchObject({ category: 'view', passthrough: true })
+      expect(keybindAction(`profile.switch.${slot}`)?.passthrough).toBeUndefined()
     }
   })
 
-  it('tab-slot actions precede profile switchers so a rebind wins the combo race', () => {
-    // defaultBindings builds its combo index in KEYBIND_ACTIONS order; a
-    // user binding mod+2 to view.tabSlot.2 must win over profile.switch.2's
-    // default claim of the same combo — first action to claim it wins.
+  it('tab-slot actions precede profile switchers so the chord reaches the tab first', () => {
+    // The combo index is built in KEYBIND_ACTIONS order; the passthrough
+    // action must sit ahead of the one it hands off to.
     const ids = KEYBIND_ACTIONS.map(action => action.id)
     const firstTabSlot = ids.indexOf('view.tabSlot.1')
     const firstProfileSwitch = ids.indexOf('profile.switch.1')

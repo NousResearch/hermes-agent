@@ -5,8 +5,9 @@ import type { TextMessagePartComponent, TextMessagePartProps } from '@assistant-
 import type { FC } from 'react'
 import { Fragment, useEffect, useMemo, useState } from 'react'
 
+import { isPastedContentPath } from '@/app/chat/composer/large-paste'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
-import type { I18nContextValue } from '@/i18n'
+import { type I18nContextValue, useI18n } from '@/i18n'
 import { extractEmbeddedImages } from '@/lib/embedded-images'
 import { ExternalLink, openLink } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
@@ -598,6 +599,7 @@ const DirectiveChip: FC<{
   id: string
   onClick?: () => void
 }> = ({ type, label, id, onClick }) => {
+  const { t } = useI18n()
   // An `onClick` override is a bespoke activation, not the kind's link action —
   // an override must not turn its carrier into a link.
   const action = onClick ? undefined : DIRECTIVE_ACTIONS[type]
@@ -607,7 +609,7 @@ const DirectiveChip: FC<{
   const body = (
     <>
       <DirectiveIcon type={type} />
-      {label}
+      {type === 'file' && isPastedContentPath(id) ? t.desktop.pastedContent : label}
     </>
   )
 

@@ -46,7 +46,13 @@ import {
 } from './api-transport'
 import { appIconCandidates, resolveAppIcon, shouldOverrideDockIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
-import { appVersionInfo, type AppVersionInfo, assertSourceUpdateChannel, nativeAboutVersion, packagedReleaseChannel } from './app-version'
+import {
+  appVersionInfo,
+  type AppVersionInfo,
+  assertSourceUpdateChannel,
+  nativeAboutVersion,
+  packagedReleaseChannel
+} from './app-version'
 import { runAppInstallerChecker } from './appinstaller-checker'
 import { installApplicationMenuAfterFirstWindow } from './application-menu-startup'
 import { stopBackendChild as stopBackendChildImpl, waitForBackendExit } from './backend-child'
@@ -937,6 +943,13 @@ const isPrimaryInstance: boolean = app.requestSingleInstanceLock()
 
 if (!isPrimaryInstance) {
   app.exit(0)
+}
+
+// `hermes desktop` shortens TMPDIR only so the lock above can bind its socket (#124688). The
+// backend and every other child get the real one (the profile scratch dir) back.
+if (process.env.HERMES_DESKTOP_TMPDIR) {
+  process.env.TMPDIR = process.env.HERMES_DESKTOP_TMPDIR
+  delete process.env.HERMES_DESKTOP_TMPDIR
 }
 
 const HERMES_HOME: string = resolveDesktopHermesHome({

@@ -1351,7 +1351,9 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
         agent._memory_manager = memory_manager
     elif not skip_memory:
         try:
-            _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+            # Provider selection must not depend on the optional built-in store
+            # import succeeding (or on its local mem_config being assigned).
+            _mem_provider_name = _cfg_dict(_agent_cfg, "memory").get("provider", "")
             if not is_core_memory_provider(_mem_provider_name):
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem

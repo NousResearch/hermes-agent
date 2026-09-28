@@ -60,3 +60,11 @@ def test_starred_hyphenated_fragment_reaches_trigram(db):
 def test_true_prefix_still_served_by_the_base_index(db):
     # A real prefix never reaches the fallback: the unicode61 index answers it.
     assert len(db.search_messages("capab*", limit=10)) == 2
+
+
+def test_near_star_is_a_fragment_not_the_proximity_operator(db):
+    # ``NEAR`` is an FTS5 operator only as ``NEAR(...)``; ``_quote_fts_tokens`` keeps
+    # quoting the bare word, so the stripped fragment is a literal phrase and the
+    # trigram fallback finds it inside "linear" (a literal ``NEAR*`` could not).
+    db.append_message("s1", role="user", content="fit a linear regression on the data")
+    assert len(db.search_messages("NEAR*", limit=10)) == 1

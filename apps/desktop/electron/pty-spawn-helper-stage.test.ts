@@ -83,6 +83,7 @@ describe('stageExternalSpawnHelper', () => {
       const result = stageExternalSpawnHelper({
         nodePtyRoot,
         destDir: path.join(root, 'userData', 'bin'),
+        platform: 'darwin',
         env
       })
 
@@ -104,10 +105,10 @@ describe('stageExternalSpawnHelper', () => {
       const nodePtyRoot = makeNodePtyFixture(root)
       const env: Record<string, string | undefined> = {}
 
-      stageExternalSpawnHelper({ nodePtyRoot, destDir: path.join(root, 'bin'), env })
+      stageExternalSpawnHelper({ nodePtyRoot, destDir: path.join(root, 'bin'), platform: 'darwin', env })
       const first = fs.statSync(path.join(root, 'bin', 'spawn-helper')).mtimeMs
 
-      const result = stageExternalSpawnHelper({ nodePtyRoot, destDir: path.join(root, 'bin'), env })
+      const result = stageExternalSpawnHelper({ nodePtyRoot, destDir: path.join(root, 'bin'), platform: 'darwin', env })
 
       expect(result.reused).toBe(true)
       expect(fs.statSync(path.join(root, 'bin', 'spawn-helper')).mtimeMs).toBe(first)
@@ -123,10 +124,10 @@ describe('stageExternalSpawnHelper', () => {
       const env: Record<string, string | undefined> = {}
       const destDir = path.join(root, 'bin')
 
-      stageExternalSpawnHelper({ nodePtyRoot, destDir, env })
+      stageExternalSpawnHelper({ nodePtyRoot, destDir, platform: 'darwin', env })
       fs.writeFileSync(path.join(nodePtyRoot, 'prebuilds', 'darwin-arm64', 'spawn-helper'), 'rebuilt helper')
 
-      const result = stageExternalSpawnHelper({ nodePtyRoot, destDir, env })
+      const result = stageExternalSpawnHelper({ nodePtyRoot, destDir, platform: 'darwin', env })
 
       expect(result.reused).toBe(false)
       expect(fs.readFileSync(path.join(destDir, 'spawn-helper'), 'utf8')).toBe('rebuilt helper')
@@ -156,7 +157,12 @@ describe('stageExternalSpawnHelper', () => {
     try {
       const env: Record<string, string | undefined> = {}
 
-      const result = stageExternalSpawnHelper({ nodePtyRoot: path.join(root, 'node-pty'), destDir: path.join(root, 'bin'), env })
+      const result = stageExternalSpawnHelper({
+        nodePtyRoot: path.join(root, 'node-pty'),
+        destDir: path.join(root, 'bin'),
+        platform: 'darwin',
+        env
+      })
 
       expect(result.staged).toBeNull()
       expect(result.sourcePath).toBeNull()
@@ -172,7 +178,12 @@ describe('stageExternalSpawnHelper', () => {
     try {
       const env: Record<string, string | undefined> = { [PTY_SPAWN_HELPER_ENV]: '/stale/leftover' }
 
-      stageExternalSpawnHelper({ nodePtyRoot: path.join(root, 'node-pty'), destDir: path.join(root, 'bin'), env })
+      stageExternalSpawnHelper({
+        nodePtyRoot: path.join(root, 'node-pty'),
+        destDir: path.join(root, 'bin'),
+        platform: 'darwin',
+        env
+      })
 
       // A stale override is harmless: the patched unixTerminal.js only honors
       // it when fs.existsSync passes, otherwise it uses the default path.

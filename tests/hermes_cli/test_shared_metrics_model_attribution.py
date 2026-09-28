@@ -164,6 +164,10 @@ def test_network_address_model_ids_and_raw_injected_marks_never_reach_counters(d
 
     for model in ("127.0.0.1:8080/x", "localhost/qwen", "10.0.0.5/x", "gpu-box.lan:8000/qwen", "gpu-box.lan:8000"):
         assert model_route("openrouter", model)["model"] == "custom", model
+    # An AWS ARN carries the account id; an alias spelling of a loopback provider names the user's model.
+    for provider, model in (("bedrock", "arn:aws:bedrock:us-east-1:123456789012:inference-profile/x"),
+                            ("lm-studio", "my-model-x"), ("lm_studio", "my-model-x")):
+        assert model_route(provider, model)["model"] == "custom", (provider, model)
     for provider, model in (("bedrock", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
                             ("openrouter", "openai/gpt-4o:free"), ("ollama-cloud", "gpt-oss:120b")):
         assert model_route(provider, model)["model"] == model

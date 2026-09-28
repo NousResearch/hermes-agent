@@ -103,13 +103,18 @@ def user_named_model_providers() -> frozenset[str]:
     """Providers whose model ids the user names: custom endpoints and loopback servers."""
     from urllib.parse import urlparse
 
+    from hermes_cli import auth, models, providers
     from hermes_cli.auth import PROVIDER_REGISTRY
 
-    loopback = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
-    return frozenset(
+    hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    loopback = {
         name for name, config in PROVIDER_REGISTRY.items()
-        if urlparse(str(getattr(config, "inference_base_url", "") or "")).hostname in loopback
-    ) | {CUSTOM}
+        if urlparse(str(getattr(config, "inference_base_url", "") or "")).hostname in hosts
+    }
+    # Alias spellings (``lm-studio``) pass provider_metric_name as shipped names, so they must collapse too.
+    tables = (providers.ALIASES, getattr(auth, "_PROVIDER_ALIASES", {}), getattr(models, "_PROVIDER_ALIASES", {}))
+    aliases = {alias for table in tables for alias, canon in table.items() if canon in loopback}
+    return frozenset(loopback | aliases | {CUSTOM})
 
 
 @functools.cache
@@ -289,10 +294,11 @@ def model_metric_name(raw: object, provider: str, *, max_length: int) -> str:
     return model
 
 
-# The user's own server, never a public model id: a URL or path (``:/``), a weight file, a loopback
-# or IPv4 host, or ``host:port`` (a 2-5 digit port, so Bedrock's ``...-v1:0`` stays readable).
+# The user's own server or account, never a public model id: a URL or path (``:/``), a weight file,
+# a loopback or IPv4 host, ``host:port`` (a 2-5 digit port, so Bedrock's ``...-v1:0`` stays readable),
+# or an AWS ARN (it carries the account id).
 _LOCATION_MODEL = re.compile(
-    r".*:/|.*\.(?:gguf|bin|safetensors)$|(?:localhost|\d{1,3}(?:\.\d{1,3}){3})(?:[:/]|$)|[^/:]+:\d{2,5}(?:/|$)"
+    r"arn:|.*:/|.*\.(?:gguf|bin|safetensors)$|(?:localhost|\d{1,3}(?:\.\d{1,3}){3})(?:[:/]|$)|[^/:]+:\d{2,5}(?:/|$)"
 )
 
 

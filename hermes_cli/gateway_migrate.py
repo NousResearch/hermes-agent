@@ -416,10 +416,20 @@ def _write_multiplex_flag(default_home: Path, value: bool) -> None:
 def _profile_gateway_config(home: Path):
     """This profile's ``GatewayConfig`` read exactly the way the multiplexer reads it: under the
     profile's own secret scope with multiplexing active, so a missing token stays missing instead of
-    borrowing the CLI process's ``os.environ`` (which holds the launch profile's ``.env``)."""
+    borrowing the CLI process's ``os.environ`` (which holds the launch profile's ``.env``).
+
+    A PARKED profile stays in the inventory and the duplicate-credential guard (parking must not hide
+    a conflict), but it is inert for the host: its config is read without discovering its plugins,
+    whose ``register()`` would otherwise run in the live gateway on every boot (#123386). Only its
+    plugin-defined platforms fall out of the guard — their credentials cannot be evaluated without
+    importing the plugin; builtin bot tokens still collide.
+    """
     from gateway.config import load_gateway_config
     from gateway.run import _profile_runtime_scope
-    with _profile_runtime_scope(home):
+    from hermes_cli.plugins_discovery import suppress_plugin_discovery
+    from hermes_cli.profiles import profile_is_parked
+    scope = suppress_plugin_discovery() if profile_is_parked(home) else contextlib.nullcontext()
+    with _profile_runtime_scope(home), scope:
         return load_gateway_config()
 
 

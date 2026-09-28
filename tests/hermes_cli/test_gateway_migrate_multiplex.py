@@ -178,6 +178,33 @@ def test_parked_profile_remains_in_migration_inventory(fleet):
     assert any("'coder'" in reason and "credential" in reason for reason in blocked.blockers)
 
 
+def test_preflight_never_imports_a_parked_profiles_plugins(fleet):
+    """A parked profile stays in the inventory and the duplicate-credential guard (above), but
+    loading its gateway config must not run its plugins' ``register()`` in the host process (#123386)."""
+    from hermes_cli.plugins import _reset_plugin_managers_for_tests
+
+    home = fleet.root / "profiles/coder"
+    (home / "gateway.parked").touch()
+    (home / "config.yaml").write_text("plugins:\n  enabled: [p1]\n", encoding="utf-8")
+    marker = fleet.root / "p1-registered"
+    plugin = home / "plugins/p1"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: p1\n", encoding="utf-8")
+    (plugin / "__init__.py").write_text(
+        f"from pathlib import Path\n\ndef register(ctx):\n    Path({str(marker)!r}).write_text('imported')\n",
+        encoding="utf-8",
+    )
+    _reset_plugin_managers_for_tests()
+    try:
+        plan = gm.build_migration_plan()
+        assert "coder" in {p.name for p in plan.standalone_secondaries}
+        assert not marker.exists(), "migration preflight imported a parked profile's plugin"
+        gm.duplicate_credential_findings()  # doctor / gateway status read the same homes
+        assert not marker.exists()
+    finally:
+        _reset_plugin_managers_for_tests()
+
+
 def test_migration_removes_parked_footprint_without_waiting_for_it_to_serve(fleet, monkeypatch):
     home = fleet.root / "profiles/coder"
     (home / "gateway.parked").touch()

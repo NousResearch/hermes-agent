@@ -568,6 +568,46 @@ class TestSafeRestore:
         assert "stubborn.txt" not in result["restored_files"]
         assert result["failed_deletes"] == ["stubborn.txt"]
 
+    def test_safe_restore_does_not_delete_when_the_checkout_half_fails(
+        self, mgr, work_dir, monkeypatch,
+    ):
+        """A failed git checkout must not leave delete_targets unlinked.
+
+        The two halves of a safe restore are independent, uncoordinated
+        filesystem operations: deleting agent-created files (unlink, not
+        git-tracked) and checking out changed-but-still-present files (git
+        checkout). Deleting before confirming the checkout half succeeds means
+        a checkout failure (e.g. a concurrent checkpoint operation holding the
+        shared store's index lock) reports "Restore failed" while files have
+        already been permanently destroyed — the opposite of what a failed,
+        no-op-looking restore should mean.
+        """
+        base = self._checkpoint(mgr, work_dir)
+
+        # Lands in checkout_targets: present in the checkpoint, changed since
+        # by Hermes (must be ledger-recorded or safe_restore_plan treats it as
+        # a user edit and skips it entirely).
+        (work_dir / "main.py").write_text("agent version\n")
+        mgr.record_agent_write(str(work_dir / "main.py"))
+        # Lands in delete_targets: agent-created, absent from the checkpoint.
+        doomed = work_dir / "doomed.txt"
+        doomed.write_text("agent scratch\n")
+        mgr.record_agent_write(str(doomed))
+
+        real_run_git = _run_git
+
+        def failing_checkout(args, *a, **kw):
+            if args and args[0] == "checkout":
+                return False, "", "fatal: Unable to create '.../index.lock': File exists."
+            return real_run_git(args, *a, **kw)
+
+        monkeypatch.setattr("tools.checkpoint_manager._run_git", failing_checkout)
+        result = mgr.restore(str(work_dir), base, safe=True)
+
+        assert result["success"] is False
+        assert doomed.exists(), "safe restore deleted a file even though checkout failed"
+        assert doomed.read_text() == "agent scratch\n"
+
     def test_unsafe_restore_overwrites_everything(self, mgr, work_dir):
         base = self._checkpoint(mgr, work_dir)
         (work_dir / "main.py").write_text("agent version\n")

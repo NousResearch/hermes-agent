@@ -1199,16 +1199,6 @@ class CheckpointManager:
                     kept_oversize.append(rel)
                 else:
                     delete_targets.append(rel)
-            for rel in delete_targets:
-                try:
-                    target = Path(abs_dir) / rel
-                    if target.is_file() or target.is_symlink():
-                        target.unlink()
-                except OSError as exc:
-                    logger.warning(
-                        "Safe restore: could not remove %s: %s", rel, exc,
-                    )
-                    failed_deletes.append(rel)
             if not checkout_targets:
                 ok, stdout, err = True, "", ""
             else:
@@ -1217,6 +1207,22 @@ class CheckpointManager:
                     store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                     index_file=index_file,
                 )
+            # Only delete once the checkout half is known to succeed: these
+            # unlinks are not part of the git-tracked checkout and can't be
+            # undone by retrying it, so a checkout failure must not destroy
+            # files while still reporting "Restore failed" as if nothing
+            # had happened.
+            if ok:
+                for rel in delete_targets:
+                    try:
+                        target = Path(abs_dir) / rel
+                        if target.is_file() or target.is_symlink():
+                            target.unlink()
+                    except OSError as exc:
+                        logger.warning(
+                            "Safe restore: could not remove %s: %s", rel, exc,
+                        )
+                        failed_deletes.append(rel)
         else:
             ok, stdout, err = _run_git(
                 ["checkout", commit_hash, "--", file_path if file_path else "."],

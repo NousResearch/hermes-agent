@@ -1242,6 +1242,7 @@ export function ChatSidebar({
   const overviewHidden = useMemo(() => {
     const isHidden = (session: SessionInfo) =>
       isHiddenFromProjects(session) || isRemovedConversation(session, removedSessionIds)
+
     const counts: Record<string, number> = {}
 
     for (const session of sessions) {

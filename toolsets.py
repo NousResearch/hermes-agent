@@ -47,6 +47,7 @@ _FEISHU_TOOLS = [
     "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
 ]
+_MATRIX_POLL_TOOLS = ["matrix_poll_create", "matrix_poll_vote", "matrix_poll_results", "matrix_poll_close"]
 _YUANBAO_TOOLS = ["yb_query_group_info", "yb_query_group_members", "yb_send_dm", "yb_search_sticker", "yb_send_sticker"]
 
 
@@ -172,6 +173,7 @@ TOOLSETS = {
     ),
     "discord": _ts("Discord read and participate tools (fetch messages, search members, create threads)", ["discord"]),
     "discord_admin": _ts("Discord server management (list channels/roles, pin messages, assign roles)", ["discord_admin"]),
+    "matrix_polls": _ts("Native Matrix polls", _MATRIX_POLL_TOOLS),
     "matrix_read": _ts("Read bounded Matrix room, thread, and event history", ["matrix_read"]),
     "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
@@ -228,7 +230,7 @@ TOOLSETS = {
     "hermes-homeassistant": _bundle("Home Assistant bot toolset - smart home event monitoring and control"),
     "hermes-email": _bundle("Email bot toolset - interact with Hermes via email (IMAP/SMTP)"),
     "hermes-mattermost": _bundle("Mattermost bot toolset - self-hosted team messaging (full access)"),
-    "hermes-matrix": _bundle("Matrix bot toolset - decentralized encrypted messaging (full access)", ["matrix_read"]),
+    "hermes-matrix": _bundle("Matrix bot toolset - decentralized encrypted messaging (full access)", ["matrix_read", *_MATRIX_POLL_TOOLS]),
     "hermes-dingtalk": _bundle("DingTalk bot toolset - enterprise messaging platform (full access)"),
     "hermes-feishu": _bundle("Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)", _FEISHU_TOOLS),
     "hermes-weixin": _bundle("Weixin bot toolset - personal WeChat messaging via iLink (full access)"),

@@ -78,7 +78,7 @@ export function ToolsetDetail({
           generic Settings → Config editor. */}
       {toolset.name === 'browser' && <BrowserRealProfilePanel profile={profile} />}
       {toolset.name === 'terminal' && (
-        <TerminalBackendPanel onConfiguredChange={onConfiguredChange} profile={profile} />
+        <TerminalBackendPanel key={profileScopeKey(profile)} onConfiguredChange={onConfiguredChange} profile={profile} />
       )}
       <ToolsetConfigPanel
         key={`${toolset.name}:${profileScopeKey(profile)}`}

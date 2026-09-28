@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -207,6 +208,33 @@ def test_kanban_and_gc_worktree_git_is_safe(malicious_repo, tmp_path):
     assert (tmp_path / "wt2" / "README").exists()
     assert worktree_gc._git(["status", "--porcelain"], cwd=str(repo)).returncode == 0
     assert _fired(marker) == []
+
+
+def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path):
+    """A filter driver is named by ``.gitattributes``, so the fixed env pins cannot reach it:
+    ``worktree add`` runs its smudge command and ``status`` its clean command."""
+    from hermes_cli import kanban_db_workspace as kw
+    from hermes_cli import worktree_gc
+    from tools.async_delegation_recovery_hints import git_state_hint
+    clean = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+    repo, marker = tmp_path / "repo", (tmp_path / "FILTER").as_posix()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=clean)
+    (repo / "README").write_text("hi\n")
+    (repo / ".gitattributes").write_text("README filter=evil\n")
+    ident = ["-c", "user.email=a@b", "-c", "user.name=a"]
+    subprocess.run(["git", "-C", str(repo), *ident, "add", "."], check=True, env=clean)
+    subprocess.run(["git", "-C", str(repo), *ident, "commit", "-qm", "init"], check=True, env=clean)
+    for key, value in {"filter.evil.smudge": f"touch '{marker}.smudge'; cat",
+                       "filter.evil.clean": f"touch '{marker}.clean'; cat", "filter.evil.required": "true"}.items():
+        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True, env=clean)
+
+    kw._ensure_git_worktree(repo, tmp_path / "wt", "safe")
+    assert (tmp_path / "wt" / "README").read_text() == "hi\n"
+    (repo / "README").write_text("hi\n")  # same size, new mtime: status must re-hash it
+    os.utime(repo / "README", (time.time() + 60, time.time() + 60))
+    assert worktree_gc._git(["status", "--porcelain"], cwd=str(repo)).returncode == 0
+    assert git_state_hint(str(repo)) is not None
+    assert sorted(p.name for p in tmp_path.glob("FILTER.*")) == []
 
 
 def test_noninteractive_env_pins_fsmonitor_and_hooks():

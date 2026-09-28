@@ -6,17 +6,21 @@ import asyncio
 from collections import deque
 import json
 import logging
+from pathlib import Path
 from urllib.parse import quote
 
 from nio import (
     AsyncClient,
     Event,
+    JoinedMembersResponse,
+    KeysQueryResponse,
     KeysUploadResponse,
     MatrixRoom,
     MegolmEvent,
     RoomMessageText,
     RoomPutStateResponse,
     RoomSendResponse,
+    ShareGroupSessionResponse,
     SyncResponse,
     ToDeviceEvent,
 )
@@ -98,7 +102,9 @@ async def _exchange(
     *,
     root: str | None = None,
     target: str | None = None,
+    barrier_home: str | None = None,
 ) -> dict:
+    home = Path(barrier_home) if barrier_home is not None else None
     client = open_encrypted_client()
     olm = client.olm
     assert olm is not None
@@ -173,6 +179,25 @@ async def _exchange(
             assert isinstance(synced, SyncResponse), synced
         assert client.rooms[room_id].encrypted
 
+        if home is not None and target is None:
+            members = await client.joined_members(room_id)
+            assert isinstance(members, JoinedMembersResponse), members
+            if client.should_query_keys:
+                queried = await client.keys_query()
+                assert isinstance(queried, KeysQueryResponse), queried
+            shared = await client.share_group_session(
+                room_id, ignore_unverified_devices=True
+            )
+            assert isinstance(shared, ShareGroupSessionResponse), shared
+            assert bot_user_id in {user for user, _device in shared.users_shared_with}
+            await asyncio.to_thread(
+                (home / "key-shared").write_text,
+                olm.outbound_group_sessions[room_id].id,
+                encoding="utf-8",
+            )
+            while not (home / "room-input-release").exists():
+                await asyncio.sleep(0.05)
+
         sync_task = asyncio.create_task(client.sync_forever(timeout=250))
         if target is not None:
             assert root is not None
@@ -202,16 +227,30 @@ async def _exchange(
         root = await _send_text(
             client, room_id, "Encrypted thread root", msgtype="m.notice"
         )
+        if home is not None:
+            raw_root = await _raw_event(client, room_id, root)
+            assert raw_root["content"]["session_id"] == (home / "key-shared").read_text(
+                encoding="utf-8"
+            )
+            await asyncio.to_thread(
+                (home / "room-input-published").write_text, root, encoding="utf-8"
+            )
         await _send_text(client, room_id, "Prime encrypted thread", root=root)
         await _next_reply(client, room_id, replies, "Matrix live reply", root)
-        await _send_text(client, room_id, "Watch the split answer", root=root)
+        intake_id = await _send_text(
+            client, room_id, "Watch the split answer", root=root
+        )
         chunks = [
             await _next_reply(
                 client, room_id, replies, f"{part} ({i + 1}/{len(parts)})", root
             )
             for i, part in enumerate(parts)
         ]
-        return {"root": root, "event_ids": [chunk.event_id for chunk in chunks]}
+        return {
+            "root": root,
+            "intake_id": intake_id,
+            "event_ids": [chunk.event_id for chunk in chunks],
+        }
     except BaseException:
         task_error = None
         if sync_task is not None and sync_task.done() and not sync_task.cancelled():

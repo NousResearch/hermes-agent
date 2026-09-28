@@ -35,14 +35,17 @@ def test_cli_create_stamps_only_verified_profile_session(kanban_home, monkeypatc
     parser = argparse.ArgumentParser()
     kc.build_parser(parser.add_subparsers())
     monkeypatch.setenv("HERMES_SESSION_ID", "origin-chat")
-    assert kc.kanban_command(parser.parse_args(["kanban", "create", "with-origin", "--json"])) == 0
+    assert kc.kanban_command(parser.parse_args([
+        "kanban", "create", "with-origin", "--created-by", "forged", "--json"])) == 0
     first = json.loads(capsys.readouterr().out)
     monkeypatch.setenv("HERMES_SESSION_ID", "foreign-or-missing")
     assert kc.kanban_command(parser.parse_args(["kanban", "create", "without-origin", "--json"])) == 0
     second = json.loads(capsys.readouterr().out)
     with kbc.connect_closing() as conn:
         assert kb.get_task(conn, first["id"]).session_id == "origin-chat"
+        assert kb.get_task(conn, first["id"]).created_by == "default"
         assert kb.get_task(conn, second["id"]).session_id is None
+        assert kb.get_task(conn, second["id"]).created_by == "user"
 
 
 # ---------------------------------------------------------------------------
@@ -260,4 +263,3 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-

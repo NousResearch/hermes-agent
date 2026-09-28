@@ -185,7 +185,7 @@ _SPECS = [
              help="Per-task runtime cap. Accepts seconds (300) or durations (90s, "
                   "30m, 2h, 1d). When exceeded, the dispatcher SIGTERMs (then "
                   "SIGKILLs) the worker and re-queues the task."),
-        _arg("--created-by", default="user", help="Author name recorded on the task (default: user)"),
+        _arg("--created-by", help="Author name for an operator-created task (default: user); session-bound turns use their profile"),
         _arg("--skill", action="append", default=[], dest="skills",
              help="Skill to force-load into the worker (repeatable). The kanban "
                   "lifecycle is already injected automatically. Example: --skill "

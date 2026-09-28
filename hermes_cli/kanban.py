@@ -378,11 +378,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    origin_session_id = _verified_origin_session_id()
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
-            created_by=args.created_by or _profile_author(),
-            session_id=_verified_origin_session_id(),
+            created_by=(_profile_author() if origin_session_id else (args.created_by or "user")),
+            session_id=origin_session_id,
             workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
             project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
             parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),

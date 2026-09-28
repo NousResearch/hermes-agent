@@ -407,6 +407,26 @@ def _parse_ssh_runtime_marker(payload: str) -> Optional[Tuple[int, Optional[floa
     return pid, create_time
 
 
+def _torn_ssh_runtime_marker_pid(payload: str, named_pid: Optional[str]) -> Optional[int]:
+    if named_pid is None:
+        return None
+    try:
+        pid = int(named_pid)
+    except ValueError:
+        return None
+    expected_pid_line = f"pid={named_pid}\n"
+    if expected_pid_line.startswith(payload):
+        return pid
+    if not payload.startswith(expected_pid_line):
+        return None
+    create_time_prefix = payload[len(expected_pid_line) :]
+    if "create_time=".startswith(create_time_prefix) or re.fullmatch(
+        r"create_time=[0-9]+\.", create_time_prefix
+    ):
+        return pid
+    return None
+
+
 def _sweep_dead_ssh_runtime_markers(purelib: str) -> None:
     try:
         with os.scandir(purelib) as entries:
@@ -423,18 +443,15 @@ def _sweep_dead_ssh_runtime_markers(purelib: str) -> None:
                     continue
                 identity = _parse_ssh_runtime_marker(payload)
                 if identity is None:
-                    # Only an empty file can be residue from a crash between
-                    # exclusive creation and payload write. Non-empty malformed
-                    # payloads have no trustworthy owner identity, so keep them.
-                    if payload:
+                    # A crash during the single payload write can leave a strict
+                    # prefix. Trust the filename only when that prefix agrees
+                    # with its exact PID; preserve every other malformed file.
+                    torn_pid = _torn_ssh_runtime_marker_pid(
+                        payload, name_match.group("pid")
+                    )
+                    if torn_pid is None:
                         continue
-                    named_pid = name_match.group("pid")
-                    if named_pid is None:
-                        continue
-                    try:
-                        identity = int(named_pid), None
-                    except ValueError:
-                        continue
+                    identity = torn_pid, None
                 pid, create_time = identity
                 try:
                     alive = _pid_alive_matches(

@@ -359,6 +359,33 @@ def test_ssh_runtime_marker_sweep_removes_empty_crash_residue_for_dead_named_pid
     assert not marker.exists()
 
 
+def test_ssh_runtime_marker_sweep_removes_torn_prefixes_for_dead_named_pid(
+    tmp_path,
+):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    exited = subprocess.Popen([sys.executable, "-c", "pass"])
+    exited.wait(timeout=10)
+    assert exited.returncode == 0
+    payloads = (
+        "pid=",
+        f"pid={exited.pid}",
+        f"pid={exited.pid}\ncreate_time=",
+        f"pid={exited.pid}\ncreate_time=17.",
+    )
+    markers = []
+    for index, payload in enumerate(payloads):
+        marker = purelib / (
+            f".hermes-ssh-runtime-fedcba9876543210-{exited.pid}-{index:016x}"
+        )
+        marker.write_text(payload, encoding="utf-8")
+        markers.append(marker)
+
+    web_server._sweep_dead_ssh_runtime_markers(str(purelib))
+
+    assert not any(marker.exists() for marker in markers)
+
+
 def test_ssh_runtime_marker_sweep_skips_pid_too_large_to_parse(tmp_path):
     purelib = tmp_path / "site-packages"
     purelib.mkdir()

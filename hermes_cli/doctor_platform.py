@@ -544,6 +544,8 @@ def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
             [sys.executable, "-c", "import hermes_cli.web_server"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120,
             cwd=str(PROJECT_ROOT),
             env=env,

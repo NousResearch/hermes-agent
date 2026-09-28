@@ -268,6 +268,8 @@ def _install_configured_features_missing_deps(project_root: Path) -> None:
     from pm.features import declared_extras
 
     missing = _configured_features_missing_deps()
+    if not missing:
+        return
     declared = set(declared_extras(project_root))
     extras = sorted({extra for *_, name in missing
                      if (extra := name.replace("_", "-")) in declared and extra_supported(extra)})

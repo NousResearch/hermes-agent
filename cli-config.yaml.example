@@ -1831,9 +1831,9 @@ display:
   #   verbose: Full args, results, and debug logs (same as /verbose)
   #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
-  # An explicit value here is also the TUI/Desktop feed's own switch: with
-  # display.show_reasoning off (answer-only), stating tool_progress keeps the
-  # execution flow visible without showing thinking.
+  # Independent of show_reasoning: hiding reasoning never hides tool rows.
+  # Answer-only (just the final response) is show_reasoning: false plus
+  # tool_progress: off.
   # tool_progress: all
 
   # tool_progress, interim_assistant_messages, long_running_notifications,

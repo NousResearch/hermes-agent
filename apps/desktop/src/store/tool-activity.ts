@@ -1,30 +1,20 @@
-/**
- * Effective visibility of the transcript's tool feed (rows + run scaffold).
- *
- * Mirrors the gateway gate `_process_tool_chrome_enabled` (tui_gateway/server.py):
- * the feed follows `display.tool_progress`; when the user never stated a feed
- * preference, the answer-only default of `display.show_reasoning: false` still
- * hides it. An explicit `display.tool_progress` overrides that hiding — `off`
- * always silences the feed — so "execution flow without thinking" is expressible
- * (siblings: reasoning-disclosure.ts, display-timestamps.ts).
- */
-import { atom, computed } from 'nanostores'
+import { atom } from 'nanostores'
 
-import { $showReasoning } from '@/store/reasoning-disclosure'
+// Mirrors `display.tool_progress`, independent of `display.show_reasoning`:
+// hiding thinking must not hide the work. Answer-only is both keys off.
+// Parsing matches the gateway's `_load_tool_progress_mode` so the renderer and
+// the event stream agree: only false / "off" silence tool rows; every other
+// mode (all, new, verbose, unknown, missing) keeps them on.
+export const $showToolActivity = atom(true)
 
-/** `display.tool_progress` parses to off (a bare YAML `off` reaches us as false). */
-const $toolProgressOff = atom(false)
+export function toolProgressVisible(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value
+  }
 
-/** `display.tool_progress` is present in the config — the user stated a feed preference. */
-const $toolProgressExplicit = atom(false)
-
-export const $showToolActivity = computed(
-  [$showReasoning, $toolProgressOff, $toolProgressExplicit],
-  (showReasoning, progressOff, progressExplicit): boolean =>
-    !progressOff && (showReasoning || progressExplicit)
-)
+  return !(typeof value === 'string' && value.trim().toLowerCase() === 'off')
+}
 
 export function setShowToolActivityFromConfig(value: unknown): void {
-  $toolProgressOff.set(value === false || (typeof value === 'string' && value.trim().toLowerCase() === 'off'))
-  $toolProgressExplicit.set(value !== undefined)
+  $showToolActivity.set(toolProgressVisible(value))
 }

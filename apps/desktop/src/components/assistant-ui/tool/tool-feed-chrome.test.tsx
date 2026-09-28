@@ -80,8 +80,8 @@ function Harness() {
 }
 
 // Drive the gateway's own tool.complete event through the message stream (the
-// store Desktop renders from), then render what it produced. Answer-only
-// suppresses tool.start, so the completion arrives on its own, and its failure
+// store Desktop renders from), then render what it produced. With
+// display.tool_progress off the gateway suppresses tool.start, so the completion arrives on its own, and its failure
 // sits inside `result`: nothing hand-sets isError on the part.
 function completionHarness(payload: Record<string, unknown>) {
   const stream = renderMessageStream(SID)
@@ -116,8 +116,9 @@ afterEach(() => {
 })
 
 describe('tool feed visibility policy', () => {
-  it('hides reasoning and non-essential tool chrome without requiring reasoning_effort none', async () => {
+  it('answer-only (both switches off) hides reasoning and non-essential tool chrome', async () => {
     setShowReasoningFromConfig(false)
+    setShowToolActivityFromConfig('off')
     setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'dangerous command', sessionId: SID })
 
     const { container } = render(<Harness />)
@@ -129,9 +130,10 @@ describe('tool feed visibility policy', () => {
     expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(1)
   })
 
-  it('keeps the execution flow while reasoning stays hidden when display.tool_progress is stated', async () => {
+  it('keeps the execution flow while reasoning stays hidden', async () => {
+    // Regression for #121524: hiding reasoning hid every tool row. A missing
+    // display.tool_progress means on, whatever show_reasoning says.
     setShowReasoningFromConfig(false)
-    setShowToolActivityFromConfig('all')
 
     const { container } = render(<Harness />)
 
@@ -162,8 +164,9 @@ describe('tool feed visibility policy', () => {
 
   it('keeps a failed call whose error sits inside result, from a real tool.complete payload', async () => {
     // The gateway's tool.complete never sets a top-level error: a read_file
-    // failure rides inside result. The answer-only gate must still show it.
+    // failure rides inside result. The tool-feed gate must still show it.
     setShowReasoningFromConfig(false)
+    setShowToolActivityFromConfig('off')
 
     const { container } = render(
       completionHarness({
@@ -181,6 +184,7 @@ describe('tool feed visibility policy', () => {
 
   it('keeps a failed terminal call with a non-zero exit_code, from a real tool.complete payload', async () => {
     setShowReasoningFromConfig(false)
+    setShowToolActivityFromConfig('off')
 
     const { container } = render(
       completionHarness({
@@ -197,6 +201,7 @@ describe('tool feed visibility policy', () => {
 
   it('keeps a call that reports success: false, from a real tool.complete payload', async () => {
     setShowReasoningFromConfig(false)
+    setShowToolActivityFromConfig('off')
 
     const { container } = render(
       completionHarness({
@@ -214,6 +219,7 @@ describe('tool feed visibility policy', () => {
 
   it('still hides a successful call driven through the same tool.complete mapping', async () => {
     setShowReasoningFromConfig(false)
+    setShowToolActivityFromConfig('off')
 
     const { container } = render(
       completionHarness({

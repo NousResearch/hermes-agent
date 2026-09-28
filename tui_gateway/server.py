@@ -1853,21 +1853,6 @@ def _load_tool_progress_mode() -> str:
     return mode if mode in _TOOL_PROGRESS_MODES else "all"
 
 
-def _tool_progress_explicit() -> bool:
-    """True when the user stated a tool-feed preference themselves.
-
-    ``display.tool_progress`` has no registered default, so its presence in the
-    behavioral config means the user wrote it; ``HERMES_TUI_TOOL_PROGRESS`` counts
-    too. An explicit feed setting overrides the chrome hiding that
-    ``display.show_reasoning: false`` (answer-only) otherwise implies — the same
-    split the classic CLI has, where the feed follows tool_progress and thinking
-    follows show_reasoning."""
-    env = os.environ.get("HERMES_TUI_TOOL_PROGRESS", "").strip().lower()
-    if env in _TOOL_PROGRESS_MODES:
-        return True
-    return "tool_progress" in _display_cfg()
-
-
 def _gui_surface_toolsets(platform: str) -> set[str]:
     """Toolsets that exist because of the CLIENT (both off ``_HERMES_CORE_TOOLS``; this is the one gate).
     ``platform`` is the SESSION's source, never a process env var: the desktop may drive a URL/cloud
@@ -2023,23 +2008,11 @@ def _session_show_reasoning(sid: str) -> bool:
     return _load_show_reasoning()
 
 
-def _process_tool_chrome_enabled(sid: str) -> bool:
-    """Non-essential tool rows: off when the feed is off; answer-only hides them
-    only by default. ``display.show_reasoning: false`` keeps the process chrome
-    hidden unless the user gave the tool feed its own explicit setting
-    (`_tool_progress_explicit`), so "execution flow without thinking" is
-    expressible — the CLI split — without reopening the answer-only default for
-    configs that never stated a feed preference."""
-    if not _tool_progress_enabled(sid):
-        return False
-    return _session_show_reasoning(sid) or _tool_progress_explicit()
-
-
 def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
-# Names whose lifecycle a UI renders as a card even in answer-only mode. `isCardTool` /
+# Names whose lifecycle a UI renders as a card even with display.tool_progress off. `isCardTool` /
 # `isFileEditTool` in apps/desktop/src/lib/tool-render-class.ts must stay in sync with this
 # set (test_gateway_lifecycle_set_covers_desktop_card_tools pins the direction that matters).
 _TOOL_LIFECYCLE_UI_TOOLS = frozenset({

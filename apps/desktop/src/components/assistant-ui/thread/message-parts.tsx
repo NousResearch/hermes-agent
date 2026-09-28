@@ -81,7 +81,7 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
 // failure inside `result`, never as the top-level error that sets isError, so
 // this reads the body like the run summary does. A non-zero exit_code counts
 // too, matching the gateway's _tool_result_needs_user, which forwards terminal
-// {output, exit_code: 1, error: null} in answer-only mode.
+// {output, exit_code: 1, error: null} even with display.tool_progress off.
 const failedCallNeedsUser = (part: TimelineToolCallProps): boolean => {
   const exitCode = parseMaybeObject(part.result).exit_code
 
@@ -155,10 +155,9 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return <ConnectorExecution {...props} />
   }
 
-  // The tool feed (reads, searches, commands) follows display.tool_progress;
-  // answer-only hides it only until the user states a feed preference. Cards,
-  // approvals, and failed calls the user must act on remain regardless, and
-  // reasoning_effort is not a display switch.
+  // The tool feed (reads, searches, commands) follows display.tool_progress,
+  // never show_reasoning. Cards, approvals, and failed calls the user must act
+  // on remain regardless.
   if (!showToolActivity && !failedCallNeedsUser(props) && !isCardTool(props.toolName)) {
     return null
   }

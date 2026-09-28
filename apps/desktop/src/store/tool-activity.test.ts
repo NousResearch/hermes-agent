@@ -1,54 +1,31 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
-import { $showToolActivity, setShowToolActivityFromConfig } from '@/store/tool-activity'
+import { $showToolActivity, setShowToolActivityFromConfig, toolProgressVisible } from '@/store/tool-activity'
 
-describe('tool feed visibility (display.tool_progress × display.show_reasoning)', () => {
+describe('tool feed visibility follows display.tool_progress only', () => {
   beforeEach(() => {
     setShowReasoningFromConfig(true)
     setShowToolActivityFromConfig(undefined)
   })
 
-  it('shows the feed by default', () => {
-    expect($showToolActivity.get()).toBe(true)
+  it('silences the feed only for false or "off"', () => {
+    for (const off of [false, 'off', ' OFF ']) {
+      expect(toolProgressVisible(off)).toBe(false)
+    }
+
+    for (const on of [true, 'all', 'new', 'verbose', 'unknown', undefined, null]) {
+      expect(toolProgressVisible(on)).toBe(true)
+    }
   })
 
-  it('hides the feed under the answer-only default (no stated feed preference)', () => {
+  it('does not follow show_reasoning', () => {
     setShowReasoningFromConfig(false)
-
-    expect($showToolActivity.get()).toBe(false)
-  })
-
-  it('keeps the feed when the preference is stated, even with reasoning hidden', () => {
-    setShowReasoningFromConfig(false)
-
-    setShowToolActivityFromConfig('all')
+    setShowToolActivityFromConfig(undefined)
     expect($showToolActivity.get()).toBe(true)
 
-    setShowToolActivityFromConfig('verbose')
-    expect($showToolActivity.get()).toBe(true)
-  })
-
-  it('treats a bare YAML off (false) and "off" as silenced', () => {
-    setShowToolActivityFromConfig(false)
-    expect($showToolActivity.get()).toBe(false)
-
-    setShowToolActivityFromConfig(' OFF ')
-    expect($showToolActivity.get()).toBe(false)
-  })
-
-  it('silences the feed on an explicit off even when reasoning blocks are on', () => {
+    setShowReasoningFromConfig(true)
     setShowToolActivityFromConfig('off')
-
     expect($showToolActivity.get()).toBe(false)
-  })
-
-  it('counts a present-but-null key as a stated preference, like the gateway', () => {
-    // The gateway reads `tool_progress: <empty>` as written-but-all; the client
-    // mirrors presence, not truthiness.
-    setShowReasoningFromConfig(false)
-    setShowToolActivityFromConfig(null)
-
-    expect($showToolActivity.get()).toBe(true)
   })
 })

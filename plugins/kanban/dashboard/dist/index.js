@@ -3534,16 +3534,94 @@
   // Task drawer
   // -------------------------------------------------------------------------
 
-  function TaskDrawer(props) {
+  // The modal's header: id, status dot, actions menu, close, and the
+  // click-to-edit title (always mounted as the dialog's accessible name).
+  function TaskModalHeader(props) {
     const { t } = useI18n();
-    const [data, setData] = useState(null);
-    const [loading, setLoading] = useState(true);
-    const [err, setErr] = useState(null);
-    // Surface PATCH failures (e.g. 409 "parent not done") right next to
-    // the drawer's action row — without it, the drawer's only error
-    // surface (``err``) is hidden behind the loaded ``data`` and the
-    // Ready/Block/Complete buttons feel like no-ops.  See #26744.
-    const [patchErr, setPatchErr] = useState(null);
+    const task = props.task;
+    const [editing, setEditing] = useState(false);
+    const titleText = task
+      ? (task.title || tx(t, "untitled", "(untitled)"))
+      : props.taskId;
+
+    // The header menu's actions. The toast is mounted from inside the dialog
+    // so it portals after the modal and stays above its overlay.
+    const { showToast, toast } = useToast();
+    const copyText = function (text, okMsg) {
+      const failed = function () { showToast(tx(t, "copyFailed", "Copy failed"), "error"); };
+      try {
+        const p = navigator.clipboard && navigator.clipboard.writeText(text);
+        if (!p || !p.then) { failed(); return; }
+        p.then(function () { showToast(okMsg, "success"); }, failed);
+      } catch (_) { failed(); }
+    };
+    // Board's deleteTask owns the confirm, the DELETE and the selection
+    // cleanup; the modal only closes once the task is actually gone.
+    const deleteThisTask = function () {
+      if (!props.onDeleteTask) return;
+      props.onDeleteTask(props.taskId, { quiet: true }).then(function (res) {
+        if (res && res.deleted) props.onClose();
+        else if (res && res.error) showToast(parseApiErrorMessage(res.error), "error");
+      });
+    };
+
+    return h(React.Fragment, null,
+      h(Toast, { toast: toast }),
+      h("div", { className: "hermes-kanban-drawer-head" },
+        h("div", { className: "hermes-kanban-drawer-head-row" },
+          task ? h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[task.status]) }) : null,
+          h("span", { className: "hermes-kanban-drawer-id" }, props.taskId),
+          task
+            ? h(TaskActionsMenu, {
+                task: task,
+                onCopy: copyText,
+                onArchive: function () {
+                  return props.onPatch({ status: "archived" }, {
+                    confirm: getDestructiveConfirm(t, "archived"),
+                    confirmLabel: tx(t, "archive", "Archive"),
+                    destructive: true,
+                  });
+                },
+                onDelete: deleteThisTask,
+              })
+            : null,
+          h(DialogClose, {
+            className: "hermes-kanban-drawer-close",
+            "aria-label": tx(t, "close", "Close (Esc)"),
+          }, "×"),
+        ),
+        editing && task
+          ? h(TitleEditor, {
+              initial: task.title || "",
+              onSave: function (newTitle) {
+                return props.onPatch({ title: newTitle }).then(function () { setEditing(false); });
+              },
+              onCancel: function () { setEditing(false); },
+            })
+          : null,
+        // Always mounted: it is the dialog's accessible name, visually
+        // hidden while the title editor replaces it.
+        h(DialogTitle, {
+          className: cn("hermes-kanban-drawer-title", editing && task ? "hermes-kanban-sr-only" : ""),
+        },
+          task
+            ? h("span", {
+                className: "hermes-kanban-drawer-title-text",
+                title: tx(t, "clickToEdit", "Click to edit"),
+                onClick: function () { setEditing(true); },
+              }, titleText)
+            : titleText,
+        ),
+      ),
+    );
+  }
+
+  // The comment box under the task: a growing textarea with an inset send
+  // button (Enter sends, Shift+Enter adds a line) and, while the task runs,
+  // "Requeue with note".
+  function CommentComposer(props) {
+    const { t } = useI18n();
+    const running = props.running;
     const [newComment, setNewComment] = useState("");
     // Outcome of "Requeue with note" on a running task ({ok, text}).
     const [composerMsg, setComposerMsg] = useState(null);
@@ -3557,9 +3635,146 @@
       return true;
     };
     const endSend = function () { sendingRef.current = false; setSending(false); };
+    const commentPlaceholder = running
+      ? tx(t, "messageWorker", "Message the running worker…")
+      : tx(t, "addComment", "Add a comment… (Enter to submit)");
+
+    const postComment = function (body) {
+      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, props.boardSlug), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body }),
+      }).then(function () { setNewComment(""); });
+    };
+
+    const handleComment = function () {
+      const body = newComment.trim();
+      if (!body || !beginSend()) return;
+      postComment(body).then(props.onSent)
+        .catch(function (e) { props.onError(String(e.message || e)); })
+        .finally(endSend);
+    };
+
+    // A running worker folds new comments into its live turn,
+    // so a plain comment is the light touch. "Requeue with note" is the
+    // heavy one: post the note, then reclaim so the task restarts from
+    // scratch with the note in context.
+    const handleRequeue = function () {
+      const body = newComment.trim();
+      if (!body || !beginSend()) return;
+      setComposerMsg(null);
+      let posted = false;
+      postComment(body).then(function () {
+        posted = true;
+        return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/reclaim`, props.boardSlug), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: "requeued with a note" }),
+        });
+      }).then(function () {
+        setComposerMsg({ ok: true, text: tx(t, "notePosted", "Note posted — worker requeued") });
+      }).catch(function (e) {
+        const reason = parseApiErrorMessage(e);
+        setComposerMsg({
+          ok: false,
+          text: posted
+            ? tx(t, "notePostedRequeueFailed", "Note posted, but requeue failed: {reason}", { reason: reason })
+            : reason,
+        });
+      }).then(function () {
+        endSend();
+        props.onSent();
+      });
+    };
+
+    return h("div", { className: "hermes-kanban-drawer-comment-foot" },
+      h("div", {
+        className: "hermes-kanban-comment-hint text-xs text-muted-foreground",
+        title: running
+          ? tx(t, "commentsHelpRunning",
+              "This task is running. Your note is folded into the worker's current turn within a few seconds — no block/unblock dance. \u201cRequeue with note\u201d instead restarts the task from scratch with your note in context.")
+          : tx(t, "commentHintTitle",
+              "Comments are the channel for talking to a task's worker. They land on the thread immediately — no need to block the task first. A running worker picks the thread up on its next kanban_show() or respawn; blocking is only for when you want the worker to STOP and wait for your input."),
+      },
+        "ⓘ ",
+        running
+          ? tx(t, "deliveredLive", "Delivered to the running worker within a few seconds.")
+          : tx(t, "commentHint",
+              "Comments reach the worker on its next run or kanban_show() — no need to block the task first."),
+      ),
+      // Like the desktop CommentComposer: a growing textarea with a
+      // ghost arrow-up send button inset top-right, rather than a
+      // labelled button beside a one-line input. Enter sends,
+      // Shift+Enter adds a line.
+      h("div", { className: "hermes-kanban-drawer-comment-row" },
+        h("div", { className: "hermes-kanban-comment-field" },
+          h("textarea", {
+            value: newComment,
+            rows: 1,
+            className: SDK_INPUT_CN,
+            "aria-label": commentPlaceholder,
+            onChange: function (e) { setNewComment(e.target.value); },
+            onKeyDown: function (e) {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault(); handleComment();
+              }
+            },
+            placeholder: commentPlaceholder,
+          }),
+          h(Button, {
+            ghost: true,
+            size: "xs",
+            type: "button",
+            className: "hermes-kanban-comment-send",
+            "aria-label": running ? tx(t, "send", "Send") : tx(t, "comment", "Comment"),
+            disabled: sending || !newComment.trim(),
+            onClick: handleComment,
+          }, h("svg", {
+            viewBox: "0 0 16 16", width: 14, height: 14, fill: "none",
+            stroke: "currentColor", strokeWidth: 1.5,
+            strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true,
+          }, h("path", { d: "M8 13V3M3.5 7.5 8 3l4.5 4.5" }))),
+        ),
+      ),
+      running || composerMsg
+        ? h("div", { className: "hermes-kanban-comment-requeue" },
+            composerMsg
+              ? h("span", {
+                  className: cn("hermes-kanban-diag-msg",
+                    composerMsg.ok ? "hermes-kanban-diag-msg--ok" : "hermes-kanban-diag-msg--err"),
+                  role: "status",
+                }, composerMsg.text)
+              : h("span"),
+            running
+              ? h(Button, {
+                  size: "sm",
+                  outlined: true,
+                  type: "button",
+                  disabled: sending || !newComment.trim(),
+                  onClick: handleRequeue,
+                  title: tx(t, "requeueWithNoteTitle",
+                    "Post the note, then reclaim the task so it restarts from scratch with the note in context."),
+                }, sending
+                  ? tx(t, "requeuing", "Requeuing…")
+                  : tx(t, "requeueWithNote", "Requeue with note"))
+              : null,
+          )
+        : null,
+    );
+  }
+
+  function TaskDrawer(props) {
+    const { t } = useI18n();
+    const [data, setData] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [err, setErr] = useState(null);
+    // Surface PATCH failures (e.g. 409 "parent not done") right next to
+    // the drawer's action row — without it, the drawer's only error
+    // surface (``err``) is hidden behind the loaded ``data`` and the
+    // Ready/Block/Complete buttons feel like no-ops.  See #26744.
+    const [patchErr, setPatchErr] = useState(null);
     const [uploadBusy, setUploadBusy] = useState(false);
     const [uploadErr, setUploadErr] = useState(null);
-    const [editing, setEditing] = useState(false);
     // Home-channel notification toggles. homeChannels is the list of platforms
     // the user has a /sethome on; each entry has a `subscribed` bool telling
     // us whether this task is currently subscribed via that platform's home.
@@ -3596,57 +3811,6 @@
         .then(function (o) { setDefaultAssignee(((o && o.default_assignee) || "").trim()); })
         .catch(function () { setDefaultAssignee(""); /* warning falls back to showing */ });
     }, []);
-
-    const postComment = function (body) {
-      return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/comments`, boardSlug), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body }),
-      }).then(function () { setNewComment(""); });
-    };
-
-    const handleComment = function () {
-      const body = newComment.trim();
-      if (!body || !beginSend()) return;
-      postComment(body).then(function () {
-        load();
-        props.onRefresh();
-      }).catch(function (e) { setErr(String(e.message || e)); })
-        .finally(endSend);
-    };
-
-    // A running worker folds new comments into its live turn,
-    // so a plain comment is the light touch. "Requeue with note" is the
-    // heavy one: post the note, then reclaim so the task restarts from
-    // scratch with the note in context.
-    const handleRequeue = function () {
-      const body = newComment.trim();
-      if (!body || !beginSend()) return;
-      setComposerMsg(null);
-      let posted = false;
-      postComment(body).then(function () {
-        posted = true;
-        return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/reclaim`, boardSlug), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reason: "requeued with a note" }),
-        });
-      }).then(function () {
-        setComposerMsg({ ok: true, text: tx(t, "notePosted", "Note posted — worker requeued") });
-      }).catch(function (e) {
-        const reason = parseApiErrorMessage(e);
-        setComposerMsg({
-          ok: false,
-          text: posted
-            ? tx(t, "notePostedRequeueFailed", "Note posted, but requeue failed: {reason}", { reason: reason })
-            : reason,
-        });
-      }).then(function () {
-        endSend();
-        load();
-        props.onRefresh();
-      });
-    };
 
     // File upload uses raw fetch (not SDK.fetchJSON, which JSON-encodes)
     // so the browser sets the multipart boundary. Auth rides the session
@@ -3867,33 +4031,6 @@
 
     const task = data && data.task;
     const running = !!task && task.status === "running";
-    const commentPlaceholder = running
-      ? tx(t, "messageWorker", "Message the running worker…")
-      : tx(t, "addComment", "Add a comment… (Enter to submit)");
-    const titleText = task
-      ? (task.title || tx(t, "untitled", "(untitled)"))
-      : props.taskId;
-
-    // The header menu's actions. The toast is mounted from inside the dialog
-    // so it portals after the modal and stays above its overlay.
-    const { showToast, toast } = useToast();
-    const copyText = function (text, okMsg) {
-      const failed = function () { showToast(tx(t, "copyFailed", "Copy failed"), "error"); };
-      try {
-        const p = navigator.clipboard && navigator.clipboard.writeText(text);
-        if (!p || !p.then) { failed(); return; }
-        p.then(function () { showToast(okMsg, "success"); }, failed);
-      } catch (_) { failed(); }
-    };
-    // Board's deleteTask owns the confirm, the DELETE and the selection
-    // cleanup; the modal only closes once the task is actually gone.
-    const deleteThisTask = function () {
-      if (!props.onDeleteTask) return;
-      props.onDeleteTask(props.taskId, { quiet: true }).then(function (res) {
-        if (res && res.deleted) props.onClose();
-        else if (res && res.error) showToast(parseApiErrorMessage(res.error), "error");
-      });
-    };
 
     // Radix listens for Esc on the document in the capture phase, before any
     // field's own onKeyDown, so an editor cannot stopPropagation its way out.
@@ -3922,53 +4059,13 @@
         "aria-describedby": undefined,
         onEscapeKeyDown: onEscapeKeyDown,
       },
-        h(Toast, { toast: toast }),
-        h("div", { className: "hermes-kanban-drawer-head" },
-          h("div", { className: "hermes-kanban-drawer-head-row" },
-            task ? h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[task.status]) }) : null,
-            h("span", { className: "hermes-kanban-drawer-id" }, props.taskId),
-            task
-              ? h(TaskActionsMenu, {
-                  task: task,
-                  onCopy: copyText,
-                  onArchive: function () {
-                    return doPatch({ status: "archived" }, {
-                      confirm: getDestructiveConfirm(t, "archived"),
-                      confirmLabel: tx(t, "archive", "Archive"),
-                      destructive: true,
-                    });
-                  },
-                  onDelete: deleteThisTask,
-                })
-              : null,
-            h(DialogClose, {
-              className: "hermes-kanban-drawer-close",
-              "aria-label": tx(t, "close", "Close (Esc)"),
-            }, "×"),
-          ),
-          editing && task
-            ? h(TitleEditor, {
-                initial: task.title || "",
-                onSave: function (newTitle) {
-                  return doPatch({ title: newTitle }).then(function () { setEditing(false); });
-                },
-                onCancel: function () { setEditing(false); },
-              })
-            : null,
-          // Always mounted: it is the dialog's accessible name, visually
-          // hidden while the title editor replaces it.
-          h(DialogTitle, {
-            className: cn("hermes-kanban-drawer-title", editing && task ? "hermes-kanban-sr-only" : ""),
-          },
-            task
-              ? h("span", {
-                  className: "hermes-kanban-drawer-title-text",
-                  title: tx(t, "clickToEdit", "Click to edit"),
-                  onClick: function () { setEditing(true); },
-                }, titleText)
-              : titleText,
-          ),
-        ),
+        h(TaskModalHeader, {
+          taskId: props.taskId,
+          task: task,
+          onPatch: doPatch,
+          onDeleteTask: props.onDeleteTask,
+          onClose: props.onClose,
+        }),
         loading ? h("div", { className: "p-4 text-sm text-muted-foreground" },
           tx(t, "loadingDetail", "Loading…")) :
         err ? h("div", { className: "p-4 text-sm text-destructive" }, err) :
@@ -4000,80 +4097,13 @@
                     requestDialog: props.requestDialog,
           defaultAssignee: defaultAssignee,
         }) : null,
-        data ? h("div", { className: "hermes-kanban-drawer-comment-foot" },
-          h("div", {
-            className: "hermes-kanban-comment-hint text-xs text-muted-foreground",
-            title: running
-              ? tx(t, "commentsHelpRunning",
-                  "This task is running. Your note is folded into the worker's current turn within a few seconds — no block/unblock dance. \u201cRequeue with note\u201d instead restarts the task from scratch with your note in context.")
-              : tx(t, "commentHintTitle",
-                  "Comments are the channel for talking to a task's worker. They land on the thread immediately — no need to block the task first. A running worker picks the thread up on its next kanban_show() or respawn; blocking is only for when you want the worker to STOP and wait for your input."),
-          },
-            "ⓘ ",
-            running
-              ? tx(t, "deliveredLive", "Delivered to the running worker within a few seconds.")
-              : tx(t, "commentHint",
-                  "Comments reach the worker on its next run or kanban_show() — no need to block the task first."),
-          ),
-          // Like the desktop CommentComposer: a growing textarea with a
-          // ghost arrow-up send button inset top-right, rather than a
-          // labelled button beside a one-line input. Enter sends,
-          // Shift+Enter adds a line.
-          h("div", { className: "hermes-kanban-drawer-comment-row" },
-            h("div", { className: "hermes-kanban-comment-field" },
-              h("textarea", {
-                value: newComment,
-                rows: 1,
-                className: SDK_INPUT_CN,
-                "aria-label": commentPlaceholder,
-                onChange: function (e) { setNewComment(e.target.value); },
-                onKeyDown: function (e) {
-                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault(); handleComment();
-                  }
-                },
-                placeholder: commentPlaceholder,
-              }),
-              h(Button, {
-                ghost: true,
-                size: "xs",
-                type: "button",
-                className: "hermes-kanban-comment-send",
-                "aria-label": running ? tx(t, "send", "Send") : tx(t, "comment", "Comment"),
-                disabled: sending || !newComment.trim(),
-                onClick: handleComment,
-              }, h("svg", {
-                viewBox: "0 0 16 16", width: 14, height: 14, fill: "none",
-                stroke: "currentColor", strokeWidth: 1.5,
-                strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true,
-              }, h("path", { d: "M8 13V3M3.5 7.5 8 3l4.5 4.5" }))),
-            ),
-          ),
-          running || composerMsg
-            ? h("div", { className: "hermes-kanban-comment-requeue" },
-                composerMsg
-                  ? h("span", {
-                      className: cn("hermes-kanban-diag-msg",
-                        composerMsg.ok ? "hermes-kanban-diag-msg--ok" : "hermes-kanban-diag-msg--err"),
-                      role: "status",
-                    }, composerMsg.text)
-                  : h("span"),
-                running
-                  ? h(Button, {
-                      size: "sm",
-                      outlined: true,
-                      type: "button",
-                      disabled: sending || !newComment.trim(),
-                      onClick: handleRequeue,
-                      title: tx(t, "requeueWithNoteTitle",
-                        "Post the note, then reclaim the task so it restarts from scratch with the note in context."),
-                    }, sending
-                      ? tx(t, "requeuing", "Requeuing…")
-                      : tx(t, "requeueWithNote", "Requeue with note"))
-                  : null,
-              )
-            : null,
-        ) : null,
+        data ? h(CommentComposer, {
+          taskId: props.taskId,
+          boardSlug: boardSlug,
+          running: running,
+          onError: setErr,
+          onSent: function () { load(); props.onRefresh(); },
+        }) : null,
       ),
     );
   }

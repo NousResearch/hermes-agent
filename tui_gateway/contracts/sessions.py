@@ -312,7 +312,7 @@ class SessionSetHiddenParams(Params):
     """``session_id`` is a live runtime id first, else a stored id / key / title."""
 
     session_id: str
-    hidden: bool = True
+    hidden: bool
     profile: str | None = None
 
 

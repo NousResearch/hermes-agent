@@ -215,10 +215,24 @@ def _joined_output(r) -> str:
     return "\n".join(p for p in (r.stdout or "", r.stderr or "") if p).strip()
 
 
+def _session_toolsets(session) -> tuple:
+    """``(enabled, disabled)`` a session's read-back RPCs must reflect: the live agent's sets once built,
+    else what that session's profile would build with — ``_load_enabled_toolsets`` under the session's
+    profile scope, the same read ``_build_agent``/``_refresh_live_sessions`` make and the key
+    ``profiles.configure`` pins. A session whose agent is not built yet (``session.create`` with no
+    prompt) otherwise read back as "everything enabled" (#117977). ``None`` = all toolsets.
+    No session → the launch profile's config."""
+    agent = session.get("agent") if session else None
+    if agent is not None:
+        return getattr(agent, "enabled_toolsets", None), getattr(agent, "disabled_toolsets", None)
+    with _session_profile_runtime_scope(session or {}):
+        return _load_enabled_toolsets(_resolve_agent_platform(_session_source(session))), _load_disabled_toolsets()
+
+
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
     toolsets = _tools_mod("toolsets")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = set((getattr(session["agent"], "enabled_toolsets", []) if session else _load_enabled_toolsets()) or [])
+    enabled = set(_session_toolsets(session)[0] or [])
     items = []
     for name in sorted(toolsets.get_all_toolsets().keys()):
         if info := toolsets.get_toolset_info(name):
@@ -1177,8 +1191,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     mt = _tools_mod("model_tools")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
-    disabled = getattr(session["agent"], "disabled_toolsets", None) if session else _load_disabled_toolsets()
+    enabled, disabled = _session_toolsets(session)
     # Pre-assembly list: /tools must also show tools deferred behind the tool_search bridge (as the CLI).
     tools = mt.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True,
                                     skip_tool_search_assembly=True)

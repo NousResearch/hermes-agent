@@ -23,7 +23,12 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { activeGatewayConnectionId, requestGatewayForAgent, requestGatewayForProfile, retainGatewayForAgent } from '@/store/gateway'
+import {
+  activeGatewayConnectionId,
+  requestGatewayForAgent,
+  requestGatewayForProfile,
+  retainGatewayForAgent
+} from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
 import {
   $activeGatewayProfile,

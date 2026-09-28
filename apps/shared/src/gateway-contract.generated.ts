@@ -3057,7 +3057,7 @@ export interface SessionTitleResult {
 /** ``session_id`` is a live runtime id first, else a stored id / key / title. */
 export interface SessionSetHiddenParams {
   session_id: string
-  hidden?: boolean
+  hidden: boolean
   profile?: string | null
 }
 export interface SessionSetHiddenResult {

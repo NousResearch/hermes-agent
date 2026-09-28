@@ -4,34 +4,63 @@ The cap counts one direction of one thread. A person mentioning the bot
 resets it. A different thread is a different count.
 """
 
+import importlib
 import sys
+from importlib.machinery import PathFinder
+from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import PlatformConfig
 
+# Only stub a Slack dependency when it is genuinely absent. A stub left in the
+# shared module table makes later test files import the fake, so restore the
+# real package (or drop the stub) once this file is done.
+_STUBBED = []
+
+
+def _real_package(name):
+    if PathFinder.find_spec(name) is None:
+        return None
+    prefix = f"{name}."
+    for module_name in tuple(sys.modules):
+        if module_name == name or module_name.startswith(prefix):
+            if not isinstance(sys.modules[module_name], ModuleType):
+                sys.modules.pop(module_name)
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        return None
+
 
 def _ensure_slack_mock():
-    if "slack_bolt" in sys.modules and hasattr(sys.modules["slack_bolt"], "__file__"):
-        return
-    slack_bolt = MagicMock()
-    slack_bolt.async_app.AsyncApp = MagicMock
-    slack_bolt.adapter.socket_mode.async_handler.AsyncSocketModeHandler = MagicMock
-    slack_sdk = MagicMock()
-    slack_sdk.web.async_client.AsyncWebClient = MagicMock
-    for name, mod in [
-        ("slack_bolt", slack_bolt),
-        ("slack_bolt.async_app", slack_bolt.async_app),
-        ("slack_bolt.adapter", slack_bolt.adapter),
-        ("slack_bolt.adapter.socket_mode", slack_bolt.adapter.socket_mode),
-        ("slack_bolt.adapter.socket_mode.async_handler", slack_bolt.adapter.socket_mode.async_handler),
-        ("slack_sdk", slack_sdk),
-        ("slack_sdk.web", slack_sdk.web),
-        ("slack_sdk.web.async_client", slack_sdk.web.async_client),
-    ]:
-        sys.modules.setdefault(name, mod)
-    sys.modules.setdefault("aiohttp", MagicMock())
+    if _real_package("slack_bolt") is None:
+        slack_bolt = MagicMock()
+        slack_bolt.async_app.AsyncApp = MagicMock
+        slack_bolt.adapter.socket_mode.async_handler.AsyncSocketModeHandler = MagicMock
+        for name, mod in [
+            ("slack_bolt", slack_bolt),
+            ("slack_bolt.async_app", slack_bolt.async_app),
+            ("slack_bolt.adapter", slack_bolt.adapter),
+            ("slack_bolt.adapter.socket_mode", slack_bolt.adapter.socket_mode),
+            ("slack_bolt.adapter.socket_mode.async_handler", slack_bolt.adapter.socket_mode.async_handler),
+        ]:
+            sys.modules.setdefault(name, mod)
+            _STUBBED.append(name)
+    if _real_package("slack_sdk") is None:
+        slack_sdk = MagicMock()
+        slack_sdk.web.async_client.AsyncWebClient = MagicMock
+        for name, mod in [
+            ("slack_sdk", slack_sdk),
+            ("slack_sdk.web", slack_sdk.web),
+            ("slack_sdk.web.async_client", slack_sdk.web.async_client),
+        ]:
+            sys.modules.setdefault(name, mod)
+            _STUBBED.append(name)
+    if _real_package("aiohttp") is None:
+        sys.modules.setdefault("aiohttp", MagicMock())
+        _STUBBED.append("aiohttp")
 
 
 _ensure_slack_mock()
@@ -41,6 +70,11 @@ import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+
+
+def teardown_module():
+    for name in _STUBBED:
+        sys.modules.pop(name, None)
 
 
 BOT = "U_TARGET_BOT"
@@ -88,7 +122,9 @@ def adapter():
 
 
 def _bot(n):
-    return _event(text=f"reply {n}", user=PEER, ts=f"1700000001.{n:06d}", bot_id="B_PEER")
+    return _event(
+        text=f"<@{BOT}> reply {n}", user=PEER,
+        ts=f"1700000001.{n:06d}", bot_id="B_PEER")
 
 
 class TestSlackBotHopLimit:
@@ -120,7 +156,7 @@ class TestSlackBotHopLimit:
             await adapter._handle_slack_message(_bot(n))
 
         other = _event(
-            text="reply elsewhere", user=PEER, ts="1700000003.000001",
+            text=f"<@{BOT}> reply elsewhere", user=PEER, ts="1700000003.000001",
             thread="1700000099.100000", bot_id="B_PEER")
         await adapter._handle_slack_message(other)
 

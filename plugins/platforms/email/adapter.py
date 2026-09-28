@@ -504,7 +504,7 @@ class EmailAdapter(BasePlatformAdapter):
             self._require_authenticated_sender = not _esecret_bool("EMAIL_TRUST_FROM_HEADER", False)
         # Optional authserv-id pinning Authentication-Results to the operator's own server (defeats an injected header sorting first).
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
-        # Quote the inbound mail under the first reply to it (default off; env wins over config.yaml).
+        # Quote the inbound mail under the turn's final reply to it (default off; env wins over config.yaml).
         self._quote_original = _esecret_bool("EMAIL_QUOTE_ORIGINAL", is_truthy_value(extra.get("quote_original"), default=False))
         self._quote_max_chars = _esecret_int("EMAIL_QUOTE_MAX_CHARS", coerce_port(extra.get("quote_max_chars"), _DEFAULT_QUOTE_MAX_CHARS))
         self._quote_header = str(extra.get("quote_header") or _DEFAULT_QUOTE_HEADER)
@@ -862,13 +862,14 @@ class EmailAdapter(BasePlatformAdapter):
         with self._quote_lock:
             self._last_original_by_sender.pop(sender_addr, None)
 
-    def _claim_quote(self, to_addr: str, body: str, reply_to_msg_id: Optional[str]) -> Tuple[str, Optional[Dict[str, str]]]:
+    def _claim_quote(self, to_addr: str, body: str, reply_to_msg_id: Optional[str], *, final: bool) -> Tuple[str, Optional[Dict[str, str]]]:
         """``(body with quote, claimed record)``; the record is ``None`` when nothing was quoted.
 
-        Only the first successful reply per inbound mail quotes: the claim marks the record pending so a
-        concurrent send skips it, ``_settle_quote`` finalizes it after SMTP success or releases it on failure.
-        The agent's own text is never shortened; the quote shrinks (or is dropped) to fit MAX_MESSAGE_LENGTH."""
-        if not self._quote_original:
+        Only a turn's final-reply send (``final``, from ``metadata["notify"]``) quotes: the claim marks the
+        record pending so a concurrent send skips it, ``_settle_quote`` finalizes it after SMTP success or
+        releases it on failure. The agent's own text is never shortened; the quote shrinks (or is dropped) to
+        fit MAX_MESSAGE_LENGTH."""
+        if not self._quote_original or not final:
             return body, None
         original_msg_id = (reply_to_msg_id or self._thread_context.get(to_addr, {}).get("message_id") or "").strip()
         with self._quote_lock:
@@ -906,8 +907,9 @@ class EmailAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an email reply to the given address."""
-        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
+        """Send an email reply to the given address; only a turn's final-reply send (``metadata["notify"]``) quotes."""
+        final = bool((metadata or {}).get("notify"))
+        return await self._run_send(self._send_email, (chat_id, content, reply_to, final), "[Email] Send failed to %s: %s", chat_id)
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
@@ -942,9 +944,9 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
+    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, final: bool = False) -> str:
         """Send an email via SMTP. Runs in executor thread."""
-        body, quoted = self._claim_quote(to_addr, body, reply_to_msg_id)
+        body, quoted = self._claim_quote(to_addr, body, reply_to_msg_id, final=final)
         try:
             msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
             self._smtp_send(msg)
@@ -956,10 +958,10 @@ class EmailAdapter(BasePlatformAdapter):
         return msg_id
 
     def _send_with_files(self, to_addr: str, body: str, files: List[Tuple[Path, str]], *, lenient: bool,
-                         reply_to_msg_id: Optional[str] = None) -> str:
+                         reply_to_msg_id: Optional[str] = None, final: bool = False) -> str:
         """Send a reply with attachments; *lenient* logs-and-skips unattachable files instead of raising.
         An explicit *reply_to_msg_id* threads the mail like ``_send_email`` does (#10131)."""
-        body, quoted = self._claim_quote(to_addr, body, reply_to_msg_id)
+        body, quoted = self._claim_quote(to_addr, body, reply_to_msg_id, final=final)
         try:
             msg, msg_id, _ = self._new_reply(to_addr, body, reply_to_msg_id)
             for path, name in files:
@@ -978,8 +980,8 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an image URL as part of an email body (``metadata`` unused)."""
-        return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to)
+        """Send an image URL as part of an email body."""
+        return await self.send(chat_id, f"{caption or ''}\n\nImage: {image_url}".strip(), reply_to, metadata)
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
                                    metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0) -> SendResult:
@@ -999,30 +1001,33 @@ class EmailAdapter(BasePlatformAdapter):
                 logger.warning("[Email] Skipping missing image: %s", local_path)
         if not local_paths and not body_parts:
             return SendResult(success=False, error="no valid images in batch")
+        final = bool((metadata or {}).get("notify"))
         try:
-            message_id = await asyncio.get_running_loop().run_in_executor(None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths)
+            message_id = await asyncio.get_running_loop().run_in_executor(
+                None, self._send_email_with_attachments, chat_id, "\n\n".join(body_parts), local_paths, final)
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
             return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         return SendResult(success=True, message_id=message_id)
 
-    def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str]) -> str:
+    def _send_email_with_attachments(self, to_addr: str, body: str, file_paths: List[str], final: bool = False) -> str:
         """Send an email with multiple file attachments via SMTP (unattachable files are skipped)."""
-        msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True)
+        msg_id = self._send_with_files(to_addr, body, [(Path(f), Path(f).name) for f in file_paths], lenient=True, final=final)
         logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
         return msg_id
 
     async def send_document(self, chat_id: str, file_path: str, caption: Optional[str] = None,
                             file_name: Optional[str] = None, reply_to: Optional[str] = None, **kwargs) -> SendResult:
-        """Send a file as an email attachment."""
-        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name, reply_to),
+        """Send a file as an email attachment; only a turn's final-reply send (``kwargs["metadata"]["notify"]``) quotes."""
+        final = bool((kwargs.get("metadata") or {}).get("notify"))
+        return await self._run_send(self._send_email_with_attachment, (chat_id, caption or "", file_path, file_name, reply_to, final),
                                     "[Email] Send document failed: %s")
 
     def _send_email_with_attachment(self, to_addr: str, body: str, file_path: str, file_name: Optional[str] = None,
-                                    reply_to_msg_id: Optional[str] = None) -> str:
+                                    reply_to_msg_id: Optional[str] = None, final: bool = False) -> str:
         """Send an email with a single file attachment via SMTP (raises if unattachable)."""
         return self._send_with_files(to_addr, body, [(Path(file_path), file_name or Path(file_path).name)], lenient=False,
-                                     reply_to_msg_id=reply_to_msg_id)
+                                     reply_to_msg_id=reply_to_msg_id, final=final)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about the email chat."""

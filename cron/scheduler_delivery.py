@@ -209,7 +209,7 @@ def _cron_mirror_message(job: dict, text: str) -> str:
 
 def _maybe_mirror_cron_delivery(
     job: dict, platform_name: str, chat_id: str, mirror_text: str, thread_id: Optional[str] = None,
-    user_id: Optional[str] = None, *, enabled: bool = False,
+    user_id: Optional[str] = None, *, enabled: bool = False, chat_type: Optional[str] = None,
 ) -> None:
     """Best-effort mirror of a cron delivery into the origin chat's session. No-op unless
     ``enabled`` (caller resolves it, scoped to the origin target). Rides the same
@@ -232,7 +232,8 @@ def _maybe_mirror_cron_delivery(
         # SQLite mirror metadata would otherwise lose on replay.
         ok = mirror_to_session(
             platform_name, str(chat_id), _cron_mirror_message(job, text),
-            source_label="cron", thread_id=thread_id, user_id=user_id, role="user")
+            source_label="cron", thread_id=thread_id, user_id=user_id, role="user",
+            **({"chat_type": chat_type} if platform_name == "matrix" else {}))
         if ok:
             logger.info(
                 "Job '%s': mirrored delivery into %s:%s session transcript",
@@ -1358,6 +1359,7 @@ class _TargetDelivery:
     original_chat_id: Optional[str] = None
     resolved_source: Optional[SessionSource] = None
     resolution_error: Optional[str] = None
+    target_origin: Optional[str] = None
     live_error: Optional[str] = None  # the live lane's own rejection string, e.g. "send_path_degraded"
 
     @property
@@ -1615,6 +1617,11 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
     Thread seeding is deferred here so open-succeeds/deliver-fails never seeds an unseen brief."""
     job = t.job
     origin = t.origin
+    if (
+        t.platform_name == "matrix"
+        and (t.resolved_source is None or t.resolved_source.chat_type not in {"dm", "group"})
+    ):
+        return
     seed_kwargs = dict(
         chat_name=origin.get("chat_name"), is_dm=t.is_dm_target, scope_id=origin.get("scope_id"))
     thread_seeded = False
@@ -1659,7 +1666,8 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
     _maybe_mirror_cron_delivery(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
         user_id=t.origin_user_id,
-        enabled=t.mirror_this_target and not thread_seeded and not inchannel_seeded)
+        enabled=t.mirror_this_target and not thread_seeded and not inchannel_seeded,
+        chat_type=t.resolved_source.chat_type if t.resolved_source is not None else None)
 
 
 def _deliver_via_live_adapter(
@@ -1855,12 +1863,25 @@ def _deliver_standalone(
         msg = f"delivery warning: {_w} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], msg)
         delivery_errors.append(msg)
+    if t.platform_name == "matrix":
+        if not isinstance(result, dict) or result.get("success") is not True:
+            return
+        t.chat_id = result.get("chat_id", t.chat_id)
+        t.thread_id = result.get("thread_id", t.thread_id)
+        t.origin_target = (
+            _target_matches_origin(t.origin, t.platform_name, t.chat_id, t.thread_id)
+            or _target_matches_origin(t.origin, t.platform_name, t.original_chat_id or t.chat_id, t.thread_id)
+        )
+        t.origin_user_id = t.origin.get("user_id") if t.origin_target else None
+        t.mirror_this_target = _cron_mirror_delivery_enabled(job) and _target_mirror_eligible(
+            job, {"_resolved_from": t.target_origin}, global_mirror=True, origin_match=t.origin_target)
     logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
     _maybe_mirror_cron_delivery(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
         user_id=t.origin_user_id,
-        enabled=t.mirror_this_target)
+        enabled=t.mirror_this_target,
+        chat_type=result.get("chat_type") if isinstance(result, dict) else None)
 
 
 def _prepare_target_delivery(
@@ -1973,6 +1994,10 @@ def _prepare_target_delivery(
     opened_thread_id: Optional[str] = None
     if (
         mirror_this_target
+        and (
+            platform_name != "matrix"
+            or resolved_source is not None and resolved_source.chat_type in {"dm", "group"}
+        )
         and not in_channel_surface
         and live_adapter_ready
         and not thread_id  # never override an explicit origin thread/topic
@@ -1990,7 +2015,7 @@ def _prepare_target_delivery(
         in_channel_surface=in_channel_surface, inchannel_continuable=inchannel_continuable,
         opened_thread_id=opened_thread_id, live_adapter_ready=live_adapter_ready,
         original_chat_id=original_chat_id, resolved_source=resolved_source,
-        resolution_error=resolution_error)
+        resolution_error=resolution_error, target_origin=target.get("_resolved_from"))
 
 
 def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:

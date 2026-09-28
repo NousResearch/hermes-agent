@@ -289,7 +289,8 @@ def _handle_send(args):
                 thread_id = result.get("thread_id", thread_id)
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
-            if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
+            mirror_kwargs = {"chat_type": result.get("chat_type")} if platform_name == "matrix" else {}
+            if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id, **mirror_kwargs):
                 result["mirrored"] = True
             if media_dropped:
                 # The text went out but an attachment the caller asked for did not: a script reading
@@ -433,7 +434,7 @@ def _slack_dm_chat_id(pconfig, chat_id):
     return _run_async(_resolve_slack_user_target(pconfig.token, dm_target))
 
 
-def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
+def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id, *, chat_type=None):
     """Best-effort mirror of the sent message into the target's gateway session."""
     try:
         from gateway.mirror import mirror_to_session
@@ -441,7 +442,8 @@ def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
         return bool(mirror_to_session(
             platform_name, chat_id, mirror_text, thread_id=thread_id,
             source_label=get_session_env("HERMES_SESSION_PLATFORM", "cli"),
-            user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None))
+            user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None,
+            **({"chat_type": chat_type} if platform_name == "matrix" else {})))
     except Exception:
         return False
 

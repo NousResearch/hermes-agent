@@ -23,8 +23,9 @@ class _MissingEncryption(Exception):
 @pytest.mark.parametrize("target_kind", ["alias", "home"])
 @pytest.mark.parametrize("payload_kind", ["text", "media"])
 @pytest.mark.parametrize("rejected", [False, True])
+@pytest.mark.parametrize("alice_exists", [False, True])
 def test_alias_send_mirrors_the_canonical_participant_thread(
-    tmp_path, monkeypatch, target_kind, payload_kind, rejected
+    tmp_path, monkeypatch, target_kind, payload_kind, rejected, alice_exists
 ):
     import hermes_state
     import model_tools
@@ -69,7 +70,10 @@ def test_alias_send_mirrors_the_canonical_participant_thread(
                 crypto=None,
             )
             adapter._refresh_dm_cache = AsyncMock()
-            adapter._is_dm_room = AsyncMock(return_value=False)
+            adapter._user_id = "@bot:remote.test"
+            adapter._get_room_members = AsyncMock(return_value={adapter._user_id, "@alice:remote.test", "@bob:remote.test"})
+            adapter._get_room_member_profiles = AsyncMock(return_value=None)
+            adapter._get_room_state_value = AsyncMock(return_value=None)
             if rejected:
                 if payload_kind == "text":
                     adapter._client.send_message_event.side_effect = ValueError("send rejected")
@@ -82,7 +86,7 @@ def test_alias_send_mirrors_the_canonical_participant_thread(
                 platform=Platform.MATRIX, chat_id=room, thread_id="$root",
                 chat_type="group", user_id="@alice:remote.test", profile=profile,
             )
-            alice = adapter._session_store.get_or_create_session(source)
+            alice = adapter._session_store.get_or_create_session(source) if alice_exists else None
             bob = adapter._session_store.get_or_create_session(SessionSource(
                 platform=Platform.MATRIX, chat_id=room, thread_id="$root",
                 chat_type="group", user_id="@bob:remote.test", profile=profile,
@@ -98,10 +102,12 @@ def test_alias_send_mirrors_the_canonical_participant_thread(
     for index, profile in enumerate(("default", "secondary", "default")):
         target_home, adapter, room, alice, bob = owners[profile]
         with _profile_runtime_scope(target_home, {}):
-            adapter._session_store.append_to_transcript(alice.session_id, {
-                "role": "user", "content": f"Request report {index} for {profile}",
-            })
-            before = deepcopy(adapter._session_store.load_transcript(alice.session_id))
+            if alice is not None:
+                adapter._session_store._db.update_system_prompt(alice.session_id, "Cached system prefix")
+                adapter._session_store.append_to_transcript(alice.session_id, {
+                    "role": "user", "content": f"Request report {index} for {profile}",
+                })
+            before = deepcopy(adapter._session_store.load_transcript(alice.session_id)) if alice else []
             tokens = set_session_vars(platform="matrix", user_id="@alice:remote.test")
             try:
                 brief = f"Report {index} for {profile}"
@@ -113,15 +119,23 @@ def test_alias_send_mirrors_the_canonical_participant_thread(
                 }))
             finally:
                 clear_session_vars(tokens)
+            if alice is not None:
+                assert adapter._session_store._db.get_session(alice.session_id)["system_prompt"] == "Cached system prefix"
             if rejected:
                 original_target = f"{alias}/$root" if target_kind == "home" else target
                 assert original_target in result["error"]
                 assert ("send rejected" if payload_kind == "text" else "upload rejected") in result["error"]
-                assert adapter._session_store.load_transcript(alice.session_id) == before
+                if alice is not None:
+                    assert adapter._session_store.load_transcript(alice.session_id) == before
                 assert adapter._session_store.load_transcript(bob.session_id) == []
                 continue
             assert result.get("success"), result
             store = adapter._session_store
+            if alice is None:
+                assert not result.get("mirrored"), result
+                assert store.load_transcript(bob.session_id) == []
+                assert list(store._entries) == [bob.session_key]
+                continue
             assert [(turn["role"], turn["content"]) for turn in store.load_transcript(alice.session_id)] == [
                 turn
                 for prior in range(index + 1)

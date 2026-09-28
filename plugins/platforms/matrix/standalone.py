@@ -86,6 +86,7 @@ class _HTTPDelivery:
             raise ValueError(
                 f"Room '{room_id}' is encrypted; use a native Matrix adapter with E2EE"
             )
+        chat_type = await self.chat_type(room_id)
         txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
         data = await self.request(
             "PUT",
@@ -97,7 +98,28 @@ class _HTTPDelivery:
             "platform": "matrix",
             "chat_id": room_id,
             "message_id": data.get("event_id"),
+            "thread_id": thread_id,
+            "chat_type": chat_type,
         }
+
+    async def chat_type(self, room_id: str) -> str:
+        try:
+            async with asyncio.timeout(10):
+                data = await self.request(
+                    "GET", f"rooms/{quote(room_id, safe='')}/joined_members"
+                )
+                members = data.get("joined")
+                if not isinstance(members, dict) or not members:
+                    return "unknown"
+                if len(members) != 2:
+                    return "group"
+                identity = await self.request("GET", "account/whoami")
+                user_id = identity.get("user_id")
+                if not isinstance(user_id, str) or user_id not in members:
+                    return "unknown"
+                return "dm"
+        except Exception:
+            return "unknown"
 
 
 def _text_payload(message: str, thread_id: str | None) -> dict[str, Any]:

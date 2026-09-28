@@ -174,7 +174,17 @@ class TurnRunner:
         ctx.last_tool[0] = tool_name
         msg = self._progress_build_message(tool_name, preview, args)
         if msg is not None:
-            self._progress_emit(msg)
+            # Dedup on RAW identity, never the (diff-aware) rendered msg (PR #24304): use the raw
+            # command / preview / args so distinct commands sharing a truncated render don't collapse.
+            if isinstance(args, dict) and tool_name == "terminal" and args.get("command"):
+                raw_body = args["command"]
+            elif preview:
+                raw_body = preview
+            elif args:
+                raw_body = json.dumps(args, sort_keys=True, default=str)
+            else:
+                raw_body = ""
+            self._progress_emit(msg, f"{tool_name}\x00{raw_body}")
 
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
@@ -247,13 +257,19 @@ class TurnRunner:
             and isinstance(args.get("command"), str) and args["command"].strip()
         ):
             return None, None
+        from agent.display import truncate_middle
         cmd_full = args["command"].rstrip()
         header = "" if self._ctx.last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
         cap = self._preview_cap()
         lines = cmd_full.splitlines()
         cmd_short = lines[0] if lines else cmd_full
+        # Diff-aware truncation (PR #24304): reveal the differing tail of consecutive
+        # `cd /same/path && cmdA` vs `… && cmdB` instead of head-cutting both identically.
+        # Thread the previous (untruncated) first line as prev, then record this one.
+        prev_cmd = self._ctx.last_terminal_cmd[0]
+        self._ctx.last_terminal_cmd[0] = cmd_short
         if len(cmd_short) > cap:
-            cmd_short = cmd_short[:cap - 3] + "..."
+            cmd_short = truncate_middle(cmd_short, cap, prev=prev_cmd)
         elif len(lines) > 1:
             cmd_short += " ..."
         return f"{header}```\n{cmd_full}\n```", f"{header}```\n{cmd_short}\n```"
@@ -290,7 +306,12 @@ class TurnRunner:
         if not preview:
             return f"{emoji} {tool_name}..."
         from agent.display import get_tool_verb, prepare_tool_preview, tool_verb_connector, verb_drops_preview
-        prepared = prepare_tool_preview(tool_name, args, fallback=preview, max_len=self._preview_cap())
+        # Diff-aware (PR #24304): thread the previous raw preview so a shared-prefix follow-up
+        # reveals its differing tail; then record this call's raw (pre-truncation) preview.
+        prepared = prepare_tool_preview(
+            tool_name, args, fallback=preview, max_len=self._preview_cap(), prev=ctx.last_preview_raw[0],
+        )
+        ctx.last_preview_raw[0] = preview
         preview = adapter.format_tool_preview(prepared) if adapter is not None else prepared.text
         # Friendly labels: human-phrased line for built-in tools ("🔍 Searching the web for ...")
         # by prefixing the verb onto the computed preview, so the command/url/query is kept.
@@ -299,13 +320,19 @@ class TurnRunner:
             return f"{emoji} {tool_name}: \"{preview}\""
         return f"{emoji} {verb}" if verb_drops_preview(tool_name) else f"{emoji} {verb}{tool_verb_connector(tool_name)}{preview}"
 
-    def _progress_emit(self, msg: str) -> None:
+    def _progress_emit(self, msg: str, raw_key: Optional[str] = None) -> None:
         """Dedup consecutive identical lines (execute_code boilerplate), then route to the native
-        stream bubble when the consumer accepts tool progress, else the progress queue."""
+        stream bubble when the consumer accepts tool progress, else the progress queue.
+
+        Dedup keys on ``raw_key`` (raw tool identity) when supplied, NOT the rendered ``msg``
+        (PR #24304): diff-aware truncation can render two DISTINCT commands identically, and keying
+        on the rendered string would wrongly collapse them to ``(×N)``. Falls back to the legacy
+        rendered-string comparison when no raw key is given."""
         ctx = self._ctx
         sc = self._stream_consumer()
         native = sc is not None and getattr(sc, "accepts_tool_progress", False)
-        if msg == ctx.last_progress_msg[0]:
+        is_repeat = raw_key == ctx.last_raw_key[0] if raw_key is not None else msg == ctx.last_progress_msg[0]
+        if is_repeat:
             ctx.repeat_count[0] += 1
             if native:
                 sc.on_tool_progress(f"{msg} (×{ctx.repeat_count[0] + 1})")
@@ -313,6 +340,7 @@ class TurnRunner:
                 ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
             return
         ctx.last_progress_msg[0], ctx.repeat_count[0] = msg, 0
+        ctx.last_raw_key[0] = raw_key
         if native:
             sc.on_tool_progress(msg)
         else:
@@ -635,6 +663,11 @@ class TurnRunner:
         below it; else tool edits hit the ORIGINAL message above (out of order)."""
         st.progress_msg_id, st.progress_lines = None, []
         self._ctx.last_progress_msg[0], self._ctx.repeat_count[0] = None, 0
+        # Reset the diff-aware progress state (PR #24304) alongside the dedup state so a new
+        # bubble starts fresh (no stale prev threaded across a content-bubble boundary).
+        self._ctx.last_terminal_cmd[0] = None
+        self._ctx.last_preview_raw[0] = None
+        self._ctx.last_raw_key[0] = None
 
     def _progress_absorb(self, st, raw) -> Any:
         """Fold a queue item into the bubble buffer; returns the line to render this tick."""

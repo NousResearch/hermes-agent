@@ -227,7 +227,16 @@ async def main():
             platform=Platform.MATRIX, chat_id=ROOM, thread_id=THREAD,
             chat_type='group', user_id=PARTICIPANT,
         )
-        if PER_USER:
+        if ABSENT_PARTICIPANT:
+            bob = runner.session_store.get_or_create_session(SessionSource(
+                platform=Platform.MATRIX, chat_id=ROOM, thread_id=THREAD,
+                chat_type='group', user_id=PEER,
+            ))
+            runner.session_store.append_to_transcript(bob.session_id, {
+                'role': 'assistant', 'content': "Bob's isolated context",
+            })
+            bob_before = runner.session_store.load_transcript(bob.session_id)
+        elif PER_USER:
             entry = runner.session_store.get_or_create_session(source)
             runner.session_store.append_to_transcript(entry.session_id, {
                 'role': 'user', 'content': 'Remember the existing participant context.',
@@ -243,9 +252,21 @@ async def main():
                 ))
             finally:
                 clear_session_vars(tokens)
-            assert result.get('success') and result.get('mirrored'), result
+            assert result.get('success'), result
+            assert bool(result.get('mirrored')) == (not ABSENT_PARTICIPANT), result
             assert (result['chat_id'], result['thread_id']) == (ROOM, THREAD), result
         else:
+            if TRANSIENT_RESOLUTION:
+                adapter = runner.adapters[Platform.MATRIX]
+                original = adapter._client.resolve_room_alias
+                first = True
+                async def transient(alias):
+                    nonlocal first
+                    if first:
+                        first = False
+                        raise ValueError('transient native alias lookup failure')
+                    return await original(alias)
+                adapter._client.resolve_room_alias = transient
             error = await asyncio.to_thread(
                 _deliver_result,
                 {
@@ -255,7 +276,10 @@ async def main():
                 BRIEF, runner.adapters, loop,
             )
             assert error is None, error
-        if PER_USER:
+        if ABSENT_PARTICIPANT:
+            assert list(runner.session_store._entries) == [bob.session_key]
+            assert runner.session_store.load_transcript(bob.session_id) == bob_before
+        elif PER_USER:
             assert list(runner.session_store._entries) == [entry.session_key]
         print(json.dumps({'cron_ready': True}), flush=True)
         await stopped.wait()
@@ -266,7 +290,16 @@ asyncio.run(main())
 """
 
 
-@pytest.mark.parametrize("delivery", ["shared_cron", "per_user_cron", "per_user_tool"])
+@pytest.mark.parametrize(
+    "delivery",
+    [
+        "shared_cron",
+        "per_user_cron",
+        "per_user_tool",
+        "per_user_tool_absent",
+        "per_user_fallback_cron",
+    ],
+)
 def test_alias_thread_reply_receives_seeded_cron_brief(
     gateway_image, synapse, live_room: LiveRoom, tmp_path: Path, delivery: str
 ):
@@ -294,11 +327,11 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
                 {"msgtype": "m.notice", "body": "External thread root"},
             )
             assert isinstance(root, RoomSendResponse), root
-            return room.room_id, root.event_id
+            return room.room_id, root.event_id, peer.user_id
         finally:
             await client.close()
 
-    room_id, root_id = asyncio.run(asyncio.wait_for(create(), timeout=15))
+    room_id, root_id, peer_id = asyncio.run(asyncio.wait_for(create(), timeout=15))
     alias = f"#{alias_localpart}:matrix.test"
     brief = "The cron-only launch code is basil-otter-47."
     home = tmp_path / "continuation-home"
@@ -327,7 +360,10 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
             f"ROOM = {room_id!r}\nTHREAD = {root_id!r}\n"
             f"PARTICIPANT = {live_room.observer.user_id!r}\n"
             f"PER_USER = {delivery != 'shared_cron'!r}\n"
-            f"TOOL_SEND = {delivery == 'per_user_tool'!r}\n" + _CONTINUE
+            f"TOOL_SEND = {delivery.startswith('per_user_tool')!r}\n"
+            f"ABSENT_PARTICIPANT = {delivery == 'per_user_tool_absent'!r}\n"
+            f"TRANSIENT_RESOLUTION = {delivery == 'per_user_fallback_cron'!r}\n"
+            f"PEER = {peer_id!r}\n" + _CONTINUE
         )
         with (
             DockerContainer(
@@ -412,20 +448,29 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
                                 messages = requests[0]["messages"]
                                 brief_role = (
                                     "assistant"
-                                    if delivery == "per_user_tool"
+                                    if delivery.startswith("per_user_tool")
                                     else "user"
                                 )
-                                assert any(
+                                mirrored = any(
                                     message.get("role") == brief_role
                                     and brief in str(message.get("content"))
                                     for message in messages
+                                )
+                                assert mirrored == (
+                                    delivery != "per_user_tool_absent"
                                 ), messages
-                                if delivery != "per_user_tool":
+                                assert "Bob's isolated context" not in json.dumps(
+                                    messages
+                                )
+                                if not delivery.startswith("per_user_tool"):
                                     assert (
                                         "[Cron delivery: alias-continuation]"
                                         in json.dumps(messages)
                                     )
-                                if delivery != "shared_cron":
+                                if delivery not in {
+                                    "shared_cron",
+                                    "per_user_tool_absent",
+                                }:
                                     assert "Existing participant context" in json.dumps(
                                         messages
                                     )

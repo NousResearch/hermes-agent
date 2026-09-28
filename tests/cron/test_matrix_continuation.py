@@ -86,7 +86,16 @@ def destinations(tmp_path, monkeypatch):
                 crypto=None,
             )
             adapter._refresh_dm_cache = AsyncMock()
-            adapter._is_dm_room = AsyncMock(return_value=False)
+            adapter._user_id = "@bot:remote.test"
+            adapter._get_room_members = AsyncMock(
+                return_value={
+                    adapter._user_id,
+                    "@alice:remote.test",
+                    "@bob:remote.test",
+                }
+            )
+            adapter._get_room_member_profiles = AsyncMock(return_value=None)
+            adapter._get_room_state_value = AsyncMock(return_value=None)
             adapter.gateway_runner = runner
             adapter.set_owner_profile(profile)
             adapter.set_session_store(SessionStore(target_home / "sessions", config))
@@ -105,7 +114,12 @@ def test_alias_delivery_seeds_the_owning_reply_session(destinations, thread, cha
     loop = SimpleNamespace(is_running=lambda: True)
     for index, profile in enumerate(("default", "secondary", "default")):
         home, adapter, room = owners[profile]
-        adapter._is_dm_room.return_value = chat_type == "dm"
+        adapter._get_room_members.return_value = {
+            adapter._user_id,
+            "@alice:remote.test",
+        }
+        if chat_type == "group":
+            adapter._get_room_members.return_value.add("@bob:remote.test")
         brief = f"Scheduled brief {index} for {profile}"
         alias = "#scheduled:remote.test"
         target = f"matrix:{alias}" + (f"/{thread}" if thread else "")
@@ -201,6 +215,10 @@ def test_per_user_thread_delivery_preserves_the_originating_participant(
         home, adapter, room = owners[profile]
         store = adapter._session_store
         store.config.thread_sessions_per_user = True
+        config_path = home / "config.yaml"
+        saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+        saved_config["thread_sessions_per_user"] = True
+        config_path.write_text(json.dumps(saved_config), encoding="utf-8")
         source = SessionSource(
             platform=Platform.MATRIX,
             chat_id=room,
@@ -256,3 +274,214 @@ def test_per_user_thread_delivery_preserves_the_originating_participant(
                 f"[Cron delivery: alice-brief-{index}]\n{brief}",
             )
             assert store.load_transcript(bob.session_id) == []
+
+
+@pytest.mark.parametrize(
+    "chat_type, unknown_state",
+    [("dm", "membership"), ("group", "membership"), ("dm", "identity")],
+)
+@pytest.mark.parametrize("thread", [None, "$existing"])
+def test_unknown_membership_defers_continuation_until_identity_recovers(
+    destinations, chat_type, thread, unknown_state
+):
+    runner, owners = destinations
+    home, adapter, room = owners["default"]
+    adapter._user_id = "@bot:remote.test"
+    members = {adapter._user_id, "@alice:remote.test"}
+    if unknown_state == "identity":
+        adapter._user_id = ""
+    if chat_type == "group":
+        members.add("@bob:remote.test")
+    adapter._get_room_members = AsyncMock(
+        side_effect=[None if unknown_state == "membership" else members, members]
+    )
+    adapter._get_room_member_profiles = AsyncMock(return_value=None)
+    adapter._get_room_state_value = AsyncMock(return_value=None)
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id=room,
+        thread_id=thread,
+        chat_type=chat_type,
+        user_id="@alice:remote.test",
+        profile="default",
+    )
+    store = adapter._session_store
+    entry = store.get_or_create_session(source)
+    store.append_to_transcript(
+        entry.session_id, {"role": "assistant", "content": "Prior turn"}
+    )
+    before = deepcopy(store.load_transcript(entry.session_id))
+    store._db.update_system_prompt(entry.session_id, "Cached DM or group prefix")
+    keys = list(store._entries)
+    with _profile_runtime_scope(home, {}):
+        for known in (False, True):
+            if known:
+                adapter._user_id = "@bot:remote.test"
+            brief = "Confirmed brief" if known else "Unclassified brief"
+            error = _deliver_result(
+                {
+                    "id": "membership",
+                    "deliver": f"matrix:{room}" + (f"/{thread}" if thread else ""),
+                    "attach_to_session": True,
+                    "origin": source.to_dict(),
+                },
+                brief,
+                runner.adapters,
+                SimpleNamespace(is_running=lambda: True),
+            )
+            assert error is None, error
+            assert (
+                store._db.get_session(entry.session_id)["system_prompt"]
+                == "Cached DM or group prefix"
+            )
+            if not known:
+                assert list(store._entries) == keys
+                assert store.load_transcript(entry.session_id) == before
+                continue
+            sent = adapter._client.send_message_event.await_args.args[2]
+            delivered_thread = sent.get("m.relates_to", {}).get("event_id")
+            reply = SessionSource(
+                platform=Platform.MATRIX,
+                chat_id=room,
+                thread_id=delivered_thread,
+                chat_type=chat_type,
+                user_id=source.user_id,
+                profile="default",
+            )
+            reply_entry = store.get_or_create_session(reply)
+            transcript = store.load_transcript(reply_entry.session_id)
+            assert "Confirmed brief" in json.dumps(transcript)
+            assert "Unclassified brief" not in json.dumps(transcript)
+            assert store.load_transcript(entry.session_id)[: len(before)] == before
+
+
+@pytest.mark.parametrize(
+    "outcome", ["confirmed", "origin_only", "failed", "unknown", "other_room"]
+)
+@pytest.mark.parametrize("alice_exists", [False, True])
+@pytest.mark.parametrize("sender", ["native", "http"])
+def test_fallback_uses_confirmed_canonical_destination_and_participant(
+    destinations, monkeypatch, outcome, alice_exists, sender
+):
+    from tools.send_message_senders import _matrix_send_core
+
+    runner, owners = destinations
+    home, adapter, room = owners["secondary"]
+    store = adapter._session_store
+    store.config.thread_sessions_per_user = True
+    (home / "config.yaml").write_text(
+        json.dumps({
+            "thread_sessions_per_user": True,
+            "cron": {
+                "wrap_response": False,
+                "mirror_delivery": outcome == "origin_only",
+            },
+            "platforms": {"matrix": {"enabled": True, "extra": {"e2ee_mode": "off"}}},
+        }),
+        encoding="utf-8",
+    )
+    source = SessionSource(
+        platform=Platform.MATRIX,
+        chat_id=room,
+        thread_id="$existing",
+        chat_type="group",
+        user_id="@alice:remote.test",
+        profile="secondary",
+    )
+    alice = store.get_or_create_session(source) if alice_exists else None
+    bob = store.get_or_create_session(
+        SessionSource(
+            platform=Platform.MATRIX,
+            chat_id=room,
+            thread_id=source.thread_id,
+            chat_type="group",
+            user_id="@bob:remote.test",
+            profile="secondary",
+        )
+    )
+    keys = list(store._entries)
+    adapter._client.resolve_room_alias.side_effect = [
+        ValueError("transient directory failure"),
+        SimpleNamespace(
+            room_id=room if outcome != "other_room" else "!other:remote.test",
+            servers=["route.test"],
+        ),
+    ]
+    if outcome == "other_room":
+        adapter._client.join_room.return_value = "!other:remote.test"
+    if outcome == "failed":
+        adapter._client.send_message_event.side_effect = ValueError("send rejected")
+    if outcome == "unknown":
+        adapter._get_room_members = AsyncMock(return_value=None)
+        adapter._get_room_state_value = AsyncMock(return_value=None)
+
+    async def request(self, method, path, **kwargs):
+        target_room = room if outcome != "other_room" else "!other:remote.test"
+        if path.startswith("directory/") or path.startswith("join/"):
+            return {"room_id": target_room, "servers": ["route.test"]}
+        if path.endswith("m.room.encryption"):
+            from plugins.platforms.matrix.standalone import _MatrixAPIError
+
+            raise _MatrixAPIError(404, {"errcode": "M_NOT_FOUND"})
+        if path.endswith("joined_members"):
+            if outcome == "unknown":
+                raise ValueError("membership unavailable")
+            return {
+                "joined": {
+                    "@bot:remote.test": {},
+                    source.user_id: {},
+                    "@bob:remote.test": {},
+                }
+            }
+        if "/send/" in path:
+            if outcome == "failed":
+                raise ValueError("send rejected")
+            return {"event_id": "$sent"}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(
+        "plugins.platforms.matrix.standalone._HTTPDelivery.request", request
+    )
+
+    async def fallback(
+        platform, pconfig, chat_id, message, *, thread_id=None, **kwargs
+    ):
+        if sender == "http":
+            from plugins.platforms.matrix.standalone import standalone_send
+
+            return await standalone_send(
+                PlatformConfig(
+                    token="token",
+                    extra={"homeserver": "http://matrix.test", "e2ee_mode": "off"},
+                ),
+                chat_id,
+                message,
+                thread_id=thread_id,
+            )
+        return await _matrix_send_core(
+            adapter, chat_id, message, [], {"thread_id": thread_id}
+        )
+
+    monkeypatch.setattr("tools.send_message_tool._send_to_platform", fallback)
+    with _profile_runtime_scope(home, {}):
+        error = _deliver_result(
+            {
+                "id": "fallback",
+                "deliver": "matrix:#scheduled:remote.test/$existing",
+                "attach_to_session": None if outcome == "origin_only" else True,
+                "origin": source.to_dict(),
+            },
+            "Fallback brief",
+            runner.adapters,
+            SimpleNamespace(is_running=lambda: True),
+        )
+        assert bool(error) == (outcome == "failed"), error
+        assert list(store._entries) == keys
+        assert store.load_transcript(bob.session_id) == []
+        if alice is not None:
+            transcript = store.load_transcript(alice.session_id)
+            assert [(turn["role"], turn["content"]) for turn in transcript] == (
+                [("user", "[Cron delivery: fallback]\nFallback brief")]
+                if outcome in {"confirmed", "origin_only"}
+                else []
+            )

@@ -13,6 +13,9 @@ from plugins.platforms.matrix.standalone import standalone_send
     "case",
     [
         "plain",
+        "plain_dm",
+        "membership_error",
+        "identity_error",
         "encrypted",
         "state_error",
         "alias_error",
@@ -55,6 +58,19 @@ async def test_standalone_checks_destination_and_encryption(case):
                     {"errcode": "M_FORBIDDEN", "error": "state forbidden"}, status=403
                 )
             return web.json_response({"errcode": "M_NOT_FOUND"}, status=404)
+        if request.path.endswith("joined_members"):
+            if case == "membership_error":
+                return web.json_response({"errcode": "M_FORBIDDEN"}, status=403)
+            members = {"@bot:remote.test": {}, "@alice:remote.test": {}}
+            if case not in {"plain_dm", "identity_error"}:
+                members["@bob:remote.test"] = {}
+            return web.json_response({"joined": members})
+        if request.path.endswith("account/whoami"):
+            return web.json_response({
+                "user_id": "@other:remote.test"
+                if case == "identity_error"
+                else "@bot:remote.test"
+            })
         if "/send/" in request.path:
             sent.append(await request.json())
             return web.json_response({"event_id": "$sent"})
@@ -82,12 +98,14 @@ async def test_standalone_checks_destination_and_encryption(case):
     finally:
         await runner.cleanup()
 
-    if case == "plain":
+    if case in {"plain", "plain_dm", "membership_error", "identity_error"}:
         assert result == {
             "success": True,
             "platform": "matrix",
             "chat_id": room,
             "message_id": "$sent",
+            "thread_id": "$root",
+            "chat_type": {"plain": "group", "plain_dm": "dm"}.get(case, "unknown"),
         }
         assert [
             (method, routes) for method, path, routes in calls if "/join/" in path

@@ -138,6 +138,7 @@ def _maybe_mirror_cron_delivery(
     user_id: Optional[str] = None,
     *,
     enabled: bool = False,
+    chat_type: Optional[str] = None,
 ) -> None:
     """Best-effort mirror of a cron delivery into the origin chat's session. No-op unless
     ``enabled`` (caller resolves it, scoped to the origin target). Rides the same
@@ -167,6 +168,7 @@ def _maybe_mirror_cron_delivery(
             thread_id=thread_id,
             user_id=user_id,
             role="user",
+            **({"chat_type": chat_type} if platform_name == "matrix" else {}),
         )
         if ok:
             logger.info(
@@ -437,6 +439,10 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
     Thread seeding is deferred here so open-succeeds/deliver-fails never seeds an unseen brief."""
     job = t.job
     origin = t.origin
+    if t.platform_name == "matrix" and (
+        t.resolved_source is None or t.resolved_source.chat_type not in {"dm", "group"}
+    ):
+        return
     seed_kwargs = dict(
         chat_name=origin.get("chat_name"),
         is_dm=t.is_dm_target,
@@ -518,4 +524,7 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
         thread_id=t.thread_id,
         user_id=t.origin_user_id,
         enabled=t.mirror_this_target and not thread_seeded and not inchannel_seeded,
+        chat_type=t.resolved_source.chat_type
+        if t.resolved_source is not None
+        else None,
     )

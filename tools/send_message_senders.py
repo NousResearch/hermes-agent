@@ -601,7 +601,7 @@ async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
                 return _error(f"Matrix media send failed: {last_result.error}")
         if last_result is None:
             return {"error": _NO_DELIVERABLE}
-        return _success("matrix", chat_id, message_id=last_result.message_id,
+        return _success("matrix", chat_id, message_id=last_result.message_id, chat_type=source.chat_type,
                         **({"thread_id": source.thread_id} if source.thread_id else {}))
     except Exception as exc:
         return _error(f"Matrix target '{target}': {exc}")

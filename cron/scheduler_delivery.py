@@ -1059,6 +1059,7 @@ class _TargetDelivery:
     original_chat_id: Optional[str] = None
     resolved_source: Optional[SessionSource] = None
     resolution_error: Optional[str] = None
+    target_origin: Optional[str] = None
     live_error: Optional[str] = None  # the live lane's own rejection string, e.g. "send_path_degraded"
 
     @property
@@ -1525,12 +1526,25 @@ def _deliver_standalone(
         msg = f"delivery warning: {_w} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], msg)
         delivery_errors.append(msg)
+    if t.platform_name == "matrix":
+        if not isinstance(result, dict) or result.get("success") is not True:
+            return
+        t.chat_id = result.get("chat_id", t.chat_id)
+        t.thread_id = result.get("thread_id", t.thread_id)
+        t.origin_target = (
+            _continuation._target_matches_origin(t.origin, t.platform_name, t.chat_id, t.thread_id)
+            or _continuation._target_matches_origin(t.origin, t.platform_name, t.original_chat_id or t.chat_id, t.thread_id)
+        )
+        t.origin_user_id = t.origin.get("user_id") if t.origin_target else None
+        t.mirror_this_target = _continuation._cron_mirror_delivery_enabled(job) and _continuation._target_mirror_eligible(
+            job, {"_resolved_from": t.target_origin}, global_mirror=True, origin_match=t.origin_target)
     logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
     _continuation._maybe_mirror_cron_delivery(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
         user_id=t.origin_user_id,
-        enabled=t.mirror_this_target)
+        enabled=t.mirror_this_target,
+        chat_type=result.get("chat_type") if isinstance(result, dict) else None)
 
 
 def _prepare_target_delivery(
@@ -1643,6 +1657,10 @@ def _prepare_target_delivery(
     opened_thread_id: Optional[str] = None
     if (
         mirror_this_target
+        and (
+            platform_name != "matrix"
+            or resolved_source is not None and resolved_source.chat_type in {"dm", "group"}
+        )
         and not in_channel_surface
         and live_adapter_ready
         and not thread_id  # never override an explicit origin thread/topic
@@ -1660,7 +1678,7 @@ def _prepare_target_delivery(
         in_channel_surface=in_channel_surface, inchannel_continuable=inchannel_continuable,
         opened_thread_id=opened_thread_id, live_adapter_ready=live_adapter_ready,
         original_chat_id=original_chat_id, resolved_source=resolved_source,
-        resolution_error=resolution_error)
+        resolution_error=resolution_error, target_origin=target.get("_resolved_from"))
 
 
 def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:

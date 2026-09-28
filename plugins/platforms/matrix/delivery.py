@@ -8,6 +8,7 @@ from typing import Any, Protocol, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from gateway.session import SessionSource
+    from plugins.platforms.matrix.adapter import MatrixRoomIdentity
 
 
 class _RoomIdentityInvalidator(Protocol):
@@ -16,22 +17,31 @@ class _RoomIdentityInvalidator(Protocol):
 
 class MatrixDeliveryMixin:
     _client: Any
+    _user_id: str
     _joined_rooms: set[str]
     _encryption: bool
     _e2ee_mode: str
     _invalidate_room_identities: _RoomIdentityInvalidator
     _refresh_dm_cache: Callable[[], Awaitable[None]]
-    _is_dm_room: Callable[[str], Awaitable[bool]]
+    _resolve_room_identity: Callable[[str], Awaitable[MatrixRoomIdentity]]
 
     async def resolve_delivery_target(self, source: SessionSource) -> SessionSource:
         """Resolve the room and reply session shape through this authenticated client."""
         from gateway.session_identity import replace_source
 
         room_id = await self._resolve_send_target(source.chat_id)
+        identity = await self._resolve_room_identity(room_id)
+        chat_type = "unknown"
+        if identity.joined_member_count is not None and (
+            identity.joined_member_count != 2 or self._user_id
+        ):
+            chat_type = "dm" if identity.chat_type == "dm" else "group"
+        else:
+            self._invalidate_room_identities(room_id)
         return replace_source(
             source,
             chat_id=room_id,
-            chat_type="dm" if await self._is_dm_room(room_id) else "group",
+            chat_type=chat_type,
         )
 
     async def _resolve_send_target(self, chat_id: str) -> str:

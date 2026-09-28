@@ -36,6 +36,7 @@ def _origin_user_id(entry: dict) -> str:
 def mirror_to_session(
     platform: str, chat_id: str, message_text: str, source_label: str = "cli", thread_id: Optional[str] = None,
     user_id: Optional[str] = None, role: str = "assistant", session_id: Optional[str] = None,
+    *, chat_type: Optional[str] = None,
 ) -> bool:
     """Append a delivery-mirror message to the target session's SQLite transcript.
 
@@ -54,7 +55,8 @@ def mirror_to_session(
     """
     try:
         if not session_id:
-            session_id = _find_session_id(platform, str(chat_id), thread_id=thread_id, user_id=user_id)
+            session_id = _find_session_id(platform, str(chat_id), thread_id=thread_id, user_id=user_id,
+                                          **({"chat_type": chat_type} if platform == "matrix" else {}))
         if not session_id:
             logger.warning(
                 "Mirror: no session found for %s:%s thread=%s user=%s (explicit_id=none, origin-scan bailed)",
@@ -73,7 +75,8 @@ def mirror_to_session(
         return False
 
 
-def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = None, user_id: Optional[str] = None) -> Optional[str]:
+def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = None, user_id: Optional[str] = None,
+                     *, chat_type: Optional[str] = None) -> Optional[str]:
     """Active session_id for a platform + chat_id pair.
 
     state.db is primary; sessions.json is the pre-migration fallback.  DM keys
@@ -81,15 +84,50 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     origin.  With *user_id*, exact sender matches win; several same-chat candidates
     with no user match → None rather than contaminate another participant's session.
 
+    Matrix requires a confirmed ``chat_type`` and uses the exact configured session
+    key in both stores. An absent participant's isolated session is never substituted.
+
     Queries state.db gateway session rows (primary source since #9006); falls back to scanning sessions.json
     for pre-migration databases.
     """
+    session_key = None
+    if platform.lower() == "matrix":
+        if chat_type not in {"dm", "group"}:
+            return None
+        from agent.secret_scope import is_multiplex_active
+        from gateway.config import Platform, load_gateway_config
+        from gateway.session import SessionSource, build_session_key
+        from hermes_cli.profiles import get_active_profile_name
+
+        config = load_gateway_config()
+        source = SessionSource(
+            platform=Platform.MATRIX, chat_id=chat_id, thread_id=thread_id,
+            user_id=user_id, chat_type=chat_type,
+        )
+        key_options = dict(
+            group_sessions_per_user=config.group_sessions_per_user,
+            thread_sessions_per_user=config.thread_sessions_per_user,
+        )
+        participant_required = (
+            chat_type != "dm" and config.group_sessions_per_user
+            and (not thread_id or config.thread_sessions_per_user)
+        )
+        if participant_required and not user_id:
+            return None
+        session_key = build_session_key(
+            source, **key_options,
+            profile=get_active_profile_name() if config.multiplex_profiles or is_multiplex_active() else None,
+        )
     try:
         from hermes_state_registry import acquire, release_or_close
         db = acquire()
         try:
-            finder = getattr(db, "find_session_by_origin", None)
-            session_id = finder(platform=platform, chat_id=chat_id, thread_id=thread_id, user_id=user_id) if callable(finder) else None
+            if session_key:
+                row = db.find_latest_gateway_session_for_peer(source=platform, session_key=session_key)
+                session_id = row.get("id") if row else None
+            else:
+                finder = getattr(db, "find_session_by_origin", None)
+                session_id = finder(platform=platform, chat_id=chat_id, thread_id=thread_id, user_id=user_id) if callable(finder) else None
             if session_id:
                 return str(session_id)
         finally:
@@ -104,6 +142,10 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
         data = json.loads(sessions_index.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
+
+    if session_key:
+        entry = data.get(session_key)
+        return entry.get("session_id") if isinstance(entry, dict) else None
 
     def _matches(entry: dict) -> bool:
         origin = entry.get("origin") or {}

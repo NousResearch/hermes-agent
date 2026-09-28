@@ -7,6 +7,7 @@ import type * as HermesModule from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $notifications } from '@/store/notifications'
+import { $readOnlyCronRuns, markCronRunReadOnly } from '@/store/read-only-transcript'
 import { setSessionOwnerHint, setSessions } from '@/store/session'
 import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
@@ -893,5 +894,52 @@ describe('useSessionTileDelegate submitToSession', () => {
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS,
       undefined
     )
+  })
+})
+
+
+describe('useSessionTileDelegate read-only cron run (#88443)', () => {
+  const storedId = 'cron_job-1_1700000000'
+  const runtimeId = 'rt-cron-zombie'
+
+  beforeEach(() => {
+    setSessions([])
+    $notifications.set([])
+    $readOnlyCronRuns.set(new Set())
+    vi.mocked(getLatestSessionMessages).mockReset()
+    vi.mocked(getLatestSessionMessages).mockImplementation(async () => ({ messages: [], session_id: storedId }))
+  })
+
+  afterEach(() => {
+    setSessions([])
+    $notifications.set([])
+    $readOnlyCronRuns.set(new Set())
+  })
+
+  // The Cron surfaces latch a never-closed run read-only by STORED id; a tile
+  // resumed for that run must honour the same latch as the primary chat's
+  // `submit`, or moving the transcript into a tile reopens the write path.
+  it('refuses submitToSession into a cron run latched read-only', async () => {
+    setSessions([row({ id: storedId, profile: 'work-vps' })])
+    markCronRunReadOnly(storedId)
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    renderTile(requestGateway, {
+      runtimeIdByStoredSessionIdRef: { current: new Map([[storedId, runtimeId]]) },
+      sessionStateByRuntimeIdRef: { current: new Map([[runtimeId, createClientSessionState(storedId, [])]]) }
+    })
+
+    await sessionTileDelegate()!.submitToSession(runtimeId, 'into the dead cron session')
+
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    expect(requestGatewayForProfile).not.toHaveBeenCalledWith(
+      'work-vps',
+      'prompt.submit',
+      expect.anything(),
+      expect.anything(),
+      expect.anything()
+    )
+    expect($notifications.get().some(note => note.kind === 'info')).toBe(true)
   })
 })

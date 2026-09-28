@@ -18,6 +18,7 @@ import { noteMessageSent } from '@/store/desktop-metrics'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
+  isStoredTranscriptReadOnly,
   readOnlyRuntimeIdFor,
   resumeWithStoredTranscriptFallback
 } from '@/store/read-only-transcript'
@@ -480,16 +481,18 @@ export function useSessionTileDelegate({
         return runtimeId
       },
       submitToSession: async (runtimeId, text) => {
+        const storedSessionId = storedSessionIdForRuntime(runtimeId)
+
         // A read-only stored-transcript tile has no live runtime to submit
-        // into (#94724). Refuse with the explanation instead of minting a
-        // misrouted prompt on a backend that never owned the session.
-        if (isReadOnlyRuntimeId(runtimeId)) {
+        // into (#94724), and a never-closed cron run latched read-only by a
+        // Cron surface (#88443) stays closed to writes when it is later opened
+        // as a tile — same gate as the primary chat's `submit`. Refuse with the
+        // explanation instead of minting a misrouted prompt.
+        if (isReadOnlyRuntimeId(runtimeId) || isStoredTranscriptReadOnly(storedSessionId)) {
           notify({ kind: 'info', message: translateNow('desktop.readOnlyTranscriptSendBlocked') })
 
           return { runtimeSessionId: runtimeId, storedSessionId: null }
         }
-
-        const storedSessionId = storedSessionIdForRuntime(runtimeId)
 
         if (storedSessionId) {
           const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)

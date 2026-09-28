@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import requests
-import shlex
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -83,15 +82,13 @@ class ManagedModalEnvironment(BaseEnvironment):
         # truncation still caps it).
         del rewrite_compound_background, bounded_capture
         exec_command, sudo_stdin = self._prepare_command(command)
-        if sudo_stdin is not None:
-            # Feed sudo via a shell pipe: the transport has no direct stdin piping.
-            exec_command = f"printf '%s\\n' {shlex.quote(sudo_stdin.rstrip())} | {exec_command}"
+        effective_stdin = sudo_stdin + (stdin_data or "") if sudo_stdin is not None else stdin_data
         timeout = timeout or self.timeout
         exec_id = str(uuid.uuid4())
         payload: Dict[str, Any] = {"execId": exec_id, "command": exec_command, "cwd": cwd or self.cwd,
                                    "timeoutMs": int(timeout * 1000)}
-        if stdin_data is not None:
-            payload["stdinData"] = stdin_data
+        if effective_stdin is not None:
+            payload["stdinData"] = effective_stdin
         try:
             response = self._request("POST", f"/v1/sandboxes/{self._sandbox_id}/execs", json=payload, timeout=10)
             body = response.json() if response.status_code < 400 else None

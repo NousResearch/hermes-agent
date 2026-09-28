@@ -110,7 +110,70 @@ test('wsl: spawns cmd.exe and resolves ok on the happy path', async () => {
 
   assert.deepEqual(result, { ok: true })
   assert.equal(spawned[0], 'cmd.exe')
-  assert.ok(spawned.some(arg => arg === 'https://example.com/'))
+  // The URL reaches cmd.exe double-quoted: Node's Windows escaping covers
+  // whitespace and quotes only, so an unquoted argument's punctuation would
+  // read as line syntax.
+  assert.ok(spawned.includes('"https://example.com/"'))
+})
+
+test('wsl: a URL with cmd.exe metacharacters is refused before any spawn (#126939)', async () => {
+  let spawnCalls = 0
+  const proc = new EventEmitter() as unknown as ChildProcess
+
+  const { deps, calls } = makeDeps({
+    isWsl: true,
+    spawn: () => {
+      spawnCalls += 1
+
+      return proc
+    }
+  })
+
+  // & is the reported vector (cmd.exe command separator — calc launches);
+  // the rest of the class cmd.exe acts on is refused with it: separators,
+  // redirection, the escape character, variable expansion (which survives
+  // double quotes), line breaks, and the quotes themselves.
+  for (const url of [
+    'https://example.com/x&calc',
+    'https://example.com/?a=1&b=2',
+    'https://example.com/a|b',
+    'https://example.com/a>b',
+    'https://example.com/a<b',
+    'https://example.com/a^b',
+    'https://example.com/%PATH%',
+    'https://example.com/a"b',
+    "https://example.com/a'b",
+    'https://example.com/a\r\nb'
+  ]) {
+    const result = await openExternalUrl(url, deps)
+
+    assert.deepEqual(result, { ok: false, reason: 'invalid' }, url)
+  }
+
+  assert.equal(spawnCalls, 0)
+  assert.deepEqual(calls.opened, [])
+  assert.equal(calls.notified.length, 0)
+  assert.ok(calls.logged.some(line => line.includes('refusing WSL open')))
+})
+
+test('wsl: mailto stays spawnable when it carries no cmd.exe metacharacters', async () => {
+  const spawned: string[] = []
+  const proc = new EventEmitter() as unknown as ChildProcess
+
+  const { deps } = makeDeps({
+    isWsl: true,
+    spawn: (cmd, args) => {
+      spawned.push(cmd, ...args)
+
+      return proc
+    }
+  })
+
+  const result = await openExternalUrl('mailto:someone@example.com?subject=hi', deps)
+
+  assert.deepEqual(result, { ok: true })
+  assert.equal(spawned[0], 'cmd.exe')
+  assert.ok(spawned.includes('"mailto:someone@example.com?subject=hi"'))
 })
 
 test('wsl: falls back to openExternal and notifies when cmd.exe fails to spawn', async () => {

@@ -59,6 +59,17 @@ export interface ExternalOpenDeps {
 
 const SUPPORTED_WEB = ['http:', 'https:', 'mailto:']
 
+// Characters cmd.exe acts on when it parses the command line it is handed via
+// the WSL bridge: & | < > ( ) separate or redirect commands, ^ escapes the next
+// character, %VAR% expands environment variables (even inside double quotes —
+// expansion happens before quote parsing, and an expanded value can itself
+// carry a separator), and quotes would break the explicit quoting below. Node's
+// Windows argument escaping only quotes whitespace and quotes, so an `&` in a
+// query string would reach cmd.exe unquoted and execute as a command separator
+// (and any such URL already silently fails to open today). No URL cmd.exe can
+// open unmodified contains any of these, so the gate fails closed: no spawn.
+const WSL_CMD_UNSAFE = /[\r\n&|<>^%"']/
+
 export function externalOpenErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -114,9 +125,23 @@ export async function openExternalUrl(rawUrl: string, deps: ExternalOpenDeps): P
 }
 
 async function openViaWsl(url: string, deps: ExternalOpenDeps): Promise<ExternalOpenResult> {
+  if (WSL_CMD_UNSAFE.test(url)) {
+    // The URL reaches `cmd.exe /c start` verbatim and cmd.exe treats several of
+    // these characters as command separators or expansions; rather than hand it
+    // a line it could mis-parse (or one it would fail on anyway), refuse before
+    // spawning. This is the documented security chokepoint — a URL the Windows
+    // shell cannot carry safely is not opened.
+    deps.log(`[link] refusing WSL open, URL contains cmd.exe metacharacters: ${url}`)
+
+    return { ok: false, reason: 'invalid' }
+  }
+
   deps.log(`[link] opening via WSL→Windows: ${url}`)
 
-  const proc = deps.spawn('cmd.exe', ['/c', 'start', '""', url], {
+  // The URL is quoted explicitly: Node's Windows escaping covers whitespace
+  // and quotes only, so without the surrounding quotes cmd.exe would read an
+  // unquoted argument's punctuation as line syntax.
+  const proc = deps.spawn('cmd.exe', ['/c', 'start', '""', `"${url}"`], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true

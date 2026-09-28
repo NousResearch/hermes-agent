@@ -150,7 +150,7 @@ _UNAUTHORIZED = unauthorized_action_notice(Platform.TELEGRAM)
 
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from plugins.platforms.telegram.telegram_entities import expand_link_entities
-from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, telegram_chat_id_key
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
 from utils import env_float, env_int
@@ -3823,7 +3823,7 @@ class TelegramAdapter(BasePlatformAdapter):
         append a fresh bubble on every call. With this method, the first call sends and the message id is
         remembered; subsequent calls with the same (chat_id, status_key) edit that same message in place.
         """
-        key = (str(chat_id), str(status_key))
+        key = (telegram_chat_id_key(chat_id), str(status_key))
         cached_id = self._status_message_ids.get(key)
         if cached_id is not None:
             result = await self.edit_message(chat_id, cached_id, content, finalize=True, metadata=metadata)
@@ -4103,6 +4103,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         try:
             await self._bot.delete_message(chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id))
+            # A cached status id pointing at the deleted bubble would make the next
+            # send_or_update_status edit a missing message. Evict only this exact
+            # chat/message pair so sibling statuses in the chat survive.
+            chat_key, message_key = telegram_chat_id_key(chat_id), str(message_id)
+            for cache_key, cached_id in list(self._status_message_ids.items()):
+                if telegram_chat_id_key(cache_key[0]) == chat_key and str(cached_id) == message_key:
+                    self._status_message_ids.pop(cache_key, None)
             return True
         except Exception as e:
             logger.debug("[%s] Failed to delete Telegram message %s: %s", self.name, message_id, _redact_telegram_error_text(e))

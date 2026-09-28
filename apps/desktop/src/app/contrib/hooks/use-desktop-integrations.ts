@@ -22,6 +22,7 @@ import {
 } from '@/store/native-notifications'
 import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import { ensureGatewayProfile } from '@/store/profile'
 import { openFolderAsProject } from '@/store/projects'
 import {
   $selectedStoredSessionId,
@@ -46,6 +47,20 @@ import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionR
 import { resolveRememberedSessionId } from './remembered-session'
 
 type RememberedSession = Pick<SessionInfo, '_lineage_root_id' | 'id' | 'parent_session_id' | 'profile' | 'source'>
+
+/** Front a stored session the way a notification click does: a `stack` open (never
+ *  yanks a live main chat), keeping a Bot chat's scope, and stepping off an overlay
+ *  view first so the routed tab is actually visible. */
+function revealStoredSession(storedId: string, navigate: DesktopIntegrationsParams['navigate'], locationPathname: string) {
+  // A reveal fronts a tab; it must not reclassify a Bot chat.
+  const scope = $sessionTiles.get().find(tile => tile.storedSessionId === storedId) ?? $botChatScopes.get()[storedId]
+
+  if (isOverlayView(appViewForPath(locationPathname))) {
+    navigate(sessionRoute($selectedStoredSessionId.get() ?? ''), { replace: true })
+  }
+
+  openSession(storedId, navigate, 'stack', scope && { ...scope, workspaceMode: scope.workspaceMode ?? 'sessions' })
+}
 
 interface DesktopIntegrationsParams {
   activeProfile: string
@@ -112,6 +127,10 @@ export function useDesktopIntegrations({
   }, [])
 
   const restoredRef = useRef(false)
+  // Deep links read the route at delivery time without re-subscribing the OS listener
+  // (and re-signalling deep-link readiness) on every navigation.
+  const locationPathnameRef = useRef(locationPathname)
+  locationPathnameRef.current = locationPathname
   const diskPluginsScanPending = useStore($diskPluginsScanPending)
 
   // Wait until boot has adopted the primary profile, then restore that profile's
@@ -305,20 +324,7 @@ export function useDesktopIntegrations({
         const viaLocalMap = storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionId.current)
         const storedId = viaLocalMap !== sessionId ? viaLocalMap : (storedSessionIdForRuntimeId(sessionId) ?? sessionId)
 
-        // A notification reveals a tab; it must not reclassify a Bot chat.
-        const scope =
-          $sessionTiles.get().find(tile => tile.storedSessionId === storedId) ?? $botChatScopes.get()[storedId]
-
-        if (isOverlayView(appViewForPath(locationPathname))) {
-          navigate(sessionRoute($selectedStoredSessionId.get() ?? ''), { replace: true })
-        }
-
-        openSession(
-          storedId,
-          navigate,
-          'stack',
-          scope && { ...scope, workspaceMode: scope.workspaceMode ?? 'sessions' }
-        )
+        revealStoredSession(storedId, navigate, locationPathname)
       }
     })
 
@@ -374,6 +380,7 @@ export function useDesktopIntegrations({
   //    modal awaiting explicit confirmation. Never auto-installs.
   //  - skill/install?identifier=… → confirmation, then the existing hub pipeline
   //  - blueprint/<name>?… → reviewable /blueprint command in the composer
+  //  - session/<stored-id>?profile=… → open that saved chat (CLI `/handoff desktop`)
   //  - <plugin>/<path>?… → in-app navigate (e.g. index-network/intent/1)
   //  - open/<path>?… → in-app navigate (generic)
   useEffect(() => {
@@ -403,6 +410,20 @@ export function useDesktopIntegrations({
 
             return viaLocalMap !== runtimeId ? viaLocalMap : (storedSessionIdForRuntimeId(runtimeId) ?? runtimeId)
           })
+        })
+
+        return
+      }
+
+      // hermes://session/<id>?profile=<name> — the CLI's `/handoff desktop` (and any tool
+      // holding a stored id) hands the conversation to the app. `openSession`, not a bare
+      // `navigate`: routing alone changes the address without selecting the session and
+      // paints an empty pane. The profile is a hint: make that backend live first so the
+      // session resumes where it was written, but a hint that fails still opens the chat.
+      if (action.type === 'open-session') {
+        const { profile, sessionId } = action
+        void (profile ? ensureGatewayProfile(profile).catch(() => undefined) : Promise.resolve()).then(() => {
+          revealStoredSession(sessionId, navigate, locationPathnameRef.current)
         })
 
         return

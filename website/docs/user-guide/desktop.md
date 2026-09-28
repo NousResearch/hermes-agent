@@ -304,6 +304,12 @@ commands if the app is missing or too old. See
 [plugin links](./features/plugins.md#one-click-install-links-desktop) for the
 parameters and review flow.
 
+`hermes://session/<id>?profile=<name>` opens a saved chat: Desktop makes the named
+profile's backend live (the hint is optional) and fronts the session as a tab. The CLI's
+[`/handoff desktop`](./sessions.md#handoff-to-the-desktop-app) emits this link; a
+dashboard row or a companion tool holding a session id can use it the same way. Only ids
+in the stored-session shape (`YYYYMMDD_HHMMSS_<hex>`) are accepted.
+
 ### Bot Mode (built in)
 
 **Bot Mode** ships with the app and is on by default: a "one chat per agent"

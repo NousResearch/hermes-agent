@@ -60,5 +60,7 @@ describe('pathFromHermesDeepLink', () => {
     expect(pathFromHermesDeepLink('blueprint', 'morning-brief')).toBeNull()
     expect(pathFromHermesDeepLink('plugin', 'install')).toBeNull()
     expect(pathFromHermesDeepLink('skill', 'install')).toBeNull()
+    // A malformed session link must stay inert, never become a plugin route.
+    expect(pathFromHermesDeepLink('session', 'settings')).toBeNull()
   })
 })

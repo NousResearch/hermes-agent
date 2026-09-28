@@ -1133,9 +1133,12 @@ class CLICommandsMixin:
         platform_name = _command_arg(cmd_original).lower()
         if not platform_name:
             return self._handoff_keep(
-                "  Usage: /handoff <platform>",
-                "  Hands the current session off to that platform's home channel.",
-                "  The CLI session ends here; resume it later with /resume.")
+                "  Usage: /handoff <platform>|desktop",
+                "  Hands the current session off to that platform's home channel, or opens it in",
+                "  the Hermes Desktop app. The CLI session ends here; resume it later with /resume.")
+        if platform_name == "desktop":
+            from hermes_cli.cli_handoff_desktop import handoff_to_desktop
+            return handoff_to_desktop(self)
         home = self._handoff_validate_target(platform_name)
         if home is None:
             return True
@@ -1196,10 +1199,12 @@ class CLICommandsMixin:
         if not self._session_db:
             return _cp(_db_unavailable_line())
         # Ensure the session row exists (an empty session has flushed nothing yet): the gateway
-        # needs a row to switch_session onto; set_session_title's INSERT OR IGNORE creates it.
+        # needs a row to switch_session onto and Desktop a row to resume. set_session_title is
+        # UPDATE-only now (CAS on the existing row), so the upsert has to be explicit.
         try:
             if not self._session_db.get_session(self.session_id):
-                self._session_db.set_session_title(self.session_id, f"handoff-{self.session_id[:8]}")
+                self._session_db.ensure_session(
+                    self.session_id, source="cli", model=getattr(self, "model", None))
         except Exception as exc:
             return _cp(f"  Could not ensure session row in state.db: {exc}")
         session_title = ""

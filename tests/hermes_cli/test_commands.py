@@ -376,7 +376,8 @@ class TestSubcommandCompletion:
         monkeypatch.setattr("gateway.config.load_gateway_config", lambda: fake)
 
     def test_handoff_completes_connected_platforms(self, monkeypatch):
-        """`/handoff ` offers connected platforms, with or without a home channel."""
+        """`/handoff ` offers connected platforms (with or without a home channel) plus the
+        Desktop app, which needs no gateway."""
         self._fake_gateway(
             monkeypatch,
             {
@@ -386,7 +387,7 @@ class TestSubcommandCompletion:
         )
 
         texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff ")}
-        assert texts == {"telegram", "discord"}
+        assert texts == {"telegram", "discord", "desktop"}
 
 
 # ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────

@@ -26,6 +26,7 @@ const RESERVED_DEEP_LINK_KINDS = new Set([
   'plugin',
   'plugin-agent',
   'plugin-desktop',
+  'session',
   'settings',
   'skill'
 ])

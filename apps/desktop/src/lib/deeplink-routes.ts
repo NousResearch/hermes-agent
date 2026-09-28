@@ -1,3 +1,4 @@
+import { SESSION_ID_RE } from '@/lib/session-ids'
 import type { PluginInstallLegacyHint } from '@/store/plugin-install-request'
 
 export interface DeepLinkPayload {
@@ -14,6 +15,10 @@ export type DeepLinkAction =
   | { type: 'skill-install'; identifier: string }
   | { type: 'composer-blueprint'; name: string; params: Record<string, string> }
   | { type: 'connection-done'; op: string; status: string }
+  /** `hermes://session/<stored-id>[?profile=<name>]` — a CLI `/handoff desktop`, a
+   *  dashboard row or a companion tool handing a conversation to the app. The id must
+   *  be the stored-session shape; `profile` is only a routing hint. */
+  | { type: 'open-session'; sessionId: string; profile: string | null }
   | { type: 'ignore' }
 
 function truthyParam(value: string | undefined, defaultValue = false): boolean {
@@ -33,6 +38,16 @@ export function resolveDeepLinkAction(payload: DeepLinkPayload | null | undefine
 
   if (payload.kind === 'blueprint' && payload.name) {
     return { type: 'composer-blueprint', name: payload.name, params: payload.params || {} }
+  }
+
+  // Only a well-formed stored id opens a session: the link is whatever an external
+  // process put on the command line, so a malformed name is dropped rather than
+  // routed into the session resolver.
+  if (payload.kind === 'session') {
+    const sessionId = (payload.name || '').trim()
+    const profile = (payload.params?.profile || '').trim()
+
+    return SESSION_ID_RE.test(sessionId) ? { type: 'open-session', sessionId, profile: profile || null } : { type: 'ignore' }
   }
 
   // The browser leg of a connection came back (hermes://connections/done?op=…&status=…). The op id

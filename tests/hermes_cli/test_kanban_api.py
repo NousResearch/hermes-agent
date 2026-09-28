@@ -520,3 +520,116 @@ def test_patch_edits_notify_observers_like_the_dashboard(
     assert notified == [(task_id, ["assignee", "priority", "title"], kanban_db.get_current_board())]
     kinds = [e["kind"] for e in client.get(f"/api/plugins/kanban/v1/tasks/{task_id}/events").json()["events"]]
     assert {"assigned", "reprioritized", "edited"} <= set(kinds)
+
+
+def test_transcript_streams_worker_session_while_running(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_cli import profiles as profiles_mod
+    from hermes_state import SessionDB
+
+    profile_home = tmp_path / "worker-home"
+    profile_home.mkdir()
+    monkeypatch.setattr(profiles_mod, "resolve_profile_env", lambda name: str(profile_home))
+
+    task_id = _create(client, title="привіт", idempotency_key="transcript-1")["task"]["id"]
+    empty = client.get(f"/api/plugins/kanban/v1/tasks/{task_id}/transcript").json()
+    assert empty["run_id"] is None and empty["messages"] == []
+
+    with kbc.connect_closing() as conn:
+        kanban_db.claim_task(conn, task_id)
+        run = kanban_db.latest_run(conn, task_id)
+        assert run is not None
+        # Before the worker links its session: run known, nothing to show yet.
+        pending = client.get(f"/api/plugins/kanban/v1/tasks/{task_id}/transcript").json()
+        assert pending["run_status"] == "running" and pending["session_id"] is None
+        assert kanban_db.set_run_worker_session(conn, run.id, task_id, "sess-1")
+        # First writer wins (background review / delegated agents).
+        assert not kanban_db.set_run_worker_session(conn, run.id, task_id, "sess-2")
+
+    db = SessionDB(profile_home / "state.db")
+    db.create_session("sess-1", "kanban")
+    db.append_message("sess-1", "system", content="secret system prompt")
+    db.append_message("sess-1", "user", content="work kanban task")
+    db.append_message(
+        "sess-1", "assistant", content=None, reasoning="Користувач вітається",
+        tool_calls=[{"id": "c1", "type": "function", "function": {
+            "name": "kanban_show", "arguments": '{"key": "sk-abcdefghijklmnopqrstuvwxyz123456"}'}}],
+    )
+    db.append_message("sess-1", "tool", content="x" * 5000, tool_name="kanban_show", tool_call_id="c1")
+    db.append_message("sess-1", "assistant", content="Привіт! <script>")
+    db.close()
+
+    url = f"/api/plugins/kanban/v1/tasks/{task_id}/transcript"
+    body = client.get(url, params={"limit": 3}).json()
+    assert [m["role"] for m in body["messages"]] == ["user", "assistant"]  # system dropped
+    assert body["has_more"] is True
+    call = body["messages"][1]
+    assert call["reasoning"] == "Користувач вітається"
+    assert call["tool_calls"][0]["name"] == "kanban_show"
+    assert "sk-abcdefghijklmnop" not in call["tool_calls"][0]["arguments"]
+
+    rest = client.get(url, params={"after_id": body["next_after_id"]}).json()
+    assert [m["role"] for m in rest["messages"]] == ["tool", "assistant"]
+    assert rest["messages"][0]["truncated"] is True
+    assert len(rest["messages"][0]["content"]) == 4000
+    assert rest["messages"][1]["content"] == "Привіт! <script>"
+    assert rest["has_more"] is False
+
+    tail = client.get(url, params={"after_id": rest["next_after_id"]}).json()
+    assert tail["messages"] == [] and tail["next_after_id"] == rest["next_after_id"]
+
+    assert client.get(url, params={"run_id": 999}).status_code == 404
+    assert client.get("/api/plugins/kanban/v1/tasks/missing/transcript").status_code == 404
+
+
+def test_agent_init_links_kanban_run_session(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent.agent_init import _link_kanban_run_session
+
+    task_id = _create(client, idempotency_key="transcript-link")["task"]["id"]
+    with kbc.connect_closing() as conn:
+        kanban_db.claim_task(conn, task_id)
+        run_id = kanban_db.latest_run(conn, task_id).id
+
+    _link_kanban_run_session("sess-outside")  # no kanban env → no-op
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+    _link_kanban_run_session("sess-main")
+    _link_kanban_run_session("sess-review")  # later agent in the same worker
+
+    with kbc.connect_closing() as conn:
+        assert kanban_db.get_run(conn, run_id).worker_session_id == "sess-main"
+
+
+def test_transcript_latest_returns_newest_steps(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hermes_cli import profiles as profiles_mod
+    from hermes_state import SessionDB
+
+    home = tmp_path / "worker-home"
+    home.mkdir()
+    monkeypatch.setattr(profiles_mod, "resolve_profile_env", lambda name: str(home))
+    task_id = _create(client, idempotency_key="transcript-latest")["task"]["id"]
+    with kbc.connect_closing() as conn:
+        kanban_db.claim_task(conn, task_id)
+        run = kanban_db.latest_run(conn, task_id)
+        kanban_db.set_run_worker_session(conn, run.id, task_id, "s-root")
+
+    db = SessionDB(home / "state.db")
+    db.create_session("s-root", "kanban")
+    for i in range(3):
+        db.append_message("s-root", "assistant", content=f"root {i}")
+    db.end_session("s-root", "compression")
+    db.create_session("s-cont", "kanban", parent_session_id="s-root")
+    db.append_message("s-cont", "assistant", content="cont 0")
+    db.close()
+
+    url = f"/api/plugins/kanban/v1/tasks/{task_id}/transcript"
+    body = client.get(url, params={"latest": "true", "limit": 2}).json()
+    assert [m["content"] for m in body["messages"]] == ["root 2", "cont 0"]
+    assert body["has_more"] is True
+    full = client.get(url).json()
+    assert [m["content"] for m in full["messages"]] == ["root 0", "root 1", "root 2", "cont 0"]

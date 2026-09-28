@@ -28,6 +28,10 @@ router = APIRouter()
 
 _API_VERSION = "1"
 _DEFAULT_LOG_TAIL = 8_192
+# Transcript field caps: tool results can be whole 1C/DB dumps, so they get
+# a tighter limit than the agent's own prose/reasoning.
+_TRANSCRIPT_TEXT_CAP = 20_000
+_TRANSCRIPT_TOOL_CAP = 4_000
 _MAX_LOG_TAIL = 32_768
 _ABSOLUTE_PATH_RE = re.compile(
     r"(?<![\w:])(?:[A-Za-z]:[\\/](?:[^\s\\/]+[\\/])*[^\s\\/]*|/(?:[^/\s]+/)+[^/\s]*)"
@@ -284,7 +288,7 @@ def capabilities() -> dict[str, Any]:
         "tasks": {"read": True, "create": True, "update": True},
         "actions": ["comment", "complete", "block", "unblock", "archive"],
         "links": {"create": True, "delete": True},
-        "observability": ["events", "runs", "sanitized_log_excerpt"],
+        "observability": ["events", "runs", "sanitized_log_excerpt", "transcript"],
         "task_statuses": sorted(kanban_db.VALID_STATUSES),
         "block_kinds": sorted(kanban_db.VALID_BLOCK_KINDS),
         "idempotent_task_creation": True,
@@ -622,4 +626,151 @@ def task_log(
         "tail_bytes": tail_bytes,
         "truncated": size > tail_bytes,
         "excerpt": _sanitize_log(content or ""),
+    }
+
+
+def _transcript_text(value: Any, cap: int) -> tuple[Optional[str], bool]:
+    """Sanitize + cap one transcript field; multimodal parts keep text only."""
+    if value is None:
+        return None, False
+    if isinstance(value, list):
+        value = "\n".join(
+            str(part.get("text") or "") for part in value if isinstance(part, dict)
+        )
+    text = _sanitize_log(str(value))
+    if not text:
+        return None, False
+    if len(text) > cap:
+        return text[:cap], True
+    return text, False
+
+
+def _transcript_tool_call(raw: Any) -> tuple[dict[str, Any], bool]:
+    raw = raw if isinstance(raw, dict) else {}
+    fn = raw.get("function") if isinstance(raw.get("function"), dict) else raw
+    arguments, truncated = _transcript_text(fn.get("arguments"), _TRANSCRIPT_TOOL_CAP)
+    return {
+        "id": str(raw.get("id") or ""),
+        "name": str(fn.get("name") or ""),
+        "arguments": arguments or "",
+    }, truncated
+
+
+def _transcript_message(msg: dict[str, Any]) -> dict[str, Any]:
+    role = msg.get("role")
+    content, truncated = _transcript_text(
+        msg.get("content"),
+        _TRANSCRIPT_TOOL_CAP if role == "tool" else _TRANSCRIPT_TEXT_CAP,
+    )
+    reasoning, cut = _transcript_text(
+        msg.get("reasoning") or msg.get("reasoning_content"), _TRANSCRIPT_TEXT_CAP
+    )
+    truncated = truncated or cut
+    tool_calls = []
+    for raw in msg.get("tool_calls") or []:
+        call, cut = _transcript_tool_call(raw)
+        tool_calls.append(call)
+        truncated = truncated or cut
+    return {
+        "id": msg["id"],
+        "role": role,
+        "content": content,
+        "reasoning": reasoning,
+        "tool_calls": tool_calls,
+        "tool_name": msg.get("tool_name"),
+        "tool_call_id": msg.get("tool_call_id"),
+        "timestamp": msg.get("timestamp"),
+        "truncated": truncated,
+    }
+
+
+def _read_session_messages(
+    profile: str, session_id: str, after_id: int, limit: int, latest: bool = False
+) -> list[dict[str, Any]]:
+    """Read a worker session (plus its compression continuations) from the
+    worker profile's own state.db. Message ids are one AUTOINCREMENT per DB,
+    so ``after_id`` is a valid cursor across the whole chain. ``latest``
+    returns the newest ``limit`` rows (still oldest-first) instead."""
+    from pathlib import Path
+
+    from hermes_cli.profiles import resolve_profile_env
+    from hermes_state import SessionDB
+
+    try:
+        db_path = Path(resolve_profile_env(profile)) / "state.db"
+    except (FileNotFoundError, ValueError):
+        return []
+    if not db_path.is_file():
+        return []
+    db = SessionDB(db_path, read_only=True)
+    try:
+        rows: list[dict[str, Any]] = []
+        # ponytail: a compression continuation re-inserts the compacted
+        # context, so post-compression transcripts repeat a summary block.
+        chain = db.get_compression_chain(session_id)
+        if latest:
+            for sid in reversed(chain):
+                rows[:0] = db.get_messages(sid, latest=True, limit=limit - len(rows))
+                if len(rows) >= limit:
+                    break
+            return rows
+        for sid in chain:
+            rows.extend(db.get_messages(sid, after_id=after_id, limit=limit - len(rows)))
+            if len(rows) >= limit:
+                break
+        return rows
+    finally:
+        db.close()
+
+
+@router.get("/tasks/{task_id}/transcript")
+def task_transcript(
+    task_id: str,
+    board: Optional[str] = Query(default=None),
+    run_id: Optional[int] = Query(default=None, ge=1),
+    after_id: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
+    latest: bool = Query(default=False),
+) -> dict[str, Any]:
+    """Step-by-step transcript of one run: reasoning, tool calls/results and
+    replies, sanitized like the log excerpt. Poll with ``after_id`` =
+    ``next_after_id`` for near-live progress while the run is going, or with
+    ``latest=true`` for the newest ``limit`` steps (``has_more`` then means
+    older steps exist; ``after_id`` is ignored)."""
+    with _connection(board) as conn:
+        task = _require_task(conn, task_id)
+        if run_id is None:
+            run = kanban_db.latest_run(conn, task_id)
+        else:
+            run = kanban_db.get_run(conn, run_id)
+            if run is None or run.task_id != task_id:
+                raise HTTPException(status_code=404, detail="run not found")
+    session_id = None
+    if run is not None:
+        session_id = run.worker_session_id or (run.metadata or {}).get("worker_session_id")
+    messages: list[dict[str, Any]] = []
+    has_more = False
+    if run is not None and session_id:
+        profile = run.profile or task.assignee or "default"
+        try:
+            rows = _read_session_messages(
+                profile, str(session_id), 0 if latest else after_id, limit + 1, latest
+            )
+        except Exception as exc:
+            log.warning("kanban transcript read failed for %s: %s", task_id, exc)
+            raise HTTPException(status_code=503, detail="transcript unavailable") from exc
+        has_more = len(rows) > limit
+        page = rows[-limit:] if latest else rows[:limit]
+        messages = [_transcript_message(row) for row in page if row.get("role") != "system"]
+        next_after_id = page[-1]["id"] if page else after_id
+    else:
+        next_after_id = after_id
+    return {
+        "task_id": task_id,
+        "run_id": run.id if run else None,
+        "run_status": run.status if run else None,
+        "session_id": session_id,
+        "messages": messages,
+        "next_after_id": next_after_id,
+        "has_more": has_more,
     }

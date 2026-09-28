@@ -71,6 +71,33 @@ def test_catalog_placeholders_match_english(lang: str):
 
 
 # ---------------------------------------------------------------------------
+# Actual translation -- key parity (above) proves a value *exists*, not that
+# it was translated.  The French gateway.context block was shipped as verbatim
+# English, so every /context line rendered in English for French users.  Guard
+# against silent copy-through: each entry must differ from its English source.
+# The "bar" key is exempt -- it's a placeholder-only value ("{bar}") with no
+# translatable text.
+# ---------------------------------------------------------------------------
+
+
+def test_fr_gateway_context_is_translated():
+    """French gateway.context values must not be identical to English."""
+    en_flat = _flatten(_load_raw("en"))
+    fr_flat = _flatten(_load_raw("fr"))
+    identical = [
+        key
+        for key, en_value in en_flat.items()
+        if key.startswith("gateway.context.")
+        and key != "gateway.context.bar"
+        and fr_flat.get(key) == en_value
+    ]
+    assert not identical, (
+        f"fr.yaml gateway.context entries are still English (untranslated): "
+        f"{sorted(identical)}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Language resolution
 # ---------------------------------------------------------------------------
 

@@ -213,6 +213,7 @@ import {
   resolveDesktopWindowLaunch
 } from './desktop-profile'
 import { registryPrimaryBootRoute, resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
+import { type DesktopSharedMetrics, registerDesktopSharedMetrics } from './desktop-shared-metrics'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -505,7 +506,6 @@ import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
 import { createSshProbeConnection, pickLocalPort, redactSecrets, SshConnection } from './ssh-connection'
 import { createSshIsolatedKeepaliveRegistry } from './ssh-isolated-keepalive'
 import { createSshTeardownTracker } from './ssh-teardown'
-import { registerStartupLatencyIpc } from './startup-latency-ipc'
 import { createStreamThrottle } from './stream-throttle'
 import { installSystemCaTrust } from './system-ca'
 import { registerTerminalIpc } from './terminal-ipc'
@@ -560,7 +560,6 @@ import {
 import { startRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
-import { registerUpdateMetricsIpc, UpdateRunRecorder } from './updater/update-metrics'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
@@ -3353,7 +3352,7 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
 function emitUpdateProgress(payload) {
   const merged = { stage: 'idle', message: '', percent: null, error: null, ...payload, at: Date.now() }
   rememberLog(`[updates] ${merged.stage}: ${merged.message || merged.error || ''}`)
-  updateRunRecorder.noteProgress(merged.stage)
+  desktopMetrics.noteUpdateProgress(merged.stage)
 
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send('hermes:updates:progress', merged)
@@ -3396,15 +3395,7 @@ let updateInFlight = false
  */
 const updateOperation: UpdateOperation = new UpdateOperation(createPackagedUpdateStrategy)
 
-const updateRunRecorder: UpdateRunRecorder = new UpdateRunRecorder({
-  dir: () => app.getPath('userData'),
-  appVersion: () => app.getVersion(),
-  onRecorded: () => {
-    for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send('hermes:updates:metric:pending')
-    }
-  }
-})
+const desktopMetrics: DesktopSharedMetrics = registerDesktopSharedMetrics()
 
 function resolvePackagedUpdateStrategy(): Promise<UpdaterStrategy | null> {
   return updateOperation.resolve()
@@ -4448,14 +4439,7 @@ async function applyUpdates(): Promise<UpdaterApplyResultWire> {
     try {
       const packaged: UpdaterStrategy | null = await resolvePackagedUpdateStrategy()
       const strategy: UpdaterStrategy = packaged ?? resolveCheckoutUpdateStrategy()
-
-      // Only packaged runs: a checkout hand-off is counted by `hermes update`'s receipt.
-      const result: UpdaterApplyResultWire = await updateRunRecorder.track(
-        packaged?.mechanism,
-        INSTALL_STAMP?.commitDate,
-        () => strategy.apply()
-      )
-
+      const result: UpdaterApplyResultWire = await desktopMetrics.trackUpdateApply(packaged, strategy)
       handedOff = result.handedOff === true
 
       return result
@@ -18112,7 +18096,6 @@ registerGitIpc({ resolveGitBinary, resolveGhBinary })
 // Client-side loopback callback for MCP OAuth against remote backends — see
 // mcp-oauth-callback-ipc.ts.
 registerMcpOauthCallbackIpc()
-registerStartupLatencyIpc()
 
 // Embedded terminal PTY host (hermes:terminal:*) — see terminal-ipc.ts.
 const terminalIpc = registerTerminalIpc({
@@ -18145,8 +18128,6 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
     message: error?.message || String(error)
   }))
 )
-
-registerUpdateMetricsIpc(ipcMain, updateRunRecorder)
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 

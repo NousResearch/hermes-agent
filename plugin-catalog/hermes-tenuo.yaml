@@ -1,16 +1,18 @@
 name: hermes-tenuo
 repo: https://github.com/tenuo-ai/hermes-tenuo
-sha: 80a980b4932f446c342da764b928772ed7ed9baa
+sha: 02b75257c0f22fe7c488d33ef41fdd38bed6ab57
 description: >-
   Per-call authorization for Hermes Agent tool calls.
   Each call is checked against a signed, expiring warrant before the
   handler runs, including argument constraints.
+
+  Disclosure — hermes-tenuo is a no-op until a warrant is configured and blocks every tool call in a kanban worker that has no per-task warrant; it appends every tool call's name and full arguments to $HERMES_HOME/tenuo/audit.jsonl (disable with audit_log: false); when TENUO_CONNECT_TOKEN or TENUO_CONTROL_PLANE_URL are set, the bundled tenuo SDK (compiled Rust core) streams those decisions, including arguments, to that control plane.
 maintainer: tenuo-ai
 tier: community
 category: tools
 requires_hermes: ">=0.20"
 docs_url: https://github.com/tenuo-ai/hermes-tenuo
-version: "0.1.1"
+version: "0.1.2"
 capabilities:
   provides_tools: []
   provides_hooks:

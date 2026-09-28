@@ -3998,8 +3998,14 @@ def _platform_manifest_paths(home: Optional[Path] = None, source: str = "all"):
         if not root.is_dir():
             continue
         for child in root.iterdir():
-            manifest_path = next(
-                (p for p in (child / "plugin.yaml", child / "plugin.yml") if child.is_dir() and p.exists()), None)
+            if child.name.startswith((".", "__")):
+                continue  # __pycache__, .git, editor state: never a plugin
+            try:
+                manifest_path = next(
+                    (p for p in (child / "plugin.yaml", child / "plugin.yml") if child.is_dir() and p.exists()), None)
+            except OSError as exc:  # an unsearchable dir cannot be loaded as a plugin either
+                logger.warning("Skipping unreadable plugin directory %s: %s", child, exc)
+                continue
             if manifest_path is not None:
                 yield child.name, manifest_path, require_kind
 
@@ -4007,21 +4013,31 @@ def _platform_manifest_paths(home: Optional[Path] = None, source: str = "all"):
 def platform_manifest_stamp(home: Optional[Path] = None, source: str = "user") -> tuple:
     """``(path, mtime_ns)`` of every platform plugin manifest file: changes whenever one is added,
     removed or edited in place, so a cache keyed on it never serves a stale declaration."""
-    return tuple((str(path), path.stat().st_mtime_ns) for _dir, path, _kind in _platform_manifest_paths(home, source))
+    stamp = []
+    for _dir, path, _kind in _platform_manifest_paths(home, source):
+        try:
+            stamp.append((str(path), path.stat().st_mtime_ns))
+        except OSError:
+            stamp.append((str(path), None))  # the strict read reports it
+    return tuple(stamp)
 
 
 def _platform_plugin_manifests(home: Optional[Path] = None, source: str = "all", *, strict: bool = False):
     """Yield ``(dir_name, manifest_dict)`` for every platform plugin manifest (see
     :func:`_platform_manifest_paths`). ``strict`` raises when a manifest cannot be read instead of
-    skipping it: the child-env scrub must not lose a declared secret to an I/O error. A manifest
-    that does not parse declares nothing (its adapter cannot load either) and is skipped."""
+    skipping it: the child-env scrub must not lose a declared secret to an I/O error. Only a
+    manifest known to be a platform's counts (the bundled and ``plugins/platforms/`` dirs); a
+    flat ``plugins/*`` manifest proves it is one only by its content, so an unreadable one is
+    skipped with a warning. A manifest that does not parse declares nothing (its adapter cannot
+    load either) and is skipped."""
     for dir_name, manifest_path, require_kind in _platform_manifest_paths(home, source):
         try:
             with open(manifest_path, "r", encoding="utf-8-sig") as f:
                 manifest = fast_safe_load(f) or {}
-        except OSError:
-            if strict:
+        except OSError as exc:
+            if strict and not require_kind:
                 raise
+            logger.warning("Skipping unreadable plugin manifest %s: %s", manifest_path, exc)
             continue
         except Exception:
             continue

@@ -87,6 +87,25 @@ def test_openviking_server_keeps_provider_keys_but_never_tier1_secrets(child_env
                     _PROVIDER: "fake-openai_api_key", **own}
 
 
+def test_openviking_server_gets_the_bound_profiles_provider_keys_not_its_bot_tokens(child_env, monkeypatch):
+    # A routed profile's own .env is overlaid for its provider keys; its bot and dashboard
+    # secrets must not ride along, and the launch profile's keys must not either.
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    _plant(monkeypatch)
+    routed = child_env / "profiles" / "b"
+    routed.mkdir(parents=True)
+    (routed / ".env").write_text(
+        "TELEGRAM_BOT_TOKEN=b-bot\nHERMES_DASHBOARD_BASIC_AUTH_PASSWORD=b-dash\nOPENAI_API_KEY=b-openai\n",
+        encoding="utf-8")
+    token = set_hermes_home_override(routed)
+    try:
+        seen = _openviking_server_seen(
+            child_env, monkeypatch, ["TELEGRAM_BOT_TOKEN", "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", _PROVIDER])
+    finally:
+        reset_hermes_home_override(token)
+    assert seen == {"TELEGRAM_BOT_TOKEN": None, "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD": None, _PROVIDER: "b-openai"}
+
+
 @pytest.mark.platforms("posix")  # the stand-in binaries are shebang scripts
 @pytest.mark.parametrize("site", ["lsp_server", "lsp_go_install", "lsp_npm_install", "raft_bridge", "buzz_cli"])
 def test_third_party_children_never_see_hermes_credentials(child_env, monkeypatch, site):

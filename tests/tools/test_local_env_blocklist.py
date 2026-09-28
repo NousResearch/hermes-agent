@@ -191,6 +191,19 @@ def test_unreadable_platform_manifest_fails_closed(tmp_path):
             platform_manifest_secret_envs(tmp_path, strict=True)
     finally:
         manifest.chmod(0o644)
+    # Not provably a platform's, so no reason to fail: an unsearchable plugin dir (a root-owned
+    # __pycache__ or plugin in a volume) or an unreadable flat plugins/* manifest.
+    locked = [tmp_path / "plugins" / "__pycache__", tmp_path / "plugins" / "memx"]
+    for d in locked:
+        d.mkdir()
+    (locked[1] / "plugin.yaml").write_text("kind: memory\n", encoding="utf-8")
+    locked[0].chmod(0)
+    (locked[1] / "plugin.yaml").chmod(0)
+    try:
+        assert platform_manifest_secret_envs(tmp_path, strict=True) == {"CHATX_SIGNING_SECRET"}
+    finally:
+        locked[0].chmod(0o755)
+        (locked[1] / "plugin.yaml").chmod(0o644)
 
 
 def test_inheriting_child_gets_provider_keys_but_never_adapter_secrets(child_env, monkeypatch):

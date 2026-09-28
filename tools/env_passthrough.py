@@ -117,8 +117,8 @@ def _load_config_passthrough() -> frozenset[str]:
 
 def is_env_passthrough(var_name: str) -> bool:
     """True if *var_name* was registered by a skill or listed in config and is not a
-    Hermes-managed credential NOW. Ownership changes after acceptance (a plugin adapter
-    registering later claims ``<PREFIX>_*_SECRET``), so the refusal applied at registration
+    Hermes-managed credential NOW. Ownership changes after acceptance (a platform plugin
+    registered later declares the name in its ``required_env`` or manifest), so the refusal applied at registration
     is re-applied here, where every child builder consumes the allowlist."""
     return ((var_name in _get_allowed() or var_name in _load_config_passthrough())
             and not _is_hermes_provider_credential(var_name))

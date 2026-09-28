@@ -128,13 +128,13 @@ def _home_adapter_secret_env() -> frozenset:
     mtime (an in-place edit invalidates it); an unreadable manifest raises instead of silently
     dropping the declaration."""
     from hermes_cli.config import platform_manifest_secret_envs, platform_manifest_stamp
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, hermes_home_key
     home = get_hermes_home()
-    stamp = platform_manifest_stamp(home)
-    cached = _HOME_ADAPTER_SECRET_CACHE.get(str(home))
+    key, stamp = hermes_home_key(home), platform_manifest_stamp(home)
+    cached = _HOME_ADAPTER_SECRET_CACHE.get(key)
     if cached is None or cached[0] != stamp:
         cached = (stamp, platform_manifest_secret_envs(home, strict=True) - _ADAPTER_SECRET_ENV)
-        _HOME_ADAPTER_SECRET_CACHE[str(home)] = cached
+        _HOME_ADAPTER_SECRET_CACHE[key] = cached
     return cached[1]
 
 

@@ -1,6 +1,6 @@
 import type { Translations } from "./types";
 
-export const en: Translations = {
+export const en = {
   common: {
     save: "Save",
     saving: "Saving...",
@@ -163,15 +163,25 @@ export const en: Translations = {
     filterChats: "Chats",
     filterAutomation: "Automation",
     filterAll: "All",
+    currentSessions: "Current",
+    archivedSessions: "Archived",
     sourceFilter: "Session source",
     anySource: "Any source",
     searchPlaceholder: "Search message content...",
     noSessions: "No sessions yet",
+    noArchivedSessions: "No archived sessions",
     noSessionsInFilter: "No sessions in this filter",
     noMatch: "No sessions match your search",
     startConversation: "Start a conversation to see it here",
     noMessages: "No messages",
     untitledSession: "Untitled session",
+    archived: "Archived",
+    archiveSession: "Archive session",
+    unarchiveSession: "Unarchive session",
+    sessionArchived: "Session archived",
+    sessionUnarchived: "Session unarchived",
+    failedToArchive: "Failed to archive session",
+    failedToUnarchive: "Failed to unarchive session",
     deleteSession: "Delete session",
     confirmDeleteTitle: "Delete session?",
     confirmDeleteMessage:
@@ -920,4 +930,4 @@ export const en: Translations = {
       confirmManyTitle: "Delete {n} tasks?",
     },
   },
-};
+} satisfies Translations;

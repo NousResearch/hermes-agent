@@ -206,6 +206,29 @@ describe("management profile scope", () => {
   );
 });
 
+describe("session archive requests", () => {
+  it("scopes list, search, and archive mutations to the requested profile", async () => {
+    const fetchMock = jsonFetchMock({ ok: true, sessions: [], results: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getSessions(20, 0, { profile: "worker", archived: "only" });
+    await api.searchSessions("needle", { profile: "worker", archived: "only" });
+    await api.setSessionArchived("session/id", true, "worker");
+    await api.setSessionArchived("session/id", false, "worker");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/sessions?limit=20&offset=0&order=created&archived=only&profile=worker",
+      "/api/sessions/search?q=needle&archived=only&profile=worker",
+      "/api/sessions/session%2Fid",
+      "/api/sessions/session%2Fid",
+    ]);
+    expect(fetchMock.mock.calls.slice(2).map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { archived: true, profile: "worker" },
+      { archived: false, profile: "worker" },
+    ]);
+  });
+});
+
 describe("api OAuth helpers", () => {
   it("starts OAuth login in gated mode without requiring an injected session token", async () => {
     vi.stubGlobal("window", { __HERMES_AUTH_REQUIRED__: true });

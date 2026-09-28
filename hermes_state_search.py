@@ -162,7 +162,8 @@ def _search_select_sql(snippet_sql: str, from_sql: str, where: List[str], order_
 def _search_filter_clauses(
     where: List[str], params: list, *, include_inactive: bool, source_filter: Optional[List[str]],
     exclude_sources: Optional[List[str]], role_filter: Optional[List[str]],
-    after_ts: Optional[int] = None, before_ts: Optional[int] = None) -> None:
+    after_ts: Optional[int] = None, before_ts: Optional[int] = None,
+    archived: Optional[bool] = None) -> None:
     """Append the visibility/source/role/session-start predicates every search route shares. Live
     rows (active=1) AND compaction-archived rows (compacted=1) are discoverable; only
     rewind/undo rows (active=0, compacted=0) are hidden. ``after_ts``/``before_ts`` bound
@@ -178,6 +179,9 @@ def _search_filter_clauses(
     if exclude_sources is not None:
         where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
         params.extend(exclude_sources)
+    if archived is not None:
+        where.append("s.archived = ?")
+        params.append(int(archived))
     if role_filter:
         where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
         params.extend(role_filter)
@@ -1064,6 +1068,7 @@ class SessionSearchMixin:
         role_filter: List[str] = None, limit: int = 20, offset: int = 0, sort: str = None,
         include_inactive: bool = False, fields: Optional[Collection[str]] = None,
         after_ts: Optional[int] = None, before_ts: Optional[int] = None,
+        archived: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         """:meth:`_search_messages_impl` plus one log line per slow search with the routing
         path taken. Threshold HERMES_SEARCH_SLOW_MS (default 1000; 0 logs every call)."""
@@ -1073,7 +1078,7 @@ class SessionSearchMixin:
             rows = self._search_messages_impl(
                 query, source_filter=source_filter, exclude_sources=exclude_sources, role_filter=role_filter,
                 limit=limit, offset=offset, sort=sort, include_inactive=include_inactive, fields=fields,
-                after_ts=after_ts, before_ts=before_ts)
+                after_ts=after_ts, before_ts=before_ts, archived=archived)
             return rows
         finally:
             elapsed_ms = (time.time() - started) * 1000.0
@@ -1087,6 +1092,7 @@ class SessionSearchMixin:
         role_filter: List[str] = None, limit: int = 20, offset: int = 0, sort: str = None,
         include_inactive: bool = False, fields: Optional[Collection[str]] = None,
         after_ts: Optional[int] = None, before_ts: Optional[int] = None,
+        archived: Optional[bool] = None,
     ) -> List[Dict[str, Any]]:
         """FTS5 search across session messages (keywords, ``"phrases"``, AND/OR/NOT, ``prefix*``).
         Returns snippet + session metadata + 1-message context per hit; ``fields`` selects a
@@ -1103,7 +1109,7 @@ class SessionSearchMixin:
             return []
         filters = dict(include_inactive=include_inactive, source_filter=source_filter,
                        exclude_sources=exclude_sources, role_filter=role_filter,
-                       after_ts=after_ts, before_ts=before_ts)
+                       after_ts=after_ts, before_ts=before_ts, archived=archived)
         # New oversized tool results index only a bounded prefix; an explicit tool-role search is the
         # opt-in full-body path and scans canonical rows via LIKE.
         if role_filter and "tool" in role_filter:
@@ -1236,7 +1242,8 @@ class SessionSearchMixin:
 
     def search_sessions_by_id(
         self, query: str, limit: int = 20, include_archived: bool = True, source: str = None,
-        sources: List[str] = None, exclude_sources: List[str] = None) -> List[Dict[str, Any]]:
+        sources: List[str] = None, exclude_sources: List[str] = None,
+        archived_only: bool = False) -> List[Dict[str, Any]]:
         """Search surfaced sessions by exact/prefix/substring session id. Also matches
         ``_lineage_root_id`` so an old compression root id resolves to the live continuation."""
         needle = (query or "").strip().lower()
@@ -1246,7 +1253,8 @@ class SessionSearchMixin:
         # chain) into SQL; over-fetch so the in-Python ranking has candidates.
         candidates = self.list_sessions_rich(
             source=source, sources=sources, exclude_sources=exclude_sources, limit=max(limit * 4, limit),
-            offset=0, include_archived=include_archived, order_by_last_active=True, id_query=needle)
+            offset=0, include_archived=include_archived, archived_only=archived_only,
+            order_by_last_active=True, id_query=needle)
 
         def score(row: Dict[str, Any]) -> int:
             normalized = [v.lower() for v in (str(row.get("id") or ""), str(row.get("_lineage_root_id") or "")) if v]

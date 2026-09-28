@@ -371,6 +371,7 @@ function appendQueryParam(url: string, key: string, value?: string): string {
 export interface SessionQueryOptions {
   profile?: string;
   order?: "created" | "recent";
+  archived?: "exclude" | "only" | "include";
   source?: string | null;
   sources?: string[];
   excludeSources?: string[];
@@ -392,6 +393,7 @@ function normalizeSessionQueryOptions(
 
 function appendSessionFilters(url: string, options: SessionQueryOptions): string {
   let next = url;
+  next = appendQueryParam(next, "archived", options.archived);
   next = appendQueryParam(next, "source", options.source ?? undefined);
   if (options.sources && options.sources.length > 0) {
     next = appendQueryParam(next, "sources", options.sources.join(","));
@@ -514,6 +516,19 @@ export const api = {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title, profile: profile || undefined }),
+      },
+    ),
+  setSessionArchived: (
+    id: string,
+    archived: boolean,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<{ ok: boolean; archived: boolean; title: string }>(
+      `/api/sessions/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived, profile: profile || undefined }),
       },
     ),
   getSessionStats: (profile = getManagementProfile()) =>
@@ -2103,6 +2118,7 @@ export interface SessionInfo {
   input_tokens: number;
   output_tokens: number;
   preview: string | null;
+  archived?: boolean;
   parent_session_id?: string | null;
   /** Owning profile stamped by the list/detail endpoints (the store the row
    * was read from). Absent on search-endpoint rows, which carry no stamp. */

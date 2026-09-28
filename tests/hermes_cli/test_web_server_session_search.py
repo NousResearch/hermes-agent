@@ -39,9 +39,11 @@ class _FakeSessionDB:
         source=None,
         sources=None,
         exclude_sources=None,
+        archived_only=False,
     ):
         assert query == "20260603"
         assert include_archived is True
+        assert archived_only is False
         rows = [
             {
                 "id": "20260603_090200_exact",
@@ -67,8 +69,10 @@ class _FakeSessionDB:
         exclude_sources=None,
         limit=20,
         fields=None,
+        archived=None,
     ):
         assert query == "20260603*"
+        assert archived is None
         type(self).requested_fields = fields
         rows = [
             {

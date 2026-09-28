@@ -31,6 +31,7 @@ import {
   Pencil,
   Check,
   Archive,
+  ArchiveRestore,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { formatSessionPruneResult } from "@/lib/session-prune";
@@ -42,6 +43,7 @@ import {
 import type {
   SessionInfo,
   SessionMessage,
+  SessionQueryOptions,
   SessionSearchResult,
   SessionStoreStats,
   StatusResponse,
@@ -71,6 +73,7 @@ import {
 import { useSystemActions } from "@/contexts/useSystemActions";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
@@ -113,6 +116,7 @@ const AUTOMATION_SESSION_SOURCE_SET = new Set(AUTOMATION_SESSION_SOURCES);
 const NO_MATCHING_SESSION_SOURCE = "__hermes_dashboard_no_matching_source__";
 
 type SessionFilterCategory = "chats" | "automation" | "all";
+type SessionArchiveFilter = "current" | "archived";
 type SourceSelectionsByCategory = Record<SessionFilterCategory, string[] | null>;
 
 function isAutomationSource(source: string): boolean {
@@ -474,6 +478,7 @@ function SessionRow({
   onToggle,
   onSelectClick,
   onDelete,
+  onArchiveToggle,
   onRename,
   onExport,
   resumeInChatEnabled,
@@ -483,7 +488,9 @@ function SessionRow({
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
+  const [archiveSaving, setArchiveSaving] = useState(false);
   const { t } = useI18n();
+  const archiveText = { ...en.sessions, ...t.sessions };
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -578,6 +585,40 @@ function SessionRow({
         }}
       >
         <Download />
+      </Button>
+
+      <Button
+        ghost
+        size="icon"
+        className={
+          session.archived
+            ? "text-muted-foreground hover:text-success"
+            : "text-muted-foreground hover:text-foreground"
+        }
+        aria-label={
+          session.archived
+            ? archiveText.unarchiveSession
+            : archiveText.archiveSession
+        }
+        title={
+          session.archived
+            ? archiveText.unarchiveSession
+            : archiveText.archiveSession
+        }
+        disabled={archiveSaving}
+        onClick={(e) => {
+          e.stopPropagation();
+          setArchiveSaving(true);
+          void onArchiveToggle(session).finally(() => setArchiveSaving(false));
+        }}
+      >
+        {archiveSaving ? (
+          <Spinner className="text-sm" />
+        ) : session.archived ? (
+          <ArchiveRestore />
+        ) : (
+          <Archive />
+        )}
       </Button>
 
       <Button
@@ -699,6 +740,11 @@ function SessionRow({
                   <Badge tone="success" className="shrink-0 text-xs">
                     <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                     {t.common.live}
+                  </Badge>
+                )}
+                {session.archived && (
+                  <Badge tone="secondary" className="shrink-0 text-xs">
+                    {archiveText.archived}
                   </Badge>
                 )}
               </div>
@@ -834,6 +880,8 @@ export default function SessionsPage() {
   const [view, setView] = useState<SessionsView>("overview");
   const [sessionCategory, setSessionCategory] =
     useState<SessionFilterCategory>("chats");
+  const [archiveFilter, setArchiveFilter] =
+    useState<SessionArchiveFilter>("current");
   const [sourceSelectionsByCategory, setSourceSelectionsByCategory] =
     useState<SourceSelectionsByCategory>({
       chats: null,
@@ -874,6 +922,7 @@ export default function SessionsPage() {
   const [importingSessions, setImportingSessions] = useState(false);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const archiveText = { ...en.sessions, ...t.sessions };
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
@@ -907,35 +956,40 @@ export default function SessionsPage() {
     [allSourceOptions],
   );
 
-  const sessionQueryOptions = useMemo(() => {
+  const sessionQueryOptions = useMemo<SessionQueryOptions>(() => {
+    const archiveOptions: SessionQueryOptions = {
+      archived: archiveFilter === "archived" ? "only" : "exclude",
+    };
     if (selectedSources !== null) {
       if (selectedSources.length === 0) {
         return allSourceNames.length > 0
-          ? { excludeSources: allSourceNames }
-          : { source: NO_MATCHING_SESSION_SOURCE };
+          ? { ...archiveOptions, excludeSources: allSourceNames }
+          : { ...archiveOptions, source: NO_MATCHING_SESSION_SOURCE };
       }
       if (selectedSources.length === 1) {
-        return { source: selectedSources[0] };
+        return { ...archiveOptions, source: selectedSources[0] };
       }
       const selected = new Set(selectedSources);
       const excludedSources = allSourceNames.filter(
         (source) => !selected.has(source),
       );
-      return excludedSources.length > 0 ? { excludeSources: excludedSources } : {};
+      return excludedSources.length > 0
+        ? { ...archiveOptions, excludeSources: excludedSources }
+        : archiveOptions;
     }
     if (sessionCategory === "chats") {
-      return { excludeSources: AUTOMATION_SESSION_SOURCES };
+      return { ...archiveOptions, excludeSources: AUTOMATION_SESSION_SOURCES };
     }
     if (sessionCategory === "automation") {
       const excludedSources = allSourceNames.filter(
         (source) => !isAutomationSource(source),
       );
       return excludedSources.length > 0
-        ? { excludeSources: excludedSources }
-        : { sources: AUTOMATION_SESSION_SOURCES };
+        ? { ...archiveOptions, excludeSources: excludedSources }
+        : { ...archiveOptions, sources: AUTOMATION_SESSION_SOURCES };
     }
-    return {};
-  }, [selectedSources, sessionCategory, allSourceNames]);
+    return archiveOptions;
+  }, [archiveFilter, selectedSources, sessionCategory, allSourceNames]);
 
   const categoryDefaultSources = useMemo(() => {
     return allSourceNames.filter((source) =>
@@ -1215,6 +1269,19 @@ export default function SessionsPage() {
     [clearSelection],
   );
 
+  const updateArchiveFilter = useCallback(
+    (value: string) => {
+      const next = value as SessionArchiveFilter;
+      setArchiveFilter(next);
+      if (next === "archived") setView("list");
+      setPage(0);
+      setExpandedId(null);
+      setSearchResults(null);
+      clearSelection();
+    },
+    [clearSelection],
+  );
+
   const toggleSourceFilter = useCallback(
     (source: string) => {
       setSourceSelectionsByCategory((currentByCategory) => {
@@ -1252,6 +1319,7 @@ export default function SessionsPage() {
 
   // Debounced FTS search
   useEffect(() => {
+    let cancelled = false;
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
     if (!search.trim()) {
@@ -1267,12 +1335,19 @@ export default function SessionsPage() {
       setSearchResults(null);
       api
         .searchSessions(search.trim(), sessionQueryOptions)
-        .then((resp) => setSearchResults(resp.results))
-        .catch(() => setSearchResults(null))
-        .finally(() => setSearching(false));
+        .then((resp) => {
+          if (!cancelled) setSearchResults(resp.results);
+        })
+        .catch(() => {
+          if (!cancelled) setSearchResults(null);
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
     }, 300);
 
     return () => {
+      cancelled = true;
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [search, sessionQueryOptions]);
@@ -1327,6 +1402,54 @@ export default function SessionsPage() {
       ],
     ),
   });
+
+  const handleArchiveToggle = useCallback(
+    async (session: SessionInfo) => {
+      const archived = !session.archived;
+      try {
+        await api.setSessionArchived(session.id, archived, session.profile);
+        setSessions((prev) => prev.filter((row) => row.id !== session.id));
+        setOverviewSessions((prev) =>
+          prev.filter((row) => row.id !== session.id),
+        );
+        setSearchResults((prev) =>
+          prev?.filter((row) => row.id !== session.id) ?? null,
+        );
+        setTotal((prev) => Math.max(0, prev - 1));
+        setSelectedIds((prev) => {
+          if (!prev.has(session.id)) return prev;
+          const next = new Set(prev);
+          next.delete(session.id);
+          return next;
+        });
+        if (expandedId === session.id) setExpandedId(null);
+        showToast(
+          archived ? archiveText.sessionArchived : archiveText.sessionUnarchived,
+          "success",
+        );
+        loadSessions(page, true);
+        loadStats();
+        refreshEmptyCount();
+      } catch {
+        showToast(
+          archived ? archiveText.failedToArchive : archiveText.failedToUnarchive,
+          "error",
+        );
+      }
+    },
+    [
+      expandedId,
+      loadSessions,
+      loadStats,
+      page,
+      refreshEmptyCount,
+      showToast,
+      archiveText.failedToArchive,
+      archiveText.failedToUnarchive,
+      archiveText.sessionArchived,
+      archiveText.sessionUnarchived,
+    ],
+  );
 
   /** Toggle one row's selection. When ``event.shiftKey`` is true AND we
    *  have a previous anchor, every row between the anchor and the
@@ -1573,7 +1696,8 @@ export default function SessionsPage() {
 
   const isSearching = Boolean(search.trim());
   const showOverviewTab =
-    platformEntries.length > 0 || recentSessions.length > 0;
+    archiveFilter === "current" &&
+    (platformEntries.length > 0 || recentSessions.length > 0);
   const showList = view === "list" || isSearching || !showOverviewTab;
   const showPagination = showList && !isSearching && total > PAGE_SIZE;
 
@@ -1843,6 +1967,17 @@ export default function SessionsPage() {
             <Segmented
               className="w-fit shrink-0"
               size="md"
+              value={archiveFilter}
+              onChange={updateArchiveFilter}
+              options={[
+                { value: "current", label: archiveText.currentSessions },
+                { value: "archived", label: archiveText.archivedSessions },
+              ]}
+            />
+
+            <Segmented
+              className="w-fit shrink-0"
+              size="md"
               value={sessionCategory}
               onChange={updateSessionCategory}
               options={[
@@ -2095,11 +2230,13 @@ export default function SessionsPage() {
             <p className="text-sm font-medium">
               {search
                 ? t.sessions.noMatch
-                : selectedSources !== null || sessionCategory !== "chats"
-                  ? t.sessions.noSessionsInFilter
-                  : t.sessions.noSessions}
+                : archiveFilter === "archived"
+                  ? archiveText.noArchivedSessions
+                  : selectedSources !== null || sessionCategory !== "chats"
+                    ? t.sessions.noSessionsInFilter
+                    : t.sessions.noSessions}
             </p>
-            {!search && sessionCategory === "chats" && selectedSources === null && (
+            {!search && archiveFilter === "current" && sessionCategory === "chats" && selectedSources === null && (
               <p className="text-xs mt-1 text-text-tertiary">
                 {t.sessions.startConversation}
               </p>
@@ -2123,6 +2260,7 @@ export default function SessionsPage() {
                     handleSelectClick(event, index, filtered)
                   }
                   onDelete={() => sessionDelete.requestDelete(s.id)}
+                  onArchiveToggle={handleArchiveToggle}
                   onRename={handleRename}
                   onExport={handleExport}
                   resumeInChatEnabled={resumeInChatEnabled}
@@ -2215,6 +2353,7 @@ export default function SessionsPage() {
 interface SessionRowProps {
   isExpanded: boolean;
   isSelected: boolean;
+  onArchiveToggle: (session: SessionInfo) => Promise<void>;
   onDelete: () => void;
   onExport: (id: string) => void;
   onRename: (id: string, title: string) => Promise<void>;

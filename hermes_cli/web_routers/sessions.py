@@ -284,7 +284,7 @@ def _is_compression_edge(child: dict, parent: dict) -> bool:
 @search_router.get("/api/sessions/search")
 async def search_sessions(
     q: str = "", limit: int = 20, profile: Optional[str] = None, source: str = None,
-    sources: str = None, exclude_sources: str = None):
+    sources: str = None, exclude_sources: str = None, archived: str = "include"):
     """Search sessions by ID (first) plus FTS5 message content.
 
     Results are deduped by compression lineage, not raw ``session_id``:
@@ -294,6 +294,9 @@ async def search_sessions(
     """
     if not q or not q.strip():
         return {"results": []}
+    if archived not in ("exclude", "only", "include"):
+        raise HTTPException(
+            status_code=400, detail="archived must be one of: exclude, only, include")
     with http_failure("GET /api/sessions/search failed", 500, detail="Search failed"):
         row_profile = _serving_profile(profile)
 
@@ -303,6 +306,7 @@ async def search_sessions(
             source_list = _csv(sources)
             include_sources = [source_filter] if source_filter else (source_list or None)
             exclude_list = _csv(exclude_sources)
+            archived_filter = None if archived == "include" else archived == "only"
             now = time.time()
 
             def get_session(sid):
@@ -397,7 +401,8 @@ async def search_sessions(
 
             # Direct ID matches first (pasted ids never appear in message text).
             for row in db.search_sessions_by_id(
-                q, limit=safe_limit, include_archived=True, source=source_filter,
+                q, limit=safe_limit, include_archived=archived != "exclude",
+                archived_only=archived == "only", source=source_filter,
                 sources=source_list or None, exclude_sources=exclude_list or None):
                 sid = row.get("id")
                 preview = (row.get("preview") or "").strip()
@@ -414,6 +419,7 @@ async def search_sessions(
             matches = db.search_messages(
                 query=prefix_query, source_filter=include_sources,
                 exclude_sources=exclude_list or None, limit=max(safe_limit * 5, 50),
+                archived=archived_filter,
                 fields=("session_id", "role", "snippet", "source", "model", "session_started"))
             for m in matches:
                 if len(seen) >= safe_limit:

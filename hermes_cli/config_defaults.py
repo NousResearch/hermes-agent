@@ -1324,6 +1324,17 @@ DEFAULT_CONFIG = {
             # the provider call that would cross the budget. 0 or a negative
             # value = unlimited.
             "max_input_tokens": 600000,
+            # Taste learning (decaying, corroborated preference scores).
+            # Rides the review fork at near-zero marginal cost; fail-open.
+            "taste": {
+                "enabled": True,                 # master switch; fail-open = True
+                "half_life_days": 14.0,          # decay; None disables (0 raises ValueError)
+                "escalate_stale_after_days": 21, # staleness escalation threshold
+                "conflict_epsilon": 0.15,        # disagreement that escalates
+                "min_observations_for_write": 3,
+                "auto_ack_observations": 10,
+                "taste_dir": ".commandcode/taste",  # CC-compatible sidecar location
+            },
         },
         "moa_reference": {
             "provider": "auto",

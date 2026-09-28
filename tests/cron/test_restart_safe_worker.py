@@ -648,6 +648,74 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
     assert "PYTHONPATH" not in worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root)
 
 
+def test_external_worker_on_store_python_is_handed_the_dependency_generation(
+    tmp_path, monkeypatch,
+):
+    """The worker is ``sys.executable -m cron.scheduler`` and has no bootstrap, so when that
+    interpreter is PM's dependency-less store Python the selected generation must ride its
+    PYTHONPATH -- otherwise the first third-party import of the job store (``ruamel``, via
+    ``hermes_yaml``) dies before the ownership ack, and every script/``no_agent`` fire fails
+    with a dispatch error the job itself never sees. A child on any other interpreter (venv,
+    wheel, pipx) already owns its site-packages and must be left untouched."""
+    import cron.scheduler as scheduler
+    import cron.scheduler_worker_env as worker_env_mod
+    from tools.process_registry import GatewayChildDispatch
+
+    repo_root = Path(scheduler.__file__).resolve().parent.parent
+    store = tmp_path / "tools" / "python-3.14" / "bin" / "python3"
+    store.parent.mkdir(parents=True)
+    store.write_text("#!/bin/sh\n", encoding="utf-8")
+    generation = (tmp_path / "installs" / "abc" / "environments" / "def" / "venv"
+                  / "lib" / "python3.14" / "site-packages")
+    generation.mkdir(parents=True)
+    kept = {"PYTHONPATH": str(tmp_path / "kept-by-sanitizer")}
+
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: store)
+    monkeypatch.setattr("pm.environments.selected_venv", lambda _root: generation.parents[2])
+    monkeypatch.setattr("pm.environments.site_packages", lambda _venv: generation)
+
+    # Same interpreter as the store Python: the generation is appended, never prepended --
+    # the repo root still wins on sys.path, and the sanitizer's kept entries stay ahead.
+    enriched = worker_env_mod.ensure_worker_dependencies(dict(kept), repo_root, python=str(store))
+    assert enriched["PYTHONPATH"].split(os.pathsep) == [
+        str(tmp_path / "kept-by-sanitizer"), str(generation),
+    ]
+
+    # A venv/wheel launch owns its dependencies.
+    assert worker_env_mod.ensure_worker_dependencies(
+        dict(kept), repo_root, python=sys.executable) == kept
+
+    # No store Python to satisfy, or no generation on disk: nothing to hand over.
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: None)
+    assert worker_env_mod.ensure_worker_dependencies(
+        dict(kept), repo_root, python=str(store)) == kept
+    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda _root: store)
+    monkeypatch.setattr("pm.environments.site_packages", lambda _venv: generation / "gone")
+    assert worker_env_mod.ensure_worker_dependencies(
+        dict(kept), repo_root, python=str(store)) == kept
+
+    # ...and the spawn site really uses it: the child's PYTHONPATH carries the generation
+    # *after* the repo root the pin adds in front of the sanitizer's own entries.
+    monkeypatch.setattr("pm.environments.site_packages", lambda _venv: generation)
+    monkeypatch.setattr(sys, "executable", str(store))
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("degraded", command),
+    )
+    monkeypatch.setattr(
+        "tools.environments.local.build_subprocess_env",
+        lambda **_: {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(kept["PYTHONPATH"])},
+    )
+    spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+
+    assert scheduler._launch_external_cron_worker({"id": "job-1", "execution_id": "exec-1",
+                                                  "prompt": "work"}) is True
+    assert spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep) == [
+        str(repo_root), str(kept["PYTHONPATH"]), str(generation),
+    ]
+
+
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):
     import cron.scheduler as scheduler
 

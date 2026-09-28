@@ -12,7 +12,7 @@ from pathlib import Path
 from hermes_cli.doctor_platform import _system_package_install_cmd
 from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
 from hermes_cli.vercel_auth import describe_vercel_auth
-from hermes_constants import is_termux as _is_termux
+from hermes_constants import hermes_managed_node_tree_present, is_termux as _is_termux
 from tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
 
 
@@ -411,9 +411,58 @@ def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
                               "Install Node.js on Termux with: pkg install nodejs", node_installed=False)
     else:
         check_warn("Node.js not found", "(optional; PM agent-browser is a native executable)")
+    _check_retired_node_layout()
     if _check_agent_browser(should_fix) and not _is_termux():
         _check_chromium()
     _check_lightpanda()
+
+
+def _retired_node_path_links(hermes_home: Path) -> list[Path]:
+    """Hermes-owned PATH symlinks that still point into the retired node layout.
+
+    Same ownership rule as uninstall.remove_node_symlinks: only a symlink
+    resolving into THIS Hermes home's node tree counts — links the user
+    repointed elsewhere (nvm, fnm, ...) are theirs, not ours.
+    """
+    node_dir = (hermes_home / "node").resolve()
+    if not hermes_managed_node_tree_present(hermes_home):
+        return []
+    ours: list[Path] = []
+    from hermes_cli.uninstall import _node_symlink_candidate_dirs
+    for bin_dir in _node_symlink_candidate_dirs():
+        for name in ("node", "npm", "npx"):
+            link = bin_dir / name
+            try:
+                if not link.is_symlink():
+                    continue
+                target = link.resolve()
+                if target != node_dir and node_dir not in target.parents:
+                    continue
+                ours.append(link)
+            except OSError:
+                continue
+    return ours
+
+
+def _check_retired_node_layout() -> None:
+    """Report install-era node/npm/npx symlinks still aimed at the retired layout (#126934).
+
+    Report-only: the user's own global npm packages may live under the old
+    prefix (~/.local via the retired npmrc), so removal is an uninstall-grade
+    decision, not a doctor --fix. PM's runtime is unaffected either way.
+    """
+    from hermes_cli.doctor import HERMES_HOME, _DHH
+
+    links = _retired_node_path_links(HERMES_HOME)
+    if not links:
+        return
+    rendered = ", ".join(str(link) for link in links)
+    check_warn("Retired node layout still owns your PATH node/npm/npx", f"({rendered})")
+    check_info("These install-era symlinks point into " + _DHH + "/node, which Hermes no longer "
+               "updates (PM serves its own Node from " + _DHH + "/tools). Global npm packages "
+               "installed through that Node keep depending on it.")
+    check_info("If nothing else depends on that Node: remove the three symlinks the way the "
+               "uninstaller does, then install a current Node yourself; the warning clears.")
 
 
 def _plural(n: int) -> str:

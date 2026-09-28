@@ -3105,7 +3105,7 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     # Python and dependency executable paths are selected at boot, not persisted.
 
     hermes_home = get_hermes_home()
-    extras = (project_root / "node_modules" / ".bin", hermes_home / "node" / "bin", hermes_home / "node_modules" / ".bin")
+    extras = (project_root / "node_modules" / ".bin", hermes_home / "node_modules" / ".bin")  # retired node layout deliberately absent (PM owns the runtime; #126934)
     for extra in extras:
         if _is_dir(extra):
             candidates.append(str(extra))

@@ -1762,6 +1762,21 @@ def test_strict_gateway_identity_rejects_reused_pid(tmp_path, monkeypatch):
         status.get_running_pid_identity_strict(pid_path)
 
 
+def test_pid_record_names_the_entry_point_under_an_inline_launcher(tmp_path, monkeypatch):
+    """The published launcher script runs `python -I -c <script> gateway run`, so sys.argv[0] is
+    "-c"; the persisted record must still read as a gateway when the live cmdline is unreadable
+    (#124029, #123151)."""
+    import types
+
+    entry = types.SimpleNamespace(__file__="/opt/Hermes Agent/hermes-agent/hermes_cli/main.py")
+    monkeypatch.setitem(status.sys.modules, "hermes_cli.main", entry)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(status.sys, "argv", ["-c", "gateway", "run"])
+    record = status._build_pid_record()
+    assert record["argv"] == [entry.__file__, "gateway", "run"]
+    assert status._record_looks_like_gateway(record)
+
+
 def test_retained_gateway_state_keeps_watchdog_degraded_like_startup_failed():
     """A watchdog-stamped ``degraded`` of a dead process is a current failure under the same rule as
     ``startup_failed`` (#113372): kept while the operator wants the gateway running, ``stopped`` once

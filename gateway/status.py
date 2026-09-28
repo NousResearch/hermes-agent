@@ -877,9 +877,25 @@ def _record_matches_live_gateway_pid(
     return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)
 
 
+def _record_argv() -> list[str]:
+    """``sys.argv`` with the inline-source placeholder replaced by the entry point this process runs.
+
+    The published launcher script (``_launchers._launcher_script``: the POSIX ``bin/hermes`` shell
+    launcher and the Windows ``.cmd``) imports ``hermes_cli.main`` inside ``python -I -c <script>``,
+    so ``sys.argv`` is ``["-c", "gateway", "run"]`` — a record the argv matcher can never accept
+    once the live command line is unreadable (Windows/EACCES fallback in
+    ``_record_matches_live_gateway_pid``). Recording the module path follows runpy's ``alter_sys``
+    convention, which is what the ``--run-module`` and store-launcher forms already persist."""
+    argv = list(sys.argv)
+    entry = sys.modules.get("hermes_cli.main")
+    if argv[:1] == ["-c"] and getattr(entry, "__file__", None):
+        argv[0] = entry.__file__
+    return argv
+
+
 def _build_pid_record() -> dict:
     return {
-        "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": list(sys.argv),
+        "pid": os.getpid(), "kind": _GATEWAY_KIND, "argv": _record_argv(),
         "start_time": _get_process_start_time(os.getpid()),
         # Scoped locks are machine-global; the owner's home lets a cross-profile
         # --replace place its takeover marker where the target will read it.

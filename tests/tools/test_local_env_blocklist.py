@@ -161,6 +161,16 @@ def test_user_platform_plugin_secrets_belong_to_their_own_profile(child_env, mon
         finally:
             reset_hermes_home_override(token)
     assert seen == {"a": (False, False, False), "b": (True, True, True)}
+    # An in-place manifest edit (no directory mtime change) takes effect on the next spawn.
+    manifest = a / "plugins" / "platforms" / "chatx" / "plugin.yaml"
+    manifest.write_text(manifest.read_text(encoding="utf-8") + "  - name: CHATX_WEBHOOK_KEY\n", encoding="utf-8")
+    os.utime(manifest, ns=(manifest.stat().st_atime_ns, manifest.stat().st_mtime_ns + 10**9))
+    monkeypatch.setenv("CHATX_WEBHOOK_KEY", "fake-value")
+    token = set_hermes_home_override(a)
+    try:
+        assert "CHATX_WEBHOOK_KEY" not in local.hermes_subprocess_env(inherit_credentials=True)
+    finally:
+        reset_hermes_home_override(token)
 
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,  # windows-footgun: ok — short-circuits on nt
@@ -173,12 +183,12 @@ def test_unreadable_platform_manifest_fails_closed(tmp_path):
     broken = tmp_path / "plugins" / "platforms" / "broken"
     broken.mkdir()
     (broken / "plugin.yaml").write_text("name: [unclosed\n", encoding="utf-8")
-    assert platform_manifest_secret_envs(tmp_path, bundled=False, strict=True) == {"CHATX_SIGNING_SECRET"}
+    assert platform_manifest_secret_envs(tmp_path, strict=True) == {"CHATX_SIGNING_SECRET"}
     manifest = tmp_path / "plugins" / "platforms" / "chatx" / "plugin.yaml"
     manifest.chmod(0)
     try:
         with pytest.raises(PermissionError):
-            platform_manifest_secret_envs(tmp_path, bundled=False, strict=True)
+            platform_manifest_secret_envs(tmp_path, strict=True)
     finally:
         manifest.chmod(0o644)
 

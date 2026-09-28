@@ -97,8 +97,18 @@ def is_autonomous_silence_response(response: Any) -> bool:
 
 
 def is_intentional_silence_agent_result(agent_result: dict | None, response: Any) -> bool:
-    """Silence markers suppress delivery only for successful agent turns."""
-    return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
+    """Silence markers suppress delivery for **successful** agent turns AND for **machinery**
+    turns that fail or are interrupted (see ``silence_allowed``). A human turn that fails is
+    NEVER silenced — the machinery/user guard stays with ``is_machinery_display_kind``."""
+    if not isinstance(agent_result, dict):
+        return False
+    if not is_intentional_silence_response(response):
+        return False
+    if not agent_result.get("failed"):
+        return True
+    # Failed/interrupted turns: only silence if the caller signs off (machinery kinds may
+    # be safely suppressed; a failed user turn is the #120051 case the prior gate preserves).
+    return bool(agent_result.get("display_kind") in MACHINERY_DISPLAY_KINDS)
 
 
 def display_kind_for_event(event: Any) -> str | None:

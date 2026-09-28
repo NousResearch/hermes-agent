@@ -18865,6 +18865,33 @@ def test_session_save_writes_under_hermes_home_with_system_prompt(monkeypatch, t
     assert payload["messages"] == history
 
 
+
+def test_session_save_lands_in_the_sessions_own_profile(monkeypatch, tmp_path):
+    """A session opened on a secondary profile saves under THAT profile's home, not the launch
+    profile's: the RPC runs unscoped, so HERMES_HOME still names the launch profile."""
+    launch_home = tmp_path / ".hermes"
+    work_home = launch_home / "profiles" / "work"
+    work_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+
+    sid = "save-profile-sid"
+    server._sessions[sid] = {
+        "agent": types.SimpleNamespace(model="hermes-test", session_id="s1", session_start=None,
+                                       _cached_system_prompt=""),
+        "session_key": "save-profile-key",
+        "profile_home": str(work_home),
+        "history": [{"role": "user", "content": "hi"}],
+        "history_lock": threading.Lock(),
+    }
+    try:
+        resp = server._methods["session.save"]("1", {"session_id": sid})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert "result" in resp, resp
+    assert Path(resp["result"]["file"]).parent == work_home / "sessions" / "saved"
+    assert not (launch_home / "sessions" / "saved").exists()
+
 def test_session_save_proxies_to_compute_host_history(monkeypatch):
     """Isolated turns own history in the host; /save must not export the stale parent mirror."""
     sid = "save-host-sid"

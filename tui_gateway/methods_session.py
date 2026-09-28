@@ -2064,8 +2064,10 @@ def _(rid, params: dict, session: dict) -> dict:
     if _session_uses_compute_host(session):
         return _save_via_compute_host(rid, params)
     agent = session["agent"]
-    # Classic CLI /save: under the profile home, with the system prompt (dashboard parity).
-    saved_dir = get_hermes_home() / "sessions" / "saved"
+    # Classic CLI /save: under the profile home, with the system prompt (dashboard parity). The SESSION's
+    # profile: this handler runs unscoped, so get_hermes_home() alone names the launch profile.
+    home = session.get("profile_home")
+    saved_dir = (Path(home) if home else get_hermes_home()) / "sessions" / "saved"
     try:
         saved_dir.mkdir(parents=True, exist_ok=True)
     except Exception as e:

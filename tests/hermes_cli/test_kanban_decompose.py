@@ -256,3 +256,39 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert outcome.ok is False
 
 
+def test_list_triage_ids_excludes_block_loop_tasks(kanban_home):
+    """Tasks that reached triage via a block-loop must NOT appear in list_triage_ids.
+
+    These tasks were escalated because the same approach failed BLOCK_RECURRENCE_LIMIT
+    times; auto-decomposing them again would spawn another worker to hit the same wall.
+    """
+    with kbc.connect() as conn:
+        # Normal triage task (newly created) - should appear.
+        normal_tid = kb.create_task(conn, title="normal triage task", triage=True)
+        # Block-loop task: simulate reaching BLOCK_RECURRENCE_LIMIT by directly
+        # writing block_recurrences via SQL (the full block/unblock/re-block cycle
+        # requires a running claim; this mirrors what _route_block does).
+        loop_tid = kb.create_task(conn, title="block-loop escalated task", triage=True)
+        conn.execute(
+            "UPDATE tasks SET block_recurrences = ? WHERE id = ?",
+            (kb.BLOCK_RECURRENCE_LIMIT, loop_tid),
+        )
+
+    ids = decomp.list_triage_ids()
+    assert normal_tid in ids, "Normal triage task should be returned"
+    assert loop_tid not in ids, (
+        "Block-loop task must NOT be returned (would re-spawn a worker into the same wall)"
+    )
+
+
+def test_list_triage_ids_includes_below_limit(kanban_home):
+    """A task at block_recurrences = BLOCK_RECURRENCE_LIMIT - 1 still auto-decomposes."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="partial loop", triage=True)
+        conn.execute(
+            "UPDATE tasks SET block_recurrences = ? WHERE id = ?",
+            (max(0, kb.BLOCK_RECURRENCE_LIMIT - 1), tid),
+        )
+
+    ids = decomp.list_triage_ids()
+    assert tid in ids

@@ -4064,6 +4064,22 @@ def _ctx_header(lines: list[str], task: Task) -> None:
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
     lines.append("")
+    # Hard-blocker escalation warning: if this task blocked for the same reason N times,
+    # a new worker must not repeat the same approach — it must block immediately.
+    if (task.block_recurrences or 0) >= BLOCK_RECURRENCE_LIMIT:
+        lines.append(
+            f"## ESCALATION NOTICE - block-loop detected ({task.block_recurrences}x, kind={task.block_kind!r})"
+        )
+        lines.append(
+            "This task has been blocked multiple times for the same reason. "
+            "DO NOT attempt the same approach again. Read '## Prior attempts' below, "
+            "then block immediately with kind='capability' (hard env wall) or "
+            "kind='needs_input' (human decision required), stating what changed "
+            "approach or resource is needed. Repeating a failing approach wastes tokens "
+            "and may cause side effects (open browser windows, API calls) that Harry "
+            "has to clean up manually."
+        )
+        lines.append("")
     if task.body and task.body.strip():
         lines.append("## Body")
         lines.append(_ctx_cap(task.body, _CTX_MAX_BODY_BYTES))

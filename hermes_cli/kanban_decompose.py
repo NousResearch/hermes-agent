@@ -337,10 +337,19 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return task ids currently in the triage column that are safe to auto-decompose.
+
+    Tasks that reached triage via a block-loop (``block_recurrences >=
+    BLOCK_RECURRENCE_LIMIT``) are excluded: they need human or orchestrator
+    attention, not another round of automatic decomposition that would simply
+    spawn a new worker to hit the same wall again.
+    """
     with kbc.connect_closing() as conn:
         rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+    return [
+        row.id for row in rows
+        if (row.block_recurrences or 0) < kb.BLOCK_RECURRENCE_LIMIT
+    ]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

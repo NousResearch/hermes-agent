@@ -532,7 +532,7 @@
   gap: 0.5rem;
   min-height: 1.6rem;
   padding: 0.1rem 0;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   line-height: 1.35;
 }
 .hermes-kanban-meta-label {
@@ -674,6 +674,12 @@
   gap: 0.5rem;
   font-size: 0.7rem;
 }
+.hermes-kanban-child-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--color-muted-foreground);
+}
 .hermes-kanban-comment-author {
   font-weight: 600;
   color: var(--color-foreground);
@@ -694,6 +700,7 @@
   min-width: 6rem;
 }
 .hermes-kanban-event-payload {
+  font-size: inherit;
   color: var(--color-muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -727,40 +734,24 @@
   flex: 1 1 auto;
   min-width: 0;
 }
+/* The textarea wears the SDK Input's classes (index.js); this only makes it
+   grow with its content and keeps text clear of the inset send button. */
 .hermes-kanban-comment-field textarea {
   display: block;
-  width: 100%;
   min-height: 2.25rem;
+  height: auto;
   max-height: 10rem;
   field-sizing: content;
   resize: none;
-  padding: 0.5rem 2.25rem 0.5rem 0.65rem;
-  font: inherit;
-  font-size: 0.8rem;
+  padding-top: 0.45rem;
+  padding-bottom: 0.45rem;
+  padding-right: 2.5rem;
   line-height: 1.4;
-  color: var(--color-foreground);
-  background: transparent;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm, 0.25rem);
-}
-.hermes-kanban-comment-field textarea::placeholder {
-  color: var(--color-muted-foreground);
-}
-.hermes-kanban-comment-field textarea:focus-visible {
-  outline: none;
-  border-color: var(--color-ring);
 }
 .hermes-kanban-comment-send {
   position: absolute;
-  top: 0.3rem;
-  right: 0.3rem;
-  color: var(--color-muted-foreground);
-}
-.hermes-kanban-comment-send:not(:disabled):hover {
-  color: var(--color-foreground);
-}
-.hermes-kanban-comment-send:disabled {
-  opacity: 0.4;
+  top: 0.35rem;
+  right: 0.35rem;
 }
 
 .hermes-kanban-count {
@@ -1814,24 +1805,13 @@
   overflow-x: auto;
   scrollbar-width: none;
 }
-/* The SDK trigger ships the Mondwest display face; no dashboard page uses
-   it, so the triggers take the section-heading type instead. The first
-   trigger sits flush with the column edge like the headings around it. */
+/* Triggers keep the SDK's own type and colours; they only stay on one line
+   and the first sits flush with the column edge like the headings around it. */
 .hermes-kanban-feed-tablist > button {
   flex: 0 0 auto;
-  padding: 0.35rem 0.65rem;
-  font-family: inherit;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.07em;
-  color: var(--color-muted-foreground);
 }
 .hermes-kanban-feed-tablist > button:first-child {
   padding-left: 0;
-}
-.hermes-kanban-feed-tablist > button[aria-selected="true"],
-.hermes-kanban-feed-tablist > button:hover {
-  color: var(--color-foreground);
 }
 .hermes-kanban-feed-panel {
   display: flex;

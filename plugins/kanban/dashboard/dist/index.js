@@ -3905,13 +3905,13 @@
           // Like the desktop CommentComposer: a growing textarea with a
           // ghost arrow-up send button inset top-right, rather than a
           // labelled button beside a one-line input. Enter sends,
-          // Shift+Enter adds a line. The SDK has no Textarea, so this is a
-          // native one styled to match the SDK Input.
+          // Shift+Enter adds a line.
           h("div", { className: "hermes-kanban-drawer-comment-row" },
             h("div", { className: "hermes-kanban-comment-field" },
               h("textarea", {
                 value: newComment,
                 rows: 1,
+                className: SDK_INPUT_CN,
                 "aria-label": tx(t, "addComment", "Add a comment… (Enter to submit)"),
                 onChange: function (e) { setNewComment(e.target.value); },
                 onKeyDown: function (e) {
@@ -4133,7 +4133,9 @@
               h("div", { className: "hermes-kanban-comment-head" },
                 h("span", { className: "hermes-kanban-comment-author" },
                   `${child.id} · ${child.title || tx(i18n, "untitled", "(untitled)")}`),
-                h(Badge, { variant: "outline" }, child.status),
+                h("span", { className: "hermes-kanban-child-status" },
+                  h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[child.status]) }),
+                  child.status),
                 h("button", {
                   type: "button",
                   className: "hermes-kanban-diag-action-btn",
@@ -4455,7 +4457,7 @@
     };
     return h("span", { className: "hermes-kanban-workspace" },
       props.kind && (props.kind !== "dir" || !path)
-        ? h(Badge, { variant: "outline", className: "hermes-kanban-tag" }, props.kind)
+        ? h(Badge, { tone: "outline", className: "hermes-kanban-tag" }, props.kind)
         : null,
       path
         ? h("span", { className: "hermes-kanban-workspace-path" },
@@ -4476,6 +4478,11 @@
         : null,
     );
   }
+
+  // The SDK Input's classes, for fields the SDK has no component for (textarea).
+  const SDK_INPUT_CN = "w-full border border-midground/15 bg-background/40 px-3 py-1 font-courier text-sm transition-colors "
+    + "placeholder:text-midground/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/30 "
+    + "focus-visible:border-midground/25";
 
   // Same glyph as the board card: a P{n} badge when the task is prioritised,
   // a muted 0 otherwise.

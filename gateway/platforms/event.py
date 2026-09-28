@@ -82,6 +82,11 @@ class MessageEvent:
     channel_context: Optional[str] = None
     # Set for synthetic events (e.g. background-process notifications) that must bypass user authorization.
     internal: bool = False
+    # Set for synthetic turns that carry no channel inputs of their own (goal continuation,
+    # heartbeat due-prompts, /goal resume) so the turn reuses the session's pinned channel
+    # prompt/parent instead of overwriting it with this event's own None (#126109). Independent
+    # of ``internal``: these events still go through user authorization.
+    inherit_channel_pin: bool = False
     # Free-form per-event metadata (e.g. ``whatsapp_from_owner=True``); plugins must ``.get()``.
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)

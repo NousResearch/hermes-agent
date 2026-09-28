@@ -11,6 +11,7 @@ reaches ``_run_agent`` is byte-identical on all three turns.
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -207,3 +208,52 @@ async def test_internal_event_keeps_channel_prompt_and_parent_override(monkeypat
     eph = [_effective_ephemeral(runner, kw) for kw in calls]
     assert "Channel hint." in eph[0] and "Parent persona." in eph[0]
     assert eph[0] == eph[1] == eph[2], "internal event toggled the channel ephemeral components"
+
+
+@pytest.mark.asyncio
+async def test_synthetic_non_internal_event_reuses_channel_pin(monkeypatch):
+    """Goal continuation / heartbeat due-prompt / ``/goal`` resume events are non-internal (they
+    must still pass authorization, unlike the kanban-wake ``internal=True`` case covered above)
+    but carry no channel inputs of their own — ``_synthetic_prompt_event`` always sets
+    ``channel_prompt=None``. Regression for #126109: without ``inherit_channel_pin``, that
+    ``None`` overwrote the session's ``channel_pin``, and the human turn after it lost its
+    channel prompt / parent-override too (A->B->A on ``channel_prompt``, independent of the
+    session-context pin covered by ``internal`` above)."""
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    runner = _make_runner(monkeypatch, config)
+    calls: list[dict] = []
+    _capture(runner, calls)
+
+    human = _human_thread_source()
+    # _synthetic_prompt_event() reuses the triggering source verbatim, stripping only
+    # message_id — chat_name/user_name/parent_chat_id survive, unlike the rebuilt-from-origin
+    # kanban wake source used elsewhere in this file.
+    synthetic_source = dataclasses.replace(human, message_id=None)
+
+    for text, source, channel_prompt, inherit_channel_pin in (
+        ("hi", human, "Channel hint.", False),
+        ("[goal] continuation", synthetic_source, None, True),
+        ("hi again", human, "Channel hint.", False),
+    ):
+        event = MessageEvent(
+            text=text, source=source, message_id=source.message_id, internal=False,
+            channel_prompt=channel_prompt, inherit_channel_pin=inherit_channel_pin,
+        )
+        await runner._handle_message_with_agent(event, source, KEY, 1)
+
+    assert len(calls) == 3
+    # The synthetic middle turn carries its own channel_prompt=None but must resolve to the
+    # pinned "Channel hint." — and so must the human turn after it.
+    resolved_channel_prompts = [kw["channel_prompt"] for kw in calls]
+    assert resolved_channel_prompts == ["Channel hint."] * 3, (
+        f"channel pin flipped across the turn sequence: {resolved_channel_prompts}"
+    )
+    # The parent-chat channel override ("Parent persona.") depends on parent_chat_id surviving
+    # onto the synthetic turn's resolved source too.
+    eph = [_effective_ephemeral(runner, kw) for kw in calls]
+    for text in eph:
+        assert "Channel hint." in text and "Parent persona." in text

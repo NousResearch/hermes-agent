@@ -282,14 +282,22 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # getproxies is pinned to the ENV-ONLY reader: after the blanking above it returns
     # {} on a clean machine, tests that set their own fake proxy env later still see
     # them, and the macOS System Settings proxy (which plain getproxies() also reads)
-    # is excluded. trust-env clients bind getproxies by value at import time (httpx
-    # and requests both do `from urllib.request import getproxies`), so the attribute
-    # patch above does not reach them — patch their bindings too.
+    # is excluded. trust-env clients bind getproxies by value at import time, so the
+    # attribute patch does not reach them — patch every by-value binding. The list
+    # below is the complete set of modules the pinned venv imports `getproxies` from
+    # urllib.request (verify with `grep -rn "import getproxies" <venv>/lib/python*/site-packages`):
+    #   - httpx._utils, requests.utils: the two clients named above
+    #   - requests.compat: legacy re-export shim of requests.utils
+    #   - aiohttp.helpers: reached by proxies_from_env() via ClientSession(trust_env=...)
+    #     — trust_env defaults to True (gateway/platforms/base.py gateway_trust_env),
+    #     so this is not opt-in
+    #   - anthropic._utils._httpx: anthropic's vendored copy of httpx's proxy utils
     monkeypatch.setattr(
         urllib.request, "getproxies", lambda: urllib.request.getproxies_environment())
     import importlib
 
-    for module_name in ("httpx._utils", "requests.utils"):
+    for module_name in ("httpx._utils", "requests.utils", "requests.compat",
+                        "aiohttp.helpers", "anthropic._utils._httpx"):
         try:
             module = importlib.import_module(module_name)
         except ImportError:

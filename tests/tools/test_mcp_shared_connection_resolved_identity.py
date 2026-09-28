@@ -25,7 +25,7 @@ server = MCPServer("gh")
 
 @server.tool()
 def whoami() -> str:
-    return "GH_TOKEN=" + str(os.environ.get("GH_TOKEN"))
+    return "GITHUB_PERSONAL_ACCESS_TOKEN=" + str(os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN"))
 
 server.run("stdio")
 """
@@ -116,7 +116,7 @@ def test_profile_with_other_secret_source_value_gets_its_own_stdio_connection(tw
     server = tmp_path / "gh_server.py"
     server.write_text(textwrap.dedent(_STDIO_SERVER), encoding="utf-8")
     for name, home in two_profile_homes.items():
-        (home / "secrets.env").write_text(f"GH_TOKEN=fake-token-{name}\n", encoding="utf-8")
+        (home / "secrets.env").write_text(f"GITHUB_PERSONAL_ACCESS_TOKEN=fake-token-{name}\n", encoding="utf-8")
         (home / "config.yaml").write_text(yaml.safe_dump({
             "model": _MODEL,
             "secrets": {"command": {"enabled": True, "command": f"cat {home / 'secrets.env'}"}},
@@ -124,7 +124,7 @@ def test_profile_with_other_secret_source_value_gets_its_own_stdio_connection(tw
 
     results = _discover_and_call(two_profile_homes, "mcp__gh__whoami", {})
 
-    assert results == {"default": "GH_TOKEN=fake-token-default", "worker": "GH_TOKEN=fake-token-worker"}
+    assert results == {"default": "GITHUB_PERSONAL_ACCESS_TOKEN=fake-token-default", "worker": "GITHUB_PERSONAL_ACCESS_TOKEN=fake-token-worker"}
 
 
 def test_profile_with_other_profile_identity_header_gets_its_own_http_connection(two_profile_homes, tmp_path):

@@ -198,12 +198,16 @@ surface and entrypoint values plus, for gateway tasks, the built-in messaging
 `platform` (`telegram`, `discord`, `slack`, ...; platforms Hermes ships under
 `plugins/platforms/` by name, a `plugin-catalog/` platform by its catalog entry
 name only when the installer's own record proves a catalog install, every other
-plugin platform `plugin`, every other surface `none`). The terminal counter contains bounded
-outcome, end reason, termination status, duration, logical model-call count,
-terminal tool-call count, and provider-retry count buckets, and a
-`failure_class` for failed tasks: the provider `FailoverReason` when the turn
-died on a classified API error, otherwise a local class (`empty_response`,
-`context_compression`, `repeated_errors`, `exception`, `other`, ...). Raw exit
+plugin platform `plugin`, every other surface `none`). The terminal counter
+(`hermes.task_run.finished`) contains the start fields plus bounded outcome, end
+reason, termination status, and a `failure_class` for failed tasks: the provider
+`FailoverReason` when the turn died on a classified API error, otherwise a local
+class (`empty_response`, `context_compression`, `repeated_errors`, `exception`,
+`other`, ...). The same end event feeds `hermes.task_run.duration` with execution
+surface, outcome, duration bucket and provider-retry count bucket. Package v2
+carried duration, retries and per-task model/tool call counts on the terminal row
+itself, which made almost every task its own row; call counts per turn live on
+`hermes.task_cost.count`. Raw exit
 reasons never leave the machine. Retries are additional
 provider attempts for the same Hermes API request ID; they do not inflate the
 logical model-call count. Tool calls are deduplicated by their Hermes tool-call
@@ -214,7 +218,9 @@ conversation session during context compression.
 
 Each tool invocation is represented by a Relay tool lifecycle named
 `hermes.tool_call`. The terminal counter contains only bounded tool category,
-outcome, approval outcome, latency, and explicit retry-count buckets. Hermes
+outcome and approval outcome; the same event feeds `hermes.tool_call.latency`
+with tool category, latency bucket and explicit retry-count bucket (package v2
+carried latency and retries on the terminal row, one row per few calls). Hermes
 derives the category from the toolset already declared in its runtime registry;
 custom and unrecognized toolsets collapse to `other` rather than exporting
 tool or plugin names. The same terminal event also feeds
@@ -466,7 +472,10 @@ $HERMES_HOME/telemetry/shared_metrics/outbox/*.json
 
 The database keeps transactional aggregate and package-outbox state. Package
 files are immutable delta documents that conform to a closed JSON schema and
-are written with atomic replacement. Each package records the Hermes version,
+are written with atomic replacement as compact JSON (`jq .` pretty-prints one).
+Once the ingest has accepted or refused a package, the database keeps only its
+send state and drops its copy of the body; the file is the local history copy.
+Each package records the Hermes version,
 OS family, architecture, and install method as bounded client resources.
 Unrecognized platform or installation values are exported as `unknown`; raw
 platform strings, hostnames, and paths are never included. Fully packaged
@@ -474,8 +483,9 @@ aggregate rows and successfully exported package rows and files are retained
 locally for 30 days. Pending package rows and counters with unexported deltas
 are never pruned.
 Package schemas v1 and v2 remain unchanged for existing outbox files. New
-packages use v3, which also accepts the v2 field sets of `hermes.model_route.count`
-and the task counters so counters recorded before an upgrade drain safely.
+packages use v3, which also accepts the v2 field sets of `hermes.model_route.count`,
+`hermes.tool_call.count` and the task counters so counters recorded before an upgrade
+drain safely.
 Vocabularies derived from in-repo registries (tool names, platforms, memory
 providers, error classes) are bounded by pattern in the JSON schema; the
 authoritative allowlist is `shared_metrics_contract.py`.

@@ -23,6 +23,7 @@ from .shared_metrics_contract import (
     INSTALL_SNAPSHOT_METRIC,
     MODEL_ROUTE_METRIC,
     TOOL_CALL_METRIC,
+    TOOL_LATENCY_METRIC,
     TOOL_USAGE_METRIC,
     client_active_counter,
     client_resource,
@@ -32,22 +33,27 @@ from .shared_metrics_contract import (
     model_token_counters,
     skill_counter,
     task_counter,
+    task_duration_counter,
     tool_approval_counter,
     tool_call_dimensions,
+    tool_latency_dimensions,
     tool_usage_dimensions,
 )
 
 logger = logging.getLogger(__name__)
 
 # Contract projections; each yields (metric_name, dimensions) or None. One tool end event feeds
-# both the category counter and the per-tool counter, so every match is recorded.
+# the category, per-tool and latency counters (one task end event the task and duration counters),
+# so every match is recorded.
 _COUNTERS = (
     client_active_counter,
     install_snapshot_counter,
     lambda event: _named(MODEL_ROUTE_METRIC, model_call_dimensions(event)),
     lambda event: _named(TOOL_CALL_METRIC, tool_call_dimensions(event)),
     lambda event: _named(TOOL_USAGE_METRIC, tool_usage_dimensions(event)),
+    lambda event: _named(TOOL_LATENCY_METRIC, tool_latency_dimensions(event)),
     task_counter,
+    task_duration_counter,
     tool_approval_counter,
     skill_counter,
     decision_counter,

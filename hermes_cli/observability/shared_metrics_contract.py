@@ -45,7 +45,9 @@ LEGACY_MODEL_CALL_METRIC = "hermes.model_call.count"
 MODEL_ROUTE_METRIC = "hermes.model_route.count"
 TASK_STARTED_METRIC = "hermes.task_run.started"
 TASK_FINISHED_METRIC = "hermes.task_run.finished"
+TASK_DURATION_METRIC = "hermes.task_run.duration"
 TOOL_CALL_METRIC = "hermes.tool_call.count"
+TOOL_LATENCY_METRIC = "hermes.tool_call.latency"
 TOOL_APPROVAL_METRIC = "hermes.tool_approval.count"
 SKILL_LIFECYCLE_METRIC = "hermes.skill.lifecycle.count"
 SKILL_LOAD_METRIC = "hermes.skill.load.count"
@@ -683,6 +685,14 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "outcome": TOOL_OUTCOMES, "retry_count_bucket": TOOL_RETRY_BUCKETS,
         "tool_category": TOOL_CATEGORIES,
     },
+    TOOL_LATENCY_METRIC: {
+        "latency_bucket": TOOL_LATENCY_BUCKETS, "retry_count_bucket": TOOL_RETRY_BUCKETS,
+        "tool_category": TOOL_CATEGORIES,
+    },
+    TASK_DURATION_METRIC: {
+        "duration_bucket": DURATION_BUCKETS, "execution_surface": EXECUTION_SURFACES,
+        "outcome": TASK_OUTCOMES, "retry_count_bucket": COUNT_BUCKETS,
+    },
     TOOL_USAGE_METRIC: {
         "error_class": TOOL_ERROR_CLASSES, "outcome": TOOL_OUTCOMES, "tool_name": TOOL_NAMES,
     },
@@ -890,13 +900,24 @@ _METRIC_FIELDS: dict[str, frozenset[str]] = {
     name: frozenset(contract) | frozenset(_IDENTIFIER_FIELDS.get(name, ()))
     for name, contract in _COUNTER_DIMENSION_VALUES.items()
 }
+# Fields v2 carried on the per-task and per-tool-call rows. Together they made nearly every task and
+# tool call its own row; v3 moves duration/retries/latency to the small split counters above (call
+# counts per task are already on hermes.task_cost.count). Their values stay in the contract so rows
+# recorded before an upgrade still validate and package.
+_TASK_FINISHED_V2_ONLY = frozenset(
+    {"duration_bucket", "model_call_count_bucket", "retry_count_bucket", "tool_call_count_bucket"}
+)
+_TOOL_CALL_V2_ONLY = frozenset({"latency_bucket", "retry_count_bucket"})
+_METRIC_FIELDS[TASK_FINISHED_METRIC] -= _TASK_FINISHED_V2_ONLY
+_METRIC_FIELDS[TOOL_CALL_METRIC] -= _TOOL_CALL_V2_ONLY
 # Older field sets still accepted at packaging so counters recorded before an upgrade drain.
 _LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
     MODEL_ROUTE_METRIC: (
         frozenset(_MODEL_ROUTE_MAX_LENGTHS), _METRIC_FIELDS[MODEL_ROUTE_METRIC] - {"ttft_bucket"},
     ),
     TASK_STARTED_METRIC: (_METRIC_FIELDS[TASK_STARTED_METRIC] - {"platform"},),
-    TASK_FINISHED_METRIC: (_METRIC_FIELDS[TASK_FINISHED_METRIC] - {"failure_class", "platform"},),
+    TASK_FINISHED_METRIC: (frozenset(_COUNTER_DIMENSION_VALUES[TASK_FINISHED_METRIC]) - {"failure_class", "platform"},),
+    TOOL_CALL_METRIC: (frozenset(_COUNTER_DIMENSION_VALUES[TOOL_CALL_METRIC]),),
     SKILL_LOAD_METRIC: (_METRIC_FIELDS[SKILL_LOAD_METRIC] - {"skill_name"},),
     INSTALL_SNAPSHOT_METRIC: (_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - {
         "display_language", "install_age_bucket", "main_provider", "messaging_platform_count_bucket",
@@ -1123,8 +1144,40 @@ def task_counter(event: Any) -> tuple[str, dict[str, str]] | None:
         event, kind="scope", category="function", name=TASK_SCOPE, category_profile=None
     ):
         return None
-    phases = {"start": TASK_STARTED_METRIC, "end": TASK_FINISHED_METRIC}
-    return _bounded_counter(phases.get(_event_text(event, "scope_category")), event)
+    phase = _event_text(event, "scope_category")
+    if phase == "start":
+        return _bounded_counter(TASK_STARTED_METRIC, event)
+    return _task_end_counter(event, TASK_FINISHED_METRIC) if phase == "end" else None
+
+
+def task_duration_counter(event: Any) -> tuple[str, dict[str, str]] | None:
+    """Return the duration/retry counter carried by the same task end event."""
+    if not _valid_shape(
+        event, kind="scope", scope_category="end", category="function", name=TASK_SCOPE,
+        category_profile=None,
+    ):
+        return None
+    return _task_end_counter(event, TASK_DURATION_METRIC)
+
+
+# The task end payload (task_terminal_fields) also carries per-task call counts for other Relay
+# subscribers; hermes.task_cost.count already buckets them, so no counter projects them here.
+_TASK_END_FIELDS = (
+    _METRIC_FIELDS[TASK_FINISHED_METRIC] | _METRIC_FIELDS[TASK_DURATION_METRIC]
+    | {"model_call_count_bucket", "tool_call_count_bucket"}
+)
+
+
+def _task_end_counter(event: Any, metric_name: str) -> tuple[str, dict[str, str]] | None:
+    """Project the task end event onto one counter; both projections must validate first."""
+    data = getattr(event, "data", None)
+    if not isinstance(data, dict) or set(data) != _TASK_END_FIELDS:
+        return None
+    projections = {
+        name: _bounded_dimensions(name, {f: data[f] for f in _METRIC_FIELDS[name]})
+        for name in (TASK_FINISHED_METRIC, TASK_DURATION_METRIC)
+    }
+    return (metric_name, projections[metric_name]) if all(projections.values()) else None
 
 
 def tool_call_dimensions(event: Any) -> dict[str, str] | None:
@@ -1137,7 +1190,13 @@ def tool_usage_dimensions(event: Any) -> dict[str, str] | None:
     return _tool_end_projection(event, TOOL_USAGE_METRIC)
 
 
-_TOOL_END_FIELDS = _METRIC_FIELDS[TOOL_CALL_METRIC] | _METRIC_FIELDS[TOOL_USAGE_METRIC]
+def tool_latency_dimensions(event: Any) -> dict[str, str] | None:
+    """Return the per-category latency/retry dimensions carried by the same tool end event."""
+    return _tool_end_projection(event, TOOL_LATENCY_METRIC)
+
+
+_TOOL_END_METRICS = (TOOL_CALL_METRIC, TOOL_USAGE_METRIC, TOOL_LATENCY_METRIC)
+_TOOL_END_FIELDS = frozenset().union(*(_METRIC_FIELDS[name] for name in _TOOL_END_METRICS))
 
 
 def _tool_end_projection(event: Any, metric_name: str) -> dict[str, str] | None:
@@ -1152,7 +1211,7 @@ def _tool_end_projection(event: Any, metric_name: str) -> dict[str, str] | None:
         return None
     projections = {
         name: _bounded_dimensions(name, {f: data[f] for f in _METRIC_FIELDS[name]})
-        for name in (TOOL_CALL_METRIC, TOOL_USAGE_METRIC)
+        for name in _TOOL_END_METRICS
     }
     return projections[metric_name] if all(projections.values()) else None
 

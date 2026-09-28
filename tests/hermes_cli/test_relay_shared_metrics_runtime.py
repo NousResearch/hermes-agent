@@ -414,11 +414,13 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "hermes.install.snapshot",
         "hermes.model_route.count",
         "hermes.task_cost.count",
+        "hermes.task_run.duration",
         "hermes.task_run.finished",
         "hermes.task_run.started",
         "hermes.tool.usage.count",
         "hermes.tool_approval.count",
         "hermes.tool_call.count",
+        "hermes.tool_call.latency",
     }
     assert metrics["hermes.tool.usage.count"]["dimensions"] == {
         "error_class": "none", "outcome": "success", "tool_name": "terminal",
@@ -445,12 +447,13 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "type": "counter",
         "dimensions": {
             "approval_outcome": "approved",
-            "latency_bucket": "250ms_to_500ms",
             "outcome": "success",
-            "retry_count_bucket": "0",
             "tool_category": "terminal",
         },
         "value": 1,
+    }
+    assert metrics["hermes.tool_call.latency"]["dimensions"] == {
+        "latency_bucket": "250ms_to_500ms", "retry_count_bucket": "0", "tool_category": "terminal",
     }
     assert metrics["hermes.tool_approval.count"] == {
         "name": "hermes.tool_approval.count",
@@ -471,8 +474,17 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         },
         "value": 1,
     }
-    terminal = metrics["hermes.task_run.finished"]["dimensions"]
-    assert terminal["duration_bucket"] in {
+    assert metrics["hermes.task_run.finished"]["dimensions"] == {
+        "end_reason": "completed",
+        "entrypoint": "interactive",
+        "execution_surface": "cli",
+        "failure_class": "none",
+        "outcome": "success",
+        "platform": "none",
+        "termination": "none",
+    }
+    duration = metrics["hermes.task_run.duration"]["dimensions"]
+    assert duration["duration_bucket"] in {
         "lt_1s",
         "1s_to_5s",
         "5s_to_30s",
@@ -480,20 +492,12 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "2m_to_10m",
         "gte_10m",
     }
-    assert {
-        key: value for key, value in terminal.items() if key != "duration_bucket"
-    } == {
-        "end_reason": "completed",
-        "entrypoint": "interactive",
-        "execution_surface": "cli",
-        "failure_class": "none",
-        "model_call_count_bucket": "1",
-        "outcome": "success",
-        "platform": "none",
-        "retry_count_bucket": "1",
-        "termination": "none",
-        "tool_call_count_bucket": "1",
+    assert {key: value for key, value in duration.items() if key != "duration_bucket"} == {
+        "execution_surface": "cli", "outcome": "success", "retry_count_bucket": "1",
     }
+    # Per-task call counts ride on the task cost row now.
+    assert metrics["hermes.task_cost.count"]["dimensions"]["api_calls_bucket"] == "1"
+    assert metrics["hermes.task_cost.count"]["dimensions"]["tool_calls_bucket"] == "1"
 
 
 def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
@@ -699,24 +703,26 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     }
     assert tool_by_outcome["success"] == {
         "approval_outcome": "approved",
-        "latency_bucket": "100ms_to_250ms",
         "outcome": "success",
-        "retry_count_bucket": "0",
         "tool_category": "terminal",
     }
     assert tool_by_outcome["failed"] == {
         "approval_outcome": "not_required",
-        "latency_bucket": "500ms_to_1s",
         "outcome": "failed",
-        "retry_count_bucket": "unknown",
         "tool_category": "file",
     }
     assert tool_by_outcome["cancelled"] == {
         "approval_outcome": "not_required",
-        "latency_bucket": "gte_30s",
         "outcome": "cancelled",
-        "retry_count_bucket": "unknown",
         "tool_category": "browser",
+    }
+    assert {
+        tuple(counter["dimensions"][f] for f in ("tool_category", "latency_bucket", "retry_count_bucket"))
+        for counter in by_metric["hermes.tool_call.latency"]
+    } == {
+        ("terminal", "100ms_to_250ms", "0"),
+        ("file", "500ms_to_1s", "unknown"),
+        ("browser", "gte_30s", "unknown"),
     }
     assert len(by_metric["hermes.tool_approval.count"]) == 1
     approval_counter = by_metric["hermes.tool_approval.count"][0]
@@ -731,8 +737,12 @@ def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
         for counter in by_metric["hermes.task_run.finished"]
     }
     assert set(terminal_by_outcome) == {"success", "failed", "cancelled"}
-    assert terminal_by_outcome["success"]["dimensions"]["retry_count_bucket"] == "1"
-    assert terminal_by_outcome["success"]["dimensions"]["tool_call_count_bucket"] == "1"
+    duration_by_outcome = {
+        counter["dimensions"]["outcome"]: counter["dimensions"]
+        for counter in by_metric["hermes.task_run.duration"]
+    }
+    assert set(duration_by_outcome) == {"success", "failed", "cancelled"}
+    assert duration_by_outcome["success"]["retry_count_bucket"] == "1"
     assert terminal_by_outcome["failed"]["dimensions"]["end_reason"] == (
         "system_aborted"
     )
@@ -864,11 +874,12 @@ def test_real_binding_correlates_plugin_approval_denial_to_tool_metric(
     assert len(tool_metrics) == 1
     assert tool_metrics[0]["dimensions"] == {
         "approval_outcome": "denied",
-        "latency_bucket": "lt_100ms",
         "outcome": "blocked",
-        "retry_count_bucket": "unknown",
         "tool_category": "file",
     }
+    assert [
+        counter["dimensions"] for counter in snapshot if counter["metric_name"] == "hermes.tool_call.latency"
+    ] == [{"latency_bucket": "lt_100ms", "retry_count_bucket": "unknown", "tool_category": "file"}]
     approval_metrics = [
         counter
         for counter in snapshot
@@ -943,11 +954,12 @@ def test_real_binding_aggregates_tool_and_approval_timeouts(
     ]
     assert tool_metric["dimensions"] == {
         "approval_outcome": "timed_out",
-        "latency_bucket": "gte_30s",
         "outcome": "timed_out",
-        "retry_count_bucket": "unknown",
         "tool_category": "terminal",
     }
+    assert [
+        counter["dimensions"] for counter in snapshot if counter["metric_name"] == "hermes.tool_call.latency"
+    ] == [{"latency_bucket": "gte_30s", "retry_count_bucket": "unknown", "tool_category": "terminal"}]
     [approval_metric] = [
         counter
         for counter in snapshot

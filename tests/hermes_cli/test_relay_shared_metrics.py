@@ -58,10 +58,13 @@ from hermes_cli.observability.shared_metrics_contract import (
     skill_counter,
     skill_lifecycle_fields,
     skill_load_fields,
+    task_counter,
+    task_duration_counter,
     task_terminal_fields,
     tool_approval_counter,
     tool_approval_outcome,
     tool_call_dimensions,
+    tool_latency_dimensions,
     tool_usage_dimensions,
     tool_category,
     tool_latency_bucket,
@@ -97,7 +100,9 @@ def _package_dimension_schema() -> dict[str, object]:
 
 def _task_dimension_schema(kind: str) -> dict[str, object]:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-    return schema["$defs"][kind]["properties"]["dimensions"]
+    dimensions = schema["$defs"][kind]["properties"]["dimensions"]
+    # The terminal counter lists its current v3 shape first, then the v2 shape it still drains.
+    return dimensions["oneOf"][0] if "oneOf" in dimensions else dimensions
 
 
 def _tool_dimension_schema(kind: str) -> dict[str, object]:
@@ -848,11 +853,10 @@ def test_tool_subscriber_contract_accepts_only_bounded_events():
         },
     )
     assert tool_call_dimensions(terminal) == {
-        "approval_outcome": "approved",
-        "latency_bucket": "250ms_to_500ms",
-        "outcome": "success",
-        "retry_count_bucket": "0",
-        "tool_category": "terminal",
+        "approval_outcome": "approved", "outcome": "success", "tool_category": "terminal",
+    }
+    assert tool_latency_dimensions(terminal) == {
+        "latency_bucket": "250ms_to_500ms", "retry_count_bucket": "0", "tool_category": "terminal",
     }
     assert tool_usage_dimensions(terminal) == {
         "error_class": "none", "outcome": "success", "tool_name": "terminal",
@@ -1094,16 +1098,59 @@ def test_store_exports_task_started_and_terminal_counters(tmp_path):
         tool_call_count=2,
         retry_count=0,
     )
-    store.record_counter("hermes.task_run.finished", terminal, _resource())
+    end = SimpleNamespace(
+        kind="scope", category="function", category_profile=None, name="hermes.task_run",
+        scope_category="end", metadata={"hermes.metrics.schema_version": "hermes.metrics.event.v3"},
+        data=terminal,
+    )
+    for counter in (task_counter(end), task_duration_counter(end)):
+        store.record_counter(*counter, _resource())
 
     [package_path] = store.create_and_export_package()
     package = json.loads(package_path.read_text(encoding="utf-8"))
     _schema_validator().validate(package)
 
     assert {metric["name"] for metric in package["metrics"]} == {
+        "hermes.task_run.duration",
         "hermes.task_run.finished",
         "hermes.task_run.started",
     }
+
+def test_v2_task_and_tool_rows_recorded_before_an_upgrade_still_package(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    store.record_counter("hermes.task_run.finished", {
+        "duration_bucket": "1s_to_5s", "end_reason": "completed", "entrypoint": "interactive",
+        "execution_surface": "cli", "model_call_count_bucket": "1", "outcome": "success",
+        "retry_count_bucket": "0", "termination": "none", "tool_call_count_bucket": "2",
+    }, _resource())
+    store.record_counter("hermes.tool_call.count", {
+        "approval_outcome": "not_required", "latency_bucket": "lt_100ms", "outcome": "success",
+        "retry_count_bucket": "0", "tool_category": "file",
+    }, _resource())
+
+    [package_path] = store.create_and_export_package()
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    _schema_validator().validate(package)
+    assert {metric["name"] for metric in package["metrics"]} == {
+        "hermes.task_run.finished", "hermes.tool_call.count",
+    }
+
+
+def test_sent_package_keeps_its_file_but_not_a_second_copy_in_the_database(tmp_path):
+    store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")
+    store.record_model_call(_dimensions(), _resource())
+    [sent_path] = store.create_and_export_package()
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute("UPDATE package_outbox SET send_state = 'sent'")
+    store.record_model_call(_dimensions(), _resource())
+    [pending_path] = store.create_and_export_package()
+
+    with sqlite3.connect(store.database_path) as connection:
+        bodies = dict(connection.execute("SELECT package_id, payload_json FROM package_outbox"))
+    assert bodies[sent_path.stem] == ""
+    assert json.loads(bodies[pending_path.stem]) == json.loads(pending_path.read_text(encoding="utf-8"))
+    _schema_validator().validate(json.loads(sent_path.read_text(encoding="utf-8")))
+
 
 def test_package_schema_rejects_unknown_fields(tmp_path):
     store = SharedMetricsStore(tmp_path / "metrics.sqlite3", tmp_path / "outbox")

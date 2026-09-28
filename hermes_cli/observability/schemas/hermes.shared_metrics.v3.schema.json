@@ -107,7 +107,13 @@
             "$ref": "#/$defs/task_finished_counter"
           },
           {
+            "$ref": "#/$defs/task_duration_counter"
+          },
+          {
             "$ref": "#/$defs/tool_call_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_latency_counter"
           },
           {
             "$ref": "#/$defs/tool_approval_counter"
@@ -537,84 +543,132 @@
           "const": "counter"
         },
         "dimensions": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "duration_bucket",
-            "end_reason",
-            "entrypoint",
-            "execution_surface",
-            "model_call_count_bucket",
-            "outcome",
-            "retry_count_bucket",
-            "termination",
-            "tool_call_count_bucket"
-          ],
-          "properties": {
-            "duration_bucket": {
-              "$ref": "#/$defs/duration_bucket"
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "end_reason",
+                "entrypoint",
+                "execution_surface",
+                "failure_class",
+                "outcome",
+                "platform",
+                "termination"
+              ],
+              "properties": {
+                "end_reason": {
+                  "enum": [
+                    "approval_denied",
+                    "completed",
+                    "failed",
+                    "guardrail_blocked",
+                    "iteration_limit",
+                    "system_aborted",
+                    "timed_out",
+                    "unknown",
+                    "user_cancelled"
+                  ]
+                },
+                "entrypoint": {
+                  "$ref": "#/$defs/task_entrypoint"
+                },
+                "execution_surface": {
+                  "$ref": "#/$defs/execution_surface"
+                },
+                "failure_class": {
+                  "$ref": "#/$defs/vocabulary_identifier"
+                },
+                "outcome": {
+                  "enum": [
+                    "cancelled",
+                    "failed",
+                    "success",
+                    "timed_out",
+                    "unknown"
+                  ]
+                },
+                "platform": {
+                  "$ref": "#/$defs/catalog_identifier"
+                },
+                "termination": {
+                  "enum": [
+                    "none",
+                    "system_aborted",
+                    "timed_out",
+                    "unknown",
+                    "user_cancelled"
+                  ]
+                }
+              }
             },
-            "end_reason": {
-              "enum": [
-                "approval_denied",
-                "completed",
-                "failed",
-                "guardrail_blocked",
-                "iteration_limit",
-                "system_aborted",
-                "timed_out",
-                "unknown",
-                "user_cancelled"
-              ]
-            },
-            "entrypoint": {
-              "$ref": "#/$defs/task_entrypoint"
-            },
-            "execution_surface": {
-              "$ref": "#/$defs/execution_surface"
-            },
-            "model_call_count_bucket": {
-              "$ref": "#/$defs/count_bucket"
-            },
-            "outcome": {
-              "enum": [
-                "cancelled",
-                "failed",
-                "success",
-                "timed_out",
-                "unknown"
-              ]
-            },
-            "retry_count_bucket": {
-              "$ref": "#/$defs/count_bucket"
-            },
-            "termination": {
-              "enum": [
-                "none",
-                "system_aborted",
-                "timed_out",
-                "unknown",
-                "user_cancelled"
-              ]
-            },
-            "tool_call_count_bucket": {
-              "$ref": "#/$defs/count_bucket"
-            },
-            "platform": {
-              "$ref": "#/$defs/catalog_identifier"
-            },
-            "failure_class": {
-              "$ref": "#/$defs/vocabulary_identifier"
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "duration_bucket",
+                "end_reason",
+                "entrypoint",
+                "execution_surface",
+                "model_call_count_bucket",
+                "outcome",
+                "retry_count_bucket",
+                "termination",
+                "tool_call_count_bucket"
+              ],
+              "properties": {
+                "duration_bucket": {
+                  "$ref": "#/$defs/duration_bucket"
+                },
+                "end_reason": {
+                  "enum": [
+                    "approval_denied",
+                    "completed",
+                    "failed",
+                    "guardrail_blocked",
+                    "iteration_limit",
+                    "system_aborted",
+                    "timed_out",
+                    "unknown",
+                    "user_cancelled"
+                  ]
+                },
+                "entrypoint": {
+                  "$ref": "#/$defs/task_entrypoint"
+                },
+                "execution_surface": {
+                  "$ref": "#/$defs/execution_surface"
+                },
+                "model_call_count_bucket": {
+                  "$ref": "#/$defs/count_bucket"
+                },
+                "outcome": {
+                  "enum": [
+                    "cancelled",
+                    "failed",
+                    "success",
+                    "timed_out",
+                    "unknown"
+                  ]
+                },
+                "retry_count_bucket": {
+                  "$ref": "#/$defs/count_bucket"
+                },
+                "termination": {
+                  "enum": [
+                    "none",
+                    "system_aborted",
+                    "timed_out",
+                    "unknown",
+                    "user_cancelled"
+                  ]
+                },
+                "tool_call_count_bucket": {
+                  "$ref": "#/$defs/count_bucket"
+                }
+              }
             }
-          },
-          "dependentRequired": {
-            "failure_class": [
-              "platform"
-            ],
-            "platform": [
-              "failure_class"
-            ]
-          }
+          ]
         },
         "value": {
           "type": "integer",
@@ -717,9 +771,7 @@
           "additionalProperties": false,
           "required": [
             "approval_outcome",
-            "latency_bucket",
             "outcome",
-            "retry_count_bucket",
             "tool_category"
           ],
           "properties": {
@@ -771,6 +823,14 @@
                 "web"
               ]
             }
+          },
+          "dependentRequired": {
+            "latency_bucket": [
+              "retry_count_bucket"
+            ],
+            "retry_count_bucket": [
+              "latency_bucket"
+            ]
           }
         },
         "value": {
@@ -4456,6 +4516,119 @@
         },
         "value": {
           "const": 1
+        }
+      }
+    },
+    "tool_latency_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_call.latency"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "latency_bucket",
+            "retry_count_bucket",
+            "tool_category"
+          ],
+          "properties": {
+            "latency_bucket": {
+              "$ref": "#/$defs/tool_latency_bucket"
+            },
+            "retry_count_bucket": {
+              "$ref": "#/$defs/tool_retry_bucket"
+            },
+            "tool_category": {
+              "enum": [
+                "browser",
+                "code_execution",
+                "communication",
+                "computer_use",
+                "delegation",
+                "file",
+                "home_automation",
+                "mcp",
+                "media",
+                "memory",
+                "other",
+                "planning",
+                "project",
+                "scheduler",
+                "skill",
+                "terminal",
+                "unknown",
+                "web"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "task_duration_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.task_run.duration"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "duration_bucket",
+            "execution_surface",
+            "outcome",
+            "retry_count_bucket"
+          ],
+          "properties": {
+            "duration_bucket": {
+              "$ref": "#/$defs/duration_bucket"
+            },
+            "execution_surface": {
+              "$ref": "#/$defs/execution_surface"
+            },
+            "outcome": {
+              "enum": [
+                "cancelled",
+                "failed",
+                "success",
+                "timed_out",
+                "unknown"
+              ]
+            },
+            "retry_count_bucket": {
+              "$ref": "#/$defs/count_bucket"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     }

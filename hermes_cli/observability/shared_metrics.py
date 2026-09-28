@@ -666,7 +666,8 @@ class SharedMetricsStore:
             package_id = str(row["package_id"])
             path = self.outbox_directory / f"{package_id}.json"
             atomic_json_write(
-                path, json.loads(row["payload_json"]), indent=2, sort_keys=True, mode=0o600
+                path, json.loads(row["payload_json"]), indent=None, separators=(",", ":"),
+                sort_keys=True, mode=0o600,
             )
             with self._connection() as connection:
                 connection.execute(
@@ -701,6 +702,13 @@ class SharedMetricsStore:
                 )
 
         with self._write() as connection:
+            # A package the ingest accepted or refused is never sent again, and its outbox file is
+            # the local history copy, so the database drops its duplicate of the body.
+            connection.execute(
+                "UPDATE package_outbox SET payload_json = ''"
+                " WHERE exported_at IS NOT NULL AND send_state IN ('sent', 'rejected')"
+                " AND payload_json != ''"
+            )
             for package_id in removable_package_ids:
                 connection.execute(
                     "DELETE FROM package_outbox"

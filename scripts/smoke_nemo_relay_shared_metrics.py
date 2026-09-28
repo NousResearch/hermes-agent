@@ -341,10 +341,12 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "hermes.skill.load.count",
         "hermes.startup.latency",
         "hermes.task_cost.count",
+        "hermes.task_run.duration",
         "hermes.task_run.finished",
         "hermes.task_run.started",
         "hermes.tool.usage.count",
         "hermes.tool_call.count",
+        "hermes.tool_call.latency",
         "hermes.tool_enabled_unused.count",
         "hermes.tool_output_truncation.count",
         "hermes.tool_overhead.count",
@@ -363,21 +365,17 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         raise AssertionError(
             f"Unexpected client-active counter: {by_name['hermes.client.active']}"
         )
-    [model] = by_name["hermes.model_route.count"]
+    # Two primary calls; each lands in whatever TTFT bucket the host's load put it in.
+    models = by_name["hermes.model_route.count"]
     expected_model = {
-        "name": "hermes.model_route.count",
-        "dimensions": {
-            "call_role": "primary",
-            "error_class": "none",
-            "model": "custom",
-            "outcome": "success",
-            "provider": "custom",
-            "ttft_bucket": "lt_500ms",
-        },
-        "value": 2,
-        "packaged_value": 2,
+        "call_role": "primary", "error_class": "none", "model": "custom", "outcome": "success",
+        "provider": "custom",
     }
-    if model != expected_model:
+    if (
+        any({k: v for k, v in m["dimensions"].items() if k != "ttft_bucket"} != expected_model for m in models)
+        or sum(m["value"] for m in models) != 2
+        or sum(m["packaged_value"] for m in models) != 2
+    ):
         raise AssertionError(
             f"Unexpected model counter: {by_name['hermes.model_route.count']}"
         )
@@ -397,17 +395,13 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         )
     [terminal] = by_name["hermes.task_run.finished"]
     expected_terminal_dimensions = {
-        "duration_bucket": terminal["dimensions"].get("duration_bucket"),
         "end_reason": "completed",
         "entrypoint": "interactive",
         "execution_surface": "cli",
         "failure_class": "none",
-        "model_call_count_bucket": "2",
         "outcome": "success",
         "platform": "none",
-        "retry_count_bucket": "0",
         "termination": "none",
-        "tool_call_count_bucket": "1",
     }
     if (
         terminal["dimensions"] != expected_terminal_dimensions
@@ -415,6 +409,15 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         or terminal["packaged_value"] != 1
     ):
         raise AssertionError(f"Unexpected task terminal counter: {terminal}")
+    [duration] = by_name["hermes.task_run.duration"]
+    if duration["dimensions"] != {
+        "duration_bucket": duration["dimensions"].get("duration_bucket"),
+        "execution_surface": "cli", "outcome": "success", "retry_count_bucket": "0",
+    } or duration["value"] != 1:
+        raise AssertionError(f"Unexpected task duration counter: {duration}")
+    [cost] = by_name["hermes.task_cost.count"]
+    if (cost["dimensions"]["api_calls_bucket"], cost["dimensions"]["tool_calls_bucket"]) != ("2", "1"):
+        raise AssertionError(f"Unexpected task cost counter: {cost}")
     if [c["dimensions"] for c in by_name["hermes.tool.usage.count"]] != [
         {"error_class": "none", "outcome": "success", "tool_name": "read_file"}
     ]:
@@ -449,15 +452,13 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         raise AssertionError(f"Missing install milestones: {sorted(milestones)}")
     [tool] = by_name["hermes.tool_call.count"]
     expected_tool_dimensions = {
-        "approval_outcome": "not_required",
-        "latency_bucket": tool["dimensions"].get("latency_bucket"),
-        "outcome": "success",
-        "retry_count_bucket": "unknown",
-        "tool_category": "file",
+        "approval_outcome": "not_required", "outcome": "success", "tool_category": "file",
     }
+    [latency] = by_name["hermes.tool_call.latency"]
     if (
         tool["dimensions"] != expected_tool_dimensions
-        or tool["dimensions"]["latency_bucket"] == "unknown"
+        or latency["dimensions"]["latency_bucket"] == "unknown"
+        or (latency["dimensions"]["retry_count_bucket"], latency["dimensions"]["tool_category"]) != ("unknown", "file")
         or tool["value"] != 1
         or tool["packaged_value"] != 1
     ):
@@ -564,10 +565,12 @@ def _validate_packages(
         "hermes.skill.load.count",
         "hermes.startup.latency",
         "hermes.task_cost.count",
+        "hermes.task_run.duration",
         "hermes.task_run.finished",
         "hermes.task_run.started",
         "hermes.tool.usage.count",
         "hermes.tool_call.count",
+        "hermes.tool_call.latency",
         "hermes.tool_enabled_unused.count",
         "hermes.tool_output_truncation.count",
         "hermes.tool_overhead.count",
@@ -586,44 +589,33 @@ def _validate_packages(
         raise AssertionError(
             f"Unexpected client-active metric: {metrics['hermes.client.active']}"
         )
-    [model] = metrics["hermes.model_route.count"]
-    if model["dimensions"] != {
-        "call_role": "primary",
-        "error_class": "none",
-        "model": "custom",
-        "outcome": "success",
-        "provider": "custom",
-        "ttft_bucket": "lt_500ms",
-    } or model["value"] != 2:
+    models = metrics["hermes.model_route.count"]
+    if any(
+        {k: v for k, v in m["dimensions"].items() if k != "ttft_bucket"} != {
+            "call_role": "primary", "error_class": "none", "model": "custom", "outcome": "success",
+            "provider": "custom",
+        }
+        for m in models
+    ) or sum(m["value"] for m in models) != 2:
         raise AssertionError(
             f"Unexpected model metric: {metrics['hermes.model_route.count']}"
         )
     [terminal] = metrics["hermes.task_run.finished"]
     if terminal["dimensions"] != {
-        "duration_bucket": terminal["dimensions"].get("duration_bucket"),
         "end_reason": "completed",
         "entrypoint": "interactive",
         "execution_surface": "cli",
         "failure_class": "none",
-        "model_call_count_bucket": "2",
         "outcome": "success",
         "platform": "none",
-        "retry_count_bucket": "0",
         "termination": "none",
-        "tool_call_count_bucket": "1",
     }:
         raise AssertionError(f"Unexpected task terminal metric: {terminal}")
     [tool] = metrics["hermes.tool_call.count"]
     if (
         tool["dimensions"]
-        != {
-            "approval_outcome": "not_required",
-            "latency_bucket": tool["dimensions"].get("latency_bucket"),
-            "outcome": "success",
-            "retry_count_bucket": "unknown",
-            "tool_category": "file",
-        }
-        or tool["dimensions"]["latency_bucket"] == "unknown"
+        != {"approval_outcome": "not_required", "outcome": "success", "tool_category": "file"}
+        or metrics["hermes.tool_call.latency"][0]["dimensions"]["latency_bucket"] == "unknown"
     ):
         raise AssertionError(f"Unexpected tool metric: {tool}")
     lifecycle = metrics["hermes.skill.lifecycle.count"]

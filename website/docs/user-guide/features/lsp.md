@@ -71,15 +71,18 @@ not for a repository the agent has just cloned.
 
 Hermes therefore treats every workspace as untrusted unless it is:
 
-- the git worktree Hermes was launched in (the process working
-  directory, so `cd my-app && hermes`), or
+- the git worktree of a directory you pointed Hermes at: where you
+  launched it (`cd my-app && hermes`), the worktree `hermes -w`
+  created, the project a Desktop or TUI session is opened in, a
+  gateway's `terminal.cwd`, or a cron job's workdir, or
 - a directory listed under `lsp.trusted_workspaces` (or any
   directory below one).
 
-A checkout nested inside the launch worktree has its own `.git`, so
-it is not trusted. Gateway and desktop backends are usually started
-outside any repository, which means nothing is trusted there until
-you list your projects.
+The agent cannot widen this: a `cd` in its terminal does not move the
+session's workspace. A checkout nested inside a trusted worktree has
+its own `.git`, so it is not trusted, and neither is a git repository
+at your home directory itself (a dotfiles repo there would otherwise
+trust everything below it).
 
 In an untrusted workspace Hermes **denies by default**: only the
 servers below start, each with settings that keep it on Hermes-side
@@ -101,7 +104,8 @@ lsp.trusted_workspaces`, and `hermes lsp status` marks those servers
 | clangd | unchanged: Hermes never passes `--query-driver`, so no project compiler runs |
 
 On a local backend, the post-write shell linters that would use the
-checkout's own toolchain are skipped the same way: `npx tsc` (it runs
+checkout's own toolchain are skipped the same way whenever the terminal's
+current directory is untrusted: `npx tsc` (it runs
 the repository's `node_modules/.bin/tsc`, or installs from the
 registry its `.npmrc` names) and `rustfmt --check` (rustup honours the
 repository's `rust-toolchain.toml`). Sandboxed backends (Docker, SSH,
@@ -275,8 +279,8 @@ lsp:
 
   # Directories whose projects a language server may load code from
   # (see "Workspace trust" above). ~ expanded; everything under an
-  # entry counts. The git worktree Hermes was launched in is always
-  # trusted.
+  # entry counts. The worktree of the directory you launched Hermes in,
+  # or opened the session in, is always trusted.
   trusted_workspaces: []
   # trusted_workspaces: ["~/code/my-app"]
 

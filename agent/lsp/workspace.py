@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Iterable, Iterator, Optional, Tuple
+from typing import Iterable, Iterator, Optional, Set, Tuple
 
 logger = logging.getLogger("agent.lsp.workspace")
 
@@ -154,20 +154,32 @@ def resolve_workspace_for_file(file_path: str, *, cwd: Optional[str] = None) -> 
     return None, False
 
 
-def is_trusted_workspace(root: str, trusted_roots: Iterable[str] = (), *, cwd: Optional[str] = None) -> bool:
+def operator_workspace_roots() -> Set[str]:
+    """Git worktrees the operator pointed Hermes at: the launch dir and the surface-set workspace
+    (``resolve_agent_cwd``: the Desktop/TUI session cwd, ``hermes -w``'s worktree, a gateway's
+    ``terminal.cwd``, a cron job's workdir).  The agent moves neither (its ``cd`` only moves the
+    terminal's cwd).  ``$HOME`` never counts: a dotfiles repo there would trust every directory below it."""
+    from agent.runtime_cwd import resolve_agent_cwd
+    from tools.terminal_scope import TerminalPolicyUnavailable
+    roots: Set[str] = set()
+    for anchor in (os.getcwd, resolve_agent_cwd):
+        try:
+            root = find_git_worktree(str(anchor()))
+        except (OSError, TerminalPolicyUnavailable):  # a deleted cwd; a profile whose terminal policy failed
+            continue
+        if root is not None and root != normalize_path("~"):
+            roots.add(root)
+    return roots
+
+
+def is_trusted_workspace(root: str, trusted_roots: Iterable[str], operator_roots: Iterable[str]) -> bool:
     """True iff a language server may load code the project at ``root`` ships (its own interpreter,
-    TypeScript SDK, config files, build scripts).  Trusted: ``root`` is inside an operator-listed
-    ``lsp.trusted_workspaces`` entry, or it belongs to the same git worktree as the process cwd
-    (where the operator launched Hermes).  A nested clone inside that worktree has its own ``.git``
-    and is not trusted: the agent may have fetched it."""
+    TypeScript SDK, config files, build scripts): ``root`` is inside an ``lsp.trusted_workspaces``
+    entry, or belongs to one of the ``operator_workspace_roots`` worktrees.  A nested clone inside
+    such a worktree has its own ``.git`` and is not trusted: the agent may have fetched it."""
     if any(is_inside_workspace(root, t) for t in trusted_roots):
         return True
-    try:
-        anchor = cwd or os.getcwd()
-    except OSError:
-        return False
-    launch_root = find_git_worktree(anchor)
-    return launch_root is not None and find_git_worktree(root) == launch_root
+    return find_git_worktree(root) in set(operator_roots)
 
 
 def clear_cache() -> None:
@@ -177,5 +189,5 @@ def clear_cache() -> None:
 
 __all__ = [
     "find_git_worktree", "is_inside_workspace", "is_trusted_workspace", "nearest_root", "normalize_path",
-    "resolve_workspace_for_file", "clear_cache",
+    "operator_workspace_roots", "resolve_workspace_for_file", "clear_cache",
 ]

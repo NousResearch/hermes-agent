@@ -168,7 +168,7 @@ class LintMixin:
             ))
         if ext in _SHELL_LINTER_LSP_REDUNDANT and self._lsp_will_handle(path):
             return LintResult(skipped=True, message=f"LSP server handles {ext} — shell linter skipped")
-        if ext in _SHELL_LINTER_RUNS_PROJECT_TOOLCHAIN and self._local_workspace_untrusted(path):
+        if ext in _SHELL_LINTER_RUNS_PROJECT_TOOLCHAIN and self._local_workspace_untrusted():
             return LintResult(skipped=True, message=(
                 f"{LINTERS[ext].split()[0]} skipped: untrusted workspace (add it to lsp.trusted_workspaces to lint {ext} here)"))
         if ext in _MANAGED_NODE_LINTERS and self._lsp_local_only():
@@ -251,21 +251,18 @@ class LintMixin:
             return False
         return isinstance(env, LocalEnvironment)
 
-    def _local_workspace_untrusted(self, path: str) -> bool:
-        """True iff on a local backend ``path`` or the command cwd lies outside every trusted workspace
-        (``workspace.is_trusted_workspace``).  Sandboxed backends answer False: their toolchain is not the host's."""
+    def _local_workspace_untrusted(self) -> bool:
+        """True iff on a local backend the linter's cwd lies outside every trusted workspace
+        (``workspace.is_trusted_workspace``): ``npx`` and rustup resolve the toolchain from there, not
+        from the linted file's directory.  Sandboxed backends answer False: their toolchain is not the host's."""
         if not self._lsp_local_only():
             return False
-        try:
-            from agent.lsp.manager import parse_trusted_workspaces
-            from agent.lsp.workspace import is_trusted_workspace
-            from hermes_cli.config import load_config_readonly
-            lsp_cfg = load_config_readonly().get("lsp")
-            trusted = parse_trusted_workspaces(lsp_cfg.get("trusted_workspaces") if isinstance(lsp_cfg, dict) else None)
-            dirs = {os.path.dirname(os.path.abspath(path)), getattr(self.env, "cwd", None) or os.getcwd()}
-            return not all(is_trusted_workspace(d, trusted) for d in dirs)
-        except Exception:  # noqa: BLE001
-            return True  # no trust decision: skipping a lint never breaks a write
+        from agent.lsp.manager import parse_trusted_workspaces
+        from agent.lsp.workspace import is_trusted_workspace, operator_workspace_roots
+        from hermes_cli.config import load_config_readonly
+        lsp_cfg = load_config_readonly().get("lsp")
+        trusted = parse_trusted_workspaces(lsp_cfg.get("trusted_workspaces") if isinstance(lsp_cfg, dict) else None)
+        return not is_trusted_workspace(self.env.cwd or self.cwd, trusted, operator_workspace_roots())
 
     def _lsp_service(self):
         """The active LSPService, or None on a non-local backend / any failure.

@@ -584,11 +584,11 @@ terminal:
 #   enabled: true
 #   # Language servers only load code a project ships (its .venv interpreter,
 #   # node_modules TypeScript, svelte.config.js, cargo/Gradle/mix build files)
-#   # in the git worktree Hermes was launched in, or under a directory listed
-#   # here. In other checkouts, such as a repository the agent cloned, only
-#   # servers that run no project code start (pinned to Hermes-side tools) and
-#   # the npx tsc / rustfmt lint fallbacks are skipped. Gateway and desktop
-#   # sessions usually need this.
+#   # in the git worktree of the directory you launched Hermes in or opened
+#   # the session in (hermes -w, a Desktop project, terminal.cwd), or under a
+#   # directory listed here. In other checkouts, such as a repository the agent
+#   # cloned, only servers that run no project code start (pinned to
+#   # Hermes-side tools) and the npx tsc / rustfmt lint fallbacks are skipped.
 #   trusted_workspaces:
 #     - ~/code/my-app
 

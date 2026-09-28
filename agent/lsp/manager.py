@@ -25,7 +25,7 @@ from agent.lsp.client import DIAGNOSTICS_DOCUMENT_WAIT, LSPClient, _diagnostic_k
 from agent.lsp.servers import (
     SERVERS, UNTRUSTED_SAFE_SERVERS, ServerContext, ServerDef, custom_servers, find_server_for_file, language_id_for,
 )
-from agent.lsp.workspace import clear_cache, is_trusted_workspace, resolve_workspace_for_file
+from agent.lsp.workspace import clear_cache, is_trusted_workspace, operator_workspace_roots, resolve_workspace_for_file
 
 logger = logging.getLogger("agent.lsp.manager")
 
@@ -65,17 +65,18 @@ def parse_trusted_workspaces(value: Any) -> List[str]:
     if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
         eventlog.event_log.warning(
             "lsp.trusted_workspaces must be a list of directories, e.g. ['~/code/my-app'] (got %s); "
-            "only the launch directory's git worktree is trusted until the key is fixed",
+            "only the workspaces you launched Hermes or opened the session in are trusted until the key is fixed",
             type(value).__name__,
         )
         return []
     return [os.path.expanduser(p) for p in value if p]
 
 
-def _client_key(srv: ServerDef, root: str) -> _Key:
+def _client_key(srv: ServerDef, root: str, trusted: bool) -> _Key:
     """Cache key for the client serving ``root``: multi-root servers share one process per
-    ``server_id``; everything else is keyed per resolved project root."""
-    return (srv.server_id, "" if srv.multi_root else root)
+    ``server_id`` across trusted roots; everything else, untrusted roots included, is keyed per
+    resolved project root (a shared process keeps the trust its first root spawned it with)."""
+    return (srv.server_id, "" if srv.multi_root and trusted else root)
 
 
 class _BackgroundLoop:
@@ -167,6 +168,7 @@ class LSPService:
         self._exclude_roots: Optional[List[str]] = _parse_exclude_roots(exclude_roots)
         self._trusted_workspaces: List[str] = parse_trusted_workspaces(trusted_workspaces)
         self._untrusted_skipped: set = set()  # (server_id, root) pairs denied by workspace trust
+        self._operator_roots: frozenset = frozenset()  # see _trusted
 
         self._loop = _BackgroundLoop()
         if self._enabled:
@@ -268,17 +270,25 @@ class LSPService:
         if self._root_excluded(key[1]):
             eventlog.log_root_excluded(srv.server_id, key[1], file_path, invalid=self._exclude_roots is None)
             return False
-        if self._untrusted_denied(srv, key[1], file_path):
+        if self._untrusted_denied(srv, key[1], file_path, self._trusted(key[1])):
             return False
         if self._is_broken(key):
             eventlog.log_skipped_broken(srv.server_id, key[1], file_path, retry_in=self._broken_retry_in(key))
             return False
         return True
 
-    def _untrusted_denied(self, srv: ServerDef, root: str, file_path: str) -> bool:
+    def _trusted(self, root: str) -> bool:
+        """Trust for ``root``; remembers each ``operator_workspace_roots`` answer, because a tool thread
+        sees the session's cwd while the loop thread that spawns servers does not."""
+        if not (roots := operator_workspace_roots()) <= self._operator_roots:
+            with self._state_lock:  # rebind, never mutate: other threads read the old set lock-free
+                self._operator_roots = self._operator_roots | roots
+        return is_trusted_workspace(root, self._trusted_workspaces, self._operator_roots)
+
+    def _untrusted_denied(self, srv: ServerDef, root: str, file_path: str, trusted: bool) -> bool:
         """True iff ``srv`` may run project code and ``root`` is not a trusted workspace (deny by default:
         only ``UNTRUSTED_SAFE_SERVERS`` start in a checkout the operator has not trusted)."""
-        if srv.server_id in UNTRUSTED_SAFE_SERVERS or is_trusted_workspace(root, self._trusted_workspaces):
+        if trusted or srv.server_id in UNTRUSTED_SAFE_SERVERS:
             return False
         with self._state_lock:
             self._untrusted_skipped.add((srv.server_id, root))
@@ -319,7 +329,7 @@ class LSPService:
         if key is None:
             return self._wait_timeout
         with self._state_lock:
-            client = self._clients.get(_client_key(srv, key[1]))
+            client = self._clients.get(_client_key(srv, key[1], self._trusted(key[1])))
         return self._wait_timeout if client is not None and client.is_running else self._warmup_timeout
 
     def snapshot_baseline(self, file_path: str) -> None:
@@ -420,7 +430,7 @@ class LSPService:
             return
         already_broken = self._is_broken(key)
         self._mark_broken(key)
-        ckey = _client_key(srv, key[1])
+        ckey = _client_key(srv, key[1], self._trusted(key[1]))
         with self._state_lock:
             client = self._clients.pop(ckey, None)
             self._last_used.pop(ckey, None)
@@ -511,7 +521,7 @@ class LSPService:
         if root is None:
             return []
         with self._state_lock:
-            client = self._clients.get(_client_key(srv, root))
+            client = self._clients.get(_client_key(srv, root, self._trusted(root)))
         return list(client.diagnostics_for(file_path, fresh_only=True)) if client else []
 
     async def _get_or_spawn(self, file_path: str) -> Optional[LSPClient]:
@@ -529,11 +539,12 @@ class LSPService:
         if root is None:
             eventlog.log_disabled(srv.server_id, file_path, "exclude marker hit (server gated off)")
             return None
-        if self._untrusted_denied(srv, root, file_path):
+        trusted = self._trusted(root)
+        if self._untrusted_denied(srv, root, file_path, trusted):
             return None
         if self._is_broken((srv.server_id, root)):
             return None
-        key = _client_key(srv, root)
+        key = _client_key(srv, root, trusted)
         with self._state_lock:
             client = self._clients.get(key)
             if client is not None and client.is_running:
@@ -554,7 +565,7 @@ class LSPService:
                 return None
             return await self._attach_root(srv, client, root) if client is not None else None
         try:
-            client = await self._spawn_client(srv, root)
+            client = await self._spawn_client(srv, root, trusted)
             if client is None:
                 self._mark_broken((srv.server_id, root))
             else:
@@ -575,12 +586,12 @@ class LSPService:
             await client.add_workspace_folder(root)
         return client
 
-    async def _spawn_client(self, srv: ServerDef, root: str) -> Optional[LSPClient]:
+    async def _spawn_client(self, srv: ServerDef, root: str, trusted: bool) -> Optional[LSPClient]:
         """Resolve the binary and start a client; ``None`` (after logging) when either fails."""
         ctx = ServerContext(
             workspace_root=root, install_strategy=self._install_strategy, binary_overrides=self._binary_overrides,
             env_overrides=self._env_overrides, init_overrides=self._init_overrides,
-            trusted=is_trusted_workspace(root, self._trusted_workspaces),
+            trusted=trusted,
         )
         spec = srv.build_spawn(root, ctx)
         if spec is None:

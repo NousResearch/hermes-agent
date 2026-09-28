@@ -59,11 +59,14 @@ haskell-language-server 等服务器在启动时就会求值项目的构建文�
 
 因此，除以下情况外，Hermes 将所有工作区视为不受信任：
 
-- 启动 Hermes 时所在的 git 工作树（即进程工作目录，例如 `cd my-app && hermes`），或
+- 你让 Hermes 指向的目录所在的 git 工作树：启动 Hermes 的目录（`cd my-app && hermes`）、
+  `hermes -w` 创建的工作树、桌面端或 TUI 会话打开的项目、网关的 `terminal.cwd`，
+  或定时任务的工作目录，或
 - `lsp.trusted_workspaces` 中列出的目录（及其下任意子目录）。
 
-嵌套在启动工作树内部的检出拥有自己的 `.git`，因此不受信任。网关和桌面端
-后端通常在任何仓库之外启动，所以在你列出项目之前，那里没有受信任的工作区。
+agent 无法扩大信任范围：它在终端里执行 `cd` 不会改变会话的工作区。嵌套在受信任
+工作树内部的检出拥有自己的 `.git`，因此不受信任；位于主目录本身的 git 仓库也不受
+信任（否则主目录下的 dotfiles 仓库会让其下的所有目录都受信任）。
 
 在不受信任的工作区中，Hermes **默认拒绝**：只有下表中的服务器会启动，并且各自
 使用让它停留在 Hermes 一侧工具上的设置。其他所有服务器都会被跳过，包括
@@ -82,7 +85,7 @@ prisma、astro，以及你在 `lsp.servers` 下声明的任何服务器。诊断
 | bash-language-server、yaml-language-server、dockerfile-ls、intelephense | 不变：它们只解析文件 |
 | clangd | 不变：Hermes 从不传入 `--query-driver`，因此不会运行项目的编译器 |
 
-在本地后端上，会使用检出自带工具链的写入后 shell 检查器也会以同样方式跳过：
+在本地后端上，当终端的当前目录不受信任时，会使用检出自带工具链的写入后 shell 检查器也会以同样方式跳过：
 `npx tsc`（它会运行仓库的 `node_modules/.bin/tsc`，或从仓库 `.npmrc` 指定的
 registry 安装）和 `rustfmt --check`（rustup 会遵循仓库的 `rust-toolchain.toml`）。
 沙箱后端（Docker、SSH、Modal 等）不受影响。
@@ -168,8 +171,8 @@ lsp:
   install_strategy: auto
 
   # 允许语言服务器加载项目自带代码的目录（见上文“工作区信任”）。
-  # 支持 ~ 展开，条目下的所有子目录均算在内。启动 Hermes 时所在的
-  # git 工作树始终受信任。
+  # 支持 ~ 展开，条目下的所有子目录均算在内。启动 Hermes 或打开会话时
+  # 所在目录的 git 工作树始终受信任。
   trusted_workspaces: []
   # trusted_workspaces: ["~/code/my-app"]
 

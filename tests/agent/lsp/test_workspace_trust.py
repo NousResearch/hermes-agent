@@ -126,7 +126,7 @@ def test_untrusted_checkout_starts_only_allowlisted_servers_pinned_to_hermes_cod
     assert all(trusted[sid] == {} for sid in ("typescript", "svelte-language-server", "rust-analyzer"))
 
 
-def test_only_the_launch_worktree_and_listed_directories_are_trusted(tmp_path, monkeypatch):
+def test_only_operator_workspaces_and_listed_directories_are_trusted(tmp_path, monkeypatch):
     """The same trust decision gates the servers and the post-write shell linters that use the repo's toolchain."""
     launcher = _hermes_side_tree(tmp_path, monkeypatch)
     launch, listed = tmp_path / "launch", tmp_path / "listed" / "proj"
@@ -146,7 +146,9 @@ def test_only_the_launch_worktree_and_listed_directories_are_trusted(tmp_path, m
     monkeypatch.setattr(fops, "_lsp_will_handle", lambda _path: False)
 
     def shell_linted(root):
+        """``npx tsc`` / rustup resolve the toolchain from the linter's cwd: the agent has ``cd``'d into ``root``."""
         ran.clear()
+        fops.env.cwd = str(root)
         for name in ("a.ts", "a.rs"):
             fops._check_lint(str(root / name))
         return len(ran)
@@ -159,3 +161,11 @@ def test_only_the_launch_worktree_and_listed_directories_are_trusted(tmp_path, m
         assert not is_inside_workspace(handed[("pyright", str(root))].get("python", {}).get("pythonPath", ""), str(root)), root
         assert ("rust-analyzer", str(root)) not in handed
         assert shell_linted(root) == 0, root
+
+    # The workspace a surface points the session at is the operator's too (hermes -w, a Desktop project)...
+    monkeypatch.setenv("TERMINAL_CWD", str(sibling))
+    assert shell_linted(sibling) == 2
+    # ...but never $HOME: a dotfiles repo there would trust every directory below it.
+    monkeypatch.setenv("HOME", str(sibling))
+    monkeypatch.setenv("USERPROFILE", str(sibling))
+    assert shell_linted(sibling) == 0

@@ -463,8 +463,13 @@ class TestTaskStore:
         # Second sweep does nothing (already terminal).
         assert store.fail_orphans(timeout_seconds=300) == []
 
-    def test_watchdog_preserves_active_requests_and_reply_window(self, monkeypatch):
+    def test_watchdog_preserves_active_requests_and_reply_window(self, monkeypatch, tmp_path):
         monkeypatch.setenv("A2A_REPLY_TIMEOUT", "600")
+        from hermes_cli import profiles
+        receiver = tmp_path / "dev"
+        receiver.mkdir()
+        monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "dev")
+        monkeypatch.setattr(profiles, "get_profile_dir", lambda name: receiver)
         adapter, _base = _make_live_adapter(monkeypatch)
         now = time.time()
         for task_id, age in (("t-live", 700), ("t-orphan", 700), ("t-within-reply-window", 400)):

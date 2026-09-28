@@ -16,6 +16,8 @@ import json
 import re
 import os
 import socket
+import subprocess
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -660,13 +662,14 @@ class TestTaskRpcHandlers:
         """Cancel must reset anti-loop turns for the task's CONTEXT (the old
         code passed the task_id into a context-keyed map — silent no-op)."""
         adapter = _bare_adapter()
+        key = adapter._conversation_key("peer", "ctx-loopy", adapter._agents[""])
         for _ in range(4):
-            adapter._turns.track("ctx-loopy")
+            adapter._turns.track(key)
         adapter.tasks.create("task-c", "ctx-loopy", "peer")
         resp = adapter._rpc_tasks_cancel(1, {"taskId": "task-c"})
         assert resp["result"]["status"]["state"] == "TASK_STATE_CANCELED"
         # Turn counter went back to zero: next track() is turn 1.
-        assert adapter._turns.track("ctx-loopy") == 1
+        assert adapter._turns.track(key) == 1
 
     def test_cancel_terminal_task_not_cancelable(self):
         adapter = _bare_adapter()
@@ -851,6 +854,158 @@ def _send_body(text, ctx="", extra_params=None):
 
 @pytest.mark.integration
 class TestInboundRoundTrip:
+    def test_authenticated_peer_owns_task_queries_and_controls_over_http(self, monkeypatch, tmp_path):
+        """The bearer identity, not a body field or task ID, controls every task RPC."""
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:token-alice,bob:token-bob")
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        token = set_hermes_home_override(tmp_path)
+        try:
+            adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda event: "private-" + event.source.user_id)
+
+            def rpc(method, params, who):
+                body = {"jsonrpc": "2.0", "id": "query", "method": method, "params": params}
+                return _post_json(base + "/", body, {"Authorization": "Bearer token-" + who})
+
+            def subscribe(task_id, who):
+                body = {"jsonrpc": "2.0", "id": "sub", "method": "tasks/subscribe", "params": {"id": task_id}}
+                req = urllib.request.Request(base + "/", data=json.dumps(body).encode(),
+                                             headers={"Authorization": "Bearer token-" + who,
+                                                      "Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    return response.headers.get("Content-Type"), response.read().decode()
+
+            async def run():
+                assert await adapter.connect()
+                try:
+                    alice = await asyncio.to_thread(rpc, "message/send", _send_body("hello", "shared")["params"], "alice")
+                    bob = await asyncio.to_thread(rpc, "message/send", _send_body("hello", "shared")["params"], "bob")
+                    aid, bid = alice["result"]["id"], bob["result"]["id"]
+                    for who, own, foreign in (("alice", aid, bid), ("bob", bid, aid)):
+                        result = await asyncio.to_thread(rpc, "tasks/list", {"includeArtifacts": True, "contextId": "shared", "peer": "alice"}, who)
+                        assert result["result"]["totalSize"] == 1
+                        assert [t["id"] for t in result["result"]["tasks"]] == [own]
+                        own_result = await asyncio.to_thread(rpc, "tasks/get", {"id": own}, who)
+                        assert "private-" + who in json.dumps(own_result)
+                        for method, params in (
+                            ("tasks/get", {"id": foreign}),
+                            ("tasks/cancel", {"id": foreign}),
+                            ("tasks/pushNotificationConfig/create", {"taskId": foreign, "pushNotificationConfig": {"url": "https://example.com/hook"}}),
+                            ("tasks/pushNotificationConfig/get", {"taskId": foreign}),
+                            ("tasks/pushNotificationConfig/list", {"taskId": foreign}),
+                            ("tasks/pushNotificationConfig/delete", {"taskId": foreign}),
+                        ):
+                            hidden = await asyncio.to_thread(rpc, method, params, who)
+                            assert hidden["error"]["code"] == protocol.ERR_TASK_NOT_FOUND, method
+                            assert "private-" not in json.dumps(hidden)
+                        content_type, hidden = await asyncio.to_thread(subscribe, foreign, who)
+                        assert "application/json" in content_type
+                        assert json.loads(hidden)["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+                        content_type, visible = await asyncio.to_thread(subscribe, own, who)
+                        assert "text/event-stream" in content_type
+                        assert "private-" + who in visible
+                    created = await asyncio.to_thread(rpc, "tasks/pushNotificationConfig/create",
+                                                      {"taskId": aid, "pushNotificationConfig": {"url": "https://example.com/hook"}}, "alice")
+                    cfg = created["result"]["configId"]
+                    for method in ("get", "list"):
+                        params = {"taskId": aid, "id": cfg}
+                        own_cfg = await asyncio.to_thread(rpc, "tasks/pushNotificationConfig/" + method, params, "alice")
+                        assert cfg in json.dumps(own_cfg)
+                        foreign_cfg = await asyncio.to_thread(rpc, "tasks/pushNotificationConfig/" + method, params, "bob")
+                        assert foreign_cfg["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+                        assert cfg not in json.dumps(foreign_cfg)
+                    assert (await asyncio.to_thread(rpc, "tasks/pushNotificationConfig/delete",
+                                                    {"taskId": aid, "id": cfg}, "bob"))["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+                    assert (await asyncio.to_thread(rpc, "tasks/pushNotificationConfig/delete",
+                                                    {"taskId": aid, "id": cfg}, "alice"))["result"]["deleted"]
+                    # A nonterminal task allows positive cancellation and negative cross-peer cancellation.
+                    adapter.tasks.create("pending-alice", "shared", "alice")
+                    hidden = await asyncio.to_thread(rpc, "tasks/cancel", {"id": "pending-alice"}, "bob")
+                    assert hidden["error"]["code"] == protocol.ERR_TASK_NOT_FOUND
+                    canceled = await asyncio.to_thread(rpc, "tasks/cancel", {"id": "pending-alice"}, "alice")
+                    assert canceled["result"]["status"]["state"] == protocol.STATE_CANCELED
+                finally:
+                    await adapter.disconnect()
+
+            asyncio.run(run())
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_authenticated_peers_same_context_concurrent_http_replies_isolated(self, monkeypatch, tmp_path):
+        """Two authenticated peers sharing a wire context cannot share a gateway turn or reply."""
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        monkeypatch.setenv("A2A_PEER_TOKENS", "alice:token-alice,bob:token-bob")
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        token = set_hermes_home_override(tmp_path)
+        try:
+            adapter, base = _make_live_adapter(monkeypatch)
+            alice_seen = asyncio.Event()
+            bob_seen = asyncio.Event()
+            bob_sent = asyncio.Event()
+            conversations = {}
+
+            async def handler(event):
+                peer = event.source.user_id
+                conversations[peer] = event.source.chat_id
+                if peer == "alice":
+                    alice_seen.set()
+                    await bob_sent.wait()
+                else:
+                    bob_seen.set()
+                    await alice_seen.wait()
+                if peer == "bob":
+                    bob_sent.set()
+                return f"private-{peer}"
+
+            adapter.handle_message = type(adapter).handle_message.__get__(adapter)
+            adapter._message_handler = handler
+
+            async def run():
+                assert await adapter.connect() is True
+                try:
+                    async def call(peer):
+                        body = _send_body(f"question-{peer}", ctx="shared/id")
+                        return await asyncio.to_thread(
+                            _post_json, base + "/", body,
+                            {"Authorization": f"Bearer token-{peer}"})
+
+                    alice, bob = await asyncio.wait_for(asyncio.gather(call("alice"), call("bob")), 12)
+                    assert bob_seen.is_set(), (alice, bob)
+                    assert conversations["alice"] != conversations["bob"]
+                    for peer, response in (("alice", alice), ("bob", bob)):
+                        task = response["result"]
+                        assert task["contextId"] == "shared/id"
+                        assert task["status"]["state"] == protocol.STATE_COMPLETED
+                        assert protocol.extract_text(task["artifacts"][0]) == f"private-{peer}"
+                    continuation = await call("alice")
+                    assert protocol.extract_text(continuation["result"]["artifacts"][0]) == "private-alice"
+                    assert conversations["alice"] == adapter._conversation_key("alice", "shared/id", adapter._agents[""])
+                finally:
+                    await adapter.disconnect()
+
+            asyncio.run(run())
+            for peer, other in (("alice", "bob"), ("bob", "alice")):
+                own = protocol.load_conversation("shared/id", peer=peer)
+                expected = [f"question-{peer}", f"private-{peer}"]
+                if peer == "alice":
+                    expected += ["question-alice", "private-alice"]
+                assert [item["text"] for item in own] == expected
+                assert all(other not in item["text"] for item in own)
+            code = ("import json; from plugins.platforms.a2a.tools import a2a_history; "
+                    "print(json.dumps([a2a_history({'context_id':'shared/id','peer':p}) "
+                    "for p in ('alice','bob')]))")
+            readback = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                                      timeout=20, env={**os.environ, "HERMES_HOME": str(tmp_path)})
+            assert readback.returncode == 0, readback.stderr
+            alice_history, bob_history = json.loads(readback.stdout.strip().splitlines()[-1])
+            assert "private-alice" in alice_history and "private-bob" not in alice_history
+            assert "private-bob" in bob_history and "private-alice" not in bob_history
+            assert len(list((tmp_path / "a2a_conversations").glob("*.jsonl"))) == 2
+        finally:
+            reset_hermes_home_override(token)
+
     def test_live_server_card_and_message_send(self, monkeypatch):
         """Start the real adapter server, hit the Agent Card, then send a task
         and verify the mocked agent's reply comes back as a v1.0 Task."""
@@ -1295,9 +1450,14 @@ class TestMultiAgentRouting:
         route = adapter._route_for_request("/dev/", {"tenant": "research"})
         assert "error" in route
 
-    def test_forwarded_profile_task_completes_in_task_store(self, monkeypatch):
+    def test_forwarded_profile_task_completes_in_task_store(self, monkeypatch, tmp_path):
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig
+        from hermes_cli import profiles
+        receiver = tmp_path / "dev"
+        receiver.mkdir()
+        monkeypatch.setattr(profiles, "profile_exists", lambda name: name == "dev")
+        monkeypatch.setattr(profiles, "get_profile_dir", lambda name: receiver)
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             "agents": {"dev": {"profile": "dev", "tenant": "dev"}}
@@ -1518,9 +1678,9 @@ class TestV1SpecRegressionFixes:
         profile_home.mkdir()
         db = profile_home / "state.db"
         import sqlite3
-        con = sqlite3.connect(db)
-        con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, title TEXT)")
-        con.commit(); con.close()
+        from hermes_state import SessionDB
+        with SessionDB(db):
+            pass
 
         fakebin = tmp_path / "bin"
         fakebin.mkdir()
@@ -1537,6 +1697,7 @@ if '--resume' not in sys.argv:
     con.execute('INSERT INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)', ('sess-1', 'a2a', time.time(), None))
     con.commit()
 print('fake reply')
+print('session_id: sess-1', file=sys.stderr)
 """)
         hermes.chmod(0o755)
         monkeypatch.setenv("PATH", str(fakebin) + os.pathsep + os.environ.get("PATH", ""))
@@ -1555,9 +1716,10 @@ print('fake reply')
         assert "--resume" not in argv_lines[0]
         assert argv_lines[1][argv_lines[1].index("--resume") + 1] == "sess-1"
         con = sqlite3.connect(db)
-        title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
+        title, source = con.execute("SELECT title, title_source FROM sessions WHERE id='sess-1'").fetchone()
         con.close()
-        assert title == "a2a-dev-ctx-unsafe-value"
+        assert title.startswith("a2a-") and len(title) == len("a2a-") + 64
+        assert source == "user"
 
 
 # --------------------------------------------------------------------------

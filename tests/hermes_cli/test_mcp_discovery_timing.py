@@ -169,6 +169,7 @@ def test_init_agent_forwards_single_query_flag(monkeypatch):
     cli._ensure_tirith_security = lambda: None
     cli._ensure_runtime_credentials = lambda: True
     cli._single_query_mode = True
+    cli._explicit_model_override = True
 
     seen = {}
 
@@ -180,11 +181,14 @@ def test_init_agent_forwards_single_query_flag(monkeypatch):
         "ensure_mcp_discovery_before_agent_build",
         _fake_ensure,
     )
+    from hermes_cli import _early_recovery
+    monkeypatch.setattr(_early_recovery, "restore_interrupted_pull", lambda: False)
     import run_agent
     monkeypatch.setattr(run_agent, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
 
     assert cli._init_agent() is True
     assert seen.get("single_query") is True
+    assert cli.agent._explicit_model_override is True
 
 def test_init_agent_defaults_to_interactive(monkeypatch):
     """Without _single_query_mode, the helper uses interactive (short) bound."""
@@ -208,6 +212,8 @@ def test_init_agent_defaults_to_interactive(monkeypatch):
         "ensure_mcp_discovery_before_agent_build",
         _fake_ensure,
     )
+    from hermes_cli import _early_recovery
+    monkeypatch.setattr(_early_recovery, "restore_interrupted_pull", lambda: False)
     import run_agent
     monkeypatch.setattr(run_agent, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
 

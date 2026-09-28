@@ -84,6 +84,15 @@ def record_response_usage(
     # must remain observable.
     agent.session_api_calls += 1
     if not (hasattr(response, 'usage') and response.usage):
+        tracker = getattr(agent, "_workflow_usage", None)
+        if tracker is not None:
+            try:
+                tracker.record_response(
+                    request_id=getattr(agent, "_current_api_request_id", ""),
+                    usage=None, estimated_cost_usd=None, actual_provider_cost_usd=None,
+                )
+            except Exception:
+                logger.debug("Workflow missing-usage accounting failed", exc_info=True)
         if getattr(compressor, "awaiting_real_usage_after_compression", False):
             # No usage -> cannot adjudicate the prior compaction; consume the
             # pending verdict so later readings aren't charged to it and
@@ -242,6 +251,18 @@ def record_response_usage(
             _cost_delta = (_cost_delta or 0.0) + _moa_cost
     agent.session_cost_status = cost_result.status
     agent.session_cost_source = cost_result.source
+    tracker = getattr(agent, "_workflow_usage", None)
+    if tracker is not None:
+        try:
+            tracker.record_response(
+                request_id=getattr(agent, "_current_api_request_id", ""),
+                usage=aggregator_usage,
+                estimated_cost_usd=(cost_result.amount_usd if _moa_ref_cost is None else None),
+                actual_provider_cost_usd=None,
+                cost_status=cost_result.status,
+            )
+        except Exception:
+            logger.debug("Workflow usage accounting failed", exc_info=True)
 
     # Persist per-call token deltas for any session_id so non-CLI runs can't lose
     # accounting; gateway/session-store writes use absolute totals and safely overwrite

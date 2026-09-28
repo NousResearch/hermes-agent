@@ -693,7 +693,9 @@ class CLIAgentSetupMixin:
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
                 notice_callback=self._on_notice, notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction)
-            # Reference for atexit memory-provider shutdown: ``_run_cleanup`` in cli.py
+            # Cost receipts describe an explicit CLI model selection; this is metadata only.
+            setattr(self.agent, "_explicit_model_override", bool(getattr(self, "_explicit_model_override", False)))
+            # Reference for atexit memory provider shutdown: ``_run_cleanup`` in cli.py
             # reads ``cli._active_agent_ref``, so this MUST write the ``cli`` module's
             # global — a ``global`` statement here would bind this module's namespace.
             # When this code lived in cli.py a bare ``global _active_agent_ref`` worked; after the god-file

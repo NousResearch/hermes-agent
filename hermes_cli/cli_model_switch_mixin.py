@@ -24,7 +24,7 @@ from hermes_cli.cli_agent_setup_mixin import _retire_agent
 # new model's effort behind with the old route.
 _RUNTIME_FIELDS = (
     "model", "provider", "requested_provider", "_explicit_api_key", "_explicit_base_url",
-    "api_key", "base_url", "api_mode", "reasoning_config")
+    "api_key", "base_url", "api_mode", "reasoning_config", "_explicit_model_override")
 
 
 def _runtime_fields(cli) -> dict:
@@ -689,6 +689,8 @@ class CLIModelSwitchMixin:
                     f"  ⚠ Model switch to {result.new_model} failed ({exc}); "
                     f"staying on {old_model}.")
                 return False
+            setattr(self.agent, "_explicit_model_override", True)
+        self._explicit_model_override = True
         return True
 
     def _apply_model_switch_result(

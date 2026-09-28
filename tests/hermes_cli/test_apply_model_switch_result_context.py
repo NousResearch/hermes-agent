@@ -59,6 +59,33 @@ def _run_display(monkeypatch, result):
     return captured
 
 
+def test_user_model_switch_is_marked_as_explicit_override(monkeypatch):
+    import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "_cprint", lambda *_a, **_k: None)
+    cli = _StubCLI()
+    result = ModelSwitchResult(
+        success=True,
+        new_model="gpt-6-sol",
+        target_provider="openai-api",
+        provider_changed=True,
+        api_key="",
+        base_url="",
+        api_mode="chat_completions",
+        warning_message="",
+        provider_label="OpenAI API",
+        resolved_via_alias=False,
+        capabilities=None,
+        model_info=_FakeModelInfo(),
+        is_global=False,
+    )
+
+    with patch("agent.model_metadata.get_model_context_length", return_value=None):
+        cli_mod.HermesCLI._apply_model_switch_result(cli, result, False)
+
+    assert cli._explicit_model_override is True
+
+
 def test_picker_path_uses_provider_aware_context_on_codex(monkeypatch):
     """``_apply_model_switch_result`` must prefer the provider-aware resolver
     (272K on Codex) over the raw models.dev value (1.05M for gpt-5.5).

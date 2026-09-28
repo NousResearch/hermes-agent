@@ -1476,7 +1476,36 @@ def _run_api_retry_loop(agent, s: _LoopState) -> Optional[Dict[str, Any]]:
             return None
         try:
             _run_phase(build_api_request, agent, s)
-            if _run_phase(perform_api_call, agent, s).action == "break":
+            _started = time.monotonic()
+            try:
+                _call = _run_phase(perform_api_call, agent, s)
+            finally:
+                _workflow = getattr(agent, "_workflow_usage", None)
+                if _workflow is not None:
+                    try:
+                        from agent.workflow_usage import normalize_reasoning_level
+                        _workflow.record_attempt(
+                            request_id=s.api_request_id,
+                            model=str(agent.model or "UNKNOWN"),
+                            provider=str(agent.provider or "UNKNOWN"),
+                            reasoning_level=normalize_reasoning_level(
+                                s.api_kwargs or {}, fallback=getattr(agent, "reasoning_effort", None)
+                            ),
+                            duration_seconds=time.monotonic() - _started,
+                        )
+                        if (
+                            int(getattr(agent, "_fallback_index", 0) or 0) > 0
+                            and (str(agent.model or "UNKNOWN"), str(agent.provider or "UNKNOWN"))
+                            != agent._workflow_initial_route
+                        ):
+                            _workflow.note_model_escalation(
+                                "configured provider/model fallback after primary call failure: "
+                                f"{agent._workflow_initial_route[0]}@{agent._workflow_initial_route[1]} -> "
+                                f"{agent.model}@{agent.provider}"
+                            )
+                    except Exception:
+                        logger.debug("Workflow attempt accounting failed", exc_info=True)
+            if _call.action == "break":
                 return None
             _rc = _run_phase(check_api_response, agent, s)
             if _rc.action == "return":
@@ -1576,6 +1605,14 @@ def _run_conversation_turn(
         system_message=system_message, moa_config=moa_config,
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
+    )
+    from agent.workflow_usage import WorkflowUsageTracker, model_decision_reason
+    agent._workflow_usage = WorkflowUsageTracker(
+        str(s.turn_id or s.effective_task_id or "UNKNOWN"), started_at=time.time()
+    )
+    agent._workflow_initial_route = (str(agent.model or "UNKNOWN"), str(agent.provider or "UNKNOWN"))
+    agent._workflow_model_decision = model_decision_reason(
+        agent.model, explicit_override=bool(getattr(agent, "_explicit_model_override", False))
     )
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
@@ -1680,21 +1717,41 @@ def run_conversation(
     # Images attached natively to this user turn stay visible to vision_analyze for the turn, so
     # it does not embed the same pixels a second time into the same request (#76411).
     with native_turn_images(user_message):
-        result = _run_conversation_turn(
-            agent,
-            user_message,
-            system_message=system_message,
-            conversation_history=conversation_history,
-            task_id=task_id,
-            stream_callback=stream_callback,
-            persist_user_message=persist_user_message,
-            persist_user_timestamp=persist_user_timestamp,
-            persist_user_display_kind=persist_user_display_kind,
-            persist_user_display_metadata=persist_user_display_metadata,
-            persist_user_platform_id=persist_user_platform_id,
-            moa_config=moa_config,
-            turn_author=turn_author,
-        )
+        result = None
+        try:
+            result = _run_conversation_turn(
+                agent,
+                user_message,
+                system_message=system_message,
+                conversation_history=conversation_history,
+                task_id=task_id,
+                stream_callback=stream_callback,
+                persist_user_message=persist_user_message,
+                persist_user_timestamp=persist_user_timestamp,
+                persist_user_display_kind=persist_user_display_kind,
+                persist_user_display_metadata=persist_user_display_metadata,
+                persist_user_platform_id=persist_user_platform_id,
+                moa_config=moa_config,
+                turn_author=turn_author,
+            )
+        finally:
+            tracker = getattr(agent, "_workflow_usage", None)
+            if tracker is not None:
+                try:
+                    outcome = (
+                        "completed" if isinstance(result, dict) and result.get("completed") and not result.get("failed")
+                        else "interrupted" if getattr(agent, "_interrupt_requested", False)
+                        else "failed"
+                    )
+                    tracker.finish(
+                        outcome=outcome,
+                        decision_reason=getattr(agent, "_workflow_model_decision", "UNKNOWN"),
+                    )
+                    tracker.persist(agent._session_db, agent.session_id)
+                except Exception:
+                    logger.debug("Workflow usage persistence failed", exc_info=True)
+                finally:
+                    agent._workflow_usage = None
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
     return result

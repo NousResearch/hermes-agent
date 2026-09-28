@@ -902,3 +902,41 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+def test_gpt6_tiered_prices_resolve_for_direct_openai():
+    for model, rates in {
+        "gpt-6-luna": ("0.1", "0.5", "0.01", "0.125", "0.2", "0.75", "0.02", "0.25"),
+        "gpt-6-sol": ("2", "10", "0.2", "2.5", "4", "15", "0.4", "5"),
+    }.items():
+        entry = get_pricing_entry(model, provider="openai-api")
+        assert entry is not None
+        assert entry.source == "official_docs_snapshot"
+        assert entry.source_url == f"https://developers.openai.com/api/docs/models/{model}"
+        assert entry.tier_threshold_tokens == 272_000
+        assert tuple(rate for rate in (
+            entry.input_cost_per_million, entry.output_cost_per_million,
+            entry.cache_read_cost_per_million, entry.cache_write_cost_per_million,
+            entry.input_cost_per_million_above, entry.output_cost_per_million_above,
+            entry.cache_read_cost_per_million_above, entry.cache_write_cost_per_million_above,
+        )) == tuple(Decimal(rate) for rate in rates)
+
+
+def test_gpt6_luna_cached_usage_cost_estimate():
+    result = estimate_usage_cost(
+        "gpt-6-luna",
+        CanonicalUsage(input_tokens=9, output_tokens=277, cache_read_tokens=10_528, cache_write_tokens=6_610),
+        provider="openai-api",
+    )
+    assert result.status == "estimated"
+    assert result.amount_usd == Decimal("0.00107093")
+
+
+def test_gpt6_sol_long_context_applies_cache_write_tier():
+    result = estimate_usage_cost(
+        "gpt-6-sol",
+        CanonicalUsage(input_tokens=24, output_tokens=4_557, cache_read_tokens=271_321, cache_write_tokens=119_762),
+        provider="openai-api",
+    )
+    assert result.status == "estimated"
+    assert result.amount_usd == Decimal("0.7757894")

@@ -973,6 +973,7 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
 # templated siblings (e.g. /api/sessions/bulk-delete before /api/sessions/{id}).
 from hermes_cli.web_routers import (  # noqa: E402
     files as _files_routes,
+    reports as _reports_routes,
     git as _git_routes,
     local_models as _local_models_routes,
     status as _status_routes,
@@ -998,6 +999,7 @@ from hermes_cli.web_routers import (  # noqa: E402
 )
 
 app.include_router(_files_routes.router)
+app.include_router(_reports_routes.router)
 app.include_router(_git_routes.router)
 app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)

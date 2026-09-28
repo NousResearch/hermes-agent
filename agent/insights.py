@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, format_cost_label, format_duration_compact, has_known_pricing
+from agent.workflow_usage import WORKFLOW_TASK_PREFIX, read_workflow_rows
 from hermes_cli.timefmt import coerce_epoch
 from hermes_time import safe_strftime
 
@@ -24,6 +25,45 @@ def _fmt_est_cost(est_cost: float) -> str:
     "~$0.00" (#79220 bug class — the same dishonesty this module's cost buckets exist to fix, #77223).
     """
     return format_cost_label(Decimal(str(est_cost)))
+
+def _workflow_display_lines(workflows: list[dict[str, Any]]) -> list[str]:
+    """Compact workflow-cost lines shared by CLI and gateway /insights."""
+    lines = ["Finalized workflows (one user turn each; includes failures):"]
+    for workflow in workflows[:3]:
+        wall_runtime = workflow.get("wall_runtime_seconds", "UNKNOWN")
+        wall_label = f"{wall_runtime:.2f}s" if isinstance(wall_runtime, (int, float)) else "UNKNOWN"
+        lines.append(
+            f"  {workflow['workflow_id']} {workflow['outcome']} | "
+            f"requests={workflow['requests']} retries={workflow.get('retries', 'UNKNOWN')} "
+            f"wall={wall_label} API={workflow['runtime_seconds']:.2f}s | "
+            f"quality={workflow.get('result_quality', 'UNKNOWN')} "
+            f"rework={workflow.get('rework', 'UNKNOWN')}"
+        )
+        for route in workflow["routes"]:
+            tokens = route.get("tokens", {})
+            token_label = ",".join(
+                f"{name}={tokens.get(key, 'UNKNOWN')}"
+                for key, name in (("input", "in"), ("output", "out"), ("cache_read", "cache-read"),
+                                  ("cache_write", "cache-write"), ("reasoning", "reasoning"))
+            )
+            est = route.get("estimated_cost_usd", "UNKNOWN")
+            status = route.get("estimated_cost_status", "UNKNOWN")
+            estimated = "UNKNOWN" if est == "UNKNOWN" else "included" if status == "included" else f"{format_cost_label(Decimal(str(est)))} est"
+            actual = route.get("actual_provider_cost_usd", "UNKNOWN")
+            if actual != "UNKNOWN":
+                actual = f"${Decimal(str(actual)):.4f} actual"
+            lines.append(
+                f"    {route.get('model', 'UNKNOWN')} @ {route.get('provider', 'UNKNOWN')} "
+                f"reasoning={route.get('reasoning_level', 'UNKNOWN')} "
+                f"requests={route.get('requests', 0)} retries={route.get('retries', 'UNKNOWN')} "
+                f"API={route.get('runtime_seconds', 0):.2f}s tokens[{token_label}] "
+                f"estimated={estimated}; actual provider cost={actual}"
+            )
+        lines.append(
+            f"    model decision: {workflow.get('decision_reason', 'UNKNOWN')}; "
+            f"escalation: {workflow.get('escalation_reason', 'UNKNOWN')}"
+        )
+    return lines
 
 
 def _estimate_cost(session_or_model: Dict[str, Any] | str, input_tokens: int = 0, output_tokens: int = 0, *, cache_read_tokens: int = 0,
@@ -147,7 +187,13 @@ class InsightsEngine:
         " u.cost_source, u.billing_mode"
         " FROM session_model_usage u"
         " JOIN sessions s ON s.id = u.session_id"
-        " WHERE s.started_at >= ?",
+        " WHERE s.started_at >= ? AND (u.task IS NULL OR u.task NOT LIKE 'workflow-ledger:v1:%')",
+    )
+    _GET_WORKFLOW_USAGE_ALL, _GET_WORKFLOW_USAGE_WITH_SOURCE = _scoped(
+        "SELECT u.session_id, u.model, u.billing_provider, u.task, u.last_seen"
+        " FROM session_model_usage u JOIN sessions s ON s.id = u.session_id"
+        " WHERE s.started_at >= ? AND u.task LIKE ?",
+        " ORDER BY u.last_seen DESC",
     )
     _PINNED = ("_GET_TOOL_CALLS", "_GET_SKILL_CALLS")
 
@@ -183,13 +229,14 @@ class InsightsEngine:
         skill_usage = self._get_skill_usage(cutoff, source)
         message_stats = self._get_message_stats(cutoff, source)
         if not sessions:
-            return {"days": days, "source_filter": source, "empty": True, "overview": {}, "models": [], "platforms": [], "tools": [],
+            return {"days": days, "source_filter": source, "empty": True, "overview": {}, "models": [], "workflows": [], "platforms": [], "tools": [],
                     "skills": self._compute_skill_breakdown([]), "activity": {}, "top_sessions": []}
         models = self._compute_model_breakdown(sessions, cutoff, source)
         return {
             "days": days, "source_filter": source, "empty": False, "generated_at": time.time(),
             "overview": self._compute_overview(sessions, message_stats, models),
             "models": models,
+            "workflows": self._get_workflow_usage(cutoff, source),
             "platforms": self._compute_platform_breakdown(sessions),
             "tools": self._compute_tool_breakdown(tool_usage),
             "skills": self._compute_skill_breakdown(skill_usage),
@@ -263,6 +310,14 @@ class InsightsEngine:
         """Per-model usage rows; [] when the table is missing (older DB) so the caller falls back to the per-session aggregate."""
         try:
             return [dict(row) for row in self._query("_GET_MODEL_USAGE", cutoff, source)]
+        except sqlite3.OperationalError:
+            return []
+
+    def _get_workflow_usage(self, cutoff: float, source: str = None) -> List[Dict]:
+        try:
+            sql = self._GET_WORKFLOW_USAGE_WITH_SOURCE if source else self._GET_WORKFLOW_USAGE_ALL
+            params = (cutoff, f"{WORKFLOW_TASK_PREFIX}%", source) if source else (cutoff, f"{WORKFLOW_TASK_PREFIX}%")
+            return read_workflow_rows([dict(row) for row in self._conn.execute(sql, params).fetchall()])
         except sqlite3.OperationalError:
             return []
 
@@ -509,6 +564,9 @@ class InsightsEngine:
         if report["models"]:
             lines += self._section("🤖 Models Used") + [f"  {'Model':<30} {'Sessions':>8} {'Tokens':>12}"]
             lines += [f"  {m['model'][:28]:<30} {m['sessions']:>8} {m['total_tokens']:>12,}" for m in report["models"]] + [""]
+        if report.get("workflows"):
+            lines.extend(f"  {line}" for line in _workflow_display_lines(report["workflows"]))
+            lines.append("")
         platforms = report["platforms"]
         if len(platforms) > 1 or (platforms and platforms[0]["platform"] != "cli"):
             lines += self._section("📱 Platforms") + [f"  {'Platform':<14} {'Sessions':>8} {'Messages':>10} {'Tokens':>14}"]
@@ -566,6 +624,9 @@ class InsightsEngine:
             lines += [f"**Cost:** {' | '.join(cost_parts)}", ""]
         if report["models"]:
             lines += ["**🤖 Models:**"] + [f"  {m['model'][:25]} — {m['sessions']} sessions, {m['total_tokens']:,} tokens" for m in report["models"][:5]] + [""]
+        if report.get("workflows"):
+            lines.extend(_workflow_display_lines(report["workflows"]))
+            lines.append("")
         if len(report["platforms"]) > 1:
             lines += ["**📱 Platforms:**"] + [f"  {p['platform']} — {p['sessions']} sessions, {p['messages']:,} msgs" for p in report["platforms"]] + [""]
         if report["tools"]:

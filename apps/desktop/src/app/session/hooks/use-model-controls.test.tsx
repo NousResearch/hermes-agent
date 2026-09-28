@@ -12,7 +12,9 @@ import {
   getCurrentModelSource,
   setCurrentModel,
   setCurrentModelSource,
-  setCurrentProvider
+  setCurrentProvider,
+  setCurrentModelTransient,
+  setCurrentProviderTransient
 } from '@/store/session'
 import * as SessionStates from '@/store/session-states'
 
@@ -913,5 +915,61 @@ describe('useModelControls', () => {
     // A provider-class pick can never be shadowed by a custom:<key> default, so
     // the sticky path must not pay for a /api/model/info round trip.
     expect(getGlobalModelInfo).not.toHaveBeenCalled()
+  })
+
+  it('does not reseed a transient preview that only looks like the poisoned legacy row (#125356 review)', async () => {
+    // A cold-resume preview painted through the transient setters: the ATOM
+    // provider is empty, but the user's real pick is still persisted below it.
+    setCurrentModel('anthropic/claude-opus-5-5')
+    setCurrentProvider('anthropic')
+    setCurrentModelSource('manual')
+    // the transient paint, exactly as applyStoredSessionPreviewRuntimeInfo does
+    setCurrentModelTransient('anthropic/claude-opus-5-5')
+    setCurrentProviderTransient('')
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'poolside/laguna-xs-2.1:free',
+      provider: 'nous'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    // The preview survives: nothing reseeds the composer to the profile default.
+    expect($currentModel.get()).toBe('anthropic/claude-opus-5-5')
+    expect($currentProvider.get()).toBe('')
+    expect(getCurrentModelSource()).toBe('manual')
+  })
+
+  it('still reseeds the real poisoned legacy row: manual model, empty provider everywhere (#125336)', async () => {
+    // The legacy damage: setCurrentProvider('') PERSISTED the empty provider,
+    // so storage and atom agree on the incoherent state.
+    setCurrentModel('anthropic/claude-opus-5-5')
+    setCurrentProvider('anthropic')
+    setCurrentModelSource('manual')
+    setCurrentProvider('')
+
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'poolside/laguna-xs-2.1:free',
+      provider: 'nous'
+    })
+
+    const { result } = renderHook(() =>
+      useModelControls({
+        queryClient: new QueryClient(),
+        requestGateway: vi.fn()
+      })
+    )
+
+    await result.current.refreshCurrentModel()
+
+    expect($currentModel.get()).toBe('poolside/laguna-xs-2.1:free')
+    expect($currentProvider.get()).toBe('nous')
+    expect(getCurrentModelSource()).toBe('default')
   })
 })

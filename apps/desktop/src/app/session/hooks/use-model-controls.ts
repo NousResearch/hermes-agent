@@ -21,6 +21,7 @@ import {
   $currentProvider,
   getComposerSelectionGeneration,
   getCurrentModelSource,
+  getStoredComposerProvider,
   markComposerSelectionManual,
   setCurrentModel,
   setCurrentModelSource,
@@ -154,7 +155,13 @@ export function useModelControls({
         // `desktopSessionCreateParams` then ships the model alone, pairing it
         // with the unrelated profile provider. Reseed from the profile default
         // so installs carrying the poisoned row recover on the next launch.
-        const orphanedModelPick = () => !force && manualPick() && pickProvider() === ''
+        // The live preview paints the same in-memory signature (model set,
+        // provider '') through the transient setters, which never touch
+        // storage, so distinguish the two by the PERSISTED provider: the
+        // poisoned legacy row stored nothing there, while a transient preview
+        // leaves the user's real pick intact underneath.
+        const orphanedModelPick = () =>
+          !force && manualPick() && pickProvider() === '' && getStoredComposerProvider() === ''
 
         // A SECOND exception: a bare provider slug can be a stale spelling of a
         // `custom:<key>` profile default (#87035 aliases the two spellings for

@@ -707,10 +707,7 @@ def _build_top_level_description(*, independent_completions=None) -> str:
     delivery = _DELIVERY_INDEPENDENT if independent_completions else _DELIVERY_JOINED
     # Per-session total budget clause (#52484). Stated here because it applies to
     # both single-task and batch calls and is not a per-task parameter.
-    try:
-        max_per_session = _get_max_children_per_session()
-    except Exception:
-        max_per_session = 10
+    max_per_session = _get_max_children_per_session()
     if max_per_session == 0:
         session_budget_clause = (
             "SESSION BUDGET: unlimited; positive config enables the cap.\n\n"

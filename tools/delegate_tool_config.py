@@ -182,28 +182,15 @@ _session_children_counts: Dict[str, int] = {}
 
 
 def _get_max_children_per_session() -> int:
-    """delegation.max_children_per_session (floor 1, 0 disables).
+    """delegation.max_children_per_session (total children per parent session; floor 1, 0 = unlimited).
 
-    Caps the total number of subagent children a single parent session may
-    spawn across all delegate_task calls. Independent of max_concurrent_children
-    (per-batch parallel limit) and max_spawn_depth (nesting limit).
+    Independent of max_concurrent_children (per-batch parallel limit) and max_spawn_depth (nesting limit).
     """
-    val = _cfg().get("max_children_per_session")
-    if val is not None:
-        try:
-            ival = int(val)
-        except (TypeError, ValueError):
-            logger.warning(
-                "delegation.max_children_per_session=%r is not a valid integer; "
-                "using default %d",
-                val,
-                _DEFAULT_MAX_CHILDREN_PER_SESSION,
-            )
-            return _DEFAULT_MAX_CHILDREN_PER_SESSION
-        if ival == 0:
-            return 0  # disabled
-        return max(1, ival)
-    return _DEFAULT_MAX_CHILDREN_PER_SESSION
+    return _knob(
+        "max_children_per_session", None, lambda v: 0 if int(v) == 0 else max(1, int(v)),
+        _DEFAULT_MAX_CHILDREN_PER_SESSION,
+        f"delegation.max_children_per_session=%r is not a valid integer; using default {_DEFAULT_MAX_CHILDREN_PER_SESSION}",
+    )
 
 
 def _session_budget_key(parent_agent) -> str:

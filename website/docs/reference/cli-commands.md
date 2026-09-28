@@ -131,7 +131,10 @@ Common options:
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
-| `--format stream-json` | Emit structured JSONL for a `-q` / `--query` invocation. Implies `--quiet`; cannot be combined with `--tui`. |
+| `--format json` | Emit exactly one final JSON result envelope for `-q` / `--query-file`. Implies `--quiet`; cannot be combined with `--tui`. |
+| `--format stream-json` | Emit structured JSONL progress and a final result for `-q` / `--query-file`. Implies `--quiet`; cannot be combined with `--tui`. |
+| `--output-schema FILE` | Validate the entire final JSON answer against a local JSON Schema, with at most one correction. One-shot only; implies `--quiet`. |
+| `-o`, `--output-last-message FILE` | Atomically replace FILE with only the successful final response, not a result envelope. One-shot only; implies `--quiet`. |
 | `--image <path>` | Attach a local image to a single query. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
 | `--worktree` | Create an isolated git worktree for this run. |
@@ -158,6 +161,76 @@ hermes chat --worktree -q "Review this repo and open a PR"
 hermes chat --ignore-user-config --ignore-rules -q "Repro without my personal setup"
 hermes chat --safe-mode -q "Is this bug mine or Hermes'?"
 ```
+
+### JSON results, schema validation, and final-output files
+
+Use `--format json` to get **one final JSON result envelope** on stdout, with the
+same `type: "result"`, `text`, `session_id`, `tokens`, `duration_ms`, `timestamp`,
+`exit_code`, and optional failure fields as the terminal `stream-json` record.
+It does not emit progress events. Diagnostics stay on stderr. `--format json`
+alone wraps the answer; it does **not** require the answer itself to be JSON.
+
+To require a particular answer shape, save a JSON Schema as `answer.schema.json`:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "summary": {"type": "string"},
+    "risks": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": ["summary", "risks"],
+  "additionalProperties": false
+}
+```
+
+```bash
+hermes chat -q "Summarize this repository and its risks" \
+  --output-schema answer.schema.json --format json \
+  --output-last-message answer.json > result.json
+
+# Alternatively, pass the prompt literally from a file or stdin:
+hermes chat --query-file prompt.txt --output-schema answer.schema.json --format json
+```
+
+- **Native and model-agnostic:** Hermes instructs your selected agent, then
+  validates locally using the installed `jsonschema` validator. This is **not
+  guaranteed constrained decoding** and needs no provider-specific JSON mode.
+- **Strict whole-response parsing:** no prose or markdown-fence extraction;
+  duplicate object keys, `NaN`, infinities, and overflowing non-finite numbers
+  fail. JSON scalars, including `false` and `null`, are valid when the schema
+  allows them. Success adds `structured_output` to the result envelope.
+- **Offline schemas:** the schema is read before the agent starts. Omitted
+  `$schema` means Draft 2020-12. Known installed dialects and local fragment
+  references such as `#/$defs/answer` are supported; remote and other-file
+  references are rejected, never retrieved. Malformed/unreadable schemas,
+  unsupported dialects or required vocabularies, and a missing validator fail
+  closed. Standard `format` keywords remain annotations, not extra format checks.
+- **One correction at most:** an invalid answer gets one additional completion
+  from the same agent/model with its original transcript, system prompt, and
+  tool schemas. It does not run another tool loop: any correction tool calls
+  are rejected without execution. No correction is attempted after a failed,
+  partial, interrupted, or exhausted-budget run. A still-invalid answer exits
+  nonzero with `failed`, `error`, `schema_errors`, and raw final `text`, without
+  a successful `structured_output` field. **Schema failure does not roll back
+  tool effects from the original task.**
+- **Final-output files:** `-o` / `--output-last-message` writes only the successful
+  response text (schema-valid JSON when requested), without an envelope or added
+  newline. Publication uses a temporary file in the destination directory and
+  atomic replacement. Failure, interruption, partial answers, or a failed
+  replacement leave an existing artifact unchanged. Symlinks and non-regular
+  targets are rejected. The parent directory must already exist. File errors
+  produce a nonzero exit and an error in the final JSON result.
+- **One-shot only:** these options require `-q` or `--query-file`, imply quiet
+  mode even on a TTY, and reject `--tui`. Schema and output paths are anchored
+  before worktree/session directory changes. Both file output and schema
+  validation can also be used with default `text` or with `stream-json`.
+
+Check the process exit code before consuming an existing output file: a failed
+run deliberately leaves the previous successful artifact in place. In
+`stream-json` mode, earlier text events may contain an invalid first answer;
+only the terminal result establishes validation success.
 
 ### `--format stream-json` — structured JSONL output
 

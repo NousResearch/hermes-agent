@@ -1676,6 +1676,9 @@ def main(
     checkpoints: bool = False,
     pass_session_id: bool = False,
     output_format: str = "text",
+    output_schema=None,
+    output_last_message: str = None,
+    _output_emitter=None,
     ignore_user_config: bool = False,
     ignore_rules: bool = False,
 ):
@@ -1741,12 +1744,19 @@ def main(
         if warning:
             print(f"Warning: {warning}", file=sys.stderr)
 
+    if output_last_message is not None:
+        from hermes_cli.structured_output import prepare_output_path
+        output_last_message = prepare_output_path(output_last_message)
+    if output_schema is not None:
+        from hermes_cli.structured_output import OutputSchema
+        if not isinstance(output_schema, OutputSchema):
+            output_schema = OutputSchema.load(output_schema)
     _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
     query = query or q
     # ``hermes chat`` already validated this; the direct Fire entry point gets the same contract.
-    if output_format == "stream-json":
+    if output_format in {"json", "stream-json"} or output_schema is not None or output_last_message is not None:
         if not query:
-            raise ValueError("--format stream-json requires -q/--query")
+            raise ValueError(f"--format {output_format} requires -q/--query")
         quiet = True
     cli = _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget,
                                verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills)
@@ -1777,7 +1787,7 @@ def main(
     _install_single_query_signal_handlers(cli)
 
     if query or image:
-        _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json=output_format == "stream-json")
+        _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json=output_format == "stream-json", json_output=output_format == "json", output_schema=output_schema, emitter=_output_emitter, output_last_message=output_last_message)
         return
     cli.run()
 

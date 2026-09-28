@@ -1810,13 +1810,32 @@ _CHAT_PASSTHROUGH = (
 
 
 def cmd_chat(args):
-    """Run interactive chat CLI."""
+    """Run chat, reserving machine stdout before startup diagnostics or cwd changes."""
+    from hermes_cli.stream_json import output_protocol, stream_json_requested
+
+    if not stream_json_requested(args):
+        return _cmd_chat(args)
+    with output_protocol(getattr(args, "output_format", "text"), getattr(args, "model", "") or "") as emitter:
+        args._output_emitter = emitter
+        return _cmd_chat(args)
+
+
+def _cmd_chat(args):
+    """Chat startup shared by interactive and one-shot output modes."""
     _apply_safe_mode(args)
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
     from hermes_cli.stream_json import stream_json_requested
     # Structured stdout is a non-interactive protocol: it overrides HERMES_TUI/display.interface too.
     use_tui = False if stream_json_requested(args) else _resolve_use_tui(args)
+
+    if getattr(args, "output_schema", None):
+        from hermes_cli.structured_output import OutputSchema
+        args.output_schema = OutputSchema.load(args.output_schema)
+
+    if getattr(args, "output_last_message", None):
+        from hermes_cli.structured_output import prepare_output_path
+        args.output_last_message = prepare_output_path(args.output_last_message)
 
     _resolve_chat_session_args(args, use_tui)
 
@@ -1875,6 +1894,9 @@ def cmd_chat(args):
         "oneshot": bool(getattr(args, "oneshot_exit", False)),
         "run_budget": getattr(args, "run_budget", None),
         "output_format": getattr(args, "output_format", "text"),
+        "output_schema": getattr(args, "output_schema", None),
+        "output_last_message": getattr(args, "output_last_message", None),
+        "_output_emitter": getattr(args, "_output_emitter", None),
         "ignore_rules": getattr(args, "ignore_rules", False) or safe_mode,
         "ignore_user_config": getattr(args, "ignore_user_config", False) or safe_mode,
         "compact": getattr(args, "compact", False),

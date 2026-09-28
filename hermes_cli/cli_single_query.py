@@ -183,7 +183,7 @@ def _single_query_exit_code(result, *, credentials_rate_limited: bool = False,
     return 1
 
 
-def _run_quiet_single_query(cli, effective_query, emitter=None):
+def _run_quiet_single_query(cli, effective_query, emitter=None, output_schema=None, output_last_message=None):
     """Quiet (-Q) one-shot turn: run, print the response (stderr for errors/session_id), then sys.exit with the automation exit code.
     With a ``StreamJsonEmitter`` the final answer and the exit line become the terminal ``result`` JSONL record instead.
     HERMES_TURN_AUTHOR (set only by a bot-to-bot dispatcher) is consumed here so tool subprocesses do not inherit it.
@@ -210,12 +210,17 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
             result = cli.agent.run_conversation(
                 user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
             )
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, InterruptedError):
             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")
             if emitter is not None:
                 exit_single_query(emitter.emit_result({"failed": True, "error": "Interrupted"}, session_id=cli.session_id or "", exit_code=130))
             print(f"\nsession_id: {cli.session_id}", file=sys.stderr)
             exit_single_query(130)
+        except Exception as exc:
+            if emitter is None and output_schema is None and output_last_message is None:
+                raise
+            logger.warning("One-shot agent failed", exc_info=True)
+            result = {"failed": True, "completed": False, "error": f"{type(exc).__name__}: {exc}", "final_response": ""}
         # The exit line below reports session_id to stderr for automation wrappers;
         # without this sync it would point at the ended parent after compression.
         _sync_cli_session_id_from_agent(cli)
@@ -265,18 +270,24 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
                 result = continued
                 # A teammate's reply displaced the answer this run prints; tell the spawner.
                 _report_turn(result)
+        if output_schema is not None and _single_query_exit_code(result) == 0:
+            result = output_schema.apply(result, cli.agent)
         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
-    # Surface backend errors that produced no visible output (e.g. invalid model slug
-    # -> provider 4xx) on stderr so piped stdout stays clean.
-    if emitter is not None:
-        pass  # the result record below carries text/error; nothing else may touch stdout
-    elif (
-        not response and isinstance(result, dict) and result.get("error")
-        and (result.get("failed") or result.get("partial"))
-    ):
-        print(f"Error: {result['error']}", file=sys.stderr)
-    elif response:
-        print(response)
+        if emitter is None and output_last_message is not None and _single_query_exit_code(result) == 0:
+            from hermes_cli.structured_output import write_last_message
+            try:
+                write_last_message(Path(output_last_message), response)
+            except ValueError as exc:
+                result = {**result, "failed": True, "completed": False,
+                          "failure_reason": "output_file", "error": str(exc)}
+    if emitter is None:
+        if isinstance(result, dict) and result.get("error") and (
+            (not response and (result.get("failed") or result.get("partial")))
+            or ((output_schema is not None or output_last_message is not None) and _single_query_exit_code(result))
+        ):
+            print(f"Error: {result['error']}", file=sys.stderr)
+        if response:
+            print(response)
 
     # Kanban goal_mode: keep working in THIS session until a judge agrees the card is
     # done, the worker terminates it, or the turn budget runs out (sticky block).
@@ -291,7 +302,8 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
 
     _exit_code = _single_query_exit_code(result)
     if emitter is not None:
-        _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code)
+        _exit_code = emitter.emit_result(result, session_id=cli.session_id or "", exit_code=_exit_code,
+                                        output_last_message=output_last_message)
     exit_single_query(_exit_code)
 
 
@@ -436,7 +448,7 @@ def _configure_quiet_agent(agent) -> None:
     agent.tool_progress_mode = "off"
 
 
-def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool = False):
+def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool = False, json_output: bool = False, output_schema=None, emitter=None, output_last_message=None):
     """``-q``/``--image`` entry: seed an interactive session on a TTY, else run the one-shot turn and exit.
     ``stream_json`` (implies quiet) swaps the plain-text final answer for the JSONL event protocol."""
     from cli import _SeededQueryMessage, _collect_kanban_task_images, _collect_query_images, _configure_quiet_agent, _finalize_single_query, _route_single_query_images, _run_kanban_goal_loop_chat, _run_quiet_single_query, _should_seed_interactive, _single_query_exit_code
@@ -477,12 +489,13 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         if quiet:
             # Quiet mode: suppress banner, spinner, tool previews.
             cli.tool_progress_mode = "off"
-            emitter = None
-            if stream_json:
+            if emitter is None and (stream_json or json_output):
                 # Built BEFORE credentials/agent init so a failed start still closes the protocol
                 # (init + result) instead of exiting 1 with an empty stdout.
                 from hermes_cli.stream_json import StreamJsonEmitter
-                emitter = StreamJsonEmitter(model=getattr(cli, "model", "") or "", session_id=cli.session_id or "")
+                emitter = StreamJsonEmitter(model=getattr(cli, "model", "") or "", session_id=cli.session_id or "", final_only=json_output)
+            if emitter is not None:
+                emitter.initialize(getattr(cli, "model", "") or "", cli.session_id or "")
             if cli._ensure_runtime_credentials():
                 effective_query: Any = _route_single_query_images(
                     cli, query, query, single_query_images, single_query_image_urls
@@ -498,7 +511,9 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                     _configure_quiet_agent(cli.agent)
                     if emitter is not None:
                         emitter.attach(cli.agent)
-                    _run_quiet_single_query(cli, effective_query, emitter=emitter)
+                    if output_schema is not None:
+                        effective_query = output_schema.instruct(effective_query)
+                    _run_quiet_single_query(cli, effective_query, emitter=emitter, output_schema=output_schema, output_last_message=output_last_message)
 
             fail_code = _single_query_exit_code(
                 None, credentials_rate_limited=getattr(cli, "_credentials_rate_limited", False),

@@ -469,6 +469,11 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
     return proc.returncode
 
 
+def _live_intent_file(dm_file: "str | os.PathLike") -> str:
+    """The pinned live-delivery intent beside a DM file (the cache sweep globs ``*.live.json``)."""
+    return f"{os.fspath(dm_file)}.live.json"
+
+
 def _dm_delivery_id(dm_file: "str | os.PathLike") -> str:
     """One delivery id per DM file: the dispatch ack, the live-owner intent and every retry
     of the runner derive it the same way, so the sender can correlate all of them."""
@@ -481,7 +486,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     from utils import fsync_directory
 
     intent: dict[str, Any]
-    intent_path = Path(dm_file + ".live.json")
+    intent_path = Path(_live_intent_file(dm_file))
     if intent_path.exists():
         intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
     else:
@@ -523,7 +528,7 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | 
         # The intent carries the message plaintext so a retry can replay the SAME delivery id;
         # once the owner settled it nothing retries, so it goes along with the dm file (same
         # plaintext) — the live branch returns before _run_delivery's own unlink.
-        _unlink_dm_file(str(dm_file) + ".live.json")
+        _unlink_dm_file(_live_intent_file(dm_file))
         _unlink_dm_file(str(dm_file))
     print(json.dumps(payload))
     return 0 if status in ("settled", "queued", "claimed") else 1
@@ -578,7 +583,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     # The live consumer owns turn admission; never compete for its CLI lease.
     if not stdin_file:
         home = profile_home or _local_delivery_home(argv)
-        if home is not None or Path(dm_file + ".live.json").exists():
+        if home is not None or os.path.exists(_live_intent_file(dm_file)):
             try:
                 record = _admit_live_dm(home, dm_file, author)
             except Exception as exc:
@@ -860,7 +865,7 @@ if __name__ == "__main__":  # pragma: no cover - exercised as a background proce
             # child (Windows) already printed its own outcome.
             booted = getattr(exc, "relaunched", False) or (isinstance(exc, SystemExit) and not exc.code)
             parsed = _runner_argv(sys.argv[1:])
-            if not booted and parsed and os.path.exists(parsed[2] + ".live.json"):
+            if not booted and parsed and os.path.exists(_live_intent_file(parsed[2])):
                 print(_live_outcome_unknown(parsed[2], "the delivery runner could not activate "
                                                        "Hermes dependencies (see stderr)"))
             raise

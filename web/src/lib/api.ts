@@ -2198,9 +2198,14 @@ export interface WhatsAppOnboardingApplyResponse {
   restart_error?: string;
 }
 
+export interface SessionContentPart {
+  type: string;
+  text?: string;
+}
+
 export interface SessionMessage {
   role: "user" | "assistant" | "system" | "tool";
-  content: string | null;
+  content: Array<SessionContentPart> | null | string;
   tool_calls?: Array<{
     id: string;
     function: { name: string; arguments: string };

@@ -10410,6 +10410,9 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
                 {"session_id": session_id, "role": role, "content": content}
             )
 
+        def deactivate_messages_by_display_kind(self, _session_id, _display_kind):
+            return 0
+
     agent = Agent()
     db = SessionDB()
     agent._session_db = db

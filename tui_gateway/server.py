@@ -1800,10 +1800,14 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
                 # Same stale-key hazard as the submit row: this durable pivot must land in the session the
                 # live agent writes to, or a model switch between turns on a rotated session files the notice
                 # under a parent the conversation no longer reads from (#123545).
+                target = _submit_row_target_key(session)
+                # The in-memory strip above keeps one marker; the durable rows need the same invariant or N
+                # switches leave N active rows that all replay on resume (#65891 kept it in memory only).
+                db.deactivate_messages_by_display_kind(target, "model_switch")
                 from agent.message_metadata import stamp_message_uid
                 entry["_row_id"] = db.append_message(
-                    session_id=_submit_row_target_key(session), role="user", content=marker,
-                    display_kind="model_switch", message_uid=stamp_message_uid(entry))
+                    session_id=target, role="user", content=marker, display_kind="model_switch",
+                    message_uid=stamp_message_uid(entry))
                 entry[_DB_PERSISTED_MARKER] = True
     except Exception:
         logger.debug("failed to persist model switch marker", exc_info=True)

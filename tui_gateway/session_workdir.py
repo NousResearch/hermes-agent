@@ -527,9 +527,10 @@ def _submit_row_target_key(session: dict) -> str:
     against this handle (``_persist_live_session_system_prompt``). Do NOT re-resolve through the lineage
     here: ``resolve_resume_session_id`` returns the deepest node that has MESSAGES, so the freshly-minted
     child of a just-published rotation resolves back to the parent and the fix would no-op exactly when
-    it is needed. The choice is made ONCE here and recorded on the staged dict (``_session_id``) so
-    every later addresser of that row — the @-expansion rewrite, the queue merge, the drain deactivation
-    — reads the same key instead of re-deriving one that a rotation can invalidate mid-turn.
+    it is needed. The choice is made ONCE here and recorded on the staged dict under
+    ``_SUBMIT_ROW_SESSION_KEY`` so every later addresser of that row — the @-expansion rewrite, the
+    queue merge, the drain deactivation — reads the same key instead of re-deriving one that a rotation
+    can invalidate mid-turn.
     """
     return str(getattr(session.get("agent"), "session_id", None) or "") or str(session.get("session_key") or "")
 

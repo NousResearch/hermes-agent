@@ -167,6 +167,69 @@ def test_model_switch_marker_lands_in_the_live_session(monkeypatch, tmp_path):
         db.close()
 
 
+def test_model_switch_markers_do_not_accumulate_across_switches(monkeypatch, tmp_path):
+    """The in-memory path is self-replacing: each switch strips the prior marker so N switches leave ONE
+    marker, not N re-sent on every API call (#65891). The DURABLE write had no counterpart, so N switches
+    left N active rows that all replay on resume — the invariant held in memory only. Filed in the live
+    session (see the test above), those rows are exactly the reporter's 130 stray markers."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key = _desktop_session(monkeypatch, db)
+    session = server._sessions[sid]
+    try:
+        with session["history_lock"]:
+            session["running"] = True
+            server._start_inflight_turn(session, "earlier turn")
+        assert server._ensure_session_db_row(session) is not False
+        agent = _flush_agent(db, key)
+        session["agent"] = agent
+        for i in range(3):
+            server._append_model_switch_marker(session, model=f"model-{i}", provider="test-provider")
+        prefix = server._MODEL_SWITCH_MARKER_PREFIX
+        # LIVE rows only (get_messages defaults to active=1), and full content: the marker prefix is
+        # longer than the _rows() helper's 48-char preview.
+        live = [r for r in db.get_messages(key) if prefix in str(r.get("content") or "")]
+        assert len(live) == 1, (
+            f"3 switches must leave 1 live durable marker, not {len(live)}: "
+            f"{[str(r.get('content'))[:60] for r in live]}")
+        # The superseded rows are preserved inactive, never deleted (same contract as deactivate_message).
+        kept = [r for r in db.get_messages(key, include_inactive=True)
+                if prefix in str(r.get("content") or "")]
+        assert len(kept) == 3, f"superseded markers must be kept inactive, not deleted: {len(kept)}"
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
+def test_message_react_targets_the_row_in_the_session_that_owns_it(monkeypatch, tmp_path):
+    """``message.react`` with ``newest_role`` resolves the row via ``latest_message_row_id``, which filters
+    on one session_id. On a rotated session the newest user row lives in the continuation, so a stale
+    ``session_key`` reacts to the PARENT's last user row — the previous turn — or 404s when the parent
+    has no text row. Same defect class as the submit row: an off-turn write addressed by a key a
+    rotation invalidated (#123545)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid, key, session, agent, child = _rotated_session(monkeypatch, db)
+    try:
+        # The continuation's newest user row is the rotated turn's own submit row.
+        db.append_message(child, "user", content="the turn the user just reacted to")
+        # The parent still holds the PREVIOUS turn's last user row.
+        db.append_message(key, "user", content="the previous turn")
+
+        got = server.handle_request({"id": "r1", "method": "message.react", "params": {
+            "session_id": sid, "newest_role": "user", "emoji": "thumbsup"}})
+        assert "result" in got, got
+        want = db._read_one("SELECT id FROM messages WHERE session_id = ? AND content = ?",
+                            (child, "the turn the user just reacted to"))
+        assert want is not None
+        row_id = int(got["result"]["row_id"])
+        assert row_id == want[0], (
+            f"reaction landed on row {row_id} (session "
+            f"{db._read_one('SELECT session_id FROM messages WHERE id = ?', (row_id,))[0]}), "
+            f"not the newest user row {want[0]} in the live session {child}")
+    finally:
+        server._sessions.pop(sid, None)
+        db.close()
+
+
 def test_unrotated_session_keeps_writing_to_session_key(monkeypatch, tmp_path):
     """The ordinary case is unchanged: no rotation, the row lands under session_key as before."""
     db = SessionDB(db_path=tmp_path / "state.db")

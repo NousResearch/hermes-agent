@@ -1236,6 +1236,19 @@ class SessionMessagesMixin:
             "UPDATE messages SET active = 0 WHERE id = ? AND session_id = ?",
             (row_id, session_id))
 
+    def deactivate_messages_by_display_kind(self, session_id: str, display_kind: str) -> int:
+        """Deactivate every live row of one ``display_kind`` (idempotent; returns the affected row count).
+        The durable counterpart to the in-memory strip a self-replacing pivot performs: the in-memory path
+        drops the prior entry so N pivots leave one, but a durable append has no such step, so every switch
+        left another active row and all of them replayed on resume. Rows are preserved (inactive), never
+        deleted — the same contract as :meth:`deactivate_message`, keyed by class instead of by id.
+        """
+        if not session_id or not display_kind:
+            return 0
+        return self._write_rowcount(
+            "UPDATE messages SET active = 0 WHERE session_id = ? AND display_kind = ? AND active = 1",
+            (session_id, _scrub_surrogates(display_kind)))
+
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
         dedupe_content = row["content"]

@@ -15,6 +15,8 @@ import uuid
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
+from agent.i18n import t
+
 try:
     from aiohttp import web
 except ImportError:  # pragma: no cover - mirrors api_server's optional import
@@ -82,7 +84,8 @@ def _hermes_extras(completed, is_partial, is_failed, err_msg, finish_reason: str
         "error_code": "output_truncated" if finish_reason == "length" else "agent_error"}
 
 
-_TRANSFORMED_NOTICE = "\n\n[Response transformed after streaming]\n"
+def _transformed_notice() -> str:
+    return t("platform.api_server.transformed_notice")
 
 
 def _post_stream_transform(result: Any) -> tuple:
@@ -959,7 +962,7 @@ class OpenAICompatRoutesMixin:
                 # Chat chunks can only append: a non-append rewrite follows the streamed text (as in the CLI).
                 tail, appended = _post_stream_transform(result)
                 if tail:
-                    await response.write(_sse_frame(_chunk({"content": tail if appended else _TRANSFORMED_NOTICE + tail})))
+                    await response.write(_sse_frame(_chunk({"content": tail if appended else _transformed_notice() + tail})))
             if finish_reason != "stop":
                 if err_msg and not presentation_muted:
                     finish_chunk["error"] = {

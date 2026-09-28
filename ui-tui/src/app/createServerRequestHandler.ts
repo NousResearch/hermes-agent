@@ -1,5 +1,6 @@
 import type { ServerRequest } from '@hermes/shared/json-rpc-channel'
 
+import { t } from '../i18n/runtime.js'
 import type { ClarifyBatchQuestion } from '../types.js'
 
 import { patchOverlayState } from './overlayStore.js'
@@ -65,7 +66,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
             ? { answers, choices: null, question: '', questions: batch, requestId: request.id }
             : { choices: strList(p.choices), question: str(p.question), requestId: request.id }
         })
-        open(request, 'waiting for input…')
+        open(request, t('session.status.waitingForInput'))
 
         return true
       }
@@ -77,25 +78,25 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
             allowPermanent: p.allow_permanent !== false,
             choices: strList(p.choices) ?? undefined,
             command: str(p.command),
-            description: str(p.description) || 'dangerous command',
+            description: str(p.description) || t('session.request.dangerousCommand'),
             requestId: request.id,
             smartDenied: p.smart_denied === true
           }
         })
-        open(request, 'approval needed')
+        open(request, t('session.status.approvalNeeded'))
 
         return true
       }
 
       case 'sudo':
         patchOverlayState({ sudo: { requestId: request.id } })
-        open(request, 'sudo password needed')
+        open(request, t('session.status.sudoPasswordNeeded'))
 
         return true
 
       case 'secret':
         patchOverlayState({ secret: { envVar: str(p.env_var), prompt: str(p.prompt), requestId: request.id } })
-        open(request, 'secret input needed')
+        open(request, t('session.status.secretInputNeeded'))
 
         return true
 
@@ -103,7 +104,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
         patchOverlayState({
           vaultUnlock: { backend: str(p.backend), displayName: str(p.display_name), requestId: request.id }
         })
-        open(request, `unlock ${str(p.display_name)}`)
+        open(request, t('session.status.unlockVault', str(p.display_name)))
 
         return true
 

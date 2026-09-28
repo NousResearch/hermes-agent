@@ -492,6 +492,8 @@ _SET_EXCLUDE = {
     ("model", "provider"),            # provider switch drops the old provider's base_url/api_mode
     ("model", "api_base"),            # alias rewritten to model.base_url
     ("_config_version",),
+    ("display", "language"),          # validated against the live language set (bundled ∪ overlay ∪ packs);
+                                      # an unknown id is refused with the list — tests/hermes_cli/test_config_display_language.py
 }
 
 

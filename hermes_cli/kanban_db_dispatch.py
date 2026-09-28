@@ -2481,17 +2481,16 @@ def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
     the spawned child runs the bare ``sys.executable`` from the task workspace
     with a scrubbed ``PYTHONPATH`` and cannot import the package the parent
     just proved importable — it dies before any work and the board
-    auto-blocks (#122299). Same-interpreter child, so the root is version-safe
-    to propagate: the entries the scrub removes are dangerous only for a
-    different interpreter's compiled modules. ``hermes_cli.main``'s own
-    bootstrap then owns dependency activation as usual.
+    auto-blocks (#122299, #122487, #122500). Same-interpreter child, so the
+    root is version-safe to propagate; ``hermes_cli.main``'s own bootstrap
+    then owns dependency activation as usual. A resolved shim path owns its
+    imports and is left alone. Same pin cron's external worker uses (#112729).
     """
     if cmd[1:3] != ["-m", "hermes_cli.main"]:
         return
-    root = str(Path(__file__).resolve().parents[1])
-    parts = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
-    if os.path.normcase(root) not in {os.path.normcase(p) for p in parts}:
-        env["PYTHONPATH"] = os.pathsep.join([root, *parts])
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+
+    pin_hermes_tree_on_pythonpath(env, Path(__file__).resolve().parents[1])
 
 
 def _absolute_hermes_path(path: str) -> str:

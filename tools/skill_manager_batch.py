@@ -129,7 +129,19 @@ def _validate_batch_ops(operations, default_name, tool_error):
         # later layer to tell an approved replay from an ordinary batch.
         if isinstance(op.get("evidence_merge"), dict):
             private = sorted(k for k in op["evidence_merge"] if k.startswith("_"))
+            # Scope the rejection to the UNTRUSTED path. An approved replay legitimately carries the
+            # writer's own staging keys (_source_digest/_staged_by/_candidate_content/_preview), so
+            # rejecting them unconditionally made every approved BATCH evidence write fail — the
+            # feature was dead whenever the write gate was on, via the advertised operations=[...]
+            # shape. A forged payload cannot pass: the candidate is honoured downstream only when
+            # _staged_by is a token this module minted (_act_patch, `_is_ours`), and an unminted
+            # token falls through to the public-delta re-merge. Rejecting here is about not
+            # silently accepting caller-supplied internals, not about the trust decision itself.
+            ours = False
             if private:
+                from tools.skill_manager_tool import _is_ours
+                ours = _is_ours(op["evidence_merge"].get("_staged_by"))
+            if private and not ours:
                 return fail(i, f" (patch on '{nm}'): evidence_merge must not carry internal "
                                f"staging keys {private}; they are set by the writer, not the caller.")
         # evidence_merge is a third, mutually-exclusive patch shape: it must not ride along with

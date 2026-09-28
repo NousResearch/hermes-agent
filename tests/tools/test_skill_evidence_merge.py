@@ -518,3 +518,75 @@ def test_evidence_schema_branch_requires_a_nonempty_delta():
     assert "evidence_merge" in branch["required"], branch["required"]
     assert branch["properties"]["evidence_merge"].get("minProperties") == 1
     assert branch["additionalProperties"] is False
+
+
+
+
+def test_approved_batch_evidence_replay_is_not_rejected_as_forged(tmp_path):
+    """An APPROVED batch evidence write must actually apply.
+
+    The anti-forgery ingress rejected any `_`-prefixed key in evidence_merge — but the writer
+    stamps `_source_digest/_staged_by/_candidate_content/_preview` onto the staged ops, so an
+    approved replay carrying the writer's OWN keys was rejected and the counter never moved. The
+    feature was dead whenever the write gate was on, via the advertised operations=[...] shape.
+
+    Goes through the real staging seam and the real apply_skill_pending replay: a hand-built
+    payload would take the untrusted path and prove nothing about the trusted one.
+    """
+    skill_dir = tmp_path / "test-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(BASE, encoding="utf-8")
+    captured = {}
+
+    def fake_run(build):
+        class WA:
+            @staticmethod
+            def skill_pending_diff(record):
+                return write_approval.skill_pending_diff(record)
+
+            @staticmethod
+            def skill_gist(*args, **kwargs):
+                return "gist"
+
+        captured["payload"], _ = build(WA)
+        return "staged"
+
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
+         patch.object(smt, "_run_write_gate", side_effect=fake_run):
+        result = smb._skill_manage_batch(
+            [{"action": "patch", "name": "test-skill",
+              "evidence_merge": {"success_count": 1}}],
+            None, None, None)
+    assert result == "staged"
+    assert captured["payload"]["operations"][0]["evidence_merge"]["_staged_by"], \
+        "staging must mint the token the ingress now trusts"
+
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+        replay = smt.apply_skill_pending(captured["payload"])
+
+    body = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert "success_count: 12" in body, f"counter not applied. replay={replay!r} body={body!r}"
+
+
+def test_batch_rejects_forged_candidate_with_a_guessed_token(tmp_path):
+    """The ingress must still refuse a forged candidate — scoping the rejection to minted tokens
+    must not have opened the forgery back up."""
+    skill_dir = tmp_path / "test-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(BASE, encoding="utf-8")
+    forged_body = BASE.replace("success_count: 11", "success_count: 0")
+
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+        result = smb._skill_manage_batch(
+            [{"action": "patch", "name": "test-skill",
+              "evidence_merge": {"success_count": 0,
+                                 "_staged_by": "deadbeef" * 4,
+                                 "_candidate_content": forged_body,
+                                 "_source_digest": "whatever"}}],
+            None, None, None)
+
+    assert "must not carry internal staging keys" in str(result), result
+    assert "success_count: 11" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")

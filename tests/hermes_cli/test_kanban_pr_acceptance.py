@@ -33,6 +33,10 @@ def github(tmp_path, monkeypatch):
                 if state.get("stale"):
                     run["head_sha"] = "b" * 40
                 runs = [] if state.get("missing") else [run]
+                if state.get("optional_failure"):
+                    runs.append({"id": 43, "name": "optional", "head_sha": sha,
+                                 "app": {"id": 1}, "status": "completed", "conclusion": "failure",
+                                 "html_url": "https://github.com/acme/repo/actions/runs/43"})
                 value = [{"total_count": 100 + len(runs), "check_runs": [
                     {**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
                     for i in range(100)]}, {"total_count": 100 + len(runs), "check_runs": runs}]
@@ -129,3 +133,14 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             assert kb.get_task(conn, tid).status != "done"
             assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 0
             github.pop("race")
+
+
+def test_optional_check_failure_does_not_veto_required_success(github):
+    github.update(conclusion="success", head="a" * 40, optional_failure=True)
+    with connect() as conn:
+        task_id = kb.create_task(conn, title="Optional telemetry", completion_contract="acme/repo")
+        assert kb.complete_task(
+            conn, task_id, result="required checks passed",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+        ) is True
+        assert kb.get_task(conn, task_id).status == "done"

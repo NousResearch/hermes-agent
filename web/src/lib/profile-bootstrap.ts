@@ -47,3 +47,22 @@ export function shouldAdoptActiveProfile(
     activeProfile !== currentProfile
   );
 }
+
+/**
+ * Whether the provider should push `?profile=` back into the current location.
+ *
+ * The root path is a TRANSIENT redirect target — App's `/` route only renders
+ * `<Navigate to="/sessions" replace />`. Replacing the location there races that
+ * navigate: on a cold load the replace lands first, the already-mounted
+ * `<Navigate>` never fires again, and the dashboard parks on `/?profile=…` with
+ * an empty page until the user reloads by hand. Skipping the root is safe — the
+ * effect re-runs on `/sessions` and adds the param there.
+ */
+export function shouldReassertProfileParam(
+  pathname: string,
+  profile: string,
+  urlProfile: string | null,
+): boolean {
+  if (pathname === "/") return false;
+  return (profile || "") !== (urlProfile ?? "");
+}

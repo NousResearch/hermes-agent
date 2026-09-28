@@ -15,6 +15,47 @@ describe('model-status-label', () => {
     expect(displayModelName('claude-fable-5-1')).toBe('Fable 5.1')
   })
 
+  it('strips hyphenated date pins vendors write as YYYY-MM-DD (#124884)', () => {
+    // Both spellings pin the same model: `…-20251101` and `…-2026-05-17`.
+    // The hyphenated form previously survived the `-\d{8}$` strip and
+    // rendered the snapshot date as part of the model name.
+    expect(displayModelName('qwen3.7-max-2026-05-17')).toBe('Qwen3.7 Max')
+    expect(displayModelName('qwen3.7-max-2026-05-17')).not.toContain('2026')
+    expect(modelDisplayParts('qwen3.7-max-2026-05-17')).toEqual({ name: 'Qwen3.7 Max', tag: '' })
+    // A base id and its date-pinned snapshot must never render as two rows.
+    expect(displayModelName('qwen3.7-max-2026-05-17')).toBe(displayModelName('qwen3.7-max'))
+  })
+
+  it('peels a date pin under the variant suffix so pinned variants keep their tag (#124884)', () => {
+    // The pin strip used to run AFTER the variant/quant split, so a pinned
+    // variant id never matched `…-thinking$` and rendered tagless — and a
+    // catalog carrying both the pinned and unpinned id showed two rows
+    // differing only by a trailing date.
+    expect(modelDisplayParts('glm-5.3-thinking-20251101')).toEqual({ name: 'GLM 5.3', tag: 'Thinking' })
+    expect(modelDisplayParts('glm-5.3-thinking-2026-05-17')).toEqual({ name: 'GLM 5.3', tag: 'Thinking' })
+    expect(modelVariantTag('glm-5.3-thinking-20251101')).toBe('Thinking')
+    expect(formatModelPillLabel('glm-5.3-thinking-20251101')).toBe('GLM 5.3 · Thinking')
+  })
+
+  it('never mistakes a plain numeric suffix for a date pin (#124884)', () => {
+    // Month 56 and day 78 are not a date; the suffix is the id's own.
+    expect(modelDisplayParts('test-1234-56-78')).toEqual({ name: 'Test 1234 56 78', tag: '' })
+    // 8-digit groups are only a pin at the very end of the id.
+    expect(displayModelName('model-20251101-x')).toBe('Model 20251101 X')
+  })
+
+  it('peels a date pin under a quant or context suffix the reviewer cases missed (#124884)', () => {
+    // The peel used to be guarded on `!variant && !quant`, so a pin exposed by
+    // a quant strip was never re-tested — and the `[1m]` slice ran after the
+    // loop, so a pin under it was not trailing either. Both regress vs the
+    // unconditional strip this PR replaces.
+    expect(modelDisplayParts('qwen3-max-20251101-Q4_K_XL')).toEqual({ name: 'Qwen3 Max', tag: 'Q4' })
+    expect(modelDisplayParts('claude-sonnet-4-5-20251101[1m]')).toEqual({ name: 'Sonnet 4.5', tag: '1M' })
+    // Base left the variant in the name here (the pin hid it from the split);
+    // the peel now keeps it a tag, matching the pin-under-variant case above.
+    expect(modelDisplayParts('glm-5.3-thinking-20251101[1m]')).toEqual({ name: 'GLM 5.3', tag: 'Thinking 1M' })
+  })
+
   it('renders the Anthropic 1M-context route suffix as a tag, never raw brackets', () => {
     expect(modelDisplayParts('claude-sonnet-5[1m]')).toEqual({ name: 'Sonnet 5', tag: '1M' })
     expect(modelDisplayParts('claude-fable-5-1[1m]')).toEqual({ name: 'Fable 5.1', tag: '1M' })

@@ -136,11 +136,20 @@ function prettifyBase(base: string): string {
   return applyVendorCasing(titleCase(base.replace(/-/g, ' ')))
 }
 
+// Snapshot date pins vendors append to otherwise-stable ids — `…-20251101`
+// and `…-2026-05-17` are the same model on a different day, not a different
+// name. Both vendor spellings are recognized, with month/day bounds so a
+// numeric-looking suffix (e.g. `-1234-56-78`) is never eaten as a "date".
+const DATE_PIN = /-(?:\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])|\d{4}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))$/
+
 // Split the trailing suffixes a local id can carry — a variant tag
 // (`…-flash`, `…-fast`) and a GGUF quant (`…-UD-Q4_K_XL`, `…-Q8_0`) — in
 // EITHER order: `…-flash-Q4_K_XL` and `…-Q4_K_XL-flash` are the same model.
 // One decomposition feeds both the catalog rows and the composer pill, so
 // the two screens can never disagree on which variant an id carries.
+// A date pin can sit under the suffixes (`…-thinking-20251101`), so it is
+// peeled in the same loop — otherwise the pin hides the variant from every
+// surface that reads it.
 function splitTrailingTags(base: string): { base: string; variant: string; quant: string } {
   let variant = ''
   let quant = ''
@@ -171,6 +180,11 @@ function splitTrailingTags(base: string): { base: string; variant: string; quant
         progress = true
       }
     }
+
+    if (DATE_PIN.test(base)) {
+      base = base.replace(DATE_PIN, '')
+      progress = true
+    }
   }
 
   return { base, variant, quant }
@@ -179,24 +193,25 @@ function splitTrailingTags(base: string): { base: string; variant: string; quant
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
 export function modelDisplayParts(model: string): { name: string; tag: string } {
-  let { base, variant, quant } = splitTrailingTags(modelBaseId(model))
-
-  const tags = [variant, quant].filter(Boolean)
+  let base = modelBaseId(model)
 
   // Anthropic's `[1m]` route suffix selects the 1M-context window. It is a
   // variant of the same model, so it renders as a tag ("Sonnet 5 · 1M") rather
-  // than raw brackets that read like an ANSI escape ("Sonnet 5[1m]").
+  // than raw brackets that read like an ANSI escape ("Sonnet 5[1m]"). Peel it
+  // before the suffix loop so a date pin under it (`…-20251101[1m]`) is
+  // trailing for the loop.
+  let contextTag = ''
   const contextWindow = base.match(/\[(\d+[mk])\]$/i)
 
   if (contextWindow) {
-    tags.push(contextWindow[1].toUpperCase())
+    contextTag = contextWindow[1].toUpperCase()
     base = base.slice(0, -contextWindow[0].length)
   }
 
-  // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
-  base = base.replace(/-\d{8}$/, '')
+  const split = splitTrailingTags(base)
+  const tags = [split.variant, split.quant, contextTag].filter(Boolean)
 
-  return { name: prettifyBase(base) || model.trim() || 'No model', tag: tags.join(' ') }
+  return { name: prettifyBase(split.base) || model.trim() || 'No model', tag: tags.join(' ') }
 }
 
 /** Friendly one-line model name for menus and the status bar. The variant

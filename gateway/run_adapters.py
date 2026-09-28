@@ -174,6 +174,15 @@ class GatewayAdapterLifecycleMixin:
         ``initial`` selects the capped cold-start budget for platforms whose full connect budget is too long
         to spend before the gateway reaches ``running`` (#85993 — Telegram's 180s).
         """
+        # Every adapter connect in this process funnels through here, so this is the one place the
+        # per-accept SO_KEEPALIVE guard is installed for the gateway process (#123327). Installing it
+        # at runner startup rather than per bind path is what covers the listeners that build their
+        # own ``web.TCPSite`` and never call ``start_tcp_site``: ``shared_ingress.bind_listener``
+        # (multiplex-profile WeCom/LINE/Teams/BlueBubbles/Graph/WhatsApp/SMS adapters) and plugin
+        # adapters. Idempotent; the proxy process installs it in its own startup (it never gets here).
+        from gateway.platforms.tcp_site import ensure_tcp_keepalive_guard
+
+        ensure_tcp_keepalive_guard()
         timeout = self._platform_connect_timeout_secs(platform, initial=initial)
         if timeout <= 0:
             return await adapter.connect(is_reconnect=is_reconnect)

@@ -189,6 +189,11 @@ async def run_server(
 ) -> None:
     """Run the proxy in the current event loop until shutdown_event is set."""
     _require_aiohttp()
+    # Own process, own listener: nothing else can have installed the per-accept SO_KEEPALIVE guard
+    # (#123327) for us, so it happens once here at startup rather than at the bind below.
+    from gateway.platforms.tcp_site import ensure_tcp_keepalive_guard
+
+    ensure_tcp_keepalive_guard()
     app = create_app(adapter)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()

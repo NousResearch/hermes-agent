@@ -17,6 +17,46 @@ from gateway.platforms.shared_ingress import is_wildcard_host
 
 logger = logging.getLogger(__name__)
 
+_keepalive_guard_installed = False
+
+
+def ensure_tcp_keepalive_guard() -> None:
+    """Make aiohttp's per-accept ``SO_KEEPALIVE`` tuning best-effort (idempotent).
+
+    The pinned aiohttp calls ``setsockopt(SO_KEEPALIVE)`` on every accepted socket with no
+    ``OSError`` guard (unlike ``tcp_nodelay`` in the same file), so a kernel that rejects the
+    option — observed as EINVAL on a macOS non-loopback bind (#123327) — tears down every
+    connection and the client sees EOF. Losing keepalive tuning must never cost the connection,
+    hence swallow ``OSError`` per accepted socket while keeping keepalive where the kernel
+    allows it (unlike ``tcp_keepalive=False``, which would drop it for all users everywhere).
+    Both ``tcp_helpers`` and ``web_protocol`` are patched: the accept path holds a direct
+    ``from .tcp_helpers import tcp_keepalive`` binding. Upstream fix belongs in aiohttp itself;
+    # ponytail: process-global monkeypatch, remove once upstream guards tcp_keepalive."""
+    global _keepalive_guard_installed
+    if _keepalive_guard_installed:
+        return
+    try:
+        from aiohttp import tcp_helpers
+    except ImportError:
+        return
+    original = tcp_helpers.tcp_keepalive
+
+    def _tolerant_keepalive(transport) -> None:
+        try:
+            original(transport)
+        except OSError as exc:
+            logger.debug("SO_KEEPALIVE rejected on an accepted socket (%s); serving without it", exc)
+
+    tcp_helpers.tcp_keepalive = _tolerant_keepalive  # type: ignore[method-assign]
+    try:
+        from aiohttp import web_protocol
+    except ImportError:
+        pass
+    else:
+        web_protocol.tcp_keepalive = _tolerant_keepalive  # type: ignore[method-assign]
+    _keepalive_guard_installed = True
+
+
 def has_live_listener(host: str, port: int) -> bool:
     """Blocking probe: True when something accepts connections on ``host:port``. Refused = nobody listens;
     any other failure (timeout, unroutable) is treated as live so the caller stays exclusive."""
@@ -47,6 +87,7 @@ async def start_tcp_site(runner: web.BaseRunner, host: Optional[str], port: int,
     foreign listener on a non-loopback interface could not be probed, so it must keep winning."""
     from aiohttp import web
 
+    ensure_tcp_keepalive_guard()
     exclusive = sys.platform == "darwin"
     site = web.TCPSite(runner, host, port, reuse_address=False if exclusive else None)
     try:

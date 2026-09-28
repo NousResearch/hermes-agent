@@ -29,8 +29,14 @@ except ImportError:
         GET = "GET"
 
 
-async def history_entry(client: Any, raw: dict, cache: MatrixEventContextCache, room_id: str) -> tuple[MatrixEventContext, dict] | None:
+async def history_entry(
+    client: Any, raw: dict, cache: MatrixEventContextCache, room_id: str,
+    *, before: MatrixEventContext | None,
+) -> tuple[MatrixEventContext, dict] | None:
     if raw.get("room_id", room_id) != room_id:
+        return None
+    event_id = raw.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
         return None
     unsigned = raw.get("unsigned")
     if isinstance(raw.get("event_id"), str) and isinstance(unsigned, dict) and unsigned.get("redacted_because"):
@@ -41,19 +47,24 @@ async def history_entry(client: Any, raw: dict, cache: MatrixEventContextCache, 
         return None
     if MatrixRelation.from_content(event_content(raw).get("m.relates_to")).is_edit:
         return None
-    state = await effective_event(
-        client, raw, is_redacted=lambda target: cache.is_redacted(room_id, target),
-    )
+    retained = cache.retain(room_id, event_id)
+    if before is None and not retained.text and not retained.redacted and not retained.state_error:
+        before = retained
+    state = await effective_event(client, raw, cache=cache, room_id=room_id)
     content = state.content
     if content is None:
-        return MatrixEventContext(
+        entry = MatrixEventContext(
             str(raw.get("sender") or ""), "[encrypted message could not be decrypted]",
             state_error=state.error["error"] if state.error else None,
-        ), state.original_content
+        )
+        stored = cache.store_resolved(room_id, event_id, entry, before)
+        return (stored, state.original_content) if stored is not None else None
     if state.redacted:
-        return MatrixEventContext(
+        entry = MatrixEventContext(
             str(raw.get("sender") or ""), "[redacted]", redacted=True,
-        ), state.original_content
+        )
+        stored = cache.store_resolved(room_id, event_id, entry, before)
+        return (stored, state.original_content) if stored is not None else None
     body = content.get("body")
     if not isinstance(body, str):
         return None
@@ -62,12 +73,14 @@ async def history_entry(client: Any, raw: dict, cache: MatrixEventContextCache, 
     if not text:
         return None
     sender = str(raw.get("sender") or "")
-    return MatrixEventContext(
+    entry = MatrixEventContext(
         sender, text, is_image=content.get("msgtype") == "m.image",
         media_content=MatrixEventContext.image_content(content),
         state_error=state.error["error"] if state.error else None,
         replacement_id=state.replacement_id,
-    ), state.original_content
+    )
+    stored = cache.store_resolved(room_id, event_id, entry, before)
+    return (stored, state.original_content) if stored is not None else None
 
 
 async def fetch_thread_entries(
@@ -83,6 +96,8 @@ async def fetch_thread_entries(
         return []
 
     cached = cache.snapshot(room_id)
+    cached.setdefault(thread_id, cache.retain(room_id, thread_id))
+    retained: dict[str, MatrixEventContext] = {}
 
     context_path = (
         f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}"
@@ -110,6 +125,8 @@ async def fetch_thread_entries(
             )
             response = room_page if isinstance(room_page, dict) else None
             event_key = "chunk"
+            if response is not None and isinstance(response.get("chunk"), list):
+                retained.update(cache.retain_events(room_id, [raw for raw in response["chunk"][:limit] if isinstance(raw, dict)]))
             relation_token = room_page.get("start") if isinstance(room_page, dict) else None
             try:
                 if isinstance(relation_token, str) and relation_token:
@@ -137,6 +154,10 @@ async def fetch_thread_entries(
     entries: list[MatrixEventContext] = []
     entry_ids: list[str] = []
     reaction_ids: list[str] = []
+    chunk = response.get(event_key) if isinstance(response, dict) else None
+    if not isinstance(chunk, list):
+        chunk = []
+    retained.update(cache.retain_events(room_id, [raw for raw in chunk[:limit] if isinstance(raw, dict)]))
     root = cache.history_entry(room_id, thread_id)
     root_path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(thread_id, safe='')}"
     try:
@@ -144,21 +165,17 @@ async def fetch_thread_entries(
         if (isinstance(raw_root, dict) and raw_root.get("event_id") == thread_id
                 and raw_root.get("room_id", room_id) == room_id):
             before = cached.get(thread_id)
-            parsed_root = await history_entry(client, raw_root, cache, room_id)
+            parsed_root = await history_entry(client, raw_root, cache, room_id, before=before)
             if parsed_root is not None:
-                root = cache.store_resolved(room_id, thread_id, parsed_root[0], before)
+                root = parsed_root[0]
     except Exception as exc:
         logger.debug("Matrix: could not fetch thread root %s in %s: %s", thread_id, room_id, exc)
         root = cache.history_entry(room_id, thread_id)
-    if root is not None:
+    if root is not None and (root.redacted or root.text or root.state_error):
         entries.append(root)
         entry_ids.append(thread_id)
         if not root.redacted:
             reaction_ids.append(thread_id)
-
-    chunk = response.get(event_key) if isinstance(response, dict) else None
-    if not isinstance(chunk, list):
-        chunk = []
 
     for raw in reversed(chunk[:limit]):
         if not isinstance(raw, dict):
@@ -169,7 +186,7 @@ async def fetch_thread_entries(
         if raw.get("room_id", room_id) != room_id:
             continue
         before = cached.get(event_id)
-        parsed = await history_entry(client, raw, cache, room_id)
+        parsed = await history_entry(client, raw, cache, room_id, before=before)
         if parsed is None:
             continue
         entry, content = parsed
@@ -177,12 +194,10 @@ async def fetch_thread_entries(
         # its thread from the redacted event alone.
         if MatrixRelation.from_content(content.get("m.relates_to")).thread_root != thread_id:
             continue
-        stored = cache.store_resolved(room_id, event_id, entry, before)
-        if stored is not None:
-            entries.append(stored)
-            entry_ids.append(event_id)
-            if not stored.redacted:
-                reaction_ids.append(event_id)
+        entries.append(entry)
+        entry_ids.append(event_id)
+        if not entry.redacted:
+            reaction_ids.append(event_id)
 
     snapshots = await fetch_reactions_for_events(client, room_id, reaction_ids, cache=cache)
     by_id = dict(zip(reaction_ids, snapshots))

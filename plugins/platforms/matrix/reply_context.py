@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import quote
 from weakref import WeakSet
 
-from plugins.platforms.matrix.effective_event import effective_event
+from plugins.platforms.matrix.effective_event import _replacement, effective_event
 from plugins.platforms.matrix.reaction_context import MatrixReaction
 
 
@@ -179,6 +179,19 @@ class MatrixEventContextCache:
     def snapshot(self, room_id: str) -> dict[str, MatrixEventContext]:
         return {event_id: entry for (room, event_id), entry in self._entries.items() if room == room_id}
 
+    def retain_events(self, room_id: str, events: list[dict]) -> dict[str, MatrixEventContext]:
+        dependencies = {}
+        for raw in events:
+            if raw.get("room_id", room_id) != room_id:
+                continue
+            for event in (raw, _replacement(raw)):
+                if event is None or event.get("room_id", room_id) != room_id:
+                    continue
+                event_id = event.get("event_id")
+                if isinstance(event_id, str) and event_id:
+                    dependencies[event_id] = self.retain(room_id, event_id)
+        return dependencies
+
     def store(self, room_id: str, event_id: str, entry: MatrixEventContext) -> MatrixEventContext | None:
         if not event_id:
             return None
@@ -263,6 +276,7 @@ class MatrixEventContextCache:
         return MatrixEventContext(
             entry.sender, "[event content unavailable]", event_id=entry.event_id,
             state_error=error, replacement_id=entry.replacement_id,
+            _state=entry._state,
             _attachment=entry._attachment or (entry if entry.media_path else None),
         )
 
@@ -333,7 +347,7 @@ class MatrixEventContextCache:
         image_loader: Callable[[dict, str], Awaitable[tuple[str, str] | None]] | None = None,
     ) -> MatrixEventContext | None:
         key = room_id, event_id
-        before = self.history_entry(room_id, event_id)
+        before = self.retain(room_id, event_id)
         cached = None
         if before is not None:
             if key in self._entries:
@@ -353,20 +367,18 @@ class MatrixEventContextCache:
                         and (not entry.is_image or entry.media_path or image_loader is None)):
                     return entry if entry.text or entry.media_path else None
         if client is None:
-            return cached
+            return cached if cached is not None and (cached.text or cached.media_path or cached.state_error) else None
 
         def current_cached() -> MatrixEventContext | None:
             current = self.history_entry(room_id, event_id)
-            return current if current is not None and not current.redacted else None
+            return current if current is not None and not current.redacted and (current.text or current.media_path or current.state_error) else None
 
         try:
             path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}/event/{quote(event_id, safe='')}"
             raw = await asyncio.wait_for(client.api.request(Method.GET, path), self.timeout_seconds)
             if not isinstance(raw, dict) or raw.get("event_id") != event_id or raw.get("room_id", room_id) != room_id:
                 return current_cached()
-            state = await effective_event(
-                client, raw, is_redacted=lambda target: self.is_redacted(room_id, target),
-            )
+            state = await effective_event(client, raw, cache=self, room_id=room_id)
             if state.redacted:
                 self.redact(room_id, event_id)
                 return None

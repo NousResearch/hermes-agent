@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
-from typing import Any, Callable
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Callable
 
 from plugins.platforms.matrix.relations import MatrixRelation
+
+if TYPE_CHECKING:
+    from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 
 
 @dataclass(frozen=True)
@@ -18,6 +21,7 @@ class MatrixEffectiveEvent:
     redacted: bool = False
     error: dict[str, str] | None = None
     replacement_id: str | None = None
+    _dependencies: tuple[MatrixEventContext, ...] = field(default=(), compare=False, repr=False)
 
 
 def event_content(event: Any) -> dict[str, Any]:
@@ -80,6 +84,19 @@ async def _decrypt(client: Any, raw: dict[str, Any]) -> tuple[Any | None, dict[s
 
 
 async def effective_event(
+    client: Any, raw: dict[str, Any], *, cache: MatrixEventContextCache | None = None,
+    room_id: str | None = None,
+) -> MatrixEffectiveEvent:
+    room_id = room_id if room_id is not None else str(raw.get("room_id") or "")
+    dependencies = cache.retain_events(room_id, [raw]) if cache is not None else {}
+    state = await _effective_event(
+        client, raw,
+        is_redacted=(lambda target: cache.is_redacted(room_id, target)) if cache is not None else None,
+    )
+    return replace(state, _dependencies=tuple(dependencies.values()))
+
+
+async def _effective_event(
     client: Any, raw: dict[str, Any], *, is_redacted: Callable[[str | None], bool] | None = None,
 ) -> MatrixEffectiveEvent:
     original_content = event_content(raw)

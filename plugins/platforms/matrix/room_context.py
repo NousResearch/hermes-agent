@@ -56,6 +56,7 @@ async def fetch_room_entries(
 
     if not isinstance(earlier, list):
         return []
+    _retained = cache.retain_events(room_id, [raw for raw in earlier[:limit] if isinstance(raw, dict)])
 
     entries: list[MatrixEventContext] = []
     entry_ids: list[str] = []
@@ -64,19 +65,17 @@ async def fetch_room_entries(
         if not isinstance(raw, dict) or not isinstance(raw.get("event_id"), str):
             continue
         before = cached.get(raw["event_id"])
-        parsed = await history_entry(client, raw, cache, room_id)
+        parsed = await history_entry(client, raw, cache, room_id, before=before)
         if parsed is None:
             continue
         entry, content = parsed
         relation = MatrixRelation.from_content(content.get("m.relates_to"))
         if relation.thread_root or relation.is_edit:
             continue
-        stored = cache.store_resolved(room_id, raw["event_id"], entry, before)
-        if stored is not None:
-            entries.append(stored)
-            entry_ids.append(raw["event_id"])
-            if not stored.redacted:
-                reaction_ids.append(raw["event_id"])
+        entries.append(entry)
+        entry_ids.append(raw["event_id"])
+        if not entry.redacted:
+            reaction_ids.append(raw["event_id"])
 
     snapshots = await fetch_reactions_for_events(client, room_id, reaction_ids, cache=cache)
     by_id = dict(zip(reaction_ids, snapshots))

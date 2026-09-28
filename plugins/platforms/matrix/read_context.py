@@ -43,10 +43,7 @@ async def _visible_event(
     retained = cache.retain(room_id, event_id) if isinstance(event_id, str) else None
     if before is None and retained is not None and not retained.text and not retained.redacted and not retained.state_error:
         before = retained
-    state = await effective_event(
-        adapter._client, raw,
-        is_redacted=lambda target: adapter._event_context_cache.is_redacted(room_id, target),
-    )
+    state = await effective_event(adapter._client, raw, cache=cache, room_id=room_id)
     content = state.content
     if state.redacted and isinstance(event_id, str):
         cache.redact(room_id, event_id)
@@ -89,13 +86,14 @@ async def _visible_event(
         visible.update(body="[event content unavailable]", msgtype=None)
         visible.pop("edited", None)
         return visible, {"event_id": event_id, "error": "event content changed"}, state.replacement_id
-    if isinstance(event_id, str) and not state.redacted and state.error is None:
-        if (before is None or before.state_error or before.text != text
+    if isinstance(event_id, str) and not state.redacted:
+        if (before is None or before.state_error or state.error or before.text != text
                 or before.replacement_id != state.replacement_id
                 or before.media_content != MatrixEventContext.image_content(content)):
             cache.store_resolved(room_id, event_id, MatrixEventContext(
                 sender, text, is_image=content.get("msgtype") == "m.image", replacement_id=state.replacement_id,
                 media_content=MatrixEventContext.image_content(content),
+                state_error=state.error["error"] if state.error else None,
             ), before)
     return visible, state.error, state.replacement_id
 
@@ -186,7 +184,10 @@ async def read_matrix_context(
     if client is None:
         return {"error": "Matrix client is disconnected"}
 
-    cached = adapter._event_context_cache.snapshot(room_id)
+    cache = adapter._event_context_cache
+    cached = cache.snapshot(room_id)
+    if event_id and kind in {"event", "thread"}:
+        cached.setdefault(event_id, cache.retain(room_id, event_id))
 
     root: dict[str, Any] | None = None
     if kind == "thread":
@@ -195,6 +196,9 @@ async def read_matrix_context(
             root = _raw_event(await asyncio.wait_for(client.api.request(Method.GET, path), timeout=10.0))
             if root.get("event_id") != event_id:
                 root = None
+            if root is not None:
+                for target, dependency in cache.retain_events(room_id, [root]).items():
+                    cached.setdefault(target, dependency)
         except Exception:
             root = None
 
@@ -227,9 +231,9 @@ async def read_matrix_context(
     events: list[dict] = []
     errors: list[dict] = []
     resolved: list[MatrixReadEvent] = []
-    for raw in ([root] if root is not None else []) + chunk[:limit - bool(root)]:
-        if not isinstance(raw, dict):
-            continue
+    returned = [raw for raw in ([root] if root is not None else []) + chunk[:limit - bool(root)] if isinstance(raw, dict)]
+    _retained = cache.retain_events(room_id, returned)
+    for raw in returned:
         visible, error, replacement_id = await _visible_event(
             adapter, raw, room_id, chat_type, before=cached.get(raw.get("event_id")),
         )

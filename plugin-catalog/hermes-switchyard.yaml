@@ -1,15 +1,15 @@
 name: hermes-switchyard
 repo: https://github.com/bgrablin/hermes-switchyard
-sha: 22cd6bcc04bc7eb0db61abe1bb86ce45037190dd
+sha: b3cf54676aa0244c55b448fe84a2eb93061d91a8
 subdir: ""
-description: "Jev-powered Hermes plugin for skill/model routing, typed assess, DOM/Cua computer use, adaptive reasoning effort, and FTS rerank. Disclosure: the default-on adaptive llm_request may send task-presence/length metadata, prior effort, and recent tool status codes to TypeSafe/OpenRouter; it does not send user-message text or tool-result excerpts on that path (disable via adaptive_reasoning_effort false). Separate default-on hosted skill routing sends up to 4,000 characters of each user turn plus skill names/descriptions to the same provider after a local blocklist scan (opt down to local_only). Model routing remains advisory."
+description: "Jev-powered Hermes plugin for skill/model routing, typed assess, DOM/Cua computer use, adaptive reasoning effort with a per-turn receipt line, and FTS rerank. Disclosure: the default-on adaptive llm_request sends up to 1,200 characters of the current user message to TypeSafe/OpenRouter after Hermes redact_for_egress (no history or tool output); greetings and thanks are decided locally with no call; without the Hermes redactor it sends metadata only (disable via adaptive_reasoning_effort false). Separate default-on hosted skill routing sends up to 4,000 characters of each user turn after Hermes redact_for_egress, plus skill names, to the same provider; without the redactor it stays local (opt down to local_only). Model routing remains advisory."
 maintainer: bgrablin
 tier: community
 category: tools
 requires_hermes: ">=0.21.3"
-docs_url: https://github.com/bgrablin/hermes-switchyard/blob/22cd6bcc04bc7eb0db61abe1bb86ce45037190dd/docs/SETUP.md
-version: "0.5.3"
-image: https://raw.githubusercontent.com/bgrablin/hermes-switchyard/22cd6bcc04bc7eb0db61abe1bb86ce45037190dd/docs/assets/hermes-switchyard-overview.png
+docs_url: https://github.com/bgrablin/hermes-switchyard/blob/b3cf54676aa0244c55b448fe84a2eb93061d91a8/docs/SETUP.md
+version: "0.5.6"
+image: https://raw.githubusercontent.com/bgrablin/hermes-switchyard/b3cf54676aa0244c55b448fe84a2eb93061d91a8/docs/assets/hermes-switchyard-overview.png
 readme: true
 platforms:
   - linux
@@ -26,7 +26,10 @@ capabilities:
     - jev_session_search_rerank
   provides_hooks:
     - pre_llm_call
+    - post_llm_call
     - post_tool_call
+    - transform_llm_output
+    - post_api_request
   provides_middleware:
     - llm_request
   requires_env: []

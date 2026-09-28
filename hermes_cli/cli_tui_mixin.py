@@ -108,6 +108,17 @@ def _prefix_wrapped_rows(wrap, label, width, first_prefix, indent) -> list[str]:
     return [(first_prefix if i == 0 else indent) + row for i, row in enumerate(rows)]
 
 
+def _prefix_wrapped_indexed_rows(wrap, items, width, first_prefix_fn, indent) -> list[tuple[int, str]]:
+    """``(index, wrapped_line)`` pairs, like ``_wrap_rows``, but wraps each item's own text
+    alone and applies a per-item first-row prefix afterward (see ``_prefix_wrapped_rows``) —
+    for a list whose per-row prefix varies (e.g. the clarify panel's cursor/checkbox/number)."""
+    return [
+        (i, row)
+        for i, item in enumerate(items)
+        for row in _prefix_wrapped_rows(wrap, item, width, first_prefix_fn(i), indent)
+    ]
+
+
 class CLITuiMixin:
     """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments."""
 
@@ -532,10 +543,13 @@ class CLITuiMixin:
         title = "Hermes needs your input"
         other_idx = len(choices)
 
-        def _label(i, text):
+        def _prefix(i):
             cursor = "❯" if (i == selected and not freetext) or (freetext and i == other_idx) else " "
             cb = ("[x] " if i in selected_indices else "[ ] ") if multi_select else ""
-            return f"{cursor} {cb}{_num_prefix(i)}. {text}"
+            return f"{cursor} {cb}{_num_prefix(i)}. "
+
+        def _label(i, text):
+            return _prefix(i) + text
 
         choice_labels = [_label(i, c) for i, c in enumerate(choices)]
         other_label = _label(other_idx, "Other (type below)" if freetext else "Other (type your answer)")
@@ -546,9 +560,18 @@ class CLITuiMixin:
         inner_text_width = max(8, box_width - 2)
 
         # Mandatory rows: choices + Other (or the freetext guidance line when there are no choices).
-        choice_wrapped = _wrap_rows(wrap, choice_labels, inner_text_width, "    ")
+        # Wrap each choice's own text, then apply its prefix (cursor/checkbox/number) per row —
+        # folding the prefix into the string before wrapping (the old ``choice_labels``) charges
+        # those columns against the choice's own width budget, so a long choice wraps one line
+        # early and strands the cursor alone on its own row (same class of bug fixed for the
+        # scroll-list panel's ``❯`` in 1e2420c199 / ``_prefix_wrapped_rows``). All prefixes here
+        # are the same width (cursor + optional checkbox + single quick-select digit), so one
+        # shared label_width is correct for every choice.
+        label_width = max(8, inner_text_width - len(_prefix(0)))
+        choice_wrapped = _prefix_wrapped_indexed_rows(wrap, choices, label_width, _prefix, "    ")
         if choices:
-            other_wrapped = wrap(other_label, inner_text_width, subsequent_indent="    ")
+            other_text = "Other (type below)" if freetext else "Other (type your answer)"
+            other_wrapped = _prefix_wrapped_rows(wrap, other_text, label_width, _prefix(other_idx), "    ")
         elif freetext:
             other_wrapped = wrap("Type your answer in the prompt below, then press Enter.", inner_text_width)
         else:

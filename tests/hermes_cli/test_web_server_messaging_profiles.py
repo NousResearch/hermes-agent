@@ -88,6 +88,71 @@ class TestProfileScopedMessagingReads:
         )
         assert resp.status_code == 404
 
+    def test_explicit_shared_route_reports_effective_connected_state(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_routers.messaging as messaging
+
+        monkeypatch.setattr(
+            messaging,
+            "_collect_profile_gateway_topology_cached",
+            lambda: {
+                "gateways": [{
+                    "profile": "transport",
+                    "served_profiles": ["transport", "worker_alpha"],
+                    "profile_routes": [{
+                        "platform": "telegram", "profile": "worker_alpha", "scope": "all",
+                    }],
+                }],
+                "profile_platforms": {
+                    "transport": {"telegram": {"state": "connected", "updated_at": "now"}},
+                },
+            },
+        )
+
+        resp = client.get(
+            "/api/messaging/platforms", params={"profile": "worker_alpha"}
+        )
+
+        assert resp.status_code == 200
+        telegram = _telegram(resp.json())
+        assert telegram["enabled"] is True
+        assert telegram["configured"] is True
+        assert telegram["gateway_running"] is True
+        assert telegram["state"] == "connected"
+        assert telegram["managed_by_profile"] == "transport"
+        assert telegram["shared_route_scope"] == "all"
+        assert telegram["local_enabled"] is False
+        assert telegram["local_configured"] is False
+        assert _env_field(telegram, "TELEGRAM_BOT_TOKEN")["is_set"] is False
+
+    def test_served_profile_without_explicit_route_stays_disabled(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_routers.messaging as messaging
+
+        monkeypatch.setattr(
+            messaging,
+            "_collect_profile_gateway_topology_cached",
+            lambda: {
+                "gateways": [{
+                    "profile": "transport",
+                    "served_profiles": ["transport", "worker_alpha"],
+                    "profile_routes": [],
+                }],
+                "profile_platforms": {
+                    "transport": {"telegram": {"state": "connected"}},
+                },
+            },
+        )
+
+        telegram = _telegram(client.get(
+            "/api/messaging/platforms", params={"profile": "worker_alpha"}
+        ).json())
+        assert telegram["enabled"] is False
+        assert telegram["state"] == "disabled"
+        assert "managed_by_profile" not in telegram
+
     def test_scoped_read_returns_profile_path_command_and_startup_failure(
         self, client, isolated_profiles, monkeypatch
     ):
@@ -171,6 +236,43 @@ class TestProfileScopedMessagingWrites:
             (isolated_profiles["default"] / "config.yaml").read_text(encoding="utf-8")
         ) or {}
         assert "telegram" not in (root_cfg.get("platforms") or {})
+
+    def test_shared_route_rejects_duplicate_local_enable_but_allows_cleanup(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_routers.messaging as messaging
+
+        monkeypatch.setattr(
+            messaging,
+            "_collect_profile_gateway_topology_cached",
+            lambda: {
+                "gateways": [{
+                    "profile": "transport",
+                    "served_profiles": ["transport", "worker_alpha"],
+                    "profile_routes": [{
+                        "platform": "telegram", "profile": "worker_alpha", "scope": "all",
+                    }],
+                }],
+                "profile_platforms": {
+                    "transport": {"telegram": {"state": "connected"}},
+                },
+            },
+        )
+
+        enable = client.put(
+            "/api/messaging/platforms/telegram",
+            params={"profile": "worker_alpha"},
+            json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN}},
+        )
+        assert enable.status_code == 409
+        assert "managed by shared gateway profile 'transport'" in enable.json()["detail"]
+
+        disable = client.put(
+            "/api/messaging/platforms/telegram",
+            params={"profile": "worker_alpha"},
+            json={"enabled": False, "clear_env": ["TELEGRAM_BOT_TOKEN"]},
+        )
+        assert disable.status_code == 200
 
 
     def test_scoped_read_after_scoped_write_round_trips(

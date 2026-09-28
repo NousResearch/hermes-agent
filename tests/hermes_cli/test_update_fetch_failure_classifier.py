@@ -106,6 +106,27 @@ class TestPrintFetchFailure:
         assert out == ["✗ Failed to fetch updates from origin."]
 
 
+class TestPrintFetchFailureContext:
+    # #125138 request 1: a failed internal fetch must say WHICH git binary
+    # and repo it ran, so "network down" stays separable from "local git broken".
+    BUG_STDERR = (
+        "BUG: builtin/pack-objects.c:4991: should_include_obj should only be called on existing objects\n"
+        "fatal: index-pack failed\n"
+    )
+
+    def test_prints_git_binary_and_repo(self, capsys, tmp_path):
+        update_cmd._print_fetch_failure(self.BUG_STDERR, ["git"], tmp_path)
+        out = capsys.readouterr().out
+        assert "BUG:" in out  # raw first line still shown
+        assert str(tmp_path) in out  # repo the fetch ran in
+        assert "git" in out  # binary the fetch ran with
+
+    def test_no_context_line_without_git_cmd(self, capsys):
+        update_cmd._print_fetch_failure("")
+        out = capsys.readouterr().out.strip().splitlines()
+        assert out == ["✗ Failed to fetch updates from origin."]
+
+
 def test_update_network_git_calls_never_prompt_for_credentials():
     """Every `git fetch`/`pull`/`push` in the updater runs with prompts disabled.
 

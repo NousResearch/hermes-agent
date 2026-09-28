@@ -612,7 +612,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
         git_cmd, root, branch, ["--depth", "1"] if is_shallow else [],
     )
     if fetch_result.returncode != 0:
-        _print_fetch_failure(fetch_result.stderr)
+        _print_fetch_failure(fetch_result.stderr, git_cmd, root)
         sys.exit(1)
     if is_shallow:
         _check.repair_shallow_grafts(root)
@@ -1392,7 +1392,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             fetch_result = _git_run(
                 git_cmd, ["fetch", "origin", _check.tracking_refspec("origin", branch)], network=True)
         if fetch_result.returncode != 0:
-            _print_fetch_failure(fetch_result.stderr)
+            _print_fetch_failure(fetch_result.stderr, git_cmd, _m().PROJECT_ROOT)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(1)
 

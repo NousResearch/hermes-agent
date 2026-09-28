@@ -1,0 +1,32 @@
+name: browserpaw
+repo: https://github.com/GoldenLoaf24h/browserpaw
+sha: e9e8fa695d7b2d973369203f74fe8360eb20216e
+subdir: "plugins/browserpaw"
+description: "Ultra-fast dual-brain Chrome browser automation with 1-based DOM indexing, visual fallbacks, Jev micro-loop, and local MCP bridge. Disclosure — patches Hermes' tool-preview/progress rendering process-wide at load: rebinds the private TurnRunner._progress_build_message, BasePlatformAdapter.format_tool_event for every platform adapter, and agent.display's get_tool_verb / build_tool_preview / get_tool_emoji / prepare_tool_preview on the module and on every reference found in sys.modules (guarded, fail-open)."
+maintainer: GoldenLoaf24h
+tier: community
+category: web
+requires_hermes: ">=0.19"
+docs_url: "https://github.com/GoldenLoaf24h/browserpaw#readme"
+version: "3.2.0"
+capabilities:
+  provides_tools:
+    - browserpaw_act_toward_goal
+    - browserpaw_navigate
+    - browserpaw_read_dom
+    - browserpaw_interact_index
+    - browserpaw_fill_index
+    - browserpaw_batch_actions
+    - browserpaw_screenshot
+    - browserpaw_smart_scroll
+    - browserpaw_scroll_until_found
+    - browserpaw_inspect_media
+    - browserpaw_grep
+    - browserpaw_get_markdown
+    - browserpaw_switch_tab
+    - browserpaw_close_tabs
+    - browserpaw_get_windows_and_tabs
+    - browserpaw_tool_docs
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

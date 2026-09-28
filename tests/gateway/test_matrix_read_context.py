@@ -116,5 +116,6 @@ async def test_read_room_uses_sync_token_and_decrypts_with_owning_client(monkeyp
     assert result == {"events": [{"event_id": "$secret", "sender": "@alice:server",
                                   "body": "secret", "msgtype": "m.text", "thread_id": None,
                                   "timestamp": None, "sender_authorized": True}], "errors": []}
-    assert client.api.request.await_args.kwargs["query_params"] == {"from": "s42", "dir": "b", "limit": "5"}
+    messages = [call for call in client.api.request.await_args_list if "/messages" in call.args[1]]
+    assert [call.kwargs["query_params"] for call in messages] == [{"from": "s42", "dir": "b", "limit": "5"}]
     crypto.decrypt_megolm_event.assert_awaited_once_with(encrypted)

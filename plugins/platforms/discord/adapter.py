@@ -5482,6 +5482,42 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return None
         return " ".join(f"<@{uid}>" for uid in user_ids)
 
+    async def _approval_mention_content_scoped(self, channel) -> Optional[str]:
+        content = self._approval_mention_content()
+        # Per-profile read (env → YAML → default), so a secondary profile that omits the key
+        # gets this default rather than the launch profile's bridged value.
+        scope = _extra_or_secret(
+            getattr(self.config, "extra", None), "approval_mentions_scope",
+            "DISCORD_APPROVAL_MENTIONS_SCOPE", "all",
+        )
+        scope = str(scope if scope is not None else "all").strip().lower()
+        if not content or scope != "participants":
+            return content
+        approver_ids = {str(uid) for uid in self._allowed_user_ids if str(uid).isdigit()}
+        if not approver_ids or not (DISCORD_AVAILABLE and isinstance(channel, discord.Thread)):
+            return content
+        found = set()
+        try:
+            async for message in channel.history(limit=100):
+                author = getattr(message, "author", None)
+                uid = str(getattr(author, "id", ""))
+                if author is not None and not getattr(author, "bot", False) and uid in approver_ids:
+                    found.add(uid)
+        except Exception:
+            pass
+        if found != approver_ids:
+            starter = getattr(channel, "starter_message", None)
+            if starter is None and getattr(channel, "parent", None) is not None:
+                try:
+                    starter = await channel.parent.fetch_message(channel.id)
+                except Exception:
+                    starter = None
+            author = getattr(starter, "author", None)
+            uid = str(getattr(author, "id", ""))
+            if author is not None and not getattr(author, "bot", False) and uid in approver_ids:
+                found.add(uid)
+        return " ".join(f"<@{uid}>" for uid in sorted(found)) if found else content
+
     async def _send_prompt(
         self, chat_id: str, metadata: Optional[dict], build, *, fail_log: Optional[str] = None,
     ) -> SendResult:
@@ -5523,9 +5559,18 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Send an approval with content as its canonical payload and an embed for state."""
+        # ``participants`` scope narrows the ping to allowlisted users who actually posted in this
+        # thread; an unresolvable channel keeps the full allowlist (fail open to pings).
+        mention_content = self._approval_mention_content()
+        if mention_content:
+            try:
+                channel = await self._resolve_channel(_prompt_target_id(prompt.chat_id, prompt.metadata))
+                mention_content = await self._approval_mention_content_scoped(channel)
+            except Exception as exc:
+                logger.warning("[%s] Approval mention scope lookup failed: %s", self.name, exc)
+
         def _build(_channel):
             content = prompt.text
-            mention_content = self._approval_mention_content()
             if mention_content:
                 content = f"{mention_content}\n{content}"
             embed = discord.Embed(
@@ -7284,6 +7329,7 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     if approval_mentions_cfg is not None:
         seeded_extra["approval_mentions"] = approval_mentions_cfg
         _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())
+    _gate("approval_mentions_scope", "DISCORD_APPROVAL_MENTIONS_SCOPE", from_platform_extra=True, lower=True)
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
     for key, env_key in (
         ("auto_thread", "DISCORD_AUTO_THREAD"),

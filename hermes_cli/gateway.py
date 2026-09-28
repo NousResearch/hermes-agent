@@ -5492,15 +5492,19 @@ def _cmd_restart(args):
         _restart_all(system)
         return
 
+    # Reap orphans only past the refusal guards above (#125394): the Desktop backend used to reap
+    # before spawning this command, so a refused restart still cost the profile its gateway. From
+    # here every path restarts (service manager, external-supervisor hand-back, manual fallback),
+    # and the reap stays best-effort: a scan failure must not abort the restart (#77276).
+    try:
+        _reap_unsupervised_gateway_orphans()
+    except Exception as exc:
+        logger.debug("orphan reap before gateway restart failed: %s", exc)
+
     # The Windows restart path handles both registered installs and detached restarts.
     kind = _installed_service_kind_for(is_windows)
     service_configured = kind is not None and (kind != "windows" or _gw_windows().is_installed())
     if kind is not None:
-        # Reap orphans only past the refusal guards above (#125394): the Desktop backend used to
-        # reap before spawning this command, so a refused restart still cost the profile its
-        # gateway. A service-manager restart never sweeps orphans itself (#77276); the manual
-        # fallback below reaps inside stop_profile_gateway().
-        _reap_unsupervised_gateway_orphans()
         swallow = (RuntimeError, OSError) if kind == "windows" else ()
         try:
             _service_call(kind, "restart", system)

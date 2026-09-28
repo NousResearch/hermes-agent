@@ -710,18 +710,48 @@
      Keyed to BOTH translucency modes, because both expose the desktop under
      this pane: glass rewrites the field surfaces to transparent, clear fades
      the whole window natively. Covering only `glass` left the transcript bare
-     on the user's wallpaper whenever the app ran in clear mode.  */
+     on the user's wallpaper whenever the app ran in clear mode.
+
+     The fill is nearly solid on purpose — GLASSMORPHISM YOU CAN READ
+     THROUGH is the wrong trade for a log: the pane is 95% chrome and the
+     chrome itself is mixed 5% toward the theme's ink, so the card describes
+     itself over a bright daylight wallpaper (light mode) as clearly as over
+     the starfield (dark mode). One `color-mix` renders the tint, the outer
+     one keeps a 4% hint of the material underneath — enough that the field
+     still reads as glass, never enough to drop the text below AA.
+
+     `!important` on the fill is load-bearing on two fronts, both of which
+     painted this pane TRANSPARENT — the exact bug the user reported (light +
+     glass, transcript sitting bare on the wallpaper behind the orb):
+       1. the frame element also wears the Tailwind
+          `bg-(--ui-chat-surface-background)` utility, which resolves to
+          `transparent` under `[data-hermes-glass]` and paints from the
+          utilities layer — later in the cascade than this base rule;
+       2. the Desktop dashboard clears that same class wholesale
+          (app/jarvis/core.css: `[data-jarvis-dashboard] main[data-home]
+          [class~='bg-(--ui-chat-surface-background)'] { background:
+          transparent }`) so its backdrop shows through its wrappers. The
+          transcript frame inherits that paint and, being unlayered, it
+          outranks this rule on specificity too.
+     The contract test (`chat-surface-glass.test.ts`) fails if the flag or
+     the coverage is dropped.  */
   :root[data-hermes-glass] [data-chat-transcript-frame],
   :root[data-hermes-clear] [data-chat-transcript-frame] {
     margin: 0.5rem;
     border: 1px solid var(--ui-stroke-tertiary);
     border-radius: var(--radius-xl);
-    background: color-mix(in srgb, var(--ui-bg-chrome) 86%, transparent);
+    background: color-mix(
+        in srgb,
+        color-mix(in srgb, var(--ui-bg-chrome) 95%, var(--ui-text-primary) 5%) 96%,
+        transparent
+      )
+      !important;
     box-shadow:
       inset 0 1px 0 color-mix(in srgb, white 14%, transparent),
       var(--shadow-nous);
-    backdrop-filter: blur(1.5rem) saturate(1.08);
-    -webkit-backdrop-filter: blur(1.5rem) saturate(1.08);
+    backdrop-filter: blur(1rem) saturate(1.08);
+    -webkit-backdrop-filter: blur(1rem) saturate(1.08);
+    color: var(--ui-text-primary);
   }
 
   /* Clear mode (native window opacity) fades EVERYTHING in the window
@@ -3649,4 +3679,165 @@ html:has([data-hud-shell]) [data-slot='popover-content'] {
   [data-hud-shell] {
     --jarvis-hero-size: min(360px, 62vh, 68vw);
   }
+}
+
+/* ── Transcript reading scale ────────────────────────────────────────────
+   The transcript is the app's HISTORY, second to the orb: it should read as
+   a quiet log, never as a document. Every knob below is set on the frame
+   element, so the whole conversation — prose, headings, lists, tables, code,
+   thinking rows — retunes together, and nothing here reaches the composer
+   (it renders outside the frame) or any other surface.
+
+   Setting them ON THE FRAME rather than on the leaves is what makes this
+   stick: the markdown leaves carry Tailwind utilities that resolve these
+   very tokens (`text-[length:var(--conversation-text-font-size)]`,
+   `leading-(--conversation-line-height)`), so the utilities keep winning
+   their cascade fight and still render at our value.
+
+   Unlayered, deliberately: the leaves are painted by utilities (utilities
+   layer) and Tailwind Typography's `.prose :where(h1)` sizes, both of which
+   outrank anything inside `@layer base`/`components`. Sizes are in rem off
+   the 14px app base — 0.75rem = 12px prose, 0.6875rem = 11px code/table. */
+[data-chat-transcript-frame] {
+  /* Prose: 13px/18px → 12px/16px. */
+  --conversation-text-font-size: 0.75rem;
+  --conversation-line-height: 1rem;
+  /* Scaffold labels keep 11px — they are already the quiet row, and smaller
+     starts to fail AA whatever the ink. Only their ink moves (below). */
+  --conversation-tool-font-size: 0.6875rem;
+  --conversation-caption-font-size: 0.6875rem;
+  --conversation-caption-line-height: 0.9375rem;
+  /* Rhythm in the pane's scale: a log's blocks sit closer than a document's. */
+  --conversation-turn-gap: 0.3125rem;
+  --turn-block-gap: 0.5rem;
+  --paragraph-gap: 0.4375rem;
+  --message-text-indent: 0.625rem;
+  /* Scaffolding (thinking headers, tool rows, run summaries) was 64%/44% ink
+     and then faded to 0.67 — on a light wallpaper that is the unreadable grey
+     the user pointed at. Lift the ink here so even the faded row clears AA
+     against the pane in both themes (the fade itself stays, see below). */
+  --conversation-scaffold-text: color-mix(in srgb, var(--ui-base) 82%, transparent);
+  --conversation-scaffold-meta: color-mix(in srgb, var(--ui-base) 72%, transparent);
+  font-size: var(--conversation-text-font-size);
+}
+
+/* Leading for the reading column: 1.55 (the app's document default) is airy
+   for a pane this dense; 1.4 keeps 12px prose scannable and compact. */
+[data-chat-transcript-frame] .aui-md,
+[data-chat-transcript-frame] [data-slot='aui_assistant-message-content'] {
+  line-height: 1.4;
+}
+
+/* Headings are section marks in a log, not display type — one weight, one
+   near-size, muted ink so they never out-shout the reply itself. */
+[data-chat-transcript-frame] .aui-md :is(h1, h2) {
+  font-size: 0.8125rem;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ui-text-secondary);
+  margin-block: 0.5rem 0.25rem;
+}
+
+[data-chat-transcript-frame] .aui-md :is(h3, h4, h5, h6) {
+  font-size: 0.75rem;
+  line-height: 1.3;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--ui-text-secondary);
+  margin-block: 0.4375rem 0.1875rem;
+}
+
+/* Lists: compact rows, smaller gutter, muted markers — structure without
+   weight. */
+[data-chat-transcript-frame] .aui-md :is(ul, ol) {
+  margin-block: 0.25rem 0;
+  padding-inline-start: 1.0625rem;
+}
+
+[data-chat-transcript-frame] .aui-md :is(ul, ol) :is(ul, ol) {
+  margin-block: 0.125rem 0;
+}
+
+[data-chat-transcript-frame] .aui-md li {
+  margin-block: 0.09375rem;
+  line-height: 1.4;
+}
+
+[data-chat-transcript-frame] .aui-md li::marker {
+  color: var(--ui-text-tertiary);
+}
+
+[data-chat-transcript-frame] .aui-md :is(p, blockquote) {
+  line-height: 1.4;
+}
+
+[data-chat-transcript-frame] .aui-md blockquote {
+  margin-block: 0.375rem 0;
+  padding-inline-start: 0.625rem;
+  border-inline-start: 2px solid var(--ui-stroke-tertiary);
+  color: var(--ui-text-secondary);
+}
+
+[data-chat-transcript-frame] .aui-md hr {
+  margin-block: 0.625rem;
+  border-color: var(--ui-stroke-tertiary);
+}
+
+/* Code in the pane's scale. The card and the fence own their own horizontal
+   scroller (CodeCardBody already scrolls `pre`); this keeps the fence in the
+   pane on every other path, where a fence is rendered bare. */
+[data-chat-transcript-frame] .aui-md :not(pre) > code,
+[data-chat-transcript-frame] [data-slot='aui_user-inline-code'] {
+  font-size: 0.6875rem;
+  padding: 0.0625rem 0.25rem;
+  border-radius: 0.25rem;
+}
+
+[data-chat-transcript-frame] .aui-md :is(pre, .aui-shiki, .aui-shiki > pre) {
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* Tables: 11px cells, tight padding, and never wider than the pane — the
+   wrapper scrolls sideways instead of pushing the frame out. */
+[data-chat-transcript-frame] .aui-md :is(.aui-md-table, table) {
+  max-width: 100%;
+}
+
+[data-chat-transcript-frame] .aui-md .aui-md-table {
+  overflow-x: auto;
+}
+
+[data-chat-transcript-frame] .aui-md :is(th, td) {
+  font-size: 0.6875rem;
+  line-height: 1.35;
+  padding: 0.25rem 0.375rem;
+}
+
+/* Nothing escapes the pane sideways: prose breaks a long token rather than
+   widening the column, and a URL breaks anywhere — it has no breakable
+   points of its own. */
+[data-chat-transcript-frame] .aui-md :is(p, li, blockquote, th, td, figcaption, dt, dd) {
+  overflow-wrap: break-word;
+}
+
+[data-chat-transcript-frame] .aui-md a {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+[data-chat-transcript-frame] .aui-md :is(img, video, iframe) {
+  max-width: 100%;
+  height: auto;
+}
+
+/* The scaffold fade, reapplied over the pane: on the translucent desktop the
+   0.67 dim of an already-muted grey was the one line the user could not read,
+   0.82 keeps the hierarchy (prose still primary) with AA ink underneath. */
+:root[data-hermes-glass] [data-chat-transcript-frame] [data-conversation-scaffold],
+:root[data-hermes-clear] [data-chat-transcript-frame] [data-conversation-scaffold] {
+  opacity: 0.82;
 }

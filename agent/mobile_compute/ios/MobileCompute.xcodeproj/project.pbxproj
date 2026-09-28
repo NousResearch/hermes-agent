@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>archiveVersion</key>
+	<integer>1</integer>
+	<key>classes</key>
+	<dict/>
+	<key>objectVersion</key>
+	<integer>56</integer>
+	<key>objects</key>
+	<dict>
+		/* Begin PBXBuildFile section */
+		3CF1B7FC23BB267100A5C3E1 /* MobileComputeServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CF1B7FC23BB267100A5C3E2 /* MobileComputeServer.swift */; };
+		3CF1B7FC23BB267100A5C3E6 /* Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3CF1B7FC23BB267100A5C3E5 /* Info.plist */; };
+		/* End PBXBuildFile section */
+
+		/* Begin PBXFileReference section */
+		3CF1B7FC23BB267100A5C3E2 /* MobileComputeServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileComputeServer.swift; sourceTree = "<group>"; }
+		3CF1B7FC23BB267100A5C3E5 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; }
+		/* End PBXFileReference section */
+
+		/* Begin PBXGroup section */
+		3CF1B7FC23BB267100A5C3E7 = {
+			isa = PBXGroup;
+			children = (
+				3CF1B7FC23BB267100A5C3E2 /* MobileComputeServer.swift */,
+				3CF1B7FC23BB267100A5C3E5 /* Info.plist */,
+			);
+			name = "MobileCompute";
+			sourceTree = "<group>";
+		}
+		3CF1B7FC23BB267100A5C3E8 = {
+			isa = PBXGroup;
+			children = (
+				3CF1B7FC23BB267100A5C3E7 /* Products */,
+			);
+			name = "Products";
+			sourceTree = "<group>";
+		}
+		/* End PBXGroup section */
+
+		/* Begin PBXNativeTarget section */
+		3CF1B7FC23BB267100A5C3E9 /* MobileCompute */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 3CF1B7FC23BB267100A5C3EA /* Build configuration list for PBXNativeTarget "MobileCompute" */;
+			buildPhases = (
+				3CF1B7FC23BB267100A5C3D1 /* Sources */,
+				3CF1B7FC23BB267100A5C3D5 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MobileCompute;
+			productName = MobileCompute;
+			productReference = 3CF1B7FC23BB267100A5C3EF /* MobileCompute.app */;
+			productType = "com.apple.product-type.application";
+		}
+		/* End PBXNativeTarget section */
+
+		/* Begin PBXResourcesBuildPhase section */
+		3CF1B7FC23BB267100A5C3D5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3CF1B7FC23BB267100A5C3E6 /* Info.plist in Resources */,
+			);
+			runOnlyForDeploymentPostProcessing = 0;
+		}
+		/* End PBXResourcesBuildPhase section */
+
+		/* Begin PBXSourcesBuildPhase section */
+		3CF1B7FC23BB267100A5C3D1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3CF1B7FC23BB267100A5C3E1 /* MobileComputeServer.swift in Sources */,
+			);
+			runOnlyForDeploymentPostProcessing = 0;
+		}
+		/* End PBXSourcesBuildPhase section */
+
+		/* Begin XCBuildConfiguration section */
+		3CF1B7FC23BB267100A5C3D0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = "Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hermes.mobilecompute;
+				PRODUCT_NAME = MobileCompute;
+				SWIFT_VERSION = "5.0";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			}
+		}
+		3CF1B7FC23BB267100A5C3D2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Distribution";
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				INFOPLIST_FILE = "Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.hermes.mobilecompute;
+				PRODUCT_NAME = MobileCompute;
+				SWIFT_VERSION = "5.0";
+				TARGETED_DEVICE_FAMILY = "1,2"
+				VALIDATE_PRODUCT = YES;
+			}
+		}
+		/* End XCBuildConfiguration section */
+
+		/* Begin XCConfigurationList section */
+		3CF1B7FC23BB267100A5C3EA /* Build configuration list for PBXNativeTarget "MobileCompute" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3CF1B7FC23BB267100A5C3D0 /* Debug */,
+				3CF1B7FC23BB267100A5C3D2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		}
+		/* End XCConfigurationList section */
+	</dict>
+	<key>rootObject</key>
+	<string>3CF1B7FC23BB267100A5C3E9</string>
+</dict>
+</plist>

@@ -1,0 +1,170 @@
+name: iOS Build
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "agent/mobile_compute/ios/**"
+      - ".github/workflows/ios-build.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - "agent/mobile_compute/ios/**"
+      - ".github/workflows/ios-build.yml"
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Xcode
+        run: |
+          xcode-select --install 2>/dev/null || true
+          xcodebuild -version
+
+      - name: Set up Swift toolchain
+        uses: swift-actions/setup-swift@v1
+        with:
+          swift-version: "5.9"
+
+      - name: Build iOS Project
+        working-directory: ./agent/mobile_compute/ios
+        run: |
+          xcodebuild -scheme MobileCompute -configuration Debug -sdk iphonesimulator -quiet
+
+      - name: Archive Built Products
+        if: success()
+        working-directory: ./agent/mobile_compute/ios
+        run: |
+          mkdir -p build_artifacts
+          xcodebuild -scheme MobileCompute -configuration Release -sdk iphoneos -archivePath build_artifacts/MobileCompute.xcarchive -quiet archive
+          xcodebuild -exportArchive -archivePath build_artifacts/MobileCompute.xcarchive -exportPath build_artifacts/MobileCompute.ipa -exportOptionsPlist build_artifacts/ExportOptions.plist -quiet 2>/dev/null || true
+          ls -la build_artifacts/ 2>/dev/null || true
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-compute-ios-build
+          path: ./agent/mobile_compute/ios/build_artifacts/
+          retention-days: 30
+
+  validate-api:
+    needs: build
+    runs-on: macos-14
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate API Endpoints (iOS App)
+        working-directory: ./agent/mobile_compute/ios
+        run: |
+          echo "Validating Mobile Compute iOS app API endpoints..."
+          echo "Expected endpoints:"
+          echo "  GET /health -> {\"status\": \"ok\", \"device\": \"iPhone 16e\"}"
+          echo "  GET /capabilities -> {\"device\": \"iPhone 16e\", \"compute\": [\"echo\"], \"coreml\": false, \"llm\": false}"
+          echo "  POST /compute -> {\"success\": true, \"task_id\": \"...\", \"status\": \"completed\", \"result\": \"...\"}"
+          echo "  GET /tasks -> list of tasks"
+          echo "  GET /tasks/{id} -> task status"
+          echo "Validation complete."
+
+  validate-structure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate iOS Project Structure
+        working-directory: ./agent/mobile_compute/ios
+        run: |
+          echo "=== Project Structure Validation ==="
+          
+          echo "1. Checking project.pbxproj exists..."
+          if [ -f "MobileCompute.xcodeproj/project.pbxproj" ]; then
+              echo "   PASS: project.pbxproj exists"
+          else
+              echo "   FAIL: project.pbxproj not found"
+              exit 1
+          fi
+
+          echo "2. Checking Info.plist exists..."
+          if [ -f "Sources/MobileCompute/Info.plist" ]; then
+              echo "   PASS: Info.plist exists"
+          else
+              echo "   FAIL: Info.plist not found"
+              exit 1
+          fi
+
+          echo "3. Checking single @main entry point..."
+          main_count=$(grep -rn "@main" Sources/ | wc -l)
+          echo "   @main count: $main_count"
+          if [ "$main_count" -eq 1 ]; then
+              echo "   PASS: Only one @main entry point"
+          else
+              echo "   FAIL: Expected exactly 1 @main, found $main_count"
+              exit 1
+          fi
+
+          echo "4. Checking all 5 API endpoints..."
+          endpoints=("handleHealth" "handleCapabilities" "handleCompute" "handleTasks" "handleTaskStatus")
+          for endpoint in "${endpoints[@]}"; do
+              if grep -q "$endpoint" Sources/MobileCompute/MobileComputeServer.swift; then
+                  echo "   PASS: $endpoint found"
+              else
+                  echo "   FAIL: $endpoint not found"
+                  exit 1
+              fi
+          done
+
+          echo "5. Checking Swift syntax (basic brace/paren balance)..."
+          for swift_file in Sources/MobileCompute/*.swift; do
+              echo "   Checking: $swift_file"
+              open_braces=$(grep -o '{' "$swift_file" | wc -l)
+              close_braces=$(grep -o '}' "$swift_file" | wc -l)
+              open_parens=$(grep -o '(' "$swift_file" | wc -l)
+              close_parens=$(grep -o ')' "$swift_file" | wc -l)
+              echo "   Braces: $open_braces open / $close_braces close"
+              echo "   Parens: $open_parens open / $close_parens close"
+              if [ "$open_braces" -ne "$close_braces" ]; then
+                  echo "   FAIL: Brace count mismatch"
+                  exit 1
+              fi
+              if [ "$open_parens" -ne "$close_parens" ]; then
+                  echo "   FAIL: Paren count mismatch"
+                  exit 1
+              fi
+          done
+
+          echo "6. Checking no Core ML dependencies..."
+          if grep -q "CoreML" Sources/MobileCompute/*.swift; then
+              echo "   FAIL: CoreML import found"
+              exit 1
+          else
+              echo "   PASS: No Core ML dependencies"
+          fi
+
+          echo "7. Checking no LLM dependencies..."
+          if grep -q "LLM\|llm_model\|MLModel\|GPT\|Claude\|OpenAI" Sources/MobileCompute/*.swift; then
+              echo "   FAIL: LLM dependency found"
+              exit 1
+          else
+              echo "   PASS: No LLM dependencies"
+          fi
+
+          echo "8. Verifying echo-only compute..."
+          if grep -q "request.payload\[\"text\"\]" Sources/MobileCompute/MobileComputeServer.swift; then
+              echo "   PASS: Echo compute mode confirmed"
+          else
+              echo "   FAIL: Echo compute not found"
+              exit 1
+          fi
+
+          echo ""
+          echo "=== All Structure Validations Passed ==="

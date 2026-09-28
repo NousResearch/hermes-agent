@@ -1664,7 +1664,15 @@ class FeishuAdapter(BasePlatformAdapter):
         # Lock the markdown decision at the whole-message level so every chunk consistently uses ``post``.
         # See #26841.
         prefer_post = bool(_MARKDOWN_HINT_RE.search(formatted))
-        last_response = None
+        return await self._send_chunks(chat_id, chunks, [], prefer_post, reply_to, metadata)
+
+    async def _send_chunks(
+        self, chat_id: str, chunks: List[str], delivered: List[Optional[str]], prefer_post: bool,
+        reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> SendResult:
+        """Send ``chunks`` after the ``delivered`` message ids. Every chunk's own response is checked: a
+        failure after one landed is a partial result (see :meth:`_split_send_failed`), so neither a gap
+        in the middle of the reply is reported as delivered nor the visible head sent again."""
 
         async def _send_plain(chunk: str) -> Any:
             return await self._feishu_send_with_retry(
@@ -1675,9 +1683,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 metadata=metadata,
             )
 
-        try:
-            for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
+        result = SendResult(success=False, error="send failed")
+        for i, chunk in enumerate(chunks):
+            msg_type, payload = self._build_outbound_payload(chunk, prefer_post=prefer_post)
+            try:
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
@@ -1694,12 +1703,29 @@ class FeishuAdapter(BasePlatformAdapter):
                 ):
                     logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
                     response = await _send_plain(chunk)
-                last_response = response
+            except Exception as exc:
+                logger.error("[Feishu] Send error: %s", exc, exc_info=True)
+                result, unsent = SendResult(success=False, error=str(exc)), self._send_never_landed(exc)
+            else:
+                result = self._finalize_send_result(response, "send failed")
+                unsent = self._send_never_landed(status=getattr(getattr(response, "raw", None), "status_code", None))
+            if not result.success:
+                failed = self._split_send_failed(result, chunks[i:], delivered, unsent=unsent)
+                if self._is_partial_delivery(failed):
+                    failed.raw_response["resume_prefer_post"] = prefer_post
+                return failed
+            delivered.append(result.message_id)
+        return result
 
-            return self._finalize_send_result(last_response, "send failed")
-        except Exception as exc:
-            logger.error("[Feishu] Send error: %s", exc, exc_info=True)
-            return SendResult(success=False, error=str(exc))
+    async def _resume_partial_send(
+        self, chat_id: str, result: SendResult, *, reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered or not self._client:
+            return None
+        return await self._send_chunks(chat_id, undelivered, list(raw.get("delivered_message_ids") or ()),
+                                       bool(raw.get("resume_prefer_post")), reply_to, metadata)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Edit a previously sent Feishu text/post message."""

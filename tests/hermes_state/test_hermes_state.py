@@ -5236,6 +5236,50 @@ def test_peer_fallback_never_adopts_a_sibling_profiles_row(tmp_path, monkeypatch
         store.close()
 
 
+def test_peer_fallback_reset_boundary_is_profile_fenced(tmp_path, monkeypatch):
+    """#119121: the recovery reset fence carries the same profile predicate as the candidate.
+
+    A Telegram DM peer tuple is identical for every bot, so a sibling profile's
+    newer session_reset row used to suppress THIS profile's recoverable session.
+    The profile's own reset must still fence.
+    """
+    import hermes_state
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    store = SessionDB(db_path=root / "state.db")  # owner: default
+    try:
+        peer = {"user_id": "42", "chat_id": "42", "chat_type": "dm"}
+
+        def recover():
+            return store.find_latest_gateway_session_for_peer(
+                source="telegram", session_key="agent:main:telegram:dm:42", **peer
+            )
+
+        def reset(session_id, session_key, profile_name):
+            store.create_session(session_id, "telegram", session_key=session_key,
+                                 profile_name=profile_name, **peer)
+            store.append_message(session_id, "user", "/new")
+            store.end_session(session_id, "session_reset")
+
+        store.create_session("own", "telegram", session_key="agent:main:telegram:dm:42:old",
+                             profile_name="default", **peer)
+        store.append_message("own", "user", "default's conversation")
+        store._execute_write(
+            lambda c: c.execute("UPDATE sessions SET last_activity_at = 1 WHERE id = 'own'")
+        )
+
+        reset("sibling-reset", "agent:bot2:telegram:dm:42", "bot2")
+        assert recover()["id"] == "own"  # a sibling profile's reset is not this profile's boundary
+
+        reset("own-reset", "agent:main:telegram:dm:42:r2", "default")
+        assert recover() is None  # the profile's own reset still fences
+    finally:
+        store.close()
+
+
 def test_child_inherits_parent_profile_only_within_its_key_namespace(db):
     """#88381: parent→child ``profile_name`` COALESCE is fenced by ``agent:<ns>:``.
 

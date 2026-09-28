@@ -1490,14 +1490,17 @@ async def cache_document_from_bytes_async(data: bytes, filename: str) -> str:
 @dataclass
 class CachedMedia:
     """Result of caching one attachment's bytes."""
-    path: str                 # absolute cache path, agent-visible (sandbox-translated)
+    path: str                 # absolute HOST cache path (same coordinate system as cache_*_from_bytes)
     media_type: str           # MIME type recorded on the MessageEvent
     kind: str                 # "image" | "video" | "audio" | "document"
     display_name: str         # human-readable name for transcript notes
 
     def context_note(self) -> str:
-        """One-line transcript annotation pointing the agent at the file."""
-        return f"[{self.kind} '{self.display_name}' saved at: {self.path}]"
+        """One-line transcript annotation pointing the agent at the file (sandbox-translated at
+        render time, never baked into ``path``: ``event.media_urls`` must hold one coordinate
+        system so the routed turn can re-home and translate every entry alike, #101134)."""
+        from tools.credential_files import to_agent_visible_cache_path
+        return f"[{self.kind} '{self.display_name}' saved at: {to_agent_visible_cache_path(self.path)}]"
 
 
 # MIME -> extension reverse lookup; FIRST match across image, video, document tables wins
@@ -1519,7 +1522,6 @@ def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
     """Classify and cache raw attachment bytes -> CachedMedia (None only for images failing
     validation). ``default_kind`` biases ambiguous ext/MIME (Telegram native photo, no name);
     anything not image/video/audio is a document."""
-    from tools.credential_files import to_agent_visible_cache_path
     ext = _resolve_media_ext(filename, mime_type)
     mime = (mime_type or "").lower()
     display = re.sub(r"[^\w.\- ]", "_", filename) if filename else (ext.lstrip(".") or "file")
@@ -1538,13 +1540,13 @@ def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
                 raise
             return None
         out_mime = mime if passthrough and mime.startswith(f"{kind}/") else table[kind_ext]
-        return CachedMedia(to_agent_visible_cache_path(path), out_mime, kind, display)
+        return CachedMedia(path, out_mime, kind, display)
     # Any other type is cached and surfaced as a path — an authorized user's uploads must never be
     # silently dropped. Unknown types get octet-stream so the agent reaches for terminal tools.
     fallback_name = filename or (f"document{ext}" if ext else "document.bin")
     path = cache_document_from_bytes(data, fallback_name)
     out_mime = SUPPORTED_DOCUMENT_TYPES.get(ext) or mime or "application/octet-stream"
-    return CachedMedia(to_agent_visible_cache_path(path), out_mime, "document", display or fallback_name)
+    return CachedMedia(path, out_mime, "document", display or fallback_name)
 
 
 async def cache_media_bytes_async(

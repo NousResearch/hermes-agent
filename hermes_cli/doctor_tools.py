@@ -403,7 +403,8 @@ def _check_lightpanda() -> None:
 @doctor_check()
 def _check_node_and_browser(should_fix: bool, f: Finding) -> None:
     """Node.js, agent-browser resolution, Playwright Chromium, Lightpanda engine."""
-    if _safe_which("node"):
+    # Only PM's Node counts; Termux's APT distribution is the one that relies on `pkg install nodejs`.
+    if _pm_tool_path("node") or (_is_termux() and _safe_which("node")):
         check_ok("Node.js")
     elif _is_termux():
         _termux_browser_hints("Node.js not found (browser tools are optional in the tested Termux path)",
@@ -431,10 +432,12 @@ def _audit_one(npm_bin: str, npm_dir, label: str, audit_extra: list[str], issues
     prescribes a local mutating fix command. See #116774.
     """
     import json
+    from hermes_constants import with_hermes_node_path
     try:
         # Resolved absolute path so Windows can execute npm.cmd (CreateProcessW can't run bare .cmd names).
         audit_result = subprocess.run([npm_bin, "audit", "--json", *audit_extra], cwd=str(npm_dir),
-                                      capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+                                      capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
+                                      env=with_hermes_node_path())
         audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
         counts = audit_data.get("metadata", {}).get("vulnerabilities", {})
         critical, high, moderate = (counts.get(k, 0) for k in ("critical", "high", "moderate"))
@@ -468,7 +471,8 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
     HERMES_HOME mirror rather than the (possibly read-only) Docker install tree, hence the shared resolver.
     """
     from hermes_cli.doctor import PROJECT_ROOT
-    npm_bin = _safe_which("npm")
+    staged = _pm_tool_path("npm")
+    npm_bin = str(staged) if staged else (_safe_which("npm") if _is_termux() else None)
     if npm_bin:
         try:
             # Each entry: (cwd, label, extra_audit_args) PROJECT_ROOT is audited with --workspaces=false so

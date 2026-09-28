@@ -614,11 +614,19 @@ class Npm(BinaryPackage):
         return [latest] if latest else []
 
 
+# The pinned git artifact is a self-extracting 7z: only hosts where PE images
+# execute can stage it (tests patch this flag).
+_HOST_IS_WINDOWS = os.name == "nt"
+
+
 @register
 class Git(BinaryPackage):
     """Windows only: Git for Windows carries the bash.exe contract. POSIX
-    uses the system git — a deliberate gap, not an oversight. The tar.bz2
-    release asset extracts with stdlib tarfile: no self-extractor, no GUI."""
+    uses the system git - a deliberate gap, not an oversight. The pin is the
+    PortableGit self-extracting 7z: it carries its own extractor (stock
+    Windows 10 tar.exe has no bzip2), shows a progress window (-y only drops
+    prompts), and runs the vendor post-install, so the staged tree is
+    post-install output."""
 
     name = "git"
     optional = True
@@ -638,7 +646,7 @@ class Git(BinaryPackage):
         arch = "arm64" if target.endswith("arm64") else "64-bit"
         return (
             f"https://github.com/git-for-windows/git/releases/download/"
-            f"v{tag}.windows.{build}/Git-{tag}.{build}-{arch}.tar.bz2"
+            f"v{tag}.windows.{build}/PortableGit-{tag}.{build}-{arch}.7z.exe"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
@@ -651,9 +659,44 @@ class Git(BinaryPackage):
         return out
 
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
-        from pm.store import extract_tar
-
-        extract_tar(archive, staged, git_msys=True)
+        if not _HOST_IS_WINDOWS:
+            raise InstallError(
+                self.name,
+                "the pinned artifact is a PortableGit self-extracting 7z, which "
+                "only runs on Windows",
+                "stage win32 git on a Windows host; POSIX hosts use the system git",
+            )
+        shutil.rmtree(staged, ignore_errors=True)
+        staged.mkdir(parents=True)
+        # Execute a scratch copy, never the cached fetch-<sha> bytes: an executed
+        # PE can stay handle-held (on-execute AV scan, the RunProgram children)
+        # past pm's download-cleanup retry and fail the install (WinError 32).
+        with tempfile.TemporaryDirectory(
+            prefix=".sfx-", dir=staged.parent, ignore_cleanup_errors=True
+        ) as work:
+            exe = Path(work) / archive.name
+            shutil.copy2(archive, exe)
+            # No pipes: RunProgram children would inherit them and hold run()
+            # open past the stub's exit. Under -y the stub prints nothing anyway.
+            try:
+                proc = subprocess.run(
+                    [str(exe), f"-o{staged}", "-y"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=600,
+                )
+            except subprocess.TimeoutExpired:
+                raise InstallError(
+                    self.name, "PortableGit self-extractor did not finish in 600 s"
+                ) from None
+        if proc.returncode:
+            raise InstallError(
+                self.name,
+                f"PortableGit self-extractor exited {proc.returncode} (it reports "
+                "nothing under -y; usual causes: disk full, path-length limit, "
+                "antivirus lock)",
+            )
 
     def env(self, entry: Path, target: str) -> dict:
         return {"PATH": [str(entry / "cmd"), str(entry / "usr" / "bin")]}
@@ -689,7 +732,7 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     it baked into the payload; every `hermes update` and `hermes pm install`
     re-ensures it from the new lockfile before the venv sync
     (pm.client.ensure_tools_for_sync), so a pin bump lands. Windows + Linux:
-    BtbN/FFmpeg-Builds (dated autobuild tag; ships ffprobe too).
+    BtbN/FFmpeg-Builds (month-end autobuild tag, kept two years; ships ffprobe too).
     macOS: ffmpeg.martin-riedl.de (uniform ZIP, published sha256;
     single-binary — no ffprobe).
 
@@ -805,7 +848,10 @@ class Ripgrep(BinaryPackage):
 class CuaDriver(BinaryPackage):
     name = "cua-driver"
     optional = True
-    gaps = {target: "cua-driver does not publish a musl build" for target in MUSL_TARGETS}
+    # Computer use's only OS path, so the default install carries it.
+    default = True
+    gaps = {**{target: "cua-driver does not publish a musl build" for target in MUSL_TARGETS},
+            "linux-arm64-bionic": "cua-driver does not publish an Android build"}
     binary_rel = {
         "darwin-arm64": "CuaDriver.app/Contents/MacOS/cua-driver",
         "darwin-x64": "CuaDriver.app/Contents/MacOS/cua-driver",

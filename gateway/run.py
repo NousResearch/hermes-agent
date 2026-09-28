@@ -1647,6 +1647,35 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     return list(profiles_to_serve(multiplex=True))
 
 
+def _recover_pending_flushes(runner) -> int:
+    """Replay every ``pending_messages`` spool this gateway owns into state.db; return the count.
+
+    ``_get_flush_dir`` follows the active HERMES_HOME, so a routed turn on a multiplexed gateway spools
+    its stalled transcript backlog under ``profiles/<name>/`` and the runtime drain forgets it on
+    restart. After the launch home, replay each served profile inside its own home so the default
+    store ``recover_pending_to_db`` opens is that profile's state.db (#123584).
+    """
+    from gateway.shutdown_flush import recover_pending_to_db
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    resolver = runner.session_store.resolve_session_id_for_key
+    recovered = recover_pending_to_db(session_resolver=resolver)
+    if not getattr(runner.config, "multiplex_profiles", False):
+        return recovered
+    launch_home = Path(get_hermes_home()).resolve()
+    for name, home in _multiplex_profile_homes(runner.config):
+        if Path(home).resolve() == launch_home or not (Path(home) / "pending_messages").is_dir():
+            continue
+        token = set_hermes_home_override(str(home))
+        try:
+            recovered += recover_pending_to_db(session_resolver=resolver)
+        except Exception:  # one profile's unreadable spool must not strand the others'
+            logger.warning("Pending-message recovery failed for profile %s", name, exc_info=True)
+        finally:
+            reset_hermes_home_override(token)
+    return recovered
+
+
 def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     """Profile homes the in-process ticker visits: the served set PLUS the process-active
     profile: ``profiles_to_serve`` lists default + every live named profile, but a ``--profile
@@ -3807,10 +3836,10 @@ class GatewayRunner(
             # The store owns/sweeps it at shutdown; this cache holds only the async wrapper (close_all).
             # Both caches resolve the SAME ``_default_db_path()``, so the process was holding two writer
             # connections and two read pools against one state.db — the fd budget doubled for nothing, and
-            # doubled again per profile on a multiplexed gateway (#98573). A borrowed wrapper cannot go
-            # stale in practice: the store's cache only drops handles in close_all_db_handles() (shutdown),
-            # and while the store's own open is failing there is nothing to borrow, so nothing is cached
-            # here either.
+            # doubled again per profile on a multiplexed gateway (#98573). A borrowed wrapper goes stale only
+            # when the registry tears its generation down (profile unserve/delete); both caches then drop
+            # the dead handle and reopen through the registry. While the store's own open is failing there
+            # is nothing to borrow, so nothing is cached here either.
             store = getattr(self, "session_store", None)
             borrowed = getattr(store, "_db", None) if store is not None else None
             if borrowed is not None:
@@ -5964,10 +5993,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         return False
 
     def _recover_pending() -> None:
-        from gateway.shutdown_flush import recover_pending_to_db
-        recovered = recover_pending_to_db(
-            session_resolver=runner.session_store.resolve_session_id_for_key,
-        )
+        recovered = _recover_pending_flushes(runner)
         if recovered:
             logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
 

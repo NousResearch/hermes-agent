@@ -3874,6 +3874,9 @@ class GatewayTurnMixin:
             next_channel_prompt, next_source = self._pinned_channel_inputs(
                 next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
             )
+            if not pending_event.internal:
+                # A drained human turn re-pins its channel inputs; make them durable like a first turn.
+                await self._persist_prompt_pins(next_session_key, session_id)
             next_message_type = getattr(pending_event, "message_type", None)
         else:
             # Event-less interrupt/steer follow-ups continue the effective prompt

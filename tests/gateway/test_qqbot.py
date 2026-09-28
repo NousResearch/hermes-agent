@@ -456,7 +456,7 @@ class TestQQTimeoutErrorNormalization:
 
         adapter._send_c2c_text = _boom
 
-        result = await adapter._send_chunk("test_openid", "hello world")
+        result, _unsent = await adapter._send_chunk("test_openid", "hello world")
 
         assert not result.success
         assert result.error, "error must not be empty"

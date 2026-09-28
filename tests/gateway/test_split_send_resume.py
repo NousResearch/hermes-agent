@@ -2,10 +2,11 @@
 behind a success (the partial_overflow contract, ``BasePlatformAdapter._with_partial_send``).
 
 Regression for #68713 (WhatsApp) and the same send loop in the Mattermost, Slack, Teams, Matrix, SMS,
-WhatsApp Cloud, Google Chat, BlueBubbles, Signal and Weixin adapters.
+WhatsApp Cloud, Google Chat, BlueBubbles, Signal, Weixin, QQBot, Feishu and Yuanbao adapters.
 """
 
 import asyncio
+import json
 import os
 import re
 import urllib.parse
@@ -227,6 +228,61 @@ def _weixin(failure, screen):
     return adapter, adapter.MAX_MESSAGE_LENGTH
 
 
+def _qqbot(failure, screen):
+    from gateway.platforms.qqbot import QQAdapter
+    adapter = QQAdapter(PlatformConfig(enabled=True, extra={"app_id": "fake", "client_secret": "fake"}))
+    adapter._running, adapter._ws = True, SimpleNamespace(closed=False)
+    adapter._access_token, adapter._token_expires_at = "fake-token", float("inf")
+    failed = []
+
+    async def request(method, url, json=None, **kwargs):
+        request = httpx.Request(method, url)
+        if len(screen) == 1 and len(failed) < 3:  # every in-adapter retry of chunk 2's first send
+            failed.append(1)
+            return failure(request)
+        screen.append((json.get("markdown") or {}).get("content") or json["content"])
+        return httpx.Response(200, json={"id": f"qq{len(screen)}"}, request=request)
+    adapter._http_client = MagicMock()
+    adapter._http_client.request = AsyncMock(side_effect=request)
+    return adapter, adapter.MAX_MESSAGE_LENGTH
+
+
+def _feishu_response(code, status, message_id=None):
+    return SimpleNamespace(success=lambda: code == 0, code=code, msg="" if code == 0 else "failed",
+                           data=SimpleNamespace(message_id=message_id), raw=SimpleNamespace(status_code=status))
+
+
+def _feishu(failure, screen):
+    from plugins.platforms.feishu.adapter import FeishuAdapter
+    adapter = FeishuAdapter(PlatformConfig())
+    adapter._client = MagicMock()
+    calls = []
+
+    async def send_raw_message(*, chat_id, msg_type, payload, reply_to, metadata):
+        calls.append(1)
+        if len(calls) == 2:
+            return failure()
+        screen.append(json.loads(payload)["text"])
+        return _feishu_response(0, 200, f"om_{len(calls)}")
+    adapter._send_raw_message = send_raw_message
+    return adapter, adapter.MAX_MESSAGE_LENGTH
+
+
+def _yuanbao(failure, screen):
+    from gateway.platforms.yuanbao import YuanbaoAdapter
+    adapter = YuanbaoAdapter(PlatformConfig(extra={
+        "app_id": "fake", "app_secret": "fake", "ws_url": "wss://yuanbao.invalid/ws", "api_domain": "https://yuanbao.invalid"}))
+    adapter._connection._ws = MagicMock()
+
+    async def send_msg_body(chat_id, msg_body, reply_to, group_code):
+        if len(screen) == 1:  # every in-adapter retry of chunk 2
+            return failure()
+        screen.append(msg_body[0]["msg_content"]["text"])
+        return {"success": True, "msg_key": f"yb{len(screen)}"}
+    adapter._outbound.sender._send_msg_body = send_msg_body
+    return adapter, adapter.MAX_TEXT_CHUNK
+
+
 def _graph_response(status, body):
     return SimpleNamespace(status_code=status, json=lambda: body, text="")
 
@@ -285,6 +341,14 @@ CASES = [
     pytest.param(_weixin, _connect_refused, _UNSENT, id="weixin-connect"),
     pytest.param(_weixin, lambda: RuntimeError("iLink sendmessage error: ret=-1 errcode=-1 errmsg=system error"),
                  _MAYBE_SENT, id="weixin-ilink-error"),
+    pytest.param(_qqbot, lambda request: httpx.Response(429, json={"message": "rate limited"}, request=request), _UNSENT,
+                 id="qqbot-429"),
+    pytest.param(_qqbot, lambda request: httpx.Response(502, json={"message": "bad gateway"}, request=request),
+                 _MAYBE_SENT, id="qqbot-502"),
+    pytest.param(_feishu, lambda: _feishu_response(99991400, 429), _UNSENT, id="feishu-429"),
+    pytest.param(_feishu, lambda: _feishu_response(1500, 500), _MAYBE_SENT, id="feishu-500"),
+    pytest.param(_yuanbao, lambda: {"success": False, "error": "Request timeout after 30s"}, _MAYBE_SENT,
+                 id="yuanbao-ack-timeout"),
 ]
 
 

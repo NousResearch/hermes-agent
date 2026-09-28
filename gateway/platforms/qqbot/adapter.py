@@ -1299,7 +1299,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             resp = await client.request(method, f"{API_BASE}{path}", headers=headers, json=body, timeout=timeout)
             data = resp.json()
             if resp.status_code >= 400:
-                raise RuntimeError(f"QQ Bot API error [{resp.status_code}] {path}: {data.get('message', data)}")
+                # Chained to the HTTP status so a caller can tell a refused send (429) from one that may have landed.
+                raise RuntimeError(f"QQ Bot API error [{resp.status_code}] {path}: {data.get('message', data)}") from (
+                    httpx.HTTPStatusError(str(resp.status_code), request=resp.request, response=resp))
             return data
         except httpx.TimeoutException as exc:
             raise RuntimeError(f"QQ Bot API timeout [{path}]: {exc}") from exc
@@ -1366,27 +1368,47 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True)
 
-        chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH)
-        last_result = SendResult(success=False, error="No chunks")
-        for chunk in chunks:
-            last_result = await self._send_chunk(chat_id, chunk, reply_to)
-            if not last_result.success:
-                return last_result
-            reply_to = None  # only reply_to the first chunk
-        return last_result
+        return await self._send_chunks(chat_id, self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH),
+                                       [], reply_to)
+
+    async def _send_chunks(self, chat_id: str, chunks: List[str], delivered: List[str],
+                           reply_to: Optional[str]) -> SendResult:
+        """Send ``chunks`` after the ``delivered`` message ids (only the reply's first chunk quotes ``reply_to``);
+        a failure after one landed is a partial result (see :meth:`_split_send_failed`), so the visible head
+        is never sent again."""
+        result = SendResult(success=False, error="No chunks")
+        for i, chunk in enumerate(chunks):
+            result, unsent = await self._send_chunk(chat_id, chunk, None if delivered else reply_to)
+            if not result.success:
+                return self._split_send_failed(result, chunks[i:], delivered, unsent=unsent)
+            delivered.append(result.message_id)
+        return result
+
+    async def _resume_partial_send(self, chat_id: str, result: SendResult, *, reply_to: Optional[str],
+                                   metadata: Optional[Dict[str, Any]]) -> Optional[SendResult]:
+        raw = result.raw_response if isinstance(result.raw_response, dict) else {}
+        undelivered = list(raw.get("undelivered_chunks") or ())
+        if not undelivered or not await self._ensure_connected():
+            return None
+        return await self._send_chunks(chat_id, undelivered, list(raw.get("delivered_message_ids") or ()), reply_to)
 
     _PERMANENT_SEND_ERRORS = ("invalid", "forbidden", "not found")
 
-    async def _send_chunk(self, chat_id: str, content: str, reply_to: Optional[str] = None) -> SendResult:
+    async def _send_chunk(self, chat_id: str, content: str,
+                          reply_to: Optional[str] = None) -> Tuple[SendResult, bool]:
+        """One chunk, retried here, and whether it certainly never landed: true only when every attempt
+        was refused or never connected (:meth:`_send_never_landed`), since any earlier attempt may have posted it."""
         last_exc: Optional[Exception] = None
+        unsent = True
         sender = self._text_sender(self._guess_chat_type(chat_id))
         if sender is None:
-            return SendResult(success=False, error=f"Unknown chat type for {chat_id}")
+            return SendResult(success=False, error=f"Unknown chat type for {chat_id}"), True
         for attempt in range(3):
             try:
-                return await sender(chat_id, content, reply_to)
+                return await sender(chat_id, content, reply_to), False
             except Exception as exc:
                 last_exc = exc
+                unsent = unsent and self._send_never_landed(exc)
                 if any(k in str(exc).lower() for k in self._PERMANENT_SEND_ERRORS + ("bad request",)):
                     break  # permanent — don't retry
                 if attempt < 2:
@@ -1397,7 +1419,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         error_msg = (str(last_exc) or type(last_exc).__name__) if last_exc else "Unknown error"
         logger.error("[%s] Send failed: %s", self._log_tag, error_msg)
         retryable = not any(k in error_msg.lower() for k in self._PERMANENT_SEND_ERRORS)
-        return SendResult(success=False, error=error_msg, retryable=retryable)
+        return SendResult(success=False, error=error_msg, retryable=retryable), unsent
 
     @staticmethod
     def _rest_path(chat_type: str, target_id: str, endpoint: str) -> str:

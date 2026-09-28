@@ -88,6 +88,8 @@ gateway:
     branched_many:         "⑂ Vertak na **{title}** ({count} boodskappe gekopieer)\nOorspronklik: `{parent}`\nTak: `{new}`\nGebruik `/resume` om terug te gaan na die oorspronklike."
     branched_thread_one:   "⑂ Vertak na **{title}** in 'n nuwe draad ({count} boodskap gekopieer)\nDraad: {thread}\nOorspronklik: `{parent}` — hierdie klets bly daarop\nTak: `{new}`\nGebruik `/branch --here` om in hierdie klets te vertak."
     branched_thread_many:  "⑂ Vertak na **{title}** in 'n nuwe draad ({count} boodskappe gekopieer)\nDraad: {thread}\nOorspronklik: `{parent}` — hierdie klets bly daarop\nTak: `{new}`\nGebruik `/branch --here` om in hierdie klets te vertak."
+    thread_seed_one:       "'n Gedeelte van **{origin}** is hierheen vertak — {count} boodskap(s) konteks is saamgebring. Tik hier om op hierdie punt voort te gaan."
+    thread_seed_many:      "'n Gedeelte van **{origin}** is hierheen vertak — {count} boodskap(s) konteks is saamgebring. Tik hier om op hierdie punt voort te gaan."
     thread_fallback:       "Geen draad kon hier geskep word nie, so die tak het hierdie klets se sessie vervang."
 
   commands:

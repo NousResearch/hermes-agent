@@ -134,20 +134,37 @@ def prune_expired_mirrors(
     conn: sqlite3.Connection, *, retention_days: int, now: Optional[int] = None,
     profile: Optional[str] = None,
 ) -> int:
-    """Delete old terminal mirrors within one profile; zero disables expiry and active turns remain."""
+    """Age stale non-terminal mirrors, then delete terminal ones past retention.
+
+    A turn killed mid-flight reaches none of the finalize paths, so its row keeps
+    ``received``/``running`` forever and the Sessions view reports a live turn that
+    cannot exist. Anything not touched in longer than the retention window is
+    recorded as ``failed`` first — the row is corrected, never silently dropped, and
+    expires on a later sweep. A genuinely running turn is still never deleted: only
+    rows older than the window are aged, and ``0`` disables expiry entirely.
+    """
     days = _validate_retention_days(retention_days)
     if days == 0:
         return 0
     timestamp = int(time.time()) if now is None else int(now)
     cutoff = timestamp - days * 86_400
     profile_filter = " AND profile = ?" if profile is not None else ""
-    params: tuple[Any, ...] = (cutoff, profile.strip()) if profile is not None else (cutoff,)
+    scope: tuple[Any, ...] = (profile.strip(),) if profile is not None else ()
     with kb.write_txn(conn, allow_nested=True):
+        # Aging refreshes updated_at, so a reaped row survives this sweep and is
+        # deleted by a later one — the user sees the killed turn, not a gap.
+        conn.execute(
+            """UPDATE session_mirrors
+               SET status = 'failed', completed_at = ?, updated_at = ?
+               WHERE status IN ('received', 'running') AND updated_at < ?"""
+            + profile_filter,
+            (timestamp, timestamp, cutoff) + scope,
+        )
         cursor = conn.execute(
             """DELETE FROM session_mirrors
                WHERE status IN ('completed', 'failed', 'cancelled') AND updated_at < ?"""
             + profile_filter,
-            params,
+            (cutoff,) + scope,
         )
         return cursor.rowcount
 

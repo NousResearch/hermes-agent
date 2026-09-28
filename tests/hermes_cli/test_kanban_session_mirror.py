@@ -131,5 +131,36 @@ def test_retention_is_scoped_to_the_profile_setting(mirror_conn):
     assert prune_expired_mirrors(mirror_conn, retention_days=1, now=100_000, profile="alpha") == 1
     assert get_mirror(mirror_conn, ids["alpha-old"]) is None
     assert get_mirror(mirror_conn, ids["beta-old"]) is not None
-    active = get_mirror(mirror_conn, ids["alpha-active"])
-    assert active is not None and active["status"] == "received"
+    # Non-terminal is not the same as live: this row was created at t=1 and swept
+    # at t=100_000 with a one-day window, so no turn can still own it. It is
+    # recorded as failed rather than deleted — the row survives expiry, it just
+    # stops claiming to be running forever.
+    aged = get_mirror(mirror_conn, ids["alpha-active"])
+    assert aged is not None and aged["status"] == "failed"
+
+
+def test_prune_ages_a_killed_turn_instead_of_leaving_it_running_forever(mirror_conn):
+    """A turn killed mid-flight reaches none of the finalize paths.
+
+    Nothing else ages its row, so without this the Sessions view reports a live
+    turn that cannot exist. Past the window the row is corrected to failed and
+    kept, so the killed turn stays visible instead of silently vanishing.
+    """
+    killed, _ = _create(mirror_conn, message_id="killed", now=1)
+    assert mark_mirror_running(mirror_conn, killed, now=1) is True
+    fresh, _ = _create(mirror_conn, message_id="fresh", now=100_000)
+    assert mark_mirror_running(mirror_conn, fresh, now=100_000) is True
+
+    # Aging is not deletion: nothing terminal was old enough to remove.
+    assert prune_expired_mirrors(mirror_conn, retention_days=1, now=100_000) == 0
+    aged = get_mirror(mirror_conn, killed)
+    assert aged is not None, "the sweep that corrects a row must not also drop it"
+    assert aged["status"] == "failed"
+    assert aged["completed_at"] == 100_000
+    untouched = get_mirror(mirror_conn, fresh)
+    assert untouched is not None and untouched["status"] == "running"
+
+    # Once terminal and past the window, the normal expiry collects it.
+    assert prune_expired_mirrors(mirror_conn, retention_days=1, now=100_000 + 86_401) == 1
+    assert get_mirror(mirror_conn, killed) is None
+    assert get_mirror(mirror_conn, fresh) is not None

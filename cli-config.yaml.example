@@ -396,7 +396,8 @@ kanban:
     mode: read_only
     # 0 disables expiry. Applies while this feature is DISABLED too: switching mirroring off
     # (or narrowing the allowlists) stops collecting, it does not strand what was already
-    # collected. A mirror untouched for longer than this expires.
+    # collected. A mirror untouched for longer than this expires; one that never reached a
+    # terminal status — a turn killed mid-flight — is recorded as failed first, then expires.
     retention_days: 30
 
 # =============================================================================

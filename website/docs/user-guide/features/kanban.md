@@ -825,7 +825,7 @@ kanban:
     retention_days: 30
 ```
 
-`retention_days: 0` disables automatic expiry. Expiry removes only old terminal mirror records, never active turns, tasks, or transcripts. The documented `retention_days` option makes the policy visible; the Sessions view permits archiving or deleting a mirror. **Promote to task** is an explicit action: the user supplies the task title and description; the new task is parked in `blocked` so it cannot run until the user explicitly unblocks/assigns it. Promotion does not copy the session transcript.
+`retention_days: 0` disables automatic expiry. Expiry removes only old mirror records, never active turns, tasks, or transcripts, and it keeps applying while `enabled: false` — switching mirroring off (or narrowing the allowlists) stops collecting new rows without stranding the rows already collected. A mirror that never reached a terminal status (a turn killed mid-flight, which reaches none of the finalize paths) is recorded as `failed` once it is older than the window, then expires on a later sweep, so a killed turn never reads as running forever. The documented `retention_days` option makes the policy visible; the Sessions view permits archiving or deleting a mirror. **Promote to task** is an explicit action: the user supplies the task title and description; the new task is parked in `blocked` so it cannot run until the user explicitly unblocks/assigns it. Promotion does not copy the session transcript.
 
 ### Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 

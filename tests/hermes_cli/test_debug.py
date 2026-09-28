@@ -416,6 +416,25 @@ class TestRunDebugShareRedaction:
                 "raw token leaked into upload-bound content"
             )
 
+    def test_fallback_provider_key_never_reaches_upload_bound_content(self, hermes_home_with_secret):
+        """``hermes dump`` quotes ``fallback_providers`` from config.yaml; neither the CLI share
+        bundle nor the gateway /debug report may carry a fallback entry's api_key."""
+        from hermes_cli.debug import _capture_dump, collect_debug_report, collect_share_bundle
+
+        fallback_key = "fbk-opaque-0123456789abcdefghij"
+        (hermes_home_with_secret / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: backup-model\n"
+            "    base_url: https://backup.example/v1\n"
+            f"    api_key: {fallback_key}\n", encoding="utf-8")
+
+        uploads = [*collect_share_bundle(log_lines=20).values(),
+                   collect_debug_report(log_lines=20, dump_text=_capture_dump())]
+
+        assert any("backup-model" in text for text in uploads)  # the dump really ran
+        assert not [text for text in uploads if fallback_key in text]
+
     def test_default_share_includes_redaction_banner(
         self, hermes_home_with_secret, capsys
     ):

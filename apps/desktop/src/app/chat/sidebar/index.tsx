@@ -177,6 +177,7 @@ import {
   StartWorkButton,
   useRepoWorktreeMap
 } from './projects'
+import { isRemovedConversation } from './projects/workspace-groups'
 import { WorktreeDialog } from './projects/worktree-dialog'
 import {
   SidebarBlankState,
@@ -1239,7 +1240,7 @@ export function ChatSidebar({
   // that exclusion hides also corrects the backend's `sessionCount` in the
   // "Show all N" label (a pin is always loaded — it renders in Pinned).
   const overviewHidden = useMemo(() => {
-    const isHidden = (session: SessionInfo) => isHiddenFromProjects(session) || removedSessionIds.has(session.id)
+    const isHidden = (session: SessionInfo) => isHiddenFromProjects(session) || isRemovedConversation(session, removedSessionIds)
     const counts: Record<string, number> = {}
 
     for (const session of sessions) {

@@ -639,7 +639,7 @@ function liveLaneForRepo(repoRoot: string, session: SessionInfo): null | Sidebar
 
 const NO_REMOVED: ReadonlySet<string> = new Set()
 
-const isRemovedConversation = (session: SessionInfo, removed: ReadonlySet<string>): boolean =>
+export const isRemovedConversation = (session: SessionInfo, removed: ReadonlySet<string>): boolean =>
   removed.size > 0 && conversationIds(session).some(id => removed.has(id))
 
 /**

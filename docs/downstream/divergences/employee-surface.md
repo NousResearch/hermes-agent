@@ -17,8 +17,8 @@ Keep upstream implementations intact and preserve the small policy checks at
 native entry points. New command aliases, loaders, UI routes or workers must
 respect the same exclusions. Do not hide controls without also closing their
 backend path. Preserve native project/environment prompting, adapters and
-execution mechanics. Hindsight recall timing is explicitly next-turn; retention
-batching is independent.
+execution mechanics. Hindsight recalls against the current message before replying, including the
+first substantive turn (`recall_sync: true`); retention batching is independent.
 
 ## Validation
 

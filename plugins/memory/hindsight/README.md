@@ -3,12 +3,12 @@
 This fork connects to a separately deployed Hindsight service. Retention,
 prefetch, reflection, and server policy follow the employee specification.
 The model receives `recall`; learning from conversations happens automatically.
-Automatic recall is explicitly asynchronous (`recall_sync: false`), matching
-the reference employee policy: recall prepared after one turn is surfaced on
-the next. The first turn has no prefetched context. Current-turn synchronous
-recall remains in the native implementation but is not an editable employee
-setting. Retention is separate: conversations are queued every four turns, with
-remaining turns flushed on session switch/shutdown.
+Automatic recall uses the current message before the reply (`recall_sync: true`),
+including the first substantive turn. This replaces the reference policy's
+previous-message background recall and adds recall latency before generation.
+Native trivial-message skipping and context placement stay unchanged. Retention
+is separate: conversations are queued every four turns, with remaining turns
+flushed on session switch/shutdown.
 
 Automatic recall uses the employee memory-context instruction: supplementary
 background information must be verified against live sources.

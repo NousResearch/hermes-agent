@@ -231,7 +231,8 @@ def test_recall_timing_current_vs_next_turn_uses_real_client():
         for current_turn in (False, True):
             provider = HindsightMemoryProvider(config={**_CLIENT_POLICY,
                 'api_url': f'http://127.0.0.1:{server.server_port}', 'bank_id': 'employee',
-                'recall_sync': current_turn, 'prefetch_waits_for_retain': False})
+                **({} if current_turn else {'recall_sync': False}),
+                'prefetch_waits_for_retain': False})
             provider.initialize('conversation')
             manager = MemoryManager()
             manager.add_provider(provider)

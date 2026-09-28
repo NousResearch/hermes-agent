@@ -4,7 +4,7 @@ _CLIENT_POLICY: dict[str, Any] = {
     "mode": "local_external",
     "memory_mode": "hybrid",
     "recall_prefetch_method": "recall",
-    "recall_sync": False,
+    "recall_sync": True,
     "recall_types": ["world", "experience", "observation"],
     "prefer_observations": True,
     "recall_budget": "mid",
@@ -37,8 +37,7 @@ RECALL_TOOL_SCHEMA: dict[str, Any] = {
         "context; this is how you deliberately go deeper. Use it when framing "
         "work rather than executing it: taking on a new area, picking up a "
         "topic you haven't touched recently, an ambiguous request — check "
-        "memory before asking the person to clarify — or a conversation's "
-        "first turn, where nothing has surfaced yet. Once a task is underway "
+        "memory before asking the person to clarify. Once a task is underway "
         "and clear, the surfaced context and live sources usually carry it.\n\n"
         "The answer is supplementary context, not a source of truth — it may "
         "be stale or incomplete; ground claims and actions in live sources."

@@ -81,10 +81,13 @@ Memory administration exposes only Hindsight, reports per-person memory sizes,
 and permits only shared-memory reset; it does not erase people through the old
 USER.md reset control. Individual files remain under `memory/people/`.
 
-Hindsight explicitly preserves next-turn background recall (`recall_sync: false`),
-separately from four-turn retention batches. Tests exercise both native timing
-modes with the real client; current-turn synchronous recall is not an exposed
-product setting. Native project/environment prompt additions remain unchanged.
+Hindsight uses current-turn recall (`recall_sync: true`): each substantive message
+queries memory before its reply, including the first turn. This deliberately
+replaces previous-message background recall and adds recall latency. Four-turn
+retention batches, native trivial-message skipping, context placement and warm
+conversation caching stay unchanged. The real-client timing test checks the
+employee policy as well as the retained native asynchronous mode. Native
+project/environment prompt additions remain unchanged.
 
 Retired slash commands and their aliases are rejected at CLI, gateway and TUI dispatch, including automation suggestions. Memory setup offers only Hindsight.
 

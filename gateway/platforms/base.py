@@ -1814,6 +1814,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
         # A photo burst always absorbs; otherwise merge only when media is involved on either
         # side. Captions merge in every absorbing case.
         if both_photo or existing.media_urls or incoming_has_media:
+            existing.absorb_context_dependencies(event)
             if both_photo or incoming_has_media:
                 existing.absorb_media(event)
             if event.text:
@@ -1833,6 +1834,7 @@ def merge_pending_message_event(pending_messages: Dict[str, MessageEvent], sessi
             return
         both_text = existing_type == MessageType.TEXT and event.message_type == MessageType.TEXT
         if merge_text and both_text:
+            existing.absorb_context_dependencies(event)
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             existing.absorb_message_ids(event)
@@ -2573,6 +2575,7 @@ class BasePlatformAdapter(ABC):
         if existing is None:
             existing = self._pending_text_batches[key] = event
         else:
+            existing.absorb_context_dependencies(event)
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
             if event.media_urls:
@@ -3892,6 +3895,7 @@ class BasePlatformAdapter(ABC):
             state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
             store[session_key] = state
         else:
+            state.event.absorb_context_dependencies(event)
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
             if event.media_urls:

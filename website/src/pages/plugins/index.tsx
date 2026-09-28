@@ -825,6 +825,11 @@ export default function PluginCatalogPage() {
               </button>
             </div>
           )}
+          <p className={styles.legalNote}>
+            The Plugin Catalog is subject to our{" "}
+            <a href="https://portal.nousresearch.com/terms">Terms of Service</a> and{" "}
+            <a href="https://portal.nousresearch.com/privacy">Privacy Policy</a>.
+          </p>
         </main>
       </div>
     </Layout>

@@ -206,12 +206,16 @@ class VoiceMixer(discord.AudioSource):
 
         Returns:
             The new :class:`StreamingMixerChild` to feed. When a previous streaming child
-            is still live, THAT child is returned instead - the new stream's chunks are
-            appended behind its remaining audio, so concurrent replies never overlap.
+            is still live (or ended but still draining), THAT child is returned instead -
+            the new stream's chunks are appended behind its remaining audio, so
+            concurrent replies never overlap.
         """
         with self._lock:
             latest_child = self._speech[-1] if self._speech else None
             if isinstance(latest_child, StreamingMixerChild) and not latest_child._finished:
+                if latest_child._ended:
+                    # Old stream will never end() again; re-open so the new stream owns it.
+                    latest_child._ended = False
                 return latest_child
             child = StreamingMixerChild(
                 gain=self._speech_gain if gain is None else float(gain), fade_in_ms=fade_in_ms,

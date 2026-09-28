@@ -168,3 +168,33 @@ def test_play_speech_streaming_reuses_live_child():
             break
     third = mixer.play_speech_streaming(gain=1.0)
     assert third is not first
+
+
+def test_play_speech_streaming_reopens_ended_but_draining_child():
+    """Regression (review finding): reuse of an ended-but-draining child must re-open
+    it, or the new stream's audio is silently refused while the reply reports success."""
+    mixer = vm.VoiceMixer()
+    first = mixer.play_speech_streaming(gain=1.0)
+    pcm = (np.sin(np.arange(vm.SAMPLES_PER_FRAME, dtype=np.float32)) * 0.1).tobytes()
+    for _ in range(10):
+        assert first.push(pcm)
+    first.end()  # _ended=True, queue still full: the end-to-drain window
+
+    second = mixer.play_speech_streaming(gain=1.0)
+    assert second is first  # still reused - queued audio must not be orphaned
+    assert not second._ended  # ...but re-opened: the new stream owns the end()
+    for _ in range(10):
+        assert second.push(pcm)  # previously refused -> silent loss
+    second.end()
+
+    frames = 0
+    nonzero = 0
+    while frames < 4000:
+        frame = mixer.read()
+        frames += 1
+        if np.max(np.abs(np.frombuffer(frame, dtype=np.int16))) > 0:
+            nonzero += 1
+        if first._finished:
+            break
+    assert first._finished
+    assert nonzero > 20  # BOTH streams' audio actually played (20+ chunks audible)

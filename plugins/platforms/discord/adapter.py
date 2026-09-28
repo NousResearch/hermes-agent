@@ -3947,7 +3947,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     elif pause_s > 0:
                         pcm = (b"\x00" * (vm_mod.BYTES_PER_MS * int(pause_s * 1000))) + pcm
                     pcm_total += len(pcm)
-                    child.push(pcm)
+                    if not child.push(pcm):
+                        # Piece would play silently (child closed or queue full): stop.
+                        logger.warning(
+                            "Streaming TTS %s stopped early (guild=%d): piece %d "
+                            "rejected by the mixer child", label, guild_id, index)
+                        break
                 child.end()
                 vm_mod = _voice_mixer_module()
                 logger.info("Streaming TTS %s done (guild=%d, pieces=%d, pcm=%.1fs)",

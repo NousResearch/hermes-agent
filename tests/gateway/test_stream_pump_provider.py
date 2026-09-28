@@ -57,16 +57,30 @@ class _RecordingMixer:
         self.stop_count = 0
         self.stream_gains = []
         self.speech_active = speech_active
+        # If set, the child refuses pushes past this count (ended-reuse / full queue).
+        self.reject_after: int | None = None
 
     def play_speech_streaming(self, *, gain=None, fade_in_ms=40):
         self.stream_gains.append(gain)
         mixer = self
 
         class _Child:
-            def push(self, pcm):
+            def __init__(self):
+                self.ended = False
+                self.push_count = 0
+
+            def push(self, pcm) -> bool:
+                if self.ended:
+                    return False
+                if (mixer.reject_after is not None
+                        and self.push_count >= mixer.reject_after):
+                    return False
+                self.push_count += 1
                 mixer.pushed.append(pcm)
+                return True
 
             def end(self):
+                self.ended = True
                 mixer.end_count += 1
 
         return _Child()
@@ -211,6 +225,17 @@ def test_pump_crash_still_ends_child():
     asyncio.run(adapter._pump_pieces_into_mixer(12345, ["a"], label="reply"))
     assert mixer.pushed == []
     assert mixer.end_count == 1  # crashed pump must not leave the child open
+
+
+def test_pump_stops_when_child_refuses_push():
+    """A refused push (reused ended child, full queue) must not fake success: the pump
+    stops early so the piece never silently disappears from the spoken reply."""
+    adapter, mixer = _make_pump_adapter()
+    mixer.reject_after = 1  # first piece accepted, everything after refused
+    ok = asyncio.run(adapter._pump_pieces_into_mixer(12345, ["a", "b", "c"], label="reply"))
+    assert ok is True  # stream still took ownership
+    assert len(mixer.pushed) == 1  # only the accepted piece was pushed
+    assert mixer.end_count == 1  # child still closed exactly once
 
 
 def test_pump_interim_never_registers_teardown_task():

@@ -340,8 +340,25 @@ class GatewayVoiceMixin:
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
+    def _spawn_voice_reply_task(self, event: MessageEvent, text: str) -> None:
+        """Detach the auto voice reply from the turn's delivery path.
+
+        The synthesis runs in a worker thread with no upper bound once the provider wedges
+        (the tool's executor join cannot cancel a stalled connection), so awaiting it here
+        pinned the final text send, the session's busy slot and the durable active-turn marker
+        behind a possibly-hours-long hang. The text reply ships immediately; audio follows as
+        best-effort. The task is kept referenced until done (same pattern as ``_background_tasks``).
+        """
+        tasks = getattr(self, "_background_tasks", None)
+        if tasks is None:
+            tasks = self._background_tasks = set()
+        task = asyncio.create_task(self._send_voice_reply(event, text))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
-        """Generate TTS audio and send as a voice message before the text reply. The TTS tool
+        """Generate TTS audio and send it as a best-effort follow-up to the text reply (the turn
+        no longer waits on synthesis; see ``_spawn_voice_reply_task``). The TTS tool
         may return one combined file or several separately valid ones (combination unavailable /
         over a platform limit); legacy single-file results keep working."""
         audio_path, actual_paths = None, []

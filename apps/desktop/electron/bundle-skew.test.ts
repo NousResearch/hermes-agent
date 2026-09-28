@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
-import { detectBundleSkew, isFallbackCommit, type RunGit, RUNTIME_PATHS } from './bundle-skew'
+import { createBundleSkewChecker, detectBundleSkew, isFallbackCommit, type RunGit, RUNTIME_PATHS } from './bundle-skew'
 
 const REPO = '/repo'
 const STAMP = { commit: 'a'.repeat(40), source: 'ci' }
@@ -43,6 +43,54 @@ function gitAnswering(answers: Record<string, { code?: number; stderr?: string; 
 function gitCounting(count: string): RunGit {
   return gitAnswering({ 'merge-base': { code: 0 }, 'rev-list': { stdout: count } }).git
 }
+
+it('coalesces polls, backs off failures, and skips checks while an update owns the checkout', async () => {
+  let updating = false
+  let now = 0
+  let finish: (value: { code: number; stderr: string; stdout: string }) => void
+  const calls: string[][] = []
+
+  const git: RunGit = (args, options) => {
+    calls.push(args)
+    expect(options.timeoutMs).toBeGreaterThan(0)
+    expect(options.timeoutMs).toBeLessThanOrEqual(5000)
+    expect(options.env?.GIT_NO_LAZY_FETCH).toBe('1')
+
+    return new Promise(resolve => {
+      finish = resolve
+    })
+  }
+
+  const check = createBundleSkewChecker(STAMP, git, { isUpdating: () => updating, now: () => now })
+  const quiet = { desktopCommitsBehind: null, outOfSync: false }
+
+  const polls = Array.from({ length: 40 }, () => check(REPO))
+  expect(calls).toHaveLength(1)
+  finish!({ code: 128, stderr: 'missing tree', stdout: '' })
+  expect(await Promise.all(polls)).toEqual(polls.map(() => quiet))
+  await check(REPO)
+  expect(calls).toHaveLength(1)
+
+  now += 60_000
+  const retry = check(REPO)
+  expect(calls).toHaveLength(2)
+  finish!({ code: 128, stderr: '', stdout: '' })
+  await retry
+
+  updating = true
+  expect(await check(REPO)).toEqual(quiet)
+  expect(calls).toHaveLength(2)
+  updating = false
+  const refreshed = check(REPO)
+  expect(calls).toHaveLength(3) // update invalidates the cached failure
+  finish!({ code: 128, stderr: '', stdout: '' })
+  await refreshed
+
+  const other = check('/another-checkout')
+  expect(calls).toHaveLength(4)
+  finish!({ code: 128, stderr: '', stdout: '' })
+  await other
+})
 
 describe('isFallbackCommit', () => {
   it('matches the all-zero placeholder at any stamp length', () => {

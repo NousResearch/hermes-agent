@@ -56,8 +56,8 @@ export interface BundleSkewResult {
 
 export type RunGit = (
   args: string[],
-  options: { cwd: string }
-) => Promise<{ code: number; stderr: string; stdout: string }>
+  options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }
+) => Promise<{ code: number | null; stderr: string; stdout: string }>
 
 /**
  * The paths that actually reach the user: renderer sources, main-process
@@ -82,6 +82,52 @@ export const RUNTIME_PATHS = [
 
 const NOT_STALE: BundleSkewResult = { desktopCommitsBehind: null, outOfSync: false }
 
+/** About/version polls share one check per checkout, including failed checks. */
+export function createBundleSkewChecker(
+  stamp: BundleSkewStamp | null,
+  runGit: RunGit,
+  { isUpdating, now = Date.now }: { isUpdating: () => boolean; now?: () => number }
+): (repoRoot: string) => Promise<BundleSkewResult> {
+  const pending = new Map<string, Promise<BundleSkewResult>>()
+  const cached = new Map<string, { result: BundleSkewResult; at: number }>()
+
+  return repoRoot => {
+    if (isUpdating()) {
+      cached.clear()
+
+      return Promise.resolve(NOT_STALE)
+    }
+
+    const running = pending.get(repoRoot)
+
+    if (running) {
+      return running
+    }
+
+    const previous = cached.get(repoRoot)
+
+    if (previous && now() - previous.at < 30_000) {
+      return Promise.resolve(previous.result)
+    }
+
+    const check = detectBundleSkew(stamp, runGit, repoRoot)
+      .then(result => {
+        if (isUpdating()) {
+          return NOT_STALE
+        }
+
+        cached.set(repoRoot, { result, at: now() })
+
+        return result
+      })
+      .finally(() => pending.delete(repoRoot))
+
+    pending.set(repoRoot, check)
+
+    return check
+  }
+}
+
 /** Matches write-build-stamp.mjs's all-zero placeholder for non-git builds. */
 export function isFallbackCommit(commit: string): boolean {
   return /^0{7,40}$/.test(commit)
@@ -97,6 +143,15 @@ export async function detectBundleSkew(
   }
 
   try {
+    // A path-filtered walk of a tree:0 clone can otherwise fetch its entire
+    // missing history. Older Git ignores NO_LAZY_FETCH, so also bound and reap
+    // the process tree in execGit, not just the promise waiting for it.
+    const options = {
+      cwd: repoRoot,
+      env: { ...process.env, GIT_NO_LAZY_FETCH: '1', GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' },
+      timeoutMs: 5000
+    }
+
     // Exit 0 = ancestor, 1 = unrelated or diverged, anything else = git could
     // not answer (unknown object, shallow clone, not a repo). Only the first
     // makes the commit count below a statement about skew, and the other two
@@ -108,17 +163,13 @@ export async function detectBundleSkew(
     // would be told "app build out of date" backwards. Ancestry is what makes
     // this a proof that the renderer PREDATES the tree, which is the claim the
     // warning actually makes.
-    const ancestry = await runGit(['merge-base', '--is-ancestor', stamp.commit, 'HEAD'], {
-      cwd: repoRoot
-    })
+    const ancestry = await runGit(['merge-base', '--is-ancestor', stamp.commit, 'HEAD'], options)
 
     if (ancestry.code !== 0) {
       return NOT_STALE
     }
 
-    const result = await runGit(['rev-list', '--count', `${stamp.commit}..HEAD`, '--', ...RUNTIME_PATHS], {
-      cwd: repoRoot
-    })
+    const result = await runGit(['rev-list', '--count', `${stamp.commit}..HEAD`, '--', ...RUNTIME_PATHS], options)
 
     if (result.code !== 0) {
       return NOT_STALE

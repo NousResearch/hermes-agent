@@ -441,6 +441,16 @@ def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
     return result.returncode == 0
 
 
+def _valid_branch_name(branch_name: str) -> bool:
+    """True when git accepts ``branch_name`` as a branch (``git check-ref-format --branch``)."""
+    try:
+        result = subprocess.run(["git", "check-ref-format", "--branch", branch_name],
+                                capture_output=True, text=True, timeout=10)
+    except Exception:
+        return True  # can't tell; let ``worktree add`` report the real error
+    return result.returncode == 0
+
+
 def _git_abs_path(path: Path, flag: str) -> Optional[Path]:
     out = _kb._git_out(path, "rev-parse", "--path-format=absolute", flag)
     return Path(out).expanduser().resolve(strict=False) if out else None
@@ -514,7 +524,11 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     every worktree lands under a board-owned repo (``<repo>/.worktrees/<id>``)
     instead of the dispatcher's incidental CWD (whatever dir the gateway was
     launched from); with no anchor configured we fail loudly rather than guess."""
-    branch_name = (task.branch_name or "").strip() or f"wt/{task.id}"
+    branch_name = (task.branch_name or "").strip()
+    if not branch_name or not _valid_branch_name(branch_name):
+        # A stored name git refuses (e.g. a title slug ending in ".") would fail every retry the
+        # same way, so fall back to the plain per-task name.
+        branch_name = f"wt/{task.id}"
     if not task.workspace_path:
         board_slug = board if board else _kb.get_current_board()
         board_default = (_kb.read_board_metadata(board_slug).get("default_workdir") or "").strip()

@@ -2489,9 +2489,49 @@ def _rotate_worker_log(
         pass
 
 
+def _isolated_store_python() -> bool:
+    """True when this process is the isolated store interpreter (``python -I``)."""
+    return bool(sys.flags.isolated)
+
+
+def _published_posix_launcher() -> Optional[str]:
+    """Install wrapper that re-inserts the repo on ``sys.path``.
+
+    Isolated store Python does not have ``hermes_cli`` on its default path.
+    Do not import ``hermes_cli._launchers`` here (it pulls ``pm``; this
+    module sits below that). Windows ``.cmd``/``.bat`` wrappers are unsafe
+    as argv[0] with task-derived args — use the interpreter-bound command.
+    """
+    shim = Path(__file__).resolve().parents[1] / ".hermes" / "bin" / "hermes"
+    if shim.is_file() and os.access(shim, os.X_OK) and not _is_windows_batch_shim(str(shim)):
+        return str(shim)
+    return None
+
+
 def _module_hermes_argv() -> list[str]:
     """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
+    console-script target — there is no top-level ``hermes`` package).
+
+    ``python -m hermes_cli.main`` is correct when this interpreter has the
+    package on its default module path (venv / pip). Isolated store Python
+    (``python -I``, Desktop / launchd launcher) only sees ``hermes_cli``
+    because the published wrapper inserts the install root — a naked ``-m``
+    child then dies with ModuleNotFoundError and the kanban circuit breaker
+    blocks the card. Prefer that wrapper when it exists; never a PATH
+    ``hermes`` (#111569). When the published wrapper is absent (for example
+    a source checkout or a Windows batch-only install), build the same
+    installation-bound bootstrap command directly instead of returning a bare
+    ``-m`` that cannot import the package from a worker workspace.
+    """
+    if _isolated_store_python():
+        launcher = _published_posix_launcher()
+        if launcher:
+            return [launcher]
+        from hermes_cli._runtime_command import bootstrap_runtime_command
+
+        return bootstrap_runtime_command(
+            Path(__file__).resolve().parents[1], python=sys.executable
+        )
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
@@ -2576,10 +2616,10 @@ def _hermes_path_argv(path: str) -> list[str]:
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
+    same-directory file), then the running interpreter's module invocation
+    (or installation-bound bootstrap under isolated Python; also covers shim-less cron,
     systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
+    search, batch shims fall back to the interpreter-bound command) only when ``hermes_cli``
     is not importable. The module argv must win over PATH: a PATH-first lookup
     lets an attacker-planted ``hermes`` shadow the running install (#111569).
     Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
@@ -2595,6 +2635,12 @@ def _resolve_hermes_argv() -> list[str]:
         resolved_env_bin = _safe_which_no_cwd(env_bin)
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
+        return _module_hermes_argv()
+
+    # An isolated parent already proves this source installation is loaded.
+    # Its bootstrap is the only safe fallback; do not swallow a construction
+    # failure and select an unrelated PATH executable.
+    if _isolated_store_python():
         return _module_hermes_argv()
 
     try:

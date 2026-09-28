@@ -1572,6 +1572,9 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 # prefers the interpreter-bound module form (exactly this install; a PATH
 # shim could be attacker-planted or belong to another install, #111569) and
 # only falls back to the PATH shim when ``hermes_cli`` is not importable.
+# Isolated store Python (``python -I``) is the exception: ``-m hermes_cli.main``
+# cannot see the package. Use the published POSIX launcher when present, or its
+# installation-bound bootstrap command when it is missing.
 # ---------------------------------------------------------------------------
 
 
@@ -1586,12 +1589,110 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_isolated_store_python", lambda: False)
     assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
 
 
+def test_resolve_hermes_argv_isolated_python_uses_install_launcher(monkeypatch):
+    """Isolated store Python cannot ``-m hermes_cli.main`` (no default path).
+    A published POSIX launcher must win over a planted PATH ``hermes``."""
+    import shutil
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_isolated_store_python", lambda: True)
+    monkeypatch.setattr(
+        kbd, "_published_posix_launcher", lambda: "/opt/hermes/.hermes/bin/hermes"
+    )
+    assert kbd._resolve_hermes_argv() == ["/opt/hermes/.hermes/bin/hermes"]
+
+
+def test_resolve_hermes_argv_isolated_python_bootstraps_without_launcher(
+    monkeypatch, tmp_path,
+):
+    """A missing published shim still starts this source tree from an unrelated cwd."""
+    import shutil
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_isolated_store_python", lambda: True)
+    monkeypatch.setattr(kbd, "_published_posix_launcher", lambda: None)
+    argv = kbd._resolve_hermes_argv()
+    assert argv[0] == sys.executable
+    assert argv[1:3] == ["-I", "-c"]
+    assert "hermes_cli.main" in argv[3]
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "HERMES_BIN"}}
+    env["HERMES_HOME"] = str(tmp_path / "home")
+    result = subprocess.run(argv + ["--version"], cwd=tmp_path, env=env,
+                            capture_output=True, text=True, timeout=45)
+    assert result.returncode == 0, result.stderr[-500:]
+    assert str(Path(kbd.__file__).resolve().parents[1]) in result.stdout
+
+
+def test_resolve_hermes_argv_isolated_does_not_fall_back_to_path_when_launchers_import_fails(
+    monkeypatch,
+):
+    """A broken heavy launcher import must not turn isolation into PATH trust."""
+    import shutil
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_isolated_store_python", lambda: True)
+    monkeypatch.setattr(kbd, "_published_posix_launcher", lambda: None)
+    monkeypatch.setitem(sys.modules, "hermes_cli._launchers", None)
+
+    argv = kbd._resolve_hermes_argv()
+
+    assert argv[0] == sys.executable
+    assert argv[1:3] == ["-I", "-c"]
+    assert "/tmp/planted/hermes" not in argv
+
+
+def test_resolve_hermes_argv_isolated_fails_closed_when_bootstrap_is_unavailable(
+    monkeypatch,
+):
+    """A bootstrap failure must surface instead of selecting a PATH executable."""
+    import shutil
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_isolated_store_python", lambda: True)
+    monkeypatch.setattr(
+        kbd, "_module_hermes_argv", lambda: (_ for _ in ()).throw(ImportError("bootstrap"))
+    )
+
+    with pytest.raises(ImportError, match="bootstrap"):
+        kbd._resolve_hermes_argv()
+
+
+def test_resolve_hermes_argv_isolated_preserves_explicit_override_and_batch_safety(
+    monkeypatch,
+):
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.setattr(kbd, "_isolated_store_python", lambda: True)
+    monkeypatch.setattr(kbd, "_published_posix_launcher", lambda: None)
+    monkeypatch.setenv("HERMES_BIN", "/opt/operator/hermes")
+    assert kbd._resolve_hermes_argv() == ["/opt/operator/hermes"]
+
+    monkeypatch.setattr(kbd._kb, "_IS_WINDOWS", True)
+    monkeypatch.setenv("HERMES_BIN", "C:\\operator\\hermes.cmd")
+    argv = kbd._resolve_hermes_argv()
+    assert argv[:3] == [sys.executable, "-I", "-c"]
+    assert "hermes_cli.main" in argv[3]
+    assert not any(arg.lower().endswith((".cmd", ".bat")) for arg in argv)
 
 
 def test_resolve_hermes_argv_module_actually_runs():

@@ -3608,6 +3608,23 @@ def _candidate_rejected(
     return False
 
 
+def _govern_compression_candidate(agent: Any, messages: list, original: list,
+                                  candidate: list, attempt: _Attempt) -> bool:
+    """Return True after rejecting a governed candidate without mutating history."""
+    from agent.context_governance import compression_commit_allowed
+    if compression_commit_allowed(original=original, candidate=candidate,
+                                  session_id=agent.session_id or ""):
+        return False
+    attempt.restore_compressor(agent.context_compressor)
+    _restore_messages_snapshot(messages, original)
+    agent._last_compaction_in_place = False
+    logger.warning("Compression candidate blocked by context governance; original context retained")
+    with contextlib.suppress(Exception):
+        agent._emit_warning("⚠ Compression candidate blocked by context governance. Original context retained.")
+    _emit_aborted_attempt_telemetry(agent, attempt.started_at, "context_governance_block")
+    return True
+
+
 @dataclasses.dataclass
 class _CommitOutcome:
     """Result of the SessionDB commit phase (in-place or rotation)."""
@@ -4167,6 +4184,10 @@ def compress_context(
         if _candidate_rejected(
             agent, compressed, messages, messages_before_compression, attempt_generation=attempt.generation,
             attempt_started_at=attempt.started_at,
+        ):
+            return messages, _existing_system_prompt(agent, system_message)
+        if _govern_compression_candidate(
+            agent, messages, messages_before_compression, compressed, attempt,
         ):
             return messages, _existing_system_prompt(agent, system_message)
         if commit_fence is not None:

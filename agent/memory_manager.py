@@ -458,7 +458,10 @@ class MemoryManager:
         """Run one provider's prefetch; external providers are bounded by a timeout. A stuck external
         call keeps running on its daemon thread and the provider is skipped on later turns until it returns."""
         if provider.name == "builtin":
-            return provider.prefetch(query, session_id=session_id)
+            result = provider.prefetch(query, session_id=session_id)
+            from agent.context_governance import memory_context_allowed
+            return result if not result or memory_context_allowed(
+                provider=provider.name, query=query, context=result, session_id=session_id) else ""
 
         result_box: Dict[str, Any] = {}
 
@@ -491,6 +494,11 @@ class MemoryManager:
         if "error" in result_box:
             raise result_box["error"]
         result = result_box.get("value", "")
+        if result and result.strip():
+            from agent.context_governance import memory_context_allowed
+            if not memory_context_allowed(provider=provider.name, query=query,
+                                          context=result, session_id=session_id):
+                return ""
         if result and result.strip():
             # Prefetch is stamped into the user turn's api_content and replayed every later turn;
             # spill oversized results like plugin hook output so one provider can't inflate the prefix.

@@ -689,6 +689,29 @@ class TestValidateCronBaseUrl:
         self._patch_named_legit(monkeypatch)  # named custom provider arm
         refused_off_origin("custom:legit", "legit.example")
 
+    def test_bare_custom_sends_a_stored_key_only_to_a_configured_origin(self, monkeypatch):
+        # Whatever key the real resolver would attach to a bare-custom base_url, the guard lets
+        # the job through only at the origin the operator configured. No key: still pure BYOK.
+        from hermes_cli.config import get_config_path
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        configured, stored = "https://api.acmellm.example/v1", "sk-stored-acmellm-key"
+        monkeypatch.setenv("ACMELLM_API_KEY", stored)
+        get_config_path().write_text(
+            f"custom_providers:\n  - name: acme\n    base_url: {configured}\n", encoding="utf-8")
+
+        def attached(bu):
+            return resolve_runtime_provider(requested="custom", explicit_base_url=bu)["api_key"]
+
+        for bu in ("http://api.acmellm.example:8080/v1", "http://api.acmellm.example/v1",
+                   "https://api.acmellm.example:8443/v1", "https://eu.acmellm.example/v1"):
+            assert attached(bu) == stored, bu
+            err = self._v("custom", bu)
+            assert err and "not allowed" in err, bu
+        assert self._v("custom", configured) is None
+        keyless = "http://192.0.2.10:8080/v1"
+        assert attached(keyless) != stored and self._v("custom", keyless) is None
+
     def test_named_custom_lookalike_host_blocked(self, monkeypatch):
         self._patch_named_legit(monkeypatch)
         assert self._v("custom:legit", "https://legit.example.attacker.test/v1") is not None

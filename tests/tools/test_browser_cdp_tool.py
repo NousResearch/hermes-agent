@@ -146,6 +146,71 @@ def cdp_server(monkeypatch):
         server.stop()
 
 
+@pytest.fixture
+def frame_supervisor(cdp_server, monkeypatch):
+    """Real supervisor and scheduler on the local CDP fixture, never a user's browser."""
+    from tools.browser_supervisor import CDPSupervisor, SUPERVISOR_REGISTRY
+    from tools.browser_supervisor_frames import FrameInfo
+
+    cdp_server.on("Target.getTargets", lambda *_: {"targetInfos": [{"type": "page", "targetId": "page"}]})
+    cdp_server.on("Target.attachToTarget", lambda *_: {"sessionId": "page-session"})
+    for method in ("Page.enable", "Runtime.enable", "Target.setAutoAttach", "Runtime.addBinding",
+                   "Page.addScriptToEvaluateOnNewDocument", "Runtime.evaluate"):
+        cdp_server.on(method, lambda *_: {})
+    supervisor = CDPSupervisor("frame-boundary-test", browser_cdp_tool._resolve_cdp_endpoint())
+    supervisor.start()
+    supervisor._set_frame(FrameInfo("child", "https://example.com", "https://example.com", "top", True, "child-session"))
+    monkeypatch.setitem(SUPERVISOR_REGISTRY._by_task, supervisor.task_id, supervisor)
+    try:
+        yield supervisor
+    finally:
+        supervisor.stop()
+
+
+@pytest.mark.parametrize("timeout,expected", [(1000, 300.0), (-5, 1.0), (7, 7.0), ("bad", 30.0), (None, 30.0)])
+def test_frame_route_uses_same_timeout_policy(cdp_server, frame_supervisor, monkeypatch, timeout, expected):
+    """#126523: frame routing cannot bypass the public timeout contract."""
+    seen = []
+    original = frame_supervisor._cdp
+
+    async def record_timeout(method, params=None, **kwargs):
+        seen.append(kwargs["timeout"])
+        return await original(method, params, **kwargs)
+
+    monkeypatch.setattr(frame_supervisor, "_cdp", record_timeout)
+    result = json.loads(browser_cdp_tool.browser_cdp(
+        "Runtime.evaluate", frame_id="child", timeout=timeout, task_id=frame_supervisor.task_id))
+    assert result.get("success") is True
+    assert seen == [expected]
+    assert cdp_server.received()[-1]["sessionId"] == "child-session"
+
+
+@pytest.mark.parametrize("method,payload", [
+    ("Runtime.evaluate", {"result": {"value": "ghp_" + "x" * 36}}),
+    ("Runtime.evaluate", {}),
+    ("Runtime.evaluate", RuntimeError("fixture CDP refusal")),
+    ("Page.captureScreenshot", {"data": "ghp_" + "x" * 36, "note": "ghp_" + "y" * 36}),
+    ("Network.getResponseBody", {"body": "ghp_" + "x" * 36, "base64Encoded": True}),
+    ("Network.getResponseBody", {"body": "ghp_" + "x" * 36, "base64Encoded": False}),
+])
+def test_frame_result_matches_stateless_redaction(cdp_server, frame_supervisor, method, payload):
+    """Same CDP data gets the same redaction, including byte-preserving binary exemptions."""
+    cdp_server.on(method, lambda *_: payload)
+    direct = json.loads(browser_cdp_tool.browser_cdp(method))
+    framed = json.loads(browser_cdp_tool.registry.dispatch(
+        "browser_cdp", {"method": method, "frame_id": "child"}, task_id=frame_supervisor.task_id))
+    if isinstance(payload, Exception):
+        assert "fixture CDP refusal" in direct["error"]
+        assert "fixture CDP refusal" in framed["error"]
+        assert not framed.get("success")
+        return
+    assert direct.get("success") is True and framed.get("success") is True
+    assert framed["result"] == direct["result"]
+    if method == "Page.captureScreenshot":
+        assert framed["result"]["data"] == payload["data"]
+        assert framed["result"]["note"] != payload["note"]
+
+
 # ---------------------------------------------------------------------------
 # Input validation
 # ---------------------------------------------------------------------------

@@ -1,0 +1,24 @@
+name: skill-retrieval
+repo: https://github.com/moonlight-lupin/agent-skills
+sha: c1c92ea625dad072e234693d22d0e604b166ea64
+subdir: plugins/skill-retrieval
+description: >-
+  BM25-based skill retrieval — injects top-K relevant skill descriptions per turn via a pre_llm_call
+  hook, replacing the full skill list in the system prompt. Token optimization for large skill
+  libraries. No API keys; runs locally, no network. Disclosure — wraps Hermes'
+  build_skills_system_prompt and clear_skills_system_prompt_cache in-process at session start so the
+  system prompt lists skill names only, and appends a short BM25-ranked list of skill descriptions to
+  each user message via the pre_llm_call hook (the system prompt is built once per session, so prompt
+  caching is unaffected). Reads SKILL.md frontmatter from the profile's skill roots; no network
+  access, no files written, pyyaml is the only dependency.
+maintainer: moonlight-lupin
+tier: community
+category: tools
+requires_hermes: ">=0.21.1"
+version: "0.3.1"
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - pre_llm_call
+  provides_middleware: []
+  requires_env: []

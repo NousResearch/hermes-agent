@@ -162,9 +162,14 @@ export const ko: Translations = {
     deleteSelectedConfirmMessage:
       "선택한 {count}개 세션과 모든 메시지가 영구적으로 제거됩니다. 이 작업은 취소할 수 없습니다.",
     selectedSessionsDeleted: "{count}개 세션이 삭제되었습니다",
+    selectedSessionsSkippedActive: "{deleted}개 삭제됨, 진행 중인 턴이 있어 {count}개 유지됨",
     failedToDeleteSelected: "선택한 세션 삭제에 실패했습니다",
     resumeInChat: "채팅에서 다시 시작",
     newChat: "새 채팅",
+    workspace: "작업 공간",
+    workspaceDefault: "기본값",
+    workspaceRescan: "저장소 다시 검색",
+    workspaceCustom: "다른 경로…",
     previousPage: "이전 페이지",
     nextPage: "다음 페이지",
     roles: {

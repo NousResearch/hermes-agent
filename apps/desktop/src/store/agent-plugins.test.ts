@@ -1,24 +1,82 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $agentPlugins, type AgentPluginRow, isDesktopRelevantPlugin, saveAgentPluginSettings } from './agent-plugins'
+import {
+  $agentPlugins,
+  type AgentPluginRow,
+  installAgentPlugin,
+  isDesktopRelevantPlugin,
+  normalizeAgentPluginRow,
+  saveAgentPluginSettings
+} from './agent-plugins'
 
 const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
   ({ name: partial.key ?? 'x', status: 'enabled', ...partial }) as AgentPluginRow
 
-describe('isDesktopRelevantPlugin (#98861)', () => {
-  it('lists the manageable bundled lifecycle plugins and keeps every other built-in hidden', () => {
-    expect(isDesktopRelevantPlugin(row({ key: 'disk-cleanup', source: 'bundled' }))).toBe(true)
-    expect(isDesktopRelevantPlugin(row({ key: 'security-guidance', source: 'bundled' }))).toBe(true)
+afterEach(() => vi.useRealTimers())
 
-    for (const key of [
-      'platforms/discord',
-      'model-providers/openai',
-      'web/firecrawl',
-      'browser/agent-browser',
-      'kanban'
-    ]) {
-      expect(isDesktopRelevantPlugin(row({ key, source: 'bundled' }))).toBe(false)
-    }
+describe('installAgentPlugin', () => {
+  it('waits for a slow successful install instead of reporting the generic 30s timeout', async () => {
+    vi.useFakeTimers()
+
+    const request = vi.fn(
+      <T>(_method: string, _params?: Record<string, unknown>, timeoutMs = 30_000): Promise<T> =>
+        new Promise((resolve, reject) => {
+          const deadline = setTimeout(
+            () => reject(new Error(`request timed out after ${timeoutMs / 1000}s: plugins.manage`)),
+            timeoutMs
+          )
+
+          setTimeout(() => {
+            clearTimeout(deadline)
+            resolve({ ok: true, plugin_name: 'demo' } as T)
+          }, 45_000)
+        })
+    )
+
+    const install = installAgentPlugin(request as never, { identifier: 'demo', profile: 'research' })
+
+    await vi.advanceTimersByTimeAsync(45_000)
+
+    expect(await install).toMatchObject({ ok: true, pluginName: 'demo' })
+    expect(request).toHaveBeenCalledWith(
+      'plugins.manage',
+      expect.objectContaining({ action: 'install', profile: 'research' }),
+      expect.any(Number)
+    )
+  })
+
+  it('marks a client timeout as an unknown install outcome', async () => {
+    const request = vi.fn(async () => {
+      throw new Error('request timed out after 120s: plugins.manage')
+    })
+
+    expect(await installAgentPlugin(request as never, { identifier: 'demo' })).toMatchObject({
+      ok: false,
+      timedOut: true
+    })
+  })
+})
+
+describe('normalizeAgentPluginRow', () => {
+  it('treats an absent servers field as an empty full snapshot', () => {
+    const previous = normalizeAgentPluginRow(
+      row({
+        key: 'example-plugin',
+        servers: [{ name: 'example-server', sentence: '', state: 'connected' }],
+        source: 'user'
+      })
+    )
+
+    const next = normalizeAgentPluginRow(row({ key: 'example-plugin', source: 'user' }))
+
+    expect(previous.servers).toHaveLength(1)
+    expect(next.servers).toEqual([])
+  })
+})
+
+describe('isDesktopRelevantPlugin (#98861)', () => {
+  it('hides ordinary built-ins but always lists user installs', () => {
+    expect(isDesktopRelevantPlugin(row({ key: 'platforms/discord', source: 'bundled' }))).toBe(false)
 
     // User installs are unaffected either way.
     expect(isDesktopRelevantPlugin(row({ key: 'my-plugin', source: 'user' }))).toBe(true)

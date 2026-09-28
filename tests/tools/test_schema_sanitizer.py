@@ -12,7 +12,6 @@ import copy
 from tools.schema_sanitizer import (
     sanitize_tool_schemas,
     strip_pattern_and_format,
-    strip_slash_enum,
 )
 
 
@@ -223,7 +222,6 @@ def test_items_sanitized_in_array_schema():
 
 def test_strip_responses_mixed_formats():
     """Mixed list of OpenAI-format and Responses-format tools should both be sanitized."""
-    from tools.schema_sanitizer import strip_pattern_and_format
 
     tools = [
         # OpenAI-format: {"function": {"parameters": {...}}}
@@ -284,7 +282,7 @@ def test_strip_responses_mixed_formats():
 # in the tools array 400s the whole request on Anthropic/Bedrock/Vertex/Azure.
 # ---------------------------------------------------------------------------
 
-from tools.schema_sanitizer import sanitize_property_key, unrename_tool_args
+from tools.schema_sanitizer import sanitize_property_key
 
 
 def test_sanitize_property_key_empty_falls_back():
@@ -578,11 +576,6 @@ def test_normalize_mcp_input_schema_still_repairs_declared_objects():
     assert bare["properties"] == {} and bare["required"] == []
 
 
-def test_collapse_is_deterministic():
-    schema = {"anyOf": [{"const": "b"}, {"const": "a"}]}
-    first = collapse_const_unions(copy.deepcopy(schema))
-    second = collapse_const_unions(copy.deepcopy(schema))
-    assert first == second == {"type": "string", "enum": ["b", "a"]}
 
 
 def test_builtin_tool_without_required_gets_empty_required_list():

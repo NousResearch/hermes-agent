@@ -4,6 +4,8 @@ Before the gate the session was minted and the FIRST turn died with the provider
 chat. Custom / unknown providers and same-family or unlisted names stay permissive.
 """
 
+import logging
+
 import pytest
 
 
@@ -55,3 +57,21 @@ def test_session_create_keeps_coherent_unlisted_and_custom_pairs(_create, params
     assert "error" not in response, response
     session = sessions[response["result"]["session_id"]]
     assert session["model_override"] == {"model": params["model"], "provider": params["provider"]}
+
+
+def test_session_create_logs_when_a_client_override_beats_the_profile_default(_create, caplog, monkeypatch):
+    """A composer pick silently decided every new chat's model; agent.log must name it (#107410)."""
+    from tui_gateway import server
+
+    monkeypatch.setattr(server, "_session_default_model", lambda session: "deepseek-v4-flash")
+    with caplog.at_level(logging.INFO):
+        response, _ = _create({"model": "gpt-5.5", "provider": "openrouter"})
+        pinned = [r.getMessage() for r in caplog.records if "client override" in r.getMessage()]
+        caplog.clear()
+        _create({})
+        unpinned = [r.getMessage() for r in caplog.records if "client override" in r.getMessage()]
+
+    assert len(pinned) == 1
+    assert response["result"]["stored_session_id"] in pinned[0]
+    assert "gpt-5.5" in pinned[0] and "openrouter" in pinned[0] and "deepseek-v4-flash" in pinned[0]
+    assert unpinned == []

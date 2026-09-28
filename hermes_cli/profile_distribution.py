@@ -480,6 +480,20 @@ def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) ->
         if _merges_per_root(child, parts):
             _refuse_symlink(dest / child.name)
             _refuse_symlinked_containers(child, dest / child.name, parts)
+        else:
+            _refuse_store_ancestor_replacement(child, dest / child.name, parts)
+
+
+def _refuse_store_ancestor_replacement(src: Path, dest: Path, rel_parts: Tuple[str, ...]) -> None:
+    """A payload file where the profile has a directory that holds credential stores
+    (``platforms`` shipped as a file over ``platforms/``) would be a whole-directory replace,
+    taking ``platforms/pairing`` with it. Refused before the first write."""
+    if (not src.is_dir() and profile_path_contains_private_store(rel_parts)
+            and dest.is_dir() and not dest.is_symlink()):
+        raise DistributionError(
+            f"{dest} is a directory that holds credential stores, and the distribution ships a "
+            f"file named {'/'.join(rel_parts)}; refusing to replace it"
+        )
 
 
 def _merges_per_root(src: Path, rel_parts: Tuple[str, ...]) -> bool:
@@ -508,6 +522,8 @@ def _refuse_symlinked_targets(target: Path, entries) -> None:
             _refuse_symlink(path)
         if _merges_per_root(src, rel_parts):
             _refuse_symlinked_containers(src, path, rel_parts)
+        else:
+            _refuse_store_ancestor_replacement(src, path / rel_parts[-1], rel_parts)
 
 
 def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:

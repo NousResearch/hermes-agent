@@ -66,7 +66,7 @@ hermes profile install github.com/you/my-research-agent --alias
 不适合的场景：
 
 - **你只想在自己的机器上备份一个 profile。** 使用 [`hermes profile export` / `import`](../reference/profile-commands.md#hermes-profile-export)——那正是这两个命令的用途。
-- **你想随 agent 一起共享 API 密钥。** `auth.json`、`.env` 以及 Hermes 从 profile 读取的其他凭据存储（`.op.env`、`npmrc`、OAuth token 文件、`mcp-tokens/`、`vault/`、浏览器 profile、平台会话）被刻意排除在分发之外。每个安装者使用自己的凭据。（导出文件同样会去除它们。）
+- **你想随 agent 一起共享 API 密钥。** `auth.json`、`.env` 以及 Hermes 从 profile 读取的其他凭据存储（`.op.env`、`npmrc`、OAuth token 文件、`honcho.json`、`mcp-tokens/`、`vault/`、浏览器 profile、平台会话）被刻意排除在分发之外。每个安装者使用自己的凭据。（导出文件同样会去除它们。）
 - **你想共享记忆 / 会话 / 对话历史。** 这些是用户数据，不是分发内容，永远不会被发送。
 
 ## 生命周期：从作者到安装者再到更新
@@ -175,7 +175,7 @@ research-bot/
 |---|---|---|
 | **分发所有** | `SOUL.md`、`config.yaml`、`mcp.json`、`skills/`、`cron/`、`distribution.yaml` | 从新克隆中替换 |
 | **配置覆盖** | `config.yaml` | 默认实际保留——安装者可能已调整模型或 provider。更新时传入 `--force-config` 可重置。 |
-| **用户所有** | `memories/`、`sessions/`、`state.db*`、`auth.json`、`.env` 及其他凭据存储（包括位于分发所有目录之下的存储，例如 `platforms/pairing/` 和 `platforms/whatsapp/session/`）、`logs/`、`workspace/`、`plans/`、`home/`、`*_cache/`、`local/` | 永不触碰，且 `distribution_owned` 不能声明凭据存储 |
+| **用户所有** | `memories/`、`sessions/`、`state.db*`、`auth.json`、`.env` 及其他凭据存储（包括位于分发所有目录之下的存储，例如 `platforms/pairing/` 和 `platforms/whatsapp/session/`）、`logs/`、`workspace/`、`plans/`、`home/`、`*_cache/`、`local/` | 永不触碰，且 `distribution_owned` 不能声明凭据存储。如果更新在你的 profile 中存放凭据存储的目录位置上发送了一个文件（例如名为 `platforms` 的文件），则会在写入任何内容之前被拒绝 |
 
 你可以在 manifest 中覆盖分发所有列表：
 

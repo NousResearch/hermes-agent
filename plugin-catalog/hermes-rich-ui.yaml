@@ -11,18 +11,18 @@ description: "Rich, evidence-backed answer cards — tables, charts, metrics, ti
 maintainer: jacobhausler
 tier: community
 category: desktop                       # README vocabulary: desktop|memory|platform|web|tools|voice|automation|models|general
-requires_hermes: ">=v2026.9.24"
+requires_hermes: ">=2026.9.24"
 version: "0.1.0"                        # cosmetic label; quoted per README
 image: "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-1.png"
 screenshots:
-  - "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-1.png"
-  - "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-2.png"
-  - "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-3.png"
+- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-1.png"
+- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-2.png"
+- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-3.png"
 readme: true
 platforms: []
 capabilities:
   provides_tools:
-    - rich_present
+  - rich_present
   provides_hooks: []
   provides_middleware: []               # plugin.yaml registers no middleware — verify at pinned SHA
   requires_env: []

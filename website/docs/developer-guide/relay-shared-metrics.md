@@ -361,9 +361,10 @@ model id; custom endpoints, provider plugins installed under
 `$HERMES_HOME/plugins/model-providers/` or from pip (names and aliases included),
 the local-server aliases of `custom` (`ollama`, `local`, `vllm`, `llamacpp`,
 `llama-cpp`, `llama.cpp`) and loopback servers read `custom`. A shipped provider
-whose endpoint is a loopback server (`lmstudio`) keeps its name, but its model reads
-`custom`. A model whose provider is unknown, or whose id is a URL, a file path or a
-network address (`host:port`, an IP address, `localhost`), reads `custom`. The local
+whose endpoint is a loopback server (`lmstudio`, under any of its aliases) keeps its
+name, but its model reads `custom`. A model whose provider is unknown, or whose id is a URL, a file path or a
+network address (`host:port`, an IP address, `localhost`) or an AWS ARN (it carries the account
+id), reads `custom`. The local
 subscriber re-runs these rules on the provider/model fields of every mark and drops a
 row they would rewrite.
 

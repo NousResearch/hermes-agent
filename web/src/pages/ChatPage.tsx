@@ -858,6 +858,54 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return false;
     });
 
+
+    let lastTouchY: number | null = null;
+
+    const handleTouchStart = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1) {
+        lastTouchY = null;
+        return;
+      }
+
+      lastTouchY = ev.touches[0].clientY;
+    };
+
+    const handleTouchMove = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1 || lastTouchY === null) {
+        return;
+      }
+
+      const currentY = ev.touches[0].clientY;
+      const deltaY = lastTouchY - currentY;
+
+      lastTouchY = currentY;
+
+      if (!deltaY) {
+        return;
+      }
+
+      const step = Math.max(1, Math.round(Math.abs(deltaY) / 10));
+      term.scrollLines(deltaY > 0 ? step : -step);
+
+      ev.preventDefault();
+    };
+
+    const handleTouchEnd = () => {
+      lastTouchY = null;
+    };
+
+    host.addEventListener("touchstart", handleTouchStart, {
+      passive: true,
+    });
+
+    host.addEventListener("touchmove", handleTouchMove, {
+      passive: false,
+    });
+
+    host.addEventListener("touchend", handleTouchEnd);
+
+    host.addEventListener("touchcancel", handleTouchEnd);
+
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
     term.unicode.activeVersion = "11";
@@ -1628,6 +1676,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
       wsRef.current?.close();
       wsRef.current = null;
+      host.removeEventListener("touchstart", handleTouchStart);
+      host.removeEventListener("touchmove", handleTouchMove);
+      host.removeEventListener("touchend", handleTouchEnd);
+      host.removeEventListener("touchcancel", handleTouchEnd);
       host.removeEventListener("keydown", _imeCompositionGuard, true);
       // Every reconnect rebuilds this terminal; the WebGL addon leaves its GL
       // context alive on dispose, so a reconnect storm hits the browser's

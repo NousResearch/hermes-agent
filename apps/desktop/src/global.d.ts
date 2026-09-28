@@ -605,6 +605,14 @@ declare global {
         ackPendingRun?: (sent: boolean) => Promise<void>
         onPendingRun?: (callback: () => void) => () => void
       }
+      desktopMetrics?: {
+        /** Mirror the user's shared-metrics opt-in; false deletes any pending crash record. */
+        setEnabled?: (on: boolean) => Promise<void>
+        /** Claim the pending renderer-crash reasons (null when disabled, none, or already claimed). */
+        takeRendererCrashes?: () => Promise<{ reasons: Array<'crash' | 'killed' | 'oom' | 'other'> } | null>
+        /** `sent` drops the claimed reasons; false keeps them for the next attach. */
+        ackRendererCrashes?: (sent: boolean) => Promise<void>
+      }
       uninstall: {
         summary: () => Promise<DesktopUninstallSummary>
         run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>

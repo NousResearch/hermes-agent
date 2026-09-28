@@ -1,9 +1,11 @@
 // Main-process shared-metrics wiring, kept out of main.ts: the once-per-launch startup-latency
-// claim and the packaged self-update recorder the renderer drains once a backend is attached.
+// claim, the packaged self-update recorder and the consent-gated renderer-crash recorder the
+// renderer drains once a backend is attached.
 
 import { app, BrowserWindow, ipcMain } from 'electron'
 
 import { INSTALL_STAMP } from './install-stamp'
+import { registerRendererCrashIpc, RendererCrashRecorder } from './renderer-crash-metrics'
 import { registerStartupLatencyIpc } from './startup-latency-ipc'
 import type { UpdaterApplyResultWire, UpdaterStrategy } from './updater/index'
 import { registerUpdateMetricsIpc, UpdateRunRecorder } from './updater/update-metrics'
@@ -13,6 +15,8 @@ export interface DesktopSharedMetrics {
   /** Run `strategy.apply()`; recorded only when `packaged` (a checkout hand-off is counted by
    *  `hermes update`'s own receipt). */
   trackUpdateApply(packaged: UpdaterStrategy | null, strategy: UpdaterStrategy): Promise<UpdaterApplyResultWire>
+  /** `installWindowRendererLifecycle` hook: counts a live window's renderer loss (no-op until opt-in). */
+  recordRendererGone(reason: unknown): void
 }
 
 export function registerDesktopSharedMetrics(): DesktopSharedMetrics {
@@ -30,7 +34,12 @@ export function registerDesktopSharedMetrics(): DesktopSharedMetrics {
 
   registerUpdateMetricsIpc(ipcMain, recorder)
 
+  const crashes = new RendererCrashRecorder({ dir: app.getPath('userData') })
+
+  registerRendererCrashIpc(ipcMain, crashes)
+
   return {
+    recordRendererGone: reason => crashes.record(reason),
     noteUpdateProgress: stage => recorder.noteProgress(stage),
     trackUpdateApply: (packaged, strategy) =>
       recorder.track(packaged?.mechanism, INSTALL_STAMP?.commitDate, () => strategy.apply())

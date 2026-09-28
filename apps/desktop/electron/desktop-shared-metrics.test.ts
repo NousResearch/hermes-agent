@@ -30,6 +30,7 @@ test('a packaged apply is reported once through the renderer IPC; a checkout han
   const metrics = registerDesktopSharedMetrics()
 
   expect(handlers.has('hermes:startup-latency:claim')).toBe(true)
+  expect(handlers.has('hermes:desktop-metrics:crash:take')).toBe(true)
 
   await metrics.trackUpdateApply(null, strategy('checkout'))
   expect(handlers.get('hermes:updates:metric:take')!({})).toBeNull()

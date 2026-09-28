@@ -663,8 +663,12 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
                 raise ValueError(f"Skill '{name}' was not found.")
             target = Path(skill["path"]) / "SKILL.md"
             current = target.read_text(encoding="utf-8-sig")
+            # An already-staged payload carries its own private keys. Strip them before merging:
+            # they are staging metadata, not merge input, and merge_evidence rejects unknown
+            # fields by design. Idempotent re-staging is then safe rather than a hard error.
+            public_delta = {k: v for k, v in evidence_merge.items() if not k.startswith("_")}
             try:
-                candidate = merge_evidence(current, evidence_merge)
+                candidate = merge_evidence(current, public_delta)
             except EvidenceMergeError as exc:
                 raise ValueError(f"cannot stage evidence_merge: {exc}") from exc
             staged_kwargs["evidence_merge"] = {

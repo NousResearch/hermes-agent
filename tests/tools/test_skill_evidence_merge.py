@@ -263,3 +263,41 @@ def test_evidence_branch_is_patch_only_and_exclusive():
     assert branch["properties"]["action"]["enum"] == ["patch"]
     assert set(branch["properties"]) == {"name", "action", "evidence_merge"}
     assert branch["additionalProperties"] is False
+
+
+def test_restaging_a_staged_payload_is_idempotent(tmp_path):
+    """A staged payload carries private keys (_source_digest/_candidate_content/_preview).
+
+    Re-staging it must not feed those back into merge_evidence, which rejects unknown fields by
+    design. Without the strip this raises "unknown merge fields" and an approved write that
+    happens to be re-staged would fail outright.
+    """
+    skill_dir = tmp_path / "test-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(BASE, encoding="utf-8")
+    captured = {}
+
+    def fake_run(build):
+        class WA:
+            @staticmethod
+            def skill_pending_diff(record):
+                return write_approval.skill_pending_diff(record)
+
+            @staticmethod
+            def skill_gist(*a, **k):
+                return "gist"
+
+        captured["payload"], _ = build(WA)
+        return "staged"
+
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
+         patch.object(smt, "_run_write_gate", side_effect=fake_run):
+        assert smt.skill_manage(action="patch", name="test-skill",
+                                evidence_merge={"success_count": 1}) == "staged"
+        staged = captured["payload"]["evidence_merge"]
+        assert {"_source_digest", "_candidate_content", "_preview"} <= set(staged)
+        # Re-stage the very same payload: must succeed, not raise.
+        assert smt.skill_manage(action="patch", name="test-skill", evidence_merge=staged) == "staged"
+    again = captured["payload"]["evidence_merge"]
+    assert "success_count: 12" in again["_candidate_content"]

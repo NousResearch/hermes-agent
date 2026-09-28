@@ -303,7 +303,9 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                 target = Path(skill["path"]) / "SKILL.md"
                 try:
                     current = target.read_text(encoding="utf-8-sig")
-                    candidate = _merge_evidence(current, evidence)
+                    # Private keys are staging metadata, not merge input (see the flat gate).
+                    public_delta = {k: v for k, v in evidence.items() if not k.startswith("_")}
+                    candidate = _merge_evidence(current, public_delta)
                 except _EvidenceMergeError as exc:
                     return ({"action": "batch", "operations": operations,
                              "error": f"operations[{len(staged_ops)}] ({op['action']} on '{nm}'): "

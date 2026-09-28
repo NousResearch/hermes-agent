@@ -27,11 +27,12 @@ def test_model_options_exposes_detected_antigravity_runtime(monkeypatch):
     assert row["models"] == ["auto", "gemini-test", "claude-opus-test-thinking"]
     assert row["total_models"] == 3
     assert row["authenticated"] is True
-    assert row["runtime_status"] == {
-        "installed": True,
-        "version": "1.2.7",
-        "authentication": "authenticated",
-    }
+    assert row["capabilities"]["auto"] == {"reasoning": True, "fast": False}
+    assert row["capabilities"]["gemini-test"] == {"reasoning": True, "fast": False}
+
+    from tui_gateway.contracts.config_free_tier_control import ModelOptionsResult
+    validated = ModelOptionsResult(**payload)
+    assert any(p.slug == "google-antigravity" for p in validated.providers)
 
 
 def test_model_switch_accepts_probed_antigravity_provider_and_model(monkeypatch):

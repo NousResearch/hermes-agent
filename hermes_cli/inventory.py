@@ -281,7 +281,7 @@ def build_model_options_payload(
             "warning": warning,
             "runtime_status": {"installed": available, "version": version,
                                "authentication": "authenticated" if authenticated else "authentication_required"},
-            "capabilities": {model: {"reasoning": True} for model in runtime_models},
+            "capabilities": {model: {"reasoning": True, "fast": False} for model in runtime_models},
             "featured_models": runtime_models,
         })
     if not refresh:

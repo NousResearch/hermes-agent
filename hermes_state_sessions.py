@@ -23,6 +23,7 @@ from hermes_state_common import (
     _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
     escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
+from hermes_state_titles import SessionTitleError
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -309,8 +310,10 @@ class SessionSessionsMixin:
         chat_id: str = None, chat_type: str = None, thread_id: str = None,
         parent_session_id: str = None, cwd: str = None, profile_name: Optional[str] = None,
         git_repo_root: str = None, origin_json: str = None, display_name: str = None,
-        transport_profile: Optional[str] = None,
-    ) -> None:
+        transport_profile: Optional[str] = None, title: Optional[str] = None,
+        return_title: bool = False, strict: bool = False,
+        after_insert: Optional[Callable[[sqlite3.Connection], Any]] = None,
+    ) -> Union[Optional[str], bool, Dict[str, Any]]:
         """Upsert a session row, never overwriting what an earlier writer set (the gateway creates a
         bare row before create_session carries the real model/prompt) — the one exception is the
         token-accounting guard's placeholder ``source='unknown'``, which a later writer's real surface
@@ -339,10 +342,18 @@ class SessionSessionsMixin:
         deep links, the fail-closed owner ladder) treat NULL as unowned: the session vanishes from the
         sidebar even though its transcript is intact (#99222). Stores outside the profile tree (explicit
         ``db_path`` in tests, ad-hoc copies) derive nothing and keep NULL — never guess.
+
+        ``title`` (``user`` provenance) is written in the same transaction, so a refused title
+        (ValueError: invalid, or in use) leaves no row behind. ``strict`` refuses a taken id (returns
+        False) before any write: the upsert would otherwise fill in and repoint another session's row.
         """
         if not (profile_name or "").strip():
             profile_name = self._own_profile_name()
+        title = self.sanitize_title(title)
         def _do(conn):
+            # Same BEGIN IMMEDIATE as the INSERT below, so no writer can take the id in between.
+            if strict and conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone():
+                return False
             system_prompt_hash = self._store_system_prompt(conn, system_prompt)
             conn.execute(
                 """INSERT INTO sessions (
@@ -400,13 +411,75 @@ class SessionSessionsMixin:
                 self._delete_unreferenced_system_prompts(conn)
             if parent_session_id:
                 self._inherit_parent_session_metadata(conn, session_id)
+            if title:
+                self._write_session_title(conn, session_id, title, self.TITLE_SOURCE_USER)
+            if after_insert is not None:
+                return after_insert(conn)
+            if return_title:
+                row = conn.execute("SELECT title FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                if row is None:
+                    raise RuntimeError(f"Created session {session_id} is missing")
+                return row["title"]
+            if strict:
+                return True
         # Transcript-critical: a failed row creation aborts the turn.
-        self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
-    def create_session(self, session_id: str, source: str, **kwargs) -> str:
-        """Create (upsert) a session record. Returns the session_id."""
-        self._insert_session_row(session_id, source, **kwargs)
-        return session_id
+    def create_session(
+        self, session_id: str, source: str, *, return_title: bool = False, **kwargs,
+    ) -> Union[str, Tuple[str, Optional[str]]]:
+        """Create (upsert) a session record. Returns the session_id, optionally with its stored title."""
+        stored_title = self._insert_session_row(session_id, source, return_title=return_title, **kwargs)
+        return (session_id, stored_title) if return_title else session_id
+
+    def create_session_strict(self, session_id: str, source: str, **kwargs) -> bool:
+        """Create a NEW session row: True when created, False when ``session_id`` is already taken
+        (nothing written). A ``title`` kwarg the row cannot take raises ValueError with nothing written."""
+        return self._insert_session_row(session_id, source, strict=True, **kwargs)
+
+    def fork_session_strict(
+        self, source_id: str, fork_id: str, source: str, messages: List[Dict[str, Any]],
+        *, title: Optional[str] = None, **kwargs,
+    ) -> Optional[Dict[str, Any]]:
+        """Create, copy history, and end the source in one write transaction; None for a taken id."""
+        def _finish(conn):
+            if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (source_id,)).fetchone() is None:
+                raise RuntimeError(f"Source session {source_id} is missing")
+            inserted, tool_calls = self._insert_message_rows(conn, fork_id, messages)
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (inserted, tool_calls, fork_id),
+            )
+            self._end_and_bump(
+                conn, "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
+                (time.time(), "branched", source_id), source_id, "branched",
+            )
+            row = conn.execute(
+                "SELECT s.*, COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved, "
+                "COALESCE(tp.prompt, s.tool_names) AS _tool_names_resolved "
+                "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
+                "LEFT JOIN system_prompts tp ON tp.hash = s.tool_names WHERE s.id = ?",
+                (fork_id,),
+            ).fetchone()
+            return self._session_row_dict(row)
+
+        return self._insert_session_row(
+            fork_id, source, parent_session_id=source_id, title=title,
+            strict=True, after_insert=_finish, **kwargs,
+        ) or None
+
+    def create_session_with_title(
+        self, session_id: str, source: str, title: Optional[str], *, return_title: bool = False, **kwargs,
+    ) -> Union[Optional[str], Tuple[Optional[str], Optional[str]]]:
+        """Create (upsert) a session row with ``title`` in the same transaction. A title the row cannot
+        take (invalid, or held by another session) leaves it untitled instead: the reason is returned,
+        None when nothing was refused. ``return_title`` also returns the title held at commit."""
+        try:
+            created = self.create_session(session_id, source, title=title, return_title=return_title, **kwargs)
+            return (None, created[1]) if return_title else None
+        except SessionTitleError as exc:
+            created = self.create_session(session_id, source, return_title=return_title, **kwargs)
+            return (str(exc), created[1]) if return_title else str(exc)
 
     def ensure_session(self, session_id: str, source: str = "unknown", model: str = None, **kwargs) -> str:
         """Ensure a session row exists (upsert). Accepts optional kwargs."""

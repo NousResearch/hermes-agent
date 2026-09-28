@@ -119,17 +119,117 @@ async def test_forked_session_stays_listable_and_parent_survives_failed_fork(ada
     session_db.create_session("parent", "api_server")
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
-        resp = await cli.post("/api/sessions/parent/fork", json={"id": "child"})
+        resp = await cli.post("/api/sessions/parent/fork", json={"id": "child", "title": "  Child  \u200b Name \t"})
         assert resp.status == 201
+        assert (await resp.json())["session"]["title"] == session_db.get_session("child")["title"] == "Child Name"
         listed = await (await cli.get("/api/sessions")).json()
         ids = {row["id"] for row in listed["data"]}
         assert {"parent", "child"} <= ids, ids
 
         session_db.create_session("solo", "api_server")
-        with patch.object(session_db, "create_session", side_effect=RuntimeError("boom")):
+        with patch.object(session_db, "_insert_session_row", side_effect=RuntimeError("boom")):
             resp = await cli.post("/api/sessions/solo/fork", json={"id": "never"})
         assert resp.status >= 500
     assert session_db.get_session("solo")["end_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_fork_with_a_taken_title_writes_nothing_and_leaves_the_source_open(adapter, session_db):
+    """A refused explicit title is a 400 with nothing written: no fork row, and the source not ended."""
+    session_db.create_session("solo", "api_server")
+    session_db.append_message("solo", "user", "hello")
+    session_db.create_session("holder", "api_server")
+    session_db.set_session_title("holder", "Taken")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post("/api/sessions/solo/fork", json={"id": "never", "title": "Taken"})
+        assert resp.status == 400 and (await resp.json())["error"]["code"] == "invalid_title"
+    assert session_db.get_session("never") is None
+    assert session_db.get_session("solo")["end_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_forks_racing_to_one_id_commit_one_and_leave_the_loser_open(adapter, session_db, monkeypatch):
+    """Two forks to one id that both pass the existence pre-check: exactly one commits. The row holds
+    the winner's parent and transcript; the loser gets 409 and its source is left open."""
+    for sid in ("s1", "s2"):
+        session_db.create_session(sid, "api_server")
+        session_db.append_message(sid, "user", f"from {sid}")
+    both_checked = threading.Barrier(2, timeout=10)
+    get_session = session_db.get_session
+
+    def get_session_once_both_checked(session_id):
+        row = get_session(session_id)
+        if session_id == "same" and row is None:
+            both_checked.wait()
+        return row
+
+    monkeypatch.setattr(session_db, "get_session", get_session_once_both_checked)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        responses = await asyncio.gather(
+            *(cli.post(f"/api/sessions/{sid}/fork", json={"id": "same"}) for sid in ("s1", "s2")))
+
+    assert sorted(resp.status for resp in responses) == [201, 409]
+    winner = get_session("same")["parent_session_id"]
+    loser = ({"s1", "s2"} - {winner}).pop()
+    assert [m["content"] for m in session_db.get_messages("same")] == [f"from {winner}"]
+    assert get_session(winner)["end_reason"] == "branched"
+    assert get_session(loser)["end_reason"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ("read", "copy", "end"))
+async def test_failed_fork_leaves_source_and_child_unchanged(adapter, session_db, monkeypatch, failure):
+    session_db.create_session("source", "api_server")
+    session_db.append_message("source", "user", "original history")
+    source_before = session_db.get_session("source")
+    read_messages = session_db.get_messages
+    history_before = read_messages("source")
+
+    if failure == "read":
+        def fail_read(_session_id):
+            raise RuntimeError("read failed")
+
+        monkeypatch.setattr(session_db, "get_messages", fail_read)
+    elif failure == "copy":
+        insert = session_db._insert_message_rows
+
+        def fail_after_copy(*args, **kwargs):
+            insert(*args, **kwargs)
+            raise RuntimeError("copy failed")
+
+        monkeypatch.setattr(session_db, "_insert_message_rows", fail_after_copy)
+    else:
+        end = session_db._end_and_bump
+
+        def fail_after_end(*args, **kwargs):
+            end(*args, **kwargs)
+            raise RuntimeError("end failed")
+
+        monkeypatch.setattr(session_db, "_end_and_bump", fail_after_end)
+
+    async with TestClient(TestServer(_create_session_app(adapter))) as cli:
+        resp = await cli.post("/api/sessions/source/fork", json={"id": "child", "title": "Child"})
+
+    assert resp.status >= 500
+    assert session_db.get_session("child") is None
+    assert session_db.get_session("source") == source_before
+    assert read_messages("source") == history_before
+
+
+@pytest.mark.asyncio
+async def test_fork_storage_value_error_is_not_a_title_error(adapter, session_db):
+    session_db.create_session("source", "api_server")
+    source_before = session_db.get_session("source")
+
+    with patch.object(session_db, "_insert_session_row", side_effect=ValueError("storage failed")):
+        async with TestClient(TestServer(_create_session_app(adapter))) as cli:
+            resp = await cli.post("/api/sessions/source/fork", json={"id": "child", "title": "Child"})
+
+    assert resp.status >= 500
+    assert session_db.get_session("child") is None
+    assert session_db.get_session("source") == source_before
 
 
 @pytest.mark.asyncio

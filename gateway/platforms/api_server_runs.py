@@ -260,6 +260,8 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
     now = time.time()
     current = self._run_statuses.get(run_id, {})
     previous_status = str(current.get("status") or "")
+    if previous_status == "stopping" and status in {"queued", "running", "waiting_for_approval"}:
+        return current  # Late worker callbacks cannot undo an accepted cancellation.
     field_names = set(fields)
     current.update({"object": "hermes.run", "run_id": run_id, "status": status, "updated_at": now})
     current.setdefault("created_at", fields.pop("created_at", now))
@@ -526,6 +528,17 @@ def _retire_live_run(self, run_id: str) -> None:
                 self._stopping_run_ids, self._shutdown_interrupted_run_ids)
 
 
+def _run_task_done(self, run: _RunLaunch, task) -> None:
+    self._background_tasks.discard(task)
+    # Cancellation before the coroutine's first step never enters its finally.
+    if task.cancelled() and self._active_run_tasks.get(run.run_id) is task:
+        status = "interrupted" if run.run_id in self._shutdown_interrupted_run_ids else "cancelled"
+        self._set_run_status(run.run_id, status, last_event=f"run.{status}")
+        run.put_event(_run_event(run.run_id, f"run.{status}"))
+        run.put_event(None)
+        _retire_live_run(self, run.run_id)
+
+
 def _drop_run_transport(self, run_id: str) -> None:
     _forget_run(
         self,
@@ -739,11 +752,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
         turn_author=turn_author)
-    self._activate_admitted_request()
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
     # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
     # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
     admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
+    self._activate_admitted_request()
     if admitted is not None:
         task = self._active_run_tasks[run_id] = asyncio.create_task(
             _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
@@ -752,7 +765,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     with suppress(TypeError):
         self._background_tasks.add(task)  # tracked for shutdown drain
     if hasattr(task, "add_done_callback"):
-        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(lambda done: _run_task_done(self, launch, done))
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
 
 
@@ -963,8 +976,28 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 interim_assistant_callback=_interim_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-        result, usage, served_runtime = await _submit_api_worker(
+        execution = _submit_api_worker(
             loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+        cancelled = False
+        while True:
+            try:
+                result, usage, served_runtime = await asyncio.shield(execution)
+                break
+            except asyncio.CancelledError:
+                if execution.done():
+                    execution.result()  # A worker may itself raise CancelledError.
+                    raise
+                cancelled = True
+                if run_id not in self._stopping_run_ids:
+                    self._stopping_run_ids.add(run_id)
+                    self._set_run_status(run_id, "stopping", last_event="run.stopping")
+                    with suppress(Exception):
+                        _api_server.request_hard_interrupt(agent, "Run task cancelled")
+                # Cancelling an asyncio wrapper cannot stop its executor thread.
+                # Release approval waits, then retain ownership until it settles.
+                _unregister_approval_notify(run.approval_session_key)
+        if cancelled:
+            raise asyncio.CancelledError
         # Publish request metrics (daily counters + latency) with each completed run (#52323).
         self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):
@@ -995,8 +1028,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         logger.exception("[api_server] run %s failed", run_id)
         _finish("failed", error=_redact_api_error_text(exc))
     finally:
-        # On cancellation (/stop) the executor thread may still block on an approval
-        # Event; unregistering releases it. Idempotent on normal completion.
+        # The executor has settled; normal and cancellation cleanup are idempotent.
         _unregister_approval_notify(run.approval_session_key)
         with suppress(Exception):
             loop.call_soon(run.put_event, None)  # close after the queued events

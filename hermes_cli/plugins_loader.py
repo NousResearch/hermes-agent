@@ -137,7 +137,13 @@ def run_with_load_deadline(plugin_key: str, ctx: "PluginContext", fn: Callable[[
 def _evict_modules(module_name: str) -> None:
     """Drop ``module_name`` and every ``module_name.*`` submodule from ``sys.modules``."""
     prefix = f"{module_name}."
-    for name in [n for n in sys.modules if n == module_name or n.startswith(prefix)]:
+    # list(sys.modules) snapshots the keys via one uninterruptible C call; filtering a live
+    # `for name in sys.modules` comprehension instead iterates it bytecode-by-bytecode, so an
+    # unrelated import running on another thread (background plugin discovery, a deadline
+    # worker) can mutate sys.modules mid-comprehension and raise "dictionary changed size
+    # during iteration" here, which this loader then reports as the *target* plugin failing
+    # to load (#125746) even though it never touched sys.modules itself.
+    for name in [n for n in list(sys.modules) if n == module_name or n.startswith(prefix)]:
         del sys.modules[name]
 
 

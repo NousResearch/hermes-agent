@@ -44,6 +44,7 @@ import time
 import uuid
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field, replace
+from collections.abc import Awaitable
 
 from html import escape as _html_escape
 from html.parser import HTMLParser
@@ -105,7 +106,13 @@ from plugins.platforms.matrix.read_context import SessionAccess, check_session_a
 from plugins.platforms.matrix.room_admin import administer_matrix_pin, administer_matrix_room
 from plugins.platforms.matrix.room_inspection import inspect_matrix_room
 from plugins.platforms.matrix.image_packs import matrix_image_packs
-from plugins.platforms.matrix.reaction_followups import ReactionWatchStore
+from plugins.platforms.matrix.sync_transport import (
+    DurableSyncStore, SyncDispatch, create_sync_client, is_invalid_sync_cursor,
+)
+from plugins.platforms.matrix.reaction_followups import (
+    FinalDeliveryEvents, PendingFollowupReactions, ReactionWatchStore,
+    REGISTRATION_REPLAY_SECONDS, reaction_follows_delivery,
+)
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
@@ -370,6 +377,7 @@ class _MatrixFollowupChoice:
     thread_id: str
     profile: str
     session_id: str
+    pending: PendingFollowupReactions = field(default_factory=PendingFollowupReactions)
 
 
 @dataclass
@@ -793,6 +801,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
     splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
+    REQUIRES_EDIT_FINALIZE = True
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
@@ -842,6 +851,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         self._pin_state_lock = asyncio.Lock()
         self._closing = False
         self._startup_ts: float = 0.0
+        self._resuming_sync = False
         self._reset_clock_skew_detector()
         self._last_sync_ts: float = 0.0
         self._dm_rooms: dict[str, bool] = {}
@@ -893,6 +903,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         self._agent_reactions: dict[tuple[str, str], list[str]] = {}
         self._reaction_followup_actions: dict[str, _MatrixFollowupChoice] = {}
         self._reaction_watch_store: ReactionWatchStore | None = None
+        self._followup_delivery_events = FinalDeliveryEvents()
 
         self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
         if self._proxy_url:
@@ -1320,14 +1331,23 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
     async def _connect_initial_sync(self, client: Any) -> None:
         """Full initial sync: seed joined rooms, DM cache, and dispatch queued to-device events."""
         try:
-            sync_data = await client.sync(timeout=10000, full_state=True)
+            since = await client.sync_store.get_next_batch()
+            self._resuming_sync = bool(since)
+            try:
+                sync_data = await client.sync(since=since, timeout=10000, full_state=True)
+            except Exception as exc:
+                if not since or not is_invalid_sync_cursor(exc):
+                    raise
+                logger.warning("Matrix: saved sync cursor was rejected; refreshing full state")
+                sync_data = await client.sync(timeout=10000, full_state=True)
             if isinstance(sync_data, dict):
                 self._joined_rooms.clear()
                 await self._absorb_sync(client, sync_data, initial=True)
             else:
-                logger.warning("Matrix: initial sync returned unexpected type %s", type(sync_data).__name__)
+                raise TypeError(f"Matrix: initial sync returned unexpected type {type(sync_data).__name__}")
         except Exception as exc:
             logger.warning("Matrix: initial sync error: %s", exc)
+            raise
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._device_id_unverified = False
@@ -1337,25 +1357,38 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             except Exception as exc:
                 logger.warning("Matrix: error disconnecting before reconnect: %s", exc)
         from mautrix.api import HTTPAPI
-        from mautrix.client import Client
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
         if not self._homeserver:
             logger.error("Matrix: homeserver URL not configured")
             return False
         # Resolved here, inside the profile scope, so multiplexed profiles never share it.
-        self._resolve_store_dir().mkdir(parents=True, exist_ok=True)
+        store_dir = self._resolve_store_dir()
+        store_dir.mkdir(parents=True, exist_ok=True)
         client_session = _create_matrix_session(self._proxy_url)
         api = HTTPAPI(base_url=self._homeserver, token=self._access_token or "", client_session=client_session)
         state_store = MemoryStateStore()
         sync_store = MemorySyncStore()
-        client = Client(
+        client = create_sync_client(
             mxid=UserID(self._user_id) if self._user_id else UserID(""), device_id=self._device_id or None,
             api=api, state_store=state_store, sync_store=sync_store)
         self._client = client
         if not await self._connect_authenticate(client, api):
             return False
+        sync_store = DurableSyncStore(
+            store_dir, self._homeserver, str(client.mxid), str(client.device_id or ""), str(api.token))
+        try:
+            await sync_store.load()
+        except OSError as exc:
+            logger.error("Matrix: could not read sync cursor: %s", exc)
+            await self.disconnect()
+            return False
+        client.sync_store = sync_store
         if self._encryption and not await self._connect_setup_e2ee(client, api, state_store):
             return False
+        if self._encryption and getattr(client, "crypto", None) and isinstance(getattr(client, "hermes_sync", None), SyncDispatch):
+            from mautrix.client.encryption_manager import DecryptionDispatcher
+            client.remove_dispatcher(DecryptionDispatcher)
+            client.add_event_handler(EventType.ROOM_ENCRYPTED, client.hermes_sync.decrypt_sync_event, wait_sync=True)
         from mautrix.client import InternalEventType as IntEvt
         from mautrix.client.dispatcher import MembershipEventDispatcher
         client.add_dispatcher(MembershipEventDispatcher)  # without this INVITE never fires
@@ -1379,7 +1412,12 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         self._startup_ts = time.time()
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
         self._closing = False
-        await self._connect_initial_sync(client)
+        self._wire_plugin_handlers(client)
+        try:
+            await self._connect_initial_sync(client)
+        except Exception:
+            await self.disconnect()
+            return False
         if self._encryption and getattr(client, "crypto", None):
             try:
                 await client.crypto.share_keys()
@@ -1387,11 +1425,12 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 logger.warning("Matrix: initial key share failed: %s", exc)
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
-        self._wire_plugin_handlers(self._client)  # plugin-registered native handlers
         return True
 
     async def disconnect(self) -> None:
         self._closing = True
+        for session_key in tuple(self._reaction_followup_actions):
+            self._discard_followup_action(session_key)
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
             try:
@@ -1432,7 +1471,8 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             if (metadata or {}).get("non_conversational"):
                 msg_content[NON_CONVERSATIONAL_KEY] = True
             try:
-                last_event_id = await self._send_room_message(chat_id, msg_content)
+                last_event_id = await self._send_room_message(
+                    chat_id, msg_content, finalize=not (metadata or {}).get("expect_edits", False))
                 event_ids.append(last_event_id)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
@@ -1441,7 +1481,8 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                     return SendResult(success=False, error=str(exc))
                 try:  # E2EE error: retry once after sharing keys
                     await self._client.crypto.share_keys()
-                    last_event_id = await self._send_room_message(chat_id, msg_content)
+                    last_event_id = await self._send_room_message(
+                        chat_id, msg_content, finalize=not (metadata or {}).get("expect_edits", False))
                     event_ids.append(last_event_id)
                     logger.info("Matrix: sent event %s to %s (after key share)", last_event_id, chat_id)
                 except Exception as retry_exc:
@@ -1464,13 +1505,17 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
     ) -> bool:
         if session_key not in self._active_sessions or not session_id:
             return False
+        self._discard_followup_action(session_key)
         if enabled:
             self._reaction_followup_actions[session_key] = _MatrixFollowupChoice(
                 uuid.uuid4().hex, emoji_filter, room_id, requester, thread_id, profile, session_id,
             )
-        else:
-            self._reaction_followup_actions.pop(session_key, None)
         return True
+
+    def _discard_followup_action(self, session_key: str) -> None:
+        action = self._reaction_followup_actions.pop(session_key, None)
+        if action is not None:
+            action.pending.clear()
 
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str,
@@ -1483,16 +1528,29 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 is_ephemeral_response=is_ephemeral_response)
             if result.success and result.message_id:
                 ids = (*result.continuation_message_ids, result.message_id)
-                self.on_streamed_final_delivery(event.source, session_key, ids, text_content)
+                replay = self.on_streamed_final_delivery(event.source, session_key, ids, text_content)
+                if replay is not None:
+                    await replay
             return result, delivery_adapter
         finally:
-            self._reaction_followup_actions.pop(session_key, None)
+            self._discard_followup_action(session_key)
 
     def on_streamed_final_delivery(
         self, source: SessionSource, session_key: str, ids: tuple[str, ...], text_content: str,
-    ) -> None:
+    ) -> Awaitable[None] | None:
         action = self._reaction_followup_actions.get(session_key)
-        if not action or not text_content or not ids or source.chat_id != action.room_id:
+        if not action or source.chat_id != action.room_id:
+            return
+        if not text_content or not ids:
+            self._discard_followup_action(session_key)
+            return
+        if action.pending.registered:
+            return
+        delivery_event_id = (
+            self._followup_delivery_events.latest(action.room_id, ids)
+            if hasattr(self, "_followup_delivery_events") else ids[-1])
+        if not delivery_event_id:
+            self._discard_followup_action(session_key)
             return
         saved_source = source.to_dict()
         saved_source.update(user_id=action.requester, thread_id=action.thread_id or None)
@@ -1505,10 +1563,37 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             thread_id=action.thread_id, session_key=session_key, session_id=action.session_id,
             requester=action.requester, source=saved_source,
             emoji_filter=action.emoji_filter, text_content=text_content,
+            delivery_event_id=delivery_event_id,
         )
-        self._reaction_followup_actions.pop(session_key, None)
+        action.pending.registered = True
+        if action.pending.events:
+            return self._replay_followup_reactions(session_key, action, ids)
+        self._discard_followup_action(session_key)
 
-    async def _send_room_message(self, chat_id: str, msg_content: dict[str, Any]) -> str:
+    async def _replay_followup_reactions(
+        self, session_key: str, action: _MatrixFollowupChoice, ids: tuple[str, ...],
+    ) -> None:
+        try:
+            async with asyncio.timeout(REGISTRATION_REPLAY_SECONDS):
+                for reaction in tuple(action.pending.events.values()):
+                    if reaction.target_event_id not in ids or not action.pending.eligible(reaction.event_id):
+                        continue
+                    await self._dispatch_reaction(
+                        action.room_id, reaction.target_event_id, reaction.emoji,
+                        reaction.sender, reaction.event_id, pending=action.pending,
+                    )
+        except TimeoutError:
+            logger.debug("Matrix: reaction registration replay timed out for session %s", session_key)
+        except Exception:
+            logger.warning("Matrix: reaction registration replay failed for session %s", session_key, exc_info=True)
+        finally:
+            action.pending.clear()
+            if self._reaction_followup_actions.get(session_key) is action:
+                self._discard_followup_action(session_key)
+
+    async def _send_room_message(
+        self, chat_id: str, msg_content: dict[str, Any], *, finalize: bool = True,
+    ) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
         event_id = await asyncio.wait_for(
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
@@ -1517,7 +1602,15 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             chat_id, event_id, MatrixEventContext(self._user_id or "", msg_content["body"])
         )
         self._thread_fallbacks.remember_sent(chat_id, msg_content, event_id)
+        self._remember_followup_delivery(chat_id, event_id, msg_content, finalize=finalize)
         return event_id
+
+    def _remember_followup_delivery(
+        self, room_id: str, event_id: str, content: Dict[str, Any], *, finalize: bool,
+    ) -> None:
+        if not hasattr(self, "_followup_delivery_events"):
+            self._followup_delivery_events = FinalDeliveryEvents()
+        self._followup_delivery_events.remember(room_id, event_id, content, finalize=finalize)
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
         """Post a seed message and return its ``event_id`` as the handoff ``thread_id``. Matrix has
@@ -1601,7 +1694,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             # JSON escaping grows a character at most sixfold (\u00XX).
             fallback = formatted.encode("utf-8")[: max(0, room // 6)].decode("utf-8", "ignore")
             msg_content["body"] = f"* {fallback}…"
-        result = await self._send_content_event(chat_id, msg_content)
+        result = await self._send_content_event(chat_id, msg_content, finalize=finalize)
         if result.success:
             self._event_context_cache.apply_edit(
                 chat_id, self._user_id or "", msg_content, replacement_id=result.message_id,
@@ -1932,11 +2025,14 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         return SendResult(
             success=False, error=f"Media file exceeds Matrix limit ({size} > {self._max_media_bytes} bytes)")
 
-    async def _send_content_event(self, room_id: str, msg_content: dict[str, Any]) -> SendResult:
+    async def _send_content_event(
+        self, room_id: str, msg_content: dict[str, Any], *, finalize: bool = True,
+    ) -> SendResult:
         """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
         try:
             event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
             self._thread_fallbacks.remember_sent(room_id, msg_content, str(event_id))
+            self._remember_followup_delivery(room_id, str(event_id), msg_content, finalize=finalize)
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -1985,6 +2081,14 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 if _is_permanent_matrix_auth_error(exc):
                     logger.error("Matrix: permanent auth error, stopping sync: %s", exc)
                     return
+                if next_batch and is_invalid_sync_cursor(exc):
+                    try:
+                        await self._connect_initial_sync(client)
+                        next_batch = await client.sync_store.get_next_batch()
+                        continue
+                    except Exception:
+                        if self._closing:
+                            return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)
 
@@ -1999,16 +2103,17 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             self._invalidate_room_identities()
         self._warn_encrypted_drops(rooms_join, client)
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
-        if nb:
-            await client.sync_store.put_next_batch(nb)
         if initial:
             logger.info("Matrix: initial sync complete, joined %d rooms", len(self._joined_rooms))
             await self._refresh_dm_cache()
-        try:
-            await self._dispatch_sync(sync_data)
-        except Exception as exc:
-            logger.warning("Matrix: %s: %s", "initial sync event dispatch error" if initial else "sync event dispatch error", exc)
+        await self._dispatch_sync(sync_data)
         self._schedule_pending_invite_joins(sync_data)
+        if nb:
+            await client.sync_store.put_next_batch(nb)
+            dispatch = getattr(client, "hermes_sync", None)
+            if isinstance(dispatch, SyncDispatch):
+                dispatch.acknowledge()
+            self._resuming_sync = True
         return nb
 
     def _warn_encrypted_drops(self, rooms_join: dict[str, Any], client: Any) -> None:
@@ -2043,6 +2148,16 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         client = self._client
         if not client or not hasattr(client, "handle_sync"):
             return
+        dispatch = getattr(client, "hermes_sync", None)
+        if isinstance(dispatch, SyncDispatch):
+            try:
+                await dispatch.dispatch_sync(sync_data)
+            finally:
+                for event_id in dispatch.failed_sync_event_ids:
+                    self._processed_events_set.discard(event_id)
+                    with suppress(ValueError):
+                        self._processed_events.remove(event_id)
+            return
         tasks = client.handle_sync(sync_data)
         if inspect.isawaitable(tasks):
             tasks = await tasks
@@ -2052,6 +2167,9 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             for result in results:
                 if isinstance(result, Exception):
                     logger.warning("Matrix: event handler failed during sync dispatch: %s", result)
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
 
     def _is_self_sender(self, sender: str) -> bool:
         """True if *sender* is the bot itself (case-insensitive: homeservers vary localpart case). With
@@ -2169,7 +2287,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             return
         # Startup grace: ignore old messages replayed by the initial sync.
         event_ts = _matrix_event_timestamp_seconds(event)
-        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
+        if not self._resuming_sync and event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
             self._note_late_grace_drop(event_ts)
             return
         if MatrixRelation.from_content(relates_to).is_edit:
@@ -2690,6 +2808,9 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             target = str(content.get("redacts") or "") if isinstance(content, dict) else ""
         if room_id and target:
             self._event_context_cache.redact(room_id, target)
+            for action in self._reaction_followup_actions.values():
+                if action.room_id == room_id:
+                    action.pending.discard(target)
 
     async def _on_invite(self, event: Any) -> None:
         """Auto-join rooms when invited, recording DM rooms in m.direct."""
@@ -2918,7 +3039,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         if actions := getattr(self, "_reaction_followup_actions", None):
-            actions.pop(self._event_session_key(event), None)
+            self._discard_followup_action(self._event_session_key(event))
         msg_id, room_id = event.message_id, event.source.chat_id
         if self._reactions_enabled and msg_id and room_id:
             reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
@@ -2927,7 +3048,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         if outcome != ProcessingOutcome.SUCCESS and (actions := getattr(self, "_reaction_followup_actions", None)):
-            actions.pop(self._event_session_key(event), None)
+            self._discard_followup_action(self._event_session_key(event))
         msg_id, room_id = event.message_id, event.source.chat_id
         if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
             return
@@ -2957,21 +3078,32 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             reacts_to = str(getattr(relates_to, "event_id", ""))
             key = str(getattr(relates_to, "key", ""))
         logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, room_id)
+        await self._dispatch_reaction(room_id, reacts_to, key, sender, event_id)
+
+    async def _dispatch_reaction(
+        self, room_id: str, reacts_to: str, key: str, sender: str, event_id: str,
+        *, pending: PendingFollowupReactions | None = None,
+    ) -> None:
         for handler in (self._handle_approval_reaction, self._handle_model_picker_reaction,
                         self._handle_choice_picker_reaction):
             if await handler(room_id, reacts_to, key, sender):
                 return
         await self._handle_followup_reaction(
-            room_id, reacts_to, key, sender, event_id,
-            reaction_time=_matrix_event_timestamp_seconds(event))
+            room_id, reacts_to, key, sender, event_id, pending=pending)
 
     async def _handle_followup_reaction(
         self, room_id: str, target_event_id: str, emoji: str, sender: str,
-        reaction_event_id: str, *, reaction_time: float | None = None,
+        reaction_event_id: str, *, pending: PendingFollowupReactions | None = None,
     ) -> None:
         store = self._followup_store()
         candidate = store.candidate(room_id, target_event_id)
-        if candidate is None or candidate["requester"] != sender:
+        if candidate is None:
+            for action in getattr(self, "_reaction_followup_actions", {}).values():
+                if (action.room_id == room_id and action.requester == sender
+                        and (not action.emoji_filter or emoji in action.emoji_filter)):
+                    action.pending.remember(target_event_id, emoji, sender, reaction_event_id)
+            return
+        if candidate["requester"] != sender:
             return
         if (self._is_system_or_bridge_sender(sender)
                 or any(pattern.search(sender) for pattern in self._ignored_user_patterns)
@@ -3001,9 +3133,16 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                     session_store.peek_session_id, candidate["session_key"]
                 ) != candidate["session_id"]):
             return
+        if not await reaction_follows_delivery(
+            getattr(self, "_client", None), room_id,
+            candidate["delivery_event_id"], reaction_event_id,
+        ):
+            return
+        if pending is not None and not pending.eligible(reaction_event_id):
+            return
         claimed = store.claim(
             source.profile or "", room_id, target_event_id, sender, emoji,
-            reaction_time=reaction_time)
+            verified_delivery_event_id=candidate["delivery_event_id"])
         if claimed is None:
             return
         reply_text = claimed["text_content"]

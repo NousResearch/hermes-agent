@@ -11,6 +11,7 @@ from urllib.parse import quote
 from plugins.platforms.matrix.client_events import Method, raw_event
 from plugins.platforms.matrix.effective_event import effective_event, event_content
 from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.polls import poll_context
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
 from plugins.platforms.matrix.reply_context import MatrixEventContext, _label_body, _own_text
 
@@ -43,9 +44,10 @@ async def _visible_event(
                 str(raw.get("sender") or ""), "", state_error=state.error["error"],
             ), before)
         return None, state.error, None
-    if not state.redacted and not content.get("msgtype") and not state.error:
+    poll_text = poll_context(content, raw.get("type"))
+    if not state.redacted and not content.get("msgtype") and not state.error and poll_text is None:
         return None, None, None
-    body = content.get("body")
+    body = poll_text or content.get("body")
     if not isinstance(body, str):
         body = ""
     body = body.strip()

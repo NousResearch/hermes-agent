@@ -2046,3 +2046,28 @@ class TestRecurringToOneshotBudgetReset:
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: later)
         assert job["id"] in {j["id"] for j in J.get_due_jobs()}
         assert J.get_job(job["id"]) is not None
+
+    def test_flip_to_recurring_resets_completed(self, tmp_cron_dir):
+        """#124229 mirror-image: a one-shot flipped to a recurring kind with an explicit
+        finite repeat must start a fresh budget — the old ``completed`` counter must be
+        reset to 0, not carried into the new schedule (which would spend its first runs)."""
+        import json
+        from cron.jobs import JOBS_FILE, create_job, update_job
+
+        job = create_job(prompt="backup", schedule="in 5m")
+        assert job["repeat"] == {"times": 1, "completed": 0}
+
+        # Simulate a spent run: the stored counter counts one run (what mark_job_run leaves).
+        payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        payload["jobs"][0]["repeat"]["completed"] = 1
+        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        # The tool/CLI copies the STORED counter into the update and overwrites only times,
+        # so the flip to a recurring kind arrives carrying completed=1 verbatim.
+        updated = update_job(
+            job["id"],
+            {"schedule": "every 1d", "repeat": {"times": 5, "completed": 1}})
+        assert updated["schedule"]["kind"] == "interval"
+        assert updated["repeat"]["times"] == 5
+        # The new schedule is a fresh budget; the old counter must not leak into it.
+        assert updated["repeat"]["completed"] == 0

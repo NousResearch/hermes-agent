@@ -827,6 +827,30 @@ class TestNativeScreenshots:
         result = json.loads(bu_cli.browser_exec("print(1)"))
         assert "screenshot_path" not in result
 
+    def test_jpeg_bytes_at_a_jpg_path_are_labelled_jpeg_not_png(self, tmp_path, monkeypatch):
+        """A script-authored screenshot helper can save real JPEG bytes at a
+        `.jpg` path (e.g. `Page.captureScreenshot(format="jpeg")`); `_native_
+        screenshot_result` must sniff that, not hardcode `image/png` — a
+        mislabelled mime_type is a non-retryable 400 from Anthropic that
+        bakes into history and wedges the conversation on every resume."""
+        shot = tmp_path / "shot.jpg"
+        shot.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 16)  # real JPEG magic bytes
+        cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "{shot}"\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        monkeypatch.setattr(
+            "tools.vision_tools._should_use_native_vision_fast_path", lambda: True
+        )
+        seen_mime = {}
+
+        def _fake_resize(p, mime_type=None, **kw):
+            seen_mime["mime_type"] = mime_type
+            return "data:image/jpeg;base64,QUJD"
+
+        monkeypatch.setattr("tools.vision_tools._resize_image_for_vision", _fake_resize)
+        result = bu_cli.browser_exec("print(capture_screenshot())")
+        assert isinstance(result, dict) and result["_multimodal"] is True
+        assert seen_mime["mime_type"] == "image/jpeg"
+
 
 class TestStepLabels:
     """browser_exec code leads with a `# …` comment (per the tool

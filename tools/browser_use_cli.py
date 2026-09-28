@@ -302,9 +302,23 @@ def _native_screenshot_result(result: Dict[str, Any], path: str) -> Optional[Dic
         from tools.vision_tools_history_budget import resolve_embed_target_bytes
         if not _should_use_native_vision_fast_path():
             return None
+        # `path` matches `_IMAGE_PATH_RE` (png/jpe?g/webp) but the CLI's own screenshot
+        # helper isn't the only writer of it: agent-authored automation scripts (this
+        # module's stdout parser picks up ANY matching path a script prints, e.g. a
+        # Page.captureScreenshot(format="jpeg") saved as .jpg) can legitimately produce
+        # real JPEG bytes at a path whose extension the caller trusts. Hardcoding
+        # mime_type="image/png" here mislabels those and Anthropic hard-rejects the
+        # mismatch with a non-retryable 400 that wedges the whole conversation on every
+        # resume (the tool result is baked into history). Sniff the real bytes instead —
+        # cheap (already read below) and authoritative; extension is only the fallback.
+        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        try:
+            sniffed_mime = _detect_image_mime_type_from_bytes(Path(path).read_bytes()[:64])
+        except OSError:
+            sniffed_mime = None
         # History-reuse cap: this data URL bakes into the tool result and is re-sent every later turn —
         # same policy as the vision_analyze / browser_vision native embeds.
-        data_url = _resize_image_for_vision(Path(path), mime_type="image/png",
+        data_url = _resize_image_for_vision(Path(path), mime_type=sniffed_mime or "image/png",
                                             max_base64_bytes=resolve_embed_target_bytes(),
                                             max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
         text = json.dumps(result, ensure_ascii=False)

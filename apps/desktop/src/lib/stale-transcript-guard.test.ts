@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import type { ChatMessage } from '@/lib/chat-messages'
 import type { SessionMessage } from '@/types/hermes'
 
 import { toChatMessages } from './chat-messages'
@@ -91,5 +92,66 @@ describe('messagesIfTranscriptBehind', () => {
 
     expect(messagesIfTranscriptBehind(toChatMessages(rows), [])).toBeNull()
     expect(messagesIfTranscriptBehind([], toChatMessages(rows))).toEqual(toChatMessages(rows))
+  })
+
+  // #125975: a tool-using turn folds into one bubble, and the two paths that
+  // build it bind different ends of the span. Live settle stamps the turn's
+  // FINAL row (withPersistedIdentity → rowId + the last text part's
+  // sourceRowId); hydration keeps the folded bubble's FIRST row and stamps
+  // every text part with its own sourceRowId. When the latest page starts
+  // mid-turn, its first durable row is one the window's settled bubble never
+  // carried — so a rowId-only tip compare misses, the graft appends, and the
+  // count reports "behind": the first send after a tool-using turn bounces
+  // with "Chat out of date" in a single window. The tip must read the highest
+  // durable address the bubble carries (rowId or any text part's sourceRowId).
+  it('matches tips when the live-settled bubble binds the final row and the page starts mid-turn', () => {
+    const text = (rowId: number, body: string) => ({ sourceRowId: rowId, text: body, type: 'text' as const })
+    const streamed = (body: string) => ({ text: body, type: 'text' as const })
+    const tool = () => ({ toolCallId: 'call-1', toolName: 'shell', type: 'tool-call' as const })
+
+    // The window settled both tool turns live: each folded bubble is addressed
+    // by its FINAL row (withPersistedIdentity), and only the final text part
+    // carries a durable sourceRowId — the streamed pre-tool text has none.
+    const localWindow: ChatMessage[] = [
+      { id: 'u1', parts: [streamed('ask')], role: 'user', rowId: 1 },
+      {
+        id: 'a-fold1-live',
+        parts: [streamed('checking'), tool(), text(5, 'final one')],
+        role: 'assistant',
+        rowId: 5
+      },
+      { id: 'u3', parts: [streamed('run the tests')], role: 'user', rowId: 6 },
+      {
+        id: 'a-fold2-live',
+        parts: [streamed('verifying'), tool(), text(10, 'final two')],
+        role: 'assistant',
+        rowId: 10
+      }
+    ]
+
+    // The refreshed latest page starts INSIDE the first folded turn: hydration
+    // addresses each folded bubble by its FIRST row (3, 8), the final rows
+    // surviving only as text-part sourceRowIds. The window's settled bubbles
+    // never carried rows 3 or 8, so a rowId-only tip compare sees 10 vs 8,
+    // the graft finds no anchor, and the merge reports the window behind —
+    // the first send after a tool-using turn bounces with "Chat out of date"
+    // in a single window (#125975).
+    const latestPage: ChatMessage[] = [
+      {
+        id: 'a-fold1-page',
+        parts: [text(3, 'checking'), tool(), text(5, 'final one')],
+        role: 'assistant',
+        rowId: 3
+      },
+      { id: 'u3', parts: [streamed('run the tests')], role: 'user', rowId: 6 },
+      {
+        id: 'a-fold2-page',
+        parts: [text(8, 'verifying'), tool(), text(10, 'final two')],
+        role: 'assistant',
+        rowId: 8
+      }
+    ]
+
+    expect(messagesIfTranscriptBehind(localWindow, latestPage)).toBeNull()
   })
 })

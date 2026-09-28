@@ -24,6 +24,7 @@ from urllib.parse import quote, unquote
 import httpx
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, cache_image_from_bytes_async,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len,
@@ -856,8 +857,9 @@ class SignalAdapter(BasePlatformAdapter):
     async def _notify_batch_pacing(self, chat_id: str, next_batch_idx: int, total_batches: int, wait_s: float) -> None:
         """Tell the user about an inter-batch pacing wait over the notice threshold (best-effort)."""
         try:
-            await self.emit_warning(chat_id, f"(More images coming — pausing ~{_format_wait(wait_s)} for Signal rate limit, "
-                                     f"batch {next_batch_idx}/{total_batches}.)")
+            await self.emit_warning(chat_id, t(
+                "platform.signal.batch_pacing_notice",
+                wait=_format_wait(wait_s), batch=next_batch_idx, total=total_batches))
         except Exception as e:
             logger.warning("Signal: failed to send pacing notice: %s", e)
 
@@ -978,27 +980,3 @@ class SignalAdapter(BasePlatformAdapter):
         result = await self._rpc("getContact", {"account": self.account, "contactAddress": chat_id})
         name = (result.get("name") or result.get("profileName")) if isinstance(result, dict) else None
         return {"name": name or chat_id, "type": "dm", "chat_id": chat_id}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-TYPING_INTERVAL = 8.0  # seconds between typing indicator refreshes
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_EXT_TO_MIME': ('gateway.platforms.media_cache', 'DEFAULT_EXT_TO_MIME'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

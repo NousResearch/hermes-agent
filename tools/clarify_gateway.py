@@ -282,27 +282,3 @@ def get_clarify_timeout() -> int:
         return resolve_clarify_timeout(load_config() or {})
     except Exception:
         return 3600
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def get_notify(session_key: str) -> Optional[Callable[[_ClarifyEntry], None]]:
-    with _lock:
-        return _notify_cbs.get(session_key)
-
-def register_notify(session_key: str, cb: Callable[[_ClarifyEntry], None]) -> None:
-    """Register a per-session notify callback used by ``clarify_callback``."""
-    with _lock:
-        _notify_cbs[session_key] = cb
-
-def unregister_notify(session_key: str) -> None:
-    """Drop the per-session notify callback and cancel any pending clarify entries."""
-    with _lock:
-        _notify_cbs.pop(session_key, None)
-    # Cancel any pending entries so blocked threads unwind when the run
-    # ends (interrupt, completion, gateway shutdown).
-    clear_session(session_key)
-# ---- END PLUGIN-COMPAT ----

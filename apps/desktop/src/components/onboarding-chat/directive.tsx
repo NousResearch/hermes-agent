@@ -6,13 +6,23 @@ import { useSessionView } from '@/app/chat/session-view'
 import { FirstBuildCard, HandoffCard, ProgressCard } from '@/components/onboarding-chat/cards/build'
 import type { CardProps } from '@/components/onboarding-chat/cards/frame'
 import { ConnectorsCard, LayoutCard, LookCard } from '@/components/onboarding-chat/cards/setup'
+import { type DesktopOnboardingStep, recordOnboarding } from '@/store/desktop-metrics'
 import { $onboardingAnswers, setOnboardingAnswers } from '@/store/onboarding-answers'
+import { $onboardingGate } from '@/store/onboarding-gate'
 
 type AnswerField = 'name' | 'context'
 
 const DATA_STEPS = new Map<string, AnswerField>([
   ['name', 'name'],
   ['working', 'context']
+])
+
+/** Guided-setup cards counted as first-run funnel steps (hermes.desktop.onboarding). */
+const FUNNEL_STEPS = new Map<string, DesktopOnboardingStep>([
+  ['connectors', 'guide_connectors'],
+  ['first', 'guide_first_build'],
+  ['layout', 'guide_layout'],
+  ['look', 'guide_look']
 ])
 
 const STEP_CARDS = new Map<string, (props: CardProps) => React.ReactNode>([
@@ -43,6 +53,15 @@ export function OnboardingChatDirective({ attrs, streaming }: { attrs: Record<st
   const messageId = useAuiState(state => state.message.id)
   const identity = JSON.stringify([storedId ?? runtimeId, messageId])
   const step = attrs.step ?? ''
+
+  useEffect(() => {
+    const funnelStep = FUNNEL_STEPS.get(step)
+
+    // Only while the guide is live — a finished setup transcript re-renders its cards on every visit.
+    if (funnelStep && $onboardingGate.get().phase === 'guided') {
+      recordOnboarding(funnelStep, 'reached')
+    }
+  }, [step])
 
   const field = DATA_STEPS.get(step)
 

@@ -9,7 +9,7 @@ description: "Plugins shipped with Hermes Agent that run automatically via lifec
 
 Hermes ships a small set of plugins bundled with the repository. They live under `<repo>/plugins/<name>/` and load automatically alongside user-installed plugins in `~/.hermes/plugins/`. They use the same plugin surface as third-party plugins — hooks, tools, slash commands — just maintained in-tree.
 
-See the [Plugins](/user-guide/features/plugins) page for the general plugin system, and [Build a Hermes Plugin](/developer-guide/plugins) to write your own.
+See the [Plugins](./plugins.md) page for the general plugin system, and [Build a Hermes Plugin](../../developer-guide/plugins/index.md) to write your own.
 
 ## How discovery works
 
@@ -58,11 +58,10 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
 | `security-guidance` | hooks | Pattern-match dangerous code on `write_file`/`patch` and append a security warning (or block) — 25 rules (Apache-2.0 fork of Anthropic's `claude-plugins-official` patterns) |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
-| `observability/nemo_relay` | hooks | Relay observability events (turns / LLM calls / tools) to an NVIDIA NeMo endpoint |
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
-| `image_gen/openai` | image backend | OpenAI `gpt-image-2` image generation backend (alternative to FAL) |
+| `image_gen/openai` | image backend | OpenAI GPT Image 2 and 2.5 Flare/Sunburst generation and editing (API key) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |
 | `image_gen/xai` | image backend | xAI `grok-2-image` backend |
 | `hermes-achievements` | dashboard tab | Steam-style collectible badges generated from your real Hermes session history |
@@ -78,7 +77,7 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 
 | Hook | Behaviour |
 |---|---|
-| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME` or `/tmp/hermes-*`, track it silently as `test` / `temp` / `cron-output`. |
+| `post_tool_call` | When `write_file` / `terminal` / `patch` creates a file matching `test_*`, `tmp_*`, or `*.test.*` inside `HERMES_HOME` or `/tmp/hermes-*`, track it silently as `test` / `temp` / `cron-output`. | <!-- no-tmp: ok — documents the plugin's scope guard -->
 | `on_session_end` | If any test files were auto-tracked during the turn, run the safe `quick` cleanup and log a one-line summary. Stays silent otherwise. |
 
 **Deletion rules:**
@@ -112,7 +111,8 @@ Auto-tracks and removes ephemeral files created during sessions — test scripts
 | `tracked.json.bak` | Atomic-write backup of the above |
 | `cleanup.log` | Append-only audit trail of every track / skip / reject / delete |
 
-**Safety** — cleanup only ever touches paths under `HERMES_HOME` or `/tmp/hermes-*`. Windows mounts (`/mnt/c/...`) are rejected. Well-known top-level state dirs (`logs/`, `memories/`, `sessions/`, `cron/`, `cache/`, `skills/`, `plugins/`, `disk-cleanup/` itself) are never removed even when empty — a fresh install does not get gutted on first session end.
+<!-- no-tmp: ok — documents the plugin's scope guard -->
+**Safety** — cleanup only ever touches paths under `HERMES_HOME` or `/tmp/hermes-*`. Windows mounts (`/mnt/c/...`) are rejected. Well-known top-level state dirs (`logs/`, `memories/`, `sessions/`, `cron/`, `cache/`, `skills/`, `plugins/`, `disk-cleanup/` itself) are never removed even when empty — a fresh install does not get gutted on first session end. User project trees (`workspace/`, `projects/`, `plans/`, `home/`) are never tracked or swept at all: a `test_*.py` or `tmp_*` file inside your project is source code, not scratch. `kanban/` (task attachments and workspaces) is never tracked either, and a tracked *directory* under a protected top level such as `cache/` is never removed — only the files inside it age out.
 
 **Enabling:** `hermes plugins enable disk-cleanup` (or check the box in `hermes plugins`).
 
@@ -152,16 +152,24 @@ The plugin is fail-open: no SDK installed, no credentials, or a transient Langfu
 hermes tools          # → Langfuse Observability → Cloud or Self-Hosted
 ```
 
-The wizard collects your keys, `pip install`s the `langfuse` SDK, and adds `observability/langfuse` to `plugins.enabled` for you. Restart Hermes and the next turn ships a trace.
+The wizard collects your keys, prepares the declared `langfuse` extra through PM
+when needed, and enables `observability/langfuse`. Restart Hermes and the next
+turn ships a trace. If preparation fails, retry through `hermes tools`; do not
+install the SDK into the selected environment with pip.
 
 **Setup (manual):**
 
+For a source checkout, first follow the [PM developer workflow](../../reference/package-management.md#developer-workflow)
+with the intended Hermes home. Use the checkout's prepared Python:
+
 ```bash
-pip install langfuse
-hermes plugins enable observability/langfuse
+python -c "import pm; pm.sync_venv(['langfuse'], explicit=True)"
+source ./activate
+python hermes plugins enable observability/langfuse
 ```
 
-Then put the credentials in `~/.hermes/.env`:
+Use `. .\activate.ps1` for PowerShell activation. Then put the credentials in
+the active home's `.env` (`$HERMES_HOME/.env`, normally `~/.hermes/.env`):
 
 ```bash
 HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...
@@ -203,40 +211,69 @@ Hermes-prefixed and standard SDK env vars (`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECR
 
 **Disabling:** `hermes plugins disable observability/langfuse`. The plugin module is still discovered, but no module code runs until you re-enable.
 
-### observability/nemo_relay
+### NeMo Relay native integration (migration note)
 
-Relays Hermes execution boundaries — sessions, turns, LLM calls, and tool invocations — to an [NVIDIA NeMo Relay](https://docs.nvidia.com/nemo/relay/about-nemo-relay/overview) endpoint. Hermes core owns the Relay session/turn/LLM/tool scopes; the plugin configures exporters (ATOF JSONL, ATIF trajectories, OpenTelemetry) and adds observer marks for approvals and delegated subagents. Full exporter setup lives in the plugin's `README.md` under `plugins/observability/nemo_relay/`.
+NeMo Relay is no longer a bundled Hermes plugin. Do not run `hermes plugins enable observability/nemo_relay`; Hermes core now owns the Relay session, turn, LLM, and tool lifecycles.
 
-**Enabling:**
+To opt into Relay middleware or exporters, create a standard Relay `plugins.toml`, then set `HERMES_NEMO_RELAY_PLUGINS_TOML` to that file before starting Hermes. The policy is process-wide for every profile hosted by that Hermes process. See the [NeMo Relay observability configuration](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/about) for ATOF, ATIF, and OpenTelemetry options.
 
-```bash
-hermes plugins enable observability/nemo_relay
+The old `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` settings no longer activate exporters — a `.env` that still carries them (and no `HERMES_NEMO_RELAY_PLUGINS_TOML`) exports **nothing**, and the gateway logs one warning saying so. `hermes doctor` reports these stale settings when no replacement `plugins.toml` is selected.
+
+**Automatic migration.** `hermes update` (and `hermes migrate relay`, or `hermes migrate relay --all-profiles` for every profile home) converts the legacy variables into `<hermes home>/relay-plugins.toml`, sets `HERMES_NEMO_RELAY_PLUGINS_TOML` in that profile's `.env`, and comments the legacy lines out (nothing is deleted). Under a multiplexed gateway every profile home gets its own file. The generated file is validated through Relay before it is written; this is the shape it produces (note the `type = "file"` sink discriminator — a sink without it is rejected):
+
+```toml
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 4
+enable_full_payloads = false
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+output_directory = "/home/you/.hermes/telemetry/nemo-relay/atof"
+filename = "hermes-atof.jsonl"
+mode = "append"
+
+[components.config.atif]
+enabled = true
+agent_name = "Hermes Agent"
+model_name = "unknown"
+output_directory = "/home/you/.hermes/telemetry/nemo-relay/atif"
+filename_template = "trajectory-{session_id}.json"
+
+[components.config.policy]
+unknown_component = "warn"
+unknown_field = "warn"
+unsupported_value = "error"
 ```
+
+Then add `HERMES_NEMO_RELAY_PLUGINS_TOML=/home/you/.hermes/relay-plugins.toml` to `.env` and restart the gateway.
 
 #### Session-span segmentation (continuous sessions)
 
-Relay export is close-driven: a span exports when its scope pops. A continuous gateway session (the normal state for a Telegram/Slack agent) keeps its session scope open for days or weeks, so the session root span — and any marks attached to it — stays unexported until `/new` or idle-end, and a crash or redeploy loses the whole open segment. Turn spans are unaffected; they already export per-turn.
-
-Opt-in segmentation rotates the session scope at turn boundaries, in `config.yaml`:
+Relay exports a span when its scope closes. A continuous gateway session can keep its session span open for days even though each turn span exports normally. Optional segmentation rotates only the session scope at a turn boundary:
 
 ```yaml
 gateway:
   telemetry:
     session_segments:
-      on_compaction: false   # rotate the session scope when the session compacts
-      max_turns: 0           # 0 = unlimited; N = rotate after N turns per segment
+      on_compaction: false  # rotate after context compaction
+      max_turns: 0          # 0 = unlimited; N = turns per segment
 ```
 
-| Key | Default | Behaviour |
-|---|---|---|
-| `on_compaction` | `false` | Close and reopen the session scope after a context compaction completes (at the next turn boundary, never mid-turn) |
-| `max_turns` | `0` | Rotate after every N turns within a segment; `0` disables the cap |
+| Key | Default | Behavior |
+|---|---:|---|
+| `on_compaction` | `false` | Rotate after compaction completes, at the next turn boundary. |
+| `max_turns` | `0` | Rotate after every N completed turns; `0` disables the cap. |
 
-Both defaults are off — with no config set, the scope lifecycle is identical to previous releases (one session scope for the life of the session).
-
-Rotated segments keep the same `session_id` attribute and add `hermes.session.segment` (0-based index) plus `hermes.session.segment_reason` (`compaction` or `max_turns`), so dashboards that group on `session_id` are unaffected. Rotation happens exclusively at turn boundaries and rides the same bounded scope-op executor as every other native Relay call — a wedged exporter costs one segment span, never the agent.
-
-**Disabling:** remove the `session_segments` block (or set both keys back to their defaults).
+Both defaults preserve one session scope for the full session. Rotated spans retain the same `session_id` and add `hermes.session.segment` plus `hermes.session.segment_reason` (`compaction` or `max_turns`).
 
 ### google_meet
 
@@ -245,7 +282,7 @@ Lets the agent **join, transcribe, and participate in Google Meet calls** — ta
 **What it adds:**
 
 - A headless virtual participant that joins a Meet URL using browser automation
-- Live transcription of the meeting audio via the configured STT provider
+- Live transcription derived from Meet's own live captions (the bot never decodes the meeting audio, so no STT billing — and captions are lossy and English-biased)
 - A `meet_join` / `meet_status` / `meet_transcript` / `meet_leave` / `meet_say` toolset the agent invokes to join calls, poll the live transcript, and act on what it heard
 - Post-meeting artifacts (transcript, status) saved under `~/.hermes/workspace/meetings/<meeting_id>/`
 
@@ -264,6 +301,8 @@ Usage from chat:
 > "Join meet.google.com/abc-defg-hij and take notes. After the call, send me a summary with action items."
 
 The agent kicks off the meeting join, streams the transcription back into its context as the call proceeds, and produces a structured summary when the meeting ends (or when you tell it to stop).
+
+**Realtime mode (`mode='realtime'`) is speak-only on the audio side.** The bot's replies are synthesized by OpenAI Realtime and played into the call through a virtual microphone; what it *hears* is still the caption stream, not the meeting audio — nothing from the call is sent to the Realtime session. `meet_status` reports `micState` (`unmuted`, `unmuted_clicked` when the bot had to unmute itself after admission, or `unknown` when Meet's toggle was not found) so a silent bot can be diagnosed.
 
 **When to use it:** recurring standups where you want a bot to transcribe + summarize for async attendees; deposition-style interviews where you want structured notes; any case where you'd otherwise need Fireflies / Otter / Grain. When you'd rather not have an AI listening in — don't enable it.
 
@@ -322,7 +361,7 @@ Adds a **Steam-style achievements tab to the dashboard** — 60+ collectible, ti
 
 ## Adding a bundled plugin
 
-Bundled plugins are written exactly like any other Hermes plugin — see [Build a Hermes Plugin](/developer-guide/plugins). The only differences are:
+Bundled plugins are written exactly like any other Hermes plugin — see [Build a Hermes Plugin](../../developer-guide/plugins/index.md). The only differences are:
 
 - Directory lives at `<repo>/plugins/<name>/` instead of `~/.hermes/plugins/<name>/`
 - Manifest source is reported as `bundled` in `hermes plugins list`
@@ -330,7 +369,7 @@ Bundled plugins are written exactly like any other Hermes plugin — see [Build 
 
 A plugin is a good candidate for bundling when:
 
-- It has no optional dependencies (or they're already `pip install .[all]` deps)
+- It has no optional dependencies (or they are already in the declared `all` extra)
 - The behaviour benefits most users and is opt-out rather than opt-in
 - The logic ties into lifecycle hooks that the agent would otherwise have to remember to invoke
 - It complements a core capability without expanding the model-visible tool surface

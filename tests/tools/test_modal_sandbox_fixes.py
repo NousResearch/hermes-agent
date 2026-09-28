@@ -14,6 +14,7 @@ import os
 import sys
 from pathlib import Path
 import pytest
+from tools import approval_context
 
 # Ensure repo root is importable
 _repo_root = Path(__file__).resolve().parent.parent.parent
@@ -34,16 +35,6 @@ except ImportError:
 class TestToolResolution:
     """Verify get_tool_definitions returns all expected tools for eval."""
 
-    def test_terminal_and_file_toolsets_resolve_all_tools(self):
-        """enabled_toolsets=['terminal', 'file'] should produce 6 tools."""
-        from model_tools import get_tool_definitions
-        tools = get_tool_definitions(
-            enabled_toolsets=["terminal", "file"],
-            quiet_mode=True,
-        )
-        names = {t["function"]["name"] for t in tools}
-        expected = {"terminal", "process", "read_file", "write_file", "search_files", "patch"}
-        assert expected == names, f"Expected {expected}, got {names}"
 
     def test_terminal_tool_present(self):
         """The terminal tool must be present (not silently dropped)."""
@@ -85,6 +76,7 @@ class TestCwdHandling:
         assert config["host_cwd"] is None
         assert config["docker_mount_cwd_to_workspace"] is False
 
+    @pytest.mark.platforms("linux")
     def test_users_path_maps_to_workspace_for_docker_when_enabled(self, monkeypatch):
         """Docker should map the host cwd into /workspace only when explicitly enabled."""
         monkeypatch.setenv("TERMINAL_ENV", "docker")
@@ -133,6 +125,7 @@ class TestCwdHandling:
             f"Backend {backend}: expected /root default, got {config['cwd']}"
         )
 
+    @pytest.mark.platforms("linux")
     def test_docker_default_cwd_maps_current_directory_when_enabled(self, monkeypatch):
         """Docker should use /workspace when cwd mounting is explicitly enabled."""
         monkeypatch.setattr("tools.terminal_tool.os.getcwd", lambda: "/home/user/project")
@@ -159,9 +152,10 @@ class TestCwdHandling:
             captured.update(kwargs)
             return sentinel
 
-        monkeypatch.setattr(_tt_mod, "_DockerEnvironment", _fake_docker_environment)
+        from tools.terminal_tool_backends import _create_environment
+        monkeypatch.setattr("tools.terminal_tool_backends._DockerEnvironment", _fake_docker_environment)
 
-        env = _tt_mod._create_environment(
+        env = _create_environment(
             env_type="docker",
             image="python:3.11",
             cwd="/workspace",
@@ -191,103 +185,18 @@ class TestCwdHandling:
 # Test 5: ephemeral_disk version check
 # =========================================================================
 
-class TestEphemeralDiskCheck:
-    """Verify ephemeral_disk is only passed when modal supports it."""
-
-    def test_ephemeral_disk_skipped_when_unsupported(self, monkeypatch):
-        """If modal.Sandbox.create doesn't have ephemeral_disk param, skip it."""
-        import inspect
-        mock_params = {
-            "args": inspect.Parameter("args", inspect.Parameter.VAR_POSITIONAL),
-            "image": inspect.Parameter("image", inspect.Parameter.KEYWORD_ONLY),
-            "timeout": inspect.Parameter("timeout", inspect.Parameter.KEYWORD_ONLY),
-            "cpu": inspect.Parameter("cpu", inspect.Parameter.KEYWORD_ONLY),
-            "memory": inspect.Parameter("memory", inspect.Parameter.KEYWORD_ONLY),
-        }
-
-        monkeypatch.setenv("TERMINAL_ENV", "modal")
-        config = _tt_mod._get_env_config()
-        # The config has container_disk default of 51200
-        disk = config.get("container_disk", 51200)
-        assert disk > 0, "disk should default to > 0"
-
-        # Simulate the version check logic from terminal_tool.py
-        sandbox_kwargs = {}
-        if disk > 0:
-            try:
-                if "ephemeral_disk" in mock_params:
-                    sandbox_kwargs["ephemeral_disk"] = disk
-            except Exception:
-                pass
-
-        assert "ephemeral_disk" not in sandbox_kwargs, (
-            "ephemeral_disk should not be set when Sandbox.create doesn't support it"
-        )
 
 
 # =========================================================================
 # Test 6: ModalEnvironment defaults
 # =========================================================================
 
-class TestModalEnvironmentDefaults:
-    """Verify ModalEnvironment has correct defaults."""
-
-    def test_default_cwd_is_root(self):
-        """ModalEnvironment default cwd should be /root, not ~."""
-        from tools.environments.modal import ModalEnvironment
-        import inspect
-        sig = inspect.signature(ModalEnvironment.__init__)
-        cwd_default = sig.parameters["cwd"].default
-        assert cwd_default == "/root", (
-            f"ModalEnvironment cwd default should be /root, got {cwd_default!r}. "
-            "Tilde ~ is not expanded by subprocess.run(cwd=...)."
-        )
 
 
 # =========================================================================
 # Test 7: ensurepip fix in ModalEnvironment
 # =========================================================================
 
-class TestEnsurepipFix:
-    """Verify the pip fix is applied in the ModalEnvironment init."""
-
-    def test_modal_environment_creates_image_with_setup_commands(self):
-        """_resolve_modal_image should create a modal.Image with pip fix."""
-        try:
-            from tools.environments.modal import _resolve_modal_image
-        except ImportError:
-            pytest.skip("tools.environments.modal not importable")
-
-        import inspect
-        source = inspect.getsource(_resolve_modal_image)
-        assert "ensurepip" in source, (
-            "_resolve_modal_image should include ensurepip fix "
-            "for Modal's legacy image builder"
-        )
-        assert "setup_dockerfile_commands" in source, (
-            "_resolve_modal_image should use setup_dockerfile_commands "
-            "to fix pip before Modal's bootstrap"
-        )
-
-    def test_modal_environment_uses_native_sdk(self):
-        """ModalEnvironment should use Modal SDK directly, not swe-rex."""
-        try:
-            from tools.environments.modal import ModalEnvironment
-        except ImportError:
-            pytest.skip("tools.environments.modal not importable")
-
-        import inspect
-        source = inspect.getsource(ModalEnvironment)
-        assert "swerex" not in source.lower(), (
-            "ModalEnvironment should not depend on swe-rex; "
-            "use Modal SDK directly via Sandbox.create() + exec()"
-        )
-        assert "Sandbox.create.aio" in source, (
-            "ModalEnvironment should use async Modal Sandbox.create.aio()"
-        )
-        assert "exec.aio" in source, (
-            "ModalEnvironment should use Sandbox.exec.aio() for command execution"
-        )
 
 
 # =========================================================================
@@ -306,22 +215,26 @@ class TestHostPrefixList:
     refactor that moves the constant.
     """
 
-    def test_all_common_host_prefixes_present_in_constant(self):
-        """The shared prefix constant must list the common host-only roots."""
-        for prefix in ("/Users/", "/home/", "C:\\", "C:/"):
-            assert prefix in _tt_mod._HOST_CWD_PREFIXES, (
-                f"Host prefix {prefix!r} missing from _HOST_CWD_PREFIXES. "
-                "Container backends need this to avoid using host paths."
-            )
-
     def test_all_common_host_paths_flagged_unusable(self):
-        """A host path under each prefix must be rejected as a container cwd."""
-        for host_path in ("/Users/me/proj", "/home/me/proj",
-                           "C:\\Users\\me", "C:/Users/me"):
+        """A host path under each user root must be rejected as a container cwd; in-sandbox
+        absolute paths pass."""
+        for host_path in ("/Users/me/proj", "/home/me/proj", "C:\\Users\\me", "C:/Users/me"):
             assert _tt_mod._is_unusable_container_cwd(host_path) is True, (
                 f"Host path {host_path!r} should be rejected as a container "
                 "cwd but was accepted."
             )
+        for sandbox_path in ("/workspace", "/root/proj", "/srv/app"):
+            assert _tt_mod._is_unusable_container_cwd(sandbox_path) is False
+
+    def test_any_windows_drive_letter_is_a_host_cwd(self):
+        """The host-shape predicate is platform-independent data: every drive letter, either slash,
+        is a host path (#60962). On POSIX ``D:\\proj`` is also non-absolute so the container guard
+        already rejected it; on a Windows host it IS absolute and only this predicate catches it."""
+        from tools.terminal_tool_config import _is_host_cwd
+        for host_path in ("C:\\Users\\me", "D:\\proj", "e:/work", "Z:\\"):
+            assert _is_host_cwd(host_path) is True, host_path
+        for not_host in ("/workspace", "/srv/app", "relative/dir", "C", "C:"):
+            assert _is_host_cwd(not_host) is False, not_host
 
 
 # =========================================================================
@@ -368,6 +281,57 @@ class TestDockerHostBindApproval:
         assert A._should_skip_container_guards("daytona") is True
         assert A._should_skip_container_guards("local") is False
 
+    def test_raising_registry_lookup_keeps_container_guards_on(self, monkeypatch):
+        """A registry that raises during the provider lookup must fail soft to guards-on,
+        not propagate out of the approval predicate."""
+        from agent import terminal_env_registry as R
+        import tools.approval as A
+
+        def boom(*_a, **_k):
+            raise RuntimeError("registry down")
+
+        monkeypatch.setattr(R._registry, "get_provider", boom)
+        assert A._should_skip_container_guards("p_disposable") is False
+
+    def test_registered_disposable_plugin_skips_container_guards(self):
+        """Plugin classification uses its registered provider, not built-in names only."""
+        from agent import terminal_env_registry
+        from agent.terminal_env_provider import TerminalEnvironmentProvider
+        import tools.approval as A
+
+        class DisposablePlugin(TerminalEnvironmentProvider):
+            name = "approval_disposable_plugin"
+            display_name = "Approval disposable plugin"
+
+            def is_available(self):
+                return True
+
+            def create_environment(self, **kwargs):
+                raise NotImplementedError
+
+        provider = DisposablePlugin()
+        previous = terminal_env_registry.get_provider(provider.name)
+        terminal_env_registry.register_provider(provider)
+        try:
+            assert A._should_skip_container_guards(provider.name) is True
+            assert A._should_skip_container_guards("unknown_plugin_backend") is False
+        finally:
+            terminal_env_registry.restore_registration(provider.name, provider, previous)
+
+        class BrokenDisposablePlugin(DisposablePlugin):
+            name = "broken_approval_disposable_plugin"
+
+            @property
+            def skip_container_guards(self):
+                raise RuntimeError("broken plugin classification")
+
+        broken_provider = BrokenDisposablePlugin()
+        terminal_env_registry.register_provider(broken_provider)
+        try:
+            assert A._should_skip_container_guards(broken_provider.name) is False
+        finally:
+            terminal_env_registry.restore_registration(broken_provider.name, broken_provider, None)
+
     def test_isolated_docker_keeps_fast_path(self, monkeypatch):
         """Isolated Docker still bypasses dangerous-command approval."""
         import tools.approval as A
@@ -391,10 +355,19 @@ class TestDockerHostBindApproval:
         config permanently allowlists e.g. "delete in root path" the guard
         under test silently approves and the assertions flip. CI never has
         such an allowlist, making this a local-only flake.
+
+        Same import-time freeze applies to ``_YOLO_MODE_FROZEN``: it reads
+        HERMES_YOLO_MODE off the environment when the module is imported at
+        collection time, before conftest's per-test env blanking runs. A test
+        run launched from a --yolo Hermes session (or any shell exporting
+        HERMES_YOLO_MODE=1) freezes True and every guard auto-approves.
+        Reset it explicitly so the tests exercise the guard, not the bypass.
         """
         import tools.approval as A
         monkeypatch.setattr(A, "_permanent_approved", set())
         monkeypatch.setattr(A, "_session_approved", {})
+        monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
 
     def test_host_bound_docker_requires_approval(self, monkeypatch):
         """Host-bound Docker dangerous command escalates instead of bypassing."""

@@ -292,7 +292,7 @@ export function parseMultipleKeypresses(
   const inputString = isFlush ? '' : inputToString(input)
 
   // Get or create tokenizer
-  const tokenizer = prevState._tokenizer ?? createTokenizer({ x10Mouse: true })
+  const tokenizer = prevState._tokenizer ?? createTokenizer({ x10Mouse: true, legacyAltEnter: true })
 
   // Tokenize the input
   const tokens = isFlush ? tokenizer.flush() : tokenizer.feed(inputString)
@@ -535,6 +535,10 @@ function decodeModifier(modifier: number): {
  */
 function keycodeToName(keycode: number): string | undefined {
   switch (keycode) {
+    // Kitty keyboard protocol functional keys (F13 through F24) are the
+    // first function-key codepoints in the private-use range. F1 through F12
+    // use their legacy CSI/SS3 sequences below.
+
     case 9:
       return 'tab'
 
@@ -721,7 +725,7 @@ function parseKeypress(s: string = ''): ParsedKey {
     return {
       kind: 'key',
       name,
-      fn: false,
+      fn: Boolean(name?.startsWith('f')),
       ctrl: mods.ctrl,
       meta: mods.meta,
       shift: mods.shift,
@@ -796,9 +800,10 @@ function parseKeypress(s: string = ''): ParsedKey {
     return createNavKey(s, 'mouse', false)
   }
 
-  if (s === '\r' || s === '\n') {
+  if (s === '\r' || s === '\n' || s === '\x1b\r' || s === '\x1b\n') {
     key.raw = undefined
     key.name = 'return'
+    key.meta = s.startsWith('\x1b')
   } else if (s === '\t') {
     key.name = 'tab'
   } else if (s === '\b' || s === '\x1b\b') {
@@ -847,6 +852,7 @@ function parseKeypress(s: string = ''): ParsedKey {
     key.code = code
 
     key.name = keyName[code]
+    key.fn = Boolean(key.name?.startsWith('f'))
     key.shift = isShiftKey(code) || key.shift
     key.ctrl = isCtrlKey(code) || key.ctrl
   }

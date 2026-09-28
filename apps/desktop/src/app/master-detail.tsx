@@ -391,6 +391,16 @@ export function ListStripMenu({
   )
 }
 
+const LIST_STRIP_LABEL_CLASS = 'text-[0.68rem] font-medium text-muted-foreground/70'
+
+export function ListStripLabel({ children }: { children: ReactNode }) {
+  return (
+    <span className={LIST_STRIP_LABEL_CLASS} role="status">
+      {children}
+    </span>
+  )
+}
+
 export function ListStripButton({
   active,
   children,
@@ -405,7 +415,8 @@ export function ListStripButton({
   return (
     <button
       className={cn(
-        'cursor-pointer text-[0.68rem] font-medium transition-colors disabled:opacity-40',
+        LIST_STRIP_LABEL_CLASS,
+        'cursor-pointer transition-colors disabled:opacity-40',
         active ? 'text-foreground' : 'text-muted-foreground/70 hover:text-foreground'
       )}
       disabled={disabled}
@@ -418,23 +429,27 @@ export function ListStripButton({
 }
 
 interface CapRowProps {
+  /** Rendered in the switch slot instead of the Switch (e.g. an Install
+   *  button for not-yet-installed catalog rows). */
+  action?: ReactNode
   active: boolean
   busy?: boolean
   enabled: boolean
   meta?: ReactNode
   onSelect: () => void
-  onToggle: (checked: boolean) => void
+  onToggle?: (checked: boolean) => void
   rowId?: string
   /** Second line under the name (category, description, status). Rows grow to h-11. */
   subtitle?: ReactNode
   title: string
-  toggleLabel: string
+  toggleLabel?: string
 }
 
 // The one row used by all three lists. Fixed height, always-visible switch —
 // state reads from the switch + dimmed title, toggling never requires
 // selecting first. Off rows dim; the switch itself dims when off.
 export function CapRow({
+  action,
   active,
   busy,
   enabled,
@@ -449,7 +464,11 @@ export function CapRow({
   return (
     <div
       className={cn(
-        'group/row row-hover flex w-full shrink-0 items-center rounded-md hover:text-foreground',
+        // content-visibility:auto lets the browser skip layout/paint for
+        // offscreen rows — the Capabilities lists routinely hold 80+ entries.
+        // Row height is already fixed (h-8/h-11), so skipped rows keep their
+        // exact size and scrollbar geometry never jumps.
+        'group/row row-hover flex w-full shrink-0 items-center rounded-md [content-visibility:auto] hover:text-foreground',
         subtitle ? 'h-11' : 'h-8',
         active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
       )}
@@ -480,15 +499,19 @@ export function CapRow({
           </span>
         )}
       </RowButton>
-      <Switch
-        aria-label={toggleLabel}
-        checked={enabled}
-        className={cn('mr-1.5 shrink-0 cursor-pointer', !enabled && 'opacity-60')}
-        disabled={busy}
-        onCheckedChange={onToggle}
-        size="xs"
-        title={toggleLabel}
-      />
+      {action != null ? (
+        <span className="mr-1.5 flex shrink-0 items-center">{action}</span>
+      ) : (
+        <Switch
+          aria-label={toggleLabel ?? title}
+          checked={enabled}
+          className={cn('mr-1.5 shrink-0 cursor-pointer', !enabled && 'opacity-60')}
+          disabled={busy}
+          onCheckedChange={onToggle}
+          size="xs"
+          title={toggleLabel ?? title}
+        />
+      )}
     </div>
   )
 }

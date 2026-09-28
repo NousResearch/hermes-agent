@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { HermesGitWorktree } from '@/global'
+import { makeCwdSession } from '@/test/session-info'
 import type { ProjectInfo, SessionInfo } from '@/types/hermes'
 
 import {
@@ -12,6 +13,10 @@ import {
   NO_PROJECT_ID,
   overlayLiveLanes,
   overlayLivePreviews,
+  projectOwnerBySessionId,
+  reconcileEnteredProjectSessions,
+  sessionBucketId,
+  sessionMatchesProjectFilter,
   sessionProjectColor,
   type SidebarProjectTree,
   type SidebarSessionGroup,
@@ -21,29 +26,6 @@ import {
 // The grouping itself now lives on the backend (tui_gateway/project_tree.py,
 // covered by tests/tui_gateway/test_project_tree.py). This file only covers the
 // thin render helpers the desktop still owns + the VISUAL worktree enhancer.
-
-let nextId = 0
-
-function makeSession(cwd: null | string, overrides: Partial<SessionInfo> = {}): SessionInfo {
-  return {
-    archived: false,
-    cwd,
-    ended_at: null,
-    id: `s${nextId++}`,
-    input_tokens: 0,
-    is_active: false,
-    last_active: 1_000,
-    message_count: 1,
-    model: 'claude',
-    output_tokens: 0,
-    preview: null,
-    source: 'cli',
-    started_at: 1_000,
-    title: null,
-    tool_call_count: 0,
-    ...overrides
-  }
-}
 
 const lane = (over: Partial<SidebarSessionGroup> & Pick<SidebarSessionGroup, 'id' | 'label'>): SidebarSessionGroup => ({
   path: null,
@@ -76,7 +58,7 @@ describe('kanbanWorktreeDir', () => {
 
 describe('sortWorktreeGroups', () => {
   it('pins trunk to the top, sinks kanban to the bottom, and orders the rest by recency', () => {
-    const at = (t: number) => [makeSession('/x', { last_active: t })]
+    const at = (t: number) => [makeCwdSession('/x', { last_active: t })]
 
     const groups = [
       lane({ id: 'k', label: 'kanban', isKanban: true, sessions: at(999) }),
@@ -92,7 +74,7 @@ describe('sortWorktreeGroups', () => {
 
   it('pins the live home checkout above trunk, even when it has no sessions yet', () => {
     const groups = [
-      lane({ id: 'main', label: 'main', isMain: true, sessions: [makeSession('/x', { last_active: 999 })] }),
+      lane({ id: 'main', label: 'main', isMain: true, sessions: [makeCwdSession('/x', { last_active: 999 })] }),
       lane({ id: 'home', label: 'bb/projects-paradigm', isMain: true, isHome: true })
     ]
 
@@ -150,7 +132,7 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
           label: 'main',
           isMain: true,
           path: '/repo',
-          sessions: [makeSession('/repo')]
+          sessions: [makeCwdSession('/repo')]
         })
       ]
     }
@@ -176,7 +158,13 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
 
   it('does not add a second "main" for a linked worktree checked out on main', () => {
     const groups = [
-      lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo', sessions: [makeSession('/repo')] })
+      lane({
+        id: '/repo::branch::main',
+        label: 'main',
+        isMain: true,
+        path: '/repo',
+        sessions: [makeCwdSession('/repo')]
+      })
     ]
 
     const discovered: HermesGitWorktree[] = [
@@ -216,14 +204,14 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
           label: 'main',
           isMain: true,
           path: '/repo',
-          sessions: [makeSession('/repo')]
+          sessions: [makeCwdSession('/repo')]
         }),
         lane({
           id: '/repo-ci',
           label: 'hermes-agent-ci',
           isMain: false,
           path: '/repo-ci',
-          sessions: [makeSession('/repo-ci')]
+          sessions: [makeCwdSession('/repo-ci')]
         })
       ]
     }
@@ -256,7 +244,7 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
           label: 'bb/attempts',
           isMain: false,
           path: '/repo/.worktrees/attempts',
-          sessions: [makeSession('/repo/.worktrees/attempts')]
+          sessions: [makeCwdSession('/repo/.worktrees/attempts')]
         })
       ]
     }
@@ -291,7 +279,7 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
           label: 'bb/feature',
           isMain: false,
           path: '/repo-feature',
-          sessions: [makeSession('/repo-feature'), makeSession('/repo-feature')]
+          sessions: [makeCwdSession('/repo-feature'), makeCwdSession('/repo-feature')]
         })
       ]
     }
@@ -313,7 +301,13 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
       id: '/repo',
       path: '/repo',
       groups: [
-        lane({ id: '/repo-ci', label: 'repo-ci', isMain: false, path: '/repo-ci', sessions: [makeSession('/repo-ci')] })
+        lane({
+          id: '/repo-ci',
+          label: 'repo-ci',
+          isMain: false,
+          path: '/repo-ci',
+          sessions: [makeCwdSession('/repo-ci')]
+        })
       ]
     }
 
@@ -334,7 +328,7 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
           label: 'main',
           isMain: true,
           path: '/repo',
-          sessions: [makeSession('/repo')]
+          sessions: [makeCwdSession('/repo')]
         })
       ]
     }
@@ -366,7 +360,7 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
           label: 'main',
           isMain: true,
           path: '/repo',
-          sessions: [makeSession('/repo')]
+          sessions: [makeCwdSession('/repo')]
         })
       ]
     }
@@ -391,14 +385,14 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
           label: 'main',
           isMain: true,
           path: '/repo',
-          sessions: [makeSession('/repo', { id: 'a' })]
+          sessions: [makeCwdSession('/repo', { id: 'a' })]
         }),
         lane({
           id: '/repo::branch::old',
           label: 'old-feature',
           isMain: true,
           path: '/repo',
-          sessions: [makeSession('/repo', { id: 'b' })]
+          sessions: [makeCwdSession('/repo', { id: 'b' })]
         })
       ]
     }
@@ -425,7 +419,7 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
           label: 'main',
           isMain: true,
           path: '/repo',
-          sessions: [makeSession('/repo')]
+          sessions: [makeCwdSession('/repo')]
         })
       ]
     }
@@ -481,11 +475,11 @@ const homeNode = (sessions: SessionInfo[]): SidebarProjectTree =>
 
 describe('liveSessionProjectId', () => {
   it('maps a brand-new (unpersisted) session to its auto project (the repo root)', () => {
-    expect(liveSessionProjectId(makeSession('/www/app'), [])).toBe('/www/app')
+    expect(liveSessionProjectId(makeCwdSession('/www/app'), [])).toBe('/www/app')
   })
 
   it('routes a session under an explicit project folder to that project', () => {
-    const id = liveSessionProjectId(makeSession('/www/app/src', { git_repo_root: '/www/app', git_branch: 'feat' }), [
+    const id = liveSessionProjectId(makeCwdSession('/www/app/src', { git_repo_root: '/www/app', git_branch: 'feat' }), [
       makeProject('p_app', ['/www/app'])
     ])
 
@@ -495,31 +489,31 @@ describe('liveSessionProjectId', () => {
   it('anchors a cwd-less session on its git_repo_root (backend groups it there too)', () => {
     // Older/imported rows carry only a repo root; the sidebar files them under
     // the repo's project, so membership (and color) must resolve from the root.
-    expect(liveSessionProjectId(makeSession(null, { git_repo_root: '/www/app' }), [])).toBe('/www/app')
+    expect(liveSessionProjectId(makeCwdSession(null, { git_repo_root: '/www/app' }), [])).toBe('/www/app')
     expect(
-      liveSessionProjectId(makeSession(null, { git_repo_root: '/www/app' }), [makeProject('p_app', ['/www/app'])])
+      liveSessionProjectId(makeCwdSession(null, { git_repo_root: '/www/app' }), [makeProject('p_app', ['/www/app'])])
     ).toBe('p_app')
   })
 
   it('skips cwd-less, kanban-task, and out-of-tree (sibling) worktree sessions', () => {
-    expect(liveSessionProjectId(makeSession(null), [])).toBeNull()
+    expect(liveSessionProjectId(makeCwdSession(null), [])).toBeNull()
     // Kanban task worktree → folds into the kanban bucket, not a project preview.
-    expect(liveSessionProjectId(makeSession('/repo/.worktrees/t_aaaaaaaa'), [])).toBeNull()
+    expect(liveSessionProjectId(makeCwdSession('/repo/.worktrees/t_aaaaaaaa'), [])).toBeNull()
     // Sibling worktree OUTSIDE the repo root → project can't be derived from the row.
-    expect(liveSessionProjectId(makeSession('/elsewhere/wt', { git_repo_root: '/repo' }), [])).toBeNull()
+    expect(liveSessionProjectId(makeCwdSession('/elsewhere/wt', { git_repo_root: '/repo' }), [])).toBeNull()
   })
 
   it('places an in-tree worktree session under its repo project (the root is in the path)', () => {
     // "Convert a branch" / "new worktree" land at `<repoRoot>/.worktrees/<slug>`,
     // so they belong to the same auto project as the repo root and must show in
     // the overview at once, not wait for the next backend refresh.
-    expect(liveSessionProjectId(makeSession('/www/app/.worktrees/test1', { git_repo_root: '/www/app' }), [])).toBe(
+    expect(liveSessionProjectId(makeCwdSession('/www/app/.worktrees/test1', { git_repo_root: '/www/app' }), [])).toBe(
       '/www/app'
     )
   })
 
   it('routes an in-tree worktree session to the owning explicit project', () => {
-    const id = liveSessionProjectId(makeSession('/www/app/.worktrees/test1', { git_repo_root: '/www/app' }), [
+    const id = liveSessionProjectId(makeCwdSession('/www/app/.worktrees/test1', { git_repo_root: '/www/app' }), [
       makeProject('p_app', ['/www/app'])
     ])
 
@@ -532,13 +526,13 @@ describe('liveSessionProjectId', () => {
     // only the auto-project (repo root) fallback needs cwd-under-root
     // confidence. Match via the repo root...
     expect(
-      liveSessionProjectId(makeSession('/www/elsewhere', { git_repo_root: '/home/u/proj' }), [
+      liveSessionProjectId(makeCwdSession('/www/elsewhere', { git_repo_root: '/home/u/proj' }), [
         makeProject('p_proj', ['/home/u/proj'])
       ])
     ).toBe('p_proj')
     // ...and via the cwd.
     expect(
-      liveSessionProjectId(makeSession('/www/elsewhere/sub', { git_repo_root: '/home/u/proj' }), [
+      liveSessionProjectId(makeCwdSession('/www/elsewhere/sub', { git_repo_root: '/home/u/proj' }), [
         makeProject('p_www', ['/www/elsewhere'])
       ])
     ).toBe('p_www')
@@ -547,13 +541,13 @@ describe('liveSessionProjectId', () => {
   it('matches a mixed-case/separator Windows cwd to its explicit project in the live overlay', () => {
     // The bug: a fresh Windows session drops into the overlay before the next
     // backend refresh; case-sensitive matching missed its project until then.
-    const id = liveSessionProjectId(makeSession('c:/work/notes/SUB'), [makeProject('p_notes', ['C:\\Work\\Notes'])])
+    const id = liveSessionProjectId(makeCwdSession('c:/work/notes/SUB'), [makeProject('p_notes', ['C:\\Work\\Notes'])])
 
     expect(id).toBe('p_notes')
   })
 
   it('matches a root-relative WSL cwd (single backslash) case-insensitively', () => {
-    const id = liveSessionProjectId(makeSession('//wsl.localhost/Ubuntu/home/alice/PROJ'), [
+    const id = liveSessionProjectId(makeCwdSession('//wsl.localhost/Ubuntu/home/alice/PROJ'), [
       makeProject('p_proj', ['\\wsl.localhost\\Ubuntu\\home\\alice\\proj'])
     ])
 
@@ -562,9 +556,27 @@ describe('liveSessionProjectId', () => {
 
   it('keeps POSIX cwd matching case-sensitive (no false project match)', () => {
     // Distinct case on POSIX is a distinct path → falls back to its own auto id.
-    expect(liveSessionProjectId(makeSession('/work/notes'), [makeProject('p_notes', ['/Work/Notes'])])).toBe(
+    expect(liveSessionProjectId(makeCwdSession('/work/notes'), [makeProject('p_notes', ['/Work/Notes'])])).toBe(
       '/work/notes'
     )
+  })
+
+  it('matches NFD and NFC spellings of the same accented folder (#65014)', () => {
+    // The same on-disk folder can reach us as NFC (typed paths, backend cwd)
+    // or NFD (macOS file pickers) — byte-different, visually identical.
+    const nfc = '/projects/sv/bist\u00e5nd'
+    const nfd = nfc.normalize('NFD')
+
+    expect(nfd).not.toBe(nfc) // premise: distinct byte strings
+    expect(liveSessionProjectId(makeCwdSession(nfd), [makeProject('p_bistand', [nfc])])).toBe('p_bistand')
+  })
+
+  it('matches a Windows cwd differing in both case and normalization form (#65014)', () => {
+    const id = liveSessionProjectId(makeCwdSession('d:/projects/sv/bist\u00e5nd'.normalize('NFD')), [
+      makeProject('p_sv', ['D:\\Projects\\SV\\Bist\u00e5nd'.normalize('NFC')])
+    ])
+
+    expect(id).toBe('p_sv')
   })
 })
 
@@ -575,19 +587,19 @@ describe('sessionProjectColor', () => {
   })
 
   it('inherits the color of the explicit project the session belongs to', () => {
-    const session = makeSession('/www/app/src', { git_repo_root: '/www/app' })
+    const session = makeCwdSession('/www/app/src', { git_repo_root: '/www/app' })
 
     expect(sessionProjectColor(session, [colored('p_app', ['/www/app'], '#4a9eff')])).toBe('#4a9eff')
   })
 
   it('returns null when the owning project has no color set', () => {
-    const session = makeSession('/www/app/src', { git_repo_root: '/www/app' })
+    const session = makeCwdSession('/www/app/src', { git_repo_root: '/www/app' })
 
     expect(sessionProjectColor(session, [makeProject('p_app', ['/www/app'])])).toBeNull()
   })
 
   it('colors a cwd-less session by its git_repo_root project (the grouped-but-grey fix)', () => {
-    const session = makeSession(null, { git_repo_root: '/www/app' })
+    const session = makeCwdSession(null, { git_repo_root: '/www/app' })
 
     expect(sessionProjectColor(session, [colored('p_app', ['/www/app'], '#4a9eff')])).toBe('#4a9eff')
   })
@@ -595,7 +607,7 @@ describe('sessionProjectColor', () => {
   it('colors a cwd-outside-root session when an explicit project folder matches', () => {
     // The backend tree groups such a row under the project; the client color
     // derivation must agree instead of leaving the row (and its tab) grey.
-    const session = makeSession('/www/elsewhere', { git_repo_root: '/home/u/proj' })
+    const session = makeCwdSession('/www/elsewhere', { git_repo_root: '/home/u/proj' })
 
     expect(sessionProjectColor(session, [colored('p_proj', ['/home/u/proj'], '#4a9eff')])).toBe('#4a9eff')
   })
@@ -603,15 +615,15 @@ describe('sessionProjectColor', () => {
   it('returns null for a session that only maps to an auto repo root (no explicit project)', () => {
     // liveSessionProjectId falls back to the repo root id, which is not a
     // project row and therefore carries no color.
-    expect(sessionProjectColor(makeSession('/www/app'), [])).toBeNull()
+    expect(sessionProjectColor(makeCwdSession('/www/app'), [])).toBeNull()
   })
 
   it('returns null for an unplaceable (cwd-less) session', () => {
-    expect(sessionProjectColor(makeSession(null), [colored('p_app', ['/www/app'], '#4a9eff')])).toBeNull()
+    expect(sessionProjectColor(makeCwdSession(null), [colored('p_app', ['/www/app'], '#4a9eff')])).toBeNull()
   })
 
   it('uses the longest-prefix project when nested projects both match', () => {
-    const session = makeSession('/www/app/packages/api/src', { git_repo_root: '/www/app' })
+    const session = makeCwdSession('/www/app/packages/api/src', { git_repo_root: '/www/app' })
 
     const projects = [
       colored('p_root', ['/www/app'], '#111111'),
@@ -623,6 +635,101 @@ describe('sessionProjectColor', () => {
 })
 
 describe('overlayLiveLanes', () => {
+  // Issue layout: explicit "work" (/work) + explicit "app" (/work/repos/app);
+  // the session's cwd is the SIBLING linked worktree /work/repos/app-2, which
+  // the backend's git common-root probe assigns to "app" while the renderer's
+  // cwd walk alone only finds "work".
+  it.each([null, '/work/repos/app'])(
+    'entering an ancestor project does not inject a backend-owned sibling worktree session (git_repo_root=%s)',
+    gitRepoRoot => {
+      const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: gitRepoRoot })
+
+      const ancestor = projectNode({
+        id: 'p_work',
+        path: '/work',
+        repos: [{ id: '/work', label: 'work', path: '/work', groups: [], sessionCount: 0 }]
+      })
+
+      const appRepo = {
+        id: '/work/repos/app',
+        label: 'app',
+        path: '/work/repos/app',
+        groups: [lane({ id: '/work/repos/app-2', label: 'app-2', path: '/work/repos/app-2', sessions: [] })],
+        sessionCount: 0
+      }
+
+      // Overview snapshot: the row sits beyond the preview window, so only the
+      // backend's claimed-id set knows the owner.
+      const repo = projectNode({ id: 'p_app', path: '/work/repos/app', previewSessions: [], sessionIds: ['sibling'] })
+      const owners = projectOwnerBySessionId([ancestor, repo])
+
+      const enteredAncestor = overlayLiveLanes(ancestor, [sibling], new Set(), owners)
+      const enteredRepo = overlayLiveLanes({ ...repo, repos: [appRepo] }, [sibling], new Set(), owners)
+
+      expect(enteredAncestor.sessionCount).toBe(0)
+      expect(enteredRepo.repos[0].groups.find(g => g.id === '/work/repos/app-2')?.sessions.map(s => s.id)).toEqual([
+        'sibling'
+      ])
+      // A row the tree does not know yet (just created) still lands by cwd.
+      const fresh = makeCwdSession('/work/notes', { id: 'fresh', git_repo_root: null })
+
+      expect(overlayLiveLanes(ancestor, [fresh], new Set(), owners).sessionCount).toBe(1)
+    }
+  )
+
+  it('keeps an overview preview visible when the hydrated drill-in is stale', () => {
+    const staleHistory = makeCwdSession('/www/app', {
+      id: 'stale-history',
+      git_branch: 'main',
+      last_active: 10
+    })
+
+    const currentPreview = makeCwdSession('/www/app', {
+      id: 'current-preview',
+      git_branch: 'main',
+      last_active: 20
+    })
+
+    const project = projectNode({
+      id: '/www/app',
+      isAuto: true,
+      previewSessions: [currentPreview],
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [
+            lane({
+              id: '/www/app::branch::main',
+              label: 'main',
+              isMain: true,
+              path: '/www/app',
+              sessions: [staleHistory]
+            })
+          ]
+        }
+      ]
+    })
+
+    const overlaySessions = reconcileEnteredProjectSessions([], project.previewSessions)
+    const overlaid = overlayLiveLanes(project, overlaySessions)
+
+    expect(overlaid.repos[0].groups[0].sessions.map(session => session.id)).toEqual([
+      'current-preview',
+      'stale-history'
+    ])
+  })
+
+  it('keeps the live row when it is also present in the overview preview', () => {
+    const live = makeCwdSession('/www/app', { id: 'same', title: 'live title' })
+    const preview = makeCwdSession('/www/app', { id: 'same', title: 'preview title' })
+    const reconciled = reconcileEnteredProjectSessions([live], [preview])
+
+    expect(reconciled).toEqual([live])
+  })
+
   it('injects a live session into the matching main lane instantly', () => {
     const project = projectNode({
       id: '/www/app',
@@ -630,12 +737,66 @@ describe('overlayLiveLanes', () => {
       repos: [{ id: '/www/app', label: 'app', path: '/www/app', sessionCount: 0, groups: [] }]
     })
 
-    const live = [makeSession('/www/app', { id: 'fresh', git_branch: 'main' })]
+    const live = [makeCwdSession('/www/app', { id: 'fresh', git_branch: 'main' })]
 
     const overlaid = overlayLiveLanes(project, live)
     const lane = overlaid.repos[0].groups.find(g => g.label === 'main')
 
     expect(lane?.sessions.map(session => session.id)).toContain('fresh')
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
+  it('keeps cwd-less repo sessions visible in both the overview and project drill-in', () => {
+    const project = projectNode({
+      id: '/www/app',
+      isAuto: true,
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 0,
+          groups: [lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app' })]
+        }
+      ]
+    })
+
+    const live = makeCwdSession(null, { id: 'fresh', git_branch: 'main', git_repo_root: '/www/app' })
+
+    expect(overlayLivePreviews([project], [live], [], 3)['/www/app'].map(session => session.id)).toEqual(['fresh'])
+
+    const overlaid = overlayLiveLanes(project, [live])
+
+    expect(overlaid.repos[0].groups.flatMap(group => group.sessions.map(session => session.id))).toEqual(['fresh'])
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
+  it('places a cwd-less repo session only in its exact repo subtree', () => {
+    const project = projectNode({
+      id: '/www',
+      repos: [
+        {
+          id: '/www',
+          label: 'www',
+          path: '/www',
+          sessionCount: 0,
+          groups: [lane({ id: '/www::branch::main', label: 'main', isMain: true, path: '/www' })]
+        },
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 0,
+          groups: [lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app' })]
+        }
+      ]
+    })
+
+    const live = makeCwdSession(null, { id: 'fresh', git_branch: 'main', git_repo_root: '/www/app' })
+    const overlaid = overlayLiveLanes(project, [live])
+
+    expect(overlaid.repos[0].groups.flatMap(group => group.sessions)).toEqual([])
+    expect(overlaid.repos[1].groups.flatMap(group => group.sessions.map(session => session.id))).toEqual(['fresh'])
     expect(overlaid.sessionCount).toBe(1)
   })
 
@@ -649,7 +810,7 @@ describe('overlayLiveLanes', () => {
       repos: [{ id: '/www/app', label: 'app', path: '/www/app', sessionCount: 0, groups: [] }]
     })
 
-    const live = [makeSession('/www/app/.worktrees/baby', { id: 'fresh' })]
+    const live = [makeCwdSession('/www/app/.worktrees/baby', { id: 'fresh' })]
 
     const overlaid = overlayLiveLanes(project, live)
     const lane = overlaid.repos[0].groups.find(g => g.id === '/www/app/.worktrees/baby')
@@ -665,7 +826,7 @@ describe('overlayLiveLanes', () => {
       repos: [{ id: '/www/app', label: 'app', path: '/www/app', sessionCount: 0, groups: [] }]
     })
 
-    const live = [makeSession('/www/app/.worktrees/t_abc12345', { id: 'k' })]
+    const live = [makeCwdSession('/www/app/.worktrees/t_abc12345', { id: 'k' })]
 
     const overlaid = overlayLiveLanes(project, live)
     const lane = overlaid.repos[0].groups.find(g => g.isKanban)
@@ -675,7 +836,7 @@ describe('overlayLiveLanes', () => {
   })
 
   it('does not duplicate a session already present in a backend lane', () => {
-    const existing = makeSession('/www/app', { id: 'dup', git_branch: 'main' })
+    const existing = makeCwdSession('/www/app', { id: 'dup', git_branch: 'main' })
 
     const project = projectNode({
       id: '/www/app',
@@ -704,8 +865,8 @@ describe('overlayLiveLanes', () => {
     // and CREATE a second main lane with the same sessions — dual lanes in the
     // project drill-in (e.g. main + codex-research-guardian).
     const root = '/home/hermes/hermes-workspace/codex-research-guardian'
-    const a = makeSession(root, { id: 's1' }) // empty git_branch / git_repo_root
-    const b = makeSession(root, { id: 's2' })
+    const a = makeCwdSession(root, { id: 's1' }) // empty git_branch / git_repo_root
+    const b = makeCwdSession(root, { id: 's2' })
 
     const project = projectNode({
       id: root,
@@ -742,7 +903,7 @@ describe('overlayLiveLanes', () => {
 
   it('joins a fresh live session into an existing non-git workspace lane (no branch id)', () => {
     const root = '/work/notes'
-    const existing = makeSession(root, { id: 'old' })
+    const existing = makeCwdSession(root, { id: 'old' })
 
     const project = projectNode({
       id: root,
@@ -759,7 +920,7 @@ describe('overlayLiveLanes', () => {
       ]
     })
 
-    const fresh = makeSession(root, { id: 'fresh' })
+    const fresh = makeCwdSession(root, { id: 'fresh' })
     const overlaid = overlayLiveLanes(project, [existing, fresh])
     const groups = overlaid.repos[0].groups
 
@@ -769,14 +930,14 @@ describe('overlayLiveLanes', () => {
   })
 
   it('preserves backend recency order when live sessions overlay a lane', () => {
-    const recentlyActive = makeSession('/www/app', {
+    const recentlyActive = makeCwdSession('/www/app', {
       id: 'recently-active',
       git_branch: 'main',
       started_at: 1,
       last_active: 3
     })
 
-    const newlyCreated = makeSession('/www/app', {
+    const newlyCreated = makeCwdSession('/www/app', {
       id: 'newly-created',
       git_branch: 'main',
       started_at: 2,
@@ -816,7 +977,7 @@ describe('overlayLiveLanes', () => {
     // Backend keyed the worktree lane off a branch-style id (no live git probe),
     // but the lane PATH is the worktree dir. A new session under that worktree
     // must join the existing lane, not spawn a twin.
-    const existing = makeSession('/www/app/.worktrees/baby', { id: 'old' })
+    const existing = makeCwdSession('/www/app/.worktrees/baby', { id: 'old' })
 
     const project = projectNode({
       id: '/www/app',
@@ -838,7 +999,7 @@ describe('overlayLiveLanes', () => {
       ]
     })
 
-    const fresh = makeSession('/www/app/.worktrees/baby', { id: 'fresh' })
+    const fresh = makeCwdSession('/www/app/.worktrees/baby', { id: 'fresh' })
 
     const overlaid = overlayLiveLanes(project, [existing, fresh])
     const lanes = overlaid.repos[0].groups.filter(g => g.path === '/www/app/.worktrees/baby')
@@ -850,7 +1011,7 @@ describe('overlayLiveLanes', () => {
   it('places a session into an out-of-tree (sibling) worktree lane by its path', () => {
     // `hermes-agent-ci` is a linked worktree living BESIDE the repo, not under
     // it — repo-root nesting fails, but the existing lane carries its real path.
-    const existing = makeSession('/www/app-ci', { id: 'old' })
+    const existing = makeCwdSession('/www/app-ci', { id: 'old' })
 
     const project = projectNode({
       id: '/www/app',
@@ -868,7 +1029,7 @@ describe('overlayLiveLanes', () => {
       ]
     })
 
-    const fresh = makeSession('/www/app-ci', { id: 'fresh' })
+    const fresh = makeCwdSession('/www/app-ci', { id: 'fresh' })
 
     const overlaid = overlayLiveLanes(project, [existing, fresh])
     const ci = overlaid.repos[0].groups.find(g => g.path === '/www/app-ci')
@@ -890,7 +1051,7 @@ describe('overlayLiveLanes', () => {
       repos: [{ id: '/www/app', label: 'app', path: '/www/app', sessionCount: 0, groups }]
     })
 
-    const fresh = makeSession('/www/app-retry', { id: 'fresh' })
+    const fresh = makeCwdSession('/www/app-retry', { id: 'fresh' })
 
     const overlaid = overlayLiveLanes(project, [fresh])
     const lane = overlaid.repos[0].groups.find(g => g.path === '/www/app-retry')
@@ -899,8 +1060,8 @@ describe('overlayLiveLanes', () => {
   })
 
   it('evicts a deleted/archived snapshot row (and drops the lane once empty)', () => {
-    const a = makeSession('/www/app', { id: 'keep', git_branch: 'main' })
-    const b = makeSession('/www/app/.worktrees/baby', { id: 'gone' })
+    const a = makeCwdSession('/www/app', { id: 'keep', git_branch: 'main' })
+    const b = makeCwdSession('/www/app/.worktrees/baby', { id: 'gone' })
 
     const project = projectNode({
       id: '/www/app',
@@ -927,14 +1088,39 @@ describe('overlayLiveLanes', () => {
   })
 
   it('adds a brand-new detached chat to Home, and evicts a deleted one', () => {
-    const existing = makeSession(null, { id: 'old', started_at: 1 })
-    const doomed = makeSession(null, { id: 'gone', started_at: 2 })
+    const existing = makeCwdSession(null, { id: 'old', started_at: 1 })
+    const doomed = makeCwdSession(null, { id: 'gone', started_at: 2 })
     const home = homeNode([existing, doomed])
 
-    const overlaid = overlayLiveLanes(home, [makeSession(null, { id: 'fresh', started_at: 9 })], new Set(['gone']))
+    const overlaid = overlayLiveLanes(home, [makeCwdSession(null, { id: 'fresh', started_at: 9 })], new Set(['gone']))
 
     expect(overlaid.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['fresh', 'old'])
     expect(overlaid.sessionCount).toBe(2)
+  })
+
+  it('never lists a chat owned by a named project in Home, even while its live copy is detached', () => {
+    // #77591: the snapshot assigns the chat to p_app, but session.info can land
+    // with an empty cwd + root. Home must defer to the one owner, including by
+    // lineage root after compression rotates the live id.
+    const home = homeNode([makeCwdSession(null, { id: 'stale' })])
+
+    const owners = new Map([
+      ['owned', 'p_app'],
+      ['root', 'p_app'],
+      ['stale', 'p_app'],
+      ['homeless', NO_PROJECT_ID]
+    ])
+
+    const live = [
+      makeCwdSession(null, { id: 'owned' }),
+      makeCwdSession(null, { id: 'tip', _lineage_root_id: 'root' }),
+      makeCwdSession(null, { id: 'homeless' })
+    ]
+
+    const overlaid = overlayLiveLanes(home, live, new Set(), owners)
+
+    expect(overlaid.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['homeless'])
+    expect(overlaid.sessionCount).toBe(1)
   })
 
   it('leaves Home alone for a session that has a cwd', () => {
@@ -943,14 +1129,73 @@ describe('overlayLiveLanes', () => {
     // and back out on the next snapshot.
     const home = homeNode([])
 
-    expect(overlayLiveLanes(home, [makeSession('/www/app', { id: 'fresh' })])).toBe(home)
+    expect(overlayLiveLanes(home, [makeCwdSession('/www/app', { id: 'fresh' })])).toBe(home)
+  })
+
+  // #77591 C: compression rotates the live id (root -> tip) while the snapshot
+  // still holds the older segment. Both are one conversation, so one row.
+  it.each([
+    ['a first compression', { id: 'root' }, { id: 'tip', _lineage_root_id: 'root', _lineage_ids: ['root', 'tip'] }],
+    [
+      'a deeper chain',
+      { id: 'mid', _lineage_root_id: 'root', _lineage_ids: ['root', 'mid'] },
+      { id: 'tip', _lineage_root_id: 'root', _lineage_ids: ['root', 'mid', 'tip'] }
+    ]
+  ])('replaces the snapshot row with its compressed live tip after %s', (_label, snapshotIds, liveIds) => {
+    const stale = makeCwdSession('/www/app', { ...snapshotIds, git_branch: 'main', last_active: 10 })
+    const tip = makeCwdSession('/www/app', { ...liveIds, git_branch: 'main', last_active: 20 })
+
+    const project = projectNode({
+      id: '/www/app',
+      isAuto: true,
+      repos: [
+        {
+          id: '/www/app',
+          label: 'app',
+          path: '/www/app',
+          sessionCount: 1,
+          groups: [
+            lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app', sessions: [stale] })
+          ]
+        }
+      ]
+    })
+
+    const overlaid = overlayLiveLanes(project, [tip])
+
+    expect(overlaid.repos[0].groups.flatMap(g => g.sessions.map(s => s.id))).toEqual(['tip'])
+    expect(overlaid.sessionCount).toBe(1)
+    // The drill-in's preview backfill must not re-add the older segment either.
+    expect(reconcileEnteredProjectSessions([tip], [stale]).map(s => s.id)).toEqual(['tip'])
+  })
+
+  it('keeps a compressed tip out of an ancestor project the snapshot did not give it to', () => {
+    // The owner map only knows the pre-compression id; the tip must inherit it
+    // instead of being re-placed by cwd into the umbrella project as well.
+    const tip = makeCwdSession('/work/repos/app-2', {
+      id: 'tip',
+      _lineage_root_id: 'root',
+      _lineage_ids: ['root', 'tip'],
+      git_repo_root: null
+    })
+
+    const ancestor = projectNode({
+      id: 'p_work',
+      path: '/work',
+      repos: [{ id: '/work', label: 'work', path: '/work', groups: [], sessionCount: 0 }]
+    })
+
+    const repo = projectNode({ id: 'p_app', path: '/work/repos/app', sessionIds: ['root'] })
+    const owners = projectOwnerBySessionId([ancestor, repo])
+
+    expect(overlayLiveLanes(ancestor, [tip], new Set(), owners).sessionCount).toBe(0)
   })
 
   it('evicts a session from the main lane when the live overlay places it into a worktree lane', () => {
     // Session was in main when the backend tree was captured, but the live
     // $sessions cache now has it under a worktree cwd. The overlay must place
     // it ONLY in the worktree lane — not both.
-    const session = makeSession('/www/app/.worktrees/feature', { id: 'moved', git_branch: 'feature' })
+    const session = makeCwdSession('/www/app/.worktrees/feature', { id: 'moved', git_branch: 'feature' })
 
     const project = projectNode({
       id: '/www/app',
@@ -986,25 +1231,66 @@ describe('overlayLiveLanes', () => {
 })
 
 describe('overlayLivePreviews', () => {
+  it.each([null, '/work/repos/app'])(
+    'shows a backend-owned sibling worktree session only under its repo project (git_repo_root=%s)',
+    gitRepoRoot => {
+      const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: gitRepoRoot })
+      const ancestor = projectNode({ id: 'p_work', path: '/work', previewSessions: [], sessionCount: 0 })
+
+      const repo = projectNode({
+        id: 'p_app',
+        path: '/work/repos/app',
+        previewSessions: [sibling],
+        sessionCount: 1,
+        sessionIds: ['sibling']
+      })
+
+      const previews = overlayLivePreviews(
+        [ancestor, repo],
+        [sibling],
+        [makeProject('p_work', ['/work']), makeProject('p_app', ['/work/repos/app'])],
+        3
+      )
+
+      expect(previews.p_work).toBeUndefined()
+      expect(previews.p_app?.map(session => session.id)).toEqual(['sibling'])
+    }
+  )
   it('merges live sessions into a project preview, live first, capped to the limit', () => {
     const project = projectNode({
       id: '/www/app',
-      previewSessions: [makeSession('/www/app', { id: 'old', started_at: 1, last_active: 1 })]
+      previewSessions: [makeCwdSession('/www/app', { id: 'old', started_at: 1, last_active: 1 })]
     })
 
-    const live = [makeSession('/www/app', { id: 'fresh', started_at: 99, last_active: 99 })]
+    const live = [makeCwdSession('/www/app', { id: 'fresh', started_at: 99, last_active: 99 })]
 
     const previews = overlayLivePreviews([project], live, [], 3)
 
     expect(previews['/www/app'].map(s => s.id)).toEqual(['fresh', 'old'])
   })
 
+  it('previews a compressed chat once, as its live tip (#77591)', () => {
+    const stale = makeCwdSession('/www/app', { id: 'root', last_active: 10 })
+
+    const tip = makeCwdSession('/www/app', {
+      id: 'tip',
+      _lineage_root_id: 'root',
+      _lineage_ids: ['root', 'tip'],
+      last_active: 20
+    })
+
+    const project = projectNode({ id: '/www/app', previewSessions: [stale], sessionIds: ['root'] })
+    const previews = overlayLivePreviews([project], [tip], [], 3)
+
+    expect(previews['/www/app'].map(s => s.id)).toEqual(['tip'])
+  })
+
   it('evicts a deleted session from a project preview (snapshot + live)', () => {
     const project = projectNode({
       id: '/www/app',
       previewSessions: [
-        makeSession('/www/app', { id: 'gone', started_at: 5, last_active: 5 }),
-        makeSession('/www/app', { id: 'old', started_at: 1, last_active: 1 })
+        makeCwdSession('/www/app', { id: 'gone', started_at: 5, last_active: 5 }),
+        makeCwdSession('/www/app', { id: 'old', started_at: 1, last_active: 1 })
       ]
     })
 
@@ -1017,9 +1303,9 @@ describe('overlayLivePreviews', () => {
     const project = projectNode({
       id: '/www/app',
       previewSessions: [
-        makeSession('/www/app', { id: 'newest', last_active: 9, started_at: 9 }),
-        makeSession('/www/app', { id: 'cheap', last_active: 8, started_at: 8 }),
-        makeSession('/www/app', { id: 'priciest', last_active: 1, started_at: 1 })
+        makeCwdSession('/www/app', { id: 'newest', last_active: 9, started_at: 9 }),
+        makeCwdSession('/www/app', { id: 'cheap', last_active: 8, started_at: 8 }),
+        makeCwdSession('/www/app', { id: 'priciest', last_active: 1, started_at: 1 })
       ]
     })
 
@@ -1029,7 +1315,7 @@ describe('overlayLivePreviews', () => {
   })
 
   it('previews a detached session under Home, which no cwd could place', () => {
-    const previews = overlayLivePreviews([homeNode([])], [makeSession(null, { id: 'fresh' })], [], 3)
+    const previews = overlayLivePreviews([homeNode([])], [makeCwdSession(null, { id: 'fresh' })], [], 3)
 
     expect(previews[NO_PROJECT_ID].map(s => s.id)).toEqual(['fresh'])
   })
@@ -1037,8 +1323,8 @@ describe('overlayLivePreviews', () => {
 
 describe('excludeProjectSessions', () => {
   it('drops matching rows from every lane and recounts the subtree', () => {
-    const keep = makeSession('/www/app', { id: 'keep' })
-    const pinnedRow = makeSession('/www/app', { id: 'pinned' })
+    const keep = makeCwdSession('/www/app', { id: 'keep' })
+    const pinnedRow = makeCwdSession('/www/app', { id: 'pinned' })
 
     const project = projectNode({
       id: '/www/app',
@@ -1062,7 +1348,7 @@ describe('excludeProjectSessions', () => {
   })
 
   it('keeps a lane the filter emptied — a worktree is structure, not a row', () => {
-    const pinnedRow = makeSession('/www/app/wt', { id: 'pinned' })
+    const pinnedRow = makeCwdSession('/www/app/wt', { id: 'pinned' })
 
     const project = projectNode({
       id: '/www/app',
@@ -1090,7 +1376,7 @@ describe('excludeProjectSessions', () => {
   it('returns the same node when nothing matches (memo-stable)', () => {
     const project = projectNode({
       id: '/www/app',
-      previewSessions: [makeSession('/www/app', { id: 'keep' })],
+      previewSessions: [makeCwdSession('/www/app', { id: 'keep' })],
       repos: [
         {
           id: '/www/app',
@@ -1098,7 +1384,7 @@ describe('excludeProjectSessions', () => {
           path: '/www/app',
           sessionCount: 1,
           groups: [
-            lane({ id: 'main', isMain: true, label: 'main', sessions: [makeSession('/www/app', { id: 'keep' })] })
+            lane({ id: 'main', isMain: true, label: 'main', sessions: [makeCwdSession('/www/app', { id: 'keep' })] })
           ]
         }
       ],
@@ -1111,7 +1397,7 @@ describe('excludeProjectSessions', () => {
   it('survives the live overlay: a lane left empty by the filter is not pruned', () => {
     // The two run in sequence on an entered project (filter, then overlay), and
     // the overlay drops lanes it empties — it must not take the filter's with it.
-    const pinnedRow = makeSession('/www/app/wt', { id: 'pinned' })
+    const pinnedRow = makeCwdSession('/www/app/wt', { id: 'pinned' })
 
     const project = projectNode({
       id: '/www/app',
@@ -1131,5 +1417,39 @@ describe('excludeProjectSessions', () => {
     const overlaid = overlayLiveLanes(filtered, [], new Set(['someone-else']))
 
     expect(overlaid.repos[0].groups.map(g => g.id)).toEqual(['wt'])
+  })
+})
+
+describe('project filter row rule (#97762)', () => {
+  const projects = [makeProject('p_app', ['/www/app'])]
+  const appRow = makeCwdSession('/www/app/src', { git_repo_root: '/www/app' })
+  const homeRow = makeCwdSession(null)
+
+  it('filtering to Home keeps the detached Home rows', () => {
+    expect(sessionMatchesProjectFilter(homeRow, [NO_PROJECT_ID], projects)).toBe(true)
+    expect(sessionMatchesProjectFilter(appRow, [NO_PROJECT_ID], projects)).toBe(false)
+  })
+
+  it('a live id still narrows', () => {
+    expect(sessionMatchesProjectFilter(appRow, ['p_app'], projects)).toBe(true)
+    expect(sessionMatchesProjectFilter(homeRow, ['p_app'], projects)).toBe(false)
+  })
+
+  // Issue layout: the sibling worktree /work/repos/app-2 sits under the
+  // ancestor "work" folder by cwd alone, but the backend tree owns it via "app".
+  // Filter, bucket and color must follow that owner, like the lane overlay does.
+  it('follows the backend owner map for a sibling worktree row, not the cwd walk', () => {
+    const explicit = [makeProject('p_work', ['/work']), { ...makeProject('p_app', ['/work/repos/app']), color: '#abc' }]
+    const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: null })
+
+    const owners = projectOwnerBySessionId([
+      projectNode({ id: 'p_work', path: '/work' }),
+      projectNode({ id: 'p_app', path: '/work/repos/app', sessionIds: ['sibling'] })
+    ])
+
+    expect(sessionMatchesProjectFilter(sibling, ['p_work'], explicit, owners)).toBe(false)
+    expect(sessionMatchesProjectFilter(sibling, ['p_app'], explicit, owners)).toBe(true)
+    expect(sessionBucketId(sibling, explicit, owners)).toBe('p_app')
+    expect(sessionProjectColor(sibling, explicit, owners)).toBe('#abc')
   })
 })

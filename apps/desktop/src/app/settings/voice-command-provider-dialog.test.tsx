@@ -13,6 +13,25 @@ const config: HermesConfigRecord = {
 }
 
 describe('VoiceCommandProviderDialog', () => {
+  it.each([
+    ['ru', 'Добавить локального провайдера STT'],
+    ['fr', 'Ajouter un fournisseur STT local'],
+    ['de', 'Lokalen STT-Anbieter hinzufügen'],
+    ['es', 'Añadir proveedor STT local']
+  ] as const)('localizes the provider creation flow in %s', (locale, title) => {
+    render(
+      <I18nProvider configClient={null} initialLocale={locale}>
+        <VoiceCommandProviderAction config={config} onApply={vi.fn()} />
+      </I18nProvider>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: title }))
+
+    expect(screen.getByRole('dialog', { name: title })).toBeTruthy()
+    expect(screen.queryByLabelText('Provider name')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Add provider' })).toBeNull()
+  })
+
   it('renders all dialog copy from the active locale', () => {
     render(
       <I18nProvider configClient={null} initialLocale="zh">
@@ -67,6 +86,31 @@ describe('VoiceCommandProviderDialog', () => {
       }
     })
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it.each([
+    ['none', 'That name is reserved for a built-in STT provider.'],
+    ['nous', 'That name is reserved for a built-in STT provider.'],
+    ['constructor', 'Use a lowercase name starting with a letter; numbers, hyphens, and underscores are allowed.'],
+    ['prototype', 'Use a lowercase name starting with a letter; numbers, hyphens, and underscores are allowed.']
+  ])('rejects reserved or unsafe provider name %s before applying config', (name, message) => {
+    const onApply = vi.fn()
+    const onOpenChange = vi.fn()
+
+    render(<VoiceCommandProviderDialog config={config} onApply={onApply} onOpenChange={onOpenChange} open />)
+
+    fireEvent.change(screen.getByLabelText('Provider name'), { target: { value: name } })
+    fireEvent.change(screen.getByLabelText('Command'), {
+      target: { value: 'sensevoice-cli {input_path} --output {output_path}' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add provider' }))
+
+    expect(screen.getByText(message)).toBeTruthy()
+    expect(screen.getByLabelText('Provider name').getAttribute('aria-invalid')).toBe('true')
+    expect(screen.getByRole('dialog', { name: 'Add local STT provider' })).toBeTruthy()
+    expect(onApply).not.toHaveBeenCalled()
+    expect(onOpenChange).not.toHaveBeenCalledWith(false)
+    expect(config).toEqual({ stt: { enabled: false, provider: 'local', echo_transcripts: true } })
   })
 
   it('keeps the dialog open and shows actionable placeholder errors', () => {

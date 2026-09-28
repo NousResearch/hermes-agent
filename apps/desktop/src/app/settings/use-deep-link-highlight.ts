@@ -11,7 +11,7 @@ interface DeepLinkHighlightOptions {
 
 // react-router's useSearchParams throws with no router context. Inside Settings
 // (every original caller) there always is one, so behavior is unchanged; when a
-// consumer is embedded OUTSIDE the router (e.g. McpTab in a plugin dialog) there
+// consumer is embedded OUTSIDE the router (a plugin dialog) there
 // is none, and this degrades to an inert [empty params, no-op setter] instead of
 // crashing. Router presence is stable for a mounted instance's lifetime, so the
 // try/catch never changes the hook count between renders (rules-of-hooks safe).
@@ -61,6 +61,12 @@ export function useDeepLinkHighlight({
 
       if (element) {
         element.scrollIntoView({ behavior: 'smooth', block })
+
+        if (!element.hasAttribute('tabindex')) {
+          element.tabIndex = -1
+        }
+
+        element.focus({ preventScroll: true })
         element.classList.add('setting-field-highlight')
         window.setTimeout(() => element.classList.remove('setting-field-highlight'), 1600)
 

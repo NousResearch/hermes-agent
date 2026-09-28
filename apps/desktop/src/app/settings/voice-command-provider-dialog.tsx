@@ -107,7 +107,9 @@ export function VoiceCommandProviderDialog({
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle icon={Mic}>{copy.add}</DialogTitle>
+          <DialogTitle className="pr-7 tracking-normal" icon={Mic}>
+            {copy.add}
+          </DialogTitle>
           <DialogDescription>{copy.description}</DialogDescription>
         </DialogHeader>
 

@@ -19,7 +19,7 @@ def test_browser_type_redacts_api_key_in_output(monkeypatch):
     secret = "sk-proj-ABCD1234567890EFGH"
 
     with patch(
-        "tools.browser_tool._run_browser_command",
+        "tools.browser_tool_session._run_browser_command",
         return_value={"success": True},
     ) as mock_run:
         result = json.loads(browser_type("@apikey", secret, task_id="redaction-test"))
@@ -39,7 +39,7 @@ def test_browser_type_keeps_normal_text_in_output(monkeypatch):
     text = "hello world search query"
 
     with patch(
-        "tools.browser_tool._run_browser_command",
+        "tools.browser_tool_session._run_browser_command",
         return_value={"success": True},
     ) as mock_run:
         result = json.loads(browser_type("@search", text, task_id="redaction-test"))
@@ -57,7 +57,7 @@ def test_browser_type_failure_redacts_api_key_in_error(monkeypatch):
     secret = "sk-proj-ABCD1234567890EFGH"
 
     with patch(
-        "tools.browser_tool._run_browser_command",
+        "tools.browser_tool_session._run_browser_command",
         return_value={
             "success": False,
             "error": f"backend failed while typing {secret}",

@@ -48,31 +48,27 @@ class _Event:
 async def test_agents_command_marks_stalling_delegation(monkeypatch):
     monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 0.03)
     monkeypatch.setattr(ad, "_STALE_IDLE_SECONDS", 0.1)
-    # Long grace so the record stays in 'stalling' while we render.
-    monkeypatch.setattr(ad, "_STALL_GRACE_SECONDS", 30.0)
+    # Force-finalization is a separate contract. Disable it so the stalling
+    # projection stays observable until this test releases the worker.
+    monkeypatch.setattr(ad, "_STALL_GRACE_SECONDS", float("inf"))
     gate = threading.Event()
+    stalling = threading.Event()
+
+    def blocked_runner():
+        gate.wait()
+        return {}
 
     res = ad.dispatch_async_delegation(
         goal="wedged child", context=None, toolsets=None, role="leaf",
         model="m", session_key="agent:main:test:dm:1", max_async_children=1,
-        runner=lambda: {} if gate.wait(timeout=10) else {},
+        runner=blocked_runner,
+        interrupt_fn=stalling.set,
         progress_fn=lambda: ((0, None), False),
     )
     assert res["status"] == "dispatched"
 
     try:
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            items = ad.list_async_delegations()
-            if any(
-                d["delegation_id"] == res["delegation_id"]
-                and d.get("status") == "stalling"
-                for d in items
-            ):
-                break
-            time.sleep(0.02)
-        else:
-            pytest.fail("delegation never reached stalling state")
+        assert stalling.wait(30.0), "delegation never reached stalling state"
 
         runner = _make_runner()
         out = await runner._handle_agents_command(_Event())

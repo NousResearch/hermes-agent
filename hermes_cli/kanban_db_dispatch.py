@@ -2442,10 +2442,24 @@ def _rotate_worker_log(
         pass
 
 
+# Interpreter safe-path flag (3.11+, the floor in pyproject): "don't prepend a
+# potentially unsafe path to sys.path". Workers are spawned with
+# ``cwd=<task workspace>`` and ``python -m`` puts that cwd at ``sys.path[0]``,
+# so a workspace file such as ``inspect.py`` or a ``hermes_cli/`` directory was
+# imported instead of the stdlib / the running install and the worker died at
+# startup (``module 'inspect' has no attribute 'signature'``). Passed in argv,
+# never via ``PYTHONSAFEPATH`` in the spawn env, so it does not leak into the
+# commands the worker itself runs.
+_PYTHON_SAFE_PATH_FLAG = "-P"
+
+
 def _module_hermes_argv() -> list[str]:
     """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
-    console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    console-script target — there is no top-level ``hermes`` package).
+
+    ``-P`` keeps the worker's cwd (the task workspace) off ``sys.path`` so the
+    workspace cannot shadow the stdlib or Hermes itself."""
+    return [sys.executable, _PYTHON_SAFE_PATH_FLAG, "-m", "hermes_cli.main"]
 
 
 def _absolute_hermes_path(path: str) -> str:

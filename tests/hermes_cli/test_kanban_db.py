@@ -1562,7 +1562,7 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
-    assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+    assert kbd._resolve_hermes_argv() == [sys.executable, "-P", "-m", "hermes_cli.main"]
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
@@ -1593,6 +1593,39 @@ def test_resolve_hermes_argv_module_actually_runs():
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
+
+
+def test_module_worker_argv_ignores_shadowing_workspace(tmp_path):
+    """Workers run with ``cwd=<task workspace>``. A workspace ``inspect.py``
+    (stdlib collider) or ``hermes_cli/`` package must not be imported by the
+    spawned CLI: before ``-P`` the worker died at startup with
+    ``AttributeError: module 'inspect' has no attribute 'signature'``."""
+    import subprocess
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    (tmp_path / "inspect.py").write_text("# shadows the stdlib\n")
+    shadow_pkg = tmp_path / "hermes_cli"
+    shadow_pkg.mkdir()
+    (shadow_pkg / "__init__.py").write_text("raise ImportError('workspace shadow imported')\n")
+
+    argv = kbd._module_hermes_argv()
+    assert argv.count("-P") == 1
+    assert argv.index("-P") < argv.index("-m")
+
+    probe = [
+        argv[0],
+        *argv[1:argv.index("-m")],
+        "-c",
+        "import inspect, hermes_cli; "
+        "assert hasattr(inspect, 'signature'), inspect.__file__; "
+        "print(hermes_cli.__file__)",
+    ]
+    r = subprocess.run(probe, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert r.returncode == 0, r.stderr[-500:]
+    assert str(tmp_path) not in r.stdout
+
+    r = subprocess.run(argv + ["--version"], cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr[-500:]
 
 
 # ---------------------------------------------------------------------------

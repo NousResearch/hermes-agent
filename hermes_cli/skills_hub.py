@@ -673,10 +673,19 @@ def _confirm_install(c: Console, bundle, category: str) -> bool:
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> None:
+               source_id: Optional[str] = None) -> Optional[int]:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
-    cannot resolve to a same-named skill elsewhere."""
+    cannot resolve to a same-named skill elsewhere.
+
+    Returns ``1`` when short-name resolution can't produce a single identifier (no match, or
+    multiple candidates) so callers that propagate this as a process exit code -- notably the
+    Desktop hub picker, which posts a bare catalog name and treats any non-zero exit as a failed
+    install -- see it as one instead of an apparent success with nothing installed. Other
+    early-exit paths (already installed, scan-blocked, user-declined) keep returning ``None``
+    (exit 0): they already print a clear reason and aren't the ambiguous-identifier failure mode
+    this guards.
+    """
     from tools.skills_hub import HubLockFile, ensure_hub_dirs, skills_hub_http_session
     from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
     from tools.skills_guard import should_allow_install
@@ -689,7 +698,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     with skills_hub_http_session():
         identifier = _full_identifier(identifier, sources, c)
         if not identifier:
-            return
+            return 1
         c.print(f"\n[bold]Fetching:[/] {identifier}")
         meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
     if not bundle:
@@ -1370,14 +1379,14 @@ _CLI_ACTIONS = {
     "snapshot": _snapshot_cli, "tap": _tap_cli}
 
 
-def skills_command(args) -> None:
+def skills_command(args) -> Optional[int]:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
     handler = _CLI_ACTIONS.get(getattr(args, "skills_action", None))
     if handler is None:
         _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
         return
-    handler(args)
+    return handler(args)
 
 
 # --- Slash command entry point (/skills in chat) ---

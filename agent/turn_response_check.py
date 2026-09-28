@@ -150,6 +150,20 @@ def check_api_response(
     agent._turn_received_provider_response = True
     finish_reason = _derive_finish_reason(agent, response, messages)
 
+    # Fold provider usage into compressor / anchors / session counters / state.db
+    # (agent/turn_usage.py). A rearmed budget also clears the preflight-block latch.
+    # Before the refusal and truncation branches: both return early, and a refused or
+    # length-stopped response is billed like any other.
+    _usage_outcome = record_response_usage(
+        agent, response, messages=messages, api_call_count=api_call_count,
+        api_duration=api_duration, compression_attempts=compression_attempts,
+        max_compression_attempts=max_compression_attempts,
+    )
+    compression_attempts = _usage_outcome.compression_attempts
+    if _usage_outcome.rearmed:
+        _preflight_compression_blocked = False
+        _last_preflight_pressure = None
+
     # HTTP-200 refusals are deterministic: one fallback try, else return the refusal.
     if finish_reason == "content_filter":
         _rv = handle_content_policy_refusal(
@@ -187,18 +201,6 @@ def check_api_response(
         compression_attempts = _tv.compression_attempts
         if _tv.action in ("return", "break", "continue"):
             return _verdict(_tv.action, _tv.result)
-
-    # Fold provider usage into compressor / anchors / session counters / state.db
-    # (agent/turn_usage.py). A rearmed budget also clears the preflight-block latch.
-    _usage_outcome = record_response_usage(
-        agent, response, messages=messages, api_call_count=api_call_count,
-        api_duration=api_duration, compression_attempts=compression_attempts,
-        max_compression_attempts=max_compression_attempts,
-    )
-    compression_attempts = _usage_outcome.compression_attempts
-    if _usage_outcome.rearmed:
-        _preflight_compression_blocked = False
-        _last_preflight_pressure = None
 
     _retry.has_retried_429 = False
     # Clearing Nous rate-limit state proves the limit reset so other sessions may resume.

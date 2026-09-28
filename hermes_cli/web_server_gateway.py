@@ -524,10 +524,57 @@ def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
     from hermes_cli.web_server_profiles import _profile_cli_args
     profile = _own_profile_selector(profile)
     args = _profile_cli_args(profile)
-    if profile and verb == "restart" and multiplexed_profile_refusal(profile, verb) is not None:
+    if profile and verb == "restart" and (
+        multiplexed_profile_refusal(profile, verb) is not None
+        or _default_multiplexer_owns_profile(profile)
+    ):
         # Always explicit, even from the default home: a bare child re-reads the sticky active_profile.
         args = ["-p", "default"]
     return args + ["gateway", verb]
+
+
+def _default_multiplexer_owns_profile(profile: str) -> bool:
+    """Whether a stopped named profile is still owned by the default host gateway.
+
+    A live ``served_profiles`` record is authoritative while the host is up. If
+    the host is stopped, that record is no longer proof; the default profile's
+    explicit/resolved multiplex flag is the remaining durable topology signal.
+    Standalone, parked, live-own, and force-installed profiles are deliberately
+    excluded so this fallback cannot steal their lifecycle from the default.
+    An unset multiplex flag is intentionally not resolved here: the gateway's
+    boot preflight, not a stopped dashboard reader, is the authority for that
+    verdict.
+    """
+    requested = (profile or "").strip()
+    if not requested or requested.lower() in {"current", "default"}:
+        return False
+    try:
+        from hermes_cli.gateway_migrate import _installed_services
+        from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+        from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
+        from hermes_cli.profiles import profile_is_parked, profile_is_standalone
+        from hermes_cli.web_server_profiles import _resolve_profile_dir
+        from hermes_constants import get_default_hermes_root
+
+        profile_dir = _resolve_profile_dir(requested)
+        default_root = get_default_hermes_root().resolve()
+        if profile_dir.resolve().parent != (default_root / "profiles").resolve():
+            return False
+        # A live host keeps the existing per-profile served-set decision. Do
+        # not reinterpret an unserved satellite as host-owned merely because
+        # the host's mode flag is true.
+        if live_default_gateway_pid() is not None:
+            return False
+        if not default_gateway_multiplexes(default_root):
+            return False
+        if profile_is_standalone(profile_dir) or profile_is_parked(profile_dir):
+            return False
+        if _has_own_gateway(profile_dir) or _installed_services(profile_dir):
+            return False
+        return True
+    except Exception:
+        _log.debug("Could not resolve stopped multiplex ownership for %s", profile, exc_info=True)
+        return False
 
 
 def _profile_is_multiplexed(profile: str) -> bool:

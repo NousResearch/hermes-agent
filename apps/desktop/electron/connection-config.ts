@@ -688,6 +688,15 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
     return true
   }
 
+  // Telegram onboarding pairings live in one backend process's memory. Pin
+  // the complete method-independent family to the primary so start, polling,
+  // apply, and cancel cannot land on different pooled backends. The query
+  // scope names the selected profile; the backend binds the pairing to it and
+  // rejects a later status/apply/cancel from another profile.
+  if (pathname === '/api/messaging/telegram/onboarding' || pathname.startsWith('/api/messaging/telegram/onboarding/')) {
+    return true
+  }
+
   // Session reads already accept `profile` and open that profile's state.db
   // read-only. Keep ownership probes and transcript reads on the shared primary
   // instead of spawning one local backend per profile. Writes remain pooled so

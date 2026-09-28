@@ -542,6 +542,26 @@ for (const route of ROUTES) {
   })
 }
 
+test('Telegram onboarding requests stay on one primary backend', () => {
+  // Pairings are process-local. Splitting start/status/apply/cancel across a
+  // pooled backend makes the apply target lose the in-memory pairing.
+  for (const [method, path] of [
+    ['POST', '/api/messaging/telegram/onboarding/start'],
+    ['GET', '/api/messaging/telegram/onboarding/pair-1'],
+    ['POST', '/api/messaging/telegram/onboarding/pair-1/apply'],
+    ['DELETE', '/api/messaging/telegram/onboarding/pair-1']
+  ] as const) {
+    const route = resolveProfileApiRequest('coder', path, {
+      globalRemote: false,
+      primaryProfile: 'default',
+      requestMethod: method
+    })
+
+    assert.equal(route.backendProfile, null)
+    assert.equal(route.requestPath, `${path}?profile=coder`)
+  }
+})
+
 test('resolveProfileBackendRoute only tags a descriptor when the backend is shared', () => {
   // A pooled backend is already scoped to its profile, so tagging it would
   // imply a second scope the caller must reconcile. Only the shared

@@ -385,6 +385,9 @@ class _TelegramOnboardingPairing:
     bot_token: str | None = None
     bot_username: str | None = None
     owner_user_id: str | None = None
+    # Canonical profile that owns this in-memory pairing. ``None`` is reserved
+    # for a custom launch home that has no addressable profile name.
+    profile: str | None = None
 
 
 _telegram_onboarding_pairings: dict[str, _TelegramOnboardingPairing] = {}

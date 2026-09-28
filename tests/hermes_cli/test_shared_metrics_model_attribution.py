@@ -155,6 +155,31 @@ def test_user_provider_plugin_name_and_model_never_leave(direct_runtime, tmp_pat
     assert catalog.provider_metric_name("deepinfra") == "deepinfra"
 
 
+def test_network_address_model_ids_and_raw_injected_marks_never_reach_counters(direct_runtime, tmp_path):
+    """A ``host:port``/IP/localhost model id on a public provider reads ``custom`` (Bedrock's
+    ``-v1:0`` and OpenRouter's ``:free`` stay), and the subscriber re-runs the catalog on a mark's
+    provider/model so a raw mark that skipped the producer's pass stores nothing."""
+    from hermes_cli.observability import shared_metrics_contract as contract
+    from hermes_cli.observability.shared_metrics_model import model_route
+
+    for model in ("127.0.0.1:8080/x", "localhost/qwen", "10.0.0.5/x", "gpu-box.lan:8000/qwen", "gpu-box.lan:8000"):
+        assert model_route("openrouter", model)["model"] == "custom", model
+    for provider, model in (("bedrock", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
+                            ("openrouter", "openai/gpt-4o:free"), ("ollama-cloud", "gpt-oss:120b")):
+        assert model_route(provider, model)["model"] == model
+
+    runtime = relay_shared_metrics._get_runtime(retry_failed=True)
+    for provider, model in (("openrouter", "127.0.0.1:8080/x"), ("openrouter", "http://127.0.0.1:8080/v1"),
+                            ("custom:acme", "x"), ("ollama", "qwen-private"), ("acmecorp-gateway", "acme-7b"),
+                            ("anthropic", "claude-sonnet-4-5")):
+        runtime.record_process_mark(contract.MODEL_SWITCH_AFTER_MARK, {
+            "model": model, "provider": provider, "turns_before_switch_bucket": "1"})
+    _flush()
+
+    assert _stored_values(tmp_path, contract.MODEL_SWITCH_AFTER_METRIC) == [
+        ({"model": "claude-sonnet-4-5", "provider": "anthropic", "turns_before_switch_bucket": "1"}, 1)]
+
+
 @pytest.mark.parametrize(("configured", "expected"), [
     (("custom", "acme-private-llama", "http://localhost:8080/v1"), ("custom", "custom")),
     (("openrouter", PUBLIC, ""), ("openrouter", PUBLIC)),

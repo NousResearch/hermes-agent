@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -283,9 +284,16 @@ def model_metric_name(raw: object, provider: str, *, max_length: int) -> str:
     model = _metric_identifier(raw, max_length=max_length)
     if model == "unknown":
         return model
-    if provider == "unknown" or "://" in model or ":/" in model or model.endswith((".gguf", ".bin", ".safetensors")):
+    if provider == "unknown" or _LOCATION_MODEL.match(model):
         return CUSTOM
     return model
+
+
+# The user's own server, never a public model id: a URL or path (``:/``), a weight file, a loopback
+# or IPv4 host, or ``host:port`` (a 2-5 digit port, so Bedrock's ``...-v1:0`` stays readable).
+_LOCATION_MODEL = re.compile(
+    r".*:/|.*\.(?:gguf|bin|safetensors)$|(?:localhost|\d{1,3}(?:\.\d{1,3}){3})(?:[:/]|$)|[^/:]+:\d{2,5}(?:/|$)"
+)
 
 
 def display_language_metric_name(raw: object) -> str:

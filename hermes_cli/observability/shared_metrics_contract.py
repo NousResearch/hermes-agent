@@ -1016,7 +1016,27 @@ def _bounded_dimensions(metric_name: str, data: Any) -> dict[str, str] | None:
     if not isinstance(data, dict) or set(data) != expected_fields:
         return None
     dimensions = {field: data.get(field) for field in sorted(expected_fields)}
-    return dimensions if counter_dimensions_are_valid(metric_name, dimensions) else None
+    valid = counter_dimensions_are_valid(metric_name, dimensions) and _catalog_holds(metric_name, dimensions)
+    return dimensions if valid else None
+
+
+def _catalog_holds(metric_name: str, dimensions: dict[str, str]) -> bool:
+    """Re-run the producer's catalog pass on a mark's provider/model fields: an identifier it would
+    rewrite (a user-named provider, a local model id) never reaches a counter. Record-time only, so
+    catalog drift can never block packaging rows already stored. ``none`` is the unset-provider value."""
+    from .shared_metrics_catalog import model_metric_name, provider_metric_name
+
+    for field, max_length in _IDENTIFIER_FIELDS.get(metric_name, {}).items():
+        value = dimensions[field]
+        if field.endswith("provider"):
+            expected = value if value == "none" else provider_metric_name(value)
+        elif field.endswith("model"):
+            expected = model_metric_name(value, dimensions[field[:-5] + "provider"], max_length=max_length)
+        else:
+            continue
+        if value != expected:
+            return False
+    return True
 
 
 def _valid_shape(event: Any, **shape: Any) -> bool:
@@ -1173,7 +1193,9 @@ def model_token_counters(event: Any) -> list[tuple[str, dict[str, str], int]]:
         if isinstance(amount, bool) or not isinstance(amount, int) or amount < 0:
             return []
         dimensions = {**base, "token_type": token_type}
-        if not counter_dimensions_are_valid(MODEL_TOKENS_METRIC, dimensions):
+        if not counter_dimensions_are_valid(MODEL_TOKENS_METRIC, dimensions) or not _catalog_holds(
+            MODEL_TOKENS_METRIC, dimensions,
+        ):
             return []
         if amount:
             counters.append((MODEL_TOKENS_METRIC, dimensions, amount))

@@ -100,6 +100,22 @@ _IMAGE_API_MODELS: Dict[str, Dict[str, Any]] = {
         aspect_ratios=("1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "auto"),
         quality=_OPENAI_QUALITY, background=("auto", "opaque"), compression=True, max_n=10, max_refs=16,
     ),
+    # 2.5 family: same OpenAI surface as gpt-image-2, plus xhigh/max quality and
+    # background=transparent. Knob enums mirror GET /images/models/<id>/endpoints.
+    "openai/gpt-image-2.5-sunburst": _image_api_model(
+        "OpenAI GPT Image 2.5 Sunburst",
+        "Best text-in-image and layout fidelity; up to 16 references",
+        aspect_ratios=("1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "auto"),
+        quality=("auto", "low", "medium", "high", "xhigh", "max"),
+        background=("auto", "transparent", "opaque"), compression=True, max_n=10, max_refs=16,
+    ),
+    "openai/gpt-image-2.5-flare": _image_api_model(
+        "OpenAI GPT Image 2.5 Flare",
+        "2.5 family, flare tier; up to 16 references",
+        aspect_ratios=("1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "auto"),
+        quality=("auto", "low", "medium", "high", "xhigh", "max"),
+        background=("auto", "transparent", "opaque"), compression=True, max_n=10, max_refs=16,
+    ),
     "openai/gpt-image-1-mini": _image_api_model(
         "OpenAI GPT Image 1 Mini",
         "The only model here with background=transparent (cut-out PNG)",

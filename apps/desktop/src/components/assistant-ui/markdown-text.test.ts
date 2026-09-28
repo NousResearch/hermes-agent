@@ -16,8 +16,9 @@ describe('preprocessMarkdown', () => {
 
     expect(output).not.toContain('```')
     expect(output).toContain("Here's your scene:")
-    // Bare localhost URLs (with or without trailing slash) are still stripped.
-    expect(output).not.toContain('http://localhost:8812/')
+    // Loopback URLs in prose are user-facing content (#121683): the address
+    // autolinks instead of being deleted from the sentence.
+    expect(output).toContain('<http://localhost:8812/>')
     expect(output).toContain('- **Multicolored cube**')
   })
 
@@ -34,8 +35,9 @@ describe('preprocessMarkdown', () => {
     const output = preprocessMarkdown(input)
 
     expect(output).not.toContain('```')
-    // Bare localhost URLs (with or without trailing slash) are still stripped.
-    expect(output).not.toContain('http://localhost:8812/')
+    // Loopback URLs in prose are user-facing content (#121683): the address
+    // autolinks instead of being deleted from the sentence.
+    expect(output).toContain('<http://localhost:8812/>')
     expect(output).toContain('- **Scroll wheel** - zoom')
   })
 
@@ -570,6 +572,18 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('$x^2 + y^2$')
     expect(output).not.toContain('\\$x^2')
+  })
+
+  it('keeps every real inline math span when CJK prose separates them (#123163)', () => {
+    expect(preprocessMarkdown('$E = mc^2$ 代入 $x$ 求解')).toBe('$E = mc^2$ 代入 $x$ 求解')
+    expect(preprocessMarkdown('$a$ 与 $b$ 之间的说明')).toBe('$a$ 与 $b$ 之间的说明')
+    expect(preprocessMarkdown('$a$ 甲 $b$ 乙 $c$ 丙')).toBe('$a$ 甲 $b$ 乙 $c$ 丙')
+    // Backslash commands are real math too; the closer must not be re-opened.
+    expect(preprocessMarkdown('根据 $\\alpha$ 和 $\\beta$ 计算')).toBe('根据 $\\alpha$ 和 $\\beta$ 计算')
+  })
+
+  it('still escapes a CJK variable inside one equation and keeps the next span (#103546)', () => {
+    expect(preprocessMarkdown('$x = 变量$ 与 $y$')).toBe('\\$x = 变量\\$ 与 $y$')
   })
 
   it('leaves real inline math adjacent to CJK untouched (#103546)', () => {

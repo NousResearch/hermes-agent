@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SidebarSessionsResponse } from './sessions'
 
 vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
-vi.mock('@/store/transcript-tail', () => ({ recordTranscriptTail: vi.fn() }))
+vi.mock('@/store/transcript-tail', () => ({ pageHonorsLatestOrder: () => true, recordTranscriptTail: vi.fn() }))
 vi.mock('./client', () => ({
   capabilityScoped: vi.fn(),
   getApiRequestConnection: vi.fn(() => 'prometheus'),

@@ -1729,6 +1729,20 @@ def _handoff_watch_scopes(runner: object) -> list:
     return scopes
 
 
+async def _resolve_handoff_watch_scopes(runner: object) -> list:
+    """``_handoff_watch_scopes`` for an on-loop watcher tick. Multiplex resolution walks the filesystem
+    (``profiles_to_serve``), so it hops to the executor; single-profile mode does no I/O and returns the
+    root poll directly — no per-tick thread spawn on the unbounded executor. A config-less stand-in
+    (tests) and a runner without the executor hop fall through to the plain resolver."""
+    config = getattr(runner, "config", None)
+    if config is not None and not getattr(config, "multiplex_profiles", False):
+        return [(None, None)]
+    offload = getattr(runner, "_run_in_executor_with_context", None)
+    if callable(offload):
+        return await offload(_handoff_watch_scopes, runner)
+    return _handoff_watch_scopes(runner)
+
+
 async def _reclaim_stale(runner: object) -> None:
     """Fail handoffs left in ``running`` by a gateway that died mid-dispatch (once per store at startup).
     ``running`` is only set for one in-process dispatch, so a leftover row belongs to a dead process and

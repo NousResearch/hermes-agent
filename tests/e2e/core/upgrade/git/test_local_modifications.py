@@ -90,12 +90,9 @@ def test_untracked_file_colliding_with_a_new_upstream_file_is_not_lost(w):
     assert w.head() == target, f"code update did not land:\n{w.diag(cp)}"
     in_tree = (w.checkout / rel).read_text(encoding="utf-8") == mine
     parked = any(t == mine.strip() for t in _stash_texts(w, rel))
-    with known_failure(r"untracked file .* is gone",
-                       "gated on #124641 (fix: #124697): an untracked file at a path upstream adds is reported 'kept as-is', "
-                       "replaced by upstream's copy, and its autostash is dropped"):
-        assert in_tree or parked, (
-            f"the user's untracked file {rel} is gone: the tree has upstream's copy and no stash keeps it:\n"
-            f"{w.diag(cp)}")
+    assert in_tree or parked, (
+        f"the user's untracked file {rel} is gone: the tree has upstream's copy and no stash keeps it:\n"
+        f"{w.diag(cp)}")
 
 
 def test_local_commit_on_main_is_kept_behind_a_named_ref(w):

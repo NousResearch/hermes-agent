@@ -684,6 +684,8 @@ export const frOverrides = {
       'composer.focus': 'Mettre le focus sur le compositeur',
       'composer.modelPicker': 'Ouvrir le sélecteur de modèle',
       'composer.voice': 'Démarrer / arrêter la conversation vocale',
+      'composer.reasoningUp': 'Augmenter le niveau de raisonnement',
+      'composer.reasoningDown': 'Réduire le niveau de raisonnement',
       'view.toggleSidebar': 'Basculer la barre latérale des sessions',
       'view.cycleSidebarGrouping': 'Changer le regroupement des sessions',
       'view.toggleRightSidebar': "Basculer l'explorateur de fichiers",
@@ -2057,6 +2059,8 @@ export const frOverrides = {
       provider: 'Fournisseur',
       model: 'Modèle',
       applying: 'Application...',
+      mainAppliedTitle: 'Modèle principal mis à jour',
+      mainAppliedMessage: model => `Les nouvelles sessions utiliseront ${model}.`,
       defaultsLabel: 'Par défaut',
       reasoning: 'Raisonnement',
       reasoningOff: 'Désactivé',
@@ -2819,6 +2823,7 @@ export const frOverrides = {
       serverStates: {
         connected: 'connecté',
         app_not_running: 'application non lancée',
+        hermes_not_connected: 'connexion MCP manquante',
         endpoint_unavailable: 'point de terminaison indisponible',
         no_interactive_session: 'aucune session interactive',
         version_too_old: 'version trop ancienne',
@@ -4395,6 +4400,7 @@ export const frOverrides = {
     goalWaiting: 'Objectif en attente',
     subagents: count => `${count} sous-agent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tâches ${done}/${total}`,
+    previousTodos: (done, total) => `Tâches précédentes ${done}/${total}`,
     running: 'En cours',
     stop: 'Arrêter',
     dismiss: 'Rejeter',
@@ -5476,8 +5482,9 @@ export const frOverrides = {
             `${provider} a renvoyé une erreur serveur. Réessayez dans un instant ou changez de fournisseur.`
         },
         timeout: {
-          title: 'Délai de réponse dépassé',
-          body: provider => `${provider} n'a pas répondu à temps. Réessayez pour renvoyer le message.`
+          title: 'Service d’IA injoignable',
+          body: provider =>
+            `${provider} est injoignable ou n'a pas répondu à temps. Vérifiez votre connexion internet, puis réessayez.`
         },
         stream_drop: {
           title: 'La réponse a été interrompue',

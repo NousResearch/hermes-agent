@@ -7,7 +7,7 @@
 # Schema version of this file. The installers copy it to seed config.yaml, and
 # `hermes update` uses it to know which one-time migrations the file already
 # has. Hermes manages it: do not copy it into another config.
-_config_version: 46
+_config_version: 47
 
 # =============================================================================
 # Database Configuration
@@ -41,6 +41,21 @@ database:
 # null to disable the adjustment. Default: 4096.
 runtime:
   nofile_soft_limit: 4096
+
+# =============================================================================
+# Attachments
+# =============================================================================
+# Where the TUI/Desktop gateway stages session file attachments (file uploads and
+# pasted text). Read per profile: a session bound to profile X follows X's own
+# config.yaml, so each agent's attachments stay with its workspace.
+#   hermes-home  (default) <profile home>/attachments — the directory container
+#                 backends bind-mount, so @file: refs resolve inside the sandbox.
+#   workspace    <session workspace>/.hermes/attachments — staging lands inside
+#                 the allowed reference root, so the profile's agent can always
+#                 read its own attachments back. A remote (ssh) workspace keeps
+#                 the profile home directory either way.
+attachments:
+  storage: "hermes-home"
 
 # =============================================================================
 # Plugin Installation
@@ -676,12 +691,11 @@ compression:
   #   "claude-sonnet": 0.35
   #   "gpt-5": 0.30
 
-  # Absolute token cap for the compression trigger (default: 256000).
-  # Compression fires at the LOWER of the ratio-based threshold and this count,
-  # bounding large-window sessions while lower proportional triggers still win
-  # whenever they fall below the cap. The cap survives model switches and fallbacks.
-  # Set null to restore ratio-only behavior.
-  threshold_tokens: 256000
+  # Optional absolute token cap for the compression trigger (default: null = disabled).
+  # When set, compression fires at the LOWER of the ratio-based threshold and this
+  # absolute token count. Clamped to the model's context length at apply-time, so a
+  # cap above the window is a no-op. Survives model switches and fallback activations.
+  # threshold_tokens: 200000
 
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.

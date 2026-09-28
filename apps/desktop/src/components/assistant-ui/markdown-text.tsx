@@ -8,7 +8,8 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { defaultRemarkPlugins } from 'streamdown'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -37,6 +38,7 @@ import {
 } from '@/lib/media'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
+import { remarkSoftBreaks } from '@/lib/remark-soft-breaks'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { isDirectiveInProgress } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
@@ -98,6 +100,8 @@ function useCodePlugin(): CodePlugin | null {
 
   return plugin
 }
+
+const REMARK_PLUGINS = [...Object.values(defaultRemarkPlugins), remarkSoftBreaks]
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
 // flush) with a tail-bounded repair. Must stay module-scope so the prop
@@ -249,13 +253,29 @@ function MediaPlaybackAttachment({ path }: { path: string }) {
   )
 }
 
+// Authored labels can be formatted markdown — an inline-code label like
+// [`v1.0.1`](url) arrives as a <code> element, not a plain string. Extract
+// the text so MarkdownLink can pass it as `fallbackLabel`; dropping it sent
+// the link down the title-fetch / URL-slug fallback path instead (#121321).
 function childrenToText(children: unknown): string {
-  if (typeof children === 'string' || typeof children === 'number') {
-    return String(children).trim()
+  return flattenChildrenToText(children).trim()
+}
+
+function flattenChildrenToText(node: unknown): string {
+  if (node === null || node === undefined || typeof node === 'boolean') {
+    return ''
   }
 
-  if (Array.isArray(children) && children.every(c => typeof c === 'string' || typeof c === 'number')) {
-    return children.join('').trim()
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node)
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(flattenChildrenToText).join('')
+  }
+
+  if (isValidElement<{ children?: unknown }>(node)) {
+    return flattenChildrenToText(node.props.children)
   }
 
   return ''
@@ -784,6 +804,7 @@ function MarkdownTextSurface({
         parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
         plugins={plugins}
         preprocess={preprocessWithTailRepair}
+        remarkPlugins={REMARK_PLUGINS}
       />
     </ErrorBoundary>
   )

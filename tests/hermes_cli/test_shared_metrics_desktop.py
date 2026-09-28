@@ -95,6 +95,15 @@ def test_onboarding_is_once_per_step_event_across_processes(marks, monkeypatch):
     _assert_valid(marks.rows)
 
 
+def test_turning_collection_off_drops_the_onboarding_latches(marks):
+    _rpc("shared_metrics.desktop_onboarding", step="intro", event="reached")
+    latches = marks.home / "telemetry" / "shared_metrics" / desktop.ONBOARDING_LATCH_DIRNAME
+    assert (latches / "intro.reached").exists()
+
+    assert _rpc("shared_metrics.set", enabled=False)["result"]["enabled"] is False
+    assert not latches.exists()
+
+
 def test_disabled_profile_records_nothing_and_leaves_no_latch(marks):
     marks.policy["on"] = False
     _rpc("shared_metrics.desktop_feature_use", area="projects")

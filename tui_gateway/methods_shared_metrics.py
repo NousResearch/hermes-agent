@@ -80,6 +80,10 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.setup import _record_send_consent_change
     # Unconditional, like the wizard: a send key already false may still have an open window.
     _record_send_consent_change(enabled=send)
+    if not enabled:
+        from hermes_cli.observability.shared_metrics_desktop import purge_onboarding_latches
+
+        purge_onboarding_latches()
     if params.get("first_run") is True:
         _shared_metrics_record_setup_completed(cfg)
     return _ok(rid, _shared_metrics_consent(cfg))

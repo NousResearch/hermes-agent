@@ -1,6 +1,6 @@
 """Tests for live+curated merge in the generic profile-based provider path.
 
-Guards two contracts:
+Guards three contracts:
 
 * #46850 — when a provider's live /v1/models endpoint returns a stale or
   incomplete list, the static curated models from ``_PROVIDER_MODELS`` must
@@ -10,12 +10,16 @@ Guards two contracts:
   leads even when the live API lags. ``_LIVE_FIRST_PICKER_PROVIDERS``
   (OpenCode Zen / Go) flip to **live-first** because their live API is the
   authoritative catalog and stale curated entries must not lead the picker.
+* #119481 — subscription-tier providers (``_LIVE_TERMINAL_PICKER_PROVIDERS``)
+  skip the merge entirely on a successful probe: entitlements vary per plan,
+  so curated-only ids are phantom rows that 404 every turn.
 """
 
 from unittest.mock import MagicMock, patch
 
 from hermes_cli.models import (
     _LIVE_FIRST_PICKER_PROVIDERS,
+    _LIVE_TERMINAL_PICKER_PROVIDERS,
     provider_model_ids,
 )
 
@@ -140,3 +144,110 @@ class TestGenericProviderLiveCuratedMerge:
 
         assert "x-preview-f-free" not in result
         assert "kimi-k3" in result
+
+
+class TestLiveTerminalPickerProviders:
+    """#119481: subscription-tier providers (``_LIVE_TERMINAL_PICKER_PROVIDERS``) have plan-dependent
+    entitlements, so a SUCCESSFUL live /v1/models is the account's whole catalog. The curated-first
+    union merge used to re-add retired ids the live endpoint no longer serves (qwen3.8-max-0902,
+    whole Kimi rows on some tiers): selecting one 404s every turn, silently answered by
+    fallback_providers. Terminal-on-success means the merge can no longer resurrect phantom rows
+    (REVERT-PROOF: any curated-first re-add fails these)."""
+
+    def _make_profile(self, models=None, fallback_models=None):
+        p = MagicMock()
+        p.auth_type = "api_key"
+        p.base_url = "https://token-plan.example.com/compatible-mode/v1"
+        p.fetch_models.return_value = models
+        p.fallback_models = fallback_models
+        return p
+
+    def test_alibaba_token_plan_live_catalog_is_terminal(self):
+        """Live tier catalog (intl sk-sp tier from #119481) replaces the curated list — no
+        curated-only phantom rows (qwen3.8-max-0902, kimi-*) can re-enter."""
+        assert "alibaba-token-plan" in _LIVE_TERMINAL_PICKER_PROVIDERS
+        live = [
+            "qwen3.6-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.8-max", "qwen3.8-flash",
+            "deepseek-v4-pro", "glm-5.2", "glm-5.3",
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+        ):
+            result = provider_model_ids("alibaba-token-plan")
+
+        # Exactly the live catalog: every served id present…
+        assert set(result) >= set(live)
+        # …and not one curated-only phantom row survives (#119481's 404 trap).
+        for phantom in ("qwen3.8-max-0902", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "glm-5.1", "glm-5"):
+            assert phantom not in result
+
+    def test_alibaba_token_plan_cn_twin_is_terminal(self):
+        """The -cn twin shares the tier-dependent endpoint shape; same terminal rule."""
+        assert "alibaba-token-plan-cn" in _LIVE_TERMINAL_PICKER_PROVIDERS
+        live = ["qwen3.8-max", "qwen3.8-flash"]
+
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+        ):
+            result = provider_model_ids("alibaba-token-plan-cn")
+
+        assert set(result) == set(live)
+
+    def test_tencent_tokenplan_live_catalog_is_terminal(self):
+        """The third tier-dependent plan named in #119481 gets the same treatment."""
+        assert "tencent-tokenplan" in _LIVE_TERMINAL_PICKER_PROVIDERS
+        live = ["hunyuan-turbo", "hunyuan-pro"]
+
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+        ):
+            result = provider_model_ids("tencent-tokenplan")
+
+        assert set(result) == set(live)
+
+    def test_failed_probe_still_falls_back_to_curated_floor(self):
+        """Terminal only applies on a SUCCESSFUL probe: without a key the picker must still offer
+        the curated floor (offline users keep a usable list)."""
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(None)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "", "base_url": ""},
+            ),
+        ):
+            result = provider_model_ids("alibaba-token-plan")
+
+        assert "qwen3.8-max-0902" in result  # real curated floor still served offline
+        assert result
+
+    def test_non_terminal_providers_keep_the_union_merge(self):
+        """Every other provider keeps the #46850 union contract: curated-only ids survive a lagging
+        live API. zai is the sentinel (curated-first, NOT terminal)."""
+        assert "zai" not in _LIVE_TERMINAL_PICKER_PROVIDERS
+        live = ["glm-5"]
+        curated = ["glm-5.2", "glm-5.1"]
+
+        with (
+            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": "k", "base_url": ""},
+            ),
+            patch.dict("hermes_cli.models._PROVIDER_MODELS", {"zai": curated}),
+        ):
+            result = provider_model_ids("zai")
+
+        assert set(result) >= {"glm-5.2", "glm-5.1", "glm-5"}

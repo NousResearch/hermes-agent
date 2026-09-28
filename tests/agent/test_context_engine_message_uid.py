@@ -300,6 +300,57 @@ def test_assistant_merge_keeps_the_absorbed_turns_tool_call_uids():
     assert first["_tool_call_uids"] == {"call_1": "1" * UID_LEN, "call_2": "2" * UID_LEN}
 
 
+def _reused_call(content, occurrence_uid=None):
+    msg = {"role": "assistant", "content": content,
+           "tool_calls": [{"id": "call_x", "type": "function", "function": {"name": "t", "arguments": "{}"}}]}
+    if occurrence_uid:
+        msg["_tool_call_uids"] = {"call_x": occurrence_uid}
+    return msg
+
+
+def test_assistant_merge_keeps_every_occurrence_of_a_reused_provider_id():
+    """Two folded turns that reuse a provider id (llama.cpp) both keep their call AND their occurrence uid;
+    the ids on the wire are untouched, and a following result pairs with the nearest (later) call."""
+    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+    from agent.message_metadata import index_tool_call_uids, resolve_tool_call_uid
+
+    first, second = _reused_call("", "1" * UID_LEN), _reused_call("", "2" * UID_LEN)
+    merged, repairs = _merge_consecutive_assistants([first, second])
+    assert repairs == 1 and merged == [first]
+    assert [tc["id"] for tc in first["tool_calls"]] == ["call_x", "call_x"]
+    assert first["_tool_call_uids"] == {"call_x": ["1" * UID_LEN, "2" * UID_LEN]}
+    index: dict = {}
+    index_tool_call_uids(index, first)
+    assert resolve_tool_call_uid(index, "call_x") == "2" * UID_LEN
+
+
+def test_a_reused_id_merge_survives_rewrite_and_restore(db):
+    """The per-occurrence map a fold produces is what the survivor's rewrite persists and a restore returns;
+    the result keeps the uid of the call it answered."""
+    from agent.agent_runtime_helpers import repair_message_sequence
+
+    sid = "20260928_120600_reused"
+    db.create_session(sid, "cli", model="test/model")
+    agent = _make_agent(db, sid)
+    agent._session_db_created = True
+    first, second = _reused_call("checking"), _reused_call("")
+    result = {"role": "tool", "content": "r", "tool_call_id": "call_x", "tool_name": "t"}
+    messages = [{"role": "user", "content": "q"}, first, second, result]
+    agent._persist_user_message_idx = 0
+    agent._persist_session(messages, conversation_history=None)
+    occurrences = [first["_tool_call_uids"]["call_x"], second["_tool_call_uids"]["call_x"]]
+    assert len(set(occurrences)) == 2 and result["_tool_call_uid"] == occurrences[1]
+
+    repair_message_sequence(agent, messages)
+    assert first["_tool_call_uids"] == {"call_x": occurrences}
+    agent._persist_session(messages, conversation_history=None)
+
+    again = db.get_messages_as_conversation(sid, repair_alternation=False)
+    stored = next(m for m in again if m["role"] == "assistant" and m.get("tool_calls"))
+    assert stored["_tool_call_uids"] == {"call_x": occurrences}
+    assert next(m for m in again if m["role"] == "tool")["_tool_call_uid"] == occurrences[1]
+
+
 def test_a_select_context_selection_is_stripped_before_the_provider():
     """The request copy is stripped BEFORE ``select_context``; an engine that hands back the
     ``conversation_messages`` clones must not put the ids back on the wire."""

@@ -128,11 +128,26 @@ def _named_tool_call_variants(assistant: Any) -> List[str]:
     return [variant for tc in assistant.get("tool_calls") or () for variant in tool_call_id_variants(tc)]
 
 
+def merge_tool_call_uids(into: Mapping[str, Any], extra: Mapping[str, Any]) -> dict:
+    """Union two ``_tool_call_uids`` maps without losing an occurrence. Folding two assistant turns that
+    reuse a provider id (llama.cpp-style constant ids) leaves both calls in ``tool_calls``; the id then maps
+    to every occurrence's uid, in call order, as a list. Provider ids themselves are never rewritten."""
+    merged = dict(into)
+    for call_id, uid in extra.items():
+        merged[call_id] = _uid_occurrences(merged[call_id]) + _uid_occurrences(uid) if call_id in merged else uid
+    return merged
+
+
+def _uid_occurrences(value: Any) -> list:
+    return list(value) if isinstance(value, list) else [value]
+
+
 def index_tool_call_uids(index: MutableMapping[str, str], assistant: Any) -> None:
     """Register an assistant dict's ``_tool_call_uids`` under every pairing-id variant of its tool calls, so a
     later tool-result row can be resolved by any spelling of its ``tool_call_id``. Provider ids repeat, so
     every id this assistant names first shadows an earlier occurrence's entry: a result pairs with the
-    NEAREST preceding call, and a call without a uid (a legacy row) pairs its result with nothing."""
+    NEAREST preceding call, and a call without a uid (a legacy row) pairs its result with nothing. A
+    provider id repeated inside one row (two folded turns) maps each call to its own occurrence's uid."""
     from agent.message_sanitization import coalesce_tool_call_id, tool_call_id_variants
 
     for variant in _named_tool_call_variants(assistant):
@@ -140,8 +155,13 @@ def index_tool_call_uids(index: MutableMapping[str, str], assistant: Any) -> Non
     uids = assistant.get(TOOL_CALL_UIDS) if isinstance(assistant, dict) else None
     if not isinstance(uids, dict) or not uids:
         return
+    occurrence: dict = {}  # provider id -> calls seen so far: a list value holds one uid per occurrence
     for tc in assistant.get("tool_calls") or ():
-        uid = uids.get(coalesce_tool_call_id(tc))
+        call_id = coalesce_tool_call_id(tc)
+        uid = uids.get(call_id)
+        if isinstance(uid, list):
+            nth = occurrence[call_id] = occurrence.get(call_id, -1) + 1
+            uid = uid[nth] if nth < len(uid) else None
         if isinstance(uid, str) and uid:
             for variant in tool_call_id_variants(tc):
                 index[variant] = uid

@@ -1193,6 +1193,15 @@ export function useBackgroundSync({
 
       lastRefreshAt = now
       requestActiveTranscriptRefresh(true)
+      // Workspace tiles share the zombie-socket blind spot: the sessions.changed
+      // tick that would have reconciled them does not replay on wake, and bot
+      // canonical chats never resolve through the main-pane path. The shared
+      // signature gate keeps a no-change pass free (#125532).
+      void reconcileTileTranscripts({
+        requestSequenceRef: tileRequestSequenceRef,
+        signatureRef: tileSignatureRef,
+        updateSessionState
+      })
     }
 
     document.addEventListener('visibilitychange', refreshOnReturn)
@@ -1202,7 +1211,7 @@ export function useBackgroundSync({
       document.removeEventListener('visibilitychange', refreshOnReturn)
       window.removeEventListener('focus', refreshOnReturn)
     }
-  }, [activeIsMessaging, activeSessionId, activeStoredSessionId, gatewayState, requestActiveTranscriptRefresh])
+  }, [activeIsMessaging, activeSessionId, activeStoredSessionId, gatewayState, requestActiveTranscriptRefresh, updateSessionState])
 
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session

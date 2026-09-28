@@ -772,6 +772,29 @@ describe('active transcript refresh', () => {
     expect(refresh).toHaveBeenCalledTimes(1)
   })
 
+  it('reconciles workspace tiles on return, not just the main pane (#125532 review)', async () => {
+    // A zombie socket that survives sleep replays no sessions.changed tick, so
+    // the tile reconcile driven by run() never fires; bot canonical chats never
+    // resolve through the main-pane path, and the tile stays pre-sleep forever.
+    const tileRuntimeId = 'runtime-wake-tile'
+    const tileStoredId = 'stored-wake-tile'
+    $sessionTiles.set([{ runtimeId: tileRuntimeId, storedSessionId: tileStoredId }])
+    publishSessionState(tileRuntimeId, createClientSessionState(tileStoredId))
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('wake tile answer', tileStoredId) as never)
+
+    const refresh = vi.fn(async () => undefined)
+    renderSync(refresh)
+    refresh.mockClear() // drop the connect-time pull; this test is about returns
+    vi.mocked(getLatestSessionMessages).mockClear()
+
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    expect(refresh).toHaveBeenCalledTimes(1) // main pane still covered
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledWith(tileStoredId, undefined, { passive: true }))
+  })
+
   it('does not refresh on a visibilitychange to hidden (#125532 review)', () => {
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
     $changeEventsAvailable.set(true)

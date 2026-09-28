@@ -167,6 +167,23 @@ class TestWriteFile:
         assert "charlie" in result.content
         _assert_clean(result.content)
 
+    # .py so write_file probes the previous content (lint coverage) for the rewrite check.
+    def test_large_rewrite_of_existing_file_warns_with_replaced_line_count(self, ops, tmp_path):
+        path = tmp_path / "big.py"
+        path.write_text("".join(f"x_{i} = {i}\n" for i in range(40)))
+        rewritten = "".join(f"x_{i} = {i + 1000 if i < 30 else i}\n" for i in range(40))
+        result = ops.write_file(str(path), rewritten)
+        assert result.error is None
+        assert result.warning is not None
+        assert "30 of 40 previous lines" in result.warning
+
+    def test_small_edit_of_existing_file_has_no_warning(self, ops, tmp_path):
+        path = tmp_path / "small.py"
+        path.write_text("".join(f"x_{i} = {i}\n" for i in range(40)))
+        result = ops.write_file(str(path), path.read_text().replace("x_7 = 7", "x_7 = 70"))
+        assert result.error is None
+        assert result.warning is None
+
 
 # ── patch_replace ────────────────────────────────────────────────────────
 
@@ -198,6 +215,31 @@ class TestPatchReplace:
         result = ops.patch_replace(path, "line2", "REPLACED")
         assert result.error is None
         assert Path(path).read_text() == "line1\nREPLACED\nline3\n"
+
+    # Each case first pins which fuzzy strategy the inputs take, so the note assertion
+    # is about that strategy rather than about an accidental exact match.
+    FUNC = "def total(x):\n    y = x + 1\n    return y\n"
+
+    def test_similarity_match_gets_boundary_note(self, ops, tmp_path):
+        from tools.fuzzy_match import fuzzy_find_and_replace
+        old = "def total(x):\n    y = x + 2\n    return y"
+        assert fuzzy_find_and_replace(self.FUNC, old, "pass", False)[2] == "block_anchor"
+        path = tmp_path / "anchor.txt"
+        path.write_text(self.FUNC)
+        result = ops.patch_replace(str(path), old, "def total(x):\n    return x + 1")
+        assert result.error is None
+        assert result.note and "block_anchor" in result.note
+
+    def test_line_trimmed_match_gets_no_note(self, ops, tmp_path):
+        from tools.fuzzy_match import fuzzy_find_and_replace
+        old = "y = x + 1\nreturn y"  # model dropped the base indentation
+        assert fuzzy_find_and_replace(self.FUNC, old, "pass", False)[2] == "line_trimmed"
+        path = tmp_path / "trimmed.txt"
+        path.write_text(self.FUNC)
+        result = ops.patch_replace(str(path), old, "y = x + 3\nreturn y")
+        assert result.error is None
+        assert path.read_text() == "def total(x):\n    y = x + 3\n    return y\n"
+        assert result.note is None
 
 
 # ── search ───────────────────────────────────────────────────────────────

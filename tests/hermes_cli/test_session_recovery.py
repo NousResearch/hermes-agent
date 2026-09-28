@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import sqlite3
+import stat
 import subprocess
 import sys
+import time
+from argparse import Namespace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +19,7 @@ from hermes_state import SessionDB
 from hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION
 from hermes_cli import session_recovery
 from hermes_cli.session_recovery import (
+    SessionRecoveryError,
     SessionRecoverySafetyError,
     SessionRecoverySourceError,
     inspect_session_database,
@@ -935,3 +939,475 @@ def test_salvage_bounds_damaged_low_edge_from_the_aggregate_not_the_int64_domain
     assert result["range_queries"] < 200
     # Only the rows on the damaged leaf are lost; everything behind it is recovered.
     assert result["copied_rows"] >= 180 - 60
+
+
+_RECOVERY_CHILD = r"""
+import os, sys
+from pathlib import Path
+from hermes_cli.session_recovery import recover_session_database
+mode, source, output, ready = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4])
+def stop_mid_copy(progress):
+    if progress["copied_rows"] < 2:
+        return
+    if mode == "die":
+        os._exit(3)  # gone like a SIGKILL: no finally, no cleanup
+    ready.write_text("copying")
+    sys.stdin.read()  # alive mid-copy until the test closes stdin
+    os._exit(0)
+recover_session_database(source, output, chunk_size=1, progress_cb=stop_mid_copy)
+"""
+
+
+def _start_recovery_child(mode: str, source: Path, output: Path, ready: Path) -> subprocess.Popen:
+    return subprocess.Popen(
+        [sys.executable, "-c", _RECOVERY_CHILD, mode, str(source), str(output), str(ready)],
+        cwd=Path(__file__).resolve().parents[2], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+
+
+def test_interrupted_recovery_leaves_nothing_at_the_output_name(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The output is built in a private stage and only named once finished, so a run killed or interrupted
+    mid-copy leaves no partial database at its output name. The next run reports the stage of a run that died
+    before its own cleanup, and never touches a live run's."""
+    source = tmp_path / "source" / "state.db"
+    output_dir = tmp_path / "output"
+    source.parent.mkdir()
+    output_dir.mkdir()
+    _make_source(source)
+    dead = _start_recovery_child("die", source, output_dir / "dead.db", tmp_path / "dead.ready")
+    assert dead.wait(timeout=60) == 3, dead.stderr.read()
+    assert not os.path.lexists(output_dir / "dead.db")
+    dead_leftovers = {path.name for path in output_dir.iterdir()}
+    live = _start_recovery_child("live", source, output_dir / "live.db", tmp_path / "live.ready")
+    try:
+        deadline = time.monotonic() + 60
+        while not (tmp_path / "live.ready").exists():
+            assert live.poll() is None and time.monotonic() < deadline, live.stderr.read()
+            time.sleep(0.05)
+        live_leftovers = {path.name for path in output_dir.iterdir()} - dead_leftovers
+        assert all(stat.S_IMODE(path.stat().st_mode) == 0o700 for path in output_dir.iterdir())
+
+        def interrupt_mid_copy(progress: dict) -> None:
+            if progress["copied_rows"] >= 2:
+                raise KeyboardInterrupt  # Ctrl-C
+
+        with pytest.raises(KeyboardInterrupt):
+            recover_session_database(
+                source, output_dir / "recovered.db", chunk_size=1, progress_cb=interrupt_mid_copy,
+            )
+
+        remaining = {path.name for path in output_dir.iterdir()}
+        assert not os.path.lexists(output_dir / "recovered.db")
+        assert live_leftovers <= remaining  # a live run's stage is never touched
+        assert dead_leftovers <= remaining
+        assert any(str(output_dir / name) in record.message and "left staging directory" in record.message
+                   for name in dead_leftovers for record in caplog.records)
+    finally:
+        live.communicate(timeout=60)
+
+
+@pytest.mark.parametrize("hard_links", [True, False], ids=["hard-links", "no-hard-links"])
+@pytest.mark.parametrize("taken", ["name", "journal", "journal-at-publish"])
+def test_recovery_refuses_competing_name_or_sidecar_appearing_mid_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    taken: str, hard_links: bool,
+) -> None:
+    """A competing name is refused. If a journal appears after publication, the complete output and
+    journal are left for inspection; after manual cleanup a rerun publishes."""
+    source = tmp_path / "source" / "state.db"
+    output = tmp_path / "output" / "recovered.db"
+    source.parent.mkdir()
+    output.parent.mkdir()
+    output = output.parent.resolve() / output.name  # the name recovery itself publishes under
+    _make_source(source)
+    intruder = output if taken == "name" else output.with_name(output.name + "-journal")
+    intruder_digest: list[str] = []
+
+    def intrude() -> None:
+        if taken == "name":
+            conn = sqlite3.connect(str(intruder))
+            conn.execute("CREATE TABLE competitor(owner TEXT)")
+            conn.commit()
+            conn.close()
+        else:
+            intruder.write_bytes(b"rollback journal of another database")
+        intruder_digest.append(_sha256(intruder))
+
+    real_snapshot = session_recovery._snapshot_and_inspect
+
+    def snapshot_then_intrude(*args, **kwargs):
+        result = real_snapshot(*args, **kwargs)
+        if taken != "journal-at-publish":
+            intrude()
+        return result
+
+    def recording(real):
+        def take_the_name(src, dst, *args, **kwargs):
+            if Path(dst) == output and taken == "journal-at-publish" and not intruder_digest:
+                intrude()
+            return real(src, dst, *args, **kwargs)
+        return take_the_name
+
+    def unsupported_link(*_args, **_kwargs):
+        raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    monkeypatch.setattr(session_recovery, "_snapshot_and_inspect", snapshot_then_intrude)
+    monkeypatch.setattr(os, "link", recording(os.link) if hard_links else unsupported_link)
+    monkeypatch.setattr(os, "rename", recording(os.rename))
+    monkeypatch.setattr(session_recovery, "_rename_exclusive", recording(session_recovery._rename_exclusive))
+    with pytest.raises(SessionRecoverySafetyError, match="appeared during recovery"):
+        recover_session_database(source, output)
+
+    assert intruder_digest and _sha256(intruder) == intruder_digest[0]
+    if taken == "journal-at-publish":
+        assert sorted(path.name for path in output.parent.iterdir()) == [output.name, intruder.name]
+        assert output.read_bytes().startswith(b"SQLite format 3\0")
+        assert any(str(output) in record.message and str(intruder) in record.message
+                   for record in caplog.records)
+        output.unlink()  # the test owns this name and has inspected it
+    else:
+        assert sorted(path.name for path in output.parent.iterdir()) == [intruder.name]
+
+    intruder.unlink()
+    monkeypatch.setattr(session_recovery, "_snapshot_and_inspect", real_snapshot)
+    report = recover_session_database(source, output)
+
+    assert report["verified"] is True
+    assert sorted(path.name for path in output.parent.iterdir()) == [output.name]
+
+
+@pytest.mark.platforms("posix")
+def test_no_hard_link_publish_preserves_competing_file_at_final_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "candidate.db"
+    output = tmp_path / "recovered.db"
+    candidate.write_bytes(b"recovered database")
+    competitor = b"competing database"
+
+    def unsupported_link(*_args, **_kwargs):
+        raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    def intrude() -> None:
+        if output.exists():
+            output.unlink()
+        output.write_bytes(competitor)
+
+    real_replace = os.replace
+
+    def replace_after_intrusion(src, dst):
+        if Path(dst) == output:
+            intrude()
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "link", unsupported_link)
+    monkeypatch.setattr(os, "replace", replace_after_intrusion)
+    exclusive_rename = getattr(session_recovery, "_rename_exclusive", None)
+    if exclusive_rename is not None:
+        def rename_after_intrusion(src, dst):
+            intrude()
+            return exclusive_rename(src, dst)
+        monkeypatch.setattr(session_recovery, "_rename_exclusive", rename_after_intrusion)
+
+    with pytest.raises(SessionRecoverySafetyError, match="appeared during recovery"):
+        session_recovery._publish_recovered_database(candidate, output)
+
+    assert output.read_bytes() == competitor
+
+
+@pytest.mark.parametrize("method", ["link", "exclusive-rename", "placeholder"])
+def test_recovery_publishes_complete_candidate_by_available_method(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, method: str,
+) -> None:
+    candidate = tmp_path / "candidate.db"
+    output = tmp_path / "recovered.db"
+    finished = b"complete recovered database"
+    candidate.write_bytes(finished)
+    real_link = os.link
+    real_replace = os.replace
+    publications = []
+
+    def link(src, dst):
+        if method != "link":
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+        assert not output.exists()
+        publications.append("link")
+        return real_link(src, dst)
+
+    def exclusive_rename(src, dst):
+        if method == "placeholder":
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+        assert not output.exists()
+        publications.append("exclusive-rename")
+        return os.rename(src, dst)
+
+    def replace(src, dst):
+        assert output.read_bytes() == b""  # only our empty reservation is visible
+        publications.append("placeholder")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "link", link)
+    monkeypatch.setattr(session_recovery, "_rename_exclusive", exclusive_rename, raising=False)
+    monkeypatch.setattr(os, "replace", replace)
+    session_recovery._publish_recovered_database(candidate, output)
+
+    assert publications == [method]
+    assert output.read_bytes() == finished
+    warnings = [record.message for record in caplog.records if record.levelname == "WARNING"]
+    assert any("placeholder" in message and "overwritten" in message for message in warnings) == (
+        method == "placeholder"
+    )
+
+
+@pytest.mark.parametrize("identity_available", [True, False])
+def test_placeholder_fstat_failure_leaves_reservation_for_inspection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    identity_available: bool,
+) -> None:
+    candidate = tmp_path / "candidate.db"
+    output = tmp_path / "recovered.db"
+    neighbour = tmp_path / "neighbour.db"
+    candidate.write_bytes(b"complete recovered database")
+    neighbour.write_bytes(b"other database")
+
+    def unsupported(*_args, **_kwargs):
+        raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    real_open, real_fstat = os.open, os.fstat
+    placeholder_fd = None
+    failed = False
+
+    def track_open(path, flags, *args, **kwargs):
+        nonlocal placeholder_fd
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if Path(path) == output and flags & os.O_EXCL:
+            placeholder_fd = descriptor
+        return descriptor
+
+    def fail_first_placeholder_fstat(descriptor):
+        nonlocal failed
+        if descriptor == placeholder_fd and (not failed or not identity_available):
+            failed = True
+            raise OSError(errno.EIO, "fstat failed")
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "link", unsupported)
+    monkeypatch.setattr(session_recovery, "_rename_exclusive", unsupported)
+    monkeypatch.setattr(os, "open", track_open)
+    monkeypatch.setattr(os, "fstat", fail_first_placeholder_fstat)
+
+    with pytest.raises(SessionRecoveryError, match="fstat failed"):
+        session_recovery._publish_recovered_database(candidate, output)
+
+    assert failed
+    assert output.read_bytes() == b""
+    assert any(str(output) in record.message and "safe to delete" in record.message
+               and "did not create it" in record.message for record in caplog.records)
+    with pytest.raises(OSError):
+        real_fstat(placeholder_fd)
+    assert candidate.read_bytes() == b"complete recovered database"
+    assert neighbour.read_bytes() == b"other database"
+
+
+def test_placeholder_fallback_refuses_replaced_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "candidate.db"
+    output = tmp_path / "recovered.db"
+    candidate.write_bytes(b"recovered database")
+    competitor = b"competing database"
+
+    def unsupported_link(*_args, **_kwargs):
+        raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    def unsupported_rename(*_args, **_kwargs):
+        raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    real_open = os.open
+    swapped = False
+
+    def replace_reservation(path, flags, *args, **kwargs):
+        nonlocal swapped
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if Path(path) == output and flags & os.O_EXCL:
+            swapped = True
+            output.unlink()
+            output.write_bytes(competitor)
+        return descriptor
+
+    monkeypatch.setattr(os, "link", unsupported_link)
+    monkeypatch.setattr(session_recovery, "_rename_exclusive", unsupported_rename, raising=False)
+    monkeypatch.setattr(os, "open", replace_reservation)
+
+    with pytest.raises(SessionRecoverySafetyError, match="appeared during recovery"):
+        session_recovery._publish_recovered_database(candidate, output)
+
+    assert swapped
+    assert output.read_bytes() == competitor
+    assert candidate.read_bytes() == b"recovered database"
+
+
+def test_failed_placeholder_publish_leaves_swapped_file_and_reports_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    candidate = tmp_path / "candidate.db"
+    output = tmp_path / "recovered.db"
+    candidate.write_bytes(b"complete recovered database")
+    competitor = b"competing database"
+
+    def unsupported(*_args, **_kwargs):
+        raise OSError(errno.ENOTSUP, "Operation not supported")
+
+    def fail_replace(*_args, **_kwargs):
+        raise OSError(errno.EIO, "replace failed")
+
+    real_samestat = os.path.samestat
+    identity_checks = 0
+
+    def swap_after_check(first, second):
+        nonlocal identity_checks
+        result = real_samestat(first, second)
+        identity_checks += 1
+        if identity_checks == 2:
+            output.unlink()
+            output.write_bytes(competitor)
+        return result
+
+    monkeypatch.setattr(os, "link", unsupported)
+    monkeypatch.setattr(session_recovery, "_rename_exclusive", unsupported)
+    monkeypatch.setattr(os, "replace", fail_replace)
+    monkeypatch.setattr(os.path, "samestat", swap_after_check)
+
+    with pytest.raises(SessionRecoveryError, match="replace failed"):
+        session_recovery._publish_recovered_database(candidate, output)
+
+    assert identity_checks >= 2
+    assert output.read_bytes() == competitor
+    assert any(str(output) in record.message and "for inspection" in record.message
+               and "safe to delete" in record.message
+               for record in caplog.records)
+
+
+def test_sidecar_refusal_leaves_swapped_output_and_reports_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    candidate = tmp_path / "candidate.db"
+    output = tmp_path / "recovered.db"
+    sidecar = tmp_path / "recovered.db-journal"
+    candidate.write_bytes(b"complete recovered database")
+    competitor = b"competing database"
+    real_link = os.link
+    real_samestat = os.path.samestat
+    swapped = False
+
+    def link_then_add_sidecar(src, dst):
+        real_link(src, dst)
+        sidecar.write_bytes(b"competing journal")
+
+    def swap_after_check(first, second):
+        nonlocal swapped
+        result = real_samestat(first, second)
+        if not swapped:
+            swapped = True
+            output.unlink()
+            output.write_bytes(competitor)
+        return result
+
+    monkeypatch.setattr(os, "link", link_then_add_sidecar)
+    monkeypatch.setattr(os.path, "samestat", swap_after_check)
+
+    with pytest.raises(SessionRecoverySafetyError, match="appeared during recovery"):
+        session_recovery._publish_recovered_database(candidate, output)
+
+    assert swapped
+    assert output.read_bytes() == competitor
+    assert sidecar.read_bytes() == b"competing journal"
+    assert any(str(output) in record.message and str(sidecar) in record.message
+               and "for inspection" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize("method", ["link", "exclusive-rename", "placeholder"])
+def test_recovery_command_warns_only_when_placeholder_is_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], method: str,
+) -> None:
+    from hermes_cli.sessions_cmd import _cmd_recover
+
+    source = tmp_path / "source.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+    real_link, real_replace = os.link, os.replace
+    intruded = False
+
+    def link(candidate, target):
+        if method != "link":
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+        return real_link(candidate, target)
+
+    def rename(candidate, target):
+        if method == "placeholder":
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+        return os.rename(candidate, target)
+
+    def replace(candidate, target):
+        nonlocal intruded
+        if Path(target) == output:
+            assert method == "placeholder" and output.read_bytes() == b""
+            intruded = True
+            output.unlink()
+            output.write_bytes(b"competitor")
+        return real_replace(candidate, target)
+
+    monkeypatch.setattr(os, "link", link)
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(session_recovery, "_rename_exclusive", rename)
+    status = _cmd_recover(Namespace(source=source, output=output, work_dir=tmp_path))
+    shown = capsys.readouterr().out
+
+    assert status == 0
+    assert "Recovered database verified" in shown
+    assert intruded == (method == "placeholder")
+    assert output.read_bytes().startswith(b"SQLite format 3\0")
+    assert ("another process removes the placeholder" in shown) == (method == "placeholder")
+    report = json.loads(output.with_name(output.name + ".recovery.json").read_text())
+    assert any("another process removes the placeholder" in warning
+               for warning in report.get("warnings", [])) == (method == "placeholder")
+
+
+def test_recovery_command_reports_left_stages_without_failing_valid_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from hermes_cli import process_identity
+    from hermes_cli.sessions_cmd import _cmd_recover
+
+    source = tmp_path / "source.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+    dead_stage = tmp_path / f"{session_recovery._owner_prefix(session_recovery._STAGE_PREFIX)}deadbeef"
+    dead_stage.mkdir()
+    (dead_stage / "candidate.db").write_bytes(b"left by interrupted recovery")
+    monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *_args: False)
+    real_rmtree = session_recovery.shutil.rmtree
+    failed_stages = []
+
+    def fail_current_stage(path, *args, **kwargs):
+        if Path(path).name.startswith(session_recovery._STAGE_PREFIX):
+            failed_stages.append(Path(path))
+            raise OSError(errno.EACCES, "cleanup denied")
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(session_recovery.shutil, "rmtree", fail_current_stage)
+    status = _cmd_recover(Namespace(source=source, output=output, work_dir=tmp_path))
+    shown = capsys.readouterr().out
+
+    assert status == 0
+    assert "Recovered database verified" in shown
+    assert str(dead_stage) in shown and "delete manually" in shown
+    assert len(failed_stages) == 1
+    assert str(failed_stages[0]) in shown and "delete manually" in shown
+    assert dead_stage.exists() and failed_stages[0].exists()
+    report = json.loads(output.with_name(output.name + ".recovery.json").read_text())
+    assert all(any(str(stage) in warning for warning in report["warnings"])
+               for stage in (dead_stage, failed_stages[0]))

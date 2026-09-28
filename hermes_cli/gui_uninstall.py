@@ -44,6 +44,14 @@ def source_built_gui_artifacts(hermes_home: Path) -> "list[Path]":
             agent_root / "node_modules", hermes_home / "desktop-build-stamp.json"]
 
 
+def desktop_install_record() -> Path:
+    """Where ``hermes update`` records the installed ``Hermes.app`` copies it keeps current. The apps
+    are machine-wide, so the record sits under the default root whichever profile runs; deleting it
+    is what stops an uninstalled app from being put back by the next update."""
+    from hermes_constants import get_default_hermes_root  # noqa: PLC0415
+    return get_default_hermes_root() / "desktop-installed-apps.json"
+
+
 def packaged_gui_app_paths() -> "list[Path]":
     """Standard install locations of the packaged desktop distributable for the current OS. Every candidate
     is returned; the caller filters to those that exist. Never globs system-wide — only the well-known
@@ -137,7 +145,7 @@ def uninstall_gui(hermes_home: "Path | None" = None, *, remove_userdata: bool = 
                 removed.append(path)
         return found
     log_info("Removing built GUI artifacts (renderer, release, node_modules)...")
-    _remove_existing(source_built_gui_artifacts(home))
+    _remove_existing([*source_built_gui_artifacts(home), desktop_install_record()])
     log_info("Removing installed desktop app...")
     if not _remove_existing(packaged_gui_app_paths()):
         log_info("No packaged desktop app found in standard locations")

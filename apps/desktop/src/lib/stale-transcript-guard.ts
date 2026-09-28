@@ -32,6 +32,26 @@ function authoredMessageCount(messages: ChatMessage[]): number {
 }
 
 /**
+ * Highest durable row address a bubble carries: its own `rowId` plus any text
+ * part's `sourceRowId`. A folded tool-turn bubble spans many stored rows, and
+ * the two paths that build it bind different ends — live settle stamps the
+ * turn's final row (use-message-stream's withPersistedIdentity) while
+ * hydration keeps the folded bubble's first row — so the tip must read every
+ * address the bubble owns (#125975).
+ */
+function bubbleTipRowId(message: ChatMessage): number | undefined {
+  let tip = message.rowId
+
+  for (const part of message.parts) {
+    if (part.type === 'text' && typeof part.sourceRowId === 'number') {
+      tip = tip === undefined ? part.sourceRowId : Math.max(tip, part.sourceRowId)
+    }
+  }
+
+  return tip
+}
+
+/**
  * Latest persisted backend row the view carries. Retention only ever releases
  * the head (rows older than the window plus its budget — see
  * app/chat/transcript-retention.ts), so the last durable row is always the
@@ -39,7 +59,7 @@ function authoredMessageCount(messages: ChatMessage[]): number {
  */
 function lastDurableRowId(messages: readonly ChatMessage[]): number | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const rowId = messages[index].rowId
+    const rowId = bubbleTipRowId(messages[index])
 
     if (typeof rowId === 'number') {
       return rowId

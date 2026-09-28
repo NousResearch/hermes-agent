@@ -260,7 +260,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
         f"(SELECT started_at FROM sessions _act_s WHERE _act_s.id = {session_id_expr})")
 
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -451,7 +451,11 @@ CREATE TABLE IF NOT EXISTS messages (
     display_kind TEXT,
     display_metadata TEXT,
     display_identity BLOB,
-    display_order INTEGER
+    display_order INTEGER,
+    message_uid TEXT,
+    absorbed_message_uids TEXT,
+    tool_call_uids TEXT,
+    tool_call_uid TEXT
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -619,6 +623,15 @@ CREATE INDEX IF NOT EXISTS idx_messages_display_backfill
 CREATE INDEX IF NOT EXISTS idx_messages_display_identity
     ON messages(session_id, display_identity, display_order)
     WHERE display_identity IS NOT NULL AND (active = 1 OR compacted = 1);
+DROP TRIGGER IF EXISTS messages_message_uid_insert;
+CREATE TRIGGER IF NOT EXISTS messages_message_uid_insert
+AFTER INSERT ON messages WHEN new.message_uid IS NULL
+BEGIN
+    -- Every row carries a message_uid, whoever wrote it: a build that predates the column binds NULL, so
+    -- the store mints one on its behalf (the current build always binds a uid; this never fires for it).
+    -- The note lives inside the body: a comment before DROP/CREATE would defeat the settled-trigger skip.
+    UPDATE messages SET message_uid = lower(hex(randomblob(16))) WHERE id = new.id;
+END;
 DROP TRIGGER IF EXISTS messages_display_order_insert;
 CREATE TRIGGER IF NOT EXISTS messages_display_order_insert
 AFTER INSERT ON messages WHEN new.display_order IS NULL
@@ -1275,3 +1288,12 @@ def fts_rebuild_admission(db_path, *, timeout_seconds=None):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             handle.close()
+
+
+def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
+    """``json.loads(raw)``; on failure log *warning* and return *fallback*."""
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning(warning)
+        return fallback

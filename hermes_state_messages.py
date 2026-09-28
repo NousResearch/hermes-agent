@@ -1756,7 +1756,13 @@ class SessionMessagesMixin:
             ids = [r[0] for r in conn.execute("SELECT id FROM messages WHERE session_id = ? AND id >= ? AND active = 1",
                                              (session_id, target_message_id)).fetchall()]
             if ids:
-                conn.execute(f"UPDATE messages SET active = 0 WHERE id IN ({_placeholders(ids)})", ids)
+                # Range predicate instead of one bound variable per id: long transcripts
+                # exceed SQLite's SQLITE_MAX_VARIABLE_NUMBER ceiling (the module chunks
+                # to <=900 elsewhere for the same reason), which made the rewind fail
+                # outright with OperationalError before it could persist.
+                conn.execute(
+                    "UPDATE messages SET active = 0 WHERE session_id = ? AND id >= ? AND active = 1",
+                    (session_id, target_message_id))
             if replacement is not None:
                 self._insert_message_rows(conn, session_id, [replacement])
                 replacement_message_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])

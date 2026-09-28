@@ -153,12 +153,15 @@ _ACTIVE_LEASES: dict[Path, Callable[[], None]] = {}
 def _sweep_dead_leases(leases: Path) -> None:
     """Unlink lease files whose holder is gone; a free lock means the file is abandoned.
 
-    Every lease is taken locked on a staged name and only then renamed into place, so a
-    file under its final name was locked before it became visible: a lock that now probes
-    free belongs to a holder that exited through a path ``atexit`` never runs. Leases this
-    process itself holds are skipped — Windows byte locks are per-process re-entrant, so
-    probing our own would succeed — and so are staged names, which a concurrent creator
-    may not have locked yet.
+    On POSIX every lease is taken locked on a staged name and only then renamed into
+    place, so a file under its final name was locked before it became visible. On
+    Windows an open handle blocks the rename, so leases are created under their final
+    name and locked in place; the creator's open handle covers the unlocked-yet-visible
+    window, because a sweep that probes in it fails the unlink on that handle. Either
+    way, a lock that now probes free belongs to a holder that exited through a path
+    ``atexit`` never runs. Leases this process itself holds are skipped — Windows byte
+    locks are per-process re-entrant, so probing our own would succeed — and so are
+    staged names, which a concurrent creator may not have locked yet.
     """
     mine = {held.resolve() for held in _ACTIVE_LEASES}
     for lease in leases.glob("*"):
@@ -182,17 +185,31 @@ def lease_directory(generation: Path) -> Callable[[], None]:
         return lambda: None  # Generations produced before leases stay conservatively retained.
     leases = generation / ".leases"
     leases.mkdir(exist_ok=True)
-    staging = leases / f".{uuid.uuid4().hex}.staging"
     lease = leases / uuid.uuid4().hex
-    fd = os.open(staging, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
-    try:
-        _lock(fd, wait=True)
-        os.replace(staging, lease)
-    except BaseException:
-        os.close(fd)
-        with suppress(OSError):
-            staging.unlink()
-        raise
+    if os.name == "nt":
+        # Windows fails os.replace with WinError 32 while any handle holds the file
+        # open, so the staged rename below cannot run there. Lease in place instead:
+        # until the lock is taken, this open fd makes a racing sweep's unlink fail,
+        # so the file cannot be mistaken for abandoned in that window.
+        fd = os.open(lease, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        try:
+            _lock(fd, wait=True)
+        except BaseException:
+            os.close(fd)
+            with suppress(OSError):
+                lease.unlink()
+            raise
+    else:
+        staging = leases / f".{lease.name}.staging"
+        fd = os.open(staging, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        try:
+            _lock(fd, wait=True)
+            os.replace(staging, lease)
+        except BaseException:
+            os.close(fd)
+            with suppress(OSError):
+                staging.unlink()
+            raise
 
     def release() -> None:
         if _ACTIVE_LEASES.get(lease) is not release:

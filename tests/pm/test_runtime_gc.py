@@ -1,9 +1,16 @@
 """Superseded and aborted PM runtime generations are collected; running workers are not."""
 import json
+import multiprocessing
 import os
 from pathlib import Path
 
+import pytest
+
 from pm.runtime import collect_runtime_generations
+
+# The lease protocol differs per host (staged rename on POSIX, in-place lock on
+# Windows), so these run on every OS lane instead of only the Linux suite.
+_ALL_HOSTS = pytest.mark.platforms("linux", "macos", "windows")
 
 
 def _generation(root: Path, name: str, *, published: bool = True, leased: bool = True) -> Path:
@@ -16,6 +23,20 @@ def _generation(root: Path, name: str, *, published: bool = True, leased: bool =
     return generation
 
 
+def _hold_lock(path: Path, ready, done) -> None:
+    """Child-process body: hold a lease lock until the parent releases us."""
+    from pm.filesystem import lock_fd
+
+    fd = os.open(path, os.O_RDWR)
+    try:
+        assert lock_fd(fd, wait=True)
+        ready.set()
+        done.wait(30)
+    finally:
+        os.close(fd)
+
+
+@_ALL_HOSTS
 def test_collector_keeps_selected_leased_and_pre_lease_generations(tmp_path):
     from hermes_cli.runtime_state import lease_directory
 
@@ -37,6 +58,7 @@ def test_collector_keeps_selected_leased_and_pre_lease_generations(tmp_path):
     assert collect_runtime_generations(root) == [busy]
 
 
+@_ALL_HOSTS
 def test_collector_yields_to_an_in_flight_stage(tmp_path):
     from pm.filesystem import lock_fd
 
@@ -50,6 +72,7 @@ def test_collector_yields_to_an_in_flight_stage(tmp_path):
     assert collect_runtime_generations(root) == [aborted]
 
 
+@_ALL_HOSTS
 def test_new_lease_sweeps_files_left_by_dead_holders(tmp_path):
     """A holder exiting via os.execv / os._exit skips atexit and leaves its lease file
     behind (#125609); the next lease taken in the generation removes the backlog."""
@@ -67,24 +90,39 @@ def test_new_lease_sweeps_files_left_by_dead_holders(tmp_path):
     release()
 
 
+@_ALL_HOSTS
 def test_new_lease_keeps_a_live_foreign_lease(tmp_path):
-    from pm.filesystem import lock_fd
+    """A foreign lease held by another live process is never swept.
+
+    Held in a child process, not this one: Windows byte locks are per-process
+    re-entrant, so a same-process holder would let the sweep's probe succeed and
+    the test would pass for the wrong reason (the unlink failing on the handle).
+    """
     from hermes_cli.runtime_state import lease_directory
 
     generation = _generation(tmp_path, "gen")
     live = generation / ".leases" / "live-foreign"
     live.parent.mkdir(parents=True)
     live.write_bytes(b"")
-    holder = os.open(live, os.O_RDWR)
+
+    ctx = multiprocessing.get_context("spawn")
+    ready, done = ctx.Event(), ctx.Event()
+    holder = ctx.Process(target=_hold_lock, args=(live, ready, done), daemon=True)
+    holder.start()
+    assert ready.wait(30), "holder child failed to take the lease lock"
     try:
-        assert lock_fd(holder, wait=True)
         release = lease_directory(generation)
         assert live.exists()  # a held lease is never swept
         release()
     finally:
-        os.close(holder)
+        done.set()
+        holder.join(30)
+        if holder.is_alive():
+            holder.terminate()
+            holder.join(30)
 
 
+@_ALL_HOSTS
 def test_release_is_idempotent(tmp_path):
     from hermes_cli.runtime_state import lease_directory
 
@@ -98,6 +136,7 @@ def test_release_is_idempotent(tmp_path):
     assert not lease_file.exists()
 
 
+@_ALL_HOSTS
 def test_sweep_leaves_staged_names_alone(tmp_path):
     """A concurrent creator's staged file may not be locked yet; it is never swept."""
     from hermes_cli.runtime_state import lease_directory

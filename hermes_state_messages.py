@@ -896,7 +896,8 @@ class SessionMessagesMixin:
 
     def get_active_message_watermark(self, session_id: str) -> int:
         """MAX(id) of the active rows (0 if none), captured at compression START: every active row above it
-        arrived concurrently and must survive compaction verbatim."""
+        arrived concurrently and must survive compaction verbatim. Rotation may advance the lease's copy past
+        rows an adopted durable snapshot already carries."""
         if not session_id:
             return 0
         return int(self._read_one(

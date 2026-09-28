@@ -250,11 +250,13 @@ class SessionCompressionMixin:
         watermark: Optional[int] = None, watermark_ceiling: Optional[int] = None) -> None:
         """Atomically close a parent and publish its durable compression child: closure, child row, and
         handoff commit in one transaction, so readers see the live parent or a complete child, never an
-        ended parent with a missing/empty child. *watermark* (parent's ``get_active_message_watermark`` at compression start): parent rows with ``id
-        > watermark`` — appends landed during the slow summary — are column-cloned into the child AFTER the
-        handoff. *watermark_ceiling* bounds the clone: the rotation path flushes its OWN transcript to the
-        parent just before publishing and those rows are already in the handoff, so only ``(watermark,
-        watermark_ceiling]`` is foreign tail (``None`` = unbounded). *require_lease_refresh* +
+        ended parent with a missing/empty child. *watermark* (the parent's highest row already represented
+        in the handoff: its ``get_active_message_watermark`` at compression start, or the newest row of an
+        adopted durable snapshot): parent rows with ``id > watermark`` — appends landed during the slow
+        summary — are column-cloned into the child AFTER the handoff. *watermark_ceiling* bounds the clone:
+        the rotation path flushes its OWN transcript to the parent just before publishing and those rows are
+        already in the handoff, so only ``(watermark, watermark_ceiling]`` is foreign tail (``None`` =
+        unbounded). *require_lease_refresh* +
         *compression_lock_holder* refreshes the lease on the same ``conn`` before the expiry check (no
         TOCTOU window), so a refresher that died on transient DB errors gets one last chance.
 

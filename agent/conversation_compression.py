@@ -2634,8 +2634,9 @@ class _CompactionLifecycle:
 
 class _CompressionLease:
     """The per-attempt durable compression lock plus its lifecycle plumbing.
-    ``holder`` is None when no durable lock is owned (legacy DB, no session db); ``watermark`` is MAX(id) of
-    active rows at lease start (None = archive everything, no concurrent-tail preservation this cycle)."""
+    ``holder`` is None when no durable lock is owned (legacy DB, no session db); ``watermark`` is the highest
+    active row the compaction already represents: MAX(id) at lease start, advanced to the newest row of an
+    adopted durable snapshot (None = archive everything, no concurrent-tail preservation this cycle)."""
 
     def __init__(
         self, agent: Any, *, db: Any, sid: str, ttl: float, refresh_interval: Any,
@@ -2747,10 +2748,11 @@ def _abort_lease(
 
 def _try_acquire_durable_lock(lease: _CompressionLease, try_acquire: Any, commit_fence: Any) -> bool:
     """Acquire the durable lock for ``lease.holder`` and capture the start watermark.
-    Watermark = MAX(id) of active rows at START: appends aren't blocked during summary; later rows are
-    concurrent tail that archive_and_compact re-sequences. Capture is safety-additive (fallback archives
-    everything), so its failure never aborts. An acquire that raises is not version skew: fail closed and
-    release holder-qualified best-effort (safe if never acquired)."""
+    Watermark = MAX(id) of active rows at START (durable-snapshot adoption may advance it to the newest adopted
+    row): appends aren't blocked during summary; later rows are concurrent tail that archive_and_compact
+    re-sequences. Capture is safety-additive (fallback archives everything), so its failure never aborts. An
+    acquire that raises is not version skew: fail closed and release holder-qualified best-effort (safe if never
+    acquired)."""
     try:
         acquired = try_acquire(lease.sid, lease.holder, ttl_seconds=lease.ttl)
         if acquired:
@@ -2921,7 +2923,8 @@ def _adopt_grown_durable_parent(agent: Any, lease: _CompressionLease, messages: 
     """Return the durable parent transcript when it outgrew the in-memory snapshot.
     Rotation only (in-place never loses rows). The snapshot predates the lease: if durable grew, a writer
     committed a turn — ADOPT it (aborting wedged busy sessions forever). Length check only: in-memory edits of
-    past turns are legal."""
+    past turns are legal. Adoption advances ``lease.watermark`` to the snapshot's newest row, so publication
+    clones only rows the snapshot does not already carry."""
     if lease.db is None or not lease.sid:
         return None
     durable_loader = getattr(type(lease.db), "get_messages_as_conversation", None)
@@ -2957,8 +2960,11 @@ def _adopt_grown_durable_parent(agent: Any, lease: _CompressionLease, messages: 
     durable_parent = durable_loader(lease.db, lease.sid, include_row_ids=True)
     if not (isinstance(durable_parent, list) and len(durable_parent) > len(messages)):
         return None
-    adopted_max_row_id = max((message.pop("_row_id", 0) or 0 for message in durable_parent), default=0)
-    if lease.watermark is not None:
+    from agent.conversation_compression_archive import newest_exact_held_id
+    adopted_max_row_id = newest_exact_held_id(durable_parent)
+    for message in durable_parent:
+        message.pop("_row_id", None)
+    if lease.watermark is not None and adopted_max_row_id is not None:
         lease.watermark = max(lease.watermark, adopted_max_row_id)
     logger.info(
         "compression: session=%s grew before lease (%d → %d msgs); adopting durable snapshot", lease.sid, len(messages),
@@ -3360,7 +3366,8 @@ def _publish_rotated_compaction(
     if _parent_deliberately_ended(agent._session_db, old_session_id):
         raise RuntimeError(f"Compression parent already ended: {old_session_id}")
     # Foreign-tail ceiling: the flush below writes OUR rows (already in handoff);
-    # rows above the start watermark up to this MAX(id) are foreign appends.
+    # rows above the lease watermark (lease start, or the newest adopted-snapshot row) up to this MAX(id)
+    # are foreign appends.
     # No trustworthy ceiling means the clone could duplicate the handoff: skip tail preservation this rotation.
     _foreign_tail_ceiling = None
     with contextlib.suppress(Exception):

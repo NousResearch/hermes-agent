@@ -10,6 +10,7 @@ reaction from those hooks (Slack 👀, Discord, Telegram, Feishu, Matrix,
 Signal, ...) silently skips the acknowledgement for mid-turn messages.
 """
 
+import asyncio
 import importlib
 import sys
 import types
@@ -181,22 +182,35 @@ async def test_queued_followup_fires_processing_hooks(monkeypatch, tmp_path):
         message_id="queued-1",
     )
 
-    result = await runner._run_agent(
-        message="the first turn",
-        context_prompt="",
-        history=[],
-        source=_source(),
-        session_id="sess-hooks",
-        session_key=SESSION_KEY,
-        processing_event=MessageEvent(text="the first turn", source=_source(), message_id="first-1"),
+    opening = MessageEvent(
+        text="the first turn", source=_source(), message_id="first-1"
     )
+    results = []
+
+    async def respond(event):
+        result = await runner._run_agent(
+            message=event.text,
+            context_prompt="",
+            history=[],
+            source=event.source,
+            session_id="sess-hooks",
+            session_key=SESSION_KEY,
+            processing_event=event,
+        )
+        results.append(result)
+        return result["final_response"]
+
+    adapter.set_message_handler(respond)
+    await adapter.handle_message(opening)
+    await asyncio.gather(*adapter._background_tasks)
+    result = results[0]
 
     # The follow-up really did run in-band.
     assert result["final_response"] == "done-2"
     assert _TwoTurnAgent.calls == ["the first turn", "the follow-up"]
 
     # ...and it was acknowledged through the lifecycle hooks.
-    assert adapter.started == ["queued-1"]
+    assert adapter.started == ["first-1", "queued-1"]
     assert adapter.completed == [
         ("first-1", ProcessingOutcome.SUCCESS),
         ("queued-1", ProcessingOutcome.SUCCESS),

@@ -473,13 +473,14 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin, GatewayInboundContextMixi
         steered = False
         if self._hm_text_only(event) and steer_text and hasattr(running_agent, "steer"):
             try:
-                steered = self._steer_running_agent(running_agent, self._steer_text_with_origin(steer_text, event))
+                input_text = self._steer_text_with_origin(steer_text, event)
+                steered = self._steer_running_agent(running_agent, input_text)
             except Exception as exc:
                 logger.warning("PRIORITY steer failed for session %s: %s", _quick_key, exc)
         if steered:
             from gateway.platforms.base_pending import release_pending_dispatch
             release_pending_dispatch(self._delivery_adapter_for(event.source), _quick_key, event, claimed=True)
-            self._fold_into_running_turn(running_agent, _quick_key, event)
+            self._fold_into_running_turn(running_agent, _quick_key, event, input_text=input_text)
             logger.debug("PRIORITY steer for session %s", _quick_key)
             return True
         logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)

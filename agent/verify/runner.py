@@ -206,6 +206,11 @@ def _compose_live_state_reason(root: Path) -> str | None:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip().splitlines()
         return f"docker compose ps failed (exit {result.returncode}): {detail[-1] if detail else 'no output'}"
+    if result.stdout is None:
+        # Unknown state, not an empty one: an empty names list is what
+        # permits the mutating phases, so a missing capture must refuse
+        # rather than be coerced into it (#124990 review follow-up).
+        return "docker compose ps returned no captured stdout; live containers cannot be ruled out"
     names = [line for line in result.stdout.splitlines() if line.strip()]
     return f"this compose project already has running container(s): {', '.join(names)}" if names else None
 

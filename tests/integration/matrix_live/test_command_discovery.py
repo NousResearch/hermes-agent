@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from pathlib import Path
@@ -19,6 +20,19 @@ from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
 _SKILLS = {
     f"discovery-{index:02d}": f"Discovery task {index:02d}" for index in range(12)
 }
+_SKILLS.update({
+    "discovery-00": "Use ``literal ```/help` literal`` here.",
+    "discovery-01": "Use ``literal `/help` literal`` here.",
+    "discovery-02": "Example:\n```/help```\nContinue discovering commands.",
+    "discovery-03": "Example:\n   ```/help```\nContinue discovering commands.",
+    "discovery-04": "Use ``literal\n`/help`\nliteral`` here.",
+    "discovery-05": "Example:\n ```text\n`/help`\n ```\nContinue discovering commands.",
+    "discovery-06": "Example:\n```text\n`/help`\n```\nContinue discovering commands.",
+    "discovery-07": "Example:\n~~~text\n`/help`\n~~~\nContinue discovering commands.",
+    "discovery-08": "Example:\n````text\n```\n`/help`\n`````\n````\nContinue discovering commands.",
+    "discovery-09": "Example:\r\n~~~text\r\n`/help`\r\n~~~\r\nContinue discovering commands.",
+    "discovery-10": "Example:\n~~~text\t\n`/help`\n~~~\t\nContinue discovering commands.",
+})
 _COMMAND_SPAN = re.compile(r"`([!/][A-Za-z][A-Za-z0-9_-]*)(?: [^`]*)?`")
 
 
@@ -31,7 +45,7 @@ def gateway_home(tmp_path: Path) -> Path:
         directory = home / "skills" / command
         directory.mkdir(parents=True)
         (directory / "SKILL.md").write_text(
-            f"---\nname: {command}\ndescription: {description}\n---\n\nResearch.\n",
+            f"---\nname: {command}\ndescription: {json.dumps(description)}\n---\n\nResearch.\n",
             encoding="utf-8",
         )
     (home / "skills").chmod(0o777)
@@ -45,6 +59,7 @@ def test_client_discovers_native_commands_without_model_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from agent.skill_commands import get_skill_commands
+    from plugins.platforms.matrix.adapter import MatrixAdapter
 
     monkeypatch.setenv("HERMES_HOME", str(gateway_home))
     monkeypatch.chdir(gateway_home)
@@ -61,6 +76,8 @@ def test_client_discovers_native_commands_without_model_turn(
     }
 
     def commands_in(body: str) -> set[str]:
+        for command, description in _SKILLS.items():
+            body = body.replace(f"`!{command}` — {description}", f"`!{command}`")
         commands = set(_COMMAND_SPAN.findall(body))
         assert all(command.startswith("!") for command in commands), body
         assert {
@@ -94,7 +111,7 @@ def test_client_discovers_native_commands_without_model_turn(
                     if not joined:
                         continue
                     replies = [
-                        event.body
+                        event
                         for event in joined.timeline.events
                         if isinstance(event, RoomMessageText)
                         and event.sender == live_room.bot.user_id
@@ -102,7 +119,11 @@ def test_client_discovers_native_commands_without_model_turn(
                     if replies:
                         assert len(replies) == 1, replies
                         assert gateway.model.main_requests() == []
-                        return replies[0]
+                        reply = replies[0]
+                        assert reply.formatted_body == object.__new__(
+                            MatrixAdapter
+                        )._markdown_to_html(reply.body)
+                        return reply.body
                 pytest.fail(
                     f"No reply to {command} after 15 seconds. Gateway logs:\n"
                     + gateway.container
@@ -132,13 +153,16 @@ def test_client_discovers_native_commands_without_model_turn(
 
             skills_body = await reply_to("!help skills")
             assert commands_in(skills_body) == skill_tokens
-            assert skills_body == "\n".join([
-                t("gateway.help.skill_header", count=len(skills)),
-                *[
-                    f"`!{command[1:]}` — {info.get('description', '').strip()}"
-                    for command, info in sorted(skills.items())
-                ],
-            ]).strip()
+            assert (
+                skills_body
+                == "\n".join([
+                    t("gateway.help.skill_header", count=len(skills)),
+                    *[
+                        f"`!{command[1:]}` — {info.get('description', '').strip()}"
+                        for command, info in sorted(skills.items())
+                    ],
+                ]).strip()
+            )
             assert gateway.model.main_requests() == []
         finally:
             await client.close()

@@ -5,6 +5,9 @@ from typing import Any
 
 
 _MATRIX_CODE_COMMAND_RE = re.compile(r"^/([A-Za-z][A-Za-z0-9_-]*)(?=\s|$)")
+_MATRIX_CODE_SPAN_RE = re.compile(
+    r"(?<![`\\])(`+)(?!`)((?:[^\n]|\n(?![ \t]*\r?\n))+?)(?<!`)\1(?!`)"
+)
 
 
 def _platformize_command_mentions(text: str, platform: Any) -> str:
@@ -18,60 +21,40 @@ def _platformize_command_mentions(text: str, platform: Any) -> str:
 
     from agent.skill_commands import get_skill_commands
     from hermes_cli.commands import is_gateway_known_command
+    from markdown.extensions.fenced_code import FencedBlockPreprocessor
 
     skill_command_names = {
         str(command).removeprefix("/") for command in get_skill_commands()
     }
 
-    def _replace_single_backtick_spans(line: str) -> str:
-        parts: list[str] = []
-        cursor = 0
-        while cursor < len(line):
-            opening = line.find("`", cursor)
-            if opening < 0:
-                parts.append(line[cursor:])
-                break
-            parts.append(line[cursor:opening])
-            run_end = opening
-            while run_end < len(line) and line[run_end] == "`":
-                run_end += 1
-            delimiter = line[opening:run_end]
-            closing = line.find(delimiter, run_end)
-            if closing < 0:
-                parts.append(line[opening:])
-                break
+    def _replace_code_span(span: re.Match[str]) -> str:
+        delimiter, content = span.groups()
+        match = _MATRIX_CODE_COMMAND_RE.match(content)
+        if len(delimiter) == 1 and match:
+            command_name = match.group(1)
+            if (
+                is_gateway_known_command(command_name)
+                or command_name in skill_command_names
+            ):
+                content = f"!{command_name}{content[match.end() :]}"
+        return f"{delimiter}{content}{delimiter}"
 
-            content = line[run_end:closing]
-            match = _MATRIX_CODE_COMMAND_RE.match(content)
-            if len(delimiter) == 1 and match:
-                command_name = match.group(1)
-                if (
-                    is_gateway_known_command(command_name)
-                    or command_name in skill_command_names
-                ):
-                    content = f"!{command_name}{content[match.end() :]}"
-            parts.extend((delimiter, content, delimiter))
-            cursor = closing + len(delimiter)
-        return "".join(parts)
-
-    lines: list[str] = []
-    fence: tuple[str, int] | None = None
+    normalized_lines: list[str] = []
+    line_offsets = [0]
     for line in rendered.splitlines(keepends=True):
-        stripped = line.lstrip(" \t")
-        if fence is not None:
-            lines.append(line)
-            marker, minimum_length = fence
-            marker_length = len(stripped) - len(stripped.lstrip(marker))
-            if marker_length >= minimum_length and not stripped[marker_length:].strip():
-                fence = None
-            continue
+        normalized_lines.append(line.rstrip("\r\n").expandtabs(4))
+        line_offsets.append(line_offsets[-1] + len(line))
+    normalized = "\n".join(normalized_lines)
 
-        opening_fence = re.match(r"(`{3,}|~{3,})", stripped)
-        if opening_fence:
-            marker = opening_fence.group(1)
-            fence = (marker[0], len(marker))
-            lines.append(line)
-            continue
-        lines.append(_replace_single_backtick_spans(line))
-
-    return "".join(lines)
+    parts: list[str] = []
+    cursor = 0
+    for fence in FencedBlockPreprocessor.FENCED_BLOCK_RE.finditer(normalized):
+        start = line_offsets[normalized.count("\n", 0, fence.start())]
+        end = line_offsets[normalized.count("\n", 0, fence.end()) + 1]
+        parts.append(
+            _MATRIX_CODE_SPAN_RE.sub(_replace_code_span, rendered[cursor:start])
+        )
+        parts.append(rendered[start:end])
+        cursor = end
+    parts.append(_MATRIX_CODE_SPAN_RE.sub(_replace_code_span, rendered[cursor:]))
+    return "".join(parts)

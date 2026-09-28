@@ -1240,7 +1240,8 @@ export function ChatSidebar({
   // that exclusion hides also corrects the backend's `sessionCount` in the
   // "Show all N" label (a pin is always loaded — it renders in Pinned).
   const overviewHidden = useMemo(() => {
-    const isHidden = (session: SessionInfo) => isHiddenFromProjects(session) || isRemovedConversation(session, removedSessionIds)
+    const isHidden = (session: SessionInfo) =>
+      isHiddenFromProjects(session) || isRemovedConversation(session, removedSessionIds)
     const counts: Record<string, number> = {}
 
     for (const session of sessions) {

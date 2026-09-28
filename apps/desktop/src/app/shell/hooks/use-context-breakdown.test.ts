@@ -119,16 +119,14 @@ describe('useContextBreakdown (#94001)', () => {
     rerender({ busy: false, enabled: true, requestGateway, sessionId: 's1' })
     await flushAsync()
 
-    // First attempt failed → the STALE cached value must NOT be served while
-    // a retry is pending... (cache eviction happens on exhaustion; during the
-    // retry window the old value would still be served by the old code.)
-    // With the fix: the failure schedules a retry, and the meter keeps the
-    // old value ONLY until exhaustion — no, the fix evicts on exhaustion. The
-    // key invariant: after retries are exhausted, breakdown is null.
+    // First attempt failed and scheduled a bounded retry. The busy toggle
+    // already dropped the cached snapshot (#70871), so nothing stale is
+    // served while the ladder runs — recovery must come from a real fetch.
+    // Flip the failure off BEFORE the timer fires, or retry 1 fails too.
+    fail = false
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000)
     })
-    fail = false
     await flushAsync()
 
     // Retry 1 succeeded (fail flipped back off) → recovered with live data.

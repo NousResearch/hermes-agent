@@ -100,7 +100,7 @@ lsp.trusted_workspaces`, and `hermes lsp status` marks those servers
 | pyright | `VIRTUAL_ENV` or the Hermes-managed Python, never the project's `.venv`/`venv` |
 | typescript-language-server | `tsserver.path` pinned to the TypeScript next to the server; skipped if there is none |
 | svelte-language-server | `isTrusted: false` (no `svelte.config.js`, no project `svelte`/`prettier`) |
-| bash-language-server, yaml-language-server, dockerfile-ls, intelephense | unchanged: they only parse files |
+| bash-language-server, yaml-language-server, dockerfile-ls, intelephense | unchanged: they run no project code (yaml-language-server may fetch the JSON schemas a file names) |
 | clangd | unchanged: Hermes never passes `--query-driver`, so no project compiler runs |
 
 On a local backend, the post-write shell linters that would use the

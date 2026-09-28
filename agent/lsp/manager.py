@@ -44,32 +44,27 @@ def _float_or(value: Any, default: float) -> float:
         return default
 
 
-def _parse_exclude_roots(value: Any) -> Optional[List[str]]:
-    """Normalise ``lsp.exclude_roots``; ``None`` (fail closed) with a WARNING for a non-list value."""
+def _parse_path_list(value: Any, key: str, expected: str, consequence: str, invalid: Optional[List[str]]):
+    """Normalise a ``~``-expanded list of paths; ``invalid`` (with a WARNING) for a non-list value."""
     if value is None:
         return []
     if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
-        eventlog.event_log.warning(
-            "lsp.exclude_roots must be a list of glob patterns, e.g. ['~/big-monorepo', '/srv/*/vendor'] "
-            "(got %s); LSP is skipped for every workspace until the key is fixed",
-            type(value).__name__,
-        )
-        return None
+        eventlog.event_log.warning("lsp.%s must be %s (got %s); %s until the key is fixed",
+                                   key, expected, type(value).__name__, consequence)
+        return invalid
     return [os.path.expanduser(p) for p in value if p]
+
+
+def _parse_exclude_roots(value: Any) -> Optional[List[str]]:
+    """``lsp.exclude_roots``; ``None`` (fail closed: every root excluded) for a malformed value."""
+    return _parse_path_list(value, "exclude_roots", "a list of glob patterns, e.g. ['~/big-monorepo', '/srv/*/vendor']",
+                            "LSP is skipped for every workspace", None)
 
 
 def parse_trusted_workspaces(value: Any) -> List[str]:
-    """Normalise ``lsp.trusted_workspaces``; a malformed value trusts nothing extra (WARNING)."""
-    if value is None:
-        return []
-    if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
-        eventlog.event_log.warning(
-            "lsp.trusted_workspaces must be a list of directories, e.g. ['~/code/my-app'] (got %s); "
-            "only the workspaces you launched Hermes or opened the session in are trusted until the key is fixed",
-            type(value).__name__,
-        )
-        return []
-    return [os.path.expanduser(p) for p in value if p]
+    """``lsp.trusted_workspaces``; a malformed value trusts nothing extra."""
+    return _parse_path_list(value, "trusted_workspaces", "a list of directories, e.g. ['~/code/my-app']",
+                            "only the workspaces you launched Hermes or opened the session in are trusted", [])
 
 
 def _client_key(srv: ServerDef, root: str, trusted: bool) -> _Key:

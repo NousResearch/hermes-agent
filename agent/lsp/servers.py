@@ -155,11 +155,13 @@ def _make_spec(root: str, ctx: ServerContext, server_id: str, command: List[str]
 
 def _simple_spawn(server_id: str, which: Sequence[str], args: Sequence[str] = (),
                   install_pkg: Optional[str] = None, base_init: Optional[Dict[str, Any]] = None,
-                  seed: bool = False) -> _SpawnFn:
-    """Build a spawn function for the common single-binary server shape."""
+                  seed: bool = False, untrusted_init: Optional[Dict[str, Any]] = None) -> _SpawnFn:
+    """Build a spawn function for the common single-binary server shape; ``untrusted_init`` replaces
+    ``base_init`` in an untrusted workspace (the server's own switch for not loading project code)."""
     def build(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         bin_path = _find_binary(ctx, server_id, which, install_pkg)
-        return None if bin_path is None else _make_spec(root, ctx, server_id, [bin_path, *args], base_init, seed)
+        init = base_init if ctx.trusted or untrusted_init is None else untrusted_init
+        return None if bin_path is None else _make_spec(root, ctx, server_id, [bin_path, *args], init, seed)
     return build
 
 
@@ -304,16 +306,6 @@ def _spawn_typescript(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     return _make_spec(root, ctx, "typescript", [bin_path, "--stdio"], base, seed=True)
 
 
-def _untrusted_init(server_id: str, init: Dict[str, Any], which: Sequence[str], args: Sequence[str],
-                    install_pkg: str) -> _SpawnFn:
-    """A single-binary server whose own option switches off project-code loading when untrusted."""
-    def build(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
-        bin_path = _find_binary(ctx, server_id, which, install_pkg)
-        return None if bin_path is None else _make_spec(root, ctx, server_id, [bin_path, *args],
-                                                        None if ctx.trusted else init)
-    return build
-
-
 def _find_pses_bundle(ctx: ServerContext) -> Optional[str]:
     """Locate the PowerShellEditorServices bundle dir (release zip, manual install).  Resolution order:
     ``lsp.servers.powershell.command[0]`` when a directory, ``init_overrides["powershell"]["bundlePath"]``,
@@ -390,7 +382,7 @@ UNTRUSTED_SAFE_SERVERS = frozenset({
     "typescript",               # tsserver pinned to Hermes's SDK; plugins then resolve beside it (_spawn_typescript)
     "svelte-language-server",   # isTrusted: false — no svelte.config.js, no project svelte/prettier
     "bash-language-server",     # parses scripts; diagnostics from shellcheck on PATH
-    "yaml-language-server",     # parses YAML against JSON schemas; no project code
+    "yaml-language-server",     # validates against JSON schemas (may fetch them); no project code
     "dockerfile-ls",            # parses the Dockerfile; never builds it
     "intelephense",             # static PHP indexer; never runs php or composer
     "clangd",                   # no --query-driver, so it never runs a project compiler
@@ -409,12 +401,12 @@ def _server(server_id: str, extensions: Tuple[str, ...], description: str, *,
             resolve_root: Optional[_RootFn] = None, build_spawn: Optional[_SpawnFn] = None,
             which: Sequence[str] = (), args: Sequence[str] = (), install_pkg: Optional[str] = None,
             base_init: Optional[Dict[str, Any]] = None, seed: bool = False,
-            multi_root: bool = False) -> ServerDef:
+            untrusted_init: Optional[Dict[str, Any]] = None, multi_root: bool = False) -> ServerDef:
     """Registry entry factory: defaults to marker-based root + single-binary spawn."""
     return ServerDef(
         server_id, extensions,
         resolve_root or _markers_root(markers, excludes),
-        build_spawn or _simple_spawn(server_id, which or (server_id,), args, install_pkg, base_init, seed),
+        build_spawn or _simple_spawn(server_id, which or (server_id,), args, install_pkg, base_init, seed, untrusted_init),
         seed_first_push=seed, description=description, multi_root=multi_root,
     )
 
@@ -428,10 +420,9 @@ SERVERS: List[ServerDef] = [
             build_spawn=_spawn_typescript, seed=True),
     _server("vue-language-server", (".vue",), "Vue.js — @vue/language-server", resolve_root=_root_typescript,
             build_spawn=_spawn_vue),
-    # Untrusted: no svelte.config.js and no project svelte/prettier (the server's own isTrusted switch).
     _server("svelte-language-server", (".svelte",), "Svelte — svelte-language-server", resolve_root=_root_typescript,
-            build_spawn=_untrusted_init("svelte-language-server", {"isTrusted": False},
-                                        ("svelteserver", "svelte-language-server"), ("--stdio",), "svelte-language-server")),
+            which=("svelteserver", "svelte-language-server"), args=("--stdio",), install_pkg="svelte-language-server",
+            untrusted_init={"isTrusted": False}),
     _server("astro-language-server", (".astro",), "Astro — @astrojs/language-server", resolve_root=_root_typescript,
             which=("astro-ls", "astro-language-server"), args=("--stdio",), install_pkg="@astrojs/language-server"),
     _server("gopls", (".go",), "Go — gopls", markers=["go.work", "go.mod", "go.sum"], install_pkg="gopls"),

@@ -82,7 +82,7 @@ prisma、astro、vue-language-server（它会加载项目 `tsconfig.json` 中
 | pyright | 使用 `VIRTUAL_ENV` 或 Hermes 管理的 Python，绝不使用项目的 `.venv`/`venv` |
 | typescript-language-server | `tsserver.path` 固定为服务器旁边的 TypeScript；若没有则跳过 |
 | svelte-language-server | `isTrusted: false`（不加载 `svelte.config.js`，不加载项目的 `svelte`/`prettier`） |
-| bash-language-server、yaml-language-server、dockerfile-ls、intelephense | 不变：它们只解析文件 |
+| bash-language-server、yaml-language-server、dockerfile-ls、intelephense | 不变：它们不运行项目代码（yaml-language-server 可能会下载文件指定的 JSON schema） |
 | clangd | 不变：Hermes 从不传入 `--query-driver`，因此不会运行项目的编译器 |
 
 在本地后端上，当终端的当前目录不受信任时，会使用检出自带工具链的写入后 shell 检查器也会以同样方式跳过：

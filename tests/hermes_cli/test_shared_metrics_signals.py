@@ -331,6 +331,15 @@ def test_web_forms_count_only_a_new_provider_key_or_endpoint(marks, monkeypatch)
 from hermes_cli.observability import shared_metrics_disabled as disabled_metrics  # noqa: E402
 
 
+def _settle_disabled() -> None:
+    """feature_disabled diffs and records off the writer's thread (outside any caller lock)."""
+    import threading
+
+    for thread in threading.enumerate():
+        if thread.name == "hermes-feature-disabled":
+            thread.join(10)
+
+
 def test_settings_skills_plugins_transitions_only_count_moves_from_and_back_to_default():
     old = {"skills": {"disabled": ["my-private-skill"]}, "plugins": {"disabled": []}}
     new = {
@@ -374,6 +383,7 @@ def test_record_config_saved_needs_a_surface_and_collection(marks, monkeypatch):
     assert marks.rows == []
     marks.policy["on"] = True
     disabled_metrics.record_config_saved({}, {"memory": {"memory_enabled": False}})
+    _settle_disabled()
     assert marks.rows == [(contract.FEATURE_DISABLED_MARK, {
         "event": "disabled", "kind": "memory", "name": "memory.memory_enabled", "surface": "cli_config"})]
     disabled_metrics.set_process_surface(None)
@@ -399,9 +409,56 @@ def test_real_config_writes_report_the_move_away_from_default(marks, monkeypatch
     config = load_config()
     config.setdefault("memory", {})["memory_enabled"] = False
     save_config(config)
+    _settle_disabled()
     set_config_value("curator.enabled", "false")
+    _settle_disabled()
     rows = [(d["kind"], d["name"], d["event"]) for m, d in marks.rows if m == contract.FEATURE_DISABLED_MARK]
     assert rows == [("memory", "memory.memory_enabled", "disabled"), ("curator", "curator.enabled", "disabled")]
+
+
+def test_migrations_and_env_templates_are_not_user_disables(marks, monkeypatch):
+    from hermes_cli.config import _persist_migration, load_config, save_config
+
+    marks.home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(disabled_metrics, "_process_surface", "cli_config")
+    config = load_config()
+    config.setdefault("memory", {})["memory_enabled"] = False
+    _persist_migration(config)  # e.g. `hermes config migrate` / profile create in the dashboard
+    # A ``${VAR}`` template on the raw side vs its expanded value: nothing moved.
+    monkeypatch.setenv("MEM_ON", "false")
+    (marks.home / "config.yaml").write_text("compression:\n  enabled: ${MEM_ON}\n")
+    config = load_config()
+    config.setdefault("display", {})["compact"] = True
+    save_config(config)
+    _settle_disabled()
+    assert [d for m, d in marks.rows if m == contract.FEATURE_DISABLED_MARK] == []
+
+
+def test_diff_and_record_run_off_the_callers_lock_in_the_owning_profile(marks, monkeypatch, tmp_path):
+    import threading
+
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.setattr(disabled_metrics, "_process_surface", "cli_config")
+    gate, seen = threading.Event(), []
+    real = disabled_metrics.config_transitions
+
+    def slow(old, new):
+        gate.wait(5)
+        seen.append(str(get_hermes_home()))
+        return real(old, new)
+
+    monkeypatch.setattr(disabled_metrics, "config_transitions", slow)
+    token = set_hermes_home_override(str(tmp_path / "b"))
+    try:
+        with threading.Lock():  # the caller's write lock (the dashboard's _CONFIG_MUTATION_LOCK)
+            disabled_metrics.record_config_saved({}, {"memory": {"memory_enabled": False}})
+            assert marks.rows == []  # returned without diffing
+    finally:
+        reset_hermes_home_override(token)
+    gate.set()
+    _settle_disabled()
+    assert seen == [str(tmp_path / "b")] and [m for m, _ in marks.rows] == [contract.FEATURE_DISABLED_MARK]
 
 
 def test_off_thread_setup_records_in_the_owning_profile(marks, tmp_path, monkeypatch):

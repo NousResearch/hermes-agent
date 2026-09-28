@@ -1315,8 +1315,12 @@ def _persist_migration(config: Dict[str, Any]) -> None:
     """Persist a migrated config under THE migration write invariant: a migration may only
     persist values that DIFFER from the schema default, plus explicit removals/renames of user
     data. Every migration step MUST write through here (``save_config`` with default-stripping
-    ON, no ``merge_existing``) so the invariant cannot regress one migration at a time."""
-    save_config(config)
+    ON, no ``merge_existing``) so the invariant cannot regress one migration at a time. A migration
+    is Hermes' own write, never a user turning a feature off."""
+    from hermes_cli.observability.shared_metrics_disabled import hermes_applied_write
+
+    with hermes_applied_write():
+        save_config(config)
 
 
 def _prompt_and_save_env(name: str, info: Dict[str, Any], prompt: str, results: Dict[str, Any]) -> bool:

@@ -9,15 +9,24 @@ each (kind, name, event) at most once per day.
 
 The surface is the entry point that is running: ``set_process_surface`` from the ``hermes`` command
 dispatch (``tools`` / ``config`` / ``skills`` / ``plugins`` / chat slash commands / the web server) and
-the TUI gateway. A process with no surface (setup wizard, updates, migrations) records nothing: those
-writes are Hermes applying choices, not a user turning something off.
+the TUI gateway. A process with no surface (setup wizard, updates) records nothing, nor does a write
+Hermes makes itself inside a surfaced process (migrations, under :func:`hermes_applied_write`): those
+are Hermes applying choices, not a user turning something off.
+
+``save_config``'s callers may hold their own write lock (the dashboard's ``_CONFIG_MUTATION_LOCK``), so
+the hook only runs the cheap gate inline; the diff and the record run on a thread bound to the owning
+profile.
 """
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import functools
 import logging
-from typing import Any, Iterable
+import threading
+from contextvars import ContextVar
+from typing import Any, Iterable, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +39,7 @@ _COMMAND_SURFACES = {
 _SETTING_KINDS = {"memory": "memory", "curator": "curator", "compression": "compression"}
 _OFF = frozenset({"false", "off", "no", "0", "none", ""})
 _process_surface: str | None = None
+_hermes_write: ContextVar[bool] = ContextVar("hermes_feature_disabled_hermes_write", default=False)
 
 
 def set_process_surface(command: Any) -> None:
@@ -125,7 +135,10 @@ def _on(value: Any) -> bool:
 
 def _setting_transitions(old: dict, new: dict) -> Iterable[tuple[str, str, str]]:
     for path in sorted(default_on_settings()):
-        before, after = _on(_get(old, path)), _on(_get(new, path))
+        before, after = _get(old, path), _get(new, path)
+        if any(isinstance(value, str) and "${" in value for value in (before, after)):
+            continue  # an unexpanded ``${VAR}`` template (the raw side): its value is unknown here
+        before, after = _on(before), _on(after)
         if before != after:
             yield _SETTING_KINDS.get(path.split(".", 1)[0], "setting"), path, "re_enabled" if after else "disabled"
 
@@ -211,16 +224,44 @@ def _emit(transitions: Iterable[tuple[str, str, str]], surface: str) -> None:
         record_process_mark(FEATURE_DISABLED_MARK, {"event": event, "kind": kind, "name": name, "surface": surface})
 
 
+@contextlib.contextmanager
+def hermes_applied_write() -> Iterator[None]:
+    """Config writes Hermes makes on its own (migrations) record nothing, whatever the surface."""
+    token = _hermes_write.set(True)
+    try:
+        yield
+    finally:
+        _hermes_write.reset(token)
+
+
+def _record(old: Any, new: Any, surface: str, home: str) -> None:
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(home)  # a thread does not inherit the profile binding
+    try:
+        _emit(config_transitions(old, new), surface)
+    except Exception:
+        logger.debug("Feature-disabled not recorded", exc_info=True)
+    finally:
+        reset_hermes_home_override(token)
+
+
 def record_config_saved(old_raw: Any, new_config: Any) -> None:
     """``save_config``'s hook, after the write and outside its lock. Never raises."""
-    if _process_surface is None:
+    if _process_surface is None or _hermes_write.get():
         return
     try:
+        from hermes_constants import get_hermes_home
+
         from .relay_shared_metrics import enabled
 
         if not enabled() or (surface := current_surface()) is None:
             return
-        _emit(config_transitions(old_raw, new_config), surface)
+        # Not a daemon: a CLI command that exits right after its write still records.
+        threading.Thread(
+            target=_record, args=(copy.deepcopy(old_raw), copy.deepcopy(new_config), surface, str(get_hermes_home())),
+            name="hermes-feature-disabled",
+        ).start()
     except Exception:
         logger.debug("Feature-disabled not recorded", exc_info=True)
 

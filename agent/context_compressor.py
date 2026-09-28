@@ -32,6 +32,7 @@ from agent.auxiliary_client import (
     extract_content_or_reasoning,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
+from agent.delegation_context import owned_kanban_task
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
@@ -854,10 +855,17 @@ _SUMMARY_INPUT_MAX_CHARS = 160_000
 
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
+# A dispatcher-owned worker's OWN kanban_show card survives compression under this
+# prefix (#126702); ``_is_summary_stub`` recognizes it so no demotion pass re-stubs it.
+_KANBAN_OWN_CARD_PREFIX = "[kanban_show own-card:"
+_KANBAN_OWN_CARD_MAX_CHARS = 4000
+
 
 def _is_summary_stub(content: str) -> bool:
     """True for a tool result already replaced by a 1-line ``[tool] ... (N chars)`` summary."""
-    return content.startswith("[") and " chars)" in content and len(content) < 400
+    return content.startswith(_KANBAN_OWN_CARD_PREFIX) or (
+        content.startswith("[") and " chars)" in content and len(content) < 400
+    )
 
 
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
@@ -1827,9 +1835,22 @@ def _sum_template(template: str, **defaults):
     )
 
 
+def _sum_kanban_show(name, args, content, content_len, line_count):
+    """Keep a dispatcher-owned worker's OWN card (title+body, truncated) so compression never
+    strips the worker's goal/write-set/done-when (#126702); all other kanban_show results get
+    the generic stub. Fail-open: unparseable results fall through to the stub shape."""
+    task = _json_dict(content).get("task") or {}
+    task_id = task.get("id") if isinstance(task, dict) else None
+    if task_id and task_id == owned_kanban_task():
+        text = f"{task.get('title', '')}\n{task.get('body', '')}".strip()
+        return f"{_KANBAN_OWN_CARD_PREFIX} {task_id}] {text}"[:_KANBAN_OWN_CARD_MAX_CHARS]
+    return f"[kanban_show] task={task_id or '?'} ({content_len:,} chars result)"
+
+
 # tool_name -> (name, args, content, content_len, line_count) -> one-line summary.
 _TOOL_RESULT_SUMMARIZERS = {
     "terminal": _sum_terminal,
+    "kanban_show": _sum_kanban_show,
     "read_file": _sum_template("[read_file] read {path} from line {offset} ({content_len:,} chars)", path="?", offset=1),
     "write_file": _sum_write_file,
     "search_files": _sum_search_files,

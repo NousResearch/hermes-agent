@@ -1,0 +1,24 @@
+name: surp
+repo: https://github.com/ivcained/surp-hermes-x402-llm
+sha: cd0b14a507cc8643d85703c54f84239e05492fa0
+title: Surp x402 LLM Router
+version: "0.2.1"
+description: Cache-aware LLM routing through Surp with live model discovery, quotes, guarded paid chat, usage, custom combos, and x402 payments on Base.
+maintainer: ivcained
+tier: community
+category: models
+docs_url: https://github.com/ivcained/surp-hermes-x402-llm#readme
+capabilities:
+  provides_tools:
+  - surp_models
+  - surp_quote
+  - surp_cache_status
+  - surp_chat
+  - surp_usage
+  - surp_combo_create
+  - surp_combo_list
+  - surp_combo_get
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - SURP_API_KEY

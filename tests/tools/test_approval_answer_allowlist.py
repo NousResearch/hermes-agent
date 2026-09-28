@@ -37,6 +37,9 @@ NOT_CONSENT = [
     "null",
     "1",
     "denied",       # near-miss on the refusal word
+    # ``approval.respond`` accepts any JSON value: a non-string answer is no decision either.
+    ["once"],
+    {"choice": "once"},
 ]
 
 @pytest.fixture(autouse=True)
@@ -85,3 +88,66 @@ class TestGatewayAnswersMustBeConsentWords:
         assert result.get("outcome") == "unrecognized_answer"
         assert result.get("user_consent") is False
         assert "not a recognized decision" in (result.get("message") or "")
+
+
+# --- The answer is canonical where it is stored, not only in ``grant`` ---------------------------
+# Real round-trip (register_gateway_notify -> resolve_gateway_approval), no mocked wait: the
+# coalescing rule and the non-grant consent gates read ``entry.result`` before ``grant`` runs.
+
+def _gateway_guard(session_key, command=DANGEROUS):
+    import contextvars
+    from gateway.session_context import set_session_vars
+    from tools.approval_context import set_current_session_key
+
+    def run():
+        set_session_vars(session_key=session_key, platform="whatsapp")
+        set_current_session_key(session_key)
+        return check_all_command_guards(command, "local")
+
+    return contextvars.Context().run(run)
+
+
+def test_alias_of_once_does_not_approve_an_identical_coalesced_call(monkeypatch):
+    """ "once" covers only the prompt it answered; an alias of it must not approve a follower."""
+    import threading
+    import tools.approval_gateway_wait as wait_mod
+
+    key = "alias-coalesce"
+    follower_waiting = threading.Event()
+    real_follow = wait_mod._await_coalesced_leader
+
+    def follow(*args, **kwargs):
+        follower_waiting.set()
+        return real_follow(*args, **kwargs)
+
+    monkeypatch.setattr(wait_mod, "_await_coalesced_leader", follow)
+    prompts = []
+
+    def notify(data):
+        prompts.append(data)
+        if len(prompts) == 1:
+            def answer():
+                follower_waiting.wait(10)
+                approval_module.resolve_gateway_approval(key, "approve", request_id=data["request_id"])
+        else:
+            def answer():
+                approval_module.resolve_gateway_approval(key, "deny", request_id=data["request_id"])
+        threading.Thread(target=answer, daemon=True).start()
+
+    approval_module.register_gateway_notify(key, notify)
+    results = {}
+    try:
+        leader = threading.Thread(target=lambda: results.update(leader=_gateway_guard(key)))
+        leader.start()
+        while not prompts:
+            threading.Event().wait(0.01)
+        follower = threading.Thread(target=lambda: results.update(follower=_gateway_guard(key)))
+        follower.start()
+        leader.join(20)
+        follower.join(20)
+    finally:
+        approval_module.unregister_gateway_notify(key)
+
+    assert results["leader"]["approved"] is True
+    assert results["follower"]["approved"] is False
+    assert len(prompts) == 2

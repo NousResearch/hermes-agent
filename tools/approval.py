@@ -145,6 +145,10 @@ def resolve_gateway_approval(session_key: str, choice: str,
     (FIFO) or the one matching *request_id*. *reason* is the ``/deny <reason>`` free text,
     relayed to the agent in the BLOCKED message. Returns the number resolved.
     """
+    # Canonicalize where the answer is stored, not only in ``grant``: coalesced followers
+    # (``choice == "once"`` covers only the leader) and the protected-write and elicitation
+    # gates read ``entry.result`` directly, so an alias of "once" must already be "once" here.
+    choice = _canonical_choice(choice)
     with _lock:
         queue = _gateway_queues.get(session_key)
         if not queue:
@@ -723,7 +727,7 @@ _CHOICE_ALIASES = {"approve": "once", "approved": "once", "allow": "once"}
 def _canonical_choice(choice):
     """Normalize a platform adapter's approval answer onto the canonical vocabulary."""
     if not isinstance(choice, str):
-        return choice
+        return ""  # a JSON list/object/number is no decision; "" is refused, and hashable for the checks
     normalized = choice.strip().lower()
     return _CHOICE_ALIASES.get(normalized, normalized)
 

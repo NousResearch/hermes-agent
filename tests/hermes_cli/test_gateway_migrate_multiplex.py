@@ -41,6 +41,9 @@ def fleet(tmp_path, monkeypatch):
         pids={"coder": 4101, "ops": 4102},
         ops=[],
         refused_at_start={},
+        # (profile, kind, system) of units whose boot enablement survived; secondaries boot-start,
+        # the pre-existing default unit starts DISABLED unless a test/migration enables it.
+        enabled={("coder", "systemd", False), ("ops", "systemd", False)},
     )
 
     def _service_op(kind, system, verb, home, *, run_as_user=None):
@@ -57,8 +60,12 @@ def fleet(tmp_path, monkeypatch):
                 state.services[name] = remaining
             else:
                 state.services.pop(name, None)
+                state.enabled.discard((name, kind, system))
         elif verb == "install":
             state.services[name] = (kind, system)
+            state.enabled.add((name, kind, system))
+        elif verb == "enable":
+            state.enabled.add((name, kind, system))
         elif verb in ("start", "restart") and name == "default":
             (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
             runtime_path = root / "gateway_state.json"
@@ -853,6 +860,25 @@ def test_half_migrated_host_converges_on_a_re_run(fleet, capsys):
     out = capsys.readouterr().out
     assert "Half-migrated host" in out and "serves 3 profiles" in out
     assert gm.build_migration_plan().already_multiplexed
+
+
+def test_migrate_enables_the_survivor_before_it_removes_anything(fleet, capsys):
+    """Systemctl recorder: a pre-existing, DISABLED survivor unit is enabled BEFORE the first
+    secondary uninstall (uninstall = stop + disable + wants-unlink), so an apply interrupted at any
+    later step still leaves a boot-startable gateway. Base restarted the survivor after the removals
+    and never enabled it: N boot-startable gateways became 0 while the migration reported ✓."""
+    fleet.services["default"] = ("systemd", False)  # unit exists; NOT in fleet.enabled
+    assert ("default", "systemd", False) not in fleet.enabled
+
+    with pytest.raises(SystemExit) as exc:
+        gm.cmd_migrate(SimpleNamespace(multiplex=True, dry_run=False, yes=True))
+    assert exc.value.code == 0
+
+    first_removal = min(i for i, op in enumerate(fleet.ops) if op[1] in ("stop", "uninstall"))
+    assert fleet.ops.index(("default", "enable")) < first_removal
+    # A reboot has exactly one gateway: the survivor, and none of the folded secondaries.
+    assert fleet.enabled == {("default", "systemd", False)}
+    assert fleet.ops[-1] == ("default", "restart") and "serves 3 profiles" in capsys.readouterr().out
 
 
 def test_plan_names_every_process_it_will_sigterm_before_it_signals_anything(fleet, capsys):

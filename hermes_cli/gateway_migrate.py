@@ -347,19 +347,14 @@ def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: 
                 gw.systemd_install(system=system, run_as_user=run_as_user, non_interactive=True)
             return
         if verb == "enable":
-            # Boot enablement of the survivor. The migration's uninstall of every secondary just
-            # destroyed their boot enablement (systemd: disable + default.target.wants unlink), so
-            # the survivor's is now load-bearing for the whole host — and `restart` on a disabled
-            # unit succeeds, so without this the host reboots with no gateway at all while the
-            # migration reports success (#124922). Best-effort with a loud failure line: failing
-            # the apply here would trigger a rollback that cannot do any better.
-            if kind == "launchd":
-                # A plist in ~/Library/LaunchAgents is loaded at login (RunAtLoad); the migration
-                # never removes the survivor's plist, so its boot-start artifact is intact.
-                return
-            if kind == "windows":
-                # The survivor's Scheduled Task is its own enablement; the migration never removes
-                # it, and reinstalling to re-flip start-on-login would escalate UAC mid-migration.
+            # Boot enablement only: the migration's uninstall of every secondary destroys their
+            # boot enablement (systemd: disable + default.target.wants unlink), so the survivor's is
+            # load-bearing for the whole host — and `restart` on a disabled unit succeeds, so a
+            # reboot came up with no gateway while the migration reported success (#124922).
+            # launchd (RunAtLoad plist) and the Windows logon task are their own enablement and the
+            # migration never removes the survivor's. Best-effort with a loud line: failing here
+            # would trigger a rollback that cannot do any better.
+            if kind != "systemd":
                 return
             enabled = gw._run_systemctl(["enable", gw.get_service_name()], system=system, check=False, timeout=30)
             if getattr(enabled, "returncode", 0) != 0:
@@ -880,22 +875,18 @@ def _restart_default(
 ) -> str:
     """Bring the default gateway up on the new flag value; returns a one-line description.
 
-    The survivor is also (re-)enabled at boot: the migration just made its enablement
-    load-bearing by uninstalling every secondary unit — ``systemd_uninstall`` disables them, and
-    the survivor's own unit may have been disabled all along (a host that predates enable-on-boot
-    installs). ``restart`` alone on a disabled unit succeeds and reports nothing, which is how a
-    reboot then came up with NO gateway while the migration said ✓ (#124922).
+    Boot enablement is NOT this function's job: an existing survivor unit is enabled by
+    :func:`_enable_default_at_boot` before the first removal, and the install branch enables
+    through ``systemd_install``'s own enable-on-startup.
     """
     if plan_default.service is not None:
         kind, system = plan_default.service
         _service_op(kind, system, "restart", default_home)
-        _service_op(kind, system, "enable", default_home)
         return f"restarted the default gateway via {kind}"
     if target is not None:
         kind, system = target
         _service_op(kind, system, "install", default_home, run_as_user=run_as_user)
         _service_op(kind, system, "start", default_home)
-        _service_op(kind, system, "enable", default_home)
         return f"installed and started the default gateway via {kind}"
     verb = "restarted" if plan_default.pid is not None else "started"
     if plan_default.pid is not None:
@@ -903,6 +894,19 @@ def _restart_default(
     if not _spawn_detached_gateway(default_home):
         raise RuntimeError("could not spawn the default gateway (detached)")
     return f"{verb} the default gateway (detached; no service manager was in use)"
+
+
+def _enable_default_at_boot(plan: MigrationPlan) -> None:
+    """Make the survivor boot-startable BEFORE anything is removed. Every secondary unit the fold
+    uninstalls takes its boot enablement with it, and the pre-existing default unit may have been
+    disabled all along; ``restart`` on a disabled unit succeeds, so the old order (remove, then
+    restart) turned N boot-startable gateways into 0 and reported success (#124922). ``enable``
+    never starts the unit, so doing it first cannot double-bind a platform while secondaries run,
+    and an apply interrupted anywhere after it still leaves a host that comes back after a reboot.
+    """
+    if plan.default.service is not None:
+        kind, system = plan.default.service
+        _service_op(kind, system, "enable", plan.default_home)
 
 
 def _remove_secondary_gateways(plan: MigrationPlan) -> None:
@@ -1029,6 +1033,7 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
     try:
         _write_multiplex_flag(plan.default_home, True)
         print(f"  ✓ default: gateway.multiplex_profiles: true ({plan.default_home / 'config.yaml'})")
+        _enable_default_at_boot(plan)
         _remove_secondary_gateways(plan)  # on resume: whatever an apply killed mid-removal left installed
         print(f"  ✓ {_restart_default(plan.default, target, plan.default_home, run_as_user=run_as_user)}")
     except Exception as exc:

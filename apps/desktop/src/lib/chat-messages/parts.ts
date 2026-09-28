@@ -119,6 +119,51 @@ export function collectUnspokenTurnSpeech(
 const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
 
 /**
+ * Comparison key for "does the final say the same thing as this draft?".
+ *
+ * Case- and punctuation-insensitive: the model's reasoning is routinely the
+ * finished paragraph with its punctuation redone (`biura.` in the draft, a
+ * colon in the reply) and with markdown markers moved around. Those are
+ * presentational, so they must not read as different prose.
+ */
+const coverageKey = (value: string) => normalizeWs(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
+
+/** Sentence-sized runs of a text, delimiters kept off the returned chunks. */
+const coverageSentences = (value: string) => value.match(/[^.!?…]+[.!?…]*/g) ?? [value]
+
+/**
+ * A run worth proving coverage with. Shorter fragments ("Ok.", "Cukier?") are
+ * noise: the final would cover them by containing the bare word.
+ */
+const COVERAGE_MIN_SENTENCE = 12
+
+/**
+ * Whether `finalText` restates `reasoning` — every meaningful sentence of the
+ * reasoning appears somewhere in the final.
+ *
+ * Coverage, not a prefix test. `finalText.startsWith(reasoning)` only matched a
+ * draft that the reply opens with verbatim, so a draft the reply *wraps* — a
+ * greeting nailed on the front, the paragraph's punctuation redone — survived
+ * the merge and rendered under the reply as a second, faded copy of the answer.
+ * The reverse direction stays unsatisfied: a short final ("Done.") covers none
+ * of a longer reasoning block's sentences, so it still cannot swallow it
+ * (#61447).
+ */
+function reasoningRestatesFinal(reasoning: string, finalCoverage: string): boolean {
+  const sentences = coverageSentences(reasoning)
+    .map(coverageKey)
+    .filter(sentence => sentence.length >= COVERAGE_MIN_SENTENCE)
+
+  if (sentences.length === 0) {
+    const key = coverageKey(reasoning)
+
+    return Boolean(key) && finalCoverage.includes(key)
+  }
+
+  return sentences.every(sentence => finalCoverage.includes(sentence))
+}
+
+/**
  * Drop earlier text parts that a later text part repeats verbatim (after
  * whitespace normalization). Providers that continue a turn after a tool
  * call sometimes re-send the previous assistant text as the next message's
@@ -177,6 +222,8 @@ export function mergeFinalAssistantText(
 
   const dedupeReference = normalizeWs(finalText)
 
+  const finalCoverage = coverageKey(finalText)
+
   const streamedText = normalizeWs(
     parts
       .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
@@ -205,12 +252,11 @@ export function mergeFinalAssistantText(
       return true
     }
 
-    // Reasoning is a restatement only when the final FULLY covers it.
+    // Reasoning is a restatement only when the final FULLY covers it —
+    // every meaningful sentence of the draft is somewhere in the reply.
     // The reverse direction is not considered — a short final must not
     // swallow a longer reasoning block (#61447).
-    const r = normalizeWs(part.text)
-
-    return !(r && dedupeReference.startsWith(r))
+    return !reasoningRestatesFinal(part.text, finalCoverage)
   })
 
   if (!finalText) {

@@ -1248,6 +1248,34 @@ describe('mergeFinalAssistantText', () => {
     expect(result.filter(p => p.type === 'text')).toHaveLength(1)
   })
 
+  it('drops a draft the reply wraps rather than opens with (greeting + punctuation drift)', () => {
+    // The duplicate seen under the composer: the model drafts the answer in its
+    // reasoning, then sends it with a greeting nailed on the front and the
+    // paragraph re-punctuated. The draft is *inside* the final but never a
+    // prefix of it, so the old `final.startsWith(reasoning)` test kept it and it
+    // rendered as a second, faded copy of the reply.
+    const draft =
+      'Proszę bardzo, świeży kawałek z życia biura. Przychodzi programista do kawiarni i zamawia kawę. Kelner pyta: — Mleko? Cukier? — Nie, dzięki.'
+    const parts = [reasoningPart(draft), { type: 'text' as const, text: 'streamed deltas' }]
+    const final = `Cześć, jestem Czesiek. ${draft.replace('biura.', 'biura:')} Chcesz jeszcze jeden?`
+
+    const result = mergeFinalAssistantText(parts, final)
+
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(0)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: final })
+  })
+
+  it('keeps reasoning whose sentences the final only partly covers', () => {
+    const parts = [
+      reasoningPart('Sprawdzę pliki. Potem uruchomię testy i podsumuję wyniki.'),
+      { type: 'text' as const, text: 'streamed deltas' }
+    ]
+
+    const result = mergeFinalAssistantText(parts, 'Sprawdzę pliki.')
+
+    expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+  })
+
   it('does not erase streamed text when the final completion is empty (#95514)', () => {
     const parts = [{ type: 'text' as const, text: 'streamed' }, reasoningPart('some reasoning')]
 

@@ -247,9 +247,15 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
 
 
 def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None) -> str:
-    """``data:<mime>;base64,...`` for a file (MIME from extension when not given)."""
-    mime = mime_type or _determine_mime_type(image_path)
-    return f"data:{mime};base64,{base64.b64encode(image_path.read_bytes()).decode('ascii')}"
+    """``data:<mime>;base64,...`` for a file. Magic bytes win over ``mime_type`` and the extension.
+
+    Callers pass a hint (the screenshot paths hardcode ``image/png``) that can be wrong for the file
+    on disk; Anthropic 400s a JPEG labelled ``image/png`` and the label is replayed every later turn.
+    """
+    from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+    raw = image_path.read_bytes()
+    mime = _detect_image_mime_type_from_bytes(raw) or mime_type or _determine_mime_type(image_path)
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
 # Absolute hard ceiling for vision payloads (20 MB): no major provider accepts more.

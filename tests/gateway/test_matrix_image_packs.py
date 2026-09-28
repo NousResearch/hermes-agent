@@ -155,6 +155,7 @@ async def test_catalog_and_send_use_exact_native_selection_across_two_homes(
             thread_id="$root",
             message_id="$question",
             session_key="session",
+            session_id="conversation",
             transport_adapter=adapter,
         )
         try:
@@ -392,6 +393,7 @@ async def test_send_rechecks_selection_and_admission_after_await(
         chat_id=ROOM,
         user_id=USER,
         session_key="session",
+        session_id="conversation",
         transport_adapter=adapter,
     )
     try:
@@ -399,7 +401,7 @@ async def test_send_rechecks_selection_and_admission_after_await(
             client.crypto = object()
         if change.startswith("late-encryption"):
             client.state_store = MemoryStateStore()
-            await client.state_store.set_encryption_info(RoomID(ROOM), None)
+            assert await client.state_store.is_encrypted(RoomID(ROOM)) is None
             client.encrypt = AsyncMock(return_value={"ciphertext": "encrypted"})
         references = {"rooms": {"!reference:example.org": {"": {}}}}
         if change == "reference-removed":
@@ -531,3 +533,231 @@ async def test_send_rechecks_selection_and_admission_after_await(
     finally:
         clear_session_vars(tokens)
         reset_hermes_home_override(scope)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["initial", "late"])
+@pytest.mark.parametrize(
+    "change", ["image", "reference", "conversation", "owner", "profile"]
+)
+async def test_crypto_preparation_revalidates_source_and_live_conversation(
+    tmp_path, phase, change, request
+):
+    from gateway.config import GatewayConfig, Platform
+    from gateway.session import SessionSource, SessionStore
+
+    scope = set_hermes_home_override(tmp_path)
+    adapter, client = make_adapter(tmp_path)
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+    request.addfinalizer(store.close_all_db_handles)
+    source = SessionSource(
+        platform=Platform.MATRIX, chat_id=ROOM, chat_type="group", user_id=USER
+    )
+    entry = store.get_or_create_session(source)
+    adapter.set_session_store(store)
+    client.crypto = object()
+    client.state_store = MemoryStateStore()
+    assert await client.state_store.is_encrypted(RoomID(ROOM)) is None
+    if phase == "initial":
+        await client.state_store.set_encryption_info(
+            RoomID(ROOM), RoomEncryptionStateEventContent()
+        )
+    references = {"rooms": {"!reference:example.org": {"": {}}}}
+    client.get_account_data.side_effect = lambda kind: (
+        references if kind == "m.image_pack.rooms" else {}
+    )
+    tokens = set_session_vars(
+        platform="matrix",
+        chat_id=ROOM,
+        user_id=USER,
+        session_key=entry.session_key,
+        session_id=entry.session_id,
+        transport_adapter=adapter,
+    )
+    entered, release = asyncio.Event(), asyncio.Event()
+    try:
+        catalog = await adapter.matrix_image_packs("list", ROOM, requester=USER)
+        selected = catalog["packs"][1]["items"][0]["selection_id"]
+        original = client.get_state_event.side_effect
+        pack_reads = 0
+        removed = False
+        decisions = []
+
+        async def state(room, kind, key="", **kwargs):
+            nonlocal pack_reads
+            if str(kind) == "m.room.image_pack":
+                pack_reads += 1
+                if removed:
+                    return {"pack": PACK["pack"], "images": {}}
+            if str(kind) == "m.room.encryption":
+                encrypted = bool(await client.state_store.is_encrypted(RoomID(ROOM)))
+                decisions.append(encrypted)
+                if encrypted:
+                    return {"algorithm": "m.megolm.v1.aes-sha2"}
+            return await original(room, kind, key, **kwargs)
+
+        async def admit(room):
+            if phase == "late" and pack_reads >= 2:
+                await client.state_store.set_encryption_info(
+                    RoomID(ROOM), RoomEncryptionStateEventContent()
+                )
+            return False
+
+        async def encrypt(*args):
+            entered.set()
+            await release.wait()
+            return {"ciphertext": "encrypted"}
+
+        client.get_state_event.side_effect = state
+        adapter._is_dm_room = admit
+        client.encrypt = AsyncMock(side_effect=encrypt)
+        sending = asyncio.create_task(
+            adapter.matrix_image_packs(
+                "send", ROOM, requester=USER, selection_id=selected
+            )
+        )
+        await asyncio.wait_for(entered.wait(), 2)
+        assert decisions[0] is (phase == "initial")
+        if change == "image":
+            removed = True
+        if change == "reference":
+            references["rooms"].clear()
+        if change == "conversation":
+            reset = store.reset_session(entry.session_key, source=source)
+            assert reset is not None and reset.session_id != entry.session_id
+        if change == "owner":
+            adapter._client = SimpleNamespace(mxid=BOT)
+        if change == "profile":
+            adapter._owner_profile = "other-profile"
+        release.set()
+        result = await asyncio.wait_for(sending, 2)
+        assert "error" in result, (phase, change, result)
+        client.api.request.assert_not_awaited()
+    finally:
+        release.set()
+        clear_session_vars(tokens)
+        reset_hermes_home_override(scope)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["reset", "rotation", "in-place"])
+async def test_selections_follow_conversation_identity_not_route(tmp_path, boundary, request):
+    from gateway.config import GatewayConfig, Platform
+    from gateway.session import SessionSource, SessionStore
+    from gateway.session_context import scoped_current_session_id
+
+    scope = set_hermes_home_override(tmp_path)
+    adapter, client = make_adapter(tmp_path)
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+    request.addfinalizer(store.close_all_db_handles)
+    source = SessionSource(
+        platform=Platform.MATRIX, chat_id=ROOM, chat_type="group", user_id=USER
+    )
+    entry = store.get_or_create_session(source)
+    adapter.set_session_store(store)
+    tokens = set_session_vars(
+        platform="matrix",
+        chat_id=ROOM,
+        user_id=USER,
+        session_key=entry.session_key,
+        session_id=entry.session_id,
+        transport_adapter=adapter,
+    )
+    try:
+        catalog = await adapter.matrix_image_packs("list", ROOM, requester=USER)
+        selected = catalog["packs"][0]["items"][0]["selection_id"]
+        current_id = entry.session_id
+        if boundary == "reset":
+            reset = store.reset_session(entry.session_key, source=source)
+            assert reset is not None and reset.session_id != entry.session_id
+            current_id = reset.session_id
+        if boundary == "rotation":
+            current_id = "compression-child"
+            entry.session_id = current_id
+        with scoped_current_session_id(current_id):
+            result = await adapter.matrix_image_packs(
+                "send", ROOM, requester=USER, selection_id=selected
+            )
+        if boundary == "in-place":
+            assert result == {"success": True, "event_id": "$sent"}
+            client.api.request.assert_awaited_once()
+            return
+        assert "error" in result, result
+        client.api.request.assert_not_awaited()
+    finally:
+        clear_session_vars(tokens)
+        reset_hermes_home_override(scope)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", ["m.room.image_pack", "im.ponies.room_emotes"])
+async def test_gateway_rebinds_conversation_for_cached_turns_across_profiles(
+    tmp_path, event_type, multiplex_profiles, monkeypatch, request
+):
+    import importlib
+    import json
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource, SessionStore, build_session_context
+    from gateway.session_context import scoped_current_session_id
+    from tools.registry import registry
+
+    importlib.import_module("tools.matrix_image_packs_tool")
+    homes = [tmp_path / "a", tmp_path / "b"]
+    owners = {}
+    for home in homes:
+        home.mkdir()
+    for home in [homes[0], homes[1], homes[0]]:
+        with _profile_runtime_scope(
+            home, prepared_secret_scope={"MATRIX_ACCESS_TOKEN": "test"}
+        ):
+            if home not in owners:
+                adapter, client = make_adapter(home, event_type)
+                config = GatewayConfig()
+                store = SessionStore(sessions_dir=home / "sessions", config=config)
+                request.addfinalizer(store.close_all_db_handles)
+                source = SessionSource(
+                    platform=Platform.MATRIX,
+                    chat_id=ROOM,
+                    chat_type="group",
+                    user_id=USER,
+                )
+                entry = store.get_or_create_session(source)
+                adapter.set_session_store(store)
+                runner = object.__new__(GatewayRunner)
+                monkeypatch.setattr(
+                    runner,
+                    "_delivery_adapter_for",
+                    lambda _source, owner=adapter: owner,
+                )
+                owners[home] = (
+                    adapter,
+                    client,
+                    runner,
+                    build_session_context(source, config, entry),
+                )
+            adapter, client, runner, context = owners[home]
+            tokens = runner._set_session_env(context)
+            try:
+                with scoped_current_session_id(context.session_id):
+                    listed = await asyncio.to_thread(
+                        registry.dispatch, "matrix_image_packs", {"action": "list"}
+                    )
+                assert isinstance(listed, str)
+                catalog = json.loads(listed)
+                selected = catalog["packs"][0]["items"][0]["selection_id"]
+            finally:
+                runner._clear_session_env(tokens)
+            tokens = runner._set_session_env(context)
+            try:
+                sent = await asyncio.to_thread(
+                    registry.dispatch,
+                    "matrix_image_packs",
+                    {"action": "send", "selection_id": selected},
+                )
+                assert isinstance(sent, str)
+                assert json.loads(sent) == {"success": True, "event_id": "$sent"}
+            finally:
+                runner._clear_session_env(tokens)
+            assert client.api.request.await_args.args[2] == PACK["images"]["fox"]

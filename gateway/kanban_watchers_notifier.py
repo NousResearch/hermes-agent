@@ -106,7 +106,7 @@ def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
 
 _ANCHORLESS_WARNED: set[tuple] = set()
 
-_ZERO_SUB_BOARD_WARNED: set[tuple] = set()
+_ZERO_SUB_BOARD_WARNED: set[str] = set()
 
 
 def _warn_zero_sub_board_once(slug: str, live: int, notifier_profiles: list) -> bool:
@@ -119,13 +119,20 @@ def _warn_zero_sub_board_once(slug: str, live: int, notifier_profiles: list) -> 
     blocked, while the *less* dangerous "dispatcher stuck" condition is a
     reachable WARNING (#124389).
 
-    WARNING-level, once per (board, live-count): a growing/shrinking backlog
-    re-announces at its new size, a steady state does not spam every tick.
+    WARNING-level, once per board per zero-subscription episode: keying on
+    the slug alone stops both oscillation (5->6->5) and a backlog climbing
+    5,6,7,8... from re-announcing on every tick. ``_board_has_subs`` re-arms
+    the memo (discards the slug) the moment the probe is non-zero, so a later
+    episode — the last sub evicted by send-failure drop, stale-sub GC, or
+    archive — warns afresh instead of being silenced by an add-only
+    (slug, live) key.
+
+    Returns True when a warning was emitted this call, False when the board
+    is already in the warned state.
     """
-    key = (slug, live)
-    if key in _ZERO_SUB_BOARD_WARNED:
-        return True
-    _ZERO_SUB_BOARD_WARNED.add(key)
+    if slug in _ZERO_SUB_BOARD_WARNED:
+        return False
+    _ZERO_SUB_BOARD_WARNED.add(slug)
     logger.warning(
         "kanban notifier: board %s has no subscriptions owned by %s and %d "
         "non-terminal task(s) — blocked cards will reach nobody; subscribe "
@@ -314,6 +321,14 @@ class _Collector:
                     "kanban notifier: board %s has no subscriptions owned by %s; "
                     "skipping open", slug, sorted(self.notifier_profiles),
                 )
+        else:
+            # Subscribers exist again: re-arm the once-memo so a later
+            # zero-sub episode (last sub evicted by send-failure drop,
+            # stale-sub GC, or archive) warns afresh instead of being silenced
+            # by an earlier (slug, live) key. Idempotent; the set holds at
+            # most one entry per board in the warned state, so growth is
+            # bounded by the board count.
+            _ZERO_SUB_BOARD_WARNED.discard(slug)
         return count != 0
 
     def _gc_stale_subs(self, conn: Any, slug: str) -> None:

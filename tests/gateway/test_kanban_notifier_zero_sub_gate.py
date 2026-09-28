@@ -191,22 +191,68 @@ def test_live_task_probe_failure_does_not_break_the_gate(tmp_path, monkeypatch, 
     assert adapter.sent == []
 
 
-def test_zero_sub_warning_is_once_per_board_and_live_count(monkeypatch, caplog):
-    """The notifier ticks every few seconds: a steady board must not warn on
-    every tick, while a changed backlog size re-announces."""
+def test_zero_sub_warning_is_once_per_board_per_episode(monkeypatch, caplog):
+    """The notifier ticks every few seconds: a board in the zero-sub state
+    warns ONCE — neither oscillation nor a backlog climbing 5,6,7,8... may
+    re-announce on every tick (#124508)."""
     from gateway import kanban_watchers_notifier as kwn
 
     kwn._ZERO_SUB_BOARD_WARNED.clear()
     try:
         with caplog.at_level("WARNING"):
             assert kwn._warn_zero_sub_board_once("alpha", 3, ["default"]) is True
-            assert kwn._warn_zero_sub_board_once("alpha", 3, ["default"]) is True
-            kwn._warn_zero_sub_board_once("alpha", 2, ["default"])
+            # Same board, same zero-sub episode: silent at a new size too.
+            assert kwn._warn_zero_sub_board_once("alpha", 3, ["default"]) is False
+            assert kwn._warn_zero_sub_board_once("alpha", 5, ["default"]) is False
+            assert kwn._warn_zero_sub_board_once("alpha", 2, ["default"]) is False
         lines = [r for r in caplog.records if "non-terminal task(s)" in r.getMessage()]
-        # First announce (3) + the re-announced new size (2) — not a third.
-        assert len(lines) == 2
+        assert len(lines) == 1
         assert "3 non-terminal" in lines[0].getMessage()
-        assert "2 non-terminal" in lines[1].getMessage()
+    finally:
+        kwn._ZERO_SUB_BOARD_WARNED.clear()
+
+
+def test_zero_sub_warning_rearms_when_subs_return(tmp_path, monkeypatch, caplog):
+    """A board that regresses to a previously-seen live count must warn
+    afresh once its subscribers return and leave again (#124508): the old
+    add-only (slug, live) memo silenced the second episode for the life of
+    the process."""
+    from gateway import kanban_watchers_notifier as kwn
+    from gateway.kanban_watchers_notifier import _Collector
+
+    kwn._ZERO_SUB_BOARD_WARNED.clear()
+    try:
+        class _FakeRunner:
+            adapters: dict = {}
+            _profile_adapters: dict = {}
+            config = None
+
+            def _owns_kanban_dispatcher_lock(self):
+                return True
+
+        runner = _FakeRunner()
+        collector = _Collector(
+            runner, kb=None, notifier_profile="default", gc_due=False, gc_retention_days=30,
+        )
+
+        subs = iter([0, 3, 0])
+
+        def fake_count_notify_subs(*_a, **_k):
+            return next(subs)
+
+        monkeypatch.setattr(kwn._kbn(), "count_notify_subs", fake_count_notify_subs)
+        monkeypatch.setattr(kwn._kbn(), "count_live_tasks", lambda *_a, **_k: 3)
+
+        with caplog.at_level("WARNING"):
+            # Tick 1: zero subs, live work -> warns.
+            assert collector._board_has_subs("alpha") is False
+            # Tick 2: a subscriber arrives -> board processed, memo re-armed.
+            assert collector._board_has_subs("alpha") is True
+            # Tick 3: last sub leaves again, same live count -> warns afresh.
+            assert collector._board_has_subs("alpha") is False
+
+        lines = [r for r in caplog.records if "non-terminal task(s)" in r.getMessage()]
+        assert len(lines) == 2
     finally:
         kwn._ZERO_SUB_BOARD_WARNED.clear()
 

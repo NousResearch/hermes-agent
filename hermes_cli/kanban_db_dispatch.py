@@ -2509,7 +2509,7 @@ def _propagate_module_import_root(cmd: list[str], env: dict[str, str]) -> None:
     then owns dependency activation as usual. A resolved shim path owns its
     imports and is left alone. Same pin cron's external worker uses (#112729).
     """
-    if cmd[1:3] != ["-m", "hermes_cli.main"]:
+    if cmd[1:3] not in (["-m", "hermes_cli.main"], ["-m", "hermes_cli.kanban_worker_log"]):
         return
     from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
 
@@ -2942,6 +2942,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         "--",
         *cmd,
     ]
+    _propagate_module_import_root(wrapped_cmd, env)
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

@@ -2973,6 +2973,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not reply_to or self._reply_to_mode == "off":
             return None
         try:
+            # Text/announcement thread ids equal their starter message's id, and that starter
+            # lives in the parent channel — an ids-built reference would claim it sits inside
+            # the thread, so Discord renders "Message could not be loaded" (#126621). Skip it;
+            # in-thread messages (id != thread id) and forum starters (in-thread) stay valid.
+            if isinstance(channel, discord.Thread) and int(reply_to) == channel.id:
+                return None
             return self._message_reference_from_ids(reply_to, channel)
         except (ValueError, TypeError) as e:
             logger.debug("Could not build reply-to reference: %s", e)

@@ -305,3 +305,75 @@ class TestVoiceReplyReference:
         await adapter.send_voice("12345", str(audio), reply_to="999")
 
         channel.fetch_message.assert_not_called()
+
+
+# ------------------------------------------------------------------
+# Tests for auto-thread starter references (#126621)
+# ------------------------------------------------------------------
+
+# Build FakeThread from the discord.Thread the adapter itself resolves at
+# runtime (adapter.py's global `discord`), not a fresh `import discord`: shared
+# conftest mocks may swap sys.modules["discord"] between imports, which would
+# hand this file a different Thread class than the isinstance() check uses.
+from plugins.platforms.discord import adapter as _discord_adapter_mod
+
+try:
+    _ThreadBase = _discord_adapter_mod.discord.Thread
+    if not isinstance(_ThreadBase, type):  # pragma: no cover - defensive mock shapes
+        raise TypeError("discord.Thread is not a class")
+except (AttributeError, TypeError):
+    _ThreadBase = object
+
+
+class FakeThread(_ThreadBase):
+    """Minimal thread stub. For a text/announcement thread the thread id equals
+    its starter message's id (Discord derives one from the other)."""
+    def __init__(self, thread_id: int = 300):
+        # Do NOT call super().__init__() — real Thread requires (data, guild, state)
+        self.id = thread_id
+
+
+class TestAutoThreadStarterReference:
+    """#126621: the first auto-thread reply referenced the parent-channel question
+    with the thread's channel id, so Discord showed "Message could not be loaded"."""
+
+    def test_thread_starter_reference_is_skipped(self, adapter_factory):
+        """reply_to == thread id means the anchor is the thread's starter message,
+        which lives in the parent channel — the reference must be dropped."""
+        adapter = adapter_factory("first")
+        thread = FakeThread(300)
+        assert adapter._reply_reference_for_send("300", thread) is None
+
+    def test_in_thread_reply_keeps_reference(self, adapter_factory):
+        """A follow-up question inside the thread (message id != thread id) keeps
+        its reference so in-thread reply previews stay intact."""
+        adapter = adapter_factory("first")
+        thread = FakeThread(300)
+        assert adapter._reply_reference_for_send("999", thread) is not None
+
+    def test_parent_channel_reply_keeps_reference(self, adapter_factory):
+        """Replies in a regular (non-thread) channel are unaffected."""
+        adapter = adapter_factory("first")
+        channel = SimpleNamespace(id=200)
+        assert adapter._reply_reference_for_send("300", channel) is not None
+
+    def test_off_mode_still_suppresses_everything(self, adapter_factory):
+        adapter = adapter_factory("off")
+        assert adapter._reply_reference_for_send("999", SimpleNamespace(id=200)) is None
+
+    @pytest.mark.asyncio
+    async def test_send_to_auto_thread_omits_broken_reference(self):
+        """End-to-end send(): the first reply in an auto-created thread must not
+        carry a reference that points the parent-channel starter at the thread."""
+        adapter, _, _ = _make_discord_adapter("first")
+        thread = FakeThread(300)
+        sent_msg = MagicMock()
+        sent_msg.id = 42
+        thread.send = AsyncMock(return_value=sent_msg)
+        adapter._client.get_channel = MagicMock(return_value=thread)
+        adapter.truncate_message = lambda content, max_len, **kw: ["answer"]
+
+        await adapter.send("200", "answer", reply_to="300", metadata={"thread_id": "300"})
+
+        thread.send.assert_awaited_once()
+        assert thread.send.call_args.kwargs.get("reference") is None

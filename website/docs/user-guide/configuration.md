@@ -2780,7 +2780,7 @@ The browser toolset supports multiple providers. See the [Browser feature page](
 
 ## Timezone
 
-Override the server-local timezone with an IANA timezone string. Affects timestamps in logs, cron scheduling, and system prompt time injection.
+Override the server-local timezone with an IANA timezone string. Affects cron scheduling and the time injected into the system prompt. It does not change log files: every line in `~/.hermes/logs/` is stamped in the machine's local time, which is what `hermes logs --since` compares against.
 
 ```yaml
 timezone: "America/New_York"   # IANA timezone (default: "" = server-local time)

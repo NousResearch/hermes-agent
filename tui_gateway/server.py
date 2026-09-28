@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone  # noqa: F401  (timezone: split modules)
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
 
@@ -2008,16 +2008,11 @@ def _session_show_reasoning(sid: str) -> bool:
     return _load_show_reasoning()
 
 
-def _process_tool_chrome_enabled(sid: str) -> bool:
-    """Non-essential tool rows follow display.show_reasoning, not reasoning_effort."""
-    return _session_show_reasoning(sid) and _tool_progress_enabled(sid)
-
-
 def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
-# Names whose lifecycle a UI renders as a card even in answer-only mode. `isCardTool` /
+# Names whose lifecycle a UI renders as a card even with display.tool_progress off. `isCardTool` /
 # `isFileEditTool` in apps/desktop/src/lib/tool-render-class.ts must stay in sync with this
 # set (test_gateway_lifecycle_set_covers_desktop_card_tools pins the direction that matters).
 _TOOL_LIFECYCLE_UI_TOOLS = frozenset({

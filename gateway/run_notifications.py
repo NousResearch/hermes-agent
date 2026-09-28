@@ -1839,8 +1839,8 @@ class GatewayNotificationsMixin:
 
     def _restore_secondary_completion_ledgers(self, profile_homes) -> None:
         """Re-queue undelivered async completions from every SECONDARY profile's ledger. The process
-        registry restores only the launch profile's ``state.db`` at import; a secondary's rows would
-        otherwise never be replayed after a restart."""
+        registry's ``restore_completions()`` covers only the launch profile's ``state.db``; a
+        secondary's rows would otherwise never be replayed after a restart."""
         from tools.async_delegation import restore_undelivered_completions
         from tools.process_registry import process_registry as _pr
         self._each_secondary_ledger(profile_homes, lambda: restore_undelivered_completions(_pr.completion_queue),

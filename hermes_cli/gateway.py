@@ -5492,6 +5492,15 @@ def _cmd_restart(args):
         _restart_all(system)
         return
 
+    # Reap orphans only past the refusal guards above (#125394): the Desktop backend used to reap
+    # before spawning this command, so a refused restart still cost the profile its gateway. From
+    # here every path restarts (service manager, external-supervisor hand-back, manual fallback),
+    # and the reap stays best-effort: a scan failure must not abort the restart (#77276).
+    try:
+        _reap_unsupervised_gateway_orphans()
+    except Exception as exc:
+        logger.debug("orphan reap before gateway restart failed: %s", exc)
+
     # The Windows restart path handles both registered installs and detached restarts.
     kind = _installed_service_kind_for(is_windows)
     service_configured = kind is not None and (kind != "windows" or _gw_windows().is_installed())
@@ -5681,41 +5690,6 @@ def _gateway_command_inner(args):
     handler = _GATEWAY_SUBCOMMANDS.get(getattr(args, "gateway_command", None))
     if handler is not None:
         handler(args)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def print_systemd_linger_guidance() -> None:
-    """Print the current linger status and the fix when it is disabled."""
-    linger_enabled, linger_detail = get_systemd_linger_status()
-    if linger_enabled is True:
-        print("✓ Systemd linger is enabled (service survives logout)")
-    elif linger_enabled is False:
-        print("⚠ Systemd linger is disabled (gateway may stop when you log out)")
-        print("  Run: sudo loginctl enable-linger $USER")
-    else:
-        print(f"⚠ Could not verify systemd linger ({linger_detail})")
-        print("  If you want the gateway user service to survive logout, run:")
-        print("  sudo loginctl enable-linger $USER")
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT': ('gateway.restart', 'DEFAULT_GATEWAY_RESTART_AFTER_TURN_TIMEOUT'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
 
 
 def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:

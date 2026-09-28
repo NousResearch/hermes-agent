@@ -1245,18 +1245,37 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     Resolution uses ``_current_cron_store()`` so the heartbeat is correctly scoped to the active profile's
     store — critical under multiplex_profiles where each profile needs its own liveness signal (#69377).
     """
-    _write_marker("ticker_heartbeat", str(time.time()), ".hb_")
+    # ``<epoch> <pid>``: a killed ticker's last stamp reads fresh for ~3 minutes, so a reader with no
+    # other proof of the scheduler (the in-process serve/Desktop ticker) checks the writer is alive.
+    _write_marker("ticker_heartbeat", f"{time.time()} {os.getpid()}", ".hb_")
     if success:
         _write_marker("ticker_last_success", str(time.time()), ".hb_")
+
+
+def _read_marker_fields(name: str) -> List[str]:
+    try:
+        return (_current_cron_store().cron_dir / name).read_text(encoding="utf-8-sig").split()
+    except Exception:
+        return []
 
 
 def _epoch_file_age(name: str) -> Optional[float]:
     """Seconds since the epoch stamp stored in ``<cron_dir>/<name>``; None = missing/unreadable."""
     try:
-        raw = (_current_cron_store().cron_dir / name).read_text(encoding="utf-8-sig").strip()
-        return max(0.0, time.time() - float(raw))
+        return max(0.0, time.time() - float(_read_marker_fields(name)[0]))
     except Exception:
         return None
+
+
+def ticker_heartbeat_writer_alive() -> bool:
+    """True when the process that wrote this store's ticker heartbeat is still running. A legacy
+    bare-epoch stamp names no writer and is NOT proof of a live scheduler by itself."""
+    fields = _read_marker_fields("ticker_heartbeat")
+    try:
+        from hermes_cli._subprocess_compat import pid_exists_stdlib
+        return len(fields) >= 2 and pid_exists_stdlib(int(fields[1]))
+    except Exception:
+        return False
 
 
 def get_ticker_heartbeat_age() -> Optional[float]:
@@ -3440,14 +3459,3 @@ def rewrite_skill_refs(
             save_jobs(jobs)
             logger.info("Curator rewrote skill references in %d cron job(s)", len(rewrites))
         return {"rewrites": rewrites, "jobs_updated": len(rewrites), "jobs_scanned": len(jobs)}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def clear_drift_alerted(job_id: str) -> None:
-    """Clear the drift alert-dedup marker (resolution matches again)."""
-    _set_alert_flag(job_id, "drift_alerted", False)
-# ---- END PLUGIN-COMPAT ----

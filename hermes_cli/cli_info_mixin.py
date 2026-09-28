@@ -96,21 +96,6 @@ class CLIInfoMixin:
     """Informational views and reload flows for the interactive CLI: banner, help, tools, usage,
     insights, MCP/skills reload, bang shell."""
 
-    def _show_plugin_compat_notice(self) -> None:
-        """One yellow block under the banner when an enabled external plugin imports paths scheduled for
-        removal (red once the date has passed and the plugin was skipped). Never raises."""
-        try:
-            from hermes_cli.plugin_compat import compat_report, removal_in_effect, summary_lines
-            lines = summary_lines(compat_report())
-        except Exception:
-            return
-        if not lines:
-            return
-        colour = "bold red" if removal_in_effect() else "bold yellow"
-        self._console_print()
-        self._console_print(f"[{colour}]⚠  {lines[0]}[/]")
-        self._console_print(f"[dim]   {lines[1]}[/]")
-
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         from cli import _build_compact_banner, get_tool_definitions, logger
@@ -195,7 +180,6 @@ class CLIInfoMixin:
 
         # Low context warning — tied to the runtime guard so guidance cannot drift.
         from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, is_local_endpoint
-        self._show_plugin_compat_notice()
         if ctx_len and ctx_len < MINIMUM_CONTEXT_LENGTH:
             self._console_print()
             self._console_print(f"[yellow]{t('cli.banner.context_too_low', tokens=f'{ctx_len:,}')}[/]")

@@ -1340,39 +1340,3 @@ __all__ = [
     "_MEMORY_REVIEW_PROMPT", "_SKILL_REVIEW_PROMPT", "_COMBINED_REVIEW_PROMPT", "load_background_review_settings",
     "spawn_background_review_thread", "summarize_background_review_actions", "build_memory_write_metadata",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-
-def is_background_review_enabled(
-    task_cfg: Optional[Dict[str, Any]] = None,
-) -> bool:
-    """Return whether automatic post-turn background review may spawn.
-
-    Controlled by ``auxiliary.background_review.enabled`` (default ``true``).
-    Explicit ``/refine`` (``focus`` set) bypasses this gate — same contract as
-    zeroing the nudge intervals, which stops automatic forks but leaves manual
-    refine working (issue #87250).
-
-    Prefer :func:`load_background_review_settings` at the spawn call site so
-    the task block is not re-read on the same turn.
-    """
-    if task_cfg is not None:
-        try:
-            from utils import is_truthy_value
-
-            return is_truthy_value(task_cfg.get("enabled"), default=True)
-        except Exception:
-            logger.warning(
-                "Failed to interpret background_review.enabled; leaving "
-                "automatic review enabled (fail-open)",
-                exc_info=True,
-            )
-            return True
-    enabled, _ = load_background_review_settings()
-    return enabled
-# ---- END PLUGIN-COMPAT ----

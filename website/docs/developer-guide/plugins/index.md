@@ -168,20 +168,17 @@ from an isolated `HERMES_HOME`. Those tests load and invoke the plugin through
 `PluginManager`; they assert real registration and callback outcomes rather
 than internal symbol lists or source-code shape.
 
-### Sep 2026 module decomposition: old import paths end 2026-09-14
+### Sep 2026 module decomposition: old import paths removed
 
 Hermes's internals were split into `<stem>_<topic>` sibling modules in Sep 2026 (PR #102117). **Internal
-import paths were never part of the plugin contract** above, but many plugins used them. Every moved name
-still resolves from its old module until **2026-09-14**, then the compatibility layer is removed.
+import paths were never part of the plugin contract** above. A temporary compatibility layer kept the old
+paths resolving until 2026-09-14; it has been removed, so a plugin that still imports an old path fails to
+load with an `ImportError` (the reason shows in `hermes plugins list`).
 
-- **Check your plugin:** `hermes plugins compat /path/to/your/plugin` lists every `file:line` with the
-  old path and the new one, and exits 1 while any remain. `COMPAT_MANIFEST.md` in the repo is the full map.
-- **What users see:** a notice under the CLI banner, in `hermes doctor` and after `hermes update`, and a
-  one-time Desktop dialog naming the plugin. Each resolution through an old path also emits a
-  `HermesPluginCompatWarning` once per process.
-- **From 2026-09-14:** plugins that still import old paths are **not loaded** (the reason shows in
-  `hermes plugins list`). Users can force-load with `plugins.allow_deprecated_imports: true` until the
-  layer is actually removed, at which point the old paths raise `ImportError`.
+To fix such a plugin, import the name from the module that defines it now, or better, use `ctx` and the
+documented ABCs instead of internals. The full old-to-new map is the
+[`COMPAT_MANIFEST.md`](https://github.com/NousResearch/hermes-agent/blob/5912ed81ed9/COMPAT_MANIFEST.md)
+from the last commit that shipped the layer.
 
 ## What you're building
 

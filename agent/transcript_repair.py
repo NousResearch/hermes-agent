@@ -289,11 +289,3 @@ def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: L
                     written[key] = canonical[key]
                 elif key not in ("role", "content"):
                     written.pop(key, None)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

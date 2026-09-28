@@ -2069,6 +2069,7 @@ export const deOverrides = {
       restartFailed: 'Das Backend konnte nicht neu gestartet werden',
       auxiliaryTitle: 'Hilfsmodelle',
       resetAllToMain: 'Alle auf Hauptmodell zurücksetzen',
+      staleAuxDismiss: 'Nicht erneut anzeigen',
       auxiliaryDesc:
         'Hilfsaufgaben laufen standardmäßig auf dem Hauptmodell. Weise einer Aufgabe ein eigenes Modell zu, um das zu überschreiben.',
       setToMain: 'Auf Hauptmodell setzen',
@@ -3085,12 +3086,6 @@ export const deOverrides = {
       system: 'System',
       usage: 'Nutzung'
     },
-    sectionDescriptions: {
-      maintenance: 'Diagnose, Backups, Curator und Memory-Daten',
-      sessions: 'Sessions durchsuchen und verwalten',
-      system: 'Status, Logs und Systemaktionen',
-      usage: 'Token-, Kosten- und Skill-Aktivität im Zeitverlauf'
-    },
     nav: {
       newChat: {
         title: 'Neue Session',
@@ -3176,7 +3171,7 @@ export const deOverrides = {
     actions: count => `${count} Aktionen`,
     logFile: 'Logdatei',
     logLevel: 'Stufe',
-    logSearchPlaceholder: 'Logzeilen filtern...',
+    logSearchPlaceholder: 'Logs durchsuchen…',
     maintenance: {
       runOps: 'Diagnose',
       doctor: 'Doctor ausführen',
@@ -3225,6 +3220,13 @@ export const deOverrides = {
   },
   messaging: {
     search: 'Messaging durchsuchen...',
+    statusFilter: {
+      all: 'Alle',
+      bad: 'Fehler',
+      good: 'Verbunden',
+      muted: 'Inaktiv',
+      warn: 'Handlungsbedarf'
+    },
     loading: 'Messaging-Plattformen werden geladen...',
     loadFailed: 'Messaging-Plattformen konnten nicht geladen werden',
     states: {
@@ -4284,6 +4286,8 @@ export const deOverrides = {
     restoredDraftNotice: 'Ihre nicht gesendete Nachricht wurde wiederhergestellt',
     restoredDraftUndo: 'Rückgängig',
     queueEdit: 'Bearbeiten',
+    queueExpand: 'Ausklappen',
+    queueCollapse: 'Einklappen',
     queueSendNext: 'Weiter',
     queueSteer: 'Steuern — laufenden Turn jetzt umleiten',
     queueSend: 'Senden',
@@ -4980,7 +4984,11 @@ export const deOverrides = {
     noAuthenticatedProviders: 'Keine authentifizierten Anbieter.',
     addProvider: 'Anbieter hinzufügen…',
     addCustomModel: 'Eigenes Modell hinzufügen',
-    removeCustomModel: 'Eigenes Modell entfernen'
+    removeCustomModel: 'Eigenes Modell entfernen',
+    resetToDefaults: 'Auf Standard zurücksetzen',
+    resetConfirm: 'Modellsichtbarkeit auf Standard zurücksetzen?',
+    resetDescription: 'Ihre Auswahl sichtbarer und ausgeblendeter Modelle wird gelöscht, und jeder Anbieter zeigt wieder seine Standardliste. Eigene Modelle bleiben erhalten und werden angezeigt.',
+    resetAction: 'Zurücksetzen'
   },
   shell: {
     windowControls: 'Fenster-Bedienelemente',
@@ -6102,6 +6110,11 @@ export const deOverrides = {
   ui: {
     search: {
       clear: 'Suche löschen'
+    },
+    logs: {
+      bottom: 'Zum Ende',
+      search: 'Logs durchsuchen…',
+      top: 'Zum Anfang'
     },
     pagination: {
       label: 'Seitennummerierung',

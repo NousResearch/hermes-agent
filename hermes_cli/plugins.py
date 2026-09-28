@@ -1475,20 +1475,6 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         if manifests:
             logger.info("Plugin discovery complete: %d found, %d enabled", len(self._plugins),
                         sum(1 for p in self._plugins.values() if p.enabled))
-        self._refresh_plugin_compat_report(list(to_load.values()))
-
-    def _refresh_plugin_compat_report(self, manifests: List[PluginManifest]) -> None:
-        """Refresh HERMES_HOME/.plugin-compat-report.json from this discovery pass (hermes_cli.plugin_compat).
-
-        The Desktop boot modal has no Python runtime of its own and reads that file after the ``serve``
-        backend is up, so the scan must run wherever plugins are discovered — not only under the CLI
-        banner / doctor / update, which never run inside the Desktop's backend. Fail-open: never raises.
-        """
-        try:
-            from hermes_cli.plugin_compat import compat_report
-            compat_report(manifests, force=True)
-        except Exception as exc:
-            logger.debug("plugin compat report refresh skipped: %s", exc)
 
     def _gate_manifest(
         self, manifest: PluginManifest, disabled: Set[str], enabled: Optional[Set[str]],
@@ -1650,6 +1636,11 @@ _plugin_manager: Optional[PluginManager] = None
 _plugin_managers_by_home: Dict[Path, PluginManager] = {}
 _plugin_managers_lock = threading.RLock()
 
+# Process-wide messaging-gateway host. A multiplexed gateway owns one scheduler while plugins are
+# isolated in per-profile managers, so every manager in this process must see the same live host.
+_published_gateway_message_injector: tuple[object, Callable] | None = None
+_published_gateway_host_lock = threading.Lock()
+
 # Process-wide Ink TUI / desktop host. Not the messaging-gateway slot. Stamped onto
 # each profile's manager so a multiplexed desktop process does not drop injects
 # aimed at a non-launch profile. ``None`` until the TUI/desktop process installs it.
@@ -1688,6 +1679,36 @@ def _known_plugin_managers() -> list[PluginManager]:
         if _plugin_manager is not None and _plugin_manager not in managers:
             managers.append(_plugin_manager)
     return managers
+
+
+def publish_gateway_message_host(owner: object, injector: Callable[..., bool]) -> None:
+    """Remember the process gateway host and stamp managers that already exist."""
+    global _published_gateway_message_injector
+    # Keep publication + stamping atomic with owner-safe clear. Managers created concurrently are
+    # registered before _attach_published_gateway_host(), which takes this same lock.
+    with _published_gateway_host_lock:
+        _published_gateway_message_injector = (owner, injector)
+        for manager in _known_plugin_managers():
+            manager.set_gateway_message_injector(owner, injector)
+
+
+def clear_published_gateway_message_host(owner: object) -> None:
+    """Forget this owner's process gateway host without clobbering a newer runner."""
+    global _published_gateway_message_injector
+    with _published_gateway_host_lock:
+        if (_published_gateway_message_injector is not None
+                and _published_gateway_message_injector[0] is owner):
+            _published_gateway_message_injector = None
+        for manager in _known_plugin_managers():
+            manager.clear_gateway_message_injector(owner)
+
+
+def _attach_published_gateway_host(manager: PluginManager) -> None:
+    """Give a newly resolved profile manager the live process gateway host, if any."""
+    with _published_gateway_host_lock:
+        host = _published_gateway_message_injector
+        if host is not None and manager._gateway_message_injector is None:
+            manager.set_gateway_message_injector(*host)
 
 
 def publish_tui_message_host(owner: object, injector: Callable[..., bool]) -> None:
@@ -1738,13 +1759,14 @@ def get_plugin_manager() -> PluginManager:
                 manager = PluginManager(scope_key=hermes_home_key(current_home))
                 _plugin_managers_by_home[current_home] = manager
             _plugin_manager = manager
+    _attach_published_gateway_host(manager)
     _attach_published_tui_host(manager)
     return manager
 
 
 def _reset_plugin_managers_for_tests() -> None:
     """Test-only: drop every cached manager and its submodules for a fully clean slate."""
-    global _plugin_manager, _published_tui_message_injector
+    global _plugin_manager, _published_gateway_message_injector, _published_tui_message_injector
     with _plugin_managers_lock:
         managers = list(dict.fromkeys(_plugin_managers_by_home.values()))
         if _plugin_manager is not None and _plugin_manager not in managers:
@@ -1757,6 +1779,8 @@ def _reset_plugin_managers_for_tests() -> None:
                 logger.debug("test plugin-manager unload failed", exc_info=True)
         _plugin_managers_by_home.clear()
         _plugin_manager = None
+    with _published_gateway_host_lock:
+        _published_gateway_message_injector = None
     with _published_tui_host_lock:
         _published_tui_message_injector = None
     # Dashboard-auth providers are persistent and survive a routine unload, so the clean-slate
@@ -2282,69 +2306,3 @@ def get_plugin_toolsets() -> List[tuple]:
         desc = (plugin.manifest.description if plugin else "") or ", ".join(sorted(toolset_tools[ts_key]))
         result.append((ts_key, f"🔌 {ts_key.replace('_', ' ').title()}", desc))
     return result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Iterable  # noqa: F401,E402
-from typing import Type  # noqa: F401,E402
-from contextlib import contextmanager  # noqa: F401,E402
-import contextvars  # noqa: F401,E402
-import copy  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-import time  # noqa: F401,E402
-from functools import wraps  # noqa: F401,E402
-
-def get_plugin_subscriptions() -> Dict[str, List[Callable]]:
-    """Return the inter-plugin event bus subscription registry.
-
-    Returns a snapshot mapping each fully-qualified event name
-    (``<plugin_key>:<event>`` or ``hermes:<event>``) to subscriber callbacks in
-    registration order. Owner ledger metadata stays private to the manager.
-    Triggers idempotent plugin discovery before reading the snapshot.
-    """
-    manager = _ensure_plugins_discovered()
-    with manager._event_lock:
-        return {
-            event: [entry.callback for entry in entries]
-            for event, entries in manager._subscriptions.items()
-        }
-
-def unload_plugins(
-    plugin: Union[str, PluginManifest, LoadedPlugin, None] = None,
-) -> bool:
-    """Unload one plugin or all plugins from the process-global manager.
-
-    Wait for background discovery first so teardown cannot race an in-flight
-    registration sweep introduced by the warm-start discovery path.
-    """
-    _join_background_discovery()
-    return get_plugin_manager().unload(plugin)
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'CAPABILITY_REGISTRY': ('hermes_cli.plugin_capabilities', 'CAPABILITY_REGISTRY'),
-    'ENTRY_POINT_CAPABILITIES_GROUP': ('hermes_cli.plugins_discovery', 'ENTRY_POINT_CAPABILITIES_GROUP'),
-    'LEGACY_RELAY_PLUGIN_KEYS': ('hermes_cli.relay_plugin_cutover', 'LEGACY_RELAY_PLUGIN_KEYS'),
-    'MAX_SYSTEM_PROMPT_SECTIONS': ('hermes_cli.plugins_dispatch', 'MAX_SYSTEM_PROMPT_SECTIONS'),
-    'OBSERVER_SCHEMA_VERSION': ('hermes_cli.middleware', 'OBSERVER_SCHEMA_VERSION'),
-    'VALID_CAPABILITY_IDS': ('hermes_cli.plugin_capabilities', 'VALID_CAPABILITY_IDS'),
-    'cfg_get': ('hermes_cli.config', 'cfg_get'),
-    'fast_safe_load': ('utils', 'fast_safe_load'),
-    'format_system_prompt_section': ('hermes_cli.plugins_dispatch', 'format_system_prompt_section'),
-    'reset_hermes_home_override': ('hermes_constants', 'reset_hermes_home_override'),
-    'set_hermes_home_override': ('hermes_constants', 'set_hermes_home_override'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

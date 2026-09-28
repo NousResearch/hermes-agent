@@ -1457,6 +1457,9 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
         media_metadata = {"notify": t.notify_delivery}
         if thread_id:
             media_metadata["thread_id"] = thread_id
+        if t.platform == Platform.MATTERMOST and route_thread_id:
+            route_metadata["mattermost_explicit_thread"] = True
+            media_metadata["mattermost_explicit_thread"] = True
 
     # Relay egress needs metadata.scope_id (fail-closed tenant guard; scope cache is COLD after a
     # restart; router stamps HOME only). Origin targets only: a wrong fan-out scope is worse than
@@ -1474,7 +1477,7 @@ def _live_send_text(
     """Schedule the text send on the gateway loop; returns ``(adapter_ok, timed_out, message_id)``.
     Re-raises a real send error so the caller falls through to standalone."""
     from agent.async_utils import safe_schedule_threadsafe
-    from gateway.delivery import DeliveryRouter, DeliveryTarget
+    from gateway.delivery import DeliveryError, DeliveryRouter, DeliveryTarget
     job = t.job
     router = DeliveryRouter(t.config, t.target_adapters)
     route_target = DeliveryTarget(
@@ -1508,6 +1511,9 @@ def _live_send_text(
             "to avoid duplicate)",
             job["id"], t.platform_name, t.chat_id)
         return True, True, None
+    except DeliveryError as ex:
+        # Failed source-aware sends can still own confirmed or uncertain spans.
+        send_result = ex.result
     except Exception as ex:
         # Real send error (not a slow confirmation): fall through to standalone.
         target_errors.append(f"live adapter send failed: {ex}")
@@ -1532,6 +1538,14 @@ def _live_send_text(
         else:
             err, shape = getattr(send_result, "error", None), type(send_result).__name__
         msg = f"live adapter send to {t.where} returned unconfirmed result ({shape}, error={err})"
+        if isinstance(send_raw_response, dict) and (
+            send_raw_response.get("_delivery_uncertain")
+            or send_raw_response.get("source_confirmed_prefix")
+        ):
+            # Replaying the whole payload would duplicate a confirmed/possible POST.
+            unverified_targets.append(t.where)
+            _note_target_error(job, msg, delivery_errors)
+            return False, False, None
         _warn_live_lane_failure(job, msg, t.is_relay)
         target_errors.append(msg)
         return False, False, None
@@ -1619,7 +1633,7 @@ def _deliver_via_live_adapter(
     t: _TargetDelivery, cleaned_text: str, media_files: list, *, target_errors: list,
     delivery_errors: list, unverified_targets: list,
 ) -> bool:
-    """Deliver one target via the live gateway adapter; True once delivered. ``target_errors`` =
+    """Deliver one target via the live gateway adapter; True once handled. ``target_errors`` =
     this lane's soft failures (surfaced only if standalone also fails); ``delivery_errors`` =
     partial failures (media, thread fallback) that surface even on success."""
     job = t.job
@@ -1637,11 +1651,24 @@ def _deliver_via_live_adapter(
                 target_errors)
             adapter_ok = False
         elif text_to_send:
+            unverified_before = len(unverified_targets)
             adapter_ok, timed_out, delivered_message_id = _live_send_text(
                 t, text_to_send, route_thread_id, route_metadata,
                 target_errors=target_errors, delivery_errors=delivery_errors,
                 unverified_targets=unverified_targets,
             )
+            if not adapter_ok and len(unverified_targets) > unverified_before:
+                # Receipt owns this attempt, but cannot confirm the full delivery.
+                # Stop fallback without logging success or seeding a continuation.
+                # Independent attachments still get their own delivery attempt.
+                try:
+                    if media_files:
+                        _live_send_media(t, media_metadata, media_files, delivery_errors)
+                except Exception as e:
+                    _note_target_error(
+                        job, f"live adapter media delivery to {t.where} failed: {e}",
+                        delivery_errors)
+                return True
 
         # Media rides the same DM-topic-aware routing as text. Skipped after a confirmation
         # timeout (loop contended, text already assumed delivered) — record the drop instead.

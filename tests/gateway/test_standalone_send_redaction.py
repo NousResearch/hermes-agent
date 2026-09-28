@@ -71,3 +71,73 @@ async def test_irc_standalone_failure_is_redacted(monkeypatch):
     assert "error" in result
     assert _FAKE_TOKEN not in result["error"]
     assert "refused" in result["error"]
+
+
+@pytest.mark.parametrize("failure_stage", ["upload", "session_enter", "session_exit"])
+@pytest.mark.asyncio
+async def test_mattermost_standalone_failure_preserves_safe_receipt(monkeypatch, tmp_path, failure_stage):
+    import aiohttp
+    import tools.send_message_tool as send_tool
+    import gateway.platforms.base as platform_base
+
+    mattermost = load_plugin_adapter("mattermost")
+    monkeypatch.setattr(send_tool, "_live_adapter", lambda platform: (None, None))
+    monkeypatch.setattr(mattermost, "_url_and_token", lambda config: ("https://mattermost.example", "test-token"))
+    monkeypatch.setattr(platform_base, "resolve_proxy_url", lambda **kwargs: None)
+    media = tmp_path / "attachment.png"
+    media.write_bytes(b"test-image")
+    error_text = "connect failed: " + "Author" + "ization" + ": " + "Bearer " + _FAKE_TOKEN + " at " + _FAKE_URL_SECRET
+    calls = []
+
+    class Response:
+        status = 201
+
+        def __init__(self, upload):
+            self.upload = upload
+
+        async def __aenter__(self):
+            if self.upload and failure_stage == "upload":
+                raise RuntimeError(error_text)
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def json(self):
+            return {"file_infos": [{"id": "file-id"}]} if self.upload else {"id": "post-id"}
+
+    class Session:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            if failure_stage == "session_enter":
+                raise RuntimeError(error_text)
+            return self
+
+        async def __aexit__(self, *args):
+            if failure_stage == "session_exit":
+                raise RuntimeError(error_text)
+            return False
+
+        def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return Response(url.endswith("/files"))
+
+    monkeypatch.setattr(aiohttp, "ClientSession", Session)
+    result = await mattermost._standalone_send(
+        PlatformConfig(enabled=True, extra={}), "test-channel", "caption", media_files=[str(media)]
+    )
+    assert _FAKE_TOKEN not in result["error"]
+    assert _FAKE_URL_SECRET not in result["error"]
+    assert "connect failed" in result["error"]
+    assert result["success"] is False
+    assert result["platform"] == "mattermost" and result["chat_id"] == "test-channel"
+    assert result["total_media"] == 1
+    delivered = int(failure_stage == "session_exit")
+    assert result["delivered_media"] == delivered and result["failed_media"] == 1 - delivered
+    expected_ids = [] if failure_stage == "session_enter" else ["post-id"]
+    assert result["message_ids"] == expected_ids
+    assert result["message_id"] == (expected_ids[-1] if expected_ids else None)
+    assert result["partial_failure"] == bool(expected_ids)
+    assert len(calls) == (0 if failure_stage == "session_enter" else 2)

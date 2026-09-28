@@ -9,9 +9,77 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from gateway.config import Platform
 from tools.send_message_tool import _send_to_platform, send_message_tool
-from tools.send_message_targets import _parse_target_ref
+from tools.send_message_targets import _parse_target_ref, resolve_send_target
+
+
+@pytest.mark.parametrize("channel_id", [
+    "a" * 26, "Z" * 26, "AbCdEfGhIjKlMnOpQrStUvWxY0", "0" * 26,
+])
+def test_mattermost_alphanumeric_channel_id_is_explicit(channel_id):
+    assert _parse_target_ref("mattermost", channel_id) == (channel_id, None, True)
+    assert _parse_target_ref("mattermost", f" \t{channel_id} ") == (channel_id, None, True)
+
+
+@pytest.mark.parametrize("channel_id,root_id", [
+    ("a" * 26, "b" * 26),
+    ("AbCdEfGhIjKlMnOpQrStUvWxY0", "0123456789AbCdEfGhIjKlMnOp"),
+    ("0" * 26, "1" * 26),
+])
+def test_mattermost_channel_and_root_ids_are_explicit(channel_id, root_id):
+    assert _parse_target_ref("mattermost", f"{channel_id}:{root_id}") == (channel_id, root_id, True)
+    assert _parse_target_ref("mattermost", f" \t{channel_id}:{root_id} ") == (channel_id, root_id, True)
+
+
+@pytest.mark.parametrize("component", [
+    "", "a" * 25, "a" * 27, "1", "1" * 25, "1" * 27, "-" + "1" * 25,
+    "é" + "a" * 25, "Ａ" + "a" * 25, "١" * 26, "²" * 26,
+    "_" + "a" * 25, "." + "a" * 25, "a" * 12 + " " + "b" * 13,
+])
+@pytest.mark.parametrize("position", ["channel", "pair-channel", "pair-root"])
+def test_mattermost_malformed_component_is_not_explicit(component, position):
+    ref = {"channel": component, "pair-channel": f"{component}:{'b' * 26}",
+           "pair-root": f"{'a' * 26}:{component}"}[position]
+    assert _parse_target_ref("mattermost", ref) == (None, None, False)
+
+
+@pytest.mark.parametrize("ref", [
+    f"{'a' * 26}::{'b' * 26}", f"{'a' * 26}:{'b' * 26}:extra",
+    f":{'a' * 26}:{'b' * 26}", f"{'a' * 26}:{'b' * 26}:",
+    f"{'a' * 26} :{'b' * 26}", f"{'a' * 26}: {'b' * 26}",
+    f"{'a' * 26}/{'b' * 26}", f"{'a' * 26}：{'b' * 26}",
+])
+def test_mattermost_malformed_separator_is_not_explicit(ref):
+    assert _parse_target_ref("mattermost", ref) == (None, None, False)
+
+
+@pytest.mark.parametrize("ref", ["town-square", "#town-square", "123"])
+def test_mattermost_unrecognized_target_keeps_channel_directory_resolution(ref):
+    channel_id = "AbCdEfGhIjKlMnOpQrStUvWxY0"
+    with patch("gateway.channel_directory.resolve_channel_name", return_value=channel_id) as directory:
+        assert resolve_send_target("mattermost", ref) == (channel_id, None, None)
+    directory.assert_called_once_with("mattermost", ref)
+
+    with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+        chat_id, thread_id, error = resolve_send_target("mattermost", ref)
+    assert chat_id is None and thread_id is None
+    assert error is not None and f"Could not resolve '{ref}' on mattermost." in error
+
+
+@pytest.mark.parametrize("platform,ref,expected", [
+    ("telegram", "-1001:42", ("-1001", "42", True)),
+    ("discord", "123:456", ("123", "456", True)),
+    ("slack", "C12345678:123.456", ("C12345678", "123.456", True)),
+    ("feishu", "oc_abc:root", ("oc_abc", "root", True)),
+    ("matrix", "!room:example.org:$root", ("!room:example.org", "$root", True)),
+    ("yuanbao", "123", ("group:123", None, True)),
+    ("discord", "AbCdEfGhIjKlMnOpQrStUvWxY0", (None, None, False)),
+])
+def test_mattermost_parser_keeps_other_platform_target_rules(platform, ref, expected):
+    assert _parse_target_ref(platform, ref) == expected
 
 
 def _run_async_immediately(coro):

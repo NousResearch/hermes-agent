@@ -71,12 +71,12 @@ it('reveals only the shortcut target after a hold and clears on release, blur or
   })
   expect(container.querySelector('[data-tab-key-hint]')).toBeNull()
   act(() => vi.advanceTimersByTime(1))
-  expect(container.querySelector('[data-tab-key-hint]')?.parentElement?.textContent).toBe('right dot1')
+  expect(container.querySelector('[data-tab-key-hint]')?.nextElementSibling?.textContent).toBe('right dot')
   act(() => $hoveredTreeGroup.set(null))
-  expect(container.querySelector('[data-tab-key-hint]')?.parentElement?.textContent).toBe('left dot1')
+  expect(container.querySelector('[data-tab-key-hint]')?.nextElementSibling?.textContent).toBe('left dot')
 
   const originalBindings = $bindings.get()
-  act(() => $bindings.set({ ...originalBindings, 'profile.switch.1': [] }))
+  act(() => $bindings.set({ ...originalBindings, 'view.tabSlot.1': [] }))
   expect(container.querySelector('[data-tab-key-hint]')).toBeNull()
   act(() => $bindings.set(originalBindings))
 

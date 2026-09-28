@@ -3,16 +3,35 @@ import { PROCESS_NOTIFICATION_RE } from './content'
 
 export interface TimelineSourceMessage {
   id: string
+  rowId?: number
   role: string
   text: string
 }
 
 export interface TimelineEntry {
   id: string
+  rowId?: number
   preview: string
 }
 
 const PREVIEW_MAX = 120
+
+/** Shared, localized focus curve; the active tick always retains its maximum. */
+export function timelineBarWidth(index: number, activeIndex: number, hoverIndex: number | null): number {
+  const curve = (distance: number) => (Math.abs(distance) > 3 ? 0 : Math.exp(-(distance ** 2) / 1.35))
+
+  return 0.5 + 0.5 * Math.max(curve(index - activeIndex), hoverIndex === null ? 0 : curve(index - hoverIndex))
+}
+
+export const TIMELINE_REVEAL_EVENT = 'hermes:timeline-reveal'
+export const EARLIER_TIMELINE_ID = '__earlier-history__'
+
+export interface TimelineRevealRequest {
+  id: string
+  rowId?: number
+  signal: AbortSignal
+  complete: (revealedId: string | false) => void
+}
 
 export function timelinePreview(text: string, max: number = PREVIEW_MAX): string {
   const collapsed = text.replace(/\s+/g, ' ').trim()
@@ -38,7 +57,11 @@ export function deriveTimelineEntries(messages: readonly TimelineSourceMessage[]
       continue
     }
 
-    entries.push({ id: message.id, preview: timelinePreview(text) })
+    entries.push({
+      id: message.id,
+      preview: timelinePreview(text),
+      ...(message.rowId !== undefined ? { rowId: message.rowId } : {})
+    })
   }
 
   return entries

@@ -2,25 +2,7 @@ import { readKey, writeJson, writeKey } from '@/lib/storage'
 
 import type { HandoffReceipt } from './handoff-leg'
 
-// Holds the receipt in memory when the disk write fails, so this window still has the session identity.
-// saveHandoffReceipt throws when the write does not read back, so nothing is submitted without a saved receipt.
 const unsavedReceipts = new Map<string, HandoffReceipt>()
-
-export function markFirstBuildSession(storedId: string): void {
-  writeKey('hermes.onboarding.first-build.v1', storedId)
-}
-
-export function endFirstBuildConnect(storedId: string): void {
-  writeKey('hermes.onboarding.first-build.done.v1', storedId)
-}
-
-export function isFirstBuildSession(storedId: string | null | undefined): boolean {
-  return (
-    !!storedId &&
-    readKey('hermes.onboarding.first-build.v1') === storedId &&
-    readKey('hermes.onboarding.first-build.done.v1') !== storedId
-  )
-}
 
 export function handoffReceiptKey(connection: null | string, guideStoredId: string): string {
   return `hermes.onboarding.handoff.v1.connection.${encodeURIComponent(connection ?? 'ambient')}.profile.default.guide.${encodeURIComponent(guideStoredId)}`
@@ -49,8 +31,6 @@ export function readHandoffReceipt(key: string): HandoffReceipt | null {
     )
   }
 
-  // JSON cannot encode a constructor, so only a primitive string has String as its constructor here.
-  // Comparing constructors rejects a corrupt id instead of coercing it to text.
   const hasTextFields = [value?.storedId, value?.runtimeId, value?.task, value?.brief].every(
     field => field?.constructor === String
   )

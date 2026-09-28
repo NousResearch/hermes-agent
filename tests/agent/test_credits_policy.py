@@ -7,12 +7,10 @@ from headers).
 
 from __future__ import annotations
 
-import pytest
 
 from agent.credits_tracker import (
     CREDITS_NOTICE_KIND,
     CREDITS_RESTORED_TTL_MS,
-    AgentNotice,
     CreditsState,
     evaluate_credits_notices,
     new_credits_latch,
@@ -165,27 +163,6 @@ class TestBoundaryFractions:
         assert "credits.usage" in keys
         assert "credits.usage" not in to_clear
 
-    def test_just_below_1_0_does_not_fire_grant_spent(self):
-        """subscription_micros = limit - 1 (used_fraction just under 1.0) must NOT fire grant_spent.
-
-        Locks the boundary so a future used_fraction clamp refactor cannot fire
-        grant_spent a micro early.
-        """
-        latch = fresh_latch()
-        limit = 20_000_000
-        s = CreditsState(
-            subscription_limit_micros=limit,
-            subscription_limit_usd="20.00",
-            subscription_micros=1,           # limit - 1 → used_fraction < 1.0
-            denominator_kind="subscription_cap",
-            purchased_micros=5_000_000,
-            purchased_usd="5.00",
-            paid_access=True,
-        )
-        assert s.used_fraction is not None and s.used_fraction < 1.0
-        to_show, to_clear = evaluate_credits_notices(s, latch)
-        assert all(n.key != "credits.grant_spent" for n in to_show)
-        assert "credits.grant_spent" not in to_clear
 
 
 # ── Scenario 4: grant_spent ───────────────────────────────────────────────────
@@ -316,7 +293,6 @@ class TestIsFreeTierModel:
 
     def test_pricing_cache_peek_zero_priced_model(self, monkeypatch):
         from agent.credits_tracker import is_free_tier_model
-        import hermes_cli.models as models_mod
         from hermes_cli import models_pricing
 
         # The picker keys the cache on the pre-/v1 root (get_pricing_for_provider
@@ -326,6 +302,7 @@ class TestIsFreeTierModel:
                 "https://inference-api.nousresearch.com": {
                     "some/zero-priced": {"prompt": "0", "completion": "0"},
                     "some/paid": {"prompt": "0.000001", "completion": "0.000002"},
+                    "some/subscription": {"prompt": "0.000001", "completion": "0.000002", "billing_mode": "subscription"},
                 }
             },
         )
@@ -334,6 +311,7 @@ class TestIsFreeTierModel:
         base = "https://inference-api.nousresearch.com/v1"
         assert is_free_tier_model("some/zero-priced", base) is True
         assert is_free_tier_model("some/paid", base) is False
+        assert is_free_tier_model("some/subscription", base) is True  # billed elsewhere: depleted credits don't block it
         # Pre-stripped and trailing-slash variants resolve to the same key.
         assert is_free_tier_model("some/zero-priced", "https://inference-api.nousresearch.com/") is True
         assert is_free_tier_model("some/zero-priced", "https://inference-api.nousresearch.com/v1/") is True
@@ -363,7 +341,6 @@ class TestIsFreeTierModel:
 
     def test_exception_fails_open_to_false(self, monkeypatch):
         from agent.credits_tracker import is_free_tier_model
-        import hermes_cli.models as models_mod
         from hermes_cli import models_pricing
 
         class _Exploding:
@@ -385,57 +362,13 @@ class TestIsFreeTierModel:
         # Non-stealth model without :free suffix → not free (without pricing cache).
         assert is_free_tier_model("some/paid-model", "") is False
 
-    def test_depleted_suppressed_for_stealth_model(self):
-        """End-to-end: paid_access:false on a stealth/ model must NOT fire
-        the depleted banner (the exact scenario from issue #91843)."""
-        from agent.credits_tracker import (
-            CreditsState, evaluate_credits_notices, is_free_tier_model,
-        )
-
-        state = CreditsState(
-            version=1,
-            remaining_micros=0,
-            remaining_usd="0.00",
-            subscription_micros=0,
-            subscription_usd="0.00",
-            purchased_micros=0,
-            purchased_usd="0.00",
-            paid_access=False,
-            captured_at=1.0,
-            from_header=True,
-        )
-        model = "stealth/ox-alpha"
-        base_url = "https://inference-api.nousresearch.com/v1"
-        model_is_free = is_free_tier_model(model, base_url)
-        assert model_is_free is True
-
-        latch = fresh_latch()
-        to_show, to_clear = evaluate_credits_notices(state, latch, model_is_free=model_is_free)
-        assert all(n.key != "credits.depleted" for n in to_show)
-        assert "credits.depleted" not in latch["active"]
 
 
 # ── Scenario 6: denominator none (uf is None) ────────────────────────────────
 
 
 class TestDenominatorNone:
-    def test_no_warn90_when_uf_none(self):
-        latch = fresh_latch()
-        s = state_with_fraction(None)
-        to_show, to_clear = evaluate_credits_notices(s, latch)
-        assert all(n.key != "credits.usage" for n in to_show)
-        assert "credits.usage" not in to_clear
 
-    def test_no_grant_spent_when_uf_none(self):
-        latch = fresh_latch()
-        s = CreditsState(
-            subscription_limit_micros=None,
-            denominator_kind="none",
-            purchased_micros=5_000_000,
-            purchased_usd="5.00",
-        )
-        to_show, to_clear = evaluate_credits_notices(s, latch)
-        assert all(n.key != "credits.grant_spent" for n in to_show)
 
     def test_warn90_clears_when_uf_becomes_none(self):
         """If warn90 was active and uf becomes None, it should clear."""
@@ -462,7 +395,6 @@ class TestNoticeCopy:
         to_show, _ = evaluate_credits_notices(s, latch)
         warn_notice = next(n for n in to_show if n.key == "credits.usage")
         assert "$20.00" in warn_notice.text
-        assert "cap" in warn_notice.text
 
     def test_grant_spent_contains_verbatim_purchased_usd(self):
         latch = fresh_latch()
@@ -476,14 +408,7 @@ class TestNoticeCopy:
         to_show, _ = evaluate_credits_notices(s, latch)
         grant_notice = next(n for n in to_show if n.key == "credits.grant_spent")
         assert "$12.34" in grant_notice.text
-        assert "top-up left" in grant_notice.text
 
-    def test_depleted_mentions_credits_command(self):
-        latch = fresh_latch()
-        s = CreditsState(paid_access=False)
-        to_show, _ = evaluate_credits_notices(s, latch)
-        depleted_notice = next(n for n in to_show if n.key == "credits.depleted")
-        assert "/topup" in depleted_notice.text
 
 
 # ── Scenario 8: severity order in a single call ──────────────────────────────

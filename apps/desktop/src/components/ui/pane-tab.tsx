@@ -305,7 +305,7 @@ export interface PaneStripTool {
  */
 export function PaneStripGlyph({ active, disabled, icon, label, onSelect }: Omit<PaneStripTool, 'id'>) {
   return (
-    <Tip label={label}>
+    <Tip label={label} placement="toolbar">
       <Button
         aria-label={label}
         aria-pressed={active ?? undefined}

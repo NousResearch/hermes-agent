@@ -454,6 +454,46 @@ class TestIPv4MappedIPv6SSRF:
             assert is_safe_url(url) is False
 
 
+class TestIPv4TranslatedIPv6SSRF:
+    """IPv4 answers can arrive wrapped as ``::ffff:0:x.x.x.x`` (RFC 2765 IPv4-translated — on the
+    reporting macOS host, fake-IP TUN DNS returns it alongside the plain address).
+    ``IPv6Address.ipv4_mapped`` is None for that form, so declaration coverage, the connect-time
+    check and the metadata floor must all classify it by the IPv4 it wraps."""
+
+    @pytest.fixture
+    def declared(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"security": {"fake_ip_ranges": ["198.18.0.0/15"]}},
+        )
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_declared_sentinel_block_covers_the_translated_wrapper(self, declared):
+        # ::ffff:0:c612:58 wraps 198.18.0.88 — inside the declared block.
+        with _resolves_to("::ffff:0:c612:58"):
+            assert is_safe_url("https://example.com/") is True
+        with _resolves_to("::ffff:0:c612:58"):
+            assert _resolved_http_connect_ips("example.com", 443, "https") == ["::ffff:0:c612:58"]
+
+    def test_translated_metadata_wrapper_still_hits_the_floor(self, monkeypatch):
+        # ::ffff:0:a9fe:a9fe wraps 169.254.169.254; the floor ignores allow_private_urls.
+        _reset_allow_private_cache()
+        with _resolves_to("::ffff:0:a9fe:a9fe"):
+            assert is_always_blocked_url("http://evil.example/") is True
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        _reset_allow_private_cache()
+        with _resolves_to("::ffff:0:a9fe:a9fe"):
+            assert is_safe_url("http://evil.example/") is False
+        _reset_allow_private_cache()
+
+    def test_literal_translated_wrapper_hits_the_floor_without_dns(self):
+        # Attacker input need not come through DNS: the URL can carry the wrapper itself.
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("nope")):
+            assert is_always_blocked_url("http://[::ffff:0:a9fe:a9fe]/") is True
+
+
 class _FakeResponse:
     """Minimal stand-in for an httpx response as seen inside a response hook."""
 
@@ -496,3 +536,69 @@ class TestRedirectTargetFromResponse:
             next_request=_FakeNextRequest("http://10.0.0.1/meta"),
         )
         assert redirect_target_from_response(resp) == "http://10.0.0.1/meta"
+
+
+class TestDeclaredFakeIpSentinelRanges:
+    """A local TUN proxy answers DNS with a fake-ip block — declared in ``security.fake_ip_ranges``.
+
+    On such a host every name outside the proxy's filter resolves into that block, so keying the
+    guard on the resolver's answer blocked every outbound fetch (web_extract, platform attachment
+    downloads, the browser relay) while the request never reached the network at all. The exemption
+    is per-host opt-in and scoped to the declared block — an undeclared host keeps the ordinary
+    private-address verdict (see TestProxyEnvironmentDnsDelegation).
+    """
+
+    @pytest.fixture
+    def declared(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"security": {"fake_ip_ranges": ["198.18.0.0/15"]}},
+        )
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_declared_sentinel_is_dialable_pre_flight_and_at_connect_time(self, declared):
+        with _resolves_to("198.18.1.125"):
+            assert is_safe_url("https://example.com/") is True
+        with _resolves_to("198.18.0.55"):
+            assert _resolved_http_connect_ips("example.com", 443, "https") == ["198.18.0.55"]
+
+    def test_declaration_excuses_only_the_declared_block(self, declared):
+        # Real private answers and the cloud-metadata floor stay blocked under the declaration...
+        with _resolves_to("192.168.99.99"):
+            assert is_safe_url("https://example.com/") is False
+        with _resolves_to("169.254.169.254"):
+            assert is_safe_url("http://example.com/") is False
+        # ...and the sentinel block itself is blocked again once the declaration is gone.
+        _reset_allow_private_cache()
+        with patch("hermes_cli.config.read_raw_config", lambda: {}), _resolves_to("198.18.0.23"):
+            assert is_safe_url("https://example.com/file.jpg") is False
+
+    @pytest.mark.parametrize(
+        ("declared", "ip"),
+        [
+            (["10.0.0.0/8"], "10.0.0.5"),  # RFC 1918
+            (["127.0.0.0/8"], "127.0.0.1"),  # loopback
+            (["100.64.0.0/10"], "100.64.0.1"),  # CGNAT
+            (["fc00::/7"], "fd00::1"),  # ULA
+            (["0.0.0.0/0"], "192.168.1.1"),  # catch-all overlaps the unspecified address
+            (["::/0"], "::1"),  # v6 catch-all overlaps the unspecified address
+        ],
+    )
+    def test_declaration_cannot_excuse_reserved_classes(self, monkeypatch, declared, ip):
+        # A declared block is trusted like allow_private_urls, so it must not be able to name
+        # loopback/RFC 1918/CGNAT/ULA/unspecified space — those classes stay blocked no matter
+        # what the config says; the overlapping entry is dropped, it does not widen the guard.
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"security": {"fake_ip_ranges": declared + ["198.18.0.0/15"]}},
+        )
+        _reset_allow_private_cache()
+        try:
+            with _resolves_to(ip):
+                assert is_safe_url("https://example.com/") is False
+            with _resolves_to("198.18.1.125"):  # the legitimate sibling declaration still works
+                assert is_safe_url("https://example.com/") is True
+        finally:
+            _reset_allow_private_cache()

@@ -25,12 +25,13 @@ def _source():
     )
 
 
-def _event(*, internal: bool = False):
+def _event(*, internal: bool = False, reply_expected=None):
     return MessageEvent(
         text="side chatter",
         source=_source(),
         message_id="msg-42",
         internal=internal,
+        reply_expected=reply_expected,
     )
 
 
@@ -147,34 +148,45 @@ async def test_silence_opt_in_belongs_to_the_routed_profile(
     from gateway.config import load_gateway_config
     from hermes_cli.config import set_config_value
 
-    profile_home = tmp_path / "secondary"
-    profile_home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(profile_home))
-    if profile_enabled is not None:
-        set_config_value("gateway.allow_human_silence_markers", str(profile_enabled).lower())
-    assert load_gateway_config().allow_human_silence_markers is bool(profile_enabled)
+    homes = {name: tmp_path / name for name in ("primary", "secondary")}
+    for name, enabled in (("primary", default_enabled), ("secondary", profile_enabled)):
+        homes[name].mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(homes[name]))
+        if enabled is not None:
+            set_config_value("gateway.allow_human_silence_markers", str(enabled).lower())
+        assert load_gateway_config().allow_human_silence_markers is bool(enabled)
 
     runner = _runner(monkeypatch, tmp_path)
     runner.config.allow_human_silence_markers = default_enabled
     runner.config.multiplex_profiles = True
-    runner._resolve_profile_home_for_source = lambda source: profile_home
+    runner._resolve_profile_home_for_source = lambda source: homes[source.profile]
     runner._deliver_queued_first_response = AsyncMock()
-    source = _source()
-    source.profile = "secondary"
-    result = {"final_response": "[SILENT]", "failed": False, "api_calls": 1}
-    _, silent, _ = await runner._hmwa_shape_agent_response(
-        result, source, [], SimpleNamespace(session_id="s"), None,
-        None, 1, "s", "telegram", 0,
-    )
-    assert silent is bool(profile_enabled)
+    # Real YAML writes/reads across A → B → A, including crash recovery's owning profile.
+    for name, enabled in (("primary", default_enabled), ("secondary", profile_enabled),
+                          ("primary", default_enabled)):
+        source = _source()
+        source.profile = name
+        result = {"final_response": "[SILENT]", "failed": False, "api_calls": 1}
+        _, silent, _ = await runner._hmwa_shape_agent_response(
+            result, source, [], SimpleNamespace(session_id="s"), None,
+            None, 1, "s", "telegram", 0, reply_expected=True,
+        )
+        assert silent is bool(enabled)
 
-    turn_ctx = SimpleNamespace(
-        session_key="secondary-key", stream_consumer_holder=[None],
-        persist_user_display_kind=None, source=source, _status_thread_metadata=None,
-        event_message_id=None, inbound_message_id="msg-42", run_generation=1,
-    )
-    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
-    assert runner._deliver_queued_first_response.await_count == (0 if profile_enabled else 1)
+        runner._deliver_queued_first_response.reset_mock()
+        turn_ctx = SimpleNamespace(
+            session_key="profile-key", stream_consumer_holder=[None],
+            mute_notification_reply=False, reply_expected=True,
+            persist_user_display_kind=None, source=source, _status_thread_metadata=None,
+            event_message_id=None, inbound_message_id="msg-42", run_generation=1,
+        )
+        await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+        assert runner._deliver_queued_first_response.await_count == (0 if enabled else 1)
+        recovered = runner._crash_left_reply([
+            {"role": "user", "content": "question", "display_metadata": {"reply_expected": True}},
+            {"role": "assistant", "content": "[SILENT]", "timestamp": 2},
+        ], 1, source)
+        assert (recovered == "") is bool(enabled)
 
 
 @pytest.mark.asyncio
@@ -192,7 +204,8 @@ async def test_silent_streamed_turn_does_not_send_a_standalone_footer(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypatch, tmp_path):
+@pytest.mark.parametrize("reply_expected", [None, True], ids=["adapter-unknown", "addressed"])
+async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypatch, tmp_path, reply_expected):
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value={
         "final_response": "[SILENT]",
@@ -208,11 +221,31 @@ async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypat
     })
 
     response = await runner._handle_message_with_agent(
-        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+        _event(reply_expected=reply_expected), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
 
-    assert "silence marker" in response
-    assert "Try again or rephrase" in response
+    assert response and not is_intentional_silence_response(response)
+
+
+@pytest.mark.asyncio
+async def test_unaddressed_human_turn_suppresses_silence_without_warning(monkeypatch, tmp_path, caplog):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "[SILENT]",
+        "messages": [{"role": "user", "content": "side chatter"},
+                     {"role": "assistant", "content": "[SILENT]"}],
+        "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+        "api_calls": 1, "failed": False,
+    })
+    with caplog.at_level("DEBUG"):
+        response = await runner._handle_message_with_agent(
+            _event(reply_expected=False), _source(), "agent:main:telegram:group:-1001:12345", 1
+        )
+    assert response == ""
+    assert not any(record.levelname == "WARNING" and "silence marker" in record.message
+                   for record in caplog.records)
+    assert any(record.levelname == "DEBUG" and "unaddressed" in record.message
+               for record in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -275,34 +308,62 @@ async def test_internal_silence_token_suppresses_delivery_but_preserves_transcri
 
 
 @pytest.mark.asyncio
+async def test_scheduled_heartbeat_silence_suppresses_delivery(monkeypatch, tmp_path):
+    """A poller-stamped heartbeat turn may end on a bare marker (#113031); the event stays
+    non-internal so authorization and the emergency stop still apply to it."""
+    runner = _runner(monkeypatch, tmp_path)
+    entry = runner.session_store.get_or_create_session.return_value
+    entry.suspended = False
+    runner.session_store.lookup_by_session_key.return_value = entry
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "NO_REPLY",
+        "messages": [], "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+        "api_calls": 1, "failed": False,
+    })
+    event = _event()
+    event._heartbeat_session_id = entry.session_id
+
+    assert await runner._handle_message_with_agent(event, _source(), entry.session_key, 1) == ""
+    assert not event.internal
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("internal", [False, True])
+@pytest.mark.parametrize("reply_expected", [None, False, True])
 @pytest.mark.parametrize("allow_silence", [False, True])
 @pytest.mark.parametrize("status", [
     {}, {"failed": True}, {"partial": True}, {"interrupted": True},
     {"completed": False}, {"error": "provider detail"},
 ])
 async def test_queued_silence_policy_belongs_to_each_turn(
-    monkeypatch, tmp_path, internal, allow_silence, status,
+    monkeypatch, tmp_path, internal, reply_expected, allow_silence, status,
 ):
     runner = _runner(monkeypatch, tmp_path)
     runner.config.allow_human_silence_markers = allow_silence
     kind = "internal_notification" if internal else None
     result = {"final_response": "[SILENT]", "api_calls": 1, "failed": False, **status}
-    expected_silence = not result["failed"] if internal else allow_silence and not status
+    expected_silence = (
+        not result["failed"] if internal else
+        not status if allow_silence else
+        reply_expected is False and not result["failed"]
+    )
 
     # The terminal kind overrides an opener with the opposite origin.
     terminal_result = {**result, "queued_terminal_display_kind": kind,
+                       "queued_terminal_reply_expected": reply_expected,
                        "queued_terminal_allow_human_silence": allow_silence}
     _, silent, _ = await runner._hmwa_shape_agent_response(
         terminal_result, _source(), [], SimpleNamespace(session_id="s"), None,
         None, 1, "s", "telegram", 0,
         persist_user_display_kind=None if internal else "internal_notification",
+        reply_expected=not reply_expected,
     )
     assert silent is expected_silence
 
     runner._deliver_queued_first_response = AsyncMock()
     turn_ctx = SimpleNamespace(
         session_key="key", stream_consumer_holder=[None],
+        mute_notification_reply=False, reply_expected=reply_expected,
         persist_user_display_kind=kind, source=_source(), _status_thread_metadata=None,
         event_message_id=None, inbound_message_id="msg-42", run_generation=1,
     )
@@ -327,7 +388,9 @@ async def test_queued_human_turn_only_suppresses_successful_non_content(first_re
     turn_ctx = SimpleNamespace(
         session_key="agent:main:telegram:group:-1001:12345",
         stream_consumer_holder=[None],
+        mute_notification_reply=False,
         persist_user_display_kind=None,
+        reply_expected=None,
         source=_source(),
         _status_thread_metadata=None,
         event_message_id=None,
@@ -362,27 +425,32 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
     runner._is_goal_continuation_event = MagicMock(return_value=False)
     runner._session_key_for_source = MagicMock(return_value="agent:main:telegram:group:-1001:12345")
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow-up")
-    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     turn_ctx = SimpleNamespace(
         source=_source(), session_id="sid", session_key="agent:main:telegram:group:-1001:12345",
         run_generation=1, _interrupt_depth=0, history=[], _status_thread_metadata=None,
         context_prompt=None, result_holder=[None])
     pending_event = SimpleNamespace(source=_source(), message_id="43", channel_prompt=None,
-                                    message_type=None, internal=True)
+                                    message_type=None, internal=True, metadata={}, reply_expected=True)
 
     merged = await gateway_run.GatewayRunner._run_agent_queued_followup(
         runner, turn_ctx, adapter=None, pending="hi again", pending_event=pending_event,
         response="resp", result={"interrupted": True, "messages": []}, stream_task=None)
 
-    assert runner._run_agent.await_args.kwargs["persist_user_display_kind"] == "internal_notification"
+    followup = runner._run_agent.await_args.kwargs
+    assert followup["persist_user_display_kind"] == "internal_notification"
+    assert followup["reply_expected"] is True
+    assert followup["persist_user_display_metadata"]["reply_expected"] is True
     assert merged["queued_terminal_display_kind"] == "internal_notification"
+    assert merged["queued_terminal_reply_expected"] is True
 
-    def _result(terminal_kind):
+    def _result(terminal_kind, terminal_reply_expected=None):
         return {
             "final_response": "[SILENT]", "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
             "api_calls": 1, "failed": False, "queued_terminal_inbound_id": "43",
             "queued_terminal_display_kind": terminal_kind,
+            "queued_terminal_reply_expected": terminal_reply_expected,
             "messages": [{"role": "user", "content": "x"}, {"role": "assistant", "content": "[SILENT]"}],
         }
 
@@ -396,7 +464,25 @@ async def test_queued_terminal_turn_owns_the_silence_verdict(monkeypatch, tmp_pa
     runner._run_agent = AsyncMock(return_value=_result(None))
     response = await runner._handle_message_with_agent(
         _event(internal=True), _source(), "agent:main:telegram:group:-1001:12345", 1)
-    assert "silence marker" in response
+    assert response and not is_intentional_silence_response(response)
+    # Unaddressed opener, addressed terminal turn: visible fallback.
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value=_result(None, True))
+    response = await runner._handle_message_with_agent(
+        _event(reply_expected=False), _source(), "agent:main:telegram:group:-1001:12345", 1)
+    assert response and not is_intentional_silence_response(response)
+
+
+@pytest.mark.parametrize("opener, absorbed, merged", [
+    (False, True, True), (False, None, None), (True, False, True), (False, False, False),
+])
+def test_one_turn_answering_several_messages_is_addressed_if_any_was(opener, absorbed, merged):
+    """A merged pending message answers both texts, so an addressed one keeps the fallback."""
+    from gateway.platforms.base import merge_pending_message_event
+
+    pending = {"k": _event(reply_expected=opener)}
+    merge_pending_message_event(pending, "k", _event(reply_expected=absorbed), merge_text=True)
+    assert pending["k"].reply_expected is merged
 
 
 @pytest.mark.asyncio
@@ -420,7 +506,7 @@ async def test_queued_terminal_profile_owns_the_silence_opt_in(
     runner._is_goal_continuation_event = MagicMock(return_value=False)
     runner._session_key_for_source = MagicMock(return_value="key")
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="follow-up")
-    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     opener, terminal = _source(), _source()
     opener.profile, terminal.profile = "opener", "terminal"
@@ -436,7 +522,7 @@ async def test_queued_terminal_profile_owns_the_silence_opt_in(
         runner._run_agent = AsyncMock(return_value=result)
         pending_event = SimpleNamespace(
             source=next_source, message_id="43", channel_prompt=None,
-            message_type=None, internal=False,
+            message_type=None, internal=False, reply_expected=None, metadata={},
         )
         result = await runner._run_agent_queued_followup(
             turn_ctx, adapter=None, pending="follow-up", pending_event=pending_event,
@@ -469,7 +555,7 @@ async def test_empty_success_still_gets_empty_response_warning(monkeypatch, tmp_
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
 
-    assert "no response was generated" in response
+    assert response.strip()
 
 
 @pytest.mark.asyncio

@@ -17,8 +17,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: docker-lint-${{ github.ref }}
-  cancel-in-progress: true
+  group: docker-lint-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   hadolint:
@@ -33,6 +33,13 @@ jobs:
         uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: Dockerfile
+          config: .hadolint.yaml
+          failure-threshold: warning
+
+      - name: hadolint (sandbox desktop image)
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+        with:
+          dockerfile: docker/sandbox-desktop.Dockerfile
           config: .hadolint.yaml
           failure-threshold: warning
 

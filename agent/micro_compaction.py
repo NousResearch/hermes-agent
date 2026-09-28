@@ -148,12 +148,16 @@ class MicroCompactionMixin:
         message = response.choices[0].message
         content = message.get("content") if isinstance(message, dict) else getattr(message, "content", message)
         content = (content if isinstance(content, str) else str(content) if content else "").strip()
+
+        from agent.agent_runtime_helpers import strip_think_blocks
+        content = strip_think_blocks(None, content).strip()
         if not content:
             logger.info("micro-summarization returned empty content")
             return None
-
-        from agent.agent_runtime_helpers import strip_think_blocks
-        return strip_think_blocks(None, content).strip() or None
+        if _cc()._is_refusal_response(response, content):
+            logger.warning("micro-summarization returned refusal content — discarding unusable summary")
+            return None
+        return content
 
     def _needs_defrag(self) -> bool:
         """Return True when the rolling summary is large enough to defrag."""
@@ -221,6 +225,11 @@ class MicroCompactionMixin:
         # Telemetry baseline; taken only once an exchange exists so no-op turns don't pay.
         _started_at = time.monotonic()
         _tokens_before = estimate_messages_tokens_rough(messages)
+        # The history this pass rewrites, and the store's watermark, before the slow summary call: the commit
+        # keeps what another surface or a concurrent write added instead of archiving it unseen. A watermark
+        # the store could not answer for leaves the commit unbounded, so the pass does not run at all.
+        _held = list(messages)
+        _skip, _start_watermark = self._micro_start_watermark(_held)
 
         def _telemetry(outcome: str, result: List[Dict[str, Any]], **extra: Any) -> None:
             self._emit_micro_compaction_telemetry(
@@ -228,12 +237,29 @@ class MicroCompactionMixin:
                 tokens_before=_tokens_before, duration_ms=int((time.monotonic() - _started_at) * 1000), **extra,
             )
 
+        if _skip:  # unanswerable watermark (unbounded archive) or a stale generation (no lease): skip
+            _telemetry(_skip, messages, tokens_after=_tokens_before)
+            return messages
+        # Pre-pass state, restored when the commit finds a compaction landed during the summary call.
+        _pre_cursor, _pre_summary = self._micro_compact_cursor, self._micro_compact_rolling_summary
+
         # Defrag rewrites summary text/marker in place (no splice, no cursor move) instead of
         # absorbing this turn.
         if self._needs_defrag():
+            _marker = next((e for e in reversed(messages) if _is_micro_marker(e)), None)
+            _pre_marker = dict(_marker) if _marker is not None else None
             defragged = self._defrag_rolling_summary(messages)
+            if defragged and not self._sync_micro_compact_to_db(
+                messages, held=_held, start_watermark=_start_watermark,
+            ):
+                # Stale generation: undo the in-place rewrite so the finalizer never persists it.
+                self._micro_compact_rolling_summary = _pre_summary
+                if _marker is not None:
+                    _marker.clear()
+                    _marker.update(_pre_marker)
+                _telemetry("stale_generation", messages, tokens_after=_tokens_before)
+                return messages
             if defragged:
-                self._sync_micro_compact_to_db(messages)
                 self._reset_micro_failure_tracking()
             outcome = "defrag" if defragged else "defrag_failed"
             _telemetry(outcome, messages, tokens_after=estimate_messages_tokens_rough(messages))
@@ -256,7 +282,12 @@ class MicroCompactionMixin:
 
         result = self._splice_micro_compact_result(messages, exchange_start, exchange_end, supersede=_cumulative)
         self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
-        self._sync_micro_compact_to_db(result)
+        if not self._sync_micro_compact_to_db(result, held=_held, start_watermark=_start_watermark):
+            # Another compaction committed during the summary call. A true no-op: returning the spliced
+            # list would let finalize_turn persist its unmarked summary row beside the winning generation.
+            self._micro_compact_cursor, self._micro_compact_rolling_summary = _pre_cursor, _pre_summary
+            _telemetry("stale_generation", messages, tokens_after=_tokens_before)
+            return messages
         _telemetry(
             "absorbed", result, tokens_after=estimate_messages_tokens_rough(result), exchange_tokens=_exchange_tokens,
         )
@@ -282,7 +313,7 @@ class MicroCompactionMixin:
     def _next_exchange(self, messages: List[Dict[str, Any]]) -> Optional[tuple[int, int]]:
         """The next un-absorbed exchange inside the compressible window, or None."""
         compress_start = self._align_boundary_forward(messages, self._protect_head_size(messages))
-        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        compress_end = self._find_tail_cut_by_tokens(messages, compress_start, allow_split_turn=False)
         if compress_start >= compress_end:
             return None
         cursor = self._resolve_compact_cursor(messages, compress_start, compress_end)
@@ -340,24 +371,78 @@ class MicroCompactionMixin:
         except Exception as exc:
             logger.debug("failed to emit micro-compaction telemetry: %s", exc)
 
-    def _sync_micro_compact_to_db(self, compacted_messages: List[Dict[str, Any]]) -> None:
+    def _micro_start_watermark(self, held: List[Dict[str, Any]]) -> "tuple[Optional[str], Optional[int]]":
+        """``(skip_outcome, watermark)`` taken before a pass's slow step; *skip_outcome* is the telemetry
+        label of a pass that must not run, or None.
+
+        A store with no watermark API runs the pass with ``(None, None)``: the commit keeps today's
+        archive-everything behaviour. ``watermark_unavailable`` when the read itself raised — that must
+        NOT collapse into the same None, because None means "archive every active row", the very loss
+        this watermark exists to prevent. ``stale_generation`` when *held* is no longer the session's live
+        generation (another compaction already committed): this pass holds no compression lease, so
+        publishing would leave two generations live. The commit re-checks, since a compaction can also
+        land during the summary call.
+        """
+        session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
+        watermark_of = getattr(session_db, "get_active_message_watermark", None)
+        if not session_id or not callable(watermark_of):
+            return None, None
+        try:
+            watermark = watermark_of(session_id)
+            _cc()._archive_watermark_for(session_db, session_id, held, watermark)
+        except _cc().StaleHeldHistory as exc:
+            logger.info("micro-compaction: skipping this pass, %s", exc)
+            return "stale_generation", None
+        except Exception as exc:
+            logger.info("micro-compaction: watermark read failed, skipping this pass: %s", exc)
+            return "watermark_unavailable", None
+        return None, watermark
+
+    def _sync_micro_compact_to_db(
+        self, compacted_messages: List[Dict[str, Any]], *, held: Optional[List[Dict[str, Any]]] = None,
+        start_watermark: Optional[int] = None,
+    ) -> bool:
         """Persist the micro-compacted set to the session DB atomically and stamp rows persisted.
         Without this the old exchange rows stay ``active=1`` and a resume double-loads both the
-        summary and the originals."""
+        summary and the originals. Returns False only when *held* turned out to be a stale generation
+        (nothing written); the caller must then discard the pass. Any other outcome returns True."""
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
         if not session_db or not session_id:
-            return
+            return True
         try:
-            # Every row except the marker is a carried-forward original: archive rewind-style.
-            session_db.archive_and_compact(session_id, compacted_messages, tail_count=max(0, len(compacted_messages) - 1))
+            # Micro-compaction is prefix + marker + suffix, not a contiguous tail. Identify the exact
+            # byte-identical originals by their persistence marker; the state transaction resolves each
+            # one by row id or durable identity+timestamp. In-place mutations deliberately pop
+            # _DB_PERSISTED_MARKER, and the fresh summary marker never has one. A positional tail_count
+            # can otherwise classify the summarized assistant/tool rows as rewind-only (#118481).
+            carried_messages = [
+                message for message in compacted_messages
+                if isinstance(message, dict) and message.get(_cc()._DB_PERSISTED_MARKER)
+            ]
+            watermark = None
+            covered_ids = unresolved_held = None
+            if held is not None and start_watermark is not None:
+                watermark = _cc()._archive_watermark_for(session_db, session_id, held, start_watermark)
+                from agent.conversation_compression_archive import coverage_for_commit
+                covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, held)
+            session_db.archive_and_compact(
+                session_id, compacted_messages, carried_messages=carried_messages, watermark=watermark,
+                covered_ids=covered_ids, unresolved_held=unresolved_held)
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
             _cc().stamp_db_persisted_markers(compacted_messages)
+        except _cc().StaleHeldHistory as exc:
+            # Another compaction committed during the summary call. Nothing is written: the store already
+            # holds the winning generation. The caller discards the pass (original list, pre-pass cursor
+            # and summary); otherwise finalize_turn would append the unmarked summary row beside the winner.
+            logger.info("Micro-compaction commit skipped, %s", exc)
+            return False
         except Exception:
             logger.info(
                 "Micro-compaction DB sync failed — resume will double-load "
                 "compacted messages until the next batch compression"
             )
+        return True
 
     def _splice_micro_compact_result(
         self, messages: List[Dict[str, Any]], splice_start: int, splice_end: int, supersede: bool = True,
@@ -395,8 +480,7 @@ class MicroCompactionMixin:
         cc = _cc()
         return f"{cc.SUMMARY_PREFIX}\n\n{cc.HISTORICAL_TASK_HEADING}\n{summary_text.strip()}\n\n{cc._SUMMARY_END_MARKER}"
 
-    @staticmethod
-    def _merge_adjacent_user_turns(result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _merge_adjacent_user_turns(self, result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Merge consecutive plain-text real user turns left by a supersede. Same ``\\n\\n`` join as
         ``repair_message_sequence`` pass 2, done here so the marker and cursor are never collateral
         damage of the downstream repair. Lists untouched."""
@@ -414,6 +498,16 @@ class MicroCompactionMixin:
             if _plain_user(msg) and _plain_user(prev):
                 prev["content"] = "\n\n".join(c for c in (prev["content"], msg["content"]) if c)
                 drop_stale_api_content(prev)  # merged content invalidates the api_content sidecar
+                # The originals stay in display history as compacted rows; showing the join too
+                # would paint every merged input twice on resume.
+                prev["display_metadata"] = {**(prev.get("display_metadata") or {}),
+                                            _cc().MODEL_ONLY_DISPLAY_METADATA_KEY: True}
+                # The merge rewrites a live dict that may carry _db_persisted: pop the stamp
+                # and flag the finalizer to invalidate the bounded flush-scan cursor, or the
+                # merged text is identity-skipped and never reaches state.db. Same contract
+                # as the defrag rewrite site above.
+                prev.pop(_cc()._DB_PERSISTED_MARKER, None)
+                self._flush_scan_cursor_invalidated = True
             else:
                 merged.append(msg)
         return merged

@@ -195,12 +195,14 @@ jobs:
             echo "::warning::python -m pm.build_env --source pm --check-lock could not reach the registry (attempt $i); retrying in ${delays[$((i-1))]}s"
             sleep "${delays[$((i-1))]}"
           done
-          if [ "$ok" = true ]; then
-            review_status='[]'
-          elif [ "$net_fail" = true ]; then
-            echo "::error title=pm/uv.lock check could not reach PyPI::Registry unreachable after 3 attempts — infrastructure failure, not a stale lockfile. Re-run the job."
-            review_status='[{"source":"pm/uv.lock check","results":[{"kind":"action_required","title":"pm/uv.lock check could not reach PyPI","summary":"`python -m pm.build_env --source pm --check-lock` could not reach the package registry after 3 attempts. This is an infrastructure failure, not a stale lockfile.","how_to_fix":"Re-run the failed job. No change to `pm/uv.lock` is needed."}]}]'
-          else
+          if [ "$ok" != true ]; then
+            if [ "$net_fail" = true ]; then
+              echo "::error title=pm/uv.lock check could not reach PyPI::Registry unreachable after 3 attempts — infrastructure failure, not a stale lockfile. Re-run the job."
+              review_status='[{"source":"pm/uv.lock check","results":[{"kind":"action_required","title":"pm/uv.lock check could not reach PyPI","summary":"`python -m pm.build_env --source pm --check-lock` could not reach the package registry after 3 attempts. This is an infrastructure failure, not a stale lockfile.","how_to_fix":"Re-run the failed job. No change to `pm/uv.lock` is needed."}]}]'
+              echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
+              echo "review_status=${review_status}" > pm-lock-review-status.json
+              exit 1
+            fi
             cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
           ## ❌ pm/uv.lock is out of sync with pm/pyproject.toml
 
@@ -208,7 +210,7 @@ jobs:
           blocking because `stage_runtime` syncs PM's runtime with `--locked`,
           so a user install aborts on it.
 
-          To fix, regenerate it from the `pm/` directory:
+          To fix, lock it from the `pm/` directory:
 
           ```bash
           cd pm
@@ -220,8 +222,11 @@ jobs:
           EOF
             echo "::error title=pm/uv.lock out of sync::Run \`hermes pm lock\` inside \`pm/\` and commit the result."
             review_status='[{"source":"pm/uv.lock check","results":[{"kind":"action_required","title":"pm/uv.lock out of sync","summary":"pm/uv.lock is out of sync with pm/pyproject.toml.","how_to_fix":"Run `hermes pm lock` inside the pm/ directory, then commit the result: cd pm; hermes pm lock; cd ..; git add pm/uv.lock; git commit with a refresh message; git push."}]}]'
+            echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
+            echo "review_status=${review_status}" > pm-lock-review-status.json
             exit 1
           fi
+          review_status='[]'
           echo "review_status=${review_status}" >> "$GITHUB_OUTPUT"
           echo "review_status=${review_status}" > pm-lock-review-status.json
 

@@ -238,8 +238,8 @@ class ModelPricing(Result):
 class ModelCapabilities(Result):
     """``hermes_cli/inventory.py::_apply_capabilities``."""
 
-    fast: bool
-    reasoning: bool
+    fast: bool = False
+    reasoning: bool = False
     can_disable_reasoning: bool | None = None
 
 

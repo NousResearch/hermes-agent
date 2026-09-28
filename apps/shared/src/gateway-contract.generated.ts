@@ -682,8 +682,8 @@ export interface ModelOptionProvider {
 }
 /** ``hermes_cli/inventory.py::_apply_capabilities``. */
 export interface ModelCapabilities {
-  fast: boolean
-  reasoning: boolean
+  fast?: boolean
+  reasoning?: boolean
   can_disable_reasoning?: boolean | null
 }
 /** ``hermes_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``""`` unknown, ``"free"``); the sale fields are Nous Portal-only. */

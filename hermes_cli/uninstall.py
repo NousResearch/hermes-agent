@@ -948,7 +948,11 @@ def remove_dashboard_launchd_jobs() -> "list[Path]":
     import shlex
     from xml.parsers.expat import ExpatError
 
-    from hermes_cli.main_dashboard import _launchd_plist_dirs, _parse_dashboard_runtime
+    from hermes_cli.main_dashboard import (
+        _launchd_plist_dirs,
+        _launchd_plist_is_in_scope,
+        _parse_dashboard_runtime,
+    )
 
     uid = os.getuid()  # windows-footgun: ok — darwin-only branch
     removed: "list[Path]" = []
@@ -958,6 +962,8 @@ def remove_dashboard_launchd_jobs() -> "list[Path]":
         except OSError:
             continue
         for plist_path in plists:
+            if not _launchd_plist_is_in_scope(kind, plist_path):
+                continue
             try:
                 with open(plist_path, "rb") as f:
                     data = plistlib.load(f)
@@ -974,7 +980,7 @@ def remove_dashboard_launchd_jobs() -> "list[Path]":
                 continue
             if _parse_dashboard_runtime(shlex.join([str(a) for a in args])) is None:
                 continue
-            domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
+            domains = ("system",) if kind in {"daemon", "system-daemon"} else (f"gui/{uid}", f"user/{uid}")
             for domain in domains:
                 try:
                     subprocess.run(

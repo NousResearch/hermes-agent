@@ -28,6 +28,7 @@ from tools.environments.file_sync import (
     quoted_rm_command,
     unique_parent_dirs,
 )
+from tools.environments.remote_common import ensure_lazy_dep
 
 logger = logging.getLogger(__name__)
 
@@ -300,17 +301,8 @@ def _instance_discriminator(owner_pod_uid: str = "") -> str:
 
 
 def _ensure_sdk() -> None:
-    """Lazily install the kubernetes client, mirroring the Daytona pattern."""
-    try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-
-        _lazy_ensure("terminal.kubernetes", prompt=False)
-    except ImportError:
-        pass
-    except Exception as exc:  # FeatureUnavailable etc.
-        # Convert: terminal_tool turns ImportError into a clean "terminal tool
-        # disabled" payload instead of a traceback.
-        raise ImportError(str(exc))
+    """Ensure the Kubernetes extra is available through Hermes PM."""
+    ensure_lazy_dep("kubernetes")
 
 
 def in_cluster() -> bool:

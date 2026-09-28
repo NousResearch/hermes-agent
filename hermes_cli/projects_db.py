@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing, write_txn
+from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing, open_db, write_txn
 from hermes_constants import get_hermes_home
 
 
@@ -118,26 +118,19 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     idempotent (``CREATE TABLE IF NOT EXISTS`` + additive migrations) and cached per-path per-process.
     """
     path = db_path if db_path is not None else projects_db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path))
-    try:
-        conn.row_factory = sqlite3.Row
-        from hermes_state_wal import apply_wal_with_fallback
 
-        apply_wal_with_fallback(conn, db_label="projects.db")
-        conn.execute("PRAGMA foreign_keys=ON")
-        if resolved not in _INITIALIZED_PATHS:
-            conn.executescript(SCHEMA_SQL)
-            cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
-            for col in _OPTIONAL_PROJECT_COLUMNS:
-                if col not in cols:
-                    _add_column_if_missing(conn, "projects", col, f"{col} TEXT")
-            _INITIALIZED_PATHS.add(resolved)
-    except Exception:
-        conn.close()
-        raise
-    return conn
+    def _initialize(conn: sqlite3.Connection) -> None:
+        if resolved in _INITIALIZED_PATHS:
+            return
+        conn.executescript(SCHEMA_SQL)
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
+        for col in _OPTIONAL_PROJECT_COLUMNS:
+            if col not in cols:
+                _add_column_if_missing(conn, "projects", col, f"{col} TEXT")
+        _INITIALIZED_PATHS.add(resolved)
+
+    return open_db(path, db_label="projects.db", foreign_keys=True, initialize=_initialize)
 
 
 @contextlib.contextmanager

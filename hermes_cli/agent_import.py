@@ -15,9 +15,9 @@ import sys
 import time
 import tomllib
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-import yaml
+import hermes_yaml as yaml
 
 from utils import atomic_write_text, atomic_yaml_write
 
@@ -47,7 +47,7 @@ def normalize_text(text: str) -> str:
 
 
 def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
+    return path.read_text(encoding="utf-8-sig", errors="replace")
 
 
 class ConfigReadError(RuntimeError):
@@ -235,7 +235,8 @@ class AgentImporter:
     plan without touching disk; every item is recorded as imported/skipped/conflict/error."""
 
     def __init__(self, agent: str, source_root: Path, target_root: Path,
-                 execute: bool = False, overwrite: bool = False) -> None:
+                 execute: bool = False, overwrite: bool = False,
+                 sync_skills: Mapping[str, Optional[str]] | Sequence[str] = ()) -> None:
         if agent not in SUPPORTED_AGENTS:
             raise ValueError(f"Unsupported agent: {agent!r}")
         self.agent = agent
@@ -243,6 +244,11 @@ class AgentImporter:
         self.target_root = Path(target_root)
         self.execute = execute
         self.overwrite = overwrite
+        # Skills a previous import-agent run copied (from the sync manifest), name → digest of the copy
+        # it wrote (None = pre-digest manifest, trusted). --sync refreshes a destination in place only
+        # while it still matches that digest; a locally edited copy keeps conflict semantics.
+        self.sync_skills: Dict[str, Optional[str]] = (dict(sync_skills) if isinstance(sync_skills, Mapping)
+                                                       else {name: None for name in sync_skills})
         self.items: List[Dict[str, Any]] = []
         self.stripped_secrets: List[str] = []
 
@@ -493,12 +499,18 @@ class AgentImporter:
             self.record("skills", source_root, destination_root, "skipped",
                         "No skills with SKILL.md found")
             return
+        from hermes_cli.agent_import_sync import skill_tree_digest
         for skill_dir in skill_dirs:
             destination = destination_root / skill_dir.name
             if destination.exists() and not self.overwrite:
-                self.record("skill", skill_dir, destination, "conflict",
-                            "Destination skill already exists")
-                continue
+                if skill_dir.name not in self.sync_skills:
+                    self.record("skill", skill_dir, destination, "conflict", "Destination skill already exists")
+                    continue
+                expected = self.sync_skills[skill_dir.name]
+                if expected is not None and skill_tree_digest(destination) != expected:
+                    self.record("skill", skill_dir, destination, "conflict",
+                                "Imported skill was modified locally — not refreshed")
+                    continue
 
             def copy(skill_dir=skill_dir, destination=destination) -> None:
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -515,6 +527,11 @@ def import_agent_command(args) -> None:
     from hermes_constants import get_hermes_home
     from hermes_cli.setup import (Colors, color, print_header, print_info, print_success,
                                   print_error, prompt_yes_no)
+
+    if getattr(args, "sync", False):
+        from hermes_cli.agent_import_sync import sync_imported_agents
+        sync_imported_agents(args)
+        return
 
     agent, explicit_source, overwrite = args.agent, args.source, args.overwrite
 
@@ -535,7 +552,7 @@ def import_agent_command(args) -> None:
 
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.MAGENTA))
-    print(color("│          ⚕ Hermes — Import From Another Agent          │", Colors.MAGENTA))
+    print(color("│          ☤ Hermes — Import From Another Agent          │", Colors.MAGENTA))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
     if not source_dir.is_dir():
         print()
@@ -596,6 +613,13 @@ def import_agent_command(args) -> None:
     if report is None:
         return
     print_import_report(report, dry_run=False)
+    from hermes_cli.agent_import_sync import update_sync_manifest
+    try:
+        update_sync_manifest(agent, source_dir.resolve(), hermes_home.resolve(), overwrite, report)
+        print_info("Source registered for sync — re-run 'hermes import-agent --sync' "
+                   "any time to pull in changes.")
+    except OSError as exc:
+        logger.warning("Could not update import sync manifest: %s", exc)
     print()
     print_success("Import complete.")
     print_info("API keys and credentials were NOT imported — run 'hermes setup' "

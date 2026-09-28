@@ -120,13 +120,12 @@ describe('shared background process refresh', () => {
     }
   )
 
-  it('polls only known running work and stops requests after a gone-runtime rejection', async () => {
-    $sessionStates.set({ idle: { storedSessionId: 'idle-stored' } as never })
+  it('stops requests after a gone-runtime rejection', async () => {
     reconcileBackgroundProcesses('gone', [running('ci')])
     request.mockRejectedValue(new Error('session not found'))
-    await vi.advanceTimersByTimeAsync(5_000)
+    await refreshBackgroundProcesses('gone')
     expect(request).toHaveBeenCalledExactlyOnceWith('process.list', { session_id: 'gone' })
-    await vi.advanceTimersByTimeAsync(30_000)
+    await refreshBackgroundProcesses('gone')
     expect(request).toHaveBeenCalledTimes(1)
     expect(isSessionGone('gone')).toBe(true)
   })
@@ -200,7 +199,7 @@ describe('shared background process refresh', () => {
     $sessionStates.set({ owned: { storedSessionId: 'stored' } as never })
     reconcileBackgroundProcesses('owned', [running('ci')])
     vi.mocked(requestGatewayForProfile).mockResolvedValue({ processes: [exited('ci')] })
-    await vi.advanceTimersByTimeAsync(5_000)
+    await refreshBackgroundProcesses('owned')
     expect(requestGatewayForProfile).toHaveBeenCalledWith(
       'work',
       'process.list',
@@ -317,32 +316,23 @@ describe('shared background process refresh', () => {
     await pending
     expect($backgroundStatusBySession.get().rewound).toBeUndefined()
   })
-  it('clears silent exits without any composer or status subscriber mounted', async () => {
+  it('owns no timer: the pane-gated composer poll is the only safety net', async () => {
     reconcileBackgroundProcesses('unmounted', [running('ci')])
-    request.mockResolvedValue({ processes: [exited('ci')] })
-
-    await vi.advanceTimersByTimeAsync(5_000)
-
-    expect(request).toHaveBeenCalledWith('process.list', { session_id: 'unmounted' })
-    expect($backgroundStatusBySession.get().unmounted?.[0]?.state).toBe('done')
-    expect($backgroundRunningSessionIds.get()).not.toContain('unmounted')
-    request.mockClear()
     await vi.advanceTimersByTimeAsync(30_000)
     expect(request).not.toHaveBeenCalled()
   })
 
-  it('keeps polling an exited process until its pending notification is accepted', async () => {
+  it('holds an exited process in Monitoring until its pending notification settles', async () => {
     const pending = { ...exited('ci'), notification_pending: true }
-    reconcileBackgroundProcesses('unmounted', [pending])
-    request.mockResolvedValue({ processes: [pending] })
+    reconcileBackgroundProcesses('settling', [pending])
+    // No success linger while the notice is owed: the row must outlive it.
     await vi.advanceTimersByTimeAsync(15_000)
-    expect($backgroundRunningSessionIds.get()).toContain('unmounted')
-    expect($backgroundStatusBySession.get().unmounted?.[0]?.notificationPending).toBe(true)
-    expect(request).toHaveBeenCalledWith('process.list', { session_id: 'unmounted' })
+    expect($backgroundRunningSessionIds.get()).toContain('settling')
+    expect($backgroundStatusBySession.get().settling?.[0]?.notificationPending).toBe(true)
     request.mockResolvedValue({ processes: [{ ...pending, notification_pending: false }] })
-    await vi.advanceTimersByTimeAsync(5_000)
-    expect($backgroundRunningSessionIds.get()).not.toContain('unmounted')
+    await refreshBackgroundProcesses('settling')
+    expect($backgroundRunningSessionIds.get()).not.toContain('settling')
     await vi.advanceTimersByTimeAsync(4_000)
-    expect($backgroundStatusBySession.get().unmounted).toBeUndefined()
+    expect($backgroundStatusBySession.get().settling).toBeUndefined()
   })
 })

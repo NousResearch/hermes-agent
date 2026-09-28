@@ -9,12 +9,16 @@ import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
+import { exitProjectScope } from '@/store/project-scope'
 import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
   setCronSessions,
+  setCurrentBranch,
+  setCurrentCwdTransient,
   setFreshDraftReady,
   setMessages,
+  setMessagingListServer,
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
@@ -22,11 +26,14 @@ import {
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
   setSessions,
+  setSessionsLoadError,
   setSessionsLoading
 } from '@/store/session'
 import { clearAllSessionControl } from '@/store/session-control'
 import { resetSessionPinMirror } from '@/store/session-pin-sync'
 import { clearAllSessionStates } from '@/store/session-states'
+import { clearAllSessionTodos } from '@/store/todos'
+import { clearTranscriptTailPaging } from '@/store/transcript-tail'
 import { clearTranscriptTails } from '@/store/transcript-tail-cache'
 
 // True while a connection switch is mid-flight — a Settings → Gateway apply
@@ -191,6 +198,9 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // has never seen them, so drop the "already pushed" bookkeeping and let the
   // next reconcile re-assert the whole set against the new backend.
   resetSessionPinMirror()
+  // Project ids belong to the outgoing backend's projects.db; a scope left
+  // entered would root the next draft's cwd in the old source's project.
+  exitProjectScope()
   setSessions([])
   setSessionProfilesTruncated({})
   setSessionProfilesUsage({})
@@ -198,6 +208,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   invalidateCronJobsRequests()
   setCronJobs([])
   setMessagingSessions([])
+  setMessagingListServer(null)
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
   // Clearing $sessionStates automatically clears $workingSessionIds and
@@ -208,6 +219,9 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // that are still unread once the next gateway's lists load — so a profile
   // round-trip doesn't swallow green dots.
   clearAllSessionBackground()
+  // Runtime ids can be reused by the next backend. Retire both the live
+  // checklist and its review snapshot before any new session is bound.
+  clearAllSessionTodos()
   clearAllSessionStates()
   // Structured goal/loop/heartbeat entries are keyed by runtime id, which the
   // next backend re-mints, so a full wipe is exact (and stale-response-safe).
@@ -216,6 +230,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   resetLiveSync()
   $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)
+  setSessionsLoadError(false)
   resetSessionsLimit()
 
   setActiveSessionId(null)
@@ -223,14 +238,27 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessages([])
   setFreshDraftReady(true)
 
+  // The draft workspace belongs to the outgoing backend. Nothing downstream
+  // clears it: ensureDefaultWorkspaceCwd only seeds a NON-empty remembered
+  // path and seedDefaultCwd only applies the new gateway's default when the
+  // cwd is EMPTY, so a gateway with nothing remembered kept painting (and
+  // sending on session.create) the previous gateway's folder (#114306).
+  // Transient on purpose: the per-backend memory of the old gateway stays.
+  setCurrentCwdTransient('')
+  setCurrentBranch('')
+
   // Artifacts are keyed by sessions on the previous backend, so both the
   // registry and any rail tab pointing into it go with them.
   clearArtifactRegistry()
 
   // Cached transcript tails belong to the PREVIOUS backend's sessions; a
   // different backend can recycle stored ids, and painting another machine's
-  // conversation under a same-named id is worse than a loader. Wipe them.
+  // conversation under a same-named id is worse than a loader. Wipe both the
+  // persisted cache and the in-memory paging entries — the latter are keyed by
+  // owner, so a survivor from the old backend would sit beside the new one and
+  // fail the unique-match lookup that shows "Show earlier".
   clearTranscriptTails()
+  clearTranscriptTailPaging()
 
   // Narrowed: account/marketplace/onboarding caches are global, not gateway-
   // scoped, so a mode swap must not refetch them.

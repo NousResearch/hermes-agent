@@ -1,6 +1,7 @@
 """Tests for terminal/file tool availability in local dev environments."""
 
 import importlib
+import logging
 
 import pytest
 
@@ -112,6 +113,57 @@ class TestCheckFnTransientFailureSuppression:
         # Different fn so last-good for `good` doesn't apply; bad has no success.
         assert reg._check_fn_cached(bad) is False
 
+
+
+    def test_core_tool_drop_after_success_warns_once_never_configured_stays_info(self, monkeypatch, caplog):
+        """A check_fn that drops a ``_HERMES_CORE_TOOLS`` member it had previously admitted logs at
+        WARNING naming the tool (#112649 atom 4): core tools are non-deferrable, so a dropped one
+        leaves neither the schema nor the tool_search catalog and the model's "no such tool" is
+        accurate. A core tool whose probe never succeeded (unconfigured browser/image_gen/HA on a
+        stock home) keeps the INFO verdict of ae5666f7fc4 — the live pass counted 13 WARNINGs per
+        process when every unconfigured core tool warned. The WARNING fires once per probe per
+        process, not on every TTL re-probe.
+        """
+        import tools.registry as reg
+
+        state = {"core": True}
+
+        def core_gate():
+            return state["core"]
+
+        def never_gate():
+            return False
+
+        import toolsets
+
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(reg.time, "monotonic", lambda: clock["now"])
+        monkeypatch.setattr(toolsets, "_HERMES_CORE_TOOLS",
+                            [*toolsets._HERMES_CORE_TOOLS, "core_probe_tool", "never_probe_tool"])
+        for name, gate in (("core_probe_tool", core_gate), ("never_probe_tool", never_gate)):
+            reg.registry.register(name=name, toolset=name, schema={"name": name},
+                                  handler=lambda **kw: None, check_fn=gate)
+        reg.invalidate_check_fn_cache()
+        try:
+            with caplog.at_level(logging.INFO, logger="tools.registry"):
+                assert reg._check_fn_cached(core_gate) is True
+                assert reg._check_fn_cached(never_gate) is False
+                state["core"] = False
+                clock["now"] += reg._CHECK_FN_FAILURE_GRACE_SECONDS + reg._CHECK_FN_TTL_SECONDS + 1
+                assert reg._check_fn_cached(core_gate) is False
+                assert reg._check_fn_cached(never_gate) is False
+                clock["now"] += reg._CHECK_FN_TTL_SECONDS + 1
+                assert reg._check_fn_cached(core_gate) is False
+        finally:
+            reg.registry.deregister("core_probe_tool")
+            reg.registry.deregister("never_probe_tool")
+            reg.invalidate_check_fn_cache()
+
+        core = [r for r in caplog.records if "core_gate" in r.getMessage()]
+        never = [r for r in caplog.records if "never_gate" in r.getMessage()]
+        assert [r.levelno for r in core] == [logging.WARNING, logging.INFO]
+        assert "core_probe_tool" in core[0].getMessage()
+        assert never and all(r.levelno == logging.INFO for r in never)
 
     def test_grace_expiry_lets_real_outage_through(self, monkeypatch):
         import tools.registry as reg
@@ -368,7 +420,54 @@ class TestUnscopedSecretReadLogging:
     crashed check_fn (WARNING + traceback); an unscoped read reported while
     the scope was *resolved* is a genuinely lost scope and stays loud."""
 
+
     def test_expected_fail_closed_probe_is_quiet_but_lost_scope_stays_loud(self, caplog):
+        """The verdict comes from the LIVE scope at the catch site (#110635): unscoped caller →
+        expected boot-time miss (DEBUG, no traceback); scoped caller whose probe still hit the
+        fail-closed path → a dropped scope inside the probe (WARNING + traceback)."""
+        import logging
+        import threading
+
+        import tools.registry as reg
+        from agent.secret_scope import (
+            get_secret, reset_secret_scope, set_multiplex_active, set_secret_scope,
+        )
+
+        def probe():
+            return bool(get_secret("REGISTRY_LOG_PROBE_TOKEN", ""))
+
+        def probe_on_bare_thread():
+            # A bare thread starts with an EMPTY context: the scope the caller holds never reaches
+            # the get_secret inside — the spawn-site bug the loud branch exists to expose.
+            out = []
+            t = threading.Thread(target=lambda: out.append(probe()))
+            t.start()
+            t.join()
+            return out[0]
+
+        set_multiplex_active(True)
+        try:
+            with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+                assert reg._run_check_fn_uncached(probe) is False
+                boot = [r for r in caplog.records if r.name == "tools.registry"]
+                caplog.clear()
+                token = set_secret_scope({})
+                try:
+                    assert reg._run_check_fn_uncached(probe_on_bare_thread) is False
+                finally:
+                    reset_secret_scope(token)
+                lost = [r for r in caplog.records if r.name == "tools.registry"]
+        finally:
+            set_multiplex_active(False)
+
+        assert boot and all(r.levelno == logging.DEBUG and r.exc_info is None for r in boot)
+        assert any(r.levelno >= logging.WARNING and r.exc_info for r in lost)
+
+    def test_uncached_probe_at_boot_is_not_reported_as_a_lost_scope(self, caplog):
+        """#110635: a ``no_cache_check_fn`` probe (the browser vault gate) skips the cache-scope
+        lookup, so on the old branch-derived hint every gateway start under multiplexing logged
+        WARNING + traceback for an EXPECTED fail-closed read. Same probe, cached or uncached,
+        same DEBUG verdict."""
         import logging
 
         import tools.registry as reg
@@ -377,16 +476,13 @@ class TestUnscopedSecretReadLogging:
         def probe():
             return bool(get_secret("REGISTRY_LOG_PROBE_TOKEN", ""))
 
+        reg.no_cache_check_fn(probe)
         set_multiplex_active(True)
         try:
             with caplog.at_level(logging.DEBUG, logger="tools.registry"):
-                assert reg._run_check_fn_uncached(probe, unresolved_scope=True) is False
-                boot = [r for r in caplog.records if r.name == "tools.registry"]
-                caplog.clear()
-                assert reg._run_check_fn_uncached(probe, unresolved_scope=False) is False
-                lost = [r for r in caplog.records if r.name == "tools.registry"]
+                assert reg._check_fn_cached(probe) is False
         finally:
             set_multiplex_active(False)
-
-        assert boot and all(r.levelno == logging.DEBUG and r.exc_info is None for r in boot)
-        assert any(r.levelno >= logging.WARNING and r.exc_info for r in lost)
+            reg._NO_CACHE_CHECK_FNS.discard(probe)
+        records = [r for r in caplog.records if r.name == "tools.registry"]
+        assert records and all(r.levelno == logging.DEBUG and r.exc_info is None for r in records)

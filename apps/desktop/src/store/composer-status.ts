@@ -60,7 +60,9 @@ export const isAwaitedBackgroundWork = (item: ComposerStatusItem): boolean =>
   item.type === 'background' &&
   (item.notificationPending === true || (item.state === 'running' && item.awaitingNotification === true))
 
-const needsBackgroundRefresh = (item: ComposerStatusItem): boolean =>
+/** Rows the composer's pane-gated 5s safety-net poll must keep refreshing:
+ *  running work (silent exits emit no event) and results still owed to the agent. */
+export const needsBackgroundRefresh = (item: ComposerStatusItem): boolean =>
   item.state === 'running' || item.notificationPending === true
 
 // Stored session ids with awaited background work or an undelivered result. The
@@ -96,39 +98,6 @@ export const $backgroundRunningSessionIds = computed(
     return (backgroundRunningIds = stableArray(backgroundRunningIds, [...ids]))
   }
 )
-
-// Silent exits have no gateway event. The store, not a mounted composer,
-// owns one safety-net timer for all known running sessions. No idle scanning.
-const BACKGROUND_POLL_MS = 5_000
-let backgroundPollTimer: ReturnType<typeof setInterval> | undefined
-
-const stopBackgroundPolling = () => {
-  if (backgroundPollTimer !== undefined) {
-    clearInterval(backgroundPollTimer)
-    backgroundPollTimer = undefined
-  }
-}
-
-const offBackgroundPolling = $backgroundStatusBySession.listen(background => {
-  if (!Object.values(background).some(items => items.some(needsBackgroundRefresh))) {
-    stopBackgroundPolling()
-  } else if (backgroundPollTimer === undefined) {
-    backgroundPollTimer = setInterval(() => {
-      for (const [sid, items] of Object.entries($backgroundStatusBySession.get())) {
-        if (!isSessionGone(sid) && items.some(needsBackgroundRefresh) && !backgroundRefreshes.has(sid)) {
-          void refreshBackgroundProcesses(sid)
-        }
-      }
-    }, BACKGROUND_POLL_MS)
-  }
-})
-
-if (import.meta.hot) {
-  import.meta.hot.dispose(() => {
-    offBackgroundPolling()
-    clearAllSessionBackground()
-  })
-}
 
 // Rows the user X-ed away. The registry keeps finished processes around for a
 // while, so without this every refresh would resurrect a dismissed row.
@@ -581,7 +550,6 @@ export async function stopBackgroundProcess(sid: string, id: string): Promise<vo
 export function clearAllSessionBackground() {
   backgroundEpoch++
   backgroundRefreshes.clear()
-  stopBackgroundPolling()
 
   for (const sid of autoClearTimers.keys()) {
     cancelAllAutoDismiss(sid)

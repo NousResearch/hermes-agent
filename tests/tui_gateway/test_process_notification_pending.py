@@ -1,6 +1,7 @@
 """The process RPC must not advertise Done while its follow-up is outstanding."""
 
 import asyncio
+import contextlib
 import json
 import shlex
 from collections import OrderedDict
@@ -177,11 +178,13 @@ def test_completion_pending_survives_public_exit_dequeue_and_busy_turn(delivery,
         runner._completion_delivery_retention = 64
         accepting = False
 
-        async def inject(_text, _event):
+        async def inject(_text, _event, **_kwargs):
             assert rows()[proc.id]["notification_pending"] is True
             return accepting
 
         monkeypatch.setattr(runner, "_inject_watch_notification", inject)
+        # Default-profile event: no profile scope to install.
+        monkeypatch.setattr(runner, "_completion_event_scope", lambda _evt: contextlib.nullcontext())
         assert asyncio.run(runner._deliver_completion_notification("finished", evt)) is False
         assert rows()[proc.id]["notification_pending"] is True
         accepting = True
@@ -210,7 +213,7 @@ def test_completion_pending_survives_public_exit_dequeue_and_busy_turn(delivery,
     assert retained[proc.id]["notification_pending"] is False  # receipts do not replay notices
 
 
-@pytest.mark.parametrize("settlement", ["poller", "post_turn", "suppressed", "poller_suppressed", "breaker", "disabled", "gateway", "gateway_off", "launch"])
+@pytest.mark.parametrize("settlement", ["poller", "post_turn", "suppressed", "poller_suppressed", "breaker", "disabled", "gateway", "gateway_retry", "gateway_off", "launch"])
 def test_watch_pending_bridges_first_hit_until_each_notice_is_settled(delivery, monkeypatch, settlement):
     from tools.async_delegation import complete_event_delivery
 
@@ -297,13 +300,22 @@ def test_watch_pending_bridges_first_hit_until_each_notice_is_settled(delivery, 
         (get_hermes_home() / "config.yaml").write_text(
             f"display:\n  background_process_notifications: {mode!r}\n")
 
+        accepting = settlement != "gateway_retry"
+
         async def inject(text, _event):
             assert "READY" in text
             assert rows()[proc.id]["notification_pending"] is True
-            return True
+            return accepting
 
         monkeypatch.setattr(runner, "_inject_watch_notification", inject)
         asyncio.run(runner._drain_watch_notifications(registry.completion_queue))
+        if settlement == "gateway_retry":
+            # A failed delivery is re-queued for retry, so the notice is still owed.
+            assert registry.completion_queue.qsize() == 1
+            assert rows()[proc.id]["notification_pending"] is True
+            accepting = True
+            asyncio.run(runner._drain_watch_notifications(registry.completion_queue))
+            assert registry.completion_queue.empty()
         assert rows()[proc.id]["notification_pending"] is False
         return
     if settlement == "poller_suppressed":

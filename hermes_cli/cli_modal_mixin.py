@@ -586,7 +586,8 @@ class CLIModalMixin:
         self._clarify_multi_base = None
         self._paint_now()
 
-    def _clarify_callback(self, question, choices, multi_select=False, questions=None):
+    def _clarify_callback(self, question, choices, multi_select=False, questions=None,
+                          timeout=None, auto_select=True):
         """Clarify-tool platform callback (agent thread): show the selection UI (or freetext for
         open-ended questions) and block until the key bindings answer or the timeout dismisses it
         (the agent is then told to decide). ``multi_select`` shows checkboxes (Space toggles).
@@ -599,10 +600,10 @@ class CLIModalMixin:
         from tools.clarify_gateway import resolve_clarify_timeout
 
         if questions:
-            return self._clarify_callback_batch(questions)
+            return self._clarify_callback_batch(questions, timeout=timeout, auto_select=auto_select)
 
         # Canonical clarify timeout, shared with the gateway/TUI path; `<= 0` = unlimited.
-        timeout = resolve_clarify_timeout(CLI_CONFIG)
+        timeout = resolve_clarify_timeout(CLI_CONFIG) if timeout is None else timeout
         response_queue = queue.Queue()
         is_open_ended = not choices
         effective_multi = multi_select and not is_open_ended
@@ -625,6 +626,8 @@ class CLIModalMixin:
             self._persist_prompt_summary("?", "Clarify", question, str(result))
             return result
         self._clarify_teardown()
+        if auto_select and choices and timeout is not None:
+            return choices[0]
         _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
         return _CLARIFY_TIMEOUT_REPLY
 
@@ -1030,7 +1033,7 @@ class CLIModalMixin:
         self._clarify_freetext = True
         self._clarify_prefill = meta.get("other_text") or "" if meta.get("kind") == "other" else ""
 
-    def _clarify_callback_batch(self, questions):
+    def _clarify_callback_batch(self, questions, *, timeout=None, auto_select=True):
         """Batch clarify panel (A-compact): all questions, one active. Returns
         ``{"answers": {qid: raw}}`` when every question is locked, plus ``"timed_out": True`` when
         the deadline expires with partial answers; a cancel string passes through unchanged so the
@@ -1038,7 +1041,7 @@ class CLIModalMixin:
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
         from tools.clarify_gateway import resolve_clarify_timeout
 
-        timeout = resolve_clarify_timeout(CLI_CONFIG)
+        timeout = resolve_clarify_timeout(CLI_CONFIG) if timeout is None else timeout
         response_queue = queue.Queue()
         state = {
             "questions": list(questions),

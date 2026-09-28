@@ -886,18 +886,37 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
                                                  "vision_analysis_routed_via": "auxiliary.vision"})
 
 # ── Availability check (used by the tool registry check_fn) ─────────────────
+_last_unavailable_reason: Optional[str] = None
+
+
+def _log_unavailable_reason(reason: str) -> None:
+    """Emit the failing branch once per distinct reason (the registry TTL re-probes; a steady-state False
+    must not repeat the line). Without it, ``check_fn ... returned False`` names no branch and an
+    in-process-only failure is undiagnosable from outside the process (#126634)."""
+    global _last_unavailable_reason
+    if reason == _last_unavailable_reason:
+        return
+    _last_unavailable_reason = reason
+    logger.info("computer_use unavailable: %s", reason)
+
+
 def check_computer_use_requirements() -> bool:
     """macOS/Windows/Linux + cua-driver binary (or env override). `hermes computer-use doctor` names blocked checks."""
     if sys.platform not in ("darwin", "win32", "linux"):
+        _log_unavailable_reason(f"platform {sys.platform} is unsupported (darwin/win32/linux only)")
         return False
-    from tools.computer_use.cua_backend_driver import cua_driver_binary_available
-    if cua_driver_binary_available():
+    from tools.computer_use.cua_backend_driver import cua_driver_binary_status
+    available, reason = cua_driver_binary_status()
+    if available:
         return True
     # No host driver: the tool is still real when the desktop is placed inside a terminal backend whose image
     # carries cua-driver (nousresearch/hermes-sandbox:desktop). Placement is config; the binary is probed lazily
     # at first use, so this stays a cheap check_fn.
     from tools.bot_desktop import placement
-    return placement.resolve().where == placement.TERMINAL
+    if placement.resolve().where == placement.TERMINAL:
+        return True
+    _log_unavailable_reason(reason)
+    return False
 
 def get_computer_use_schema() -> Dict[str, Any]:
     from tools.computer_use.schema import COMPUTER_USE_SCHEMA

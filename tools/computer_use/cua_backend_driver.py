@@ -88,6 +88,41 @@ def cua_driver_binary_available() -> bool:
     """True if PM or an explicit override selects a local driver."""
     return resolve_cua_driver_cmd() is not None
 
+def cua_driver_binary_status() -> Tuple[bool, str]:
+    """``(available, why-not)`` for availability surfaces: the bare False names no failing branch, which
+    left an in-process-only resolution failure undiagnosable (#126634). ``why-not`` is "" when available."""
+    resolved = resolve_cua_driver_cmd()
+    return (True, "") if resolved is not None else (False, _diagnose_unresolved_cua_driver())
+
+def _diagnose_unresolved_cua_driver() -> str:
+    """Read-only best-effort reason for a ``None`` resolve — never raises, it runs only after a failure.
+    Names the branch (override that resolves nowhere / no PM record / record that no longer matches the
+    pin) and the store root this process resolved, so a long-lived process's view can be compared with
+    the shell's (#126634)."""
+    configured = os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip()
+    if configured:
+        return (f"{_CUA_DRIVER_CMD_ENV} is set to {configured!r} but does not resolve to an executable "
+                f"via PATH (PATH={os.environ.get('PATH') or ''!r})")
+    try:
+        from pm.lock import Facts, Lockfile
+        from pm.paths import facts_path, lockfile_path, store_root, writable_store_root
+
+        root, fact = store_root(), Facts(facts_path()).get("cua-driver")
+        if not fact:
+            extra = writable_store_root()
+            fact = Facts(extra / "facts.json").get("cua-driver") if extra != root else None
+            root = extra if fact else root
+        pin = Lockfile(lockfile_path()).version("cua-driver")
+    except Exception as exc:
+        return f"the PM install state could not be read: {exc!r}"
+    if not fact:
+        return (f"PM has no install record for cua-driver (store {root}); install it with "
+                f"`hermes computer-use install` or set {_CUA_DRIVER_CMD_ENV}")
+    entry = fact.get("entry")
+    state = "no store entry" if not entry else f"entry {'present' if (root / entry).exists() else 'missing'} ({entry})"
+    return (f"PM does not select cua-driver (recorded v{fact.get('version') or '?'}, pin v{pin or '?'}, "
+            f"{state}, store {root}); reinstall with `hermes computer-use install`")
+
 def cua_driver_install_hint() -> str:
     return ("cua-driver is not installed. Install the pinned driver with:\n  hermes computer-use install\n"
             "Or run `hermes tools` and enable the Computer Use toolset to install it automatically.")

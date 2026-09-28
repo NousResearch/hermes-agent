@@ -1543,13 +1543,37 @@ class TurnRunner:
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
-            if fut is not None:
-                fut.result(timeout=15)
+            outcome = _approval_send_outcome(fut, timeout=15)
+            if outcome == "sent":
                 # No card to edit on the text path: the prompt has no buttons to drop and carries
                 # the /approve instructions, so the timeout notice is posted as a new message.
                 register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+                return
+            if outcome == "ambiguous":
+                # Same physics as the button path: the text may have posted with a late ack. The
+                # registration stays armed for a late /approve; re-sending would ask the user to
+                # approve the same command twice.
+                logger.warning(
+                    "Text approval send timed out — treating as possibly-delivered "
+                    "(no re-send; the prompt stays armed for a late /approve)"
+                )
+                return
+            if outcome == "declined":
+                # The connector refused this destination (see the button path's decline note):
+                # nothing else is sent, and the raise drops the central queue entry.
+                raise _ExecApprovalDeclined(
+                    "exec approval undeliverable: connector egress declined this destination"
+                )
+            raise RuntimeError("exec approval prompt undeliverable over plain text")
+        except _ExecApprovalDeclined:
+            raise
         except Exception as e:
+            # The text lane is the last delivery lane: a definitive failure must reach
+            # `_await_gateway_decision`, whose raising-notify path drops the queue entry and
+            # returns notify_failed (unblocking the guarded command) instead of parking the
+            # session for the full approval timeout over a prompt nobody can see.
             logger.error("Failed to send approval request: %s", e)
+            raise
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

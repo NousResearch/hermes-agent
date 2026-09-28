@@ -1,0 +1,16 @@
+name: hermes-chutes-provider
+repo: https://github.com/TheStreamCode/hermes-chutes-provider
+sha: d1165cdd5c65a1179c559e9169a428adb9a36b42
+description: Chutes model provider for Hermes Agent via API key.
+maintainer: TheStreamCode
+tier: community
+category: models
+docs_url: https://github.com/TheStreamCode/hermes-chutes-provider
+version: "0.1.5"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - CHUTES_API_KEY

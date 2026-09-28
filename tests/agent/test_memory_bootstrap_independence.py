@@ -103,3 +103,57 @@ def test_builtin_failure_does_not_invent_provider_or_plugin_error(caplog, memory
     assert agent._memory_store is None
     assert agent._memory_manager is None
     assert not any("Memory provider plugin init failed" in r.getMessage() for r in caplog.records)
+
+
+def test_disk_provider_discovery_survives_builtin_import_failure():
+    from types import SimpleNamespace
+    from hermes_constants import get_hermes_home
+    from hermes_cli.config import load_config_readonly
+    from agent import agent_init
+
+    home = get_hermes_home()
+    plugin = home / "plugins" / "bootstrap-disk"
+    plugin.mkdir(parents=True)
+    (plugin / "__init__.py").write_text('''
+from agent.memory_provider import MemoryProvider
+
+class DiskProvider(MemoryProvider):
+    name = "bootstrap-disk"
+    def is_available(self):
+        return True
+    def initialize(self, session_id, **kwargs):
+        self.session_id = session_id
+        self.home = kwargs["hermes_home"]
+    def get_tool_schemas(self):
+        return [{"name": "disk_recall", "description": "Fixture",
+                 "parameters": {"type": "object", "properties": {}}}]
+    def handle_tool_call(self, tool_name, args, **kwargs):
+        return self.session_id
+''', encoding="utf-8")
+    (home / "config.yaml").write_text("memory:\n  provider: bootstrap-disk\n", encoding="utf-8")
+    config = load_config_readonly()
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "tools.memory_tool" and (globals or {}).get("__name__") == "agent.agent_init":
+            raise ModuleNotFoundError("fixture built-in import failure")
+        return real_import(name, globals, locals, fromlist, level)
+
+    agent = SimpleNamespace(enabled_toolsets=["memory"], disabled_toolsets=[],
+                            tools=[], valid_tool_names=set(), session_id="disk-session",
+                            _session_db=None, session_cwd=None)
+    for name in agent_init._GATEWAY_IDENTITY_PARAMS:
+        setattr(agent, f"_{name}", None)
+    with patch("builtins.__import__", side_effect=guarded_import):
+        agent_init._init_memory(agent, config, False, "cron")
+    try:
+        assert agent._memory_store is None
+        assert agent._memory_manager is not None
+        assert agent._memory_manager.has_tool("disk_recall")
+        assert "disk_recall" in agent.valid_tool_names
+        provider = agent._memory_manager.providers[0]
+        assert provider.home == str(home)
+        assert provider.handle_tool_call("disk_recall", {}) == "disk-session"
+    finally:
+        if agent._memory_manager is not None:
+            agent._memory_manager.shutdown_all()

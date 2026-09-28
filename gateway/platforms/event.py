@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from gateway.session import SessionSource
 
 if TYPE_CHECKING:
-    from gateway.inbound_context import PreparedInboundMessage
+    from gateway.inbound_context import InboundContextSnapshot, PreparedInboundMessage
 
 
 class MessageType(Enum):
@@ -115,6 +115,10 @@ class MessageEvent:
         default=(), kw_only=True, repr=False, compare=False,
     )
 
+    _inbound_context_dependencies: tuple["InboundContextSnapshot", ...] = field(
+        default=(), kw_only=True, repr=False, compare=False,
+    )
+
     def absorb_reply_expected(self, other: "MessageEvent") -> None:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""
         if self.reply_expected is not True and other.reply_expected is not False:
@@ -135,9 +139,14 @@ class MessageEvent:
         self.reply_to_author_name = other.reply_to_author_name
         self.reply_to_is_own_message = other.reply_to_is_own_message
         self.reply_to_author_authorized = other.reply_to_author_authorized
+        self._inbound_context_dependencies += other._inbound_context_dependencies
 
     def absorb_media(self, other: "MessageEvent") -> None:
         """Append attachments with their inline flags and quoted-event dependencies."""
+        self._inbound_context_dependencies += tuple(
+            dependency for dependency in other._inbound_context_dependencies
+            if all(dependency is not existing for existing in self._inbound_context_dependencies)
+        )
         offset = len(self.media_urls)
         self.media_text_inlined = [
             *self.media_text_inlined,

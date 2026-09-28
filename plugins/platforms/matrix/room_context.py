@@ -78,7 +78,7 @@ async def fetch_room_entries(
             if not stored.redacted:
                 reaction_ids.append(raw["event_id"])
 
-    snapshots = await fetch_reactions_for_events(client, room_id, reaction_ids)
+    snapshots = await fetch_reactions_for_events(client, room_id, reaction_ids, cache=cache)
     by_id = dict(zip(reaction_ids, snapshots))
     entries = [
         cache.recheck(room_id, cache.history_entry(room_id, event_id) or entry)

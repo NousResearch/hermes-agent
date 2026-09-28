@@ -2058,6 +2058,17 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         if any(pattern.search(sender or "") for pattern in self._ignored_user_patterns):
             logger.debug("Matrix: ignoring sender %s in %s due to configured ignore pattern", sender, room_id)
             return
+        content = getattr(event, "content", None)
+        if content is None:
+            return
+        if isinstance(content, dict):
+            source_content, msgtype = content, content.get("msgtype", "")
+        else:
+            source_content = content.serialize() if hasattr(content, "serialize") else {}
+            msgtype = str(content.msgtype) if hasattr(content, "msgtype") else ""
+        relates_to = source_content.get("m.relates_to", {})
+        reply_target = MatrixRelation.from_content(relates_to).reply_target
+        reply_parent = self._event_context_cache.retain(room_id, reply_target) if reply_target else None
         if not await self._is_allowed_matrix_room_event(room_id):
             logger.info("Matrix: ignoring message from unauthorized room %s", room_id)
             return
@@ -2069,15 +2080,6 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
             self._note_late_grace_drop(event_ts)
             return
-        content = getattr(event, "content", None)
-        if content is None:
-            return
-        if isinstance(content, dict):
-            source_content, msgtype = content, content.get("msgtype", "")
-        else:
-            source_content = content.serialize() if hasattr(content, "serialize") else {}
-            msgtype = str(content.msgtype) if hasattr(content, "msgtype") else ""
-        relates_to = source_content.get("m.relates_to", {})
         if MatrixRelation.from_content(relates_to).is_edit:
             if isinstance(content, dict):
                 self._event_context_cache.apply_edit(
@@ -2091,14 +2093,19 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                     if prior is not None and prior.sender and prior.sender != sender:
                         return
                     self._event_context_cache.invalidate(room_id, target)
+                    await self._event_context_cache.resolve(self._client, room_id, target)
             return
         # m.notice is the conventional bot-response msgtype; ignoring it prevents bot-to-bot loops.
         if msgtype == "m.notice" and not self._process_notices:
             return
         if msgtype in ("m.image", "m.audio", "m.video", "m.file"):
-            await self._handle_media_message(room_id, sender, event_id, event_ts, source_content, relates_to, msgtype)
+            await self._handle_media_message(
+                room_id, sender, event_id, event_ts, source_content, relates_to, msgtype,
+                reply_parent=reply_parent)
         elif msgtype in ("m.text", "m.notice"):
-            await self._handle_text_message(room_id, sender, event_id, event_ts, source_content, relates_to)
+            await self._handle_text_message(
+                room_id, sender, event_id, event_ts, source_content, relates_to,
+                reply_parent=reply_parent)
 
     async def _resolve_message_context(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
@@ -2188,6 +2195,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         reply_to_author_authorized = None
         reply_media_path = reply_media_type = None
         parent = self._event_context_cache.history_entry(room_id, reply_to) if reply_to else None
+        retained_parent = self._event_context_cache.retain(room_id, reply_to) if reply_to else None
         if reply_to and body.startswith("> "):
             reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
             body = _strip_reply_fallback(body)
@@ -2201,7 +2209,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 reply_to_author_authorized = False
         if reply_to and (
             not reply_to_text or _is_bare_media_filename("m.image", reply_to_text)
-            or parent is not None
+            or parent is not None and (parent.sender or parent.text or parent.redacted or parent.state_error)
         ) and self._is_sender_authorized(
             sender, chat_type=chat_type, chat_id=room_id
         ) is not False:
@@ -2209,7 +2217,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 self._client, room_id, reply_to, self._cache_quoted_image,
             )
             if parent is not None:
-                reply_to_text = None if parent.state_error else parent.text
+                reply_to_text = None if parent.state_error or not parent.text else parent.text
                 reply_media_path, reply_media_type = parent.media_path, parent.media_type
                 reply_to_author_id = parent.sender or None
                 if reply_to_author_id:
@@ -2225,7 +2233,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             parent = self._event_context_cache.recheck(room_id, checked) if checked is not None else None
             if parent is not None and parent != checked:
                 parent = await self._event_context_cache.refresh(self._client, room_id, parent)
-            if parent is not None:
+            if parent is not None and (parent.text or parent.redacted or parent.state_error):
                 reply_to_text = None if parent.redacted or parent.state_error else parent.text
                 reply_media_path, reply_media_type = parent.media_path, parent.media_type
         return MatrixReplyContext(
@@ -2234,6 +2242,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             is_own_message=reply_to_is_own_message, author_authorized=reply_to_author_authorized,
             media_path=reply_media_path, media_type=reply_media_type,
             media_content_id=parent.attachment_identity if parent is not None and reply_media_path else None,
+            parent=parent or retained_parent,
         )
 
     async def _cache_quoted_image(self, content: dict, event_id: str) -> tuple[str, str] | None:
@@ -2259,11 +2268,14 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
 
     async def _build_inbound_event(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict, relates_to: dict,
-        ctx: Optional[tuple] = None, **extra) -> Optional[MessageEvent]:
+        ctx: Optional[tuple] = None, *, reply_parent: MatrixEventContext | None = None,
+        **extra) -> Optional[MessageEvent]:
         """Gate + normalise an inbound event into a MessageEvent (None => drop). Text body may
         still change (reply-fallback strip); ``extra`` carries media fields / message_type.
         ``ctx`` is a pre-resolved ``_resolve_message_context`` result (media path gates before
         downloading); resolving it twice would double the read receipt / thread mark."""
+        reply_target = MatrixRelation.from_content(relates_to).reply_target
+        retained_parent = reply_parent or (self._event_context_cache.retain(room_id, reply_target) if reply_target else None)
         if ctx is None:
             ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
@@ -2299,6 +2311,12 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                     reply.media_content_id,
                 ),
             )
+        if reply.event_id:
+            from plugins.platforms.matrix.turn_context import MatrixTurnContext
+
+            event._inbound_context_dependencies = (
+                MatrixTurnContext.capture(self, event, reply.parent or retained_parent),
+            )
         return event
 
     def take_turn_channel_context(
@@ -2324,10 +2342,12 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict) -> None:
+        relates_to: dict, *, reply_parent: MatrixEventContext | None = None) -> None:
         body = source_content.get("body", "") or ""
         if not body:
             return
+        reply_target = MatrixRelation.from_content(relates_to).reply_target
+        reply_parent = reply_parent or (self._event_context_cache.retain(room_id, reply_target) if reply_target else None)
         # Dict lookup first: the mention regexes only run when a voice is parked or being gated
         # (both only happen under require_mention).
         if (self._parked_voices.pending(room_id, sender)
@@ -2343,7 +2363,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 self._background_read_receipt(room_id, event_id)  # the claim receipted the voice
                 return
         msg_event = await self._build_inbound_event(
-            room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
+            room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to,
+            reply_parent=reply_parent)
         if msg_event is None:
             return
         self._event_context_cache.store(room_id, event_id, MatrixEventContext(sender, msg_event.text))
@@ -2354,7 +2375,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
 
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict, msgtype: str, mention_claimed: bool = False) -> None:
+        relates_to: dict, msgtype: str, mention_claimed: bool = False, *,
+        reply_parent: MatrixEventContext | None = None) -> None:
         body = source_content.get("body", "") or ""
         url = source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
@@ -2381,6 +2403,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 return
         is_encrypted_media = bool(file_content and isinstance(file_content, dict) and file_content.get("url"))
         msg_type, media_type, is_voice_message = self._classify_inbound_media(msgtype, event_mimetype, source_content)
+        reply_target = MatrixRelation.from_content(relates_to).reply_target
+        reply_parent = reply_parent or (self._event_context_cache.retain(room_id, reply_target) if reply_target else None)
         # Gate (require_mention / allowed rooms) BEFORE the download: an unmentioned or
         # non-allowlisted room must not pull media onto the host only to drop it.
         # First await: mark a voice that may park in-flight so a concurrent bare mention waits for it.
@@ -2409,6 +2433,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         media_urls = [cached_path] if cached_path else ([http_url] if http_url else None)
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
+            reply_parent=reply_parent,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype,
             metadata={"matrix_mention_claimed": True} if mention_claimed else {})
         if msg_event is not None:

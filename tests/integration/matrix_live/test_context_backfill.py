@@ -16,65 +16,18 @@ import aiohttp
 import pytest
 from nio import JoinResponse, RoomInviteResponse, RoomMessageText, RoomRedactResponse, RoomSendResponse, UploadResponse
 
-from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom, MatrixAccount, _register
+from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
+from tests.integration.matrix_live.context_client import _send, _wait_for_final
+from tests.integration.matrix_live.context_client import group_gateway as group_gateway
+from tests.integration.matrix_live.context_client import group_member as group_member
 
 
-@pytest.fixture
-def group_member(live_room: LiveRoom) -> MatrixAccount:
-    async def join() -> MatrixAccount:
-        bob = await _register(live_room.homeserver, f"bob-{uuid.uuid4().hex[:8]}")
-        alice_client = live_room.observer.client(live_room.homeserver)
-        bob_client = bob.client(live_room.homeserver)
-        try:
-            invited = await alice_client.room_invite(live_room.room_id, bob.user_id)
-            assert isinstance(invited, RoomInviteResponse), invited
-            joined = await bob_client.join(live_room.room_id)
-            assert isinstance(joined, JoinResponse), joined
-            return bob
-        finally:
-            await alice_client.close()
-            await bob_client.close()
-
-    return asyncio.run(join())
 
 
-@pytest.fixture
-def group_gateway(group_member: MatrixAccount, gateway: LiveGateway) -> LiveGateway:
-    return gateway
 
 
-async def _send(
-    client, room_id: str, body: str, *, root: str | None = None, mention: str | None = None,
-    reply: str | None = None,
-) -> str:
-    content: dict = {"msgtype": "m.text", "body": body}
-    if root is not None:
-        content["m.relates_to"] = {
-            "rel_type": "m.thread", "event_id": root,
-            "m.in_reply_to": {"event_id": root}, "is_falling_back": True,
-        }
-    if reply is not None:
-        content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply}}
-    if mention is not None:
-        content["m.mentions"] = {"user_ids": [mention]}
-    sent = await client.room_send(room_id, "m.room.message", content)
-    assert isinstance(sent, RoomSendResponse), sent
-    return sent.event_id
 
 
-async def _wait_for_final(client, room: LiveRoom, seen: set[str], expected: str) -> None:
-    while True:
-        response = await client.sync(timeout=250)
-        joined = response.rooms.join.get(room.room_id)
-        if joined is None:
-            continue
-        for event in joined.timeline.events:
-            if not isinstance(event, RoomMessageText) or event.sender != room.bot.user_id:
-                continue
-            if event.event_id in seen or event.body != expected:
-                continue
-            seen.add(event.event_id)
-            return
 
 
 def test_room_mention_recovers_unaddressed_messages(
@@ -284,7 +237,7 @@ def test_redacted_child_is_removed_from_thread_relations(live_room: LiveRoom) ->
     asyncio.run(asyncio.wait_for(exchange(), timeout=15))
 
 
-@pytest.mark.parametrize("gateway", ["pause-image-context"], indirect=True)
+@pytest.mark.parametrize("gateway", ["pause-image-context", "pause-image-conversion"], indirect=True)
 @pytest.mark.parametrize("change", [
     "unchanged", "replacement", "redaction", "redaction-eviction",
     "replacement-redaction-eviction", "sender", "missing-new-content",
@@ -292,6 +245,7 @@ def test_redacted_child_is_removed_from_thread_relations(live_room: LiveRoom) ->
 def test_quoted_image_catch_up_keeps_only_current_model_attachment(
     tmp_path: Path, group_gateway: LiveGateway, live_room: LiveRoom,
     group_member: MatrixAccount, record_property: Callable[[str, object], None], change: str,
+    request: pytest.FixtureRequest,
 ) -> None:
     async def exchange() -> None:
         client = live_room.observer.client(live_room.homeserver)
@@ -377,7 +331,9 @@ def test_quoted_image_catch_up_keeps_only_current_model_attachment(
             elif change == "replacement":
                 assert "Replaced image with text" in text
             elif change == "replacement-redaction-eviction":
-                assert "[image]" in text
+                expected = ("[event content unavailable]" if request.node.callspec.params["gateway"] == "pause-image-conversion"
+                            else "[image]")
+                assert expected in text
             else:
                 assert "[redacted]" in text
                 assert "Replying to" not in text

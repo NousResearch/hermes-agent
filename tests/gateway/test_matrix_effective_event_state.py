@@ -1094,14 +1094,15 @@ async def test_context_refreshes_edit_at_last_asynchronous_boundary(scope: str, 
         updated["unsigned"]["m.relations"]["m.replace"]["content"].update(session_id="sess", ciphertext="fake")
 
     async def decrypt(_client, event):
-        started.set()
-        await release.wait()
+        if event is original:
+            started.set()
+            await release.wait()
         return SimpleNamespace(content=event["content"]), None
 
     async def request(_method, path, **_kwargs):
         if "/event/" in path:
             response = raw
-            if scope in {"event-fetch", "thread-fetch"}:
+            if scope in {"event-fetch", "thread-fetch"} and response is original:
                 started.set()
                 await release.wait()
             return response
@@ -1546,7 +1547,310 @@ async def test_active_context_keeps_effective_state_after_eviction(scope: str, c
     current = cache.recheck(ROOM, parent)
     current_ref = weakref.ref(current)
     del parent, current, pending, result, context
+    await asyncio.sleep(0)
     independent._entries.clear()
     cache._entries.clear()
     gc.collect()
     assert (parent_ref(), current_ref()) == (None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "consumer",
+    [
+        "queued",
+        "queued-copy",
+        "queued-merge",
+        "queued-command",
+        "queued-unresolved-edit",
+        "queued-room-intake",
+        "queued-media-intake",
+        "reaction-room",
+        "reaction-thread",
+        "error-room",
+        "error-thread",
+    ],
+)
+@pytest.mark.parametrize("withdrawn", [False, True])
+async def test_active_consumers_retain_dependencies_from_intake(
+    consumer, withdrawn, tmp_path, monkeypatch
+):
+    import gc
+    import weakref
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from plugins.platforms.matrix.room_context import format_history_context
+    from tests.gateway.test_matrix import _make_adapter
+
+    adapter = _make_adapter()
+    adapter._joined_rooms = {ROOM}
+    adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+    adapter._is_dm_room = AsyncMock(return_value=False)
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._event_context_cache = cache = MatrixEventContextCache(max_entries=2)
+    target = "$target"
+    raw = _original(target, "withdrawn quote")
+    started, release = asyncio.Event(), asyncio.Event()
+    reaction = {
+        "type": "m.reaction",
+        "event_id": "$reaction",
+        "sender": SENDER,
+        "content": {
+            "m.relates_to": {
+                "rel_type": "m.annotation",
+                "event_id": target,
+                "key": "withdrawn reaction",
+            }
+        },
+    }
+    failed = {
+        **_original("$failed", ""),
+        "type": "m.room.encrypted",
+        "content": {"ciphertext": "unavailable"},
+    }
+    if consumer == "error-thread":
+        failed["content"]["m.relates_to"] = {"rel_type": "m.thread", "event_id": target}
+
+    async def request(_method, path, **_kwargs):
+        if "/event/" in path:
+            return json.loads(json.dumps(raw))
+        if "/context/" in path:
+            return {"start": "boundary"}
+        if path.endswith("/m.thread") and consumer.startswith("error"):
+            return {"chunk": [failed]}
+        if "/messages" in path or path.endswith("/m.thread"):
+            return {"chunk": [failed, raw] if consumer.startswith("error") else [raw]}
+        if path.endswith("/m.annotation"):
+            if consumer.startswith("error"):
+                started.set()
+                await release.wait()
+            return {"chunk": [reaction] if consumer.startswith("reaction") else []}
+        raise AssertionError(path)
+
+    adapter._client = SimpleNamespace(
+        api=SimpleNamespace(request=AsyncMock(side_effect=request)),
+        crypto=None,
+        sync_store=SimpleNamespace(get_next_batch=AsyncMock(return_value="boundary")),
+    )
+    independent = MatrixEventContextCache()
+    independent.store(ROOM, target, MatrixEventContext(SENDER, "independent owner"))
+
+    def evict():
+        for index in range(cache.max_entries):
+            cache.store(ROOM, f"$other{index}", MatrixEventContext(SENDER, "other"))
+        gc.collect()
+
+    if consumer.startswith("queued"):
+        source = SessionSource(Platform.MATRIX, ROOM, chat_type="dm", user_id=SENDER)
+        body = f"> <{SENDER}> withdrawn quote\n\nquestion"
+        relation = {"m.in_reply_to": {"event_id": target}}
+        intake = consumer in {"queued-room-intake", "queued-media-intake"}
+        if intake:
+            from gateway.platforms.event import MessageEvent
+
+            adapter._is_dm_room = AsyncMock(return_value=True)
+            adapter._resolve_room_identity = AsyncMock(return_value=SimpleNamespace(
+                display_name="Room", room_topic=None, server_name=None, members_digest=None,
+            ))
+            adapter.set_message_handler(AsyncMock())
+            adapter._text_batch_delay_seconds = 0
+            adapter._busy_text_debounce_seconds = 0
+            session_key = adapter._event_session_key(MessageEvent("question", source=source))
+            adapter._active_sessions[session_key] = asyncio.Event()
+
+            async def pause(*_args):
+                started.set()
+                await release.wait()
+                return True
+
+            content = {"msgtype": "m.text", "body": body, "m.relates_to": relation}
+            if consumer == "queued-room-intake":
+                adapter._is_allowed_matrix_room_event = pause
+            else:
+                import base64
+
+                content.update(msgtype="m.image", url="mxc://example.org/image")
+
+                async def download(_uri):
+                    await pause()
+                    return base64.b64decode(
+                        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+                    )
+
+                adapter._client.download_media = download
+            pending = asyncio.create_task(adapter._on_room_message(SimpleNamespace(
+                room_id=ROOM, sender=SENDER, event_id="$current", timestamp=0, content=content,
+            )))
+            try:
+                await asyncio.wait_for(started.wait(), timeout=2)
+                if withdrawn:
+                    await adapter._on_redaction(SimpleNamespace(room_id=ROOM, redacts=target))
+                evict()
+            finally:
+                release.set()
+                await pending
+            event = adapter._pending_messages.pop(session_key)
+            adapter._pending_messages["session"] = event
+            del pending
+        else:
+            event = await adapter._build_inbound_event(
+                ROOM,
+                SENDER,
+                "$current",
+                body,
+                {"body": body, "m.relates_to": relation},
+                relation,
+                ctx=(body, True, "dm", None, "Alice", source),
+            )
+        if consumer == "queued-copy":
+            event = replace(event, text="copied question")
+        if consumer == "queued-merge":
+            from gateway.platforms.event import MessageEvent
+
+            adapter._pending_messages["session"] = MessageEvent(
+                "first question", source=source
+            )
+        if consumer == "queued-command":
+            runner = object.__new__(GatewayRunner)
+            runner.config = GatewayConfig()
+            runner.adapters = {Platform.MATRIX: adapter}
+            event = replace(event, text="/queue question")
+            monkeypatch.setattr(
+                runner,
+                "_enqueue_fifo",
+                lambda _key, item, _adapter: adapter._pending_messages.update(
+                    session=item
+                ),
+            )
+            monkeypatch.setattr(runner, "_queue_depth", lambda *_args, **_kwargs: 1)
+            await runner._busy_queue_command(event, "session", source)
+        elif not intake:
+            await adapter._handle_message_while_active(event, "session")
+        del event
+        if consumer == "queued-unresolved-edit":
+            await adapter._on_room_message(
+                SimpleNamespace(
+                    room_id=ROOM,
+                    sender="@mallory:example.org",
+                    event_id="$untrusted-edit",
+                    timestamp=0,
+                    content={
+                        "msgtype": "m.text",
+                        "body": "* untrusted replacement",
+                        "m.new_content": {
+                            "msgtype": "m.text",
+                            "body": "untrusted replacement",
+                        },
+                        "m.relates_to": {"rel_type": "m.replace", "event_id": target},
+                    },
+                )
+            )
+        if withdrawn and not intake:
+            await adapter._on_redaction(SimpleNamespace(room_id=ROOM, redacts=target))
+        evict()
+        event = adapter._pending_messages.pop("session")
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig()
+        runner.adapters = {Platform.MATRIX: adapter}
+        if intake:
+            monkeypatch.setattr(runner, "_decide_image_input_mode", lambda **_kwargs: "native")
+        result = await runner._prepare_inbound_message_text(
+            event=event, source=source, history=[{}], session_key="session"
+        )
+        assert ("withdrawn quote" in result) is (not withdrawn)
+        assert event.reply_to_message_id == target
+        requests = adapter._client.api.request.await_args_list
+        assert [call.args[1] for call in requests] == (
+            []
+            if withdrawn
+            else [
+                f"/_matrix/client/v3/rooms/{quote(ROOM, safe='')}/event/{quote(target, safe='')}"
+            ]
+        )
+        dependency = cache.history_entry(ROOM, target)
+        reference = weakref.ref(dependency) if dependency else lambda: None
+        del event, dependency, result
+    elif consumer.startswith("reaction"):
+        entries = (
+            await fetch_room_entries(adapter._client, cache, ROOM, "$current", limit=1)
+            if consumer == "reaction-room"
+            else await fetch_thread_entries(
+                adapter._client,
+                cache,
+                ROOM,
+                target,
+                limit=1,
+                before_event_id="$current",
+            )
+        )
+        if withdrawn:
+            await adapter._on_redaction(
+                SimpleNamespace(room_id=ROOM, redacts="$reaction")
+            )
+        evict()
+        result = await format_history_context(adapter, ROOM, entries, "History")
+        assert result == "[History]\n[Alice] withdrawn quote" + (
+            ""
+            if withdrawn
+            else f"\n[reaction by {SENDER} to {target}] withdrawn reaction"
+        )
+        dependency = cache.history_entry(ROOM, "$reaction")
+        reference = weakref.ref(dependency) if dependency else lambda: None
+        del entries, result, dependency
+    else:
+        kind = "room" if consumer == "error-room" else "thread"
+        pending = asyncio.create_task(
+            read_matrix_context(adapter, kind, ROOM, target, 3, requester=SENDER)
+        )
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            if withdrawn:
+                await adapter._on_redaction(
+                    SimpleNamespace(room_id=ROOM, redacts="$failed")
+                )
+            evict()
+        finally:
+            release.set()
+            result = await pending
+        failed_event = {
+            "event_id": "$failed",
+            "sender": SENDER,
+            "body": "[redacted]",
+            "msgtype": None,
+            "thread_id": target if consumer == "error-thread" else None,
+            "timestamp": None,
+            "sender_authorized": True,
+            "redacted": True,
+        }
+        target_event = {
+            "event_id": target,
+            "sender": SENDER,
+            "body": "withdrawn quote",
+            "msgtype": "m.text",
+            "thread_id": None,
+            "timestamp": None,
+            "sender_authorized": True,
+        }
+        events = [target_event]
+        if withdrawn:
+            events = (
+                [failed_event, target_event]
+                if kind == "room"
+                else [target_event, failed_event]
+            )
+        assert result == {
+            "events": events,
+            "errors": []
+            if withdrawn
+            else [{"event_id": "$failed", "error": "missing decryption keys"}],
+        }
+        reference = lambda: None
+        del pending, result
+    assert independent.history_entry(ROOM, target).text == "independent owner"
+    cache._entries.clear()
+    gc.collect()
+    assert reference() is None
+    assert len(cache._active_states) == 0

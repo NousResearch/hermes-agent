@@ -263,8 +263,9 @@ def gateway(
 ) -> Iterator[LiveGateway]:
     _, _, network = synapse
     room_id = live_room.room_id
-    context_pause = getattr(request, "param", None) in {"pause-context", "pause-image-context"}
-    native_images = getattr(request, "param", None) == "pause-image-context"
+    mode = getattr(request, "param", None)
+    context_pause = mode in {"pause-context", "pause-image-context", "pause-image-conversion", "pause-queued-context"}
+    native_images = mode in {"pause-image-context", "pause-image-conversion"}
     home = tmp_path / "hermes"
     home.mkdir(mode=0o777)
     with FakeLLMServer([Text("Matrix live reply")], bind_host="0.0.0.0") as model:
@@ -273,7 +274,11 @@ def gateway(
             f"http://host.docker.internal:{model.port}/v1",
             extra_config=(
                 ("  image_input_mode: native\n" if native_images else "")
-                + "platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n"
+                + "platforms:\n  matrix:\n    enabled: true\n"
+                + ("    thread_require_mention: true\n" if mode == "pause-context" else "")
+                + "updates:\n  check: false\n"
+                + ("display:\n  busy_input_mode: queue\n  busy_ack_enabled: false\n"
+                   if mode == "pause-queued-context" else "")
                 + ("plugins:\n  enabled:\n    - matrix-live-context\n"
                    if context_pause else "")
             ),
@@ -318,7 +323,7 @@ def gateway(
                 "    ctx.register_context_reference(ContextPause())\n",
                 encoding="utf-8",
             )
-        if native_images:
+        if context_pause:
             with (plugin / "__init__.py").open("a", encoding="utf-8") as stream:
                 stream.write(
                     "from plugins.platforms.matrix.reply_context import MatrixEventContextCache\n"
@@ -344,7 +349,15 @@ def gateway(
                     "        return\n"
                     "    original_message = self._on_room_message\n"
                     "    async def observed_message(event):\n"
+                    "        from plugins.platforms.matrix.effective_event import event_content\n"
+                    "        queued = 'queued question' in str(event_content(event).get('body', ''))\n"
+                    "        if queued:\n"
+                    "            self._event_context_cache._entries.clear()\n"
+                    "            import gc\n"
+                    "            gc.collect()\n"
                     "        await original_message(event)\n"
+                    "        if queued:\n"
+                    "            (get_hermes_home() / 'reply-queued').write_text('queued', encoding='utf-8')\n"
                     "        expected = get_hermes_home() / 'expected-media-change'\n"
                     "        from plugins.platforms.matrix.effective_event import event_content\n"
                     "        relation = event_content(event).get('m.relates_to', {})\n"
@@ -352,6 +365,27 @@ def gateway(
                     "            (get_hermes_home() / 'media-change-observed').write_text(relation['event_id'], encoding='utf-8')\n"
                     "    self._on_room_message = observed_message\n"
                     "BasePlatformAdapter.__init__ = observed_init\n"
+                )
+        if mode == "pause-image-conversion":
+            with (plugin / "__init__.py").open("a", encoding="utf-8") as stream:
+                stream.write(
+                    "import time\n"
+                    "from pathlib import Path\n"
+                    "async def expanded(self, target):\n"
+                    "    return 'Live enrichment completed'\n"
+                    "ContextPause.expand = expanded\n"
+                    "original_read_bytes = Path.read_bytes\n"
+                    "def paused_read_bytes(path):\n"
+                    "    home = get_hermes_home()\n"
+                    "    if path.suffix == '.png' and home in path.parents and not (home / 'context-started').exists():\n"
+                    "        (home / 'context-started').write_text('conversion', encoding='utf-8')\n"
+                    "        deadline = time.monotonic() + 10\n"
+                    "        while not (home / 'context-release').exists():\n"
+                    "            if time.monotonic() >= deadline:\n"
+                    "                raise TimeoutError('Matrix file conversion was not released')\n"
+                    "            time.sleep(0.01)\n"
+                    "    return original_read_bytes(path)\n"
+                    "Path.read_bytes = paused_read_bytes\n"
                 )
         home.chmod(0o777)
 

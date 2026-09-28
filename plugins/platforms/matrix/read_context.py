@@ -40,6 +40,9 @@ async def _visible_event(
         cache.redact(room_id, event_id)
     if MatrixRelation.from_content(event_content(raw).get("m.relates_to")).is_edit:
         return None, None, None
+    retained = cache.retain(room_id, event_id) if isinstance(event_id, str) else None
+    if before is None and retained is not None and not retained.text and not retained.redacted and not retained.state_error:
+        before = retained
     state = await effective_event(
         adapter._client, raw,
         is_redacted=lambda target: adapter._event_context_cache.is_redacted(room_id, target),
@@ -48,6 +51,10 @@ async def _visible_event(
     if state.redacted and isinstance(event_id, str):
         cache.redact(room_id, event_id)
     if content is None:
+        if isinstance(event_id, str) and state.error is not None:
+            cache.store_resolved(room_id, event_id, MatrixEventContext(
+                str(raw.get("sender") or ""), "", state_error=state.error["error"],
+            ), before)
         return None, state.error, None
     if not state.redacted and not content.get("msgtype") and not state.error:
         return None, None, None
@@ -242,7 +249,7 @@ async def read_matrix_context(
     targets = [event for event in events if isinstance(event["event_id"], str) and not event.get("redacted")]
     snapshots = await fetch_reactions_for_events(
         client, room_id, [event["event_id"] for event in targets],
-        limit=50 if kind == "event" else 8,
+        limit=50 if kind == "event" else 8, cache=adapter._event_context_cache,
     )
     by_id = {event["event_id"]: snapshot for event, snapshot in zip(targets, snapshots)}
     events = []

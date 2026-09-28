@@ -1674,19 +1674,39 @@ class TurnRunner:
         same runner never re-attach stale images. Falls back to plain text when nothing is readable."""
         ctx = self._ctx
         native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
+
+        def revalidate(paths: list[str]) -> tuple[str, list[str]]:
+            if ctx.input_snapshot is None:
+                return ctx.message or "", paths
+            ctx.message, retained = ctx.input_snapshot.revalidate_native_input(
+                self._runner, ctx.message or "", paths
+            )
+            ctx.persist_user_message = ctx.input_snapshot.persist_user_message
+            ctx.persist_user_timestamp = ctx.input_snapshot.persist_user_timestamp
+            return ctx.message or "", retained
+
         if ctx.input_snapshot is not None:
             native_imgs = ctx.input_snapshot.retained_image_paths(native_imgs)
         if not native_imgs:
+            revalidate([])
             return ctx.message
         try:
             from agent.image_routing import build_native_content_parts
-            parts, skipped = build_native_content_parts(ctx.message, native_imgs)
+
+            parts, skipped = build_native_content_parts(
+                ctx.message, native_imgs, revalidate=revalidate
+            )
             if skipped:
-                logger.warning("Native image attachment: skipped %d unreadable path(s): %s", len(skipped), skipped)
+                logger.warning(
+                    "Native image attachment: skipped %d unreadable path(s): %s",
+                    len(skipped),
+                    skipped,
+                )
             if any(p.get("type") == "image_url" for p in parts):
                 return parts
         except Exception as exc:
             logger.warning("Native image attachment failed, falling back to text: %s", exc)
+            revalidate([])
         return ctx.message
 
     def _run_conversation_with_approval(self, agent, agent_history, observed_group_context,
@@ -1701,7 +1721,16 @@ class TurnRunner:
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
+            previous_persist = ctx.persist_user_message
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
+            if ctx.input_snapshot is not None:
+                if persist_user_message_override == previous_persist:
+                    persist_user_message_override = ctx.persist_user_message
+                elif isinstance(persist_user_message_override, str) and previous_persist:
+                    persist_user_message_override = persist_user_message_override.replace(
+                        previous_persist, ctx.persist_user_message or "", 1,
+                    )
+                persist_user_timestamp_override = ctx.persist_user_timestamp
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             if _accepts_keyword(agent.run_conversation, "turn_author"):
                 # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.

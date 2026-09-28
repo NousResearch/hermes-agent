@@ -45,6 +45,15 @@ class PreparedInboundMessage:
             if path not in quoted or path in current or path in authored
         ]
 
+    def revalidate_native_input(
+        self, runner: Any, message: str, paths: list[str]
+    ) -> tuple[str, list[str]]:
+        previous = self.message_text
+        current = self.render(runner, timestamps=True)
+        if previous is not None and previous in message:
+            current = message.replace(previous, current, 1)
+        return current, self.retained_image_paths(paths)
+
     def render(self, runner: Any, *, timestamps: bool = False) -> str:
         text = self.text
         current = self.snapshot.reply_image_paths()

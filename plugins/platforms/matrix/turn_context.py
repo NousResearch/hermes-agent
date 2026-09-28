@@ -56,6 +56,50 @@ class MatrixTurnContext:
     attachments: tuple[MatrixQuotedAttachment, ...] = ()
 
     @classmethod
+    def capture(
+        cls,
+        adapter: Any,
+        event: MessageEvent,
+        parent: MatrixEventContext | None = None,
+    ) -> MatrixTurnContext:
+        room_id = event.source.chat_id
+        dependencies = tuple(
+            dependency
+            for dependency in event._inbound_context_dependencies
+            if isinstance(dependency, cls) and dependency.adapter is adapter
+        )
+        if parent is None and event.reply_to_message_id:
+            parent = next(
+                (
+                    dependency.parent
+                    for dependency in dependencies
+                    if dependency.room_id == room_id
+                    and dependency.reply.reply_to_message_id
+                    == event.reply_to_message_id
+                ),
+                None,
+            ) or adapter._event_context_cache.retain(room_id, event.reply_to_message_id)
+        attachments: list[MatrixQuotedAttachment] = []
+        for dependency in event._quoted_media_dependencies:
+            retained = next(
+                (
+                    attachment.parent
+                    for snapshot in dependencies
+                    for attachment in snapshot.attachments
+                    if attachment.dependency.room_id == dependency.room_id
+                    and attachment.dependency.event_id == dependency.event_id
+                    and attachment.dependency.content_id == dependency.content_id
+                ),
+                None,
+            ) or adapter._event_context_cache.retain(
+                dependency.room_id, dependency.event_id
+            )
+            attachments.append(MatrixQuotedAttachment(dependency, retained))
+        return cls(
+            adapter, room_id, replace(event), parent, attachments=tuple(attachments)
+        )
+
+    @classmethod
     async def prepare(
         cls,
         adapter: Any,
@@ -64,28 +108,7 @@ class MatrixTurnContext:
         include_thread_history: bool,
     ) -> MatrixTurnContext:
         room_id = event.source.chat_id
-        parent = (
-            adapter._event_context_cache.history_entry(
-                room_id, event.reply_to_message_id
-            )
-            if event.reply_to_message_id
-            else None
-        )
-        snapshot = cls(
-            adapter,
-            room_id,
-            replace(event),
-            parent,
-            attachments=tuple(
-                MatrixQuotedAttachment(
-                    dependency,
-                    adapter._event_context_cache.history_entry(
-                        dependency.room_id, dependency.event_id
-                    ),
-                )
-                for dependency in event._quoted_media_dependencies
-            ),
-        )
+        snapshot = cls.capture(adapter, event)
         content = event.raw_message
         mention = (
             not event.internal

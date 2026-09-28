@@ -44,6 +44,7 @@ class MatrixEventContext:
     replacement_id: str | None = None
     media_content: str | None = None
     _state: _MatrixEventState | None = field(default=None, compare=False, repr=False)
+    _reaction_states: tuple[_MatrixEventState, ...] = field(default=(), compare=False, repr=False)
     _attachment: MatrixEventContext | None = field(default=None, compare=False, repr=False)
 
     @staticmethod
@@ -77,6 +78,7 @@ class MatrixReplyContext:
     media_path: str | None = None
     media_type: str | None = None
     media_content_id: str | None = None
+    parent: MatrixEventContext | None = field(default=None, compare=False, repr=False)
 
 
 def _own_text(body: str) -> str:
@@ -164,6 +166,15 @@ class MatrixEventContextCache:
              if state.room_id == room_id and state.event_id == event_id),
             None,
         )
+
+    def retain(self, room_id: str, event_id: str) -> MatrixEventContext:
+        entry = self.history_entry(room_id, event_id)
+        if entry is None:
+            self.store(room_id, event_id, MatrixEventContext("", ""))
+            entry = self.history_entry(room_id, event_id)
+        if entry is None:
+            raise ValueError("Matrix event dependency requires an event ID")
+        return entry
 
     def snapshot(self, room_id: str) -> dict[str, MatrixEventContext]:
         return {event_id: entry for (room, event_id), entry in self._entries.items() if room == room_id}
@@ -263,15 +274,20 @@ class MatrixEventContextCache:
             entry = replace(
                 current, reactions=entry.reactions, reactions_truncated=entry.reactions_truncated,
                 reaction_keys_missing=entry.reaction_keys_missing, reactions_unavailable=entry.reactions_unavailable,
+                _reaction_states=entry._reaction_states,
             )
         return self._check_dependencies(room_id, entry)
 
     def _check_dependencies(self, room_id: str, entry: MatrixEventContext) -> MatrixEventContext:
         if entry.replacement_id and self.is_redacted(room_id, entry.replacement_id):
             return self._unavailable(entry, "replacement was redacted")
+        dependencies = tuple(
+            retained._state for reaction in entry.reactions
+            if (retained := self.retain(room_id, reaction.event_id))._state is not None
+        )
         return replace(entry, reactions=tuple(
             reaction for reaction in entry.reactions if not self.is_redacted(room_id, reaction.event_id)
-        ))
+        ), _reaction_states=dependencies)
 
     def apply_edit(
         self, room_id: str, sender: str, content: dict, *, replacement_id: str | None = None,
@@ -287,7 +303,10 @@ class MatrixEventContextCache:
         prior = self.history_entry(room_id, target)
         if prior is not None and prior.redacted:
             return
-        if prior is not None and prior.sender and prior.sender != sender:
+        if prior is not None and not prior.sender:
+            self.invalidate(room_id, target)
+            return
+        if prior is not None and prior.sender != sender:
             return
         self.store(room_id, target, MatrixEventContext(
             sender, _own_text(body.strip()),
@@ -305,7 +324,7 @@ class MatrixEventContextCache:
         self, client: Any, room_id: str, entry: MatrixEventContext,
     ) -> MatrixEventContext:
         current = self.recheck(room_id, entry)
-        if current.event_id and current.state_error:
+        if current.event_id and not current.redacted and (current.state_error or not current.text):
             await self.resolve(client, room_id, current.event_id)
         return self.recheck(room_id, entry)
 
@@ -330,7 +349,8 @@ class MatrixEventContextCache:
                 cached = entry
             else:
                 cached = entry
-                if not entry.state_error and (not entry.is_image or entry.media_path or image_loader is None):
+                if (not entry.state_error and (entry.text or entry.media_path)
+                        and (not entry.is_image or entry.media_path or image_loader is None)):
                     return entry if entry.text or entry.media_path else None
         if client is None:
             return cached

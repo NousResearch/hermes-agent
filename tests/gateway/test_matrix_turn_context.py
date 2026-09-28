@@ -591,3 +591,353 @@ async def test_typed_edit_keeps_quoted_media_until_authoritative_content_changes
         ("[image]", [str(image)], 1) if change in {"sender", "missing-new-content"} else
         ("replacement text", [], 1) if change == "valid" else (None, [], 1)
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["unchanged", "original", "replacement", "edit"])
+@pytest.mark.parametrize("shared_path", [False, True])
+async def test_native_conversion_revalidates_current_input_after_file_read(
+    tmp_path, monkeypatch, change, shared_path
+):
+    import base64
+    import threading
+
+    image = tmp_path / "quoted.png"
+    image.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+        )
+    )
+    adapter = _make_adapter()
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    cache = adapter._event_context_cache
+    cache.store(
+        ROOM,
+        "$target",
+        MatrixEventContext(
+            SENDER,
+            "withdrawn quote",
+            str(image),
+            "image/png",
+            is_image=True,
+            replacement_id="$latest",
+        ),
+    )
+    adapter._client = None
+    source = SessionSource(Platform.MATRIX, ROOM, chat_type="dm", user_id=SENDER)
+    event = await adapter._build_inbound_event(
+        ROOM,
+        SENDER,
+        "$current",
+        "question",
+        {"body": "question"},
+        {"m.in_reply_to": {"event_id": "$target"}},
+        ctx=("question", True, "dm", None, "Alice", source),
+        media_urls=[str(image)] if shared_path else [],
+        media_types=["image/png"] if shared_path else [],
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {Platform.MATRIX: adapter}
+    state = runner._session_state("session")
+
+    async def enrich(_source, _key, text, paths):
+        state.persistent.native_image_paths = list(paths)
+        return text
+
+    monkeypatch.setattr(runner, "_enrich_inbound_images", enrich)
+    message = await runner._prepare_inbound_message_text(
+        event=event, source=source, history=[{}], session_key="session"
+    )
+    history = [
+        {"role": "user", "content": "previous quote stays"},
+        {"role": "assistant", "content": "previous answer"},
+    ]
+    ctx = TurnContext(
+        source=source,
+        message=message,
+        history=history,
+        context_prompt="cached system prefix",
+        session_key="session",
+        session_id="id",
+        input_snapshot=event._prepared_inbound,
+    )
+    runner._pending_model_notes = {"session": "Pending model note"}
+    turn = TurnRunner(runner, ctx)
+    persist, timestamp = turn._prepare_turn_message(history)
+    started = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    original_read = Path.read_bytes
+
+    def read(path):
+        if path == image:
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(2), "file conversion was not released"
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    captured = {}
+
+    def model_input(text, **kwargs):
+        captured.update(
+            text=text,
+            history=kwargs["conversation_history"],
+            persisted=kwargs.get("persist_user_message"),
+        )
+        return {"final_response": "ok"}
+
+    pending = asyncio.create_task(
+        asyncio.to_thread(
+            turn._run_conversation_with_approval,
+            SimpleNamespace(run_conversation=model_input),
+            history,
+            [],
+            persist,
+            timestamp,
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        if change in {"original", "replacement"}:
+            await adapter._on_redaction(
+                SimpleNamespace(
+                    room_id=ROOM,
+                    redacts="$target" if change == "original" else "$latest",
+                )
+            )
+        elif change == "edit":
+            cache.apply_edit(
+                ROOM,
+                SENDER,
+                {
+                    "m.relates_to": {"rel_type": "m.replace", "event_id": "$target"},
+                    "m.new_content": {"msgtype": "m.text", "body": "latest quote"},
+                },
+                replacement_id="$next",
+            )
+    finally:
+        release.set()
+        await pending
+    current = captured["text"]
+    parts = (
+        current if isinstance(current, list) else [{"type": "text", "text": current}]
+    )
+    text = "\n".join(part["text"] for part in parts if part["type"] == "text")
+    assert (
+        "withdrawn quote" in text,
+        "latest quote" in text,
+        len([part for part in parts if part["type"] == "image_url"]),
+    ) == (
+        change == "unchanged",
+        change == "edit",
+        int(shared_path or change == "unchanged"),
+    )
+    assert "Pending model note" in text
+    assert (
+        "withdrawn quote" in captured["persisted"],
+        "latest quote" in captured["persisted"],
+    ) == (change == "unchanged", change == "edit")
+    assert "Pending model note" not in captured["persisted"]
+    assert (captured["history"], ctx.context_prompt) == (
+        history,
+        "cached system prefix",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        "valid",
+        "missing-new-content",
+        "sender",
+        "failed-fetch",
+        "missing-keys",
+        "redaction",
+    ],
+)
+async def test_typed_edit_callback_resolves_current_native_input(
+    tmp_path, monkeypatch, change
+):
+    import base64
+    import copy
+    import threading
+
+    from hermes_constants import get_hermes_home
+    from plugins.platforms.matrix.room_context import MatrixHistoryContext
+
+    mautrix_types = pytest.importorskip("mautrix.types")
+    image = tmp_path / "quoted.png"
+    pixels = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+    )
+    image.write_bytes(pixels)
+    original = _original("$target", image.name)
+    original["content"].update(msgtype="m.image", url="mxc://example.org/image")
+    raw = _edited(original, "replacement text")
+    replacement = raw["unsigned"]["m.relations"]["m.replace"]
+    if change == "missing-new-content":
+        replacement["content"].pop("m.new_content")
+    if change == "sender":
+        replacement["sender"] = "@mallory:example.org"
+    typed = mautrix_types.Event.deserialize({
+        **copy.deepcopy(replacement),
+        "origin_server_ts": 100_000,
+    })
+    assert "m.new_content" in typed.content.serialize()
+    adapter = _make_adapter()
+    adapter._startup_ts = 100.0
+    monkeypatch.setattr("plugins.platforms.matrix.adapter.time.time", lambda: 100.0)
+    adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    loop = asyncio.get_running_loop()
+    home = get_hermes_home()
+    response = original
+
+    async def request(_method, path, **_kwargs):
+        assert asyncio.get_running_loop() is loop
+        assert get_hermes_home() == home
+        assert path.endswith("/event/%24target")
+        if response is raw and change == "failed-fetch":
+            raise RuntimeError("recovery unavailable")
+        return copy.deepcopy(response)
+
+    adapter._client = SimpleNamespace(
+        api=SimpleNamespace(request=AsyncMock(side_effect=request)), crypto=None
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_cache_quoted_image",
+        AsyncMock(return_value=(str(image), "image/png")),
+    )
+    source = SessionSource(Platform.MATRIX, ROOM, chat_type="dm", user_id=SENDER)
+    event = await adapter._build_inbound_event(
+        ROOM,
+        SENDER,
+        "$current",
+        "question",
+        {"body": "question"},
+        {"m.in_reply_to": {"event_id": "$target"}},
+        ctx=("question", True, "dm", None, "Alice", source),
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {Platform.MATRIX: adapter}
+    state = runner._session_state("session")
+
+    async def enrich(_source, _key, text, paths):
+        state.persistent.native_image_paths = list(paths)
+        return text
+
+    monkeypatch.setattr(runner, "_enrich_inbound_images", enrich)
+    message = await runner._prepare_inbound_message_text(
+        event=event, source=source, history=[{}], session_key="session"
+    )
+    snapshot = event._prepared_inbound.snapshot
+    snapshot.history = MatrixHistoryContext(
+        adapter,
+        ROOM,
+        [snapshot.parent],
+        "Recent room messages",
+        "dm",
+        {SENDER: "Alice"},
+    )
+    history = [
+        {"role": "user", "content": "previous quote stays"},
+        {"role": "assistant", "content": "previous answer"},
+    ]
+    previous_history = copy.deepcopy(history)
+    ctx = TurnContext(
+        source=source,
+        message=message,
+        history=history,
+        context_prompt="cached system prefix",
+        session_key="session",
+        session_id="id",
+        input_snapshot=event._prepared_inbound,
+    )
+    turn = TurnRunner(runner, ctx)
+    persist, timestamp = turn._prepare_turn_message(history)
+    started, release = asyncio.Event(), threading.Event()
+    original_read = Path.read_bytes
+
+    def read(path):
+        if path == image:
+            loop.call_soon_threadsafe(started.set)
+            assert release.wait(2), "file conversion was not released"
+        return original_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read)
+    captured = {}
+
+    def model_input(text, **kwargs):
+        captured.update(
+            text=text,
+            persisted=kwargs.get("persist_user_message"),
+            history=kwargs["conversation_history"],
+        )
+        return {"final_response": "ok"}
+
+    pending = asyncio.create_task(
+        asyncio.to_thread(
+            turn._run_conversation_with_approval,
+            SimpleNamespace(run_conversation=model_input),
+            history,
+            [],
+            persist,
+            timestamp,
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        response = raw
+        if change == "missing-keys":
+            raw["type"] = "m.room.encrypted"
+            raw["content"] = {"ciphertext": "unavailable"}
+        await adapter._on_room_message(typed)
+        if change == "redaction":
+            await adapter._on_redaction(
+                SimpleNamespace(room_id=ROOM, redacts="$target")
+            )
+    finally:
+        release.set()
+        await pending
+    current = captured["text"]
+    parts = (
+        current if isinstance(current, list) else [{"type": "text", "text": current}]
+    )
+    text = "\n".join(part["text"] for part in parts if part["type"] == "text")
+    unchanged = change in {"missing-new-content", "sender"}
+    assert (
+        snapshot.reply_event(event).reply_to_text,
+        [part for part in parts if part["type"] == "image_url"],
+        "replacement text" in text,
+        "[image]" in text,
+    ) == (
+        "[image]" if unchanged else "replacement text" if change == "valid" else None,
+        [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{base64.b64encode(pixels).decode('ascii')}",
+                },
+            }
+        ]
+        if unchanged
+        else [],
+        change == "valid",
+        unchanged,
+    )
+    assert "[Recent room messages]" in text
+    assert "question" in text
+    assert (
+        "replacement text" in captured["persisted"],
+        "[image]" in captured["persisted"],
+    ) == (change == "valid", unchanged)
+    assert (captured["history"], ctx.context_prompt) == (
+        previous_history,
+        "cached system prefix",
+    )

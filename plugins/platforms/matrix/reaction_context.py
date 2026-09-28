@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
+
+
+if TYPE_CHECKING:
+    from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
 
 
 logger = logging.getLogger(__name__)
@@ -48,6 +52,7 @@ class ReactionSnapshot:
     missing_keys: tuple[str, ...] = ()
     error: str | None = None
     timed_out: bool = False
+    _dependencies: tuple[MatrixEventContext, ...] = field(default=(), compare=False, repr=False)
 
 
 def _raw_event(event: Any) -> dict:
@@ -75,7 +80,7 @@ async def _reaction_content(client: Any, raw: dict) -> tuple[dict | None, bool]:
 
 
 async def fetch_event_reactions(
-    client: Any, room_id: str, target_event_id: str, *, limit: int = 50,
+    client: Any, room_id: str, target_event_id: str, *, limit: int = 50, cache: MatrixEventContextCache | None = None,
 ) -> ReactionSnapshot:
     path = (
         f"/_matrix/client/v1/rooms/{quote(room_id, safe='')}"
@@ -96,6 +101,7 @@ async def fetch_event_reactions(
 
     reactions: list[MatrixReaction] = []
     missing_keys: list[str] = []
+    dependencies: list[MatrixEventContext] = []
     seen: set[tuple[str, str]] = set()
     for raw in chunk[:limit]:
         if not isinstance(raw, dict):
@@ -115,6 +121,8 @@ async def fetch_event_reactions(
             continue
         if outer_relation.get("rel_type") != "m.annotation" or outer_relation.get("event_id") != target_event_id:
             continue
+        if cache is not None:
+            dependencies.append(cache.retain(room_id, event_id))
         visible, needs_keys = await _reaction_content(client, raw)
         if needs_keys:
             missing_keys.append(event_id)
@@ -134,11 +142,12 @@ async def fetch_event_reactions(
 
     return ReactionSnapshot(
         tuple(reactions), truncated=bool(response.get("next_batch")), missing_keys=tuple(missing_keys),
+        _dependencies=tuple(dependencies),
     )
 
 
 async def fetch_reactions_for_events(
-    client: Any, room_id: str, event_ids: list[str], *, limit: int = 8,
+    client: Any, room_id: str, event_ids: list[str], *, limit: int = 8, cache: MatrixEventContextCache | None = None,
 ) -> list[ReactionSnapshot]:
     if not event_ids:
         return []
@@ -147,7 +156,7 @@ async def fetch_reactions_for_events(
 
     async def fetch(event_id: str) -> ReactionSnapshot:
         async with semaphore:
-            return await fetch_event_reactions(client, room_id, event_id, limit=limit)
+            return await fetch_event_reactions(client, room_id, event_id, limit=limit, cache=cache)
 
     tasks = [asyncio.create_task(fetch(event_id)) for event_id in reversed(event_ids)]
     try:

@@ -22,7 +22,7 @@ def empty_reaction_snapshots(monkeypatch):
     from plugins.platforms.matrix import room_context, thread_context
     from plugins.platforms.matrix.reaction_context import ReactionSnapshot
 
-    async def fetch(_client, _room_id, event_ids, *, limit=8):
+    async def fetch(_client, _room_id, event_ids, *, limit=8, cache=None):
         return [ReactionSnapshot() for _ in event_ids]
 
     monkeypatch.setattr(room_context, "fetch_reactions_for_events", fetch)

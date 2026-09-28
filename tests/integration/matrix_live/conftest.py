@@ -167,7 +167,7 @@ def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network
             entrypoint="/bin/sh",
         ).with_command([
             "-c",
-            "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\n' >> /data/homeserver.yaml",
+            "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\nrc_message:\\n  per_second: 100\\n  burst_count: 100\\n' >> /data/homeserver.yaml",
         ]).with_volume_mapping(volume.name, "/data", "rw") as configure:
             exit_state = configure.get_wrapped_container().wait(timeout=30)
             assert exit_state["StatusCode"] == 0, configure.get_wrapped_container().logs().decode(errors="replace")

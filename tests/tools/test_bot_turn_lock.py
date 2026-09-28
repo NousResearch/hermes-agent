@@ -184,6 +184,8 @@ def test_delivery_main_reports_target_busy_json(root, tmp_path, monkeypatch, cap
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(bot_relay, "turn_wait_seconds", lambda: 0.2)
+    # The local message_agent runner queues behind a busy recipient for bot_mode.dm_queue_wait_seconds.
+    monkeypatch.setattr(bot_relay, "dm_queue_wait_seconds", lambda home=None: 0.2)
     dm = tmp_path / "dm.txt"
     dm.write_text("hi", encoding="utf-8")
 

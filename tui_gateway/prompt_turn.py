@@ -447,6 +447,16 @@ def _run_post_turn_followups(
                 return  # user already sent something — their turn wins
             session["running"] = True
         _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
+    # A queued teammate DM (live-owner mailbox) goes ahead of process-completion follow-ups. The
+    # poller only claims it at an idle boundary, and a busy Bot Chat chains completion turns
+    # back-to-back from here, so without this a DM waited behind every completion and never ran
+    # while the owner stayed busy. The DM turn's own follow-ups drain the completions.
+    try:
+        with _session_profile_runtime_scope(session):
+            if _poll_bot_live_delivery_once(sid, session):
+                return
+    except Exception as _dm_exc:
+        _hook_failure("bot mailbox claim", _dm_exc)
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
     # and compression-chain aware (same fail-closed gate as the poller): session B must
     # not consume session A's event.  Unclaimable events are requeued for the poller.

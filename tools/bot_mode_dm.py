@@ -48,7 +48,15 @@ REPLY_COMPLETION_CHARS = MESSAGE_MAX_CHARS + 2000
 # the machine dies between spawn ack and the runner's finally.
 _DM_DIR_NAME = "hermes-dm"
 _DM_STALE_SECONDS = 24 * 60 * 60
+# Short live-owner receipt wait shared by the Desktop relay and peer routes (bounded by their deadlines).
 _LIVE_WAIT_SECONDS = 300
+# The local message_agent runner is a detached process that wakes its sender on exit, so it waits up to
+# ``bot_mode.dm_queue_wait_seconds`` instead. None = read config; tests pin a number.
+_LOCAL_LIVE_WAIT_SECONDS: Optional[float] = None
+# While waiting on a live owner's receipt, re-check that the owner lease still exists this often.
+_OWNER_CHECK_SECONDS = 15.0
+# A local delivery re-probes for a live owner between turn-lock attempts of this length.
+_BUSY_SLICE_SECONDS = 15.0
 
 # '<peer>/<agent>' — peer names are lowercase (``hermes peer`` normalizes them).
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
@@ -369,6 +377,8 @@ def cleanup_bot_dm_cache(max_age_hours: float = _DM_STALE_SECONDS / 3600, *, now
         # their runner on purpose — a retry replays the same delivery id from them — so the
         # orphans of runners that never settled are swept here too.
         locations.append((dm_dir, "*.live.json"))
+        locations.append((dm_dir, "*.txt.lock"))  # per-DM runner locks (_dm_runner_lock)
+        locations.append((dm_dir, "*.txt.gen"))  # per-DM live-admission generations
     from tools.bot_relay import unlink_files_older_than
 
     return sum(unlink_files_older_than(d, pattern, cutoff) for d, pattern in locations)
@@ -395,7 +405,7 @@ def _write_dm_file(content: str) -> str:
     return path
 
 
-def _delivery_lock(argv: list[str], *, stdin_file: bool):
+def _delivery_lock(argv: list[str], *, stdin_file: bool, timeout_seconds: Optional[float] = None):
     """Per-profile turn lock for a LOCAL teammate delivery: local and relay deliveries
     into one profile both run a Bot Chat turn here, so the turn window is serialized on
     ``tools.bot_relay``'s cross-process lock. Peer transports (stdin mode) are locked
@@ -412,7 +422,7 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     from tools.bot_mode_probe import _hermes_root
     from tools.bot_relay import acquire_turn_lock
 
-    return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
+    return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2], timeout_seconds)
 
 
 def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None) -> int:
@@ -475,8 +485,39 @@ def _dm_delivery_id(dm_file: "str | os.PathLike") -> str:
     return hashlib.sha256(str(Path(dm_file).resolve()).encode()).hexdigest()
 
 
-def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
-    """Pin intent before admission; retries may inspect, never change transport."""
+def _generation_delivery_id(dm_file: str, generation: int) -> str:
+    base_id = _dm_delivery_id(dm_file)
+    return base_id if not generation else hashlib.sha256(f"{base_id}:{generation}".encode()).hexdigest()
+
+
+def _read_generation(dm_file: str) -> int:
+    """Durable live-admission generation of a DM file (``<dm>.gen``); 0 when never bumped."""
+    try:
+        return max(0, int(Path(dm_file + ".gen").read_text(encoding="utf-8").strip() or 0))
+    except (OSError, ValueError):
+        return 0
+
+
+def _write_generation(dm_file: str, generation: int) -> None:
+    from utils import atomic_write_text
+
+    atomic_write_text(Path(dm_file + ".gen"), str(generation), mode=0o600, fsync_dir=True)
+
+
+def _unlink_dm_artifacts(dm_file: str) -> None:
+    """Payload FIRST, then the intent and generation: while the payload survives, its delivery identity must
+    survive too, or a retry could re-send an already delivered message."""
+    _unlink_dm_file(dm_file)
+    if Path(dm_file).exists():
+        return  # payload removal failed: keep the identity files so a retry reads the same receipt
+    _unlink_dm_file(dm_file + ".live.json")
+    _unlink_dm_file(dm_file + ".gen")
+
+
+def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None,
+                   *, generation: int = 0) -> dict | None:
+    """Pin intent before admission; retries may inspect, never change transport. ``generation`` > 0 re-admits a
+    message whose earlier envelope was retired ``owner_gone`` (never executed) under a derived delivery id."""
     from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
     from utils import fsync_directory
 
@@ -486,11 +527,15 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
         intent = json.loads(intent_path.read_text(encoding="utf-8-sig"))
     else:
         assert profile_home is not None
+        # A receipt for this generation outranks any fresh admission (its intent file may be gone).
+        existing = read_delivery_result(profile_home, _generation_delivery_id(dm_file, generation))
+        if existing is not None:
+            return existing
         owner = find_canonical_live_owner(profile_home)
         if owner is None:
             return None
         intent = dict(owner=owner, message=Path(dm_file).read_text(encoding="utf-8-sig"),
-                      delivery_id=_dm_delivery_id(dm_file),
+                      delivery_id=_generation_delivery_id(dm_file, generation),
                       **({"author": author} if author else {}))
         try:
             fd = os.open(intent_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -510,10 +555,74 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     return record
 
 
-def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | None" = None) -> int:
+def _live_wait_budget(profile_home: "str | os.PathLike | None" = None) -> float:
+    if _LOCAL_LIVE_WAIT_SECONDS is not None:
+        return float(_LOCAL_LIVE_WAIT_SECONDS)
+    from tools.bot_relay import dm_queue_wait_seconds
+
+    return dm_queue_wait_seconds(profile_home)
+
+
+def _owner_gone(record: Optional[dict]) -> bool:
+    from tools.bot_live_delivery import OWNER_GONE_REASON
+
+    return bool(record) and record.get("status") == "cancelled" and record.get("reason") == OWNER_GONE_REASON
+
+
+def _settle_if_owner_gone(home: str, delivery_id: str) -> None:
+    """The pinned owner lease is gone: hand the still-queued envelope to the Bot Chat's current live
+    consumer (same compression lineage), or retire it as ``owner_gone`` so this runner can take the CLI
+    transport. Never raises and never guesses: an unreadable registry leaves the envelope queued."""
+    from tools.bot_live_delivery import (
+        find_canonical_live_owner, live_lease_ids, queued_pins, reconcile_orphaned_deliveries,
+    )
+
+    try:
+        # Pin first, then liveness evidence: the mutation below applies only if the pin is unchanged, so an
+        # owner that registered and adopted the envelope after our registry read is never overridden.
+        pins = queued_pins(home, only_id=delivery_id)
+        if not pins:
+            return
+        live = live_lease_ids(home)
+        if pins[delivery_id] in live:
+            return
+        reconcile_orphaned_deliveries(home, find_canonical_live_owner(home), live_leases=live, expected_pins=pins,
+                                      adopt_max_age_seconds=_live_wait_budget(home), only_id=delivery_id)
+    except Exception:
+        logger.debug("live-owner liveness check failed for %s", delivery_id, exc_info=True)
+
+
+def _await_live_record(home: str, delivery_id: str, budget: float) -> Optional[dict]:
+    """Wait for the owner's receipt; a queued envelope whose owner lease died is adopted by the new
+    owner (keep waiting) or retired ``owner_gone`` (returned at once)."""
     from tools.bot_live_delivery import await_delivery
 
-    record = await_delivery(home, delivery_id, _LIVE_WAIT_SECONDS)
+    deadline = time.monotonic() + max(0.0, budget)
+    while True:
+        next_check = time.monotonic() + _OWNER_CHECK_SECONDS
+        remaining = max(0.0, deadline - time.monotonic())
+        record = await_delivery(home, delivery_id, min(remaining, _OWNER_CHECK_SECONDS),
+                                should_stop=lambda: time.monotonic() >= next_check)
+        if record is None or record["status"] not in ("queued", "claimed"):
+            return record
+        if record["status"] == "queued":
+            _settle_if_owner_gone(home, delivery_id)
+            from tools.bot_live_delivery import read_delivery_result
+
+            record = read_delivery_result(home, delivery_id) or record
+            if record["status"] not in ("queued", "claimed"):
+                return record
+        if time.monotonic() >= deadline:
+            return record
+
+
+def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | None" = None,
+                  fallback_ok: bool = False) -> Optional[int]:
+    """Report the live owner's receipt. With ``fallback_ok`` an ``owner_gone`` receipt (the message
+    never ran) returns None so the caller delivers it over the CLI transport instead."""
+    record = _await_live_record(home, delivery_id, _live_wait_budget(home))
+    if fallback_ok and _owner_gone(record):
+        return None
     status = record["status"] if record else "ambiguous"
     payload = {key: record[key] for key in ("reply", "error", "reason") if record and record.get(key)}
     payload.update(status=status, delivery_id=delivery_id)
@@ -523,8 +632,7 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: "str | os.PathLike | 
         # The intent carries the message plaintext so a retry can replay the SAME delivery id;
         # once the owner settled it nothing retries, so it goes along with the dm file (same
         # plaintext) — the live branch returns before _run_delivery's own unlink.
-        _unlink_dm_file(str(dm_file) + ".live.json")
-        _unlink_dm_file(str(dm_file))
+        _unlink_dm_artifacts(str(dm_file))
     print(json.dumps(payload))
     return 0 if status in ("settled", "queued", "claimed") else 1
 
@@ -538,8 +646,60 @@ def _local_delivery_home(argv: list[str]) -> Path | None:
     return dict(_roster(_hermes_root(Path(_default_home())))).get(argv[2])
 
 
+@contextlib.contextmanager
+def _dm_runner_lock(dm_file: str):
+    """One runner per DM file for its whole lifecycle (live admission, owner_gone re-admission, CLI fallback).
+    Every decision inside re-reads the durable intent/receipt, so an overlapping retry of the same runner
+    waits and then observes its predecessor's outcome instead of acting on a stale receipt. Held on every
+    platform: without it two runners could both read one ``owner_gone`` receipt and both take the CLI path.
+    Blocking by design: runners are detached background processes."""
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover — Windows
+        fcntl = None
+        import msvcrt
+    fd = os.open(dm_file + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:  # pragma: no cover — Windows
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b" ")  # msvcrt locks a byte range; it must exist
+            os.lseek(fd, 0, os.SEEK_SET)
+            while True:
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)  # retries ~10s, then raises
+                    break
+                except OSError:
+                    continue
+        try:
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                if fcntl is not None:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                else:  # pragma: no cover — Windows
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    finally:
+        os.close(fd)
+
+
 def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                   profile_home: Path | None = None, author: Optional[dict] = None) -> int:
+    if stdin_file:
+        return _run_delivery_locked(argv, dm_file, stdin_file=True, profile_home=profile_home, author=author)
+    with _dm_runner_lock(dm_file):
+        if not Path(dm_file).exists() and not Path(dm_file + ".live.json").exists():
+            # A predecessor runner for this DM already finished and consumed the payload.
+            print(json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
+                              "error": "Another delivery run for this message already handled it. Do not resend."}))
+            return 1
+        return _run_delivery_locked(argv, dm_file, stdin_file=False, profile_home=profile_home, author=author)
+
+
+def _run_delivery_locked(argv: list[str], dm_file: str, *, stdin_file: bool,
+                         profile_home: Path | None = None, author: Optional[dict] = None) -> int:
     """Route to the live owner before attempting a CLI transport. Live deliveries
     retain their intent/payload and immutable receipt; only CLI/peer payloads are
     removed after consumption. The CLI turn window holds the profile lock, so two
@@ -553,32 +713,76 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
     gateway's deliver path, not here.
     """
     # The live consumer owns turn admission; never compete for its CLI lease.
-    if not stdin_file:
-        home = profile_home or _local_delivery_home(argv)
-        if home is not None or Path(dm_file + ".live.json").exists():
+    home = (profile_home or _local_delivery_home(argv)) if not stdin_file else None
+
+    def _via_live_owner() -> Optional[int]:
+        """rc when the live-owner path answered; None to take the CLI transport. The generation is durable
+        (``<dm>.gen``) and bumped only after an ``owner_gone`` receipt, which proves that envelope never ran."""
+        if stdin_file or (home is None and not Path(dm_file + ".live.json").exists()):
+            return None
+        for _ in range(8):  # each retirement needs an owner lease to die; bounded against a flapping owner
+            generation = _read_generation(dm_file)
             try:
-                record = _admit_live_dm(home, dm_file, author)
+                record = _admit_live_dm(home, dm_file, author, generation=generation)
             except Exception as exc:
-                print(json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
+                print(json.dumps({"status": "ambiguous", "delivery_id": _generation_delivery_id(dm_file, generation),
                     "error": f"Live admission outcome unknown: {exc}. Do not resend.",
                     "evidence_file": dm_file}))
                 return 1
-            if record is not None:
-                return _wait_live_dm(record["profile_home"], record["delivery_id"], dm_file=dm_file)
+            if record is None:
+                return None
+            if not _owner_gone(record):
+                rc = _wait_live_dm(record["profile_home"], record["delivery_id"], dm_file=dm_file, fallback_ok=True)
+                if rc is not None:
+                    return rc
+            # The owner closed before running it (nothing ran). Persist the next generation BEFORE dropping the
+            # spent intent, so a retry never re-reads a stale generation; then offer a fresh envelope to the
+            # current live owner, or fall through to the CLI transport when there is none.
+            if record["delivery_id"] == _generation_delivery_id(dm_file, generation):
+                _write_generation(dm_file, generation + 1)
+            _unlink_dm_file(dm_file + ".live.json")
+        return None
+
+    rc = _via_live_owner()
+    if rc is not None:
+        return rc
+    keep_dm_file = False
     try:
-        from tools.bot_relay import delivery_env
+        from tools.bot_relay import TurnBusyError, delivery_env, dm_queue_wait_seconds
 
         env = delivery_env(author, profile_home if not stdin_file else None)
-        with _delivery_lock(argv, stdin_file=stdin_file):
-            if not stdin_file:
-                return _run_local_turn(argv, dm_file, env=env)
-            # Keep the file open until the transport exits; cleanup occurs
-            # after subprocess.run returns, not merely after stdin reaches EOF.
-            with open(dm_file, "r", encoding="utf-8-sig") as stream:
-                # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
-                return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
+        if stdin_file:
+            with _delivery_lock(argv, stdin_file=stdin_file):
+                # Keep the file open until the transport exits; cleanup occurs
+                # after subprocess.run returns, not merely after stdin reaches EOF.
+                with open(dm_file, "r", encoding="utf-8-sig") as stream:
+                    # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
+                    return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
+        # Queue behind the recipient's running turn instead of failing target_busy after the short relay
+        # budget: this runner is a detached process that wakes the sender on exit. Between
+        # lock attempts, re-probe for a live Bot Chat owner that opened meanwhile and hand off to it.
+        started = time.monotonic()
+        deadline = started + dm_queue_wait_seconds(home)  # the recipient's queue, so its config
+        first = True
+        while True:
+            if not first:
+                rc = _via_live_owner()
+                if rc is not None:
+                    keep_dm_file = True  # the live path owns its intent/evidence files from here
+                    return rc
+            first = False
+            remaining = max(0.0, deadline - time.monotonic())
+            final = remaining <= _BUSY_SLICE_SECONDS
+            try:
+                with _delivery_lock(argv, stdin_file=False,
+                                    timeout_seconds=remaining if final else _BUSY_SLICE_SECONDS):
+                    return _run_local_turn(argv, dm_file, env=env)
+            except TurnBusyError as exc:
+                if final:
+                    raise TurnBusyError(exc.profile, time.monotonic() - started) from None
     finally:
-        _unlink_dm_file(dm_file)
+        if not keep_dm_file:
+            _unlink_dm_artifacts(dm_file)
 
 
 def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,

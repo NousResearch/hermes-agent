@@ -292,6 +292,127 @@ def complete_delivery(
         return record
 
 
+OWNER_GONE_REASON = "owner_gone"
+
+
+def live_lease_ids(profile_home: Path | str) -> set[str]:
+    """Lease ids the profile's active-session registry still holds (dead owners pruned).
+
+    Raises when the registry is unreadable: callers must not treat "can't tell" as "gone".
+    """
+    from hermes_cli.active_sessions import active_session_registry_snapshot
+
+    return {str(entry.get("lease_id") or "") for entry in
+            active_session_registry_snapshot(registry_home=Path(profile_home).resolve())} - {""}
+
+
+def _same_chat_lineage(home: Path | str, pinned_session: str, owner_session: str) -> bool:
+    if pinned_session == owner_session:
+        return True
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=Path(home) / "state.db", read_only=True)
+    try:
+        return db.get_compression_tip(pinned_session) == owner_session
+    finally:
+        db.close()
+
+
+def queued_pins(profile_home: Path | str, *, only_id: str | None = None) -> dict[str, str]:
+    """``{delivery_id: pinned lease_id}`` for queued envelopes — read BEFORE the liveness snapshot so
+    ``reconcile_orphaned_deliveries`` can fence each mutation on the pin being unchanged."""
+    if not _root(profile_home).is_dir():
+        return {}
+    with _locked(profile_home) as root:
+        paths = [root / f"{_delivery_id(only_id)}.json"] if only_id else list(root.glob("*.json"))
+        return {record["delivery_id"]: record["owner"]["lease_id"] for path in paths
+                if (record := _scan_read(path)) is not None and record["status"] == "queued"}
+
+
+def reconcile_orphaned_deliveries(
+    profile_home: Path | str, owner: dict[str, Any] | None, *,
+    live_leases: set[str], expected_pins: dict[str, str], adopt_max_age_seconds: float,
+    now_ns: int | None = None, only_id: str | None = None,
+) -> dict[str, list[str]]:
+    """Settle QUEUED envelopes whose pinned owner lease no longer exists.
+
+    A live owner (Desktop Bot Chat) that closes or restarts leaves every envelope it had not yet
+    claimed pinned to a dead lease: nobody can ever claim it, so the sender only ever sees
+    'pending or unknown' and the recipient's transcript never gets the row. Queued means the
+    turn never started, so each orphan is safe to move exactly once, under the mailbox lock:
+
+    * ``owner`` given (a live consumer on the same Bot Chat compression lineage) and the envelope
+      is at most ``adopt_max_age_seconds`` old → re-pinned to ``owner``; it runs in FIFO order.
+    * otherwise → terminal ``cancelled`` receipt with reason ``owner_gone`` (never executed), which
+      the sender's runner reads as "take the CLI transport" or reports as not delivered.
+
+    ``expected_pins`` (from ``queued_pins``, read BEFORE ``live_leases``/``owner``) fences every mutation:
+    an envelope is moved only if it is still pinned to the lease observed then, so an owner that registered
+    and adopted it after the liveness snapshot is never overridden (the caller retries with fresh evidence).
+    Claimed envelopes are never touched (their turn may have run). ``only_id`` limits the pass to one
+    envelope (a sender's runner settling its own delivery). Returns ``{"adopted": [...], "retired": [...]}``.
+    """
+    result: dict[str, list[str]] = {"adopted": [], "retired": []}
+    if not _root(profile_home).is_dir():
+        return result
+    current = _owner(profile_home, owner) if owner is not None else None
+    now = time.time_ns() if now_ns is None else now_ns
+    max_age_ns = int(max(0.0, float(adopt_max_age_seconds)) * 1e9)
+    with _locked(profile_home) as root:
+        paths = [root / f"{_delivery_id(only_id)}.json"] if only_id else list(root.glob("*.json"))
+        for path in paths:
+            record = _scan_read(path)
+            if record is None or record["status"] != "queued":
+                continue
+            pinned = record["owner"]
+            if expected_pins.get(record["delivery_id"]) != pinned["lease_id"]:
+                continue  # re-pinned (or admitted) after the caller's liveness snapshot
+            if pinned["lease_id"] in live_leases or (current is not None and pinned["lease_id"] == current["lease_id"]):
+                continue
+            if (current is not None and now - record["created_at"] <= max_age_ns
+                    and pinned["lease_id"] != current["lease_id"]
+                    and _same_chat_lineage(profile_home, pinned["session_id"], current["session_id"])):
+                record.setdefault("repinned_from", []).append(pinned)
+                record.update(owner=dict(current), **current, repinned_at=now)
+                _write(path, record)
+                result["adopted"].append(record["delivery_id"])
+                continue
+            record.update(status="cancelled", reply="", reason=OWNER_GONE_REASON, completed_at=now,
+                          error=("The live Bot Chat owner this message was queued for closed before it ran; "
+                                 "it was NOT delivered through the live session."))
+            _write(path, record)
+            result["retired"].append(record["delivery_id"])
+    return result
+
+
+_ADOPT_EVERY_SECONDS = 60.0
+
+
+def adopt_orphaned_deliveries(profile_home: Path | str, owner: dict[str, Any], *, state: dict) -> None:
+    """Live consumer hook: at most once per ``_ADOPT_EVERY_SECONDS`` (tracked in ``state``), re-pin to
+    ``owner`` the queued envelopes a closed previous owner of this Bot Chat left behind, or retire them.
+    Never raises: a failed pass must not block the caller's own claim; the next pass retries."""
+    now = time.monotonic()
+    if now - state.get("_bot_orphan_reconciled_at", -_ADOPT_EVERY_SECONDS) < _ADOPT_EVERY_SECONDS:
+        return
+    state["_bot_orphan_reconciled_at"] = now
+    try:
+        from tools.bot_relay import dm_queue_wait_seconds
+
+        pins = queued_pins(profile_home)
+        if not pins:
+            return
+        moved = reconcile_orphaned_deliveries(profile_home, owner, live_leases=live_lease_ids(profile_home),
+                                              expected_pins=pins,
+                                              adopt_max_age_seconds=dm_queue_wait_seconds(profile_home))
+    except Exception:
+        log.debug("bot_live_delivery: orphan reconcile failed", exc_info=True)
+        return
+    if moved["adopted"] or moved["retired"]:
+        log.info("bot_live_delivery: adopted %d and retired %d delivery(ies) orphaned by a closed owner",
+                 len(moved["adopted"]), len(moved["retired"]))
+
+
 def read_delivery_result(profile_home: Path | str, delivery_id: str) -> dict[str, Any] | None:
     """Read admission/claim/terminal state without waiting or deleting its receipt."""
     return _read(_root(profile_home) / f"{_delivery_id(delivery_id)}.json")

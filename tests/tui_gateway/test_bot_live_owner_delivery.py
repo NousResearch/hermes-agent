@@ -171,3 +171,49 @@ def test_mailbox_poll_delivers_past_a_schema_damaged_ticket(monkeypatch, tmp_pat
     assert poll("live", session) is True
     assert submitted == ["healthy"]
     assert mailbox.read_delivery_result(tmp_path, queued["delivery_id"])["status"] == "settled"
+
+
+def test_mailbox_poll_adopts_and_runs_a_dm_its_closed_predecessor_left_queued(monkeypatch, tmp_path):
+    """The Bot Chat reopened under a new lease: the envelope pinned to the old lease must still run here."""
+    import tools.bot_live_delivery as mailbox
+    old = dict(profile_home=str(tmp_path.resolve()), session_id="chat", lease_id="old-lease", live_session_id="old")
+    owner = dict(old, lease_id="lease", live_session_id="live")
+    queued = mailbox.deliver_to_live_owner(tmp_path, old, "sent while the chat was closing", delivery_id="e" * 32)
+    monkeypatch.setattr(mailbox, "find_canonical_live_owner", lambda home: owner)
+    monkeypatch.setattr(mailbox, "live_lease_ids", lambda home: {"lease"})
+    submitted = []
+    def submit(rid, sid, session, text, **kwargs):
+        submitted.append(text)
+        kwargs["terminal_callback"]({"status": "settled", "text": "reply"})
+        return True
+    poll = rebind(session_notifications._poll_bot_live_delivery_once, {
+        "_session_home": lambda session: tmp_path,
+        "_session_turn_admission": _session_turn_admission,
+        "_run_prompt_submit": submit,
+        "_notif_release_turn": lambda session: session.update(running=False),
+    })
+    session = {"history_lock": threading.RLock(), "agent": object(), "session_key": "chat",
+               "active_session_lease": SimpleNamespace(lease_id="lease", released=False)}
+    assert poll("live", session) is True
+    assert submitted == ["sent while the chat was closing"]
+    receipt = mailbox.read_delivery_result(tmp_path, queued["delivery_id"])
+    assert receipt["status"] == "settled" and receipt["reply"] == "reply"
+
+
+def test_post_turn_followups_run_a_queued_dm_before_completion_notifications(monkeypatch):
+    """A busy Bot Chat chains completion turns back-to-back; a queued DM must get the idle boundary first."""
+    from tui_gateway import server
+    from tools.process_registry import process_registry
+
+    order = []
+    monkeypatch.setattr(server, "_poll_bot_live_delivery_once", lambda sid, session: order.append("dm") or True)
+    monkeypatch.setattr(process_registry, "drain_notifications",
+                        lambda **kwargs: order.append("completions") or [])
+    session = {"history_lock": threading.RLock(), "running": False, "session_key": "chat"}
+    server._run_post_turn_followups("r", "live", session, {}, None)
+    assert order == ["dm"]
+
+    monkeypatch.setattr(server, "_poll_bot_live_delivery_once", lambda sid, session: order.append("dm") or False)
+    order.clear()
+    server._run_post_turn_followups("r", "live", session, {}, None)
+    assert order == ["dm", "completions"]

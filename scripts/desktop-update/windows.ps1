@@ -90,9 +90,31 @@ $script:Ui = $null
 $script:UiStage = "Hermes will open once done."   # until the first gate; matches ui.html
 $script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
+# ``Add-Content`` is NOT thread-safe: PowerShell caches one content writer per
+# path, so when the UI runspace and the main hand-off flow both log, the second
+# writer gets a handle the first already consumed -- a loud "stream is not
+# readable" / GetContentWriterArgumentError flood on Windows PowerShell 5.1, and
+# silently dropped lines on PowerShell 7 (measured: 332 of 800 lines survived).
+# Both shells are affected; ``Add-Content`` is not a version-specific problem and
+# the script is launched as ``powershell`` (5.1) regardless of an installed pwsh.
+# Serialize through a mutex named per log path (parallel hand-offs for different
+# profiles must not block each other) and append via an explicit FileStream so
+# every write opens, writes and closes its own handle. The bounded wait keeps a
+# stuck peer from ever blocking the update, preserving the "logging must never
+# break the update" contract.
+$script:HandoffLogMutex = New-Object System.Threading.Mutex($false, "Global\HermesHandoffLog-$([Math]::Abs($LogPath.GetHashCode()))")
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
-    try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
+    $held = $false
+    try {
+        $held = $script:HandoffLogMutex.WaitOne(5000)
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($line + [Environment]::NewLine)
+        $fs = New-Object System.IO.FileStream($LogPath, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+        try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush() } finally { $fs.Dispose() }
+    } catch {
+    } finally {
+        if ($held) { try { $script:HandoffLogMutex.ReleaseMutex() } catch {} }
+    }
     Write-Host $line
 }
 

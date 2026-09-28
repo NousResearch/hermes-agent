@@ -57,6 +57,8 @@ via `tasks/get`.
 
 - **No token ⇒ localhost only.** The server binds `127.0.0.1` and refuses to
   widen unless you configure a token *and* set `A2A_HOST`.
+  Without a token it also refuses browser-originated POSTs (`Origin`,
+  cross-site `Sec-Fetch-Site`, non-JSON `Content-Type`).
 - **Per-peer tokens**: `A2A_PEER_TOKENS="alice:tok1,bob:tok2"` gives each
   remote agent its own credential; that authenticated name (never anything
   in the request body) drives rate limiting, trust, and audit.

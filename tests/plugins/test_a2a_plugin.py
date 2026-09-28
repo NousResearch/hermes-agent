@@ -849,6 +849,39 @@ def _send_body(text, ctx="", extra_params=None):
     return {"jsonrpc": "2.0", "id": "1", "method": "message/send", "params": params}
 
 
+@pytest.mark.parametrize("headers,dispatched", [
+    ({}, True),                                                      # local agent / SDK
+    ({"Origin": "https://site.example"}, False),                     # any browser Origin
+    ({"Sec-Fetch-Site": "cross-site"}, False),
+    ({"Content-Type": "text/plain"}, False),                         # CORS-simple body type
+])
+def test_no_token_listener_refuses_browser_originated_posts(monkeypatch, headers, dispatched):
+    """Without a token the listener trusts the loopback socket, which a web page in the operator's
+    browser can also reach: requests carrying browser signals are refused and never dispatched."""
+    monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+    seen: list = []
+    adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda event: seen.append(event) or "ok")
+
+    def post():
+        try:
+            return 200, _post_json(base + "/", _send_body("hi"), headers)
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode())
+
+    async def run():
+        assert await adapter.connect() is True
+        try:
+            return await asyncio.to_thread(post)
+        finally:
+            await adapter.disconnect()
+
+    status, _ = asyncio.run(run())
+    assert (status == 200, bool(seen)) == (dispatched, dispatched), status
+    if not dispatched:
+        assert status == 403
+
+
 @pytest.mark.integration
 class TestInboundRoundTrip:
     def test_live_server_card_and_message_send(self, monkeypatch):

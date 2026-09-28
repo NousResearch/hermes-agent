@@ -21,7 +21,7 @@ from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
-from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
+from tools.mcp_tool_errors import _is_auth_error, _is_recorded_auth_error, _is_session_expired_error
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
@@ -188,11 +188,39 @@ def _retry_once(server_name: str, retry_call, op_description: str, what: str):
     return _record_call_outcome(server_name, result)
 
 
+def _take_recorded_401(server_name: str) -> bool:
+    """Consume a 401 the live server's HTTP response hook recorded, else False.
+
+    mcp >= 2.0 folds a ``tools/call`` 401 into a generic ``MCPError`` — the streamable-HTTP
+    transport synthesises ``INTERNAL_ERROR "Server returned an error response"`` for every
+    non-404 >= 400 it cannot parse as a JSON-RPC error — so the status never reaches the
+    exception and ``_is_auth_error`` alone never fires (#121285). The owned client's response
+    hook keeps the real status; this reads it so the auth recovery below actually runs and the
+    model is told the server wants (re)authentication instead of a transport failure.
+
+    The reading is consumed: the hook's sink is only reset on the next *connect*, so without
+    this a 401 from an earlier attempt would keep re-classifying unrelated later failures as
+    auth errors and drive needless OAuth reconnects.
+    """
+    try:
+        from tools.mcp_tool_scope import _resolve_server_key
+        from tools.mcp_tool_common import _core
+
+        with _core._lock:
+            srv = _core._servers.get(_resolve_server_key(server_name))
+        if not _is_recorded_auth_error(srv):
+            return False
+        srv._http_rejection = {}
+        return True
+    except Exception:
+        return False  # a lookup failure must not change the call's outcome
+
+
 def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_call, op_description: str):
     """OAuth recovery + one retry; None when *exc* is not an auth error. ``handle_401`` decides
     viability; if viable, signal a reconnect (fresh credentials), wait ready, retry once. Any
     failure returns the structured ``needs_reauth`` error so the model stops refreshing."""
-    if not _is_auth_error(exc):
+    if not (_is_auth_error(exc) or _take_recorded_401(server_name)):
         return None
     from tools.mcp_oauth_manager import get_manager
     try:

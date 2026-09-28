@@ -9,7 +9,7 @@ import importlib
 import logging
 import os
 import re
-from typing import Any, List, Optional
+from typing import Any, List, Mapping, Optional
 from urllib.parse import urlparse
 from tools.mcp_tool_common import _sanitize_error, _core
 from tools.mcp_tool_node_abi import NodeAbiMismatchError
@@ -488,6 +488,29 @@ def _is_auth_error(exc: BaseException) -> bool:
     if not isinstance(exc, auth_types):
         return False
     return getattr(exc.response, "status_code", None) == 401 if isinstance(exc, http_types) else True
+
+
+def _recorded_status_is_401(rejection: Optional[Mapping[str, Any]]) -> bool:
+    """Whether the owned client's response hook recorded a 401 for this server.
+
+    mcp >= 2.0 cannot tell a 401 on ``tools/call`` from any other 4xx: the streamable-HTTP
+    transport synthesises ``ErrorData(INTERNAL_ERROR, "Server returned an error response")``
+    for every non-404 >= 400 it cannot parse as a JSON-RPC error, so the status never reaches
+    the exception and ``_is_auth_error`` sees a plain ``MCPError`` (#121285). The response
+    hook already keeps the real status — this is the other end of that hook, where the
+    recorded 401 stands in for the status the SDK discarded.
+    """
+    if not rejection:
+        return False
+    try:
+        return int(rejection.get("status") or 0) == 401
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_recorded_auth_error(server: Any) -> bool:
+    """Whether *server*'s owned HTTP client saw a 401 since its last connect attempt."""
+    return _recorded_status_is_401(getattr(server, "_http_rejection", None))
 
 
 # Lower-cased substrings meaning the transport session expired / was GC'd (OAuth token still valid).

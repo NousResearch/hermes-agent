@@ -2087,6 +2087,9 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 # Mautrix can synthesise m.new_content when serialising typed edits.
                 target = relates_to.get("event_id")
                 if isinstance(target, str):
+                    prior = self._event_context_cache.history_entry(room_id, target)
+                    if prior is not None and prior.sender and prior.sender != sender:
+                        return
                     self._event_context_cache.invalidate(room_id, target)
             return
         # m.notice is the conventional bot-response msgtype; ignoring it prevents bot-to-bot loops.

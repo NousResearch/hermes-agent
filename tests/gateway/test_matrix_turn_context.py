@@ -261,7 +261,7 @@ async def test_gateway_preparation_rechecks_context_after_enrichment(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["text", "native"])
-@pytest.mark.parametrize("change", ["unchanged", "redaction", "failed-recovery", "replacement"])
+@pytest.mark.parametrize("change", ["unchanged", "redaction", "failed-recovery", "replacement", "unchanged-eviction", "redaction-eviction", "failed-recovery-eviction"])
 @pytest.mark.parametrize("transform", ["direct", "rewrite", "pending", "parked", "photo", "text-batch", "queue-command", "shared-path"])
 async def test_quoted_images_are_rechecked_without_losing_authored_image_enrichment(
     tmp_path, mode: str, change: str, transform: str, monkeypatch
@@ -376,9 +376,9 @@ async def test_quoted_images_are_rechecked_without_losing_authored_image_enrichm
     )
     try:
         await asyncio.wait_for(started.wait(), timeout=2.0)
-        if change == "redaction":
+        if change.startswith("redaction"):
             cache.redact(ROOM, "$target")
-        elif change == "failed-recovery":
+        elif change.startswith("failed-recovery"):
             cache.redact(ROOM, "$latest")
         elif change == "replacement":
             cache.apply_edit(
@@ -387,6 +387,12 @@ async def test_quoted_images_are_rechecked_without_losing_authored_image_enrichm
                  "m.new_content": {"msgtype": "m.text", "body": "new text parent"}},
                 replacement_id="$next",
             )
+        if change.endswith("-eviction"):
+            import gc
+
+            for index in range(cache.max_entries):
+                cache.store(ROOM, f"$unrelated{index}", MatrixEventContext(SENDER, "unrelated"))
+            gc.collect()
     finally:
         release.set()
         result = await pending
@@ -394,12 +400,12 @@ async def test_quoted_images_are_rechecked_without_losing_authored_image_enrichm
     if mode == "native":
         assert state.persistent.native_image_paths == list(dict.fromkeys([
             str(authored_image),
-            *([str(quoted_image)] if change == "unchanged" else []),
+            *([str(quoted_image)] if change.startswith("unchanged") else []),
         ]))
     else:
         assert "authored image description" in result
-        assert ("quoted image description" in result) == (change == "unchanged")
-    assert ("quoted attachment" in result) == (change == "unchanged")
+        assert ("quoted image description" in result) == (change.startswith("unchanged"))
+    assert ("quoted attachment" in result) == (change.startswith("unchanged"))
 
 
 @pytest.mark.asyncio
@@ -521,3 +527,67 @@ async def test_catch_up_preserves_only_current_quoted_pixels_at_model_input(tmp_
         assert ("[redacted]" in parts) == (change == "redaction")
     assert captured["history"] == []
     assert ctx.context_prompt == "cached system prefix"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["sender", "missing-new-content", "valid", "redaction"])
+@pytest.mark.parametrize("encrypted", [False, True])
+async def test_typed_edit_keeps_quoted_media_until_authoritative_content_changes(
+    tmp_path, monkeypatch, change: str, encrypted: bool,
+):
+    import copy
+    from unittest.mock import patch
+    from plugins.platforms.matrix.turn_context import MatrixTurnContext
+    from tests.gateway.test_matrix_effective_event_state import _edit_store
+
+    mautrix_types = pytest.importorskip("mautrix.types")
+    image = tmp_path / "quoted.png"
+    image.write_bytes(b"image")
+    original = _original("$target", "quoted.png")
+    original["content"].update(msgtype="m.image", url="mxc://example.org/image")
+    raw = _edited(original, "replacement text")
+    replacement = raw["unsigned"]["m.relations"]["m.replace"]
+    if change == "sender":
+        replacement["sender"] = "@mallory:example.org"
+    elif change == "missing-new-content":
+        replacement["content"].pop("m.new_content")
+    content = copy.deepcopy(replacement["content"])
+    typed = mautrix_types.Event.deserialize({**copy.deepcopy(replacement), "origin_server_ts": 1})
+    assert "m.new_content" in typed.content.serialize()
+    typed_original = mautrix_types.Event.deserialize({**copy.deepcopy(original), "origin_server_ts": 1})
+    if encrypted:
+        typed["mautrix"] = {"was_encrypted": True}
+        raw["type"] = "m.room.encrypted"
+        raw["content"] = {"ciphertext": "original"}
+        replacement["type"] = "m.room.encrypted"
+        replacement["content"] = {"ciphertext": "replacement", "session_id": "sess",
+                                  "m.relates_to": {"rel_type": "m.replace", "event_id": "$target"}}
+    adapter = _make_adapter()
+    adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(return_value=copy.deepcopy(original))),
+                                     crypto=SimpleNamespace(crypto_store=_edit_store(content)))
+    loader = AsyncMock(return_value=(str(image), "image/png"))
+    monkeypatch.setattr(adapter, "_cache_quoted_image", loader)
+    source = SessionSource(Platform.MATRIX, ROOM, chat_type="dm", user_id=SENDER)
+    event = await adapter._build_inbound_event(
+        ROOM, SENDER, "$reply", "question", {"body": "question"}, {"m.in_reply_to": {"event_id": "$target"}},
+        ctx=("question", True, "dm", None, "Alice", source),
+    )
+    snapshot = await MatrixTurnContext.prepare(adapter, event, include_thread_history=False)
+    adapter._client.api.request.return_value = raw
+    if change == "redaction":
+        await adapter._on_redaction(SimpleNamespace(room_id=ROOM, redacts="$target"))
+    else:
+        await adapter._on_room_message(typed)
+    if change == "sender":
+        assert snapshot.reply_image_paths() == [str(image)]
+    with patch("plugins.platforms.matrix.effective_event._decrypt", new_callable=AsyncMock) as decrypt:
+        decrypt.side_effect = [(typed_original, None), (typed, None)]
+        await snapshot.refresh()
+    current = snapshot.reply_event(event)
+    assert (current.reply_to_text, snapshot.reply_image_paths(), loader.await_count) == (
+        ("[image]", [str(image)], 1) if change in {"sender", "missing-new-content"} else
+        ("replacement text", [], 1) if change == "valid" else (None, [], 1)
+    )

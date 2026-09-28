@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import quote
@@ -1436,3 +1437,116 @@ async def test_catch_up_retains_only_identical_quoted_attachment(scope: str, cha
     assert (current.media_path, current.media_type) == (
         (str(image), "image/png") if change == "unchanged" else (None, None)
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["reply", "room", "thread", "event", "room-read", "thread-read"])
+@pytest.mark.parametrize("change", ["unchanged", "original", "replacement", "edit"])
+async def test_active_context_keeps_effective_state_after_eviction(scope: str, change: str, tmp_path):
+    import copy
+    import gc
+    import weakref
+
+    from tests.gateway.test_matrix import _make_adapter
+    from plugins.platforms.matrix.reply_context import MatrixReplyContext
+
+    started, release = asyncio.Event(), asyncio.Event()
+    image = tmp_path / "quoted.png"
+    image.write_bytes(b"image")
+    original = _original("$target", "quoted.png")
+    original["content"].update(msgtype="m.image", url="mxc://example.org/image")
+    raw = _edited(original, "quoted.png")
+    replacement = raw["unsigned"]["m.relations"]["m.replace"]
+    replacement["content"]["m.new_content"] = dict(original["content"])
+
+    async def request(_method, path, **_kwargs):
+        if "/event/" in path:
+            return copy.deepcopy(raw)
+        if "/context/" in path:
+            return {"start": "boundary"}
+        if "/messages" in path:
+            return {"chunk": [copy.deepcopy(raw)]}
+        if "/m.annotation" in path and scope in {"event", "room-read", "thread-read"}:
+            started.set()
+            await release.wait()
+        return {"chunk": []}
+
+    async def display_name(_room, _sender):
+        started.set()
+        await release.wait()
+        return "Alice"
+
+    adapter = _make_adapter()
+    adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)),
+                                     sync_store=SimpleNamespace(get_next_batch=AsyncMock(return_value="boundary")))
+    adapter._joined_rooms = {ROOM}
+    adapter._event_context_cache = cache = MatrixEventContextCache(max_entries=3)
+    adapter._get_display_name = display_name
+    adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
+    adapter._is_dm_room = AsyncMock(return_value=False)
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    loader = AsyncMock(return_value=(str(image), "image/png"))
+    adapter._cache_quoted_image = loader
+    parent = await cache.resolve(adapter._client, ROOM, "$target", loader)
+    parent_ref = weakref.ref(parent)
+    independent = MatrixEventContextCache(max_entries=3)
+    independent.store(ROOM, "$target", replace(parent))
+
+    if scope == "reply":
+        context = adapter._extract_reply_context(ROOM, "question", {"m.in_reply_to": {"event_id": "$target"}},
+                                                sender=SENDER, chat_type="group")
+    elif scope == "room":
+        context = adapter.fetch_room_context(ROOM, "$current")
+    elif scope == "thread":
+        context = adapter.fetch_thread_context(ROOM, "$target", before_event_id="$current")
+    else:
+        context = adapter.read_matrix_context({"event": "event", "room-read": "room", "thread-read": "thread"}[scope],
+                                             ROOM, "$target", 1, requester=SENDER)
+    pending = asyncio.create_task(context)
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        for index in range(3):
+            cache.store(ROOM, f"$before{index}", MatrixEventContext(SENDER, "unrelated"))
+        if change in {"original", "replacement"}:
+            cache.redact(ROOM, "$target" if change == "original" else "$edit")
+        elif change == "edit":
+            raw = _edited(original, "current text")
+            raw["unsigned"]["m.relations"]["m.replace"]["event_id"] = "$next"
+            cache.apply_edit(ROOM, SENDER, raw["unsigned"]["m.relations"]["m.replace"]["content"], replacement_id="$next")
+        for index in range(3):
+            cache.store(ROOM, f"$after{index}", MatrixEventContext(SENDER, "unrelated"))
+        gc.collect()
+    finally:
+        release.set()
+        result = await pending
+
+    text = {"unchanged": "[image]", "original": "[redacted]", "replacement": "[event content unavailable]", "edit": "current text"}[change]
+    if scope == "reply":
+        assert result == MatrixReplyContext("question", "$target", text if change in {"unchanged", "edit"} else None,
+                                           SENDER, "Alice", False, True,
+                                           media_path=str(image) if change == "unchanged" else None,
+                                           media_type="image/png" if change == "unchanged" else None,
+                                           media_content_id=parent.attachment_identity if change == "unchanged" else None)
+    elif scope in {"room", "thread"}:
+        heading = "Recent room messages" if scope == "room" else "Earlier messages in this thread"
+        suffix = "\n[Matrix event state unavailable: replacement was redacted.]" if change == "replacement" else ""
+        assert result == f"[{heading}]\n[Alice] {text}{suffix}"
+    else:
+        event = {"event_id": "$target", "sender": SENDER, "body": text,
+                 "msgtype": "m.image" if change == "unchanged" else "m.text" if change == "edit" else None,
+                 "thread_id": None, "timestamp": None, "sender_authorized": True}
+        if change in {"unchanged", "edit"}:
+            event["edited"] = True
+        elif change == "original":
+            event["redacted"] = True
+        assert result == {"events": [event], "errors": [{"event_id": "$target", "error": "replacement was redacted"}]
+                          if change == "replacement" else []}
+    assert independent.recheck(ROOM, independent.history_entry(ROOM, "$target")).media_path == str(image)
+    assert len(cache._entries) <= cache.max_entries
+    current = cache.recheck(ROOM, parent)
+    current_ref = weakref.ref(current)
+    del parent, current, pending, result, context
+    independent._entries.clear()
+    cache._entries.clear()
+    gc.collect()
+    assert (parent_ref(), current_ref()) == (None, None)

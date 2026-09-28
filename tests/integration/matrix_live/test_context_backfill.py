@@ -285,13 +285,17 @@ def test_redacted_child_is_removed_from_thread_relations(live_room: LiveRoom) ->
 
 
 @pytest.mark.parametrize("gateway", ["pause-image-context"], indirect=True)
-@pytest.mark.parametrize("change", ["unchanged", "replacement", "redaction"])
+@pytest.mark.parametrize("change", [
+    "unchanged", "replacement", "redaction", "redaction-eviction",
+    "replacement-redaction-eviction", "sender", "missing-new-content",
+])
 def test_quoted_image_catch_up_keeps_only_current_model_attachment(
     tmp_path: Path, group_gateway: LiveGateway, live_room: LiveRoom,
-    record_property: Callable[[str, object], None], change: str,
+    group_member: MatrixAccount, record_property: Callable[[str, object], None], change: str,
 ) -> None:
     async def exchange() -> None:
         client = live_room.observer.client(live_room.homeserver)
+        other = group_member.client(live_room.homeserver)
         home = tmp_path / "hermes"
         seen: set[str] = set()
         pixels = base64.b64decode(
@@ -311,6 +315,13 @@ def test_quoted_image_catch_up_keeps_only_current_model_attachment(
                      "info": {"mimetype": "image/png", "size": len(pixels), "w": 1, "h": 1}}
             target = await client.room_send(live_room.room_id, "m.room.message", image)
             assert isinstance(target, RoomSendResponse), target
+            latest = None
+            if change == "replacement-redaction-eviction":
+                latest = await client.room_send(live_room.room_id, "m.room.message", {
+                    **image, "m.new_content": image,
+                    "m.relates_to": {"rel_type": "m.replace", "event_id": target.event_id},
+                })
+                assert isinstance(latest, RoomSendResponse), latest
             await _send(client, live_room.room_id,
                         f"{live_room.bot.user_id} inspect quoted media @matrix-live:pause",
                         mention=live_room.bot.user_id, reply=target.event_id)
@@ -318,15 +329,21 @@ def test_quoted_image_catch_up_keeps_only_current_model_attachment(
                 await asyncio.sleep(0.01)
             if change != "unchanged":
                 (home / "expected-media-change").write_text(target.event_id, encoding="utf-8")
-                if change == "replacement":
-                    replacement = await client.room_send(live_room.room_id, "m.room.message", {
+                if change.endswith("-eviction"):
+                    (home / "evict-media-state").write_text("evict", encoding="utf-8")
+                if change in {"replacement", "sender", "missing-new-content"}:
+                    edit_content = {
                         "msgtype": "m.text", "body": "* Replaced image with text",
                         "m.new_content": {"msgtype": "m.text", "body": "Replaced image with text"},
                         "m.relates_to": {"rel_type": "m.replace", "event_id": target.event_id},
-                    })
+                    }
+                    if change == "missing-new-content":
+                        edit_content.pop("m.new_content")
+                    editor = other if change == "sender" else client
+                    replacement = await editor.room_send(live_room.room_id, "m.room.message", edit_content)
                     assert isinstance(replacement, RoomSendResponse), replacement
                 else:
-                    redacted = await client.room_redact(live_room.room_id, target.event_id)
+                    redacted = await client.room_redact(live_room.room_id, latest.event_id if latest else target.event_id)
                     assert isinstance(redacted, RoomRedactResponse), redacted
                 while not (home / "media-change-observed").exists():
                     await asyncio.sleep(0.01)
@@ -336,10 +353,12 @@ def test_quoted_image_catch_up_keeps_only_current_model_attachment(
             requests = group_gateway.model.main_requests()
             assert len(requests) == 2
             assert requests[0]["messages"][0] == requests[1]["messages"][0]
+            assert requests[1]["messages"][:len(requests[0]["messages"])] == requests[0]["messages"]
             current = requests[1]["messages"][-1]["content"]
             parts = current if isinstance(current, list) else [{"type": "text", "text": current}]
             attachments = [part for part in parts if part.get("type") == "image_url"]
-            assert len(attachments) == (1 if change == "unchanged" else 0), {
+            unchanged = change in {"unchanged", "sender", "missing-new-content"}
+            assert len(attachments) == (1 if unchanged else 0), {
                 "model_input": current,
                 "media_logs": [
                     line
@@ -352,16 +371,19 @@ def test_quoted_image_catch_up_keeps_only_current_model_attachment(
             assert "[Recent room messages]" in text
             assert "inspect quoted media" in text
             assert "Live enrichment completed" in text
-            if change == "unchanged":
+            if unchanged:
                 assert attachments[0]["image_url"]["url"].startswith("data:image/")
                 assert "[image]" in text
             elif change == "replacement":
                 assert "Replaced image with text" in text
+            elif change == "replacement-redaction-eviction":
+                assert "[image]" in text
             else:
                 assert "[redacted]" in text
                 assert "Replying to" not in text
         finally:
             await client.close()
+            await other.close()
 
     started = time.monotonic()
     try:

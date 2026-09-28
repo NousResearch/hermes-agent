@@ -116,7 +116,9 @@ export function requestNamesActiveSession({
 
   return $sessions
     .get()
-    .some(session => sessionMatchesStoredId(session, requestStoredId) && sessionMatchesStoredId(session, activeStoredId))
+    .some(
+      session => sessionMatchesStoredId(session, requestStoredId) && sessionMatchesStoredId(session, activeStoredId)
+    )
 }
 
 /** This window hosts the session: it is the primary view or an open session tile. */

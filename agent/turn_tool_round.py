@@ -56,6 +56,8 @@ def run_tool_round(
     process-only state."""
     from agent.conversation_loop import _invalid_tool_name_error_content
 
+    agent._consecutive_stall_turns = 0
+
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ToolRoundVerdict:
         return ToolRoundVerdict(
             action=action, messages=messages, conversation_history=conversation_history,

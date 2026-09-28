@@ -156,7 +156,8 @@ def finish_text_response(
     # conversation context and the cached prompt prefix stay byte-identical.
     from agent.agent_runtime_helpers import (
         intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
-        tool_results_this_turn, trailing_continue_intent,
+        tool_results_this_turn, trailing_continue_intent, paraphrase_loop_detected,
+        _segment_continuation_intent_segments,
     )
 
     _ack_mode = intent_ack_continuation_mode(agent)
@@ -166,6 +167,10 @@ def finish_text_response(
     # and zero tool calls, chain-of-thought ending on "Let me batch the terminal calls..." is a
     # stalled model, and returning it as the answer aborts the tool loop while reporting
     # "complete" (#111761). Same cap, so a model that never acts still ends after 2 nudges.
+    # Paraphrase loop: the SAME detectors applied across the WHOLE turn text (not just the
+    # tail) — 2+ segments each ending on a continuation-intent pattern is a re-narrated plan
+    # loop the tail-only check misses. That is a hard stop, not a nudge: the model has already
+    # re-announced the same intent within this turn, so another nudge is pointless (#117979).
     _stall_text = agent._strip_think_blocks(final_response or "")
     _stall_continue_intent = (
         bool(getattr(agent, "_stall_guards", True))
@@ -188,7 +193,19 @@ def finish_text_response(
         and looks_like_degenerate_final(_stall_text, user_message=user_message)
     )
     # Precedence: an announced next action outranks the fragment shape; the codex ack is last.
-    if _stall_continue_intent:
+    # A paraphrase loop (2+ segments each ending on a continuation-intent pattern) is escalated
+    # to a hard stop OUTRIGHT — the model has already re-announced the same plan several times
+    # within this turn, so another nudge is pointless (#117979). It also arms the cross-turn
+    # escalation on the agent so a second consecutive stall turn ends rather than re-prompting.
+    _paraphrase_loop = False
+    if not _stall_continue_intent and getattr(agent, "_stall_guards", True) and agent.valid_tool_names:
+        try:
+            _paraphrase_loop = paraphrase_loop_detected(_stall_text)
+        except Exception:
+            logger.debug("paraphrase-loop check failed", exc_info=True)
+    if _paraphrase_loop:
+        _continuation_kind = "paraphrase_loop"
+    elif _stall_continue_intent:
         _continuation_kind = "stall"
     elif _degenerate_final:
         _continuation_kind = "degenerate"
@@ -205,12 +222,80 @@ def finish_text_response(
     else:
         _continuation_kind = None
     if _continuation_kind:
+        if _continuation_kind == "paraphrase_loop":
+            logger.warning(
+                "Paraphrase loop: %d segments in the turn ended on a continuation-intent "
+                "pattern — the model re-narrated the same plan several times with different "
+                "wording and never acted. Ending the turn rather than re-prompting.",
+                _segment_continuation_intent_segments(_stall_text),
+            )
+            agent._consecutive_stall_turns = getattr(agent, "_consecutive_stall_turns", 0) + 1
+            if agent._consecutive_stall_turns >= 2:
+                _hard_stop_notice = (
+                    "[The turn ended because it kept re-announcing the same plan instead of "
+                    "acting on it. If the task is unfinished, re-issue it as a fresh, concrete "
+                    "ask — e.g. a single file to write or a single tool to call — rather than a "
+                    "multi-step narration.]"
+                )
+                final_msg = agent._build_assistant_message(assistant_message, "complete")
+                if _promoted:
+                    final_msg["api_content"] = final_response
+                else:
+                    final_msg["content"] = final_response
+                append_message(messages, final_msg)
+                agent._emit_interim_assistant_message(final_msg)
+                agent._session_messages = messages
+                try:
+                    agent._flush_messages_to_session_db(messages, conversation_history)
+                except Exception:
+                    logger.debug("paraphrase-loop hard-stop flush failed", exc_info=True)
+                final_response = _hard_stop_notice
+                return _verdict("break")
+            codex_ack_continuations += 1
+            interim_msg = agent._build_assistant_message(assistant_message, "incomplete")
+            if _promoted:
+                interim_msg["api_content"] = final_response
+            append_message(messages, interim_msg)
+            agent._emit_interim_assistant_message(interim_msg)
+            append_message(messages, {
+                "role": "user",
+                "content": (
+                    "[System: Your previous reply re-announced the same next step several times "
+                    "without taking action. If you have a concrete tool call or file write to make, "
+                    "make it now. If the task is genuinely complete, send the final answer. Do not "
+                    "re-explain the plan.]"
+                ),
+            })
+            agent._session_messages = messages
+            final_response = None
+            return _verdict("continue")
         if _continuation_kind == "stall":
             logger.info(
                 "Stall guard: turn ending on trailing continue-"
                 "intent with no tool calls — re-prompting to act "
                 "(%d/2)", codex_ack_continuations + 1,
             )
+            agent._consecutive_stall_turns = getattr(agent, "_consecutive_stall_turns", 0) + 1
+            if agent._consecutive_stall_turns >= 2:
+                _hard_stop_notice = (
+                    "[The turn ended because it kept ending on a continuation intent without "
+                    "acting. If the task is unfinished, re-issue it as a fresh, concrete ask — "
+                    "a single file to write or a single tool to call — rather than a multi-step "
+                    "narration.]"
+                )
+                if _promoted:
+                    final_msg["api_content"] = final_response
+                else:
+                    final_msg["content"] = final_response
+                append_message(messages, final_msg)
+                agent._emit_interim_assistant_message(final_msg)
+                agent._session_messages = messages
+                try:
+                    agent._flush_messages_to_session_db(messages, conversation_history)
+                except Exception:
+                    logger.debug("stall-guard hard-stop flush failed", exc_info=True)
+                final_response = _hard_stop_notice
+                return _verdict("break")
         elif _continuation_kind == "degenerate":
             logger.warning(
                 "Degenerate final: %d-char fragment %r ended the turn after %d tool result(s) — "
@@ -309,6 +394,7 @@ def finish_text_response(
 
     # Genuine turn end (no dropped-tool-call mismatch): clear stall budget.
     agent._dropped_toolcall_retries = 0
+    agent._consecutive_stall_turns = 0
 
     # Pop prefill / empty-retry scaffolding before the final response or
     # verification follow-up; it must not become durable transcript.

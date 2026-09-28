@@ -23,6 +23,7 @@ from agent.redact import redact_cdp_url
 from hermes_constants import get_hermes_home, hermes_home_key
 from utils import env_int
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from hermes_cli.observability.shared_metrics_loop import record_browser_call
 
 
 # Env keys re-added to the agent-browser subprocess AFTER credential stripping.
@@ -1215,11 +1216,19 @@ def _capture_vision_screenshot(effective_task_id: str, annotate: bool, screensho
         result = _lp._annotate_lightpanda_fallback(
             {"success": True, "data": {"path": str(screenshot_path)}}, _LP_VISION_FALLBACK_REASON)
     else:
-        screenshot_args = (["--annotate"] if annotate else []) + ["--full", str(screenshot_path)]
+        # In the sandbox the CLI writes to ITS filesystem; the file is fetched back below.
+        remote_path = _session.sandbox_screenshot_path(screenshot_path)
+        screenshot_args = (["--annotate"] if annotate else []) + ["--full", remote_path or str(screenshot_path)]
         # A failed Lightpanda pre-route forces Chrome so _run_browser_command
         # doesn't trigger a redundant LP fallback.
         result = _session._run_browser_command(effective_task_id, "screenshot", screenshot_args,
                                       _engine_override="auto" if lp_prerouted else None)
+        if remote_path and result.get("success"):
+            try:
+                _session.fetch_sandbox_file(str((result.get("data") or {}).get("path") or remote_path), screenshot_path)
+                result.setdefault("data", {})["path"] = str(screenshot_path)
+            except Exception as exc:  # noqa: BLE001 — reported as the missing-file error below
+                logger.warning("could not fetch the sandbox screenshot %s: %s", remote_path, exc)
     if not result.get("success"):
         return result, screenshot_path, _json_with_fallback(_err(
             f"Failed to take screenshot ({_vision._vision_mode_label()} mode): {result.get('error', 'Unknown error')}"
@@ -1340,8 +1349,10 @@ def _routed_check_fn(name: str):
 
 def _routed_handler(name: str, fallback):
     def handler(args, **kw):
-        return routed_browser_handler(name, args, fallback=lambda: fallback(args, kw),
-                                      task_id=kw.get("task_id"), session_id=kw.get("session_id"))
+        return record_browser_call(lambda legacy: routed_browser_handler(
+            name, args, fallback=lambda: legacy(lambda: fallback(args, kw)),
+            task_id=kw.get("task_id"), session_id=kw.get("session_id"),
+        ), _cloud.browser_backend_name)
     return handler
 
 
@@ -1351,53 +1362,3 @@ for _name, _emoji, _check_fn, _defaults, *_extra in _BROWSER_TOOL_TABLE:
     registry.register(name=_name, toolset="browser", schema=_BROWSER_SCHEMA_MAP[_name],
                       handler=_routed_handler(_name, _fallback_call(_name, _defaults, *_extra)),
                       check_fn=_check_fn, emoji=_emoji)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-import contextlib  # noqa: F401,E402
-from datetime import datetime  # noqa: F401,E402
-import functools  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-import signal  # noqa: F401,E402
-from datetime import timezone  # noqa: F401,E402
-
-SNAPSHOT_SUMMARIZE_THRESHOLD = DEFAULT_SNAPSHOT_THRESHOLD
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'BrowserUseProvider': ('plugins.browser.browser_use.provider', 'BrowserUseBrowserProvider'),
-    'BrowserbaseProvider': ('plugins.browser.browserbase.provider', 'BrowserbaseBrowserProvider'),
-    'CloudBrowserProvider': ('agent.browser_provider', 'BrowserProvider'),
-    'FirecrawlProvider': ('plugins.browser.firecrawl.provider', 'FirecrawlBrowserProvider'),
-    'agent_browser_runnable': ('hermes_constants', 'agent_browser_runnable'),
-    'check_browser_requirements': ('tools.browser_tool_install', 'check_browser_requirements'),
-    'check_browser_vision_requirements': ('tools.browser_tool_install', 'check_browser_vision_requirements'),
-    'cleanup_all_browsers': ('tools.browser_tool_lifecycle', 'cleanup_all_browsers'),
-    'cleanup_browser': ('tools.browser_tool_lifecycle', 'cleanup_browser'),
-    'get_hermes_home_override': ('hermes_constants', 'get_hermes_home_override'),
-    'hermes_home_key': ('hermes_constants', 'hermes_home_key'),
-    'is_truthy_value': ('utils', 'is_truthy_value'),
-    'lightpanda_engine_status': ('tools.browser_tool_lightpanda_fallback', 'lightpanda_engine_status'),
-    'node_tool_runnable': ('hermes_constants', 'node_tool_runnable'),
-    'normalize_browser_cloud_provider': ('tools.tool_backend_helpers', 'normalize_browser_cloud_provider'),
-    'reset_hermes_home_override': ('hermes_constants', 'reset_hermes_home_override'),
-    'set_hermes_home_override': ('hermes_constants', 'set_hermes_home_override'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

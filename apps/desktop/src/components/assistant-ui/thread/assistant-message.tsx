@@ -65,6 +65,7 @@ import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { DESKTOP_BUTTON_ACTIONS, recordAction } from '@/store/desktop-metrics'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
 import { startManualProviderOAuth } from '@/store/onboarding'
@@ -694,7 +695,8 @@ const CompressConversationAction: FC<{ label: string }> = ({ label }) => {
     }
 
     triggerHaptic('submit')
-    void delegate.executeSlash('/compress', sessionId).catch(error => {
+    // A button, not a typed command: kept out of the slash-command usage count.
+    void delegate.executeSlash('/compress', sessionId, { typed: false }).catch(error => {
       notifyError(error, t.assistant.thread.errorCompressFailed)
     })
   }, [sessionId, t.assistant.thread.errorCompressFailed])
@@ -835,26 +837,33 @@ const ErrorRecoveryActions: FC = () => {
 
   // Reveal a local folder through Electron; `logsRoot` is the profile's
   // HERMES_HOME/logs, and its parent is the Hermes data folder itself (what
-  // the user needs to see to free space after a disk-full failure).
-  const openLocalDir = useCallback(async (resolve: (logsRoot: string) => string, failedMessage: string) => {
-    try {
-      const root = await window.hermesDesktop?.logsRoot?.()
+  // the user needs to see to free space after a disk-full failure). Resolved
+  // for the profile that OWNS this session (a tile / Bot chat names it in its
+  // composer scope), not the pooled backend's launch profile (#119080).
+  const ownerProfile = useComposerScope().profile || gatewayProfile
 
-      if (!root) {
-        notifyError(new Error('logs root unavailable'), failedMessage)
+  const openLocalDir = useCallback(
+    async (resolve: (logsRoot: string) => string, failedMessage: string) => {
+      try {
+        const root = await window.hermesDesktop?.logsRoot?.(normalizeProfileKey(ownerProfile))
 
-        return
+        if (!root) {
+          notifyError(new Error('logs root unavailable'), failedMessage)
+
+          return
+        }
+
+        const result = await window.hermesDesktop?.openDir?.(resolve(root))
+
+        if (result && !result.ok) {
+          notifyError(new Error(result.error || 'open failed'), failedMessage)
+        }
+      } catch (error) {
+        notifyError(error, failedMessage)
       }
-
-      const result = await window.hermesDesktop?.openDir?.(resolve(root))
-
-      if (result && !result.ok) {
-        notifyError(new Error(result.error || 'open failed'), failedMessage)
-      }
-    } catch (error) {
-      notifyError(error, failedMessage)
-    }
-  }, [])
+    },
+    [ownerProfile]
+  )
 
   const openLogs = useCallback(
     () => openLocalDir(root => root, copy.errorOpenLogsFailed),
@@ -931,7 +940,14 @@ const ErrorRecoveryActions: FC = () => {
       )}
       {plan.retry && (
         <ActionBarPrimitive.Reload asChild>
-          <button className="aui-error-action" onClick={() => triggerHaptic('submit')} type="button">
+          <button
+            className="aui-error-action"
+            onClick={() => {
+              triggerHaptic('submit')
+              recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
+            }}
+            type="button"
+          >
             <RefreshCwIcon className="size-3" />
             {copy.errorRetry}
           </button>
@@ -1020,7 +1036,13 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
             <GitForkIcon className="size-3.5" />
           </TooltipIconButton>
         )}
-        <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
+        <CopyButton
+          appearance="icon"
+          buttonSize="icon"
+          label={copy.copy}
+          onCopied={() => recordAction(DESKTOP_BUTTON_ACTIONS.messageCopy, 'click')}
+          text={getMessageText}
+        />
         {fullResponseAvailable && (
           <CopyButton appearance="icon" buttonSize="icon" label={copy.copyFullResponse} text={getFullResponseText} />
         )}
@@ -1031,7 +1053,13 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
           messageId={messageId}
         />
         <ActionBarPrimitive.Reload asChild>
-          <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>
+          <TooltipIconButton
+            onClick={() => {
+              triggerHaptic('submit')
+              recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
+            }}
+            tooltip={copy.refresh}
+          >
             <RefreshCwIcon className="size-3.5" />
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>

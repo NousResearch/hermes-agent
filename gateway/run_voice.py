@@ -18,6 +18,7 @@ from difflib import SequenceMatcher
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.base import build_auto_tts_output_path
 from gateway.platforms.event import MessageEvent, MessageType
@@ -147,13 +148,13 @@ class GatewayVoiceMixin:
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         adapter = self._delivery_adapter_for(event.source)
         if not hasattr(adapter, "join_voice_channel"):
-            return "Voice channels are not supported on this platform."
+            return t("gateway.voice.channel_unsupported")
         guild_id = self._get_guild_id(event)
         if not guild_id:
-            return "This command only works in a Discord server."
+            return t("gateway.voice.channel_guild_only")
         voice_channel = await adapter.get_user_voice_channel(guild_id, event.source.user_id)
         if not voice_channel:
-            return "You need to be in a voice channel first."
+            return t("gateway.voice.channel_not_in_voice")
         # Wire callbacks BEFORE join so voice input arriving right after connection is not lost.
         self._bind_voice_input_callback(adapter)
         voice_profile = self._adapter_profile_for_source(event.source)
@@ -174,23 +175,22 @@ class GatewayVoiceMixin:
             if not getattr(adapter, "_voice_text_channels", {}).get(guild_id):
                 adapter._voice_input_callback = None
             if not any(tok in str(e).lower() for tok in ("pynacl", "nacl", "davey")):
-                return f"Failed to join voice channel: {e}"
-            return ("Voice dependencies are missing (PyNaCl / davey). "
-                    f"Run: `{install_hint('discord')}`")
+                return t("gateway.voice.channel_join_failed", error=e)
+            return t("gateway.voice.channel_deps_missing", hint=install_hint("discord"))
         if not success:
             if not getattr(adapter, "_voice_text_channels", {}).get(guild_id):
                 adapter._voice_input_callback = None
-            return "Failed to join voice channel. Check bot permissions (Connect + Speak)."
+            return t("gateway.voice.channel_join_permissions")
         # Re-assert the callback: bind-before-join races with a concurrent failed join's
         # null-out (STT kept transcribing with no submit path).
         self._bind_voice_input_callback(adapter)
+
         adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
         if hasattr(adapter, "_voice_sources"):
             adapter._voice_sources[guild_id] = event.source.to_dict()
         self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),
                                event.source.chat_id, "all")
-        return (f"Joined voice channel **{voice_channel.name}**.\n"
-                f"I'll speak my replies and listen to you. Use /voice leave to disconnect.")
+        return t("gateway.voice.channel_joined", name=voice_channel.name)
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         adapter = self._delivery_adapter_for(event.source)
@@ -198,7 +198,7 @@ class GatewayVoiceMixin:
         if not (guild_id and hasattr(adapter, "leave_voice_channel")
                 and hasattr(adapter, "is_in_voice_channel")
                 and adapter.is_in_voice_channel(guild_id)):
-            return "Not in a voice channel."
+            return t("gateway.voice.channel_not_joined")
         try:
             await adapter.leave_voice_channel(guild_id)
         except Exception as e:
@@ -208,7 +208,7 @@ class GatewayVoiceMixin:
                                event.source.chat_id, "off")
         if hasattr(adapter, "_voice_input_callback"):
             adapter._voice_input_callback = None
-        return "Left voice channel."
+        return t("gateway.voice.channel_left")
 
     def _handle_voice_timeout_cleanup(self, chat_id: str, *, adapter=None) -> None:
         """Adapter callback on voice-channel timeout: clear runner-side voice_mode state.
@@ -288,7 +288,7 @@ class GatewayVoiceMixin:
             if channel:
                 safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone")
                 safe_text = safe_text.replace("@here", "@\u200bhere")
-                await channel.send(f"**[Voice]** <@{user_id}>: {safe_text}")
+                await channel.send(t("gateway.voice.transcript_echo", user=user_id, text=safe_text))
         # Bound text channel's channel_prompt: voice input gets the same per-channel context.
         channel_prompt = None
         if callable(resolver := getattr(adapter, "_resolve_channel_prompt", None)):

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { recordFeatureUse } from '@/store/desktop-metrics'
 import { notify, notifyError } from '@/store/notifications'
 
 import type { VoiceActivityState, VoiceStatus } from '../types'
@@ -89,6 +90,7 @@ export function useVoiceRecorder({
       startedAtRef.current = Date.now()
       setElapsedSeconds(0)
       setVoiceStatus('recording')
+      recordFeatureUse('voice_dictation')
       intervalRef.current = window.setInterval(() => setElapsedSeconds((Date.now() - startedAtRef.current) / 1000), 250)
       const cap = Math.max(1, Math.min(Math.trunc(maxRecordingSeconds), 600))
       timeoutRef.current = window.setTimeout(() => void stop(), cap * 1000)

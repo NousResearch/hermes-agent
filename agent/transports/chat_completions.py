@@ -656,10 +656,13 @@ class ChatCompletionsTransport(ProviderTransport):
             name = alias_map.get(name, name)
         arguments = getattr(tc_function, "arguments", None)
         extra = _attr_or_model_extra(tc, "extra_content")
-        return ToolCall(
+        call = ToolCall(
             id=getattr(tc, "id", None), name=name, arguments="{}" if arguments is None else arguments,
             provider_data=None if extra is None else {"extra_content": _dump_extra_content(extra)},
         )
+        if getattr(tc_function, "args_repaired", False) is True:
+            call.args_repaired = True  # stream assembly fixed the JSON; read by tool-call quality metrics
+        return call
 
     def validate_response(self, response: Any) -> bool:
         """Check that response has valid choices and is not a router failure shim."""
@@ -682,11 +685,3 @@ class ChatCompletionsTransport(ProviderTransport):
 from agent.transports import register_transport  # noqa: E402
 
 register_transport("chat_completions", ChatCompletionsTransport)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -1,4 +1,4 @@
-import { groupCatalogPlugins, PLUGIN_CATEGORIES } from '@hermes/shared'
+import { compactNumber, groupCatalogPlugins, PLUGIN_CATEGORIES } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } from 'react'
 
@@ -377,7 +377,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                                   {section.label}
                                 </Button>
                                 <span className="text-xs font-normal text-(--ui-text-tertiary)">
-                                  {section.entries.length.toLocaleString()}
+                                  {compactNumber(section.entries.length)}
                                 </span>
                               </h3>
                               <Button onClick={() => filters.chooseCategory(section.key)} size="inline" variant="text">

@@ -29,6 +29,7 @@ from agent.credential_pool import (
 )
 from agent.error_classifier import FailoverReason
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
+from agent.message_metadata import MERGED_TURN_PREFIX
 from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
@@ -600,6 +601,10 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             )
             had_api_sidecar = "api_content" in prev
             prev["content"] = merged_content
+            # The clean-text persist override must replace only the absorbed turn, never the
+            # unanswered text before it; kept across replay passes (an empty turn absorbs too).
+            if prev_content:
+                prev[MERGED_TURN_PREFIX] = prev_content
             # Merged content invalidates the api_content sidecar; drop it so replay cannot use stale bytes.
             drop_stale_api_content(prev)
             # Pop the persist marker only when the durable row actually changed: a merge that
@@ -3577,30 +3582,3 @@ __all__ = [
     "extract_api_error_context", "apply_pending_steer_to_tool_results", "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def agent_runtime_owns_post_tool_hook(agent: Any, function_name: str) -> bool:
-    """Return True when an agent-level tool path emits its own post hook."""
-    if function_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES:
-        return True
-    if getattr(agent, "_context_engine_tool_names", None) and function_name in agent._context_engine_tool_names:
-        return True
-    memory_manager = getattr(agent, "_memory_manager", None)
-    return bool(memory_manager and memory_manager.has_tool(function_name))
-
-def intent_ack_continuation_enabled(agent) -> bool:
-    """Whether intent-ack continuation should fire at all for this turn.
-
-    The ``codex_ack_continuations < 2`` per-turn cap and the
-    ``looks_like_codex_intermediate_ack`` detector are applied by the caller;
-    this only decides the on/off gate. Callers that also need to know whether
-    the workspace requirement applies should use ``intent_ack_continuation_mode``
-    directly (``"codex_only"`` ⇒ require_workspace=True, ``"all"`` ⇒ False).
-    """
-    return intent_ack_continuation_mode(agent) != "off"
-# ---- END PLUGIN-COMPAT ----

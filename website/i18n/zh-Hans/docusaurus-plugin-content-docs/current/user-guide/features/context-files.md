@@ -107,7 +107,7 @@ Hermes 兼容 Cursor IDE 的 `.cursorrules` 文件和 `.cursor/rules/*.mdc` 规�
 上下文文件由 `agent/prompt_builder.py` 中的 `build_context_files_prompt()` 加载：
 
 1. **扫描工作目录** — 依次检查 `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`（先匹配先生效）
-2. **读取内容** — 以 UTF-8 文本读取每个文件
+2. **读取内容** — 以 UTF-8 文本读取每个文件。解析后的目标（含符号链接）位于项目之外（git 根目录，否则为工作目录）或在文件读取拒绝列表中的文件会被跳过
 3. **安全扫描** — 检查内容是否存在 prompt 注入模式
 4. **截断** — 超过 20,000 个字符的文件进行首尾截断（70% 头部，20% 尾部，中间插入标记）
 5. **组装** — 所有部分合并在 `# Project Context` 标题下

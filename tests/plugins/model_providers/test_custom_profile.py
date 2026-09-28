@@ -169,6 +169,25 @@ class TestCustomReasoningWireShape:
         )
         assert eb.get("think") is not True
 
+    @pytest.mark.parametrize(
+        "reasoning_config, expected",
+        [({"enabled": True, "effort": "high"}, "default"), ({"enabled": False, "effort": "medium"}, "none")],
+    )
+    def test_groq_host_clamps_effort_to_groq_vocabulary(self, custom_profile, reasoning_config, expected):
+        """api.groq.com accepts top-level reasoning_effort only as 'none' / 'default' (#75089).
+
+        Drives the main transport so the clamp is proven where production reads it.
+        """
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="qwen/qwen3.6-27b", messages=[{"role": "user", "content": "ping"}], tools=None,
+            provider_profile=custom_profile, reasoning_config=reasoning_config,
+            base_url="https://api.groq.com/openai/v1", provider_name="custom",
+        )
+        assert kwargs["reasoning_effort"] == expected
+        assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
+
 
 class TestCustomAdaptiveClaudeReasoningWireShape:
     """CometAPI-style relays map ``reasoning_effort`` to Bedrock ``thinking.enabled`` (#122672)."""
@@ -192,25 +211,36 @@ class TestCustomAdaptiveClaudeReasoningWireShape:
         assert eb == {}
         assert tl == {}
 
-
     @pytest.mark.parametrize(
-        "reasoning_config, expected",
-        [({"enabled": True, "effort": "high"}, "default"), ({"enabled": False, "effort": "medium"}, "none")],
+        "model",
+        ["claude-haiku-5-5", "claude-haiku-4.5"],
     )
-    def test_groq_host_clamps_effort_to_groq_vocabulary(self, custom_profile, reasoning_config, expected):
-        """api.groq.com accepts top-level reasoning_effort only as 'none' / 'default' (#75089).
+    @pytest.mark.parametrize(
+        "reasoning_config, expected_effort",
+        [
+            ({"enabled": True, "effort": "low"}, "low"),
+            ({"enabled": True, "effort": "high"}, "high"),
+            ({"enabled": False}, "none"),
+            ({"enabled": True, "effort": "none"}, "none"),
+        ],
+    )
+    def test_haiku_keeps_the_reasoning_effort_ladder(
+        self, custom_profile, model, reasoning_config, expected_effort,
+    ):
+        """Haiku is classified adaptive but has no extended thinking.
 
-        Drives the main transport so the clamp is proven where production reads it.
+        An early return on ``_supports_adaptive_thinking`` drops the effort knob
+        (helper returns {} for haiku). Both the legacy and the 5.x ids must still
+        emit top-level ``reasoning_effort`` and never the adaptive pair.
         """
-        from agent.transports.chat_completions import ChatCompletionsTransport
-
-        kwargs = ChatCompletionsTransport().build_kwargs(
-            model="qwen/qwen3.6-27b", messages=[{"role": "user", "content": "ping"}], tools=None,
-            provider_profile=custom_profile, reasoning_config=reasoning_config,
-            base_url="https://api.groq.com/openai/v1", provider_name="custom",
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning_config,
+            model=model,
+            base_url="https://api.cometapi.com/v1",
         )
-        assert kwargs["reasoning_effort"] == expected
-        assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
+        assert tl == {"reasoning_effort": expected_effort}
+        assert "thinking" not in eb
+        assert "output_config" not in eb
 
 
 class TestCustomReasoningWithNumCtx:

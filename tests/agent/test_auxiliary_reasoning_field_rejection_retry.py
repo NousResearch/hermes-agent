@@ -64,6 +64,40 @@ def test_reasoning_effort_rejection_retries_once_without_reasoning_fields(async_
     assert retry["model"] == first["model"]
 
 
+def test_adaptive_pair_rejection_strips_thinking_and_output_config():
+    """A 400 naming ``thinking`` must drop ``output_config`` in the same retry.
+
+    The adaptive shape is two keys. Stripping only ``thinking`` leaves
+    ``output_config`` on the wire, the next 400 is not a reasoning rejection,
+    and the ladder stops.
+    """
+    client = MagicMock()
+    client.base_url = "https://relay.example/v1"
+    client.chat.completions.create.side_effect = [
+        RuntimeError("Error code: 400 - Unrecognized request argument supplied: thinking"),
+        {"ok": True},
+    ]
+    with (
+        patch("agent.auxiliary_client._resolve_task_provider_model",
+              return_value=("custom", "claude-opus-4-6", "https://relay.example/v1", "sk-x", None)),
+        patch("agent.auxiliary_client._get_cached_client", return_value=(client, "claude-opus-4-6")),
+        patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task, **_kw: resp),
+        patch("agent.auxiliary_client._try_payment_fallback", return_value=None),
+    ):
+        assert call_llm(
+            task="title_generation", messages=[{"role": "user", "content": "hi"}],
+            extra_body={"response_format": {"type": "json_object"}},
+            reasoning_config={"enabled": True, "effort": "high"},
+        ) == {"ok": True}
+
+    first, retry = (c.kwargs for c in client.chat.completions.create.call_args_list)
+    assert first["extra_body"]["thinking"]["type"] == "adaptive"
+    assert "effort" in first["extra_body"]["output_config"]
+    assert "thinking" not in retry["extra_body"]
+    assert "output_config" not in retry["extra_body"]
+    assert retry["extra_body"]["response_format"] == {"type": "json_object"}
+
+
 def test_unrelated_400_does_not_strip_reasoning_fields():
     """A 400 that does not name a reasoning field must not silently drop the thinking-off encoding."""
     client = MagicMock()

@@ -74,7 +74,17 @@ class CustomProfile(ProviderProfile):
             # Adaptive Claude on OpenAI-compat relays (CometAPI → Bedrock): top-level
             # ``reasoning_effort`` is translated to legacy ``thinking.type=enabled`` and 400s
             # on Opus 5.5+ (#122672). Emit the adaptive + output_config shape instead.
-            if _is_claude_model(model_id) and _supports_adaptive_thinking(model_id):
+            # Haiku matches the adaptive classifier but has no extended thinking, so the
+            # helper returns {} (or a disable a chat-completions relay rejects). It must
+            # fall through to the reasoning_effort ladder. Every other adaptive Claude
+            # still returns here when the helper is empty: that empty is the
+            # mandatory-thinking omit, and rewriting it to reasoning_effort="none" is
+            # the 400 this branch exists to avoid.
+            if (
+                _is_claude_model(model_id)
+                and _supports_adaptive_thinking(model_id)
+                and "haiku" not in model_id.lower()
+            ):
                 adaptive = adaptive_thinking_wire_fields(reasoning_config, model_id)
                 if adaptive:
                     extra_body.update(adaptive)

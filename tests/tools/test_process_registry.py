@@ -1474,6 +1474,109 @@ class TestKillProcess:
         assert writes == ["proc_slow_disk"]
         assert registry._finished[s.id] is s
 
+    def test_receipt_write_publishes_finished_after_durability(self, registry):
+        """Review findings 1+2 (PR #123901): a session stays visible through
+        get() while its receipt is in flight (via _receipt_pending), but only
+        enters _finished — the store every reader treats as "receipt is on
+        disk" — after the write returns. A finite parent can never observe a
+        finished session whose durable receipt does not exist yet (#108327)."""
+        import tools.process_registry_results as _prr
+        from hermes_constants import get_hermes_home
+
+        release = threading.Event()
+        started = threading.Event()
+        receipt = get_hermes_home() / "logs" / "process-results" / "proc_slow_disk.json"
+
+        def blocking_save(session):
+            started.set()
+            assert release.wait(timeout=10)
+            # Gate passed: perform the REAL durable write, so the assertions
+            # below check the actual receipt file, not a stubbed one.
+            _prr.save_completed_result(session)
+
+        s = _make_session(sid="proc_slow_disk", output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+
+        with patch.object(registry, "_write_checkpoint"), \
+             patch("tools.process_registry.save_completed_result", side_effect=blocking_save):
+            mover = threading.Thread(target=registry._move_to_finished, args=(s,))
+            mover.start()
+            assert started.wait(timeout=5), "receipt write never started"
+            try:
+                # In flight: visible through get(), not yet "finished", no receipt.
+                assert registry.get("proc_slow_disk") is s
+                with registry._lock:
+                    assert s.id not in registry._finished
+                    assert registry._receipt_pending.get(s.id) is s
+                assert not receipt.exists(), "receipt must not exist while the write is in flight"
+            finally:
+                release.set()
+                mover.join(timeout=10)
+
+        assert not mover.is_alive(), "mover thread did not finish"
+        # After the write returns: published as finished, receipt durable.
+        assert receipt.exists()
+        with registry._lock:
+            assert registry._receipt_pending.get(s.id) is None
+            assert registry._finished[s.id] is s
+        assert registry.get("proc_slow_disk") is s
+
+    def test_kill_receipt_rewrite_wins_over_reader_finalise(self, registry):
+        """Review finding 2 (PR #123901): the reader thread finalised the
+        session (plain "exited" receipt, bridge still pending) while the kill
+        path was inside its grace window. The kill rewrite must overwrite the
+        durable record with "killed" AND publish the bridged session into
+        _finished, so both paths agree on what "finished" means (#108327)."""
+        from hermes_constants import get_hermes_home
+        from tools.process_registry_results import save_completed_result as real_save
+
+        s = _make_session(sid="proc_racekill", output="work")
+        registry._running[s.id] = s
+        receipt = get_hermes_home() / "logs" / "process-results" / "proc_racekill.json"
+
+        # Reader finalised first: plain "exited" receipt on disk, bridge pending.
+        real_save(s)
+        assert json.loads(receipt.read_text())["completion_reason"] == "exited"
+        registry._running.pop(s.id)
+        registry._receipt_pending[s.id] = s
+
+        with patch.object(registry, "_write_checkpoint"), \
+             patch.object(registry, "_post_kill_survivors", return_value=[]), \
+             patch.object(registry, "_signal_kill", return_value=None):
+            result = registry.kill_process("proc_racekill", source="test.kill")
+
+        assert result["status"] == "killed"
+        record = json.loads(receipt.read_text())
+        assert record["completion_reason"] == "killed"
+        with registry._lock:
+            assert registry._receipt_pending.get(s.id) is None
+            assert registry._finished[s.id] is s
+
+    def test_receipt_write_failure_still_publishes_session(self, registry):
+        """PR #123901 review hardening: if the receipt write raises, the
+        terminal session is still published into _finished — never stranded
+        invisible in _receipt_pending. (The production saver swallows OSError
+        itself; this covers any unexpected error.)"""
+        def exploding_save(session):
+            raise RuntimeError("disk on fire")
+
+        s = _make_session(sid="proc_burst", output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+
+        with patch.object(registry, "_write_checkpoint"), \
+             patch("tools.process_registry.save_completed_result", side_effect=exploding_save):
+            with pytest.raises(RuntimeError, match="disk on fire"):
+                registry._move_to_finished(s)
+
+        with registry._lock:
+            assert registry._receipt_pending.get(s.id) is None
+            assert registry._finished[s.id] is s
+        assert registry.get("proc_burst") is s
+
 
 # =========================================================================
 # Tool handler

@@ -575,6 +575,13 @@ class ProcessSession:
     _watch_consecutive_strikes: int = field(default=0, repr=False)
     _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    # Serializes durable completion-receipt writes: the reader-thread bridge in
+    # _move_to_finished and the kill path's receipt rewrite target the same
+    # ``logs/process-results/<id>.json``. Without this, a reader finalizing
+    # inside the kill grace window races the kill rewrite and last-writer-wins
+    # could drop the "killed" record in favor of a stale plain "exited"
+    # (#108327, PR #123901 review finding 2).
+    _receipt_lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _reader_finish_requested: threading.Event = field(default_factory=threading.Event, repr=False)
     _reader_selectable: bool = field(default=False, repr=False)
@@ -634,6 +641,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def __init__(self):
         self._running: Dict[str, ProcessSession] = {}
         self._finished: Dict[str, ProcessSession] = {}
+        # Sessions moved out of ``_running`` whose durable completion receipt
+        # (``logs/process-results/<id>.json``) has not been written yet. Only
+        # populated between the atomic move and the receipt write; ``get()``
+        # and the list/wait scans consult it so a slow receipt write can never
+        # make a terminal session vanish, while ``_finished`` — the store every
+        # reader treats as "receipt is on disk" — is only published after the
+        # write returns (#108327, PR #123901 review).
+        self._receipt_pending: Dict[str, ProcessSession] = {}
         self._lock = threading.Lock()
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
@@ -1623,14 +1638,35 @@ class ProcessRegistry(ProcessCheckpointMixin):
             if was_running:
                 session.exited_at = time.time()
                 self._running.pop(session.id)
-            self._finished[session.id] = session
+                # Receipt bridge: the session stays visible to get()/list/wait
+                # scans via _receipt_pending while its durable receipt is
+                # written OUTSIDE self._lock — the gateway event loop polls
+                # get() under that lock, and a stalled write here used to
+                # block the loop until the shutdown watchdog killed the
+                # gateway (#108327). The session is published into
+                # ``_finished`` — the store every reader treats as "receipt
+                # is on disk" — only after the write returns (or in the
+                # cleanup below if it raises), so a finite parent can never
+                # observe a finished session whose receipt is not durable yet.
+                self._receipt_pending[session.id] = session
+            elif session.id in self._receipt_pending:
+                # First mover's receipt bridge is still in flight; it
+                # publishes into _finished when done. Nothing to do here.
+                pass
+            else:
+                self._finished[session.id] = session
         if was_running:
-            # Keep the session tracked until its result is durable. A finite
-            # parent must not observe completion and exit during this write —
-            # but the write must not hold _lock: the gateway event loop polls
-            # get() under the same lock, and a stalled receipt write here
-            # blocks the loop until the shutdown watchdog kills the gateway (#108327).
-            save_completed_result(session)
+            try:
+                with session._receipt_lock:
+                    save_completed_result(session)
+            finally:
+                # Publish even if the write raised: a terminal session must
+                # never be stranded invisible in _receipt_pending. (The
+                # production saver swallows OSError itself; this covers any
+                # unexpected error.) The error still propagates to the caller.
+                with self._lock:
+                    self._receipt_pending.pop(session.id, None)
+                    self._finished[session.id] = session
         # Release the retained Popen/PTY handles now: otherwise every
         # finished-but-unpruned session keeps its stdout pipe (or PTY master)
         # FD open until FINISHED_TTL_SECONDS elapses, and heavy background
@@ -1736,11 +1772,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
             timeout = self._oneshot_completion_wait_seconds()
         result: dict = {"waited": [], "completed": [], "timed_out": []}
         with self._lock:
-            # `_finished` too: `_move_to_finished` pops a session from `_running` and enqueues its completion
-            # only after releasing handles and writing the checkpoint. A parent whose turn ends inside that
-            # window would otherwise see nothing pending, drain nothing and exit without the follow-up turn.
+            # `_finished` and `_receipt_pending` too: `_move_to_finished` pops a session from `_running` and
+            # enqueues its completion only after writing the receipt and publishing it into `_finished`. A
+            # parent whose turn ends inside that window would otherwise see nothing pending, drain nothing
+            # and exit without the follow-up turn.
             pending = [
-                s for store in (self._running, self._finished) for s in store.values()
+                s for store in (self._running, self._finished, self._receipt_pending) for s in store.values()
                 if s.notify_on_complete and not s._completion_event.is_set()
                 and (task_id is None or s.owner_task_id == task_id)
             ]
@@ -1899,7 +1936,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if not isinstance(session_id, str) or not session_id:
             return None
         with self._lock:
-            session = self._running.get(session_id) or self._finished.get(session_id)
+            session = (self._running.get(session_id)
+                       or self._finished.get(session_id)
+                       or self._receipt_pending.get(session_id))
         if session is None:
             session = load_completed_results(session_id).get(session_id)
         return self._refresh_detached_session(session if session is not None else self._resolve_prefix(session_id))
@@ -1917,7 +1956,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         matches = load_completed_results(query)
         with self._lock:
             matches.update({
-                sid: s for store in (self._running, self._finished)
+                sid: s for store in (self._running, self._finished, self._receipt_pending)
                 for sid, s in store.items() if sid.startswith(query)
             })
         return next(iter(matches.values())) if len(matches) == 1 else None
@@ -2201,7 +2240,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # then persists this kill as a plain ``exited``. Re-write the receipt
             # so the durable record matches what the caller was told.
             if not self._move_to_finished(session):
-                save_completed_result(session)
+                with session._receipt_lock:
+                    save_completed_result(session)
+                with self._lock:
+                    if self._receipt_pending.pop(session.id, None) is not None:
+                        self._finished[session.id] = session
             self._write_checkpoint()
             return {
                 "status": "killed", "session_id": session.id, "completion_reason": session.completion_reason,
@@ -2345,6 +2388,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         sessions = load_completed_results() if include_retained else {}
         with self._lock:
             sessions.update(self._finished)
+            sessions.update(self._receipt_pending)
             sessions.update(self._running)
         all_sessions = [self._refresh_detached_session(s) for s in sessions.values()]
         if task_id or session_key:
@@ -2515,7 +2559,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             del self._finished[sid]
         # Belt-and-suspenders against module-lifetime growth: forget consumed /
         # poll-observed marks for any session no longer tracked at all.
-        tracked = self._running.keys() | self._finished.keys()
+        tracked = self._running.keys() | self._finished.keys() | self._receipt_pending.keys()
         self._completion_consumed &= tracked
         self._poll_observed &= tracked
 

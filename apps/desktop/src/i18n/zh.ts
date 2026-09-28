@@ -10,6 +10,38 @@ export const zh = defineLocale({
     copyUrl: '复制链接',
     close: '关闭'
   },
+  sharedMetrics: {
+    consentTitle: '帮助改进 Hermes？',
+    consentBody:
+      '共享指标只包含有上限的计数，绝不包含提示词、文件、路径或错误文本。收集仅在本地进行；发送给 Nous 需要另行同意。',
+    whatIsCollected: '收集哪些内容',
+    collectedIntro: '仅限有上限的计数：',
+    collectedActivity: '活动、会话时长、结果和错误类别',
+    collectedModels: '模型路由和 token 总量',
+    collectedNames: '内置工具、命令和目录项名称',
+    collectedMilestones: '分桶的设置计数',
+    collectedReliability: '更新结果与耗时、崩溃、启动与回复速度、消息平台状态',
+    collectedUsage: 'Hermes 的使用方式：代理的准确度与效率（编辑是否成功、循环、错误后的恢复、每个任务的 token 与工具调用数、缓存中断），各界面与 Desktop 模式的活跃时间，哪些应用区域、操作与设置被使用、很快关闭或被关闭，以及提供商设置的结果',
+    collectedMachine: '概略的机器信息：内存范围、GPU 类型、Hermes 版本新旧与发布通道、落后的更新数、是否使用本地模型服务器',
+    installId:
+      '发送会把每日数据包上传到 Nous 遥测服务。数据包带有此配置文件的安装 ID：一个不含个人信息的固定随机 UUID，删除共享指标目录即可重置。',
+    consentWindow:
+      '只有整个收集周期都落在已记录同意时段内的数据包才会被发送——你同意之前的数据，或发送关闭期间的数据，都会留在本机。你可以随时再次关闭发送。',
+    readDocs: '查看完整说明',
+    share: '收集并发送给 Nous',
+    local: '仅在本地收集',
+    off: '不用了',
+    changeLater: '你可以随时在 设置 → 安全 中更改。',
+    saveFailed: '无法保存你的选择',
+    collectLabel: '收集使用统计',
+    collectDesc: '在此设备上保存有上限的计数。绝不包含提示词、文件、路径或错误文本。',
+    sendLabel: '向 Nous 发送使用统计',
+    sendDesc: '将每日数据包上传到 Nous 遥测服务。只发送同意时段内的数据。需要先开启收集。',
+    unavailable: '请更新 Hermes 后端以更改此设置。',
+    stripBody: '仅限有界计数器，绝不包含提示词或文件。',
+    stripChoices: { share: '发送给 Nous', local: '仅本地', off: '不用了' },
+    stripDetails: '详情'
+  },
   intro: introZh,
   catalog: {
     add: '添加',
@@ -454,6 +486,8 @@ export const zh = defineLocale({
       'composer.modelPicker': '打开模型选择器',
       'composer.voice': '开始 / 停止语音对话',
       'composer.dictate': '开始 / 停止听写',
+      'composer.reasoningUp': '提高推理等级',
+      'composer.reasoningDown': '降低推理等级',
       'view.toggleSidebar': '切换会话侧边栏',
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.toggleReview': '切换审查面板',
@@ -884,6 +918,8 @@ export const zh = defineLocale({
       textDirection: { auto: '自动', rtl: '从右到左', ltr: '从左到右' },
       introSplashTitle: '开场标识',
       introSplashDesc: '空白对话中显示的字标和提示语。',
+      modelPricingTitle: '模型价格',
+      modelPricingDesc: '在模型选择器中显示每百万 token 的输入、输出和缓存读取价格。',
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
       tipsTitle: '应用内提示',
@@ -892,7 +928,7 @@ export const zh = defineLocale({
       toursTitle: '引导导览',
       toursDesc: '让 Hermes 逐步高亮每个位置，带你熟悉应用。开始使用满30天后自动关闭，你可以重新开启。',
       composerPopoutTitle: '悬浮输入框',
-      composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
+      composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭时，输入框停靠在底部。',
       fileBrowserTitle: '文件浏览器',
       fileBrowserDesc: '打开工作区时，在聊天旁显示文件浏览器。标题栏的切换按钮也会更改此设置。',
       vibeHeartsTitle: '心情爱心',
@@ -1729,6 +1765,7 @@ export const zh = defineLocale({
       restartFailed: '无法重启后端',
       auxiliaryTitle: '辅助模型',
       resetAllToMain: '全部重置为主模型',
+      staleAuxDismiss: '不再显示',
       auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',
       setToMain: '设为主模型',
       change: '更改',
@@ -2579,12 +2616,6 @@ export const zh = defineLocale({
     mcpServers: 'MCP 服务器',
     archivedChats: '已归档对话',
     sections: { maintenance: '维护', sessions: '会话', system: '系统', usage: '用量' },
-    sectionDescriptions: {
-      maintenance: '诊断、备份、维护器与记忆数据',
-      sessions: '搜索与管理会话',
-      system: '状态、日志与系统操作',
-      usage: '一段时间内的词元、成本与技能活动'
-    },
     nav: {
       newChat: { title: '新建会话', detail: '开始一个新会话' },
       settings: { title: '设置', detail: '配置 Hermes 桌面端' },
@@ -2646,7 +2677,7 @@ export const zh = defineLocale({
     actions: count => `${count} 次操作`,
     logFile: '日志文件',
     logLevel: '级别',
-    logSearchPlaceholder: '筛选日志行…',
+    logSearchPlaceholder: '搜索日志行…',
     maintenance: {
       runOps: '诊断',
       doctor: '运行体检',
@@ -2695,6 +2726,13 @@ export const zh = defineLocale({
 
   messaging: {
     search: '搜索消息平台…',
+    statusFilter: {
+      all: '全部',
+      bad: '错误',
+      good: '已连接',
+      muted: '未启用',
+      warn: '需要关注'
+    },
     loading: '正在加载消息平台…',
     loadFailed: '消息平台加载失败',
     states: {
@@ -3038,6 +3076,7 @@ export const zh = defineLocale({
     skillsLabel: '技能',
     notSet: '未设置',
     soulDesc: '内置于此配置档案的系统提示词与人格指令。',
+    soulMissing: '此配置档案尚无 SOUL.md 文件。在下方输入指令并保存即可创建。config.yaml 中的人格预设需单独管理。',
     soulOptional: '可选',
     soulPlaceholder: mode => `此配置档案的系统提示词 / 人格说明。\n留空则保留${mode}默认值。`,
     soulPlaceholderCloned: '克隆的',
@@ -3470,6 +3509,7 @@ export const zh = defineLocale({
       backgroundRunning: '后台任务运行中',
       draftSession: '草稿 — 尚未发送',
       handoffOrigin: platform => `从 ${platform} 转接`,
+      continuationOrigin: '自动延续 — 此对话已压缩并延续',
       ownedByProfile: profile => `配置档：${profile}`,
       renamed: '已重命名',
       renameFailed: '重命名失败',
@@ -3665,6 +3705,8 @@ export const zh = defineLocale({
     restoredDraftNotice: '已恢复你未发送的消息',
     restoredDraftUndo: '撤销',
     queueEdit: '编辑',
+    queueExpand: '展开',
+    queueCollapse: '收起',
     queueSendNext: '下一个',
     queueSteer: '引导 — 立即修正当前回合',
     queueSend: '发送',
@@ -3768,6 +3810,7 @@ export const zh = defineLocale({
     goalWaiting: '目标等待中',
     subagents: count => `${count} 个子代理`,
     todos: (done, total) => `任务 ${done}/${total}`,
+    previousTodos: (done, total) => `以往任务 ${done}/${total}`,
     running: '运行中',
     stop: '停止',
     dismiss: '关闭',
@@ -3948,6 +3991,7 @@ export const zh = defineLocale({
     updateNow: '立即更新',
     maybeLater: '稍后再说',
     moreChanges: count => `另有 ${count} 项更改。`,
+    copyFullLog: '复制完整更新日志',
     manualTitle: '从终端更新',
     manualUnavailableTitle: '无法从这里更新',
     manualBody: '你是从命令行安装的 Hermes，因此更新也需要在那里运行。请将此命令粘贴到终端：',
@@ -4279,7 +4323,11 @@ export const zh = defineLocale({
     noAuthenticatedProviders: '没有已认证的提供方。',
     addProvider: '添加提供方…',
     addCustomModel: '添加自定义模型',
-    removeCustomModel: '移除自定义模型'
+    removeCustomModel: '移除自定义模型',
+    resetToDefaults: '恢复默认',
+    resetConfirm: '将模型可见性恢复为默认？',
+    resetDescription: '你对模型显示与隐藏的选择将被清除，每个提供方都会恢复默认列表。你添加的自定义模型会保留并显示。',
+    resetAction: '恢复'
   },
 
   shell: {
@@ -4292,7 +4340,11 @@ export const zh = defineLocale({
       editModels: '编辑模型…',
       followDefault: '使用设置中的默认模型',
       refreshModels: '刷新模型',
-      fast: '快速'
+      fast: '快速',
+      free: '免费',
+      cacheRead: '缓存读取',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `输入 ${input}/Mtok · 输出 ${output}/Mtok` + (cache ? ` · 缓存读取 ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: '此模型没有可用选项',
@@ -4746,8 +4798,8 @@ export const zh = defineLocale({
           body: provider => `${provider} 返回了服务器错误。请稍后重试或切换服务商。`
         },
         timeout: {
-          title: '回复超时',
-          body: provider => `${provider} 未及时响应。请重试以重新发送。`
+          title: '无法连接到 AI 服务',
+          body: provider => `无法连接到 ${provider}，或其未及时响应。请检查网络连接后重试。`
         },
         ssl_cert_verification: {
           title: '安全连接失败',
@@ -4785,6 +4837,8 @@ export const zh = defineLocale({
       preparingAudio: '正在准备音频...',
       stopReading: '停止朗读',
       readAloud: '朗读',
+      copyFullResponse: '复制完整回复',
+      readAloudFullResponseHint: '按住 Shift 点击：朗读完整回复',
       editMessage: '编辑消息',
       expandMessage: '展开消息',
       scrollToBottom: '滚动到底部',
@@ -5158,6 +5212,11 @@ export const zh = defineLocale({
   ui: {
     search: {
       clear: '清除搜索'
+    },
+    logs: {
+      bottom: '日志底部',
+      search: '搜索日志…',
+      top: '日志顶部'
     },
     pagination: {
       label: '分页',

@@ -243,7 +243,7 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const slashFlightRef = useRef(0)
-  const slashRef = useRef<(cmd: string) => boolean>(() => false)
+  const slashRef = useRef<(cmd: string, typed?: boolean) => boolean>(() => false)
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
   const onEventRef = useRef<(ev: AnyGatewayEvent) => void>(() => {})
@@ -1204,7 +1204,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
-    slashRef.current(`/model ${value}`)
+    slashRef.current(`/model ${value}`, false) // the typed /model that opened the picker already counted
   }, [])
 
   const closeLiveSession = useCallback(

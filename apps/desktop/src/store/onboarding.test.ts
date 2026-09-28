@@ -246,28 +246,31 @@ describe('refreshOnboarding', () => {
     expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
   })
 
-  it('shows a non-blocking notification when preserving configured on fallback', async () => {
-    const notifySpy = vi.spyOn(notifications, 'notify')
-
+  it('keeps an unknown readiness notice temporary and clears it on recovery (#124545)', async () => {
+    vi.useFakeTimers()
+    notifications.clearNotifications()
     installApiMock(vi.fn())
-    $desktopOnboarding.set(
-      baseState({
-        configured: true,
-        providers: [makeOAuthProvider('cached')],
-        reason: null,
-        requested: false
-      })
-    )
+    $desktopOnboarding.set(baseState({ configured: true }))
 
-    await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+    try {
+      await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+      expect(notifications.$notifications.get()).toEqual([
+        expect.objectContaining({ id: 'runtime-not-ready', kind: 'info' })
+      ])
+      expect($desktopOnboarding.get().configured).toBe(true)
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(notifications.$notifications.get()).toEqual([])
 
-    expect(notifySpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: 'runtime-not-ready',
-        kind: 'error'
-      })
-    )
-    expect($desktopOnboarding.get().configured).toBe(true)
+      // A later outage can show a fresh notice; an authoritative ready clears it
+      // without waiting for its timer, and must not dismiss unrelated errors.
+      await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+      notifications.notify({ id: 'unrelated', kind: 'error', message: 'Keep me' })
+      await refreshOnboarding(onboardingContext(keylessCustomGateway()))
+      expect(notifications.$notifications.get().map(item => item.id)).toEqual(['unrelated'])
+    } finally {
+      notifications.clearNotifications()
+      vi.useRealTimers()
+    }
   })
 
   it('enters setup when the selected OpenRouter credential is genuinely empty', async () => {

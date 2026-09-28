@@ -728,12 +728,3 @@ def format_token_count_compact(value: int) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return f"{sign}{text}{suffix}"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
-# ---- END PLUGIN-COMPAT ----

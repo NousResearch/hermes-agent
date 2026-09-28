@@ -700,7 +700,11 @@ def _setup_logging(agent):
     # agent.log (INFO+) + errors.log (WARNING+); idempotent so per-message gateway agents
     # don't duplicate handlers.
     from hermes_logging import setup_logging, setup_verbose_logging
-    setup_logging(hermes_home=_ra()._hermes_home)
+    # The ACTIVE home, not run_agent's import-time freeze: a Desktop serve backend builds agents
+    # for several profiles inside set_hermes_home_override(), and the frozen launch home made
+    # setup_logging() see a home it already served, so it never adopted the profile and every
+    # profile's records landed in the launch profile's agent.log (#125974).
+    setup_logging(hermes_home=get_hermes_home())
 
     if agent.verbose_logging:
         setup_verbose_logging()
@@ -887,6 +891,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
     # so name it even when no fallback entries are configured.
     _pool_exhausted = False
+    _pool = None
     if _explicit and _explicit != "auto":
         with suppress(Exception):
             from agent.credential_pool import load_pool
@@ -901,6 +906,25 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             "credential pool exhausted" if _pool_exhausted else "no usable credentials",
             "; ".join(f"{_p} ({_r})" for _p, _r in _refused_entries) or "none configured",
         )
+    # A fully-exhausted pool is a billing/quota failure, NOT a config problem: name it for EVERY
+    # explicit provider. ``openrouter`` / ``custom`` have no provider-specific missing-credentials
+    # branch, so a burned override pool there fell through to the generic "No LLM provider
+    # configured" setup message even though the config default was fine (#94785). Prefer a billing
+    # verdict (402 / classifier "billing") and fall back to the existing cooldown wording (which
+    # names the 429 reset time, #56810); raise before the missing-credentials branch so a genuine
+    # 402 is never described as a missing key or a transient rate limit.
+    if _pool_exhausted:
+        from agent.auxiliary_unavailable import (
+            ProviderCredentialsExhaustedError,
+            pool_billing_message,
+            pool_cooldown_message,
+        )
+        _exhausted_message = (
+            pool_billing_message(_explicit, model=agent.model, pool=_pool)
+            or pool_cooldown_message(_explicit)
+        )
+        if _exhausted_message:
+            raise ProviderCredentialsExhaustedError(_exhausted_message, provider=_explicit)
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
         from agent.auxiliary_unavailable import missing_provider_credentials_message
@@ -2479,25 +2503,3 @@ def init_agent(
 
 
 __all__ = ["init_agent"]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'ToolGuardrailDecision': ('agent.tool_guardrails', 'ToolGuardrailDecision'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

@@ -1,4 +1,4 @@
-import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
+import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
 import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
@@ -13,6 +13,7 @@ import {
   useState
 } from 'react'
 
+import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
@@ -27,7 +28,6 @@ import {
   DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
 import { HighlightMatches } from '@/components/ui/highlight-matches'
-import { usePointerQuiet } from '@/components/ui/keyboard-first'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -46,6 +46,7 @@ import {
   useLocalModelsStatus,
   useLocalRuntimeJobs
 } from '@/store/local-runtime-jobs'
+import { $showModelPricing } from '@/store/model-pricing'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -67,6 +68,56 @@ import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-
 // hover-revealed edit submenu (reasoning/fast) stays open to play with (its
 // items preventDefault on select).
 export const ModelMenuCloseContext = createContext<() => void>(() => {})
+
+/** Compact per-row price: `$in/$out` per Mtok (cached read appended when the
+ *  provider ships it), "free", and a sale tag when the portal reports a
+ *  discounted list price. Rendered only when the provider's payload carries
+ *  pricing (Nous Portal and others that ship it). */
+function ModelPrice({ pricing }: { pricing: ModelPricing }) {
+  const { t } = useI18n()
+  const copy = t.shell.modelMenu
+  // Partial payloads: `_apply_pricing` ships "" for unknown, but a provider
+  // can report null — render nothing rather than "null/null" or "—/—".
+  const input = pricing.input || null
+  const output = pricing.output || null
+  // Cached-input rate (`cache`, from the backend's `input_cache_read`); the
+  // inline `input` rate is the uncached read, so together they cover the
+  // cached-vs-uncached comparison without a tooltip round-trip (#63125).
+  const cache = pricing.cache || null
+
+  if (pricing.free) {
+    return <span className="shrink-0 pl-2 text-[0.625rem] text-(--ui-green)">{copy.free}</span>
+  }
+
+  if (!input && !output) {
+    return null
+  }
+
+  const discount = typeof pricing.discount_percent === 'number' && pricing.discount_percent > 0
+    ? pricing.discount_percent
+    : null
+
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1.5 pl-2 text-[0.625rem] tabular-nums text-(--ui-text-tertiary)"
+      title={copy.priceTitle(input ?? '—', output ?? '—', cache ?? '')}
+    >
+      <span>
+        {input ?? '—'}/{output ?? '—'}
+      </span>
+      {cache ? (
+        <span className="text-(--ui-text-quaternary)" title={`${copy.cacheRead} ${cache}/Mtok`}>
+          ·{cache}
+        </span>
+      ) : null}
+      {discount ? (
+        <span className="rounded bg-(--ui-green)/10 px-1 py-px font-medium text-(--ui-green)">
+          −{discount}%
+        </span>
+      ) : null}
+    </span>
+  )
+}
 
 /** One model choice, everything a caller needs to act on a selection.
  *  `effort` is '' for "inherit the default" and 'none' for thinking off. */
@@ -167,6 +218,7 @@ export function ModelCatalogMenu({
   // catalog must show the same shortlist. A per-caller opt-in is how the board
   // and the composer would end up disagreeing about what "my models" means.
   const visibleModels = useStore($visibleModels)
+  const showPricing = useStore($showModelPricing)
   const customModels = useStore($customModels)
 
   const modelOptions = useQuery({
@@ -392,9 +444,9 @@ export function ModelCatalogMenu({
   )
 
   const [kbOverride, setKbOverride] = useState<null | number>(null)
-  // A parked cursor is not a cursor in use: until the mouse actually moves,
-  // hover can't take rows out from under the keyboard.
-  const pointerQuiet = usePointerQuiet()
+  // Searchable DropdownMenu rows already cancel Radix's hover-to-focus while
+  // the search owns focus (#53980). Keep rows hit-testable so the first
+  // deliberate click works even before the pointer has moved (#123040).
 
   const rowIsCurrent = (row: KbRow) =>
     row.kind === 'moa'
@@ -540,9 +592,6 @@ export function ModelCatalogMenu({
     }
   }
 
-  // Rows are hover-selectable, so they go inert with the pointer.
-  const quietRows = pointerQuiet && 'pointer-events-none'
-
   return (
     <>
       <DropdownMenuSearch
@@ -600,7 +649,7 @@ export function ModelCatalogMenu({
           {copy.noModels}
         </DropdownMenuItem>
       ) : hasList ? (
-        <div className={cn('max-h-[max(150px,30dvh)] overflow-y-auto py-0.5', quietRows)} ref={listRef}>
+        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" ref={listRef}>
           {groups.map(group => {
             const slug = group.provider.slug
 
@@ -640,6 +689,14 @@ export function ModelCatalogMenu({
                     const isCurrent = activeId !== null
                     const { name, tag } = modelDisplayParts(family.id)
                     const caps = group.provider.capabilities?.[family.id]
+
+                    // Live per-model $/Mtok pricing (Nous Portal and other
+                    // providers that ship it). A `-fast` sibling shares the
+                    // base id's price: the collapsed row fronts the base, so
+                    // fall back to it when only the fast variant is unpriced.
+                    const pricing =
+                      group.provider.pricing?.[family.id] ??
+                      (family.fastId ? group.provider.pricing?.[family.fastId] : undefined)
 
                     // Managed local model loading into memory right now:
                     // real load percent, keyed by exact model id (remote
@@ -706,12 +763,9 @@ export function ModelCatalogMenu({
                               <HighlightMatches foldSeparators query={search} text={name} />
                             </span>
                             {metaTags.map(chip => (
-                              <span
-                                className="shrink-0 rounded-sm border border-(--ui-stroke-secondary) bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] font-medium uppercase leading-none tracking-wide text-(--ui-text-tertiary)"
-                                key={chip}
-                              >
+                              <Badge className="shrink-0 uppercase tracking-wide" key={chip} size="xs" variant="muted">
                                 {chip}
-                              </span>
+                              </Badge>
                             ))}
                           </span>
                           {loadProgress ? (
@@ -730,6 +784,7 @@ export function ModelCatalogMenu({
                               </span>
                             </span>
                           ) : null}
+                          {showPricing && pricing ? <ModelPrice pricing={pricing} /> : null}
                           {isCurrent ? (
                             <Codicon
                               className={cn('text-foreground', loadProgress ? 'ml-1' : 'ml-auto')}
@@ -782,7 +837,7 @@ export function ModelCatalogMenu({
       ) : null}
 
       {!hideCatalog && shownMoaPresets.length > 0 ? (
-        <div className={cn(quietRows)}>
+        <div>
           {hasList ? <DropdownMenuSeparator className="mx-0" /> : null}
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
           {shownMoaPresets.map(preset => {
@@ -808,7 +863,7 @@ export function ModelCatalogMenu({
       ) : null}
 
       {customSlug && customProviders.length > 0 ? (
-        <div className={cn(quietRows)}>
+        <div>
           {hasList || shownMoaPresets.length > 0 ? <DropdownMenuSeparator className="mx-0" /> : null}
           <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copyPicker.customModel}</DropdownMenuLabel>
           {customProviders.map(provider => (

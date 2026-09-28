@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopBootstrapState, DesktopConnectionsRegistry } from '@/global'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { BACKEND_BOOT_WAIT_TIMEOUT_MS } from '@/lib/with-timeout'
 import { $desktopBoot } from '@/store/boot'
 import {
   $connectionsRegistry,
@@ -455,37 +456,40 @@ async function advanceBackoff() {
 }
 
 describe('default-route profile adoption', () => {
-  it('keeps a peer primary on its registered gateway across boot, reconnect and soft switch', async () => {
-    const originalUrl = window.location.href
-    window.history.replaceState(null, '', '/?peer=1&profile=coder&connectionId=coder-remote')
+  it.each(['peer=1', 'win=secondary&watch=1'])(
+    'keeps %s on its registered gateway across boot, reconnect and soft switch',
+    async marker => {
+      const originalUrl = window.location.href
+      window.history.replaceState(null, '', `/?${marker}&profile=coder&connectionId=coder-remote`)
 
-    const desktop = {
-      ...fakeDesktop(),
-      getConnection: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
-      getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
-      getGatewayWsUrlFor: vi.fn(async () => coderConn.wsUrl)
+      const desktop = {
+        ...fakeDesktop(),
+        getConnection: vi.fn(async profile => (profile ? primaryConn : { ...coderConn, registryScoped: true })),
+        getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
+        getGatewayWsUrlFor: vi.fn(async () => coderConn.wsUrl)
+      }
+
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+      try {
+        render(<Harness />)
+        await flushAsync()
+        expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+
+        FakeWebSocket.instances.at(-1)!.drop()
+        await advanceBackoff()
+        expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+
+        act(() => connectionApplied?.())
+        await flushAsync()
+        expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+        expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'coder-remote', profile: 'coder' })
+        expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
+      } finally {
+        window.history.replaceState(null, '', originalUrl)
+      }
     }
-
-    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
-
-    try {
-      render(<Harness />)
-      await flushAsync()
-      expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
-
-      FakeWebSocket.instances.at(-1)!.drop()
-      await advanceBackoff()
-      expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
-
-      act(() => connectionApplied?.())
-      await flushAsync()
-      expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
-      expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'coder-remote', profile: 'coder' })
-      expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
-    } finally {
-      window.history.replaceState(null, '', originalUrl)
-    }
-  })
+  )
 
   it.each([null, 'coder-remote'])(
     'dials the saved startup route before an ambient sender can replace it (%s)',
@@ -1781,11 +1785,11 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($desktopBoot.get().error).toBeNull()
 
-    // Advance past the shared backend-boot budget (45s) — the
+    // Advance past the shared backend-boot budget — the
     // stalled await must reject on its own so boot()'s catch runs instead of
     // waiting indefinitely on main.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(45_000)
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS)
     })
 
     expect($desktopBoot.get().error).toBeTruthy()
@@ -1819,11 +1823,11 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewaySwitching.get()).toBe(true)
 
-    // Advance past the shared backend-boot budget (45s) — the
+    // Advance past the shared backend-boot budget — the
     // stalled await must reject so the `finally` clears $gatewaySwitching
     // instead of latching the switch UI frozen forever.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(45_000)
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS)
     })
 
     expect($gatewaySwitching.get()).toBe(false)

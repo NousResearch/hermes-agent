@@ -1,4 +1,5 @@
 """PM's resolver must not depend on the application it is repairing."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -135,3 +136,60 @@ def test_sealed_worker_command_uses_only_its_recorded_site(tmp_path, monkeypatch
     entries = json.loads(result.stdout)
     assert str(site) in entries
     assert not any(Path(entry).name in {"site-packages", "dist-packages"} for entry in entries)
+
+
+def test_one_store_through_symlinked_homes_keeps_one_pm_runtime(tmp_path, monkeypatch):
+    """#123798: a store reached through symlinks (a per-task HERMES_HOME whose tools/ links back,
+    a home under /home -> /var/home) is ONE PM runtime: every spelling reuses the selected
+    generation, and a record written before canonicalization is not re-staged."""
+    from pm import runtime
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "pyproject.toml").write_text("[project]\nname = 'fixture'\n")
+    (project / "uv.lock").write_text("version = 1\n")
+    real = tmp_path / "volume" / "tools"
+    (real / "python" / "bin").mkdir(parents=True)
+    (real / "python" / "bin" / "python3.14").touch()
+    home, task = tmp_path / "home", tmp_path / "task"
+    try:
+        (real / "python" / "bin" / "python3").symlink_to("python3.14")  # as the pinned CPython ships
+        for linked in (home, task):
+            linked.mkdir()
+            (linked / "tools").symlink_to(real, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    def pre_fix_identity(python: Path) -> str:  # the selected.json format earlier releases wrote
+        digest = hashlib.sha256()
+        for name in ("pyproject.toml", "uv.lock"):
+            digest.update((project / name).read_bytes() + b"\0")
+        digest.update(str(python).encode())
+        return digest.hexdigest()
+
+    staged = []
+
+    def stage(uv, python, environment, **_):
+        staged.append(python)
+        environment.mkdir(parents=True)
+        return runtime._python(environment)
+
+    monkeypatch.setattr("pm.runtime_stage.stage_runtime", stage)
+    monkeypatch.setattr(runtime, "_validate", lambda python, env: "")
+    monkeypatch.setattr(runtime, "_hold_for_children", lambda environment: None)
+    root = tmp_path / "pm-runtime"
+    old = root / "generations" / "old"
+    old.mkdir(parents=True)
+    (old / "pm-runtime.json").write_text("{}")
+    (root / "selected.json").write_text(json.dumps(
+        {"inputs": pre_fix_identity(home / "tools" / "python" / "bin" / "python3"), "generation": "generations/old"}))
+
+    def launch(tools: Path, bootstrap: bool = False) -> Path:
+        return runtime.prepare_runtime(tools / "uv", tools / "python" / "bin" / "python3", root,
+                                       project=project, bootstrap=bootstrap)
+
+    assert launch(home / "tools") == runtime._python(old)
+    current = launch(task / "tools", bootstrap=True)  # a per-task home that was already churning re-stages once
+    for tools in (home / "tools", task / "tools", real, home / "tools"):
+        assert launch(tools) == current
+    assert len(staged) == 1

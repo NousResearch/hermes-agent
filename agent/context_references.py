@@ -17,6 +17,7 @@ from typing import Awaitable, Callable
 
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
+from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.sizefmt import format_bytes
 
 # ── Plugin context-reference provider API ────────────────────────────────────
@@ -296,10 +297,30 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
     if is_folder:
         listing = _build_folder_listing(path, cwd, display_base=allowed_root)
         return None, f"📁 {ref.raw} ({estimate_tokens_rough(listing)} tokens)\n{listing}"
+    try:
+        # Keep admission through every sniff, stat and text read (a connection can start
+        # between a check and a later open otherwise), but release it before token
+        # counting/formatting: the registry lock blocks every tracked connect/close.
+        with offline_file_access(path, what="preview context reference"):
+            early, text = _read_file_reference(ref, path, max_inline_tokens)
+    except LiveConnectionError:
+        return None, _on_disk_reference_block(
+            ref, path, descriptor="live SQLite database file",
+            reason="not previewed: raw access would cancel SQLite's POSIX locks.",
+            guidance="Do not open this file directly while its database connection is live.",
+        )
+    return early or _format_file_reference(ref, path, text, max_inline_tokens)
+
+
+def _read_file_reference(
+    ref: ContextReference, path: Path, max_inline_tokens: int | None,
+) -> tuple[Expansion | None, str]:
+    """Raw file I/O for an @file ref: ``(early, text)`` where ``early`` is a refusal block
+    (then ``text`` is empty) or ``None`` with the text to inline."""
     if _is_binary_file(path):
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
-        return None, _binary_reference_block(ref, path)
+        return (None, _binary_reference_block(ref, path)), ""
     if ref.line_start is not None:
         # A ranged ref wants a slice, not the file: stream to the window so a GB-scale
         # file serves :1-5 without being materialized. Lines are read in bounded pieces
@@ -338,7 +359,7 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
                     break
                 total_chars += len(line)
                 if char_budget is not None and total_chars > char_budget:
-                    return None, _oversized_text_reference_block(ref, path, total_chars // CHARS_PER_TOKEN)
+                    return (None, _oversized_text_reference_block(ref, path, total_chars // CHARS_PER_TOKEN)), ""
                 parts.append(line)
         text = "".join(parts)
     else:
@@ -346,8 +367,12 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         # file past that byte ceiling is certainly oversized; refuse without reading it.
         size = path.stat().st_size
         if max_inline_tokens is not None and size > max_inline_tokens * CHARS_PER_TOKEN:
-            return None, _oversized_text_reference_block(ref, path, size // CHARS_PER_TOKEN)
+            return (None, _oversized_text_reference_block(ref, path, size // CHARS_PER_TOKEN)), ""
         text = path.read_text(encoding="utf-8-sig")
+    return None, text
+
+
+def _format_file_reference(ref: ContextReference, path: Path, text: str, max_inline_tokens: int | None) -> Expansion:
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
     text_tokens = estimate_tokens_rough(text)
     # Check BEFORE building the fenced block: an oversized file is not going to be
@@ -657,15 +682,18 @@ def _file_metadata(path: Path) -> str:
         size = path.stat().st_size
     except OSError:
         return "unknown size"
-    # A listing line is a summary, not content: past the cap, byte size conveys the
-    # same "how big is this" without a full scan per entry.
-    if _is_binary_file(path) or size > _LINE_COUNT_MAX_BYTES:
-        return f"{size} bytes"
     try:
-        with path.open("rb") as fh:
-            # UTF-8 never embeds 0x0A inside a multibyte sequence, so counting bytes
-            # matches a decoded newline count while streaming instead of read_text.
-            lines = sum(chunk.count(b"\n") for chunk in iter(lambda: fh.read(1 << 20), b""))
-        return f"{lines + 1} lines"
-    except Exception:
+        # A directory preview inspects each entry separately; the registry lock
+        # must cover both its binary sniff and optional line-count read.
+        with offline_file_access(path, what="inspect folder entry"):
+            # A listing line is a summary, not content: past the cap, byte size conveys
+            # the same "how big is this" without a full scan per entry.
+            if _is_binary_file(path) or size > _LINE_COUNT_MAX_BYTES:
+                return f"{size} bytes"
+            with path.open("rb") as fh:
+                # UTF-8 never embeds 0x0A inside a multibyte sequence, so counting bytes
+                # matches a decoded newline while streaming instead of read_text.
+                lines = sum(chunk.count(b"\n") for chunk in iter(lambda: fh.read(1 << 20), b""))
+            return f"{lines + 1} lines"
+    except (LiveConnectionError, OSError):
         return f"{size} bytes"

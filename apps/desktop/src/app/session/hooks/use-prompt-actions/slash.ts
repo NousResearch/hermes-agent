@@ -37,6 +37,7 @@ import {
   $connection,
   $sessions,
   $yoloActive,
+  applySessionTitle,
   setActiveSessionId,
   setCurrentUsage,
   setModelPickerOpen,
@@ -189,7 +190,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
   const compressInFlightRef = useRef(new Set<string>())
 
   return useCallback(
-    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
+    async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean; typed?: boolean }) => {
       // Resolve the session this command targets through the SHARED ladder that
       // submit.ts uses. A slash command runs backend commands against a runtime
       // session, and per-session state (`/goal`, `/usage`, `/status`) is keyed by
@@ -1066,7 +1067,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             const finalTitle = (result?.title || arg).trim()
             const queued = result?.pending === true
 
-            setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
+            // Patch every sidebar slice (lineage-aware), then refresh the
+            // project surfaces — a bare-id recents patch left project rows
+            // stale until a profile switch (#123337).
+            applySessionTitle(sessionId, finalTitle || null)
             await refreshSessions().catch(() => undefined)
             renderSlashOutput(
               finalTitle
@@ -1289,6 +1293,18 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           return
+        }
+
+        // Shared metrics count each command the user typed exactly once, here, whether the desktop
+        // handles it locally or on the gateway (which no longer counts slash.exec itself). An alias
+        // re-dispatch (recordInput=false) and programmatic calls (typed=false) are not user input.
+        if (recordInput && options?.typed !== false) {
+          const metricsSessionId = sessionHint || activeSessionIdRef.current
+
+          void requestGateway('shared_metrics.slash_command', {
+            command: name,
+            ...(metricsSessionId ? { session_id: metricsSessionId } : {})
+          }).catch(() => undefined)
         }
 
         const ctx: SlashActionCtx = { arg, command, name, recordInput, sessionHint }

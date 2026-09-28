@@ -683,6 +683,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['s'],
     help: 'inject a message after the next tool call (no interrupt)',
     name: 'steer',
     run: (arg, ctx) => {
@@ -757,7 +758,7 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.send(last)
       }
 
-      ctx.gateway.rpc<SessionUndoResponse>('session.undo', { session_id: ctx.sid }).then(
+      ctx.gateway.rpc<SessionUndoResponse>('session.undo', { intent: 'retry', session_id: ctx.sid }).then(
         ctx.guarded<SessionUndoResponse>(r => {
           if ((r.removed ?? 0) <= 0) {
             return ctx.transcript.sys('nothing to retry')

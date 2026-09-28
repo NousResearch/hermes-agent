@@ -787,7 +787,7 @@ def _absorb_turn_result(
                     _apply_model_switch(
                         sid, session, _raw, confirm_expensive_model=False,
                         pin_session_override=bool(_prev_override),
-                        persist_override=False)  # session-internal restore, never config.yaml
+                        persist_override=False, count_switch=False)  # session-internal restore, never config.yaml
                 except Exception as _moa_restore_exc:
                     logger.warning("MoA one-shot model restore failed: %s", _moa_restore_exc)
         elif _restore is None:
@@ -879,7 +879,10 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         payload["reasoning"] = last_reasoning
     if status_note:
         payload["warning"] = status_note
-    if result.get("response_previewed"):
+    # A runtime that delivers its final message as an interim (the Codex app-server bridge routes every
+    # completed agentMessage there) never sets response_previewed; the client would render it twice (#125951).
+    was_delivered = getattr(agent, "_interim_text_was_delivered", None)
+    if result.get("response_previewed") or (callable(was_delivered) and was_delivered(raw) is True):
         payload["response_previewed"] = True
     # transform_llm_output may rewrite the final after streaming: the renderer must treat
     # this payload as the authoritative replacement even without a prefix relationship.

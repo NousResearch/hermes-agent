@@ -4,6 +4,40 @@ import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  sharedMetrics: {
+    consentTitle: 'Aider à améliorer Hermes ?',
+    consentBody:
+      'Les métriques partagées ne contiennent que des compteurs bornés. Jamais de prompts, fichiers, chemins ni textes d’erreur. La collecte reste locale. Les envoyer à Nous est un consentement distinct.',
+    whatIsCollected: 'Ce qui est collecté',
+    collectedIntro: 'Uniquement des compteurs bornés :',
+    collectedActivity: 'Activité, durée des sessions, résultats et classes d’erreur',
+    collectedModels: 'Routes de modèles et totaux de tokens',
+    collectedNames: 'Noms des outils, commandes et éléments du catalogue intégrés',
+    collectedMilestones: 'Comptes de configuration regroupés',
+    collectedReliability: 'Résultats et durée des mises à jour, plantages, vitesse de démarrage et de réponse, état des plateformes de messagerie',
+    collectedUsage: "Comment Hermes est utilisé : précision et efficacité de l'agent (modifications réussies, boucles, reprises après erreur, jetons et appels d'outils par tâche, ruptures de cache), temps actif par interface et mode Desktop, zones, actions et réglages de l'app utilisés, vite fermés ou désactivés, et résultats de la configuration des fournisseurs",
+    collectedMachine: "Données générales de la machine : plage de RAM, type de GPU, âge et canal de la version de Hermes, mises à jour en retard, utilisation d'un serveur de modèles local",
+    installId:
+      'L’envoi transmet chaque paquet quotidien au service de télémétrie de Nous. Les paquets portent l’identifiant d’installation de ce profil : un UUID aléatoire stable sans information personnelle, réinitialisé en supprimant le dossier des métriques partagées.',
+    consentWindow:
+      'Seuls les paquets dont toute la période de collecte tombe dans une fenêtre de consentement enregistrée sont envoyés — les données d’avant votre accord, ou de toute période où l’envoi était désactivé, restent sur cette machine. L’envoi peut être désactivé à tout moment.',
+    readDocs: 'Lire tous les détails',
+    share: 'Collecter et envoyer à Nous',
+    local: 'Collecter en local uniquement',
+    off: 'Non merci',
+    changeLater: 'Vous pouvez changer cela à tout moment dans Réglages → Sécurité.',
+    saveFailed: 'Impossible d’enregistrer votre choix',
+    collectLabel: 'Collecter les statistiques d’utilisation',
+    collectDesc:
+      'Compteurs bornés conservés sur cet appareil. Jamais de prompts, fichiers, chemins ni textes d’erreur.',
+    sendLabel: 'Envoyer les statistiques d’utilisation à Nous',
+    sendDesc:
+      'Envoyer chaque paquet quotidien au service de télémétrie de Nous. Seules les données d’une fenêtre de consentement sont envoyées. Nécessite la collecte activée.',
+    unavailable: 'Mettez à jour le backend Hermes pour modifier ce réglage.',
+    stripBody: 'Uniquement des compteurs bornés, jamais de prompts ni de fichiers.',
+    stripChoices: { share: 'Envoyer à Nous', local: 'Local uniquement', off: 'Non merci' },
+    stripDetails: 'Détails'
+  },
   intro: introFr,
   connectors: {
     title: 'Connectez vos applications',
@@ -684,6 +718,8 @@ export const frOverrides = {
       'composer.focus': 'Mettre le focus sur le compositeur',
       'composer.modelPicker': 'Ouvrir le sélecteur de modèle',
       'composer.voice': 'Démarrer / arrêter la conversation vocale',
+      'composer.reasoningUp': 'Augmenter le niveau de raisonnement',
+      'composer.reasoningDown': 'Réduire le niveau de raisonnement',
       'view.toggleSidebar': 'Basculer la barre latérale des sessions',
       'view.cycleSidebarGrouping': 'Changer le regroupement des sessions',
       'view.toggleRightSidebar': "Basculer l'explorateur de fichiers",
@@ -710,6 +746,15 @@ export const frOverrides = {
       'view.findInPage': 'Rechercher dans la page',
       'view.findNext': 'Rechercher la correspondance suivante',
       'view.findPrevious': 'Rechercher la correspondance précédente',
+      'view.tabSlot.1': "Basculer vers l'onglet 1",
+      'view.tabSlot.2': "Basculer vers l'onglet 2",
+      'view.tabSlot.3': "Basculer vers l'onglet 3",
+      'view.tabSlot.4': "Basculer vers l'onglet 4",
+      'view.tabSlot.5': "Basculer vers l'onglet 5",
+      'view.tabSlot.6': "Basculer vers l'onglet 6",
+      'view.tabSlot.7': "Basculer vers l'onglet 7",
+      'view.tabSlot.8': "Basculer vers l'onglet 8",
+      'view.tabSlot.9': "Basculer vers l'onglet 9",
       'appearance.toggleMode': 'Basculer clair / sombre',
       'profile.default': 'Basculer vers le profil par défaut',
       'profile.switch.1': 'Basculer vers le profil 1',
@@ -1165,6 +1210,8 @@ export const frOverrides = {
       textDirection: { auto: 'Auto', rtl: 'De droite à gauche', ltr: 'De gauche à droite' },
       introSplashTitle: "Écran d'accueil",
       introSplashDesc: "Le logo et l'invite affichés dans une conversation vide.",
+      modelPricingTitle: 'Tarifs des modèles',
+      modelPricingDesc: "Affiche les prix d'entrée, de sortie et de lecture du cache par million de jetons dans le sélecteur de modèle.",
       reactionsTitle: 'Réactions aux messages',
       reactionsDesc: 'Réactions emoji façon iMessage — réagissez aux messages, et Hermes peut réagir aux vôtres.',
       tipsTitle: "Astuces dans l'application",
@@ -1176,7 +1223,8 @@ export const frOverrides = {
       toursDesc:
         "Laissez Hermes vous guider dans l'application en assombrissant l'écran et en mettant chaque étape en évidence.",
       composerPopoutTitle: 'Détacher la zone de saisie',
-      composerPopoutDesc: "Autoriser la zone de saisie à s'ouvrir dans une fenêtre flottante distincte.",
+      composerPopoutDesc:
+        'Permet de faire glisser la zone de saisie hors de son emplacement. Désactivé, elle reste ancrée en bas.',
       fileBrowserTitle: 'Navigateur de fichiers',
       fileBrowserDesc:
         "Affiche le navigateur de fichiers à côté du chat lorsqu'un espace de travail est ouvert. Le bouton de la barre de titre modifie aussi ce réglage.",
@@ -2047,6 +2095,8 @@ export const frOverrides = {
       provider: 'Fournisseur',
       model: 'Modèle',
       applying: 'Application...',
+      mainAppliedTitle: 'Modèle principal mis à jour',
+      mainAppliedMessage: model => `Les nouvelles sessions utiliseront ${model}.`,
       defaultsLabel: 'Par défaut',
       reasoning: 'Raisonnement',
       reasoningOff: 'Désactivé',
@@ -2059,6 +2109,7 @@ export const frOverrides = {
       restartFailed: 'Impossible de redémarrer le backend',
       auxiliaryTitle: 'Modèles auxiliaires',
       resetAllToMain: 'Tout réinitialiser au principal',
+      staleAuxDismiss: 'Ne plus afficher',
       auxiliaryDesc:
         "Les tâches d'assistance s'exécutent sur le modèle principal par défaut. Attribuez un modèle dédié à toute tâche pour remplacer.",
       setToMain: 'Définir comme principal',
@@ -2809,6 +2860,7 @@ export const frOverrides = {
       serverStates: {
         connected: 'connecté',
         app_not_running: 'application non lancée',
+        hermes_not_connected: 'connexion MCP manquante',
         endpoint_unavailable: 'point de terminaison indisponible',
         no_interactive_session: 'aucune session interactive',
         version_too_old: 'version trop ancienne',
@@ -3081,12 +3133,6 @@ export const frOverrides = {
       system: 'Système',
       usage: 'Utilisation'
     },
-    sectionDescriptions: {
-      maintenance: 'Diagnostiques, sauvegardes, curateur et données de mémoire',
-      sessions: 'Rechercher et gérer les sessions',
-      system: 'État, journaux et actions système',
-      usage: 'Activité des jetons, coûts et skills au fil du temps'
-    },
     nav: {
       newChat: {
         title: 'Nouvelle session',
@@ -3172,7 +3218,7 @@ export const frOverrides = {
     actions: count => `${count} actions`,
     logFile: 'Fichier journal',
     logLevel: 'Niveau',
-    logSearchPlaceholder: 'Filtrer les lignes du journal...',
+    logSearchPlaceholder: 'Rechercher dans les journaux…',
     maintenance: {
       runOps: 'Diagnostiques',
       doctor: 'Exécuter le diagnostic',
@@ -3221,6 +3267,13 @@ export const frOverrides = {
   },
   messaging: {
     search: 'Rechercher dans la messagerie...',
+    statusFilter: {
+      all: 'Tous',
+      bad: 'Erreurs',
+      good: 'Connectés',
+      muted: 'Inactifs',
+      warn: 'Attention requise'
+    },
     loading: 'Chargement des plateformes de messagerie...',
     loadFailed: 'Échec du chargement des plateformes de messagerie',
     states: {
@@ -4078,6 +4131,7 @@ export const frOverrides = {
       backgroundRunning: 'Tâche en arrière-plan en cours',
       draftSession: 'Brouillon — aucun message envoyé',
       handoffOrigin: platform => `Transférée depuis ${platform}`,
+      continuationOrigin: 'Continuation automatique — cette conversation a été compressée puis poursuivie',
       ownedByProfile: profile => `Profil : ${profile}`,
       renamed: 'Renommée',
       renameFailed: 'Échec du renommage',
@@ -4279,6 +4333,8 @@ export const frOverrides = {
     restoredDraftNotice: 'Votre message non envoyé a été restauré',
     restoredDraftUndo: 'Annuler',
     queueEdit: 'Modifier',
+    queueExpand: 'Déplier',
+    queueCollapse: 'Replier',
     queueSendNext: 'Suivant',
     queueSteer: 'Diriger — réorienter maintenant le tour en cours',
     queueSend: 'Envoyer',
@@ -4384,6 +4440,7 @@ export const frOverrides = {
     goalWaiting: 'Objectif en attente',
     subagents: count => `${count} sous-agent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tâches ${done}/${total}`,
+    previousTodos: (done, total) => `Tâches précédentes ${done}/${total}`,
     running: 'En cours',
     stop: 'Arrêter',
     dismiss: 'Rejeter',
@@ -4627,6 +4684,7 @@ export const frOverrides = {
     maybeLater: 'Peut-être plus tard',
     moreChanges: count =>
       `+ ${count} ${count === 1 ? 'changement supplémentaire inclus' : 'changements supplémentaires inclus'}.`,
+    copyFullLog: 'Copier le journal complet des modifications',
     manualTitle: 'Mise à jour depuis votre terminal',
     manualUnavailableTitle: 'Mise à jour impossible ici',
     manualBody:
@@ -4975,7 +5033,11 @@ export const frOverrides = {
     noAuthenticatedProviders: 'Aucun fournisseur authentifié.',
     addProvider: 'Ajouter un fournisseur…',
     addCustomModel: 'Ajouter un modèle personnalisé',
-    removeCustomModel: 'Retirer le modèle personnalisé'
+    removeCustomModel: 'Retirer le modèle personnalisé',
+    resetToDefaults: 'Rétablir les valeurs par défaut',
+    resetConfirm: 'Rétablir la visibilité des modèles par défaut ?',
+    resetDescription: 'Vos choix de modèles affichés et masqués sont effacés et chaque fournisseur retrouve sa liste par défaut. Les modèles personnalisés ajoutés sont conservés et affichés.',
+    resetAction: 'Rétablir'
   },
   shell: {
     windowControls: 'Contrôles de fenêtre',
@@ -4987,7 +5049,11 @@ export const frOverrides = {
       editModels: 'Modifier les modèles…',
       followDefault: 'Utiliser le modèle par défaut des Réglages',
       refreshModels: 'Actualiser les modèles',
-      fast: 'Rapide'
+      fast: 'Rapide',
+      free: 'gratuit',
+      cacheRead: 'lecture en cache',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'Aucune option pour ce modèle',
@@ -5465,8 +5531,9 @@ export const frOverrides = {
             `${provider} a renvoyé une erreur serveur. Réessayez dans un instant ou changez de fournisseur.`
         },
         timeout: {
-          title: 'Délai de réponse dépassé',
-          body: provider => `${provider} n'a pas répondu à temps. Réessayez pour renvoyer le message.`
+          title: 'Service d’IA injoignable',
+          body: provider =>
+            `${provider} est injoignable ou n'a pas répondu à temps. Vérifiez votre connexion internet, puis réessayez.`
         },
         stream_drop: {
           title: 'La réponse a été interrompue',
@@ -5603,6 +5670,8 @@ export const frOverrides = {
       preparingAudio: "Préparation de l'audio…",
       stopReading: 'Arrêter la lecture',
       readAloud: 'Lire à voix haute',
+      copyFullResponse: 'Copier la réponse complète',
+      readAloudFullResponseHint: 'Maj+clic : lire la réponse complète',
       editMessage: 'Modifier le message',
       expandMessage: 'Développer le message',
       scrollToBottom: 'Défiler vers le bas',
@@ -6093,6 +6162,11 @@ export const frOverrides = {
   ui: {
     search: {
       clear: 'Effacer la recherche'
+    },
+    logs: {
+      bottom: 'Aller à la fin',
+      search: 'Rechercher dans les journaux…',
+      top: 'Aller au début'
     },
     pagination: {
       label: 'pagination',

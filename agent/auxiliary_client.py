@@ -1171,6 +1171,10 @@ def _close_quietly(target: Any, failure_note: Optional[str]) -> None:
                 logger.debug("Codex auxiliary: %s", failure_note, exc_info=True)
 
 
+# The context compressor keys its retry-ladder classification on this text (#124077).
+CODEX_STREAM_STALL_MARKER = "stream stalled"
+
+
 class _CodexStreamGuard:
     """Progress-aware deadline + FD-safe timeout watchdog for one Codex aux stream attempt.
 
@@ -1272,7 +1276,7 @@ class _CodexStreamGuard:
                 "Codex auxiliary Responses stream produced no output "
                 f"within {float(self.no_progress_timeout):.1f}s (no-progress timeout, {elapsed:.1f}s elapsed)")
         return (
-            "Codex auxiliary Responses stream stalled: no new output "
+            f"Codex auxiliary Responses {CODEX_STREAM_STALL_MARKER}: no new output "
             f"for {float(self.no_progress_timeout):.1f}s ({elapsed:.1f}s elapsed)")
 
     def _close_client_on_timeout(self) -> None:
@@ -8220,32 +8224,3 @@ async def _async_call_llm_impl(
         return await _drive_ladder_async(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),
             _perform)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-import copy  # noqa: F401,E402
-
-NOUS_EXTRA_BODY = _nous_extra_body()
-
-def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Dict[str, Any]] = None):
-    """Return (async_client, model_slug) for async consumers.
-
-    For standard providers returns (AsyncOpenAI, model). For Codex returns
-    (AsyncCodexAuxiliaryClient, model) which wraps the Responses API.
-    Returns (None, None) when no provider is available.
-    """
-    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
-    return resolve_provider_client(
-        provider,
-        model=model,
-        async_mode=True,
-        explicit_base_url=base_url,
-        explicit_api_key=api_key,
-        api_mode=api_mode,
-        main_runtime=main_runtime,
-    )
-# ---- END PLUGIN-COMPAT ----

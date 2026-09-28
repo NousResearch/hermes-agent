@@ -766,7 +766,8 @@ class CLISessionMixin:
         turn). Rows are soft-deleted in SessionDB (``active=0``, kept for audit), memory
         providers get ``on_session_switch(rewound=True)``, and the agent is patched like
         /branch does. ``prefill=False`` is for programmatic callers (checkpoint rollback)
-        that must not touch the input buffer.
+        that must not touch the input buffer. Returns the number of user turns undone (None when
+        nothing changed).
         """
         from cli import logger
         if not self.conversation_history:
@@ -820,6 +821,7 @@ class CLISessionMixin:
         # Editable, not auto-sent (Claude-Code-style).
         if prefill and removed_text:
             self._prefill_input_buffer(removed_text)
+        return turns_undone
 
     @staticmethod
     def _undo_content_to_text(content) -> str:

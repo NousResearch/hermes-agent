@@ -23,6 +23,7 @@ from agent.memory_manager import sanitize_context
 
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
 from agent.trajectory import save_trajectory as _save_trajectory_to_file
+from agent.message_metadata import DB_ROW_SNAPSHOT, REPAIR_BOOKKEEPING_FIELDS
 from agent.transcript_repair import sync_flushed_message_markers
 
 
@@ -210,17 +211,23 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
         api_content = content
     # Key order is the divert-JSONL wire order (divert_session_transcript_jsonl).
     row = {
-        "role": role, "content": _durable_content(content), "tool_name": msg.get("tool_name"),
+        "role": role, "content": _durable_content(content),
+        "tool_name": msg.get("tool_name") or (msg.get("name") if role == "tool" else None),
         "tool_calls": msg["tool_calls"] if isinstance(msg.get("tool_calls"), list) else None,
-        "tool_call_id": msg.get("tool_call_id"), "finish_reason": msg.get("finish_reason"),
+        "tool_call_id": msg.get("tool_call_id"), "effect_disposition": msg.get("effect_disposition"),
+        "token_count": msg.get("token_count"), "finish_reason": msg.get("finish_reason"),
         **{k: msg.get(k) for k in _ROW_REASONING_KEYS},
         "_compressed_summary": bool(msg.get(COMPRESSED_SUMMARY_METADATA_KEY)),
         "timestamp": timestamp, "api_content": api_content,
         "display_kind": _summary_display_kind(msg), "display_metadata": msg.get("display_metadata"),
-        "platform_message_id": msg.get("platform_message_id"),  # load-bearing for restart drain-window recovery dedup
+        # Load-bearing for restart drain-window recovery dedup.
+        "platform_message_id": msg.get("platform_message_id") or msg.get("message_id"),
+        "observed": bool(msg.get("observed")),
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
+    if isinstance(msg.get(DB_ROW_SNAPSHOT), str):
+        row[DB_ROW_SNAPSHOT] = msg[DB_ROW_SNAPSHOT]
     return row
 
 
@@ -364,7 +371,10 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
     if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
         # A replaced/quarantined handle will not take this batch again — keep it on disk.
         try:
-            divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "", batch_rows)
+            # The CAS digest / adopted row are local repair bookkeeping, not transcript payload.
+            divert_session_transcript_jsonl(getattr(agent, "session_id", "") or "",
+                                            [{k: v for k, v in r.items() if k not in REPAIR_BOOKKEEPING_FIELDS}
+                                             for r in batch_rows])
         except Exception:
             logger.warning("JSONL divert failed after state.db %s for %s",
                            agent._last_persistence_error_cause, getattr(agent, "session_id", None), exc_info=True)

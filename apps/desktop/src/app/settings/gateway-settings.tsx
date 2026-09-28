@@ -1320,7 +1320,14 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
               action={
                 <Select
                   onValueChange={selectHost}
-                  value={sshHostSuggestions.includes(state.sshHost) ? state.sshHost : SSH_HOST_CUSTOM}
+                  // Only report an actual host here. Leaving the value at the
+                  // empty string shows the placeholder; using SSH_HOST_CUSTOM
+                  // while the dropdown is still rendered would make the FIRST
+                  // "Custom" click a no-op (Radix suppresses onValueChange when
+                  // a controlled value doesn't change), so the custom-host
+                  // input would never mount without a round-trip through
+                  // another option.
+                  value={sshHostSuggestions.includes(state.sshHost) ? state.sshHost : ''}
                 >
                   <SelectTrigger className={cn('h-8', CONTROL_TEXT)}>
                     <SelectValue placeholder={g.sshHostPick} />

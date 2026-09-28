@@ -392,6 +392,15 @@ TASK_COMPLETION_GUIDANCE = (
     "produce. Reporting a blocker honestly is always better than inventing a result."
 )
 
+ASYNC_HANDOFF_GUIDANCE = (
+    "# Async handoff\n"
+    "When delegate_task explicitly says background work will deliver its result only after you end the current turn, "
+    "ending the turn is the required handoff — not abandoning the task. Finish only work that does not depend on the "
+    "pending result, then give a brief status and stop so delivery can occur. Do not manufacture polling, no-op, "
+    "placeholder, or unrelated tool calls just to keep the turn open. Do not claim the pending result or task "
+    "completion before it is delivered."
+)
+
 # Universal parallel-tool-call guidance (ALL models): the runtime already executes independent calls
 # concurrently. Supersedes the former Google-only bullet so no model receives the steer twice.
 # Why this matters for cost: every assistant turn resends the entire accumulated conversation (and, on
@@ -1769,26 +1778,3 @@ def build_context_files_prompt(
         return ""
     return ("# Project Context\n\nThe following project context files have been loaded and should be followed:\n\n"
             + "\n".join(sections))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'org_id_of_path': ('agent.skill_utils', 'org_id_of_path'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

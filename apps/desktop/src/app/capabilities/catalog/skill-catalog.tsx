@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { capabilityScoped } from '@/api/client'
+import { Loader } from '@/components/ui/loader'
 import { getOfficialSkills, type ProfileScope, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { HUB_SOURCES_KEY, installHubSkill, notifyHubActionFailed, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
@@ -279,9 +280,11 @@ function ScopedSkillCatalog({
             </CatalogAlert>
           )}
           {hasHubSkills && hubPending && !installedPending && !notice && (
-            <p className="px-3 py-2 text-xs text-(--ui-text-tertiary)" role="status">
-              {t.skills.loading}
-            </p>
+            <Loader
+              className="mx-auto my-2 size-6 text-(--ui-text-tertiary)"
+              label={t.skills.loading}
+              type="rose-curve"
+            />
           )}
         </>
       }

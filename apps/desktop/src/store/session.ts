@@ -16,7 +16,7 @@ import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
-import { isSessionRemovalPending } from './session-removal'
+import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
 
@@ -704,12 +704,28 @@ export function mergeSessionPage(
     merged.flatMap(session => (session._lineage_ids ?? []).map(id => `${profileKeyOf(session)}::${id}`))
   )
 
+  // The tombstone set is re-read here, not at the caller: optimistic removal
+  // can land between `previous` being captured and this merge committing (a
+  // messaging "Load more" holds its slice for a long time), and a row the
+  // user archived or deleted must not survive through the keep set — the
+  // settle grace keeps a just-archived chat "recently settled" for 30s, which
+  // is exactly the window the survivor path used to resurrect it (#118156).
+  // A tombstone matches ANY id the row has answered to (tip, root, and every
+  // intermediate lineage segment), same as dropTombstoned applies to incoming
+  // rows; a failed RPC untombstones immediately, so the filter is only ever
+  // as sticky as the removal itself.
+  const tombstones = $removedSessionIds.get()
+
+  const tombstoned = (session: SessionInfo): boolean =>
+    tombstones.size > 0 && tombstoneRowIds(session).some(id => tombstones.has(id))
+
   const survivors = previous.filter(
     session =>
       // The keep-list answers "live, not listed yet" — a hidden row (canonical
       // Bot Chat, room plumbing) is LISTED-NEVER by design, so a live turn or
       // open tab must not resurrect it into the sidebar (#113273).
       !session.hidden &&
+      !tombstoned(session) &&
       !incomingIds.has(identity(session)) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
       !incomingLineageIdMembers.has(identity(session)) &&
@@ -881,6 +897,44 @@ export function touchSessionActivity(
 
     return changed ? next : prev
   })
+}
+
+/** Patch a session's title across EVERY sidebar slice, matching the row by
+ *  any id the conversation has answered to (`sessionMatchesStoredId`) — a
+ *  compression tip, its root, and a middle segment all name the same chat.
+ *  A rename writes one title; every surface that renders the row (recents,
+ *  cron, messaging) must show it without waiting for a profile switch to
+ *  force a refetch (#123337). Reference-stable per slice when nothing
+ *  matched or the title is already current. */
+export function applySessionTitle(storedSessionId: string | null | undefined, title: string | null): void {
+  const id = storedSessionId?.trim()
+
+  if (!id) {
+    return
+  }
+
+  const next = title?.trim() || null
+
+  const patch = (rows: SessionInfo[]): SessionInfo[] => {
+    let changed = false
+
+    const mapped = rows.map(session => {
+      if (!sessionMatchesStoredId(session, id) || session.title === next) {
+        return session
+      }
+
+      changed = true
+
+      return { ...session, title: next }
+    })
+
+    return changed ? mapped : rows
+  }
+
+  setSessions(patch)
+  setCronSessions(patch)
+  setMessagingSessions(patch)
+  setUnlistedSessionOwnerRows(patch)
 }
 
 export const $connection = atom<HermesConnection | null>(null)

@@ -643,6 +643,98 @@ export interface FreeTierProvisionResult {
 export interface FreeTierAckNoticeResult {
   acked: boolean
 }
+/** The focused profile's ``telemetry.shared_metrics`` opt-ins. ``send`` is never true while ``enabled`` is false; ``decided`` = either key is written in config.yaml (the shipped defaults are not an answer). */
+export interface SharedMetricsConsentResult {
+  enabled: boolean
+  send: boolean
+  decided: boolean
+}
+/** ``send`` is ignored unless ``enabled``; ``first_run`` marks the Desktop first-run answer. */
+export interface SharedMetricsSetParams {
+  profile?: string | null
+  enabled: boolean
+  send?: boolean
+  first_run?: boolean
+}
+/** ``command`` is the raw typed name (no leading ``/``, no args); the backend canonicalizes it against the published registry. ``session_id`` scopes the count to that session's profile. */
+export interface SharedMetricsSlashCommandParams {
+  profile?: string | null
+  command: string
+  session_id?: string | null
+}
+export interface SharedMetricsSlashCommandResult {
+  ok: boolean
+}
+/** ``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready (TUI gateway ready / Desktop backend attached), measured once per launch by the client. The client names its surface because a Desktop may attach to a URL/cloud backend where ``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection. ``launch_id`` is an opaque per-launch token the backend latches on (never recorded), so a reconnect re-sending the same launch counts once while a new launch counts again. */
+export interface SharedMetricsStartupLatencyParams {
+  profile?: string | null
+  elapsed_ms: number
+  surface?: 'desktop_attach' | 'tui' | null
+  launch_id?: string | null
+}
+export interface SharedMetricsStartupLatencyResult {
+  ok: boolean
+}
+/** One Desktop PACKAGED self-update (electron-updater / App Installer / Store). Source-checkout hand-offs run ``hermes update`` and are counted from its receipt, never here. Raw words; the backend buckets them: ``outcome`` success|failed|noop|refused, ``failed_stage`` download|verify|apply|restart, ``mechanism`` the updater strategy kind, ``duration_ms`` wall time, ``from_commit_date`` the updated-from build's commit time (epoch seconds) when known. */
+export interface SharedMetricsUpdateRunParams {
+  profile?: string | null
+  outcome: string
+  failed_stage?: string | null
+  mechanism?: string | null
+  duration_ms?: number | null
+  from_commit_date?: number | null
+}
+export interface SharedMetricsUpdateRunResult {
+  ok: boolean
+}
+/** ``area`` is a Desktop surface id (``command_palette``, ``terminal_pane``, ``settings_<view>`` …); the backend collapses anything outside its closed set to ``other``. */
+export interface SharedMetricsDesktopFeatureUseParams {
+  profile?: string | null
+  area: string
+}
+export interface OkResult {
+  ok?: boolean
+}
+/** ``kind`` notice_dismissed|error_toast|renderer_crash|backend_disconnect|slow_frame; ``detail`` a closed code-defined word for that kind (notice id, error category, crash reason, drop reason, frame duration bucket), never message text. */
+export interface SharedMetricsDesktopFrictionParams {
+  profile?: string | null
+  kind: string
+  detail: string
+}
+/** ``step`` a Desktop first-run step id; ``event`` reached|completed|abandoned. */
+export interface SharedMetricsDesktopOnboardingParams {
+  profile?: string | null
+  step: string
+  event: string
+}
+/** ``signal`` quick_close|cancelled|setting_off_default|rage_click|undo|feature_disabled; ``target`` a closed code-defined id for that signal (area, flow, action, undo path, feature toggle); ``setting`` a config key for setting_off_default only (the value is never sent — the backend compares it to the default). */
+export interface SharedMetricsDesktopDislikeParams {
+  profile?: string | null
+  signal: string
+  target?: string
+  setting?: string | null
+}
+/** One finished UTC day of Desktop use, aggregated on the client. ``day`` (YYYY-MM-DD) only latches a resend and is never recorded; the raw counts are bucketed by the backend. */
+export interface SharedMetricsDesktopDailyParams {
+  profile?: string | null
+  day: string
+  bot_count?: number
+  modes?: SharedMetricsDesktopModeDay[]
+  actions?: SharedMetricsDesktopActionDay[]
+}
+export interface SharedMetricsDesktopModeDay {
+  mode: 'bots' | 'sessions'
+  active_ms?: number
+  messages_sent?: number
+}
+export interface SharedMetricsDesktopActionDay {
+  action: string
+  via: 'click' | 'menu' | 'palette' | 'shortcut'
+  count: number
+}
+export interface SharedMetricsDesktopDailyResult {
+  recorded: boolean
+}
 export interface ModelOptionsParams {
   profile?: string | null
   session_id?: string | null
@@ -1146,8 +1238,16 @@ export interface DisplayStatus {
   blocker?: string | null
   memory_available_mb?: number | null
   memory_limit_mb?: number | null
+  placement?: string
+  image_switch?: DisplayImageSwitch | null
   lease: DisplayLease
   profile_key: string
+}
+/** A persisted Docker sandbox kept on the previous default image; the user decides the switch. */
+export interface DisplayImageSwitch {
+  current_image: string
+  target_image: string
+  containers: number
 }
 /** ``tools/bot_desktop/lease.py::Lease`` as clients may see it: the holder's viewer id is a capability and never leaves the gateway; ``viewer_hash`` lets the holder recognise itself. */
 export interface DisplayLease {
@@ -1183,6 +1283,8 @@ export interface DisplayStopResult {
   blocker?: string | null
   memory_available_mb?: number | null
   memory_limit_mb?: number | null
+  placement?: string
+  image_switch?: DisplayImageSwitch | null
   lease: DisplayLease
   profile_key: string
   stopped: boolean
@@ -1206,11 +1308,38 @@ export interface DisplayObserveResult {
   blocker?: string | null
   memory_available_mb?: number | null
   memory_limit_mb?: number | null
+  placement?: string
+  image_switch?: DisplayImageSwitch | null
   lease: DisplayLease
   profile_key: string
   ticket: string
   path: string
   viewer_id: string
+}
+export interface DisplaySwitchSandboxImageParams {
+  profile?: string | null
+  approve?: boolean
+}
+export interface DisplaySwitchSandboxImageResult {
+  profile: string
+  supported: boolean
+  installed: boolean
+  missing: string[]
+  running: boolean
+  pid?: number | null
+  display?: string | null
+  socket?: string | null
+  geometry: string
+  install_command?: string | null
+  browser?: string | null
+  blocker?: string | null
+  memory_available_mb?: number | null
+  memory_limit_mb?: number | null
+  placement?: string
+  image_switch?: DisplayImageSwitch | null
+  lease: DisplayLease
+  profile_key: string
+  docker_image: string
 }
 export interface DisplayInstallResult {
   started: boolean
@@ -1621,9 +1750,6 @@ export interface BotRelayReplyParams {
   error?: string | null
   reason?: string | null
 }
-export interface OkResult {
-  ok?: boolean
-}
 export interface BrowserControllerRegisterParams {
   session_id: string
   controller_id: string
@@ -1691,10 +1817,11 @@ export interface CompletionItem {
   meta?: string
   kind?: string | null
 }
-/** ``session_id`` binds skill completions to that session's profile and workspace (project skills). */
+/** ``session_id`` binds skill completions to that session's profile and workspace (project skills); ``profile`` scopes a session-less request (a new-chat draft). */
 export interface CompleteSlashParams {
   text?: string | null
   session_id?: string | null
+  profile?: string | null
 }
 /** ``replace_from`` is the column the accepted item replaces from. */
 export interface CompleteSlashResult {
@@ -2062,10 +2189,10 @@ export interface SessionForeignImportResult {
   session_id: string
   already_imported?: boolean
 }
-/** ``delegations`` is reserved for async delegation records and is currently always empty. */
+/** ``delegations``: recently failed async delegation tasks for the session (durable store), newest first. */
 export interface SubagentListResult {
   subagents?: SubagentSnapshot[]
-  delegations?: Record<string, unknown>[]
+  delegations?: FailedDelegation[]
 }
 /** ``methods_subagents._SUBAGENT_SNAPSHOT_FIELDS`` projection of one live child record. */
 export interface SubagentSnapshot {
@@ -2083,6 +2210,16 @@ export interface SubagentSnapshot {
 }
 /** Lifecycle of one delegated child (``tools/delegate_tool_child_run.py``); ``failed`` / ``error`` / ``timeout`` / ``interrupted`` / ``completed`` are terminal. */
 export type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'error' | 'timeout' | 'interrupted'
+/** ``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation. */
+export interface FailedDelegation {
+  delegation_id: string
+  task_index?: number
+  status: string
+  goal?: string
+  error?: string | null
+  dispatched_at?: number | null
+  completed_at?: number | null
+}
 export interface SubagentIdParams {
   session_id: string
   profile?: string | null
@@ -2312,6 +2449,7 @@ export interface ProjectTreeSession {
   handoff_state?: string | null
   _lineage_root_id?: string | null
   _lineage_ids?: string[] | null
+  continuation_kind?: string | null
   profile?: string | null
   [key: string]: unknown
 }
@@ -2844,6 +2982,7 @@ export interface SessionResumeParams {
   omit_messages?: boolean
   eager_build?: boolean
   close_on_disconnect?: boolean
+  inline_images?: boolean
 }
 export interface SessionResumeResult {
   session_id: string
@@ -3007,11 +3146,22 @@ export interface SessionTitleResult {
 /** ``session_id`` is a live runtime id first, else a stored id / key / title. */
 export interface SessionSetHiddenParams {
   session_id: string
-  hidden?: boolean
+  hidden: boolean
   profile?: string | null
 }
 export interface SessionSetHiddenResult {
   hidden: boolean
+  session_key: string
+}
+/** ``session_id`` (or its ``session_key`` alias) is a live runtime id first, else a stored id / key / title. */
+export interface SessionArchiveParams {
+  session_id?: string | null
+  session_key?: string | null
+  archived?: boolean
+  profile?: string | null
+}
+export interface SessionArchiveResult {
+  archived: boolean
   session_key: string
 }
 export interface SessionWorkspaceMoveParams {
@@ -3102,7 +3252,9 @@ export interface SessionBranchWholeResult {
 export interface SessionUndoParams {
   session_id: string
   profile?: string | null
+  intent?: UndoIntent | null
 }
+export type UndoIntent = 'retry' | 'undo'
 export interface SessionUndoResult {
   removed: number
 }
@@ -3770,9 +3922,10 @@ export interface SkillInspectInfo {
   skill_md_preview?: string | null
   [key: string]: unknown
 }
-/** ``session_id`` binds the rescan to that session's profile and workspace (project skills). */
+/** ``session_id`` binds the rescan to that session's profile and workspace (project skills); ``profile`` scopes a session-less rescan. */
 export interface SkillsReloadParams {
   session_id?: string | null
+  profile?: string | null
 }
 export interface SkillsReloadResult {
   output: string
@@ -4047,6 +4200,7 @@ export interface PluginsManageResult {
   warnings?: string[] | null
   missing_env?: string[] | null
   python_dependencies?: string[] | null
+  known_issues?: string[] | null
   after_install_path?: string | null
   enabled?: boolean | null
   sha?: string | null
@@ -4083,7 +4237,7 @@ export interface PluginServerRow {
   state: PluginServerState
   sentence: string
 }
-export type PluginServerState = 'connected' | 'app_not_running' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unknown'
+export type PluginServerState = 'connected' | 'app_not_running' | 'hermes_not_connected' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unknown'
 /** One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env`` names the ``.env`` variable and ``has_value`` whether it is set. */
 export interface PluginSettingField {
   key: string
@@ -4284,6 +4438,8 @@ export interface DisplayStatusPayload {
   blocker?: string | null
   memory_available_mb?: number | null
   memory_limit_mb?: number | null
+  placement?: string
+  image_switch?: DisplayImageSwitch | null
   lease: DisplayLease
   profile_key: string
 }
@@ -4776,6 +4932,8 @@ export interface RpcMethods {
   'display.status': { params: ProfileParams; result: DisplayStatus }
   /** Stop the screen. Refused (5300, code viewer_mismatch) while a human holds unless force. */
   'display.stop': { params: DisplayStopParams; result: DisplayStopResult }
+  /** Decide the pending default sandbox image switch for this profile; refused when none is pending. */
+  'display.switchSandboxImage': { params: DisplaySwitchSandboxImageParams; result: DisplaySwitchSandboxImageResult }
   /** One JPEG grab of the bot's screen; read-only, never changes the lease. */
   'display.thumbnail': { params: ProfileParams; result: DisplayThumbnailResult }
   /** Stage a non-image file into the session workspace and hand back its @file: ref. */
@@ -5002,6 +5160,8 @@ export interface RpcMethods {
   'session.activate': { params: SessionActivateParams; result: SessionActivateResult }
   /** Live sessions in this process, insertion order (not a DB browser). */
   'session.active_list': { params: SessionActiveListParams; result: SessionActiveListResult }
+  /** Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity. */
+  'session.archive': { params: SessionArchiveParams; result: SessionArchiveResult }
   /** Fork a live session into a new stored child that shares the parent's history so far. */
   'session.branch': { params: SessionBranchParams; result: SessionBranchResult }
   /** Whole-session branch of a stored parent: the owning backend reads and copies the transcript, which never crosses the wire (a separate method so an older gateway fails loudly, not with an empty branch). */
@@ -5066,6 +5226,26 @@ export interface RpcMethods {
   'setup.runtime_check': { params: SetupRuntimeCheckParams; result: SetupRuntimeCheckResult }
   /** Loose provider check: is ANY provider auth state discoverable for the (launch or named) profile. */
   'setup.status': { params: ProfileParams; result: SetupStatusResult }
+  /** Record one finished Desktop day (mode use + button presses); recorded=false keeps it for a retry. */
+  'shared_metrics.desktop_daily': { params: SharedMetricsDesktopDailyParams; result: SharedMetricsDesktopDailyResult }
+  /** Count one Desktop dislike signal (fire-and-forget; capped per signal per day; a no-op unless on). */
+  'shared_metrics.desktop_dislike': { params: SharedMetricsDesktopDislikeParams; result: OkResult }
+  /** Count one Desktop area used today (fire-and-forget; once per area per UTC day; a no-op unless on). */
+  'shared_metrics.desktop_feature_use': { params: SharedMetricsDesktopFeatureUseParams; result: OkResult }
+  /** Count one Desktop friction event (fire-and-forget; capped per day; a no-op unless on). */
+  'shared_metrics.desktop_friction': { params: SharedMetricsDesktopFrictionParams; result: OkResult }
+  /** Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on). */
+  'shared_metrics.desktop_onboarding': { params: SharedMetricsDesktopOnboardingParams; result: OkResult }
+  /** Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows. */
+  'shared_metrics.set': { params: SharedMetricsSetParams; result: SharedMetricsConsentResult }
+  /** Count one user-typed slash command (fire-and-forget; a no-op unless shared metrics are on). */
+  'shared_metrics.slash_command': { params: SharedMetricsSlashCommandParams; result: SharedMetricsSlashCommandResult }
+  /** Record one client launch-to-ready latency (fire-and-forget; a no-op unless shared metrics are on). */
+  'shared_metrics.startup_latency': { params: SharedMetricsStartupLatencyParams; result: SharedMetricsStartupLatencyResult }
+  /** Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered). */
+  'shared_metrics.status': { params: ProfileParams; result: SharedMetricsConsentResult }
+  /** Count one Desktop packaged self-update outcome (fire-and-forget; a no-op unless shared metrics are on). */
+  'shared_metrics.update_run': { params: SharedMetricsUpdateRunParams; result: SharedMetricsUpdateRunResult }
   /** Run a safe (non-dangerous) shell command captured for ``!cmd`` / inline substitution. */
   'shell.exec': { params: ShellExecParams; result: ShellExecResult }
   /** Skills hub backend: list the profile's skills or search / browse / inspect / install from the hub. */
@@ -5201,6 +5381,7 @@ export const RPC_METHODS = [
   'display.start',
   'display.status',
   'display.stop',
+  'display.switchSandboxImage',
   'display.thumbnail',
   'file.attach',
   'free_tier.ack_notice',
@@ -5314,6 +5495,7 @@ export const RPC_METHODS = [
   'rollback.restore',
   'session.activate',
   'session.active_list',
+  'session.archive',
   'session.branch',
   'session.branch_stored',
   'session.branch_whole',
@@ -5346,6 +5528,16 @@ export const RPC_METHODS = [
   'session.workspace.move',
   'setup.runtime_check',
   'setup.status',
+  'shared_metrics.desktop_daily',
+  'shared_metrics.desktop_dislike',
+  'shared_metrics.desktop_feature_use',
+  'shared_metrics.desktop_friction',
+  'shared_metrics.desktop_onboarding',
+  'shared_metrics.set',
+  'shared_metrics.slash_command',
+  'shared_metrics.startup_latency',
+  'shared_metrics.status',
+  'shared_metrics.update_run',
   'shell.exec',
   'skills.manage',
   'skills.reload',
@@ -5516,7 +5708,7 @@ export interface BackendGatewayEventMap {
   'preview.restart.complete': SideAgentCompletePayload
   /** Progress line from the preview-restart agent. */
   'preview.restart.progress': PreviewRestartProgressPayload
-  /** projects.db moved; refetch the Projects sidebar. */
+  /** projects.db moved; refetch the project list + tree. */
   'projects.changed': ChangeSignalPayload
   /** Affection reaction detected in the user's message (hearts etc.). */
   reaction: ReactionPayload

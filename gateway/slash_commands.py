@@ -326,9 +326,9 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_whoami_command(self, event: MessageEvent) -> str:
         """Handle /whoami — platform, DM-vs-group scope, tier and runnable commands (always allowed)."""
-        from gateway.slash_access import policy_for_source
+        from gateway.slash_access import policy_for_runner_source
         source = event.source
-        policy = policy_for_source(self.config, source)
+        policy = policy_for_runner_source(self, source)
         platform = source.platform.value if source and source.platform else "?"
         chat_type = ((source.chat_type if source else "") or "dm").lower()
         scope = "DM" if chat_type in {"dm", "direct", "private", ""} else "group/channel"
@@ -599,11 +599,11 @@ class GatewaySlashCommandsMixin(
         """``allowed_commands`` for /help and /commands when the caller is a gated non-admin:
         the slash-access floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog
         never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
-        from gateway.slash_access import policy_for_source
+        from gateway.slash_access import policy_for_runner_source
         source = event.source
-        # ``getattr``: partially-constructed runners (``GatewayRunner.__new__`` in tests) have
-        # no ``config``; policy_for_source treats None as ungated.
-        policy = policy_for_source(getattr(self, "config", None), source)
+        # Partially-constructed runners (``GatewayRunner.__new__`` in tests) have no ``config``;
+        # policy_for_source treats None as ungated.
+        policy = policy_for_runner_source(self, source)
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
             return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
         return {}
@@ -935,13 +935,13 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_approvals_command(self, event: MessageEvent) -> str:
         """Show or persist the profile-wide dangerous-command approval mode."""
-        from gateway.slash_access import policy_for_source
+        from gateway.slash_access import policy_for_runner_source
         from hermes_cli.approval_mode import run_approval_mode_command
         requested = event.get_command_args().strip() or None
         # This mutates profile-wide security policy. The central slash gate can allow selected
         # commands to non-admin users, so enforce admin again at this side-effect boundary.
         # Unconfigured policies remain unrestricted.
-        policy = policy_for_source(self.config, event.source)
+        policy = policy_for_runner_source(self, event.source)
         if requested and not policy.is_admin(event.source.user_id):
             return "Only gateway admins can change the persistent approval mode."
         # Approval checks load config dynamically; do not evict the cached agent or alter its
@@ -1330,36 +1330,3 @@ class GatewaySlashCommandsMixin(
             return t("gateway.update.start_failed", error=e)
         self._schedule_update_notification_watch()
         return t("gateway.update.starting")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'HISTORY_UNREADABLE': ('gateway.slash_commands_status', 'HISTORY_UNREADABLE'),
-    'MessageType': ('gateway.platforms.event', 'MessageType'),
-    'SessionSource': ('gateway.session', 'SessionSource'),
-    'base_url_host_matches': ('utils', 'base_url_host_matches'),
-    'build_session_key': ('gateway.session', 'build_session_key'),
-    'clear_model_endpoint_credentials': ('hermes_cli.config', 'clear_model_endpoint_credentials'),
-    'extract_api_content_sidecar': ('agent.turn_context', 'extract_api_content_sidecar'),
-    'fetch_account_usage': ('agent.account_usage', 'fetch_account_usage'),
-    'is_shared_multi_user_session': ('gateway.session', 'is_shared_multi_user_session'),
-    'render_account_usage_lines': ('agent.account_usage', 'render_account_usage_lines'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

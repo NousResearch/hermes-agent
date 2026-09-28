@@ -8,6 +8,7 @@ import logging
 import contextlib
 import argparse
 import hashlib
+import json
 import os
 import platform
 import re
@@ -409,6 +410,32 @@ def _electron_dir(project_root: Path) -> Path:
     return project_root / "node_modules" / "electron"
 
 
+def _runs_from(proc, release_dir: Path) -> bool:
+    """True when *proc*'s executable lives inside *release_dir* (False when it cannot be read)."""
+    try:
+        return release_dir in Path(proc.exe()).resolve().parents
+    except Exception:
+        return False
+
+
+def _desktop_ancestor_in(desktop_dir: Path) -> Optional[int]:
+    """PID of a Desktop from this build's ``release`` tree that is one of OUR ancestors, else None.
+
+    That Desktop is running this process (its backend's launch-time update tail, or a
+    `hermes update` it spawned). On Windows it holds the exe lock the promotion rename
+    needs, and it cannot be stopped without killing this process first. Never raises."""
+    try:
+        import psutil
+        release_dir = (desktop_dir / "release").resolve()
+        ancestors = list(psutil.Process(os.getpid()).parents())
+    except Exception:
+        return None
+    for parent in ancestors:
+        if _runs_from(parent, release_dir):
+            return int(parent.pid)
+    return None
+
+
 def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool = False) -> list[int]:
     """Terminate a running desktop app whose exe lives INSIDE this build's ``release`` tree.
 
@@ -428,13 +455,17 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
         return []
 
     me = os.getpid()
-    # On POSIX, never stop a Desktop that is one of OUR ancestors. A
-    # historical Desktop (v2026.7.1 Linux in-app update) runs `hermes update`
-    # as a child with piped stdout/stderr and owns the post-update rebuild and
-    # relaunch. Killing it breaks those pipes (EPIPE fails the update) and
-    # leaves nobody to relaunch. It also outlives the swap safely because it
-    # relaunches itself afterwards. Windows keeps stopping it: there, the exe
-    # lock would make the rename fail anyway.
+    # Never stop a Desktop that is one of OUR ancestors, on any platform: this
+    # process lives in its tree. A historical Desktop (v2026.7.1 Linux in-app
+    # update) runs `hermes update` as a child with piped stdout/stderr and owns
+    # the post-update rebuild and relaunch. Killing it breaks those pipes (EPIPE
+    # fails the update) and leaves nobody to relaunch. On Windows the same holds
+    # for the launch-time tail a Desktop's own backend runs
+    # (venv_sync._finish_source_update): stopping that Desktop took the whole
+    # tree down with it before the tail could clear its markers, so every
+    # launch repeated it (#123499). The exe lock that stop was meant to free
+    # cannot be freed by the process that holds it alive; build_prepared_desktop
+    # skips that doomed build instead (_desktop_ancestor_in).
     #
     # Spare that Desktop's whole process tree, not just its main process. Its
     # zygote, renderer, GPU and network-service helpers run the same release
@@ -443,23 +474,18 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path, *, also_posix: bool
     # quit, so it outlives the update forever. (That is the v2026.7.1 Linux
     # in-app update E2E: the receipt succeeds and then the app hangs.)
     spared: set[int] = set()
-    if sys.platform != "win32":
-        try:
-            ancestors = list(psutil.Process(me).parents())
-        except Exception:
-            ancestors = []
-        for parent in ancestors:
-            spared.add(parent.pid)
-            try:
-                parent_exe = Path(parent.exe()).resolve()
-            except Exception:
-                continue
-            # Only a Desktop ancestor's descendants. Every process descends from
-            # init, so sparing all ancestors' trees would spare everything.
-            if release_dir not in parent_exe.parents:
-                continue
-            with contextlib.suppress(Exception):
-                spared.update(child.pid for child in parent.children(recursive=True))
+    try:
+        ancestors = list(psutil.Process(me).parents())
+    except Exception:
+        ancestors = []
+    for parent in ancestors:
+        spared.add(parent.pid)
+        # Only a Desktop ancestor's descendants. Every process descends from
+        # init, so sparing all ancestors' trees would spare everything.
+        if not _runs_from(parent, release_dir):
+            continue
+        with contextlib.suppress(Exception):
+            spared.update(child.pid for child in parent.children(recursive=True))
     victims = []
     try:
         proc_iter = psutil.process_iter(["pid", "exe"])
@@ -947,10 +973,72 @@ def _install_rebuilt_desktop_app(desktop_dir: Path) -> tuple[list[Path], list[st
     rebuilt_exe = _desktop_packaged_executable(desktop_dir)
     if rebuilt_exe is None:
         return [], []
-    from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: PLC0415
     # .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app
     return _install_rebuilt_macos_bundles(
-        rebuilt_exe.parents[2], packaged_gui_app_paths(), running=_running_macos_app_bundles())
+        rebuilt_exe.parents[2], _installed_desktop_apps(), running=_running_macos_app_bundles())
+
+
+def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
+    """Install the rebuilt bundle over stale installed copies and report each outcome."""
+    installed, problems = _install_rebuilt_desktop_app(desktop_dir)
+    for app in installed:
+        print(f"  ✓ Installed the rebuilt Desktop app at {app}")
+    for problem in problems:
+        print(f"  ⚠ {problem}")
+
+
+def _update_owned_macos_bundles(candidates: list[Path]) -> list[Path]:
+    """The existing bundles in *candidates* that only ``hermes update`` keeps current (#52339).
+
+    Ownership comes from the bundle's own ``install-stamp.json``. ``updateMechanism: self`` is a
+    bootstrap build (a local pack or the bootstrap download), and stamps older than the field
+    predate every self-updating kind. Bundled/light releases update themselves and commit builds
+    are external, so a local build must never be copied over them. No readable stamp, no claim.
+    """
+    owned = []
+    for app in candidates:
+        try:
+            stamp = json.loads((app / "Contents" / "Resources" / "install-stamp.json").read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(stamp, dict) and stamp.get("updateMechanism", "self") == "self":
+            owned.append(app)
+    return owned
+
+
+def _installed_desktop_apps() -> list[Path]:
+    """Installed macOS ``Hermes.app`` bundles this checkout's update owns (none off macOS).
+
+    A packaged app runs the checkout under the default Hermes home, so only that checkout may
+    build for it: a bundle from any other tree (a dev worktree) would split shell from backend.
+    """
+    if sys.platform != "darwin":
+        return []
+    from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: PLC0415
+    from hermes_cli.main import PROJECT_ROOT  # noqa: PLC0415
+    from hermes_constants import get_default_hermes_root  # noqa: PLC0415
+    if Path(PROJECT_ROOT).resolve() != (get_default_hermes_root() / "hermes-agent").resolve():
+        return []
+    return _update_owned_macos_bundles(packaged_gui_app_paths())
+
+
+def _installed_desktop_launch_target(desktop_dir: Path, packaged_executable: Path) -> Path:
+    """The executable ``hermes desktop`` launches: the installed app once it IS the checkout build.
+
+    Finder, the Dock and Spotlight open the installed ``Hermes.app``; launching the ``release/``
+    bundle beside it ran the same app from a second path while the installed copy went stale
+    (#52339). Refresh the installed copies, then launch the first one that matches the checkout
+    build. The checkout bundle stays the fallback: nothing installed, or a copy that is running
+    or could not be replaced.
+    """
+    if sys.platform != "darwin":
+        return packaged_executable
+    _refresh_installed_desktop_apps(desktop_dir)
+    rebuilt_hash = _app_asar_hash(packaged_executable.parents[2])
+    for app in _installed_desktop_apps():
+        if rebuilt_hash is not None and _app_asar_hash(app) == rebuilt_hash:
+            return app / "Contents" / "MacOS" / "Hermes"
+    return packaged_executable
 
 
 def _install_rebuilt_macos_bundles(
@@ -1134,17 +1222,21 @@ def _detect_linux_password_store() -> str | None:
     return None
 
 
-def _desktop_launch_options() -> tuple[list[str], str, str, str]:
+_A11Y_OFF_WORDS = frozenset(("0", "false", "no", "off", "disabled"))
+
+
+def _desktop_launch_options() -> tuple[list[str], str, str, str, bool]:
     """``desktop.*`` launch options: ``(electron_flags, disable_gpu "auto"/"1"/"0", password_store,
-    ozone_hint "auto"/"x11"/"wayland")``; unknown values and config errors yield "auto"/[] so a
-    malformed config never blocks the launch."""
+    ozone_hint "auto"/"x11"/"wayland", renderer_accessibility bool)``; unknown values and config
+    errors yield "auto"/[]/True so a malformed config never blocks the launch."""
     flags: list[str] = []
     disable_gpu = password_store = ozone_hint = "auto"
+    renderer_accessibility = True
     try:
         from hermes_cli.config import load_config
         desktop_cfg = (load_config() or {}).get("desktop") or {}
     except Exception:
-        return flags, disable_gpu, password_store, ozone_hint
+        return flags, disable_gpu, password_store, ozone_hint, renderer_accessibility
 
     raw_flags = desktop_cfg.get("electron_flags")
     if isinstance(raw_flags, str):
@@ -1164,7 +1256,17 @@ def _desktop_launch_options() -> tuple[list[str], str, str, str]:
         disable_gpu = _GPU_FLAG_WORDS.get(raw_gpu.strip().lower(), "auto")
     password_store = _choice("password_store", _LINUX_PASSWORD_STORES)
     ozone_hint = _choice("ozone_platform_hint", ("auto", "x11", "wayland"))
-    return flags, disable_gpu, password_store, ozone_hint
+    raw_a11y = desktop_cfg.get("renderer_accessibility", True)
+    if isinstance(raw_a11y, bool):
+        renderer_accessibility = raw_a11y
+    elif isinstance(raw_a11y, (int, float)):
+        # YAML resolves a bare `0`/`0.0` to int/float, not str — the unquoted
+        # off-switch a user actually writes must not silently keep the ON
+        # default. Checked after bool: bool is an int subclass in Python.
+        renderer_accessibility = bool(raw_a11y)
+    elif isinstance(raw_a11y, str):
+        renderer_accessibility = raw_a11y.strip().lower() not in _A11Y_OFF_WORDS
+    return flags, disable_gpu, password_store, ozone_hint, renderer_accessibility
 
 
 def _register_linux_desktop_entry(defer: bool = False):
@@ -1249,6 +1351,16 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
     """Build prepared desktop sources, then publish the verified staged app."""
     from pm.progress import run_contained
 
+    if not source_mode and sys.platform == "win32" and (ancestor := _desktop_ancestor_in(desktop_dir)):
+        # The Desktop running this build holds the exe lock the promotion rename needs,
+        # and stopping it would kill this process first (#123499). Packing would only
+        # produce a build that cannot be installed; leave the app as it is. Its content
+        # stamp stays stale, so `hermes desktop` run outside the app rebuilds it
+        # (_desktop_build_needed), and the in-app update completes with desktop=True.
+        print(f"  ⚠ Skipped rebuilding the desktop app: this update is running inside it (pid {ancestor}),")
+        print("    and Windows locks a running app's files. Quit Hermes Desktop and run `hermes desktop`")
+        print("    from a terminal, or use Update now in Settings → About, to rebuild and reopen it.")
+        return None
     build_label = "source build" if source_mode else "packaged app"
     build_env = dict(env)
     if sys.platform == "win32":
@@ -1310,12 +1422,24 @@ def _prefer_wsl_d3d12(env: dict) -> None:
         env["GALLIUM_DRIVER"] = "d3d12"
 
 
+# Chromium's ProcessSingleton binds $TMPDIR/scoped_dirXXXXXX/SingletonSocket (33 bytes after
+# TMPDIR, measured on Electron 40); sun_path holds 107 bytes plus the NUL.
+_ELECTRON_TMPDIR_MAX_BYTES = 107 - len("/scoped_dirXXXXXX/SingletonSocket")
+_DESKTOP_TMPDIR_ENV = "HERMES_DESKTOP_TMPDIR"
+
+
 def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
     """Electron child env + config-supplied extra flags. ``desktop.*`` config is bridged to env vars
     Electron already reads; an explicit env var wins over config (and over keychain detection)."""
-    from hermes_constants import with_hermes_node_path
+    from hermes_constants import socket_safe_tmpdir, with_hermes_node_path
     # with_hermes_node_path() copies os.environ when called with no arg.
     env = with_hermes_node_path()
+    tmpdir = env.get("TMPDIR", "")
+    if sys.platform == "linux" and len(os.fsencode(tmpdir)) > _ELECTRON_TMPDIR_MAX_BYTES:
+        # A longer TMPDIR hangs requestSingleInstanceLock(). Only Chromium's socket dir moves:
+        # Electron main hands the real TMPDIR back to the backend and its other children.
+        env[_DESKTOP_TMPDIR_ENV] = tmpdir
+        env["TMPDIR"] = socket_safe_tmpdir()
     _prefer_wsl_d3d12(env)
     for attr, key in (
         ("fake_boot", "HERMES_DESKTOP_BOOT_FAKE"), ("ignore_existing", "HERMES_DESKTOP_IGNORE_EXISTING")):
@@ -1326,12 +1450,18 @@ def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
     cwd = getattr(args, "cwd", None)
     env["HERMES_DESKTOP_CWD"] = str(Path(cwd).expanduser().resolve()) if cwd else os.getcwd()
 
-    config_electron_flags, config_disable_gpu, config_password_store, config_ozone_hint = (
+    config_electron_flags, config_disable_gpu, config_password_store, config_ozone_hint, config_renderer_a11y = (
         _desktop_launch_options())
     if config_disable_gpu != "auto" and "HERMES_DESKTOP_DISABLE_GPU" not in os.environ:
         env["HERMES_DESKTOP_DISABLE_GPU"] = config_disable_gpu
     if config_ozone_hint != "auto" and "ELECTRON_OZONE_PLATFORM_HINT" not in os.environ:
         env["ELECTRON_OZONE_PLATFORM_HINT"] = config_ozone_hint
+
+    # Renderer accessibility tree (composer exposure to OS dictation/IME
+    # tools, #118271/#92607) defaults to ON inside the app; bridge only the
+    # explicit opt-out so the default never depends on the launcher path.
+    if not config_renderer_a11y and "HERMES_DESKTOP_RENDERER_ACCESSIBILITY" not in os.environ:
+        env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] = "0"
 
     # Without --password-store safeStorage.isEncryptionAvailable() is often
     # false and the desktop app refuses to persist remote gateway tokens.
@@ -1486,7 +1616,8 @@ def cmd_gui(args: argparse.Namespace):
                                         explicit=force_build or getattr(args, "build_only", False))
             built = build_prepared_desktop(desktop_dir, source_mode=source_mode, npm=npm, env=build_env)
             if not source_mode:
-                packaged_executable = built
+                # None only when the build was skipped under its own Desktop: reopen the app it kept.
+                packaged_executable = built or packaged_executable
         else:
             build_label = "source build" if source_mode else "packaged app"
             desktop_launch_notice(f"✓ Desktop {build_label} is up to date (content stamp matches)", source_mode=source_mode)
@@ -1539,7 +1670,8 @@ def cmd_gui(args: argparse.Namespace):
             print(f"✗ Desktop package build completed but no launchable app was found at: {desktop_dir / 'release'}")
             print("  Expected an unpacked Electron app for the current OS.")
             sys.exit(1)
-        launch_command = _packaged_desktop_launch_command(packaged_executable)
+        launch_command = _packaged_desktop_launch_command(
+            _installed_desktop_launch_target(desktop_dir, packaged_executable))
         launch_command.extend(config_electron_flags)
     if getattr(args, "local", False):
         launch_command.append("--local")

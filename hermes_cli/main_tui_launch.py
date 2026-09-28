@@ -59,9 +59,13 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
         if db is not None:
             db.close()
 
-    print(f"\nResume this session with:\n  hermes --tui --resume {target}")
+    # Sessions live under the profile's HERMES_HOME — mirror cli_session_mixin::_print_exit_summary.
+    from hermes_cli.profiles import get_active_profile_name
+    active_profile = get_active_profile_name()
+    profile_flag = "" if active_profile in ("default", "custom") else f" -p {active_profile}"
+    print(f"\nResume this session with:\n  hermes --tui --resume {target}{profile_flag}")
     if title:
-        print(f'  hermes --tui -c "{title}"')
+        print(f'  hermes --tui -c "{title}"{profile_flag}')
     print(f"\nSession:        {target}")
     if title:
         print(f"Title:          {title}")
@@ -358,6 +362,11 @@ def _launch_tui(
     # the single factory; keep secrets (the TUI/agent needs provider creds).
     from tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
+    # The directory this launch was invoked from is the source of truth. An inherited
+    # HERMES_CWD (exported by an outer `hermes --tui`, or by the user's own shell) merely
+    # names *a* real directory, so the is_dir() repair in _apply_tui_python_env keeps it
+    # and the gateway starts in last session's project. `--worktree` still wins below.
+    env["HERMES_CWD"] = _safe_tui_cwd(env)
     from hermes_cli.shared_session_attach import configure_tui_attachment
     try:
         configure_tui_attachment(env, resume_session_id)
@@ -389,6 +398,14 @@ def _launch_tui(
         wt_info = _setup_tui_worktree()
         env["HERMES_CWD"] = wt_info["path"]
         env["TERMINAL_CWD"] = wt_info["path"]
+
+    # A local interactive session starts where the user launched (or in the --worktree), the
+    # classic CLI's rule; terminal.cwd stays the default for gateway, cron and remote backends.
+    # HERMES_TUI_CWD is what the TUI sends on session.create, which beats the configured cwd (#84015).
+    if str(env.get("TERMINAL_ENV") or "local") == "local":
+        env["TERMINAL_CWD"] = env["HERMES_TUI_CWD"] = env["HERMES_CWD"]
+    else:
+        env.pop("HERMES_TUI_CWD", None)
 
     _apply_tui_python_env(env)
 

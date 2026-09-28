@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 
@@ -30,13 +29,9 @@ class MatrixFeedbackMixin:
         if outcome != ProcessingOutcome.SUCCESS and (actions := getattr(self, "_reaction_followup_actions", None)):
             self._discard_followup_action(self._event_session_key(event))
         msg_id, room_id = event.message_id, event.source.chat_id
-        if (
-            self._read_receipts_mode == "after_processing"
-            and msg_id
-            and room_id
-            and outcome != ProcessingOutcome.CANCELLED
-        ):
-            self._background_read_receipt(room_id, msg_id)
+        if self._read_receipts_mode.should_send_on_completion(outcome) and msg_id and room_id:
+            receipt_id = event.metadata.get("matrix_read_receipt_event_id") or msg_id
+            self._background_read_receipt(room_id, receipt_id)
         if not self._reactions_enabled or not msg_id or not room_id or outcome == ProcessingOutcome.CANCELLED:
             return
         eyes_event_id = self._pending_reactions.pop((room_id, msg_id), None)
@@ -75,76 +70,3 @@ class MatrixFeedbackMixin:
         except Exception as exc:
             logger.debug("Matrix: read receipt failed: %s", exc)
             return False
-
-
-
-    @staticmethod
-    def _parse_read_receipts_mode(config) -> str:
-        """Resolve read-receipt mode from config.yaml ``matrix.read_receipts``.
-
-        Falls back to the legacy ``MATRIX_READ_RECEIPTS`` env var; the YAML
-        value always wins when set. Returns one of ``"immediate"``,
-        ``"after_processing"``, or ``"disabled"``.
-
-        Back-compat: earlier releases exposed only a boolean env var, so
-        boolean / ``"true"`` / ``"false"`` / ``"on"`` / ``"off"`` / ``"1"`` /
-        ``"0"`` values are still accepted — truthy maps to ``"immediate"`` and
-        falsy to ``"disabled"``. Unrecognized values fall back to the default.
-        """
-        default = "immediate"
-        valid = {"immediate", "after_processing", "disabled"}
-
-        def _coerce(raw) -> Optional[str]:
-            if raw is None:
-                return None
-            if isinstance(raw, bool):
-                return "immediate" if raw else "disabled"
-            token = str(raw).strip().lower()
-            if not token:
-                return None
-            if token in valid:
-                return token
-            # Legacy boolean spellings (the pre-mode env flag).
-            if token in {"true", "1", "yes", "on", "enabled"}:
-                return "immediate"
-            if token in {"false", "0", "no", "off"}:
-                return "disabled"
-            return default
-
-        configured = _coerce(config.extra.get("read_receipts"))
-        if configured is not None:
-            return configured
-        env_mode = _coerce(os.getenv("MATRIX_READ_RECEIPTS"))
-        if env_mode is not None:
-            return env_mode
-        return default
-
-
-    @staticmethod
-    def _parse_reactions_enabled(config) -> bool:
-        """Resolve lifecycle-reaction toggle from ``matrix.reactions``.
-
-        Falls back to the legacy ``MATRIX_REACTIONS`` env var; the YAML value
-        always wins when set. Defaults to enabled. A value is falsy when it is
-        the boolean ``False`` or one of ``"false"`` / ``"0"`` / ``"no"`` /
-        ``"off"`` (case-insensitive); everything else is truthy.
-        """
-
-        def _coerce(raw) -> Optional[bool]:
-            if raw is None:
-                return None
-            if isinstance(raw, bool):
-                return raw
-            token = str(raw).strip().lower()
-            if not token:
-                return None
-            return token not in {"false", "0", "no", "off"}
-
-        configured = _coerce(config.extra.get("reactions"))
-        if configured is not None:
-            return configured
-        env_val = _coerce(os.getenv("MATRIX_REACTIONS"))
-        if env_val is not None:
-            return env_val
-        return True
-

@@ -87,7 +87,7 @@ class MatrixMediaMixin(BasePlatformAdapter):
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
         relates_to: dict, msgtype: str, mention_claimed: bool = False, *,
-        reply_parent: MatrixEventContext | None = None) -> bool | None:
+        reply_parent: MatrixEventContext | None = None, receipt_event_id: str | None = None) -> bool | None:
         body = source_content.get("body", "") or ""
         transport_filename = inbound_media_filename(
             source_content.get("filename"), _media_wire_body(source_content, relates_to))
@@ -165,6 +165,8 @@ class MatrixMediaMixin(BasePlatformAdapter):
             media_urls=media_urls, media_types=[media_type] if media_urls else [], media_msgtype=msgtype,
             metadata={"matrix_mention_claimed": True} if mention_claimed else {})
         if msg_event is not None:
+            if receipt_event_id:
+                msg_event.metadata["matrix_read_receipt_event_id"] = receipt_event_id
             return await self._admit(msg_event)
 
 

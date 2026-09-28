@@ -37,7 +37,7 @@ from testcontainers.core.labels import LABEL_SESSION_ID, SESSION_ID
 from testcontainers.core.network import Network
 
 from hermes_platform.host import facts
-from tests.fakes.fake_llm_provider import FakeLLMServer, Response, Text, write_hermes_home
+from tests.fakes.fake_llm_provider import FakeLLMServer, Responder, Response, Text, write_hermes_home
 from tests.integration.matrix_live.image_build import REPO_ROOT, build_command
 
 
@@ -114,6 +114,12 @@ class GatewaySettings:
     max_message_length: int | None = None
     mode: str | None = None
     reply_to_mode: str | None = None
+
+
+@dataclass(frozen=True)
+class MatrixFeedbackSettings:
+    read_receipts: str = "immediate"
+    reactions: bool = False
 
 
 @dataclass(frozen=True)
@@ -448,6 +454,16 @@ def gateway_home_setup() -> Callable[[Path], None]:
 
 
 @pytest.fixture
+def model_responder() -> Responder | None:
+    return None
+
+
+@pytest.fixture
+def matrix_feedback() -> MatrixFeedbackSettings:
+    return MatrixFeedbackSettings()
+
+
+@pytest.fixture
 def gateway(
     request: pytest.FixtureRequest,
     tmp_path: Path,
@@ -458,6 +474,8 @@ def gateway(
     live_room: LiveRoom,
     gateway_home_setup: Callable[[Path], None],
     gateway_script: list[Response] | None,
+    model_responder: Responder | None,
+    matrix_feedback: MatrixFeedbackSettings,
 ) -> Iterator[LiveGateway]:
     param = getattr(request, "param", GatewaySettings())
     settings = GatewaySettings(mode=param) if isinstance(param, str) else param
@@ -476,9 +494,11 @@ def gateway(
             "    enabled: true\n" + f'    reply_to_mode: "{settings.reply_to_mode}"\n',
             1,
         )
-    script: list[Response] = gateway_script if gateway_script is not None else (
-        [] if mode == "inspection" else [Text(settings.reply)]
-    )
+    script: list[Response] | Responder | None = model_responder
+    if script is None:
+        script = gateway_script if gateway_script is not None else (
+            [] if mode == "inspection" else [Text(settings.reply)]
+        )
     with FakeLLMServer(
         script, bind_host=route.bind_host, default_text=settings.reply if mode == "inspection" else "ok",
     ) as model:
@@ -490,6 +510,8 @@ def gateway(
                 + gateway_config.replace(
                     "    enabled: true\n",
                     "    enabled: true\n"
+                    + f"    read_receipts: {matrix_feedback.read_receipts}\n"
+                    + f"    reactions: {str(matrix_feedback.reactions).lower()}\n"
                     + ("    thread_require_mention: true\n" if mode == "pause-context" or resolution_pause else "")
                     + (f"    free_response_rooms:\n      - {room_id!r}\n" if resolution_pause else ""),
                     1,
@@ -517,7 +539,7 @@ def gateway(
                 "MATRIX_HOMESERVER=http://synapse:8008\n"
                 f"MATRIX_ACCESS_TOKEN={live_room.bot.access_token}\n"
                 f"MATRIX_HOME_ROOM={room_id}\n"
-                "MATRIX_E2EE_MODE=optional\nMATRIX_REACTIONS=false\nMATRIX_AUTO_THREAD=false\n"
+                "MATRIX_E2EE_MODE=optional\nMATRIX_AUTO_THREAD=false\n"
             )
             if settings.max_message_length is not None:
                 stream.write(f"MATRIX_MAX_MESSAGE_LENGTH={settings.max_message_length}\n")

@@ -70,6 +70,7 @@ class MatrixIntakeMixin(BasePlatformAdapter):
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
         relates_to: dict, *, reply_parent: MatrixEventContext | None = None) -> asyncio.Future[bool] | bool | None:
+        from plugins.platforms.matrix.adapter_feedback import ReadReceiptMode
         from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
 
         body = source_content.get("body", "") or ""
@@ -88,8 +89,9 @@ class MatrixIntakeMixin(BasePlatformAdapter):
                 voice_id, voice_ts, voice_content, voice_relates = parked
                 await self._handle_media_message(
                     room_id, sender, voice_id, voice_ts, voice_content, voice_relates, "m.audio",
-                    mention_claimed=True)
-                self._background_read_receipt(room_id, event_id)  # the claim receipted the voice
+                    mention_claimed=True, receipt_event_id=event_id)
+                if self._read_receipts_mode == ReadReceiptMode.IMMEDIATE:
+                    self._background_read_receipt(room_id, event_id)
                 return
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to,

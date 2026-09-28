@@ -2769,7 +2769,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return policy
         if policy:
             logger.warning(
-                "[%s] Invalid DISCORD_COMMAND_SYNC_POLICY=%r; falling back to 'safe'", self.name,
+                "[%s] Invalid DISCORD_COMMAND_SYNC_POLICY=%r; expected 'safe', 'bulk' or 'off'; falling back to 'safe'", self.name,
                 policy,
             )
         return "safe"

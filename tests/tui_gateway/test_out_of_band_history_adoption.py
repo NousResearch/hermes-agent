@@ -9,7 +9,6 @@ held only the early snapshot.
 
 import contextlib
 import threading
-import types
 
 from hermes_state import SessionDB
 from tui_gateway import server
@@ -115,15 +114,8 @@ def _immediate_thread(monkeypatch) -> None:
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
 
 
-def test_desktop_prompt_carries_gateway_rows_appended_after_hydration(tmp_path, monkeypatch):
-    """The reported shape: desktop hydrated the first exchange, the gateway appended ten more, and the
-    next desktop prompt must send the whole conversation — not the early snapshot — to the provider."""
-    db = SessionDB(tmp_path / "state.db")
-    db.create_session("s1", source="desktop")
-    _seed_exchange(db, 0)
-    session = _hydrated_record(db, stamped=True)
-    _gateway_appends(db)
-
+def _desktop_prompt(db, session, monkeypatch, text: str = "continue on desktop") -> list:
+    """Drive ``prompt.submit`` on ``session``; returns the ``conversation_history`` the model was given."""
     seen = {}
 
     class _Agent:
@@ -142,15 +134,43 @@ def test_desktop_prompt_carries_gateway_rows_appended_after_hydration(tmp_path, 
     monkeypatch.setattr(server, "_emit", lambda *a: None)
     try:
         resp = server.handle_request({"id": "1", "method": "prompt.submit",
-                                      "params": {"session_id": "sid-81951", "text": "continue on desktop"}})
+                                      "params": {"session_id": "sid-81951", "text": text}})
         assert resp.get("result"), resp
     finally:
         server._sessions.pop("sid-81951", None)
+    return seen["history"]
 
-    contents = [m.get("content") for m in seen["history"]]
+
+def test_desktop_prompt_carries_gateway_rows_appended_after_hydration(tmp_path, monkeypatch):
+    """The reported shape: desktop hydrated the first exchange, the gateway appended ten more, and the
+    next desktop prompt must send the whole conversation — not the early snapshot — to the provider."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s1", source="desktop")
+    _seed_exchange(db, 0)
+    session = _hydrated_record(db, stamped=True)
+    _gateway_appends(db)
+
+    contents = [m.get("content") for m in _desktop_prompt(db, session, monkeypatch)]
+
     assert contents[:4] == ["ask0", "", "probe0", "answer0"]
     assert [c for c in contents if isinstance(c, str) and c.startswith("answer")] == [
         f"answer{n}" for n in range(11)]
+
+
+def test_unstamped_desktop_prompt_does_not_adopt_its_own_user_row(tmp_path, monkeypatch):
+    """Through ``prompt.submit`` the store already holds THIS turn's user row when adoption runs
+    (``_persist_submit_user_row``); the fallback must stop below it like the stamped path does, or the
+    model sees the prompt twice and the live history keeps both copies."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s1", source="desktop")
+    _seed_exchange(db, 0)
+    session = _hydrated_record(db, stamped=False)
+    _gateway_appends(db, turns=1)
+
+    contents = [m.get("content") for m in _desktop_prompt(db, session, monkeypatch)]
+
+    assert contents == ["ask0", "", "probe0", "answer0", "ask1", "", "probe1", "answer1"]
+    assert [m["content"] for m in session["history"]].count("continue on desktop") == 1
 
 
 def test_unstamped_live_record_is_caught_up_from_the_store(tmp_path, monkeypatch):
@@ -202,8 +222,8 @@ def test_unstamped_record_is_untouched_when_the_store_is_not_ahead(tmp_path, mon
     assert session["history_version"] == 0
 
 
-def test_unstamped_seeded_history_equal_to_the_store_is_untouched(tmp_path, monkeypatch):
-    """A seeded/branched record writes its rows before the first turn: heads match, lengths equal, no-op."""
+def test_unstamped_history_equal_to_the_store_is_untouched(tmp_path, monkeypatch):
+    """Heads match and lengths are equal: nothing appended out of band, no-op."""
     db = SessionDB(tmp_path / "state.db")
     db.create_session("s1", source="desktop")
     _seed_exchange(db, 0)

@@ -514,13 +514,13 @@ def _adopt_out_of_band_turns(session: dict) -> None:
         history, version = list(session.get("history") or ()), int(session.get("history_version", 0))
     seen = max((rid for m in history if isinstance(m, dict) and (rid := _message_row_id(m)) is not None),
                default=None)
-    if seen is None:
-        _adopt_store_tail_without_row_ids(session, history, version)
-        return
     ceiling = _message_row_id(session.get("_submit_user_row") or {})
 
     def _below_ceiling(rid) -> bool:
         return isinstance(rid, int) and (ceiling is None or rid < ceiling)
+    if seen is None:
+        _adopt_store_tail_without_row_ids(session, history, version, _below_ceiling)
+        return
 
     def _foreign(rid) -> bool:
         return _below_ceiling(rid) and rid > seen
@@ -547,24 +547,24 @@ def _adopt_out_of_band_turns(session: dict) -> None:
         session["history_version"] = version + 1
 
 
-def _adopt_store_tail_without_row_ids(session: dict, history: list, version: int) -> None:
+def _adopt_store_tail_without_row_ids(session: dict, history: list, version: int, below_ceiling) -> None:
     """Catch a live record up with the store when its in-memory messages carry NO durable ``_row_id``.
 
     ``_adopt_out_of_band_turns`` keys off the highest ``_row_id`` in memory; a record whose list was
-    rebuilt from provider-format messages (a failed turn's ``agent._session_messages``, the unstamped
-    shape ``_resolve_truncate_row_id`` heals for rewind — #82959) carries none. A writer in ANOTHER
-    process (the messaging gateway appending to the same session while the desktop's serve record holds
-    it) was then silently dropped and the next provider request truncated to the early snapshot while
-    the UI showed the full transcript (#81951).
+    rebuilt from provider-format messages (the unstamped shape ``_resolve_truncate_row_id`` heals for
+    rewind — #82959) carries none. A writer in ANOTHER process (the messaging gateway appending to the
+    same session while the desktop's serve record holds it) was then silently dropped and the next
+    provider request truncated to the early snapshot while the UI showed the full transcript (#81951).
 
     With no row ids there is no boundary to key on, so adoption is gated on proof instead: the durable
-    lineage must be STRICTLY longer and its head must equal the in-memory view entry for entry. A
-    seeded/branched record writes its rows to the store before the first turn (heads match, equal
-    lengths — no-op) and a diverged view (prefix mismatch, e.g. a rewind that has not landed locally) is
-    left untouched, so the guard that keeps the stamped path safe is preserved. An empty in-memory
-    history has no head to prove against and is left alone, exactly as the stamped path leaves it.
+    lineage (below this turn's own user row, which ``_persist_submit_user_row`` already wrote and the turn
+    appends itself) must be STRICTLY longer and its head must equal the in-memory view entry for entry.
+    A diverged view (prefix mismatch, e.g. a rewind that has not landed locally), a store that is not
+    ahead (an unflushed local tail is the fresher record) and an empty in-memory history (no head to
+    prove against) are left alone, the same guards that keep the stamped path safe.
     """
-    rows = _load_durable_truncation_history(session, repair_alternation=True) or []
+    rows = [m for m in _load_durable_truncation_history(session, repair_alternation=True) or []
+            if below_ceiling(_message_row_id(m))]
     if not history or len(rows) <= len(history):
         return
     if not all(isinstance(mem, dict) and mem.get("role") == stored.get("role")

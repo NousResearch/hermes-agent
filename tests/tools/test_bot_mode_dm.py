@@ -519,6 +519,33 @@ def test_delivery_pins_the_hermes_entrypoint_beside_this_interpreter(tmp_path, m
     assert transport_argv == [str(hermes_entry), "-p", "default", "peer", "dm", "spark"]
 
 
+def test_delivery_runner_rides_the_published_launcher_and_keeps_author_after_the_switch(tmp_path, monkeypatch):
+    """On a published install the runner is ``<launcher> --run-module tools.bot_mode_dm`` (the store
+    interpreter behind ``sys.executable`` has no dependencies), and ``--author`` must still land
+    right after ``--run-delivery`` — the prefix is longer than the script form's."""
+    name = "hermes.exe" if sys.platform == "win32" else "hermes"
+    launcher = tmp_path / ".hermes" / "bin" / name
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(bot_relay, "__file__", str(tmp_path / "tools" / "bot_relay.py"))
+    dm_file = tmp_path / "dm.txt"
+    author = {"id": "bot:default", "name": "hermes", "is_bot": True}
+
+    command = bot_mode_dm._delivery_command(
+        ["hermes", "-p", "ops", "chat"], str(dm_file), stdin_file=False, author=author
+    )
+    parts = shlex.split(command)
+
+    assert parts[0] == str(launcher).replace("\\", "/")
+    assert parts[1:5] == ["--run-module", "tools.bot_mode_dm", "--run-delivery", "--author"]
+    assert json.loads(parts[5]) == author
+    assert parts[6] == "query-file"
+    assert parts[7] == str(dm_file).replace("\\", "/")
+    assert parts[8:] == ["hermes", "-p", "ops", "chat"]
+    assert _runner_parts(command) == ("query-file", parts[7], ["hermes", "-p", "ops", "chat"])
+    assert _runner_author(command) == author
+
+
 def test_peer_delivery_author_carries_the_sender_hostname_and_local_stays_bare(tmp_path, monkeypatch):
     """A peer dm crosses installs, so its author id is ``bot:<hostname>/<profile>``: the peer's own ``coder`` and a
     remote ``coder`` must not share one id. A teammate on this install still sees the bare ``bot:coder``."""

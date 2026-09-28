@@ -585,8 +585,11 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
                       profile_home: Path | None = None, author: Optional[dict] = None) -> str:
     """Build an argv-safe command for the cleanup-owning background runner:
     ``--run-delivery [--author <json>] <mode> <dm_file> [--profile-home <path>] <argv...>``."""
-    runner_argv = [sys.executable, str(Path(__file__).resolve()), "--run-delivery",
-                   "stdin" if stdin_file else "query-file", dm_file]
+    from tools.bot_relay import runner_argv as runner_prefix
+
+    # The prefix is the published launcher's ``--run-module`` form on installed copies and the
+    # script path on this interpreter elsewhere — see ``bot_relay.runner_argv``.
+    runner_argv = [*runner_prefix(), "--run-delivery", "stdin" if stdin_file else "query-file", dm_file]
     if profile_home is not None:
         runner_argv.extend(["--profile-home", str(Path(profile_home).resolve())])
     runner_argv.extend(argv)
@@ -595,8 +598,10 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
         # paths executable there; backslash paths are parsed as command names (exit 127).
         runner_argv = [part.replace("\\", "/") for part in runner_argv]
     if author:
-        # Inserted after the slash rewrite: JSON escapes are backslashes too.
-        runner_argv[3:3] = ["--author", json.dumps(author, separators=(",", ":"))]
+        # Inserted after the slash rewrite: JSON escapes are backslashes too. The prefix length
+        # varies by install form, so anchor on the switch instead of a fixed index.
+        at = runner_argv.index("--run-delivery") + 1
+        runner_argv[at:at] = ["--author", json.dumps(author, separators=(",", ":"))]
     return shlex.join(runner_argv)
 
 

@@ -187,11 +187,50 @@ def test_waiter_is_a_runner_entrypoint_the_approval_gate_lets_through(root):
     env = {"id": "b" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
     cmd = bot_relay.waiter_command(root, env)
     parts = shlex.split(cmd)
+    at = parts.index("--wait-reply")
+    # Native Windows argv is rewritten to forward slashes for Git Bash; compare in that form.
+    expected_prefix = [part.replace("\\", "/") for part in bot_relay.runner_argv()]
+    expected_reply = str(bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{'b' * 32}.json").replace("\\", "/")
 
     assert detect_dangerous_command(cmd)[0] is False, cmd
-    assert parts[1].endswith("bot_mode_dm.py") and parts[2] == "--wait-reply"
-    assert parts[3] == str(bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{'b' * 32}.json")
-    assert parts[4:] == ["@researcher on ssh-vps", str(bot_relay.REPLY_WAIT_SECONDS)]
+    assert parts[:at] == expected_prefix
+    assert "-c" not in parts
+    assert parts[at + 1] == expected_reply
+    assert parts[at + 2:] == ["@researcher on ssh-vps", str(bot_relay.REPLY_WAIT_SECONDS)]
+
+
+def test_runner_argv_uses_the_published_launcher_module_switch(tmp_path, monkeypatch):
+    """A published install's backend runs on the bare store interpreter (``python -I``, dependencies
+    selected at process start), so ``sys.executable`` cannot import Hermes: a runner spawned on it
+    died with ``No module named 'ruamel'`` after the DM file was already written. The launcher's
+    ``--run-module`` switch performs the same dependency selection for the runner."""
+    import shlex
+    import sys
+
+    name = "hermes.exe" if sys.platform == "win32" else "hermes"
+    launcher = tmp_path / ".hermes" / "bin" / name
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(bot_relay, "__file__", str(tmp_path / "tools" / "bot_relay.py"))
+
+    assert bot_relay.runner_argv() == [str(launcher), "--run-module", "tools.bot_mode_dm"]
+
+    env = {"id": "f" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
+    parts = shlex.split(bot_relay.waiter_command(tmp_path, env))
+
+    assert parts[0] == str(launcher).replace("\\", "/")
+    assert parts[1:4] == ["--run-module", "tools.bot_mode_dm", "--wait-reply"]
+    assert "-c" not in parts
+
+
+def test_runner_argv_falls_back_to_the_script_on_this_interpreter(tmp_path, monkeypatch):
+    """No published launcher (venv console script, source checkout): this interpreter does carry
+    the dependencies, so the runner stays the script path on ``sys.executable``."""
+    import sys
+
+    monkeypatch.setattr(bot_relay, "__file__", str(tmp_path / "tools" / "bot_relay.py"))
+
+    assert bot_relay.runner_argv() == [sys.executable, str(tmp_path / "tools" / "bot_mode_dm.py")]
 
 
 def test_waiter_outlives_the_desktop_deliver_deadline():

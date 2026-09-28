@@ -17,6 +17,8 @@ import urllib.request
 
 import pytest
 
+from hermes_cli.auth_oauth_grants import SINGLE_USE_REFRESH_POOL_PROVIDERS
+
 
 @pytest.fixture
 def fleet(tmp_path, monkeypatch):
@@ -367,61 +369,44 @@ def test_profile_auth_add_owns_only_its_own_rows(fleet):
     assert [e["id"] for e in fleet["rows"](fleet["root"])] == ["abc123"]
 
 
-def test_profile_auth_add_on_empty_root_persists_to_profile(fleet):
-    """Named profile adding a single-use credential when root store has no rows (#103694).
-
-    When root has no rows for the single-use provider (e.g. fresh root or unconfigured
-    provider), load_pool() records an empty borrowed_ids set. The profile's add_entry()
-    must persist the newly added credential to the profile store instead of silently
-    routing to update-only root merge.
-    """
+@pytest.mark.parametrize("provider", sorted(SINGLE_USE_REFRESH_POOL_PROVIDERS))
+def test_profile_fresh_add_with_no_login_anywhere_lands_in_the_profile(fleet, provider):
+    """#103694: with no rows in root or the profile, a login made inside the
+    profile is the profile's own credential. It must be readable afterwards,
+    and root must be left exactly as it was."""
     from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
 
-    root = fleet["root"]
-    (root / "auth.json").write_text(json.dumps({"version": 1, "providers": {}, "credential_pool": {}}))
+    root_file = fleet["root"] / "auth.json"
+    store = json.loads(root_file.read_text())
+    store["credential_pool"].pop(provider, None)
+    root_file.write_text(json.dumps(store))
+    kid = _profile(fleet, "kid")
+    root_before = root_file.read_bytes()
 
-    fresh_profile = _profile(fleet, "fresh_profile")
-    fleet["use"](fresh_profile)
-    pool = load_pool("anthropic")
-    pool.add_entry(PooledCredential(
-        provider="anthropic", id="fresh001", label="fresh_auth", auth_type=AUTH_TYPE_OAUTH,
-        priority=0, source="manual:hermes_pkce", access_token="sk-ant-oat01-FRESH",
-        refresh_token="rt-fresh",
-    ))
-    assert fleet["rows"](fresh_profile) is not None, "credential was dropped without persisting (#103694)"
-    assert [e["id"] for e in fleet["rows"](fresh_profile)] == ["fresh001"]
-    assert fleet["rows"](root) is None
-
-
-def test_profile_auth_add_persists_when_root_and_profile_are_empty(fleet):
-    """A named-profile OAuth login must not report success then
-    discard the new row when neither the root nor profile has that provider.
-
-    With no borrowed root ids, add_entry previously used _persist(); the
-    borrowed-root safety path is update-only and therefore ignored the brand-
-    new id.  This is the exact empty-store state after a lost shared auth.json.
-    """
-    from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool
-
-    root = fleet["root"]
-    store = json.loads((root / "auth.json").read_text())
-    del store["credential_pool"]["anthropic"]
-    (root / "auth.json").write_text(json.dumps(store))
-
-    kid = _profile(fleet, "empty-kid")
     fleet["use"](kid)
-    pool = load_pool("anthropic")
-    assert pool.entries() == []
-    assert pool._borrowed_root_ids == set()
-
-    pool.add_entry(PooledCredential(
-        provider="anthropic", id="own-empty", label="mine", auth_type=AUTH_TYPE_OAUTH,
-        priority=0, source="manual:hermes_pkce", access_token="at-mine-empty",
-        refresh_token="rt-mine-empty",
+    load_pool(provider).add_entry(PooledCredential(
+        provider=provider, id="fresh1", label="mine", auth_type=AUTH_TYPE_OAUTH, priority=0,
+        source="manual:device_code", access_token="at-fresh", refresh_token="rt-fresh",
     ))
 
-    assert [e["id"] for e in fleet["rows"](kid)] == ["own-empty"]
-    assert fleet["rows"](root) is None
+    assert "fresh1" in [e.id for e in load_pool(provider).entries()]
+    assert "fresh1" in [r["id"] for r in json.loads((kid / "auth.json").read_text())["credential_pool"][provider]]
+    assert root_file.read_bytes() == root_before
+
+
+def test_auth_add_never_reports_added_for_a_row_the_store_did_not_keep(fleet, monkeypatch, capsys):
+    """"Added" is printed only for a credential the store holds afterwards."""
+    from argparse import Namespace
+
+    import agent.credential_pool as credential_pool
+    from hermes_cli.auth_commands import auth_add_command
+
+    monkeypatch.setattr(credential_pool, "write_credential_pool", lambda *a, **kw: [])
+    with pytest.raises(SystemExit, match="not saved"):
+        auth_add_command(Namespace(
+            provider="openrouter", auth_type="api-key", api_key="sk-or-v1-new", label="new", priority=None,
+        ))
+    assert "Added" not in capsys.readouterr().out
 
 
 def test_classic_mode_persist_is_unchanged(fleet):

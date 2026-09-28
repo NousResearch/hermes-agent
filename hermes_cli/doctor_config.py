@@ -528,20 +528,3 @@ def _check_retired_session_reset(should_fix: bool, f: Finding) -> None:
     else:
         check_warn(format_notice(*found))
         f.manual_issues.append(format_notice(*found))
-
-
-@doctor_check("Plugin compat check skipped", "({e})")
-def _check_plugin_compat(should_fix: bool, f: Finding) -> None:
-    from hermes_cli.plugin_compat import ALLOW_KEY, COMPAT_REMOVAL, compat_report, removal_in_effect
-    report = compat_report()
-    if not report:
-        check_ok(f"No enabled plugin imports paths removed on {COMPAT_REMOVAL}")
-        return
-    for name, hits in sorted(report.items()):
-        (check_fail if removal_in_effect() else check_warn)(
-            f"{name}: {len(hits)} import(s) of paths removed on {COMPAT_REMOVAL}", f"{hits[0].old} -> {hits[0].new}")
-    check_info("Details: hermes plugins compat")
-    f.manual_issues.append(
-        f"Update {len(report)} plugin(s) still importing pre-decomposition paths (hermes plugins compat) — "
-        + ("they are NOT being loaded" if removal_in_effect() else f"they stop loading on {COMPAT_REMOVAL}")
-        + f"; escape hatch: plugins.{ALLOW_KEY}: true")

@@ -1081,6 +1081,16 @@ class SessionStore(
         self._record_gateway_session_peer(
             peer_sid, session_key, peer_origin, display_name=peer_name, transport_profile=peer_transport)
 
+    def clear_prompt_usage_if_bound(self, session_key: str, session_id: str) -> bool:
+        """CAS the post-compaction usage reset without changing the user-activity clock."""
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None or entry.session_id != session_id or entry.active_turn_token:
+                return False
+            entry.last_prompt_tokens = 0
+            self._save_entry(session_key, lock_held=True)
+        return True
+
     def get_session_metadata(self, session_key: str, key: str, default: Any = None) -> Any:
         """Return a metadata value stored on a live session entry."""
         with self._lock:

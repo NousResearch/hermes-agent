@@ -69,6 +69,7 @@ def estimate_request_tokens(agent: Any, messages: Sequence[Dict[str, Any]]) -> i
 def compress_now(
     agent: Any, history: Sequence[Dict[str, Any]], request: CompressRequest, *,
     system_message: Any = None, task_id: str = "default", skip_without_window: bool = False,
+    commit_fence: Any = None,
 ) -> CompressResult:
     """Run one manual compression of ``history`` on ``agent`` and return the outcome; the caller installs
     ``after_messages`` (and re-anchors session ids) — history is never mutated here.
@@ -125,7 +126,8 @@ def compress_now(
     try:
         compressed, _ = agent._compress_context(
             head, system_message, approx_tokens=before_tokens, focus_topic=request.focus_topic, force=True,
-            defer_context_engine_notification=True, **({"task_id": task_id} if task_id != "default" else {}),
+            defer_context_engine_notification=True, commit_fence=commit_fence,
+            **({"task_id": task_id} if task_id != "default" else {}),
             **({"verbatim_tail": tail_rows} if tail_rows else {}))
     except Exception:
         finalize_context_engine_compression_notification(agent, committed=False)

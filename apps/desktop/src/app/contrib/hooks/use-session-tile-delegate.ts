@@ -444,7 +444,10 @@ export function useSessionTileDelegate({
             const stored =
               (await prefetchPromise) ??
               (await getLatestSessionMessages(storedSessionId, restScope).catch(() => null)) ??
-              (await fetchStoredTranscriptAcrossBackends(storedSessionId))
+              (await fetchStoredTranscriptAcrossBackends(
+                storedSessionId,
+                typeof owner === 'string' ? owner : owner?.profile
+              ))
 
             if (!stored) {
               throw new Error('stored transcript unavailable on every reachable backend')

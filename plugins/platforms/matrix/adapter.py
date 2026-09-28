@@ -2153,7 +2153,9 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             try:
                 await dispatch.dispatch_sync(sync_data)
             finally:
-                for event_id in dispatch.failed_sync_event_ids:
+                for handler, event_id in dispatch.failed_sync_handlers:
+                    if handler not in {self._on_room_message, self._on_reaction}:
+                        continue
                     self._processed_events_set.discard(event_id)
                     with suppress(ValueError):
                         self._processed_events.remove(event_id)

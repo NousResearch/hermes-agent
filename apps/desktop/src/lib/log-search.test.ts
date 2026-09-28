@@ -25,4 +25,11 @@ describe('log search', () => {
       { match: true, text: 'DOCKER' }
     ])
   })
+
+  it('preserves source boundaries when a Unicode character expands while lowercasing', () => {
+    expect(splitLogSearchMatches('İstanbul', 'i')).toEqual([
+      { match: true, text: 'İ' },
+      { match: false, text: 'stanbul' }
+    ])
+  })
 })

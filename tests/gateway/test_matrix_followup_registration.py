@@ -189,6 +189,116 @@ async def test_sync_before_watch_registration_resumes_once_on_the_live_adapter(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome",
+    ["followup", "approval", "model-picker", "choice-picker", "removed", "filtered"],
+)
+async def test_queued_reconcile_awaits_replay_with_control_precedence_and_filters(
+    delivery, outcome
+):
+    adapter = delivery.adapter
+    source = delivery.source
+    await delivery.configure(("👍",))
+    sent = await adapter.send(source.chat_id, "Draft", metadata={"expect_edits": True})
+    target = sent.message_id
+    consumer = SimpleNamespace(message_id=target, final_message_ids=(target,))
+    delivered, register = asyncio.Event(), asyncio.Event()
+    edit_message = adapter.edit_message
+
+    async def edit(**kwargs):
+        result = await edit_message(**kwargs)
+        assert result.success
+        delivered.set()
+        await register.wait()
+        return result
+
+    adapter.edit_message = edit
+    runner = object.__new__(GatewayRunner)
+    runner._send_queued_final_text = AsyncMock()
+    task = asyncio.create_task(
+        runner._deliver_queued_first_response(
+            "Final answer",
+            source,
+            adapter,
+            deliver_media=False,
+            stream_consumer=consumer,
+            session_key="session",
+        )
+    )
+    try:
+        await delivered.wait()
+        for ignored in (
+            delivery.reaction(target, sender="@bob:test"),
+            delivery.reaction(target, room_id="!other:test"),
+            delivery.reaction(target, emoji="👎"),
+        ):
+            await adapter._on_reaction(ignored)
+        fresh = delivery.reaction(target, emoji="👎" if outcome == "filtered" else "👍")
+        await adapter._on_reaction(fresh)
+        await adapter._on_reaction(fresh)
+        adapter.handle_message.assert_not_awaited()
+        if outcome == "removed":
+            await adapter._on_redaction(
+                SimpleNamespace(room_id=source.chat_id, redacts=fresh.event_id)
+            )
+        controls = []
+
+        def control(label):
+            async def handle(*_args):
+                controls.append(label)
+                return outcome == label
+
+            return handle
+
+        adapter._handle_approval_reaction = control("approval")
+        adapter._handle_model_picker_reaction = control("model-picker")
+        adapter._handle_choice_picker_reaction = control("choice-picker")
+        register.set()
+        assert await task is True
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert (
+        controls
+        == {
+            "followup": ["approval", "model-picker", "choice-picker"],
+            "approval": ["approval"],
+            "model-picker": ["approval", "model-picker"],
+            "choice-picker": ["approval", "model-picker", "choice-picker"],
+            "removed": [],
+            "filtered": [],
+        }[outcome]
+    )
+    runner._send_queued_final_text.assert_not_awaited()
+    assert adapter._reaction_followup_actions == {}
+    if outcome == "followup":
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert (event.message_id, event.reply_to_text, event.source.thread_id) == (
+            fresh.event_id,
+            "Final answer",
+            source.thread_id,
+        )
+    else:
+        adapter.handle_message.assert_not_awaited()
+        assert adapter._followup_store().candidate(source.chat_id, target) is not None
+        adapter._handle_approval_reaction = AsyncMock(return_value=False)
+        adapter._handle_model_picker_reaction = AsyncMock(return_value=False)
+        adapter._handle_choice_picker_reaction = AsyncMock(return_value=False)
+        await adapter._on_reaction(delivery.reaction(target))
+        adapter.handle_message.assert_awaited_once()
+    await adapter._on_reaction(fresh)
+    await adapter._on_reaction(delivery.reaction(target))
+    restarted = delivery.make_adapter()
+    await restarted._on_reaction(delivery.reaction(target))
+    restarted.handle_message.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    assert adapter._followup_store().candidate(source.chat_id, target) is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("boundary", [
     "expired-buffer", "removed", "removed-during-order", "expired-during-order", "cancelled-during-order",
     "failed-final", "empty-final", "preview-only", "unknown-order", "denied", "wrong-profile",

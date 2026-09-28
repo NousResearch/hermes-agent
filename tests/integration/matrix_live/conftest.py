@@ -14,7 +14,7 @@ import urllib.request
 import uuid
 from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -49,7 +49,7 @@ RYUK_IMAGE = "testcontainers/ryuk:0.8.1@sha256:bf3f74a47dee0acda89aba4b2fc9c7fdc
 class MatrixAccount:
     user_id: str
     device_id: str
-    access_token: str
+    access_token: str = field(repr=False)
 
     def client(self, homeserver: str) -> AsyncClient:
         client = AsyncClient(

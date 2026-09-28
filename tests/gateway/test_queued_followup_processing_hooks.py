@@ -188,6 +188,7 @@ async def test_queued_followup_fires_processing_hooks(monkeypatch, tmp_path):
         source=_source(),
         session_id="sess-hooks",
         session_key=SESSION_KEY,
+        processing_event=MessageEvent(text="the first turn", source=_source(), message_id="first-1"),
     )
 
     # The follow-up really did run in-band.
@@ -196,7 +197,10 @@ async def test_queued_followup_fires_processing_hooks(monkeypatch, tmp_path):
 
     # ...and it was acknowledged through the lifecycle hooks.
     assert adapter.started == ["queued-1"]
-    assert adapter.completed == [("queued-1", ProcessingOutcome.SUCCESS)]
+    assert adapter.completed == [
+        ("first-1", ProcessingOutcome.SUCCESS),
+        ("queued-1", ProcessingOutcome.SUCCESS),
+    ]
 
 
 @pytest.mark.asyncio

@@ -407,6 +407,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
             return
         merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
         event._gateway_accepted = True
+        event._processing_state.deferred = True
 
     async def _hm_busy_slash_or_photo(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
@@ -537,6 +538,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
             self._queue_or_replace_pending_event(_quick_key, event)
             return None
 
+        event._processing_state.deferred = True
         effective_busy_input_mode = self._effective_busy_input_mode(source)
         if self._hm_busy_telegram_grace_queue(event, source, _quick_key, effective_busy_input_mode):
             return None if event._gateway_accepted else self._pending_queue_refusal(event)
@@ -552,6 +554,7 @@ class GatewayInboundMixin(GatewayInboundContextMixin, GatewayInboundAdmissionMix
             return None if event._gateway_accepted else self._pending_queue_refusal(event)
         if self._draining:
             queue_during_drain = self._queue_during_drain_enabled(effective_busy_input_mode)
+            event._processing_state.deferred = queue_during_drain
             if queue_during_drain:
                 if not self._queue_or_replace_pending_event(_quick_key, event):
                     return self._pending_queue_refusal(event)

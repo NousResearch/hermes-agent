@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
@@ -14,6 +15,7 @@ from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.platforms.base import ExecApprovalPrompt, SendResult
 from gateway.turn_context import TurnContext
+from gateway.session import SessionSource
 from hermes_cli.config import atomic_config_write
 from plugins.platforms.matrix.adapter import MatrixAdapter
 
@@ -170,6 +172,208 @@ async def test_aggregated_turn_receipts_cover_the_latest_native_input(
         assert receipts.call_args_list == [
             call(room, event_id) for event_id in expected_ids
         ]
+    finally:
+        release.set()
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("admission", ["startup", "priority"])
+@pytest.mark.parametrize("rewritten", [False, True])
+async def test_deferred_admission_receives_no_completion_until_replayed(
+    monkeypatch, admission, rewritten
+):
+    adapter, receipts, sender = _intake_adapter(monkeypatch, "after_processing")
+    adapter._reactions_enabled = True
+    adapter._send_reaction = AsyncMock(return_value="$eyes")
+    adapter._schedule_reaction_redaction = MagicMock()
+    runner = _busy_runner(monkeypatch, adapter, "queue")
+    event = MessageEvent(
+        text="deferred",
+        message_id="$deferred",
+        source=SessionSource(
+            platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="dm"
+        ),
+    )
+    key = adapter._event_session_key(event)
+    adapter._spawn_drain_task = MagicMock()
+    adapter._requeue_backoff_delay = MagicMock(return_value=1)
+    queued = []
+    if admission == "startup":
+        runner._startup_restore_in_progress = True
+    else:
+        runner._session_state(key).turn.agent = MagicMock()
+
+    async def admit(incoming):
+        incoming = replace(incoming) if rewritten else incoming
+        if admission == "startup":
+            result = await runner._handle_message(incoming)
+            queued.extend(runner._startup_restore_queue)
+            return result
+        result = await runner._hm_handle_running_session_message(
+            incoming, incoming.source, key
+        )
+        queued.extend(adapter._pending_messages.values())
+        return result
+
+    adapter.set_message_handler(admit)
+    await adapter._process_message_background(event, key)
+    assert (queued, receipts.call_args_list, sender.await_args_list) == (
+        [event],
+        [],
+        [],
+    )
+    adapter._pending_messages.clear()
+    adapter.set_message_handler(AsyncMock(return_value="processed"))
+    await adapter._process_message_background(event, key)
+    assert receipts.call_args_list == [call(event.source.chat_id, event.message_id)]
+    assert adapter._send_reaction.await_args_list == [
+        call(event.source.chat_id, event.message_id, "👀"),
+        call(event.source.chat_id, event.message_id, "✅"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("turn_count", [2, 3])
+async def test_completed_turns_are_acknowledged_before_a_cancellable_followup(
+    monkeypatch, turn_count
+):
+    adapter, receipts, sender = _intake_adapter(monkeypatch, "after_processing")
+    adapter._reactions_enabled = True
+    adapter._send_reaction = AsyncMock(return_value="$eyes")
+    adapter._schedule_reaction_redaction = MagicMock()
+    runner = _busy_runner(monkeypatch, adapter, "queue")
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(
+        side_effect=lambda **kwargs: kwargs["event"].text
+    )
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    events = [
+        MessageEvent(
+            text=f"turn-{index}",
+            message_id=f"$turn-{index}",
+            source=SessionSource(
+                platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="dm"
+            ),
+        )
+        for index in range(turn_count)
+    ]
+    key = adapter._event_session_key(events[0])
+    started, release = asyncio.Event(), asyncio.Event()
+    at_last_turn = []
+
+    async def run_turn(current, following):
+        result = {"final_response": f"reply-{current.text}", "messages": []}
+        ctx = TurnContext(
+            source=current.source,
+            session_key=key,
+            session_id="receipt-chain",
+            event_message_id=current.message_id,
+            inbound_message_id=current.message_id,
+            processing_event=current,
+        )
+        return await runner._run_agent_queued_followup(
+            ctx, adapter, following.text, following, result, result, None
+        )
+
+    async def next_turn(**kwargs):
+        index = int(kwargs["message"].split("-")[-1])
+        if index < turn_count - 1:
+            return await run_turn(events[index], events[index + 1])
+        at_last_turn.append((
+            list(receipts.call_args_list),
+            list(sender.await_args_list),
+        ))
+        started.set()
+        await release.wait()
+        return {"final_response": "last reply", "messages": []}
+
+    monkeypatch.setattr(runner, "_run_agent", next_turn)
+    adapter.set_message_handler(lambda event: run_turn(event, events[1]))
+    try:
+        await adapter.handle_message(events[0])
+        await asyncio.wait_for(started.wait(), 2)
+        completed = events[:-1]
+        expected_receipts = [
+            call(event.source.chat_id, event.message_id) for event in completed
+        ]
+        assert at_last_turn == [
+            (
+                expected_receipts,
+                [
+                    call(
+                        chat_id=event.source.chat_id,
+                        content=f"reply-{event.text}",
+                        reply_to=event.message_id,
+                        metadata={"notify": True},
+                    )
+                    for event in completed
+                ],
+            )
+        ]
+        await adapter.cancel_session_processing(key)
+        assert receipts.call_args_list == expected_receipts
+        assert adapter._send_reaction.await_args_list == [
+            invocation
+            for index, event in enumerate(events)
+            for invocation in (
+                [
+                    call(event.source.chat_id, event.message_id, "👀"),
+                    call(event.source.chat_id, event.message_id, "✅"),
+                ]
+                if index < turn_count - 1
+                else [call(event.source.chat_id, event.message_id, "👀")]
+            )
+        ]
+    finally:
+        release.set()
+        await adapter.cancel_background_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["immediate", "after_processing", "disabled"])
+@pytest.mark.parametrize("command_reply", ["active", None])
+async def test_inline_command_receipt_is_independent_of_the_active_turn(
+    monkeypatch, mode, command_reply
+):
+    adapter, receipts, _sender = _intake_adapter(monkeypatch, mode)
+    adapter._reactions_enabled = True
+    adapter._send_reaction = AsyncMock(return_value="$eyes")
+    adapter._schedule_reaction_redaction = MagicMock()
+    adapter._text_batch_delay_seconds = 0
+    _busy_runner(monkeypatch, adapter, "queue")
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def respond(event):
+        if event.get_command() == "status":
+            return command_reply
+        started.set()
+        await release.wait()
+        return "done"
+
+    adapter.set_message_handler(respond)
+    room = "!room:example.org"
+    try:
+        await _text_input(adapter, "$opening", "opening")
+        await asyncio.wait_for(started.wait(), 2)
+        await _text_input(adapter, "$status", "/status")
+        assert (receipts.call_args_list, adapter._send_reaction.await_args_list) == (
+            {
+                "immediate": [call(room, "$opening"), call(room, "$status")],
+                "after_processing": [call(room, "$status")],
+                "disabled": [],
+            }[mode],
+            [call(room, "$opening", "👀")],
+        )
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*adapter._background_tasks), 2)
+        assert (receipts.call_args_list, adapter._send_reaction.await_args_list) == (
+            {
+                "immediate": [call(room, "$opening"), call(room, "$status")],
+                "after_processing": [call(room, "$status"), call(room, "$opening")],
+                "disabled": [],
+            }[mode],
+            [call(room, "$opening", "👀"), call(room, "$opening", "✅")],
+        )
     finally:
         release.set()
         await adapter.cancel_background_tasks()

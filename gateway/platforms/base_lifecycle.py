@@ -39,12 +39,23 @@ class BaseLifecycleMixin:
         if emoji:
             await add(chat_id, message_id, emoji)
 
+    async def on_inline_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Acknowledge an inline command without changing the active turn's lifecycle."""
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)
         if not callable(hook):
             return
+        event = args[0] if args else None
+        if isinstance(event, MessageEvent):
+            if hook_name == "on_processing_start":
+                event._processing_state.deferred = False
+                event._processing_state.completed = False
+            elif hook_name in {"on_processing_complete", "on_inline_processing_complete"}:
+                if event._processing_state.deferred or event._processing_state.completed:
+                    return
+                event._processing_state.completed = True
         try:
             await hook(*args, **kwargs)
         except Exception as e:

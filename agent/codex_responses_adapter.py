@@ -805,8 +805,10 @@ def _preflight_encrypted(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> 
 
 
 def _preflight_message(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Dict[str, Any]:
+    if item.get("role") == "user":
+        return _preflight_role_message(item, idx, ctx)
     if item.get("role") != "assistant":
-        raise ValueError(f"Codex Responses input[{idx}] message items must have role='assistant'.")
+        raise ValueError(f"Codex Responses input[{idx}] message items must have role='assistant' or 'user'.")
     content = item.get("content")
     if not isinstance(content, list):
         raise ValueError(f"Codex Responses input[{idx}] message item must have content list.")

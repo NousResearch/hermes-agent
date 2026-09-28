@@ -670,6 +670,27 @@ def test_preflight_codex_api_kwargs_leaves_tool_definition_names_alone():
     assert kwargs["tools"][0]["name"] == "my_tool"
 
 
+def test_preflight_codex_input_items_accepts_typed_user_message():
+    normalized = _preflight_codex_input_items(
+        [
+            {
+                "type": "message",
+                "role": "user",
+                "status": "completed",
+                "id": "msg_user_input",
+                "content": [{"type": "input_text", "text": "resume queued work"}],
+            }
+        ]
+    )
+
+    assert normalized == [
+        {
+            "role": "user",
+            "content": [{"type": "input_text", "text": "resume queued work"}],
+        }
+    ]
+
+
 def test_preflight_codex_input_items_drops_short_id_for_github_responses():
     items = _preflight_codex_input_items(
         [

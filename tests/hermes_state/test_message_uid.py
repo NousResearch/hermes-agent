@@ -204,3 +204,58 @@ class TestCopyPathsKeepTheUid:
             assert [r["message_uid"] for r in _rows(other, "s")] == [r["message_uid"] for r in stored]
         finally:
             other.close()
+
+
+def _absorbed(db, sid):
+    return [r[0] for r in db._conn.execute(
+        "SELECT absorbed_message_uids FROM messages WHERE session_id = ? AND active = 1 ORDER BY id", (sid,))]
+
+
+class TestPersistedMergeWitness:
+    """``_absorbed_message_uids`` (which rows a consecutive-user merge folded into the survivor) rides on the
+    survivor's row, so a consumer that restarts after the merge still knows the composite's constituents."""
+
+    def test_flushed_survivor_persists_the_absorbed_uids_and_restore_returns_them(self, db):
+        from agent.agent_runtime_helpers import _merge_consecutive_users
+
+        db.create_session("s", "cli")
+        dangling = {"role": "user", "content": "first, never answered"}
+        db.append_messages_batch("s", [dangling])
+        prompt = {"role": "user", "content": "second"}
+        db.append_messages_batch("s", [prompt])
+        _merge_consecutive_users([dangling, prompt])
+        assert dangling["_absorbed_message_uids"] == [prompt["message_uid"]]
+        # The survivor re-flushes as a row-addressed rewrite of its own row (same id, same uid).
+        db.append_messages_batch("s", [dangling])
+        rows = _rows(db, "s")
+        assert [r["content"] for r in rows] == ["first, never answered\n\nsecond", "second"]
+        assert rows[0]["message_uid"] == dangling["message_uid"]
+        assert _absorbed(db, "s") == ['["%s"]' % prompt["message_uid"], None]
+        restored = db.get_messages_as_conversation("s")
+        assert restored[0]["_absorbed_message_uids"] == [prompt["message_uid"]]
+        assert "_absorbed_message_uids" not in restored[1]
+
+    def test_a_survivor_inserted_as_a_fresh_row_carries_the_witness(self, db):
+        db.create_session("s", "cli")
+        composite = {"role": "user", "content": "a\n\nb", "message_uid": "a" * 32,
+                     "_absorbed_message_uids": ["b" * 32, "c" * 32]}
+        db.append_messages_batch("s", [composite])
+        assert _absorbed(db, "s") == ['["%s", "%s"]' % ("b" * 32, "c" * 32)]
+        assert db.get_messages_as_conversation("s")[0]["_absorbed_message_uids"] == ["b" * 32, "c" * 32]
+
+    def test_compaction_copy_and_export_import_keep_the_witness(self, db, tmp_path):
+        db.create_session("s", "cli")
+        composite = {"role": "user", "content": "a\n\nb", "message_uid": "a" * 32,
+                     "_absorbed_message_uids": ["b" * 32]}
+        db.append_messages_batch("s", [composite, {"role": "assistant", "content": "ok"}])
+        restored = db.get_messages_as_conversation("s")
+        db.archive_and_compact("s", [{"role": "user", "content": "[CONTEXT COMPACTION] s"},
+                                     copy.copy(restored[0]), copy.copy(restored[1])])
+        assert _absorbed(db, "s") == [None, '["%s"]' % ("b" * 32), None]
+        payload = db.export_session("s")
+        other = SessionDB(db_path=tmp_path / "other.db")
+        try:
+            assert other.import_sessions([payload])["ok"]
+            assert other.get_messages_as_conversation("s")[1]["_absorbed_message_uids"] == ["b" * 32]
+        finally:
+            other.close()

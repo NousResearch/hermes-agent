@@ -15,7 +15,7 @@ from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
     _newest_checkpoint_carrier, split_user_originated_turn)
 from agent.memory_manager import sanitize_context
-from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID
+from agent.message_metadata import ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID
 from agent.message_sanitization import _sanitize_surrogates
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
@@ -29,8 +29,8 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
-                   display_metadata, display_identity, message_uid)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   display_metadata, display_identity, message_uid, absorbed_message_uids)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -96,6 +96,23 @@ def _message_uid_or_none(msg: Dict[str, Any]) -> Optional[str]:
     blank would be a bug upstream of the write, not an identity)."""
     uid = msg.get(MESSAGE_UID)
     return uid if isinstance(uid, str) and uid else None
+
+
+def _uid_list(value: Any) -> List[str]:
+    """Normalize a uid list (a live list, or the JSON text an export/import carries) to unique non-empty
+    strings in order; anything else is ``[]``."""
+    if isinstance(value, str):
+        value = _json_or(value, [], "Failed to deserialize a message uid list, falling back to []")
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(item for item in value if isinstance(item, str) and item))
+
+
+def _uid_list_json(msg: Dict[str, Any], live_key: str, column: str) -> Optional[str]:
+    """JSON text for a uid-list column, read from the live key first (flushed dicts, batch rows) and the
+    column name second (import payloads); ``None`` when empty."""
+    uids = _uid_list(msg.get(live_key) if live_key in msg else msg.get(column))
+    return json.dumps(uids) if uids else None
 
 
 def _parse_tool_calls(tool_calls: Any) -> Any:
@@ -294,7 +311,7 @@ class SessionMessagesMixin:
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
-            _message_uid_or_none(msg))
+            _message_uid_or_none(msg), _uid_list_json(msg, ABSORBED_MESSAGE_UIDS, "absorbed_message_uids"))
 
     @staticmethod
     def _stamp_message_uid(msg: Dict[str, Any]) -> str:
@@ -345,6 +362,10 @@ class SessionMessagesMixin:
             msg["observed"] = True
         if row["_compressed_summary"]:
             msg["_compressed_summary"] = True
+        if row[MESSAGE_UID]:
+            msg[MESSAGE_UID] = row[MESSAGE_UID]
+        if row["absorbed_message_uids"] and (absorbed := _uid_list(row["absorbed_message_uids"])):
+            msg[ABSORBED_MESSAGE_UIDS] = absorbed
         if row["api_content"] is not None:
             msg["api_content"] = row["api_content"]
         if row["display_kind"] is not None:
@@ -1564,6 +1585,9 @@ class SessionMessagesMixin:
             # projection (ACP, gateway, CLI, TUI, compression adoption), never opt-in like ``_row_id``.
             if row[MESSAGE_UID]:
                 msg[MESSAGE_UID] = row[MESSAGE_UID]
+            # The persisted merge witness: which rows a consecutive-user merge folded into this one.
+            if row["absorbed_message_uids"] and (absorbed := _uid_list(row["absorbed_message_uids"])):
+                msg[ABSORBED_MESSAGE_UIDS] = absorbed
             msg.update((col, row[col]) for col in ("api_content", "display_kind") if row[col])
             if row["display_metadata"] and (decoded := self._decode_display_metadata(row["display_metadata"])) is not None:
                 msg["display_metadata"] = decoded

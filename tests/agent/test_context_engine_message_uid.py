@@ -186,6 +186,34 @@ def test_consecutive_user_merge_keeps_the_first_uid_and_records_the_absorbed_one
     assert "_absorbed_row_ids" not in a
 
 
+def test_restart_after_a_merge_still_sees_the_composites_constituents(db):
+    """A dangling user row, a restart, the next prompt merged into it, a turn flush, another restart: the
+    restored survivor names the absorbed row by uid instead of leaving the engine to parse ``\\n\\n``."""
+    sid = "20260928_120300_witness"
+    db.create_session(sid, "cli", model="test/model")
+    db.append_message(session_id=sid, role="user", content="unanswered before the crash")
+    dangling_uid = db.get_messages_as_conversation(sid)[0]["message_uid"]
+    # Restart: the ACP/gateway restore shape, then the next prompt lands and the pre-request repair merges.
+    history = db.get_messages_as_conversation(sid, repair_alternation=True, include_row_ids=True)
+    agent = _make_agent(db, sid)
+    agent._session_db_created = True
+    prompt = {"role": "user", "content": "next prompt"}
+    messages = history + [prompt]
+    agent._persist_user_message_idx = 1
+    agent._persist_session(messages, conversation_history=history)  # the turn-start flush of the prompt
+    from agent.agent_runtime_helpers import repair_message_sequence
+    repair_message_sequence(agent, messages)
+    assert len(messages) == 1 and messages[0]["message_uid"] == dangling_uid
+    assert messages[0]["_absorbed_message_uids"] == [prompt["message_uid"]]
+    messages.append({"role": "assistant", "content": "reply"})
+    agent._persist_session(messages, conversation_history=None)
+    # Second restart.
+    again = db.get_messages_as_conversation(sid, repair_alternation=True)
+    survivor = next(m for m in again if m["message_uid"] == dangling_uid)
+    assert survivor["content"].startswith("unanswered before the crash")
+    assert prompt["message_uid"] in survivor["_absorbed_message_uids"]
+
+
 def test_the_uid_never_reaches_the_provider_copy():
     from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 

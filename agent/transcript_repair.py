@@ -9,7 +9,7 @@ import sqlite3
 from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
-from agent.message_metadata import CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID
+from agent.message_metadata import ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID
 from hermes_state_common import _id_chunks, _placeholders
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
 
@@ -278,6 +278,8 @@ def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: L
             written["_row_id"] = row["_row_id"]
         if isinstance(row.get(MESSAGE_UID), str) and row[MESSAGE_UID]:
             written[MESSAGE_UID] = row[MESSAGE_UID]
+        if isinstance(row.get(ABSORBED_MESSAGE_UIDS), list) and row[ABSORBED_MESSAGE_UIDS]:
+            written[ABSORBED_MESSAGE_UIDS] = list(row[ABSORBED_MESSAGE_UIDS])
         if isinstance(row.get("timestamp"), (int, float)):
             written["timestamp"] = row["timestamp"]
         if isinstance(row.get(DB_ROW_SNAPSHOT), str):

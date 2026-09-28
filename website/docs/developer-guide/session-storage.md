@@ -207,7 +207,7 @@ later.
 
 Abridged — the full schema also includes `effect_disposition`,
 `platform_message_id`, `observed`, `active`, `compacted`, `api_content`,
-`display_kind`, `display_metadata`, and `message_uid`:
+`display_kind`, `display_metadata`, `message_uid`, and `absorbed_message_uids`:
 
 ```sql
 CREATE TABLE IF NOT EXISTS messages (
@@ -243,6 +243,7 @@ Notes:
 - `api_content` is a byte-fidelity sidecar: the exact content string sent to the API for this message when it differs from `content` (ephemeral memory/plugin injections, persist overrides). It preserves the wire bytes for prompt-cache-stable replay — stored as sent, except lone surrogates, which sqlite3 cannot bind and which the conversation loop scrubs from every outgoing payload anyway. `NULL` means `content` was sent verbatim.
 - Timestamps are Unix epoch floats (`time.time()`)
 - `message_uid` is the durable per-message id (32 hex, `uuid4().hex`): minted once at a row's first insert and copied by every clone (in-place compaction generations, rotation children, concurrent-tail clones, `replace_messages` re-issues, export/import), so one logical message keeps one uid while its physical `id` changes. Row-addressed rewrites leave it alone. It is restored on every projection (`get_messages_as_conversation` sets it unconditionally; `_row_id` stays opt-in) and stripped from provider requests. Context engines key their own per-message state on it — see [Context Engine Plugins](./context-engine-plugin.md#stable-message-identity-message_uid).
+- `absorbed_message_uids` is the merge witness: a JSON list of the `message_uid`s that alternation repair folded into this user row (the survivor keeps its own uid). Written when the survivor is flushed, rewritten with it, restored as the live `_absorbed_message_uids`, `NULL` on rows that absorbed nothing.
 
 ### FTS5 Full-Text Search
 

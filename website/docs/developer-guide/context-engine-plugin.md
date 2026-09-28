@@ -160,11 +160,13 @@ What the host guarantees:
   sanitizer's row-addressed rewrite, the interrupted-stream fill. Treat
   `(message_uid, content)` as a *version* of the message; never fail closed on
   a content change under a known uid.
-- **Merges keep the first constituent's uid.** When alternation repair merges
-  consecutive user turns, the survivor keeps its own uid and records the
-  absorbed rows' uids in `_absorbed_message_uids` (live-only, in absorption
-  order), so an engine can see that `A\n\nB` is the host's fold of `A` and `B`
-  rather than a new message.
+- **Merges keep the first constituent's uid and record the rest.** When
+  alternation repair merges consecutive user turns, the survivor keeps its own
+  uid and records the absorbed rows' uids in `_absorbed_message_uids` (in
+  absorption order). The list is persisted on the survivor's row
+  (`messages.absorbed_message_uids`) and restored with it, so after a restart an
+  engine still sees that `A\n\nB` is the host's fold of `A` and `B` rather
+  than a new message.
 - **Engine-authored rows keep the uid the engine sets.** If your `compress()`
   output pre-stamps `message_uid` on a summary carrier, the host writes that
   value; rows without one are minted at insert.

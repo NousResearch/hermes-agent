@@ -65,6 +65,25 @@ class LiveGateway:
     model: FakeLLMServer
     home: Path
 
+    def restart(self) -> None:
+        gateway_log = self.home / "logs" / "gateway.log"
+        log_offset = len(gateway_log.read_text(encoding="utf-8"))
+        self.container.get_wrapped_container().restart(timeout=5)
+
+        def connected() -> bool:
+            return "Matrix: initial sync complete" in gateway_log.read_text(
+                encoding="utf-8"
+            )[log_offset:]
+
+        _wait_for(
+            connected,
+            "Matrix gateway sync after restart",
+            timeout=30,
+            details=lambda: self.container.get_wrapped_container()
+            .logs()
+            .decode(errors="replace")[-6000:],
+        )
+
     def log_tail(self, lines: int = 200) -> str:
         path = self.home / "logs" / "gateway.log"
         if not path.exists():
@@ -366,12 +385,18 @@ def _gateway_ready(log: str, room_id: str) -> bool:
 
 
 @pytest.fixture
+def gateway_config() -> str:
+    return "platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n"
+
+
+@pytest.fixture
 def gateway(
     request: pytest.FixtureRequest,
     tmp_path: Path,
     gateway_image: str,
     synapse: tuple[DockerContainer, str, Network],
     live_room: LiveRoom,
+    gateway_config: str,
 ) -> Iterator[LiveGateway]:
     param = getattr(request, "param", GatewaySettings())
     settings = GatewaySettings(mode=param) if isinstance(param, str) else param
@@ -390,10 +415,13 @@ def gateway(
             f"http://host.docker.internal:{model.port}/v1",
             extra_config=(
                 ("  image_input_mode: native\n" if native_images else "")
-                + "platforms:\n  matrix:\n    enabled: true\n"
-                + ("    thread_require_mention: true\n" if mode == "pause-context" or resolution_pause else "")
-                + (f"    free_response_rooms:\n      - {room_id!r}\n" if resolution_pause else "")
-                + "updates:\n  check: false\n"
+                + gateway_config.replace(
+                    "    enabled: true\n",
+                    "    enabled: true\n"
+                    + ("    thread_require_mention: true\n" if mode == "pause-context" or resolution_pause else "")
+                    + (f"    free_response_rooms:\n      - {room_id!r}\n" if resolution_pause else ""),
+                    1,
+                )
                 + ("display:\n  busy_input_mode: queue\n  busy_ack_enabled: false\n"
                    if mode == "pause-queued-context" else "")
                 + ("plugins:\n  enabled:\n    - matrix-live-context\n"
@@ -536,6 +564,8 @@ def gateway(
             extra_hosts={"host.docker.internal": route.container_address},
         ).with_command("-m hermes_cli.main gateway run").with_volume_mapping(
             home, "/opt/data", "rw"
+        ).with_volume_mapping(
+            REPO_ROOT / "tests/integration/matrix_live", "/matrix_live", "ro"
         ).with_env("HOME", "/opt/data") as container:
             def connected() -> bool:
                 output = container.get_wrapped_container().logs().decode(errors="replace")

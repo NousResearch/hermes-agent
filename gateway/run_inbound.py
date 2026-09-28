@@ -74,6 +74,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
 
     _peek_session_state: Callable[[str], Optional[SessionState]]
 
+    if TYPE_CHECKING:
+        _queue_or_replace_pending_event = GatewayRunner._queue_or_replace_pending_event
+
     async def _hm_pre_gateway_dispatch_hook(
         self, event: MessageEvent, source: SessionSource
     ) -> Optional[MessageEvent]:
@@ -704,6 +707,10 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
         if _handled:
             return _result
         if not await self._strict_session_current(event, _quick_key):
+            return None
+
+        if event.internal or event.defer_until_idle:
+            self._queue_or_replace_pending_event(_quick_key, event)
             return None
 
         effective_busy_input_mode = self._effective_busy_input_mode(source)

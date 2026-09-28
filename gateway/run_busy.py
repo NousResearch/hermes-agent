@@ -124,6 +124,10 @@ class GatewayBusySessionMixin:
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if pending_slot is None:
             return
+        if session_key not in pending_slot:
+            earlier = self._promote_queued_event(session_key, adapter, None)
+            if earlier is not None:
+                pending_slot[session_key] = earlier
         if session_key in pending_slot:
             self._session_state(session_key).conversation.queued_events.append(queued_event)
         else:

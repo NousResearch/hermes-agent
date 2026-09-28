@@ -32,7 +32,7 @@ from gateway.response_filters import (
 from gateway.run_inbound_turn_context import channel_state_metadata
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
-    SessionSource, _session_key_namespace, build_channel_continuity_note,
+    SessionContext, SessionSource, _session_key_namespace, build_channel_continuity_note,
     build_session_context,
 )
 from gateway.session_transcript import TranscriptReadError
@@ -169,6 +169,11 @@ def hygiene_no_commit_reason(agent) -> str:
 
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
+
+    if TYPE_CHECKING:
+        _delivery_adapter_for = GatewayRunner._delivery_adapter_for
+        _session_state = GatewayRunner._session_state
+        _session_env_scope = GatewayRunner._session_env_scope
 
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
@@ -3657,7 +3662,18 @@ class GatewayTurnMixin:
         pending_event = None
         pending = None
         if result and adapter and session_key:
-            pending_event = _dequeue_pending_event(adapter, session_key)
+            live_adapter = self._delivery_adapter_for(source)
+            if (live_adapter is not None and live_adapter is not adapter
+                    and isinstance(getattr(live_adapter, "_pending_messages", None), dict)):
+                earlier = _dequeue_pending_event(adapter, session_key)
+                if earlier is not None:
+                    newer = _dequeue_pending_event(live_adapter, session_key)
+                    if newer is not None:
+                        self._session_state(session_key).conversation.queued_events.insert(0, newer)
+                    pending_event = earlier
+                adapter = live_adapter
+            if pending_event is None:
+                pending_event = _dequeue_pending_event(adapter, session_key)
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
             pending_event = self._promote_queued_event(session_key, adapter, pending_event)
@@ -3823,7 +3839,7 @@ class GatewayTurnMixin:
                 if _text_delivered and isinstance(result, dict):
                     result["already_sent"] = True
                     if _already_streamed:
-                        self._run_agent_notify_streamed_final_delivery(
+                        await self._run_agent_notify_streamed_final_delivery(
                             adapter, turn_ctx.source, session_key, _sc, first_response)
                     # The queued lane already uploaded this response's MEDIA: attachments; without
                     # this the completion path's already_sent rescan uploads every file twice.
@@ -3976,20 +3992,27 @@ class GatewayTurnMixin:
                 )
                 return result
 
-            followup_result = await self._run_agent(
-                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-                source=next_source, session_id=session_id, session_key=next_session_key,
-                run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-                event_message_id=next_message_id, inbound_message_id=next_inbound_id,
-                channel_prompt=next_channel_prompt, message_type=next_message_type,
-                persist_user_message=next_persist_message,
-                persist_user_display_kind=next_display_kind,
-                reply_expected=next_reply_expected,
-                input_snapshot=getattr(pending_event, "_prepared_inbound", None),
-                persist_user_display_metadata={
-                    **channel_state_metadata(pending_event),
-                    **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+            from gateway.session_identity import replace_source
+            tool_context = SessionContext(
+                source=replace_source(next_source, message_id=next_inbound_id),
+                connected_platforms=[], home_channels={},
+                session_key=next_session_key or "", session_id=session_id or "",
             )
+            with self._session_env_scope(tool_context):
+                followup_result = await self._run_agent(
+                    message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                    source=next_source, session_id=session_id, session_key=next_session_key,
+                    run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+                    event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+                    channel_prompt=next_channel_prompt, message_type=next_message_type,
+                    persist_user_message=next_persist_message,
+                    persist_user_display_kind=next_display_kind,
+                    reply_expected=next_reply_expected,
+                    input_snapshot=getattr(pending_event, "_prepared_inbound", None),
+                    persist_user_display_metadata={
+                        **channel_state_metadata(pending_event),
+                        **reply_expected_metadata(next_reply_expected), **diagnostic_metadata(pending_event)} or None,
+                )
         except asyncio.CancelledError:
             await _run_followup_processing_hook(
                 _hook_adapter, pending_event, "on_processing_complete", _followup_cancel_outcome(_hook_adapter))
@@ -4171,14 +4194,16 @@ class GatewayTurnMixin:
                 _sk, _streamed, _previewed, _content_delivered, _transformed, len(_final),
             )
         if response.get("already_sent") and _sc is not None:
-            self._run_agent_notify_streamed_final_delivery(
+            await self._run_agent_notify_streamed_final_delivery(
                 getattr(_sc, "adapter", None), source, session_key, _sc, _final)
 
     @staticmethod
-    def _run_agent_notify_streamed_final_delivery(adapter, source, session_key, consumer, final_text) -> None:
+    async def _run_agent_notify_streamed_final_delivery(adapter, source, session_key, consumer, final_text) -> None:
         callback = getattr(adapter, "on_streamed_final_delivery", None)
         if callable(callback):
-            callback(source, session_key, getattr(consumer, "final_message_ids", ()), final_text)
+            result = callback(source, session_key, getattr(consumer, "final_message_ids", ()), final_text)
+            if inspect.isawaitable(result):
+                await result
 
     def _run_agent_schedule_bubble_cleanup(self, response: Any, _cleanup_adapter: Any, turn_ctx: TurnContext) -> None:
         """Schedule deletion of tracked temporary progress bubbles after the final response lands.

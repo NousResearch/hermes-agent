@@ -2,16 +2,118 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import sqlite3
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+from plugins.platforms.matrix.reaction_context import Method
 
 
 WATCH_SECONDS = 600
+REGISTRATION_REPLAY_SECONDS = 10
+REGISTRATION_REPLAY_LIMIT = 32
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PendingFollowupReaction:
+    target_event_id: str
+    emoji: str
+    sender: str
+    event_id: str
+    expires_at: float
+
+
+class PendingFollowupReactions:
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self.clock = clock
+        self.events: dict[str, PendingFollowupReaction] = {}
+        self.registered = False
+
+    def remember(self, target_event_id: str, emoji: str, sender: str, event_id: str) -> None:
+        self.events = {key: event for key, event in self.events.items()
+                       if event.expires_at > self.clock()}
+        if self.registered or not event_id or not target_event_id or not emoji:
+            return
+        if event_id in self.events or len(self.events) >= REGISTRATION_REPLAY_LIMIT:
+            return
+        self.events[event_id] = PendingFollowupReaction(
+            target_event_id, emoji, sender, event_id, self.clock() + REGISTRATION_REPLAY_SECONDS,
+        )
+
+    def eligible(self, event_id: str) -> bool:
+        event = self.events.get(event_id)
+        return event is not None and event.expires_at > self.clock()
+
+    def discard(self, event_id: str) -> None:
+        self.events.pop(event_id, None)
+
+    def clear(self) -> None:
+        self.events.clear()
+
+
+class FinalDeliveryEvents:
+    def __init__(self) -> None:
+        self.events: OrderedDict[tuple[str, str], str | None] = OrderedDict()
+
+    def remember(
+        self, room_id: str, event_id: str, content: dict[str, Any], *, finalize: bool,
+    ) -> None:
+        relation = content.get("m.relates_to", {})
+        target = relation.get("event_id") if relation.get("rel_type") == "m.replace" else event_id
+        key = (room_id, target)
+        self.events.pop(key, None)
+        self.events[key] = event_id if finalize else None
+        if len(self.events) > 512:
+            self.events.popitem(last=False)
+
+    def latest(self, room_id: str, visible_ids: tuple[str, ...]) -> str | None:
+        targets = set(visible_ids)
+        return next((self.events[key] for key in reversed(self.events)
+                     if key[0] == room_id and key[1] in targets), None)
+
+
+async def reaction_follows_delivery(
+    client: Any, room_id: str, delivery_event_id: str, reaction_event_id: str,
+) -> bool:
+    if client is None or not delivery_event_id or not reaction_event_id:
+        return False
+    room_path = f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}"
+    try:
+        async with asyncio.timeout(10.0):
+            context = await client.api.request(
+                Method.GET, f"{room_path}/context/{quote(delivery_event_id, safe='')}",
+                query_params={"limit": "0"},
+            )
+            token = context.get("end") if isinstance(context, dict) else None
+            seen = set()
+            for _ in range(10):
+                if not isinstance(token, str) or not token or token in seen:
+                    return False
+                seen.add(token)
+                page = await client.api.request(
+                    Method.GET, f"{room_path}/messages",
+                    query_params={"from": token, "dir": "f", "limit": "100"},
+                )
+                chunk = page.get("chunk") if isinstance(page, dict) else None
+                if not isinstance(chunk, list):
+                    return False
+                if any(isinstance(event, dict) and event.get("event_id") == reaction_event_id
+                       for event in chunk):
+                    return True
+                token = page.get("end")
+    except Exception as exc:
+        logger.debug("Matrix: could not establish reaction delivery order: %s", exc)
+    return False
 
 
 class ReactionWatchStore:
@@ -33,6 +135,7 @@ class ReactionWatchStore:
                     source_json TEXT NOT NULL,
                     emoji_json TEXT NOT NULL,
                     text_content TEXT NOT NULL DEFAULT '',
+                    delivery_event_id TEXT NOT NULL DEFAULT '',
                     expires_at REAL NOT NULL
                 )
             """)
@@ -41,6 +144,8 @@ class ReactionWatchStore:
                 db.execute("ALTER TABLE watches ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
             if "text_content" not in columns:
                 db.execute("ALTER TABLE watches ADD COLUMN text_content TEXT NOT NULL DEFAULT ''")
+            if "delivery_event_id" not in columns:
+                db.execute("ALTER TABLE watches ADD COLUMN delivery_event_id TEXT NOT NULL DEFAULT ''")
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.path, timeout=5)
@@ -58,6 +163,7 @@ class ReactionWatchStore:
         requester: str,
         source: dict[str, Any],
         emoji_filter: tuple[str, ...],
+        delivery_event_id: str,
         text_content: str = "",
     ) -> None:
         rows = [
@@ -73,6 +179,7 @@ class ReactionWatchStore:
                 json.dumps(source),
                 json.dumps(emoji_filter),
                 text_content,
+                delivery_event_id,
                 self.clock() + WATCH_SECONDS,
             )
             for event_id in event_ids
@@ -85,8 +192,8 @@ class ReactionWatchStore:
             db.executemany(
                 """INSERT OR REPLACE INTO watches
                    (event_id, turn_id, profile, room_id, thread_id, session_key,
-                    session_id, requester, source_json, emoji_json, text_content, expires_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    session_id, requester, source_json, emoji_json, text_content, delivery_event_id, expires_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 rows,
             )
 
@@ -98,7 +205,7 @@ class ReactionWatchStore:
         sender: str,
         emoji: str,
         *,
-        reaction_time: float | None = None,
+        verified_delivery_event_id: str = "",
     ) -> dict[str, Any] | None:
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -106,14 +213,14 @@ class ReactionWatchStore:
             row = db.execute(
                 """
                 SELECT turn_id, thread_id, session_key, session_id, requester,
-                       source_json, emoji_json, expires_at, text_content
+                       source_json, emoji_json, expires_at, text_content, delivery_event_id
                 FROM watches WHERE event_id = ? AND profile = ? AND room_id = ?
             """,
                 (target_event_id, profile, room_id),
             ).fetchone()
             if row is None or row[4] != sender or not row[3]:
                 return None
-            if reaction_time is not None and reaction_time < row[7] - WATCH_SECONDS:
+            if not row[9] or row[9] != verified_delivery_event_id:
                 return None
             allowed = tuple(json.loads(row[6]))
             if allowed and emoji not in allowed:
@@ -137,12 +244,12 @@ class ReactionWatchStore:
             row = db.execute(
                 """
                 SELECT profile, thread_id, session_key, session_id, requester,
-                       source_json, expires_at
+                       source_json, expires_at, delivery_event_id
                 FROM watches WHERE event_id = ? AND room_id = ?
             """,
                 (target_event_id, room_id),
             ).fetchone()
-        if row is None or row[6] <= self.clock():
+        if row is None or row[6] <= self.clock() or not row[7]:
             return None
         return {
             "profile": row[0],
@@ -151,4 +258,5 @@ class ReactionWatchStore:
             "session_id": row[3],
             "requester": row[4],
             "source": json.loads(row[5]),
+            "delivery_event_id": row[7],
         }

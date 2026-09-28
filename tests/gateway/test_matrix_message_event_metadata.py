@@ -67,6 +67,7 @@ def _make_adapter(require_mention=False, auto_thread=False, monkeypatch=None):
         server_name="example.org",
         members_digest=None,
         chat_type="dm",  # DM shortcut so we bypass MATRIX_ALLOWED_ROOMS
+        members_digest=None,
     )
     adapter._resolve_room_identity = AsyncMock(return_value=identity)
     return adapter

@@ -370,7 +370,10 @@
     if (!src) return "";
     // Split out fenced code blocks first so their contents aren't mangled.
     const blocks = [];
-    let working = String(src).replace(/```([\s\S]*?)```/g, (_m, code) => {
+    // A fence's first line is its info string ("```js"); drop it so the
+    // language tag doesn't render as the first line of code. A one-line
+    // fence ("```x```") has no info string.
+    let working = String(src).replace(/```(?:[^\n`]*\n)?([\s\S]*?)\n?```/g, (_m, code) => {
       blocks.push(code);
       return `\u0000CODE${blocks.length - 1}\u0000`;
     });

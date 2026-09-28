@@ -981,9 +981,11 @@
 .hermes-kanban-md h3 { font-size: 0.88rem; }
 .hermes-kanban-md h4 { font-size: 0.82rem; }
 .hermes-kanban-md ul {
-  margin: 0.25rem 0 0.25rem 1.1rem;
-  padding: 0;
+  margin: 0.25rem 0;
+  padding-left: 1.1rem;
+  list-style: disc outside;
 }
+.hermes-kanban-md li::marker { color: var(--color-muted-foreground); }
 .hermes-kanban-md li { margin: 0.1rem 0; }
 .hermes-kanban-md a {
   color: var(--color-ring);

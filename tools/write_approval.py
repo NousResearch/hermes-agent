@@ -275,8 +275,15 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
             current = p.read_text(encoding="utf-8-sig") if p.exists() else ""
 
     if action == "patch":
-        old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
-        new = current.replace(old_s, new_s) if current else f"(patch {old_s!r} → {new_s!r})"
+        # evidence_merge was staged with its merged candidate already frozen and bound to the
+        # source digest. Diff THAT, never a re-derivation: the reviewer must approve the exact
+        # bytes the replay will write, and re-merging here could show something else.
+        evidence = payload.get("evidence_merge")
+        if isinstance(evidence, dict) and "_candidate_content" in evidence:
+            new = evidence["_candidate_content"]
+        else:
+            old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""
+            new = current.replace(old_s, new_s) if current else f"(patch {old_s!r} → {new_s!r})"
     else:
         new = payload.get("content" if action == "edit" else "file_content") or ""
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),

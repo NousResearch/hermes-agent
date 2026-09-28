@@ -341,6 +341,24 @@ def test_ssh_runtime_marker_sweep_keeps_marker_when_liveness_lookup_raises(
     assert marker.is_file()
 
 
+def test_ssh_runtime_marker_sweep_removes_empty_crash_residue_for_dead_named_pid(
+    tmp_path,
+):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    exited = subprocess.Popen([sys.executable, "-c", "pass"])
+    exited.wait(timeout=10)
+    assert exited.returncode == 0
+    marker = purelib / (
+        f".hermes-ssh-runtime-fedcba9876543210-{exited.pid}-0123456789abcdef"
+    )
+    marker.touch()
+
+    web_server._sweep_dead_ssh_runtime_markers(str(purelib))
+
+    assert not marker.exists()
+
+
 def test_ssh_runtime_marker_sweep_skips_pid_too_large_to_parse(tmp_path):
     purelib = tmp_path / "site-packages"
     purelib.mkdir()
@@ -536,6 +554,36 @@ def test_preexisting_empty_marker_does_not_disable_marker_tier(tmp_path, monkeyp
         web_server._apply_ssh_owner_nonce(None)
 
     assert legacy_marker.is_file()
+
+
+def test_random_marker_name_collision_keeps_existing_file_and_uses_stat_fallback(
+    tmp_path, monkeypatch
+):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    monkeypatch.setattr(
+        web_server,
+        "sysconfig",
+        types.SimpleNamespace(get_paths=lambda *a, **k: {"purelib": str(purelib)}),
+    )
+    nonce = "0123456789abcdef"
+    token = "fedcba9876543210"
+    marker = purelib / f".hermes-ssh-runtime-{nonce}-{os.getpid()}-{token}"
+    marker.touch()
+    monkeypatch.setattr(
+        web_server,
+        "secrets",
+        types.SimpleNamespace(token_hex=lambda _size: token),
+    )
+
+    web_server._apply_ssh_owner_nonce(nonce)
+    try:
+        assert web_server._SSH_RUNTIME_MARKER is None
+        assert marker.read_bytes() == b""
+        assert web_server._SSH_RUNTIME_PURELIB is not None
+        assert web_server._ssh_runtime_intact() is True
+    finally:
+        web_server._apply_ssh_owner_nonce(None)
 
 
 def test_ssh_owner_nonce_arms_without_create_time_when_lookup_raises(

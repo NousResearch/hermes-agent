@@ -365,7 +365,7 @@ _SSH_RUNTIME_MARKER: Optional[str] = None
 _SSH_RUNTIME_MARKER_OWNER_PID: Optional[int] = None
 _SSH_RUNTIME_MARKER_PAYLOAD: Optional[str] = None
 _SSH_RUNTIME_MARKER_NAME = re.compile(
-    r"\.hermes-ssh-runtime-[0-9a-f]{16}(?:-[1-9][0-9]*-[0-9a-f]{16})?"
+    r"\.hermes-ssh-runtime-[0-9a-f]{16}(?:-(?P<pid>[1-9][0-9]*)-[0-9a-f]{16})?"
 )
 _SSH_RUNTIME_MARKER_PAYLOAD_RE = re.compile(
     r"pid=([1-9][0-9]*)\n(?:create_time=([0-9]+(?:\.[0-9]+)?)\n?)?"
@@ -411,7 +411,8 @@ def _sweep_dead_ssh_runtime_markers(purelib: str) -> None:
     try:
         with os.scandir(purelib) as entries:
             for entry in entries:
-                if _SSH_RUNTIME_MARKER_NAME.fullmatch(entry.name) is None:
+                name_match = _SSH_RUNTIME_MARKER_NAME.fullmatch(entry.name)
+                if name_match is None:
                     continue
                 try:
                     if not entry.is_file(follow_symlinks=False):
@@ -422,7 +423,13 @@ def _sweep_dead_ssh_runtime_markers(purelib: str) -> None:
                     continue
                 identity = _parse_ssh_runtime_marker(payload)
                 if identity is None:
-                    continue
+                    named_pid = name_match.group("pid")
+                    if named_pid is None:
+                        continue
+                    try:
+                        identity = int(named_pid), None
+                    except ValueError:
+                        continue
                 pid, create_time = identity
                 try:
                     alive = _pid_alive_matches(

@@ -4326,7 +4326,8 @@ class TelegramAdapter(BasePlatformAdapter):
         on_model_selected, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an inline-keyboard model picker: provider → model drill-down, edited in place."""
         def build():
-            keyboard, provider_page_info = self._build_provider_keyboard(providers, 0)
+            flat = self._three_provider_menu_enabled()
+            keyboard, provider_page_info = self._build_provider_keyboard(providers, 0, flat=flat)
             text = self.format_message(
                 self._provider_list_text(current_model, self._provider_get_label()(current_provider), provider_page_info)
             )
@@ -4334,7 +4335,7 @@ class TelegramAdapter(BasePlatformAdapter):
             def _remember(msg):
                 self._model_picker_state[str(chat_id)] = {
                     "msg_id": msg.message_id, "providers": providers, "session_key": session_key, "on_model_selected": on_model_selected,
-                    "current_model": current_model, "current_provider": current_provider, "provider_page": 0}
+                    "current_model": current_model, "current_provider": current_provider, "provider_page": 0, "flat": flat}
             return text, keyboard, _remember
         return await self._send_prompt(
             "send_model_picker", chat_id, metadata, build, thread_id=metadata.get("thread_id") if metadata else None,
@@ -4423,23 +4424,30 @@ class TelegramAdapter(BasePlatformAdapter):
     def _picker_back_cancel_row() -> list:
         return [InlineKeyboardButton("◀ Back", callback_data="mb"), InlineKeyboardButton("✗ Cancel", callback_data="mx")]
 
-    def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list) -> tuple:
+    def _paged_keyboard(self, buttons: list, page_meta: dict, nav_prefix: str, tail_row: list, extra_rows: Optional[list] = None) -> tuple:
         rows = self._rows_of_two(buttons)
         if page_meta["total_pages"] > 1:
             rows.append(self._picker_nav_row(page_meta["page"], page_meta["total_pages"], nav_prefix))
+        if extra_rows:
+            rows.extend(extra_rows)
         rows.append(tail_row)
         return InlineKeyboardMarkup(rows), page_meta["page_info"]
 
-    def _build_provider_keyboard(self, providers: list, page: int = 0) -> tuple:
+    def _build_provider_keyboard(self, providers: list, page: int = 0, flat: bool = False) -> tuple:
         """Paginated top-level provider keyboard folding provider families (Kimi/Moonshot, MiniMax, xAI…)
-        into one ``mpg:<gid>`` button via the shared ``group_providers`` fold; singles are ``mp:<slug>``."""
+        into one ``mpg:<gid>`` button via the shared ``group_providers`` fold; singles are ``mp:<slug>``.
+
+        ``flat=True`` (opt-in ``model_catalog.telegram_three_provider_menu``) lists the payload providers
+        as-is — no family fold — and appends the ``🕘 Son kullanılanlar`` / ``🔎 Search`` rows."""
         try:
             from hermes_cli.models_catalog_static import group_providers
         except Exception:
             group_providers = None
         by_slug = {p.get("slug"): p for p in providers}
         buttons: list = []
-        if group_providers is not None:
+        if flat:
+            buttons = [self._provider_button(p) for p in providers]
+        elif group_providers is not None:
             for row in group_providers([p.get("slug") for p in providers]):
                 if row["kind"] == "group":
                     members = [by_slug[m] for m in row["members"] if m in by_slug]
@@ -4455,7 +4463,199 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             buttons = [self._provider_button(p) for p in providers]
         page_buttons, page_meta = self._format_choice_page(buttons, page, self._PROVIDER_PAGE_SIZE)
-        return self._paged_keyboard(page_buttons, page_meta, "mpv", [InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+        extra_rows = (
+            [[InlineKeyboardButton("🕘 Son kullanılanlar", callback_data="mr")],
+             [InlineKeyboardButton("🔎 Search", callback_data="ms")]]
+            if flat else None
+        )
+        return self._paged_keyboard(
+            page_buttons, page_meta, "mpv",
+            [InlineKeyboardButton("✗ Cancel", callback_data="mx")], extra_rows=extra_rows)
+
+    # ------------------------------------------------------------------
+    # Opt-in flat 3-provider menu + 🔎 Search + 🕘 Son kullanılanlar
+    # (``model_catalog.telegram_three_provider_menu``; classic picker when off)
+    # ------------------------------------------------------------------
+
+    def _three_provider_menu_enabled(self) -> bool:
+        """True when ``model_catalog.telegram_three_provider_menu`` is set (fails closed)."""
+        from hermes_cli.telegram_picker_menu import three_provider_menu_enabled
+
+        return three_provider_menu_enabled()
+
+    def _mark_pending_model_search(self, chat_key: str) -> None:
+        """Flag that the next free-text message from ``chat_key`` is a search query."""
+        state = self._model_picker_state.get(str(chat_key))
+        if isinstance(state, dict):
+            state["awaiting_search"] = True
+
+    def _take_pending_model_search(self, chat_key: str) -> Optional[dict]:
+        """Consume the pending-search flag; returns the picker state exactly once."""
+        state = self._model_picker_state.get(str(chat_key))
+        if not isinstance(state, dict) or not state.pop("awaiting_search", False):
+            return None
+        return state
+
+    @staticmethod
+    def _search_key_for_event(event) -> str:
+        """Chat key the picker state is stored under, from an inbound event."""
+        chat_id = getattr(getattr(event, "source", None), "chat_id", None)
+        return "" if chat_id is None else str(chat_id)
+
+    @staticmethod
+    def _search_models(providers: list, query: str, limit: int = 60) -> list:
+        """Case-insensitive substring match over every provider's model ids."""
+        needle = (query or "").strip().lower()
+        if not needle:
+            return []
+        hits: list = []
+        for prov in providers or []:
+            if not isinstance(prov, dict):
+                continue
+            slug = str(prov.get("slug") or "")
+            for model_id in prov.get("models") or []:
+                model_id = str(model_id)
+                if needle in model_id.lower():
+                    hits.append((slug, model_id))
+                    if len(hits) >= limit:
+                        return hits
+        return hits
+
+    @staticmethod
+    def _short_model(model_id: str, limit: int = 30) -> str:
+        """Button label for a model id: drop the vendor prefix, truncate."""
+        short = model_id.split("/")[-1] if "/" in model_id else model_id
+        return short if len(short) <= limit else short[: limit - 3] + "..."
+
+    @staticmethod
+    def _provider_short(name: str, slug: str) -> str:
+        """Short provider label for buttons: "OpenCode Zen" → "Zen"."""
+        label = (name or "").strip() or (slug or "").strip()
+        parts = label.split()
+        if len(parts) > 1 and parts[0].lower() == "opencode":
+            return parts[-1]
+        return label
+
+    @staticmethod
+    def _recent_entries(limit: int = 10) -> list:
+        """Recently used ``(provider_slug, model_id)`` pairs, newest first."""
+        from hermes_cli.telegram_recent_models import recent_models
+
+        return [(str(item["provider"]), str(item["model"])) for item in recent_models(limit=limit)]
+
+    def _remember_recent(self, provider_slug: str, model_id: str) -> None:
+        """Record a successful pick in the 🕘 recent-models history (never fatal)."""
+        try:
+            from hermes_cli.telegram_recent_models import record_recent
+
+            record_recent(provider_slug, model_id)
+        except Exception:
+            logger.debug("[%s] recent-model record failed", self.name, exc_info=True)
+
+    def _build_indexed_keyboard(self, entries: list, page: int, prefix: str, labeler) -> tuple:
+        """Paginated keyboard over ``(provider_slug, model_id)`` pairs.
+
+        ``prefix`` is the flow id: ``ms`` (search) / ``mr`` (recent) — page callbacks are
+        ``<prefix>v:<page>``, selection callbacks ``<prefix>sel:<idx>``.
+        """
+        page_entries, page_meta = self._format_choice_page(list(entries), page, self._MODEL_PAGE_SIZE)
+        start = page_meta["start"]
+        buttons = [
+            InlineKeyboardButton(labeler(slug, model_id), callback_data=f"{prefix}sel:{start + i}")
+            for i, (slug, model_id) in enumerate(page_entries)
+        ]
+        return self._paged_keyboard(buttons, page_meta, f"{prefix}v", self._picker_back_cancel_row())
+
+    async def _picker_show_search(self, query, state: dict, page: int) -> None:
+        """Render a page of cross-provider search hits."""
+        hits = state.get("search_hits") or []
+        state["search_page"] = page
+        keyboard, page_info = self._build_indexed_keyboard(
+            hits, page, "ms", lambda slug, model_id: self._short_model(model_id, 30))
+        await self._picker_edit(
+            query, f"🔎 *Search results*{page_info}\n\n_{len(hits)} model(s) found — select one_", keyboard)
+
+    async def _picker_show_recent(self, query, state: dict, page: int) -> None:
+        """Render a page of recently used models (``model · Provider`` labels)."""
+        entries = state.get("recent_entries") or self._recent_entries()
+        state["recent_entries"] = entries
+        state["recent_page"] = page
+        names = {
+            str(p.get("slug")): str(p.get("name") or p.get("slug"))
+            for p in state.get("providers") or [] if isinstance(p, dict)
+        }
+        keyboard, page_info = self._build_indexed_keyboard(
+            entries, page, "mr",
+            lambda slug, model_id: f"{self._short_model(model_id, 22)} · {self._provider_short(names.get(slug, ''), slug)}")
+        await self._picker_edit(
+            query, f"⚙ *Model Configuration*\n\n🕘 *Son kullanılanlar*{page_info}\n\n_Seçmek için dokun:_", keyboard)
+
+    async def _picker_switch_indexed(self, query, chat_id: str, state: dict, entries: list,
+                                     idx: int, confirmed: bool, prefix: str) -> None:
+        """Select a search hit / recent entry — same confirm-gate + switch path as ``mm:``/``mc:``.
+
+        ``prefix`` is ``ms``/``mr``, so the confirm callback is ``msc:<idx>`` / ``mrc:<idx>``.
+        """
+        if idx < 0 or idx >= len(entries):
+            await query.answer(text="Invalid selection.")
+            return
+        provider_slug, model_id = entries[idx]
+        callback = state.get("on_model_selected")
+        if not callback:
+            await query.answer(text="Picker expired.")
+            return
+        if not confirmed:
+            try:
+                from hermes_cli.model_selection_guards import combined_selection_warning
+                # Pricing lookup may hit models.dev on a cache miss — keep it off the event loop.
+                warning = await asyncio.to_thread(combined_selection_warning, model_id, provider=provider_slug)
+            except Exception:
+                warning = None
+            if warning is not None:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Switch anyway", callback_data=f"{prefix}c:{idx}")],
+                    self._picker_back_cancel_row()])
+                await query.edit_message_text(
+                    text=self.format_message(f"⚠ *{warning.title}*\n\n{warning.message}"),
+                    parse_mode=ParseMode.MARKDOWN_V2, reply_markup=keyboard)
+                await query.answer(text="Confirm model selection")
+                return
+        await self._picker_switch(query, chat_id, model_id, provider_slug, callback)
+
+    async def _run_model_search(self, event, state: dict, query_text: str) -> None:
+        """Serve a pending 🔎 Search query and post the result keyboard."""
+        chat_id = self._search_key_for_event(event)
+        metadata = getattr(event, "metadata", None)
+        try:
+            hits = self._search_models(state.get("providers") or [], query_text)
+        except Exception:  # a bad query must never break the chat
+            logger.debug("[%s] model search failed", self.name, exc_info=True)
+            hits = []
+        state["search_hits"] = hits
+        state["search_page"] = 0
+
+        from hermes_cli.telegram_picker_menu import escape_md
+
+        shown = escape_md(query_text)
+        if hits:
+            keyboard, page_info = self._build_indexed_keyboard(
+                hits, 0, "ms", lambda slug, model_id: self._short_model(model_id, 30))
+            text = self.format_message(
+                f"🔎 *Search*: `{shown}`{page_info}\n\n_{len(hits)} model(s) found — select one_")
+        else:
+            keyboard = InlineKeyboardMarkup([self._picker_back_cancel_row()])
+            text = self.format_message(f"🔎 *Search*: `{shown}`\n\n_No matching model found._")
+
+        thread_id = metadata.get("thread_id") if metadata else None
+        reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+        try:
+            await self._send_message_with_thread_fallback(
+                chat_id=normalize_telegram_chat_id(chat_id), text=text, parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard, reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(chat_id, thread_id, metadata, reply_to_message_id=reply_to_id),
+                **self._link_preview_kwargs())
+        except Exception as exc:
+            logger.warning("[%s] model search send failed: %s", self.name, _redact_telegram_error_text(exc))
 
     def _build_model_keyboard(self, models: list, page: int) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
@@ -4494,7 +4694,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _picker_show_providers(self, query, state: dict, page: int, get_label) -> None:
         """Render the (folded, paginated) provider list."""
-        keyboard, provider_page_info = self._build_provider_keyboard(state["providers"], page)
+        keyboard, provider_page_info = self._build_provider_keyboard(
+            state["providers"], page, flat=bool(state.get("flat")))
         try:
             provider_label = get_label(state["current_provider"])
         except Exception:
@@ -4523,6 +4724,7 @@ class TelegramAdapter(BasePlatformAdapter):
         switch_failed = False
         try:
             result_text = await callback(chat_id, model_id, provider_slug)
+            self._remember_recent(provider_slug, model_id)
         except Exception as exc:
             logger.error("Model picker switch failed: %s", exc)
             result_text = f"Error switching model: {exc}"
@@ -4539,8 +4741,16 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer(text="Invalid page.")
             return None
 
+    @staticmethod
+    async def _parse_index(query, raw: str) -> Optional[int]:
+        try:
+            return int(raw)
+        except ValueError:
+            await query.answer(text="Invalid selection.")
+            return None
+
     async def _handle_model_picker_callback(self, query, data: str, chat_id: str) -> None:
-        """Handle model picker callbacks (mp:/mpg:/mpv:/mm:/mc:/mb/mx/mg:)."""
+        """Handle model picker callbacks (mp:/mpg:/mpv:/mm:/mc:/mb/mx/mg: + ms*/mr* flows)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
             await query.answer(text="Picker expired — use /model again.")
@@ -4607,6 +4817,43 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._picker_edit(
                 query, f"⚙ *Model Configuration*\n\nProvider family: *{_label or group_id}*\n\nSelect a provider:",
                 InlineKeyboardMarkup(rows))
+        elif data == "ms":  # 🔎 Search: the next free-text message in this chat is the query
+            if not state.get("flat"):
+                await query.answer(text="Search is not enabled.")
+                return
+            self._mark_pending_model_search(chat_id)
+            await self._picker_edit(
+                query,
+                "⚙ *Model Configuration*\n\n🔎 *Search*: type part of a model name in this chat\n"
+                "_(e.g. `gemini`, `deepseek`, `claude`)_",
+                InlineKeyboardMarkup([self._picker_back_cancel_row()]))
+            await query.answer(text="Type your search query")
+        elif data.startswith("msv:"):  # search results page
+            page = await self._parse_page(query, data[4:])
+            if page is not None:
+                await self._picker_show_search(query, state, page)
+        elif data.startswith(("msel:", "msc:")):  # search hit selected (msc = confirmed)
+            idx = await self._parse_index(query, data.split(":", 1)[1])
+            if idx is not None:
+                await self._picker_switch_indexed(
+                    query, chat_id, state, state.get("search_hits") or [], idx,
+                    data.startswith("msc:"), "ms")
+        elif data == "mr":  # 🕘 recently used models
+            if not self._recent_entries():
+                await query.answer(text="Henüz model seçilmedi.")
+                return
+            await self._picker_show_recent(query, state, 0)
+        elif data.startswith("mrv:"):  # recent list page
+            page = await self._parse_page(query, data[4:])
+            if page is not None:
+                await self._picker_show_recent(query, state, page)
+        elif data.startswith(("mrsel:", "mrc:")):  # recent entry selected (mrc = confirmed)
+            idx = await self._parse_index(query, data.split(":", 1)[1])
+            if idx is not None:
+                await self._picker_switch_indexed(
+                    query, chat_id, state,
+                    state.get("recent_entries") or self._recent_entries(), idx,
+                    data.startswith("mrc:"), "mr")
         elif data == "mb":  # back to provider list (folds groups)
             await self._picker_show_providers(query, state, int(state.get("provider_page", 0) or 0), get_label)
         elif data == "mx":
@@ -4710,7 +4957,9 @@ class TelegramAdapter(BasePlatformAdapter):
         cb = self._callback_ctx(query)
         # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
         for prefixes, handler in (
-            (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:"), self._handle_model_picker_callback),
+            # ``ms``/``mr`` cover their own sub-flows (msv:/msel:/msc:, mrv:/mrsel:/mrc:).
+            (("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:", "ms", "mr"),
+             self._handle_model_picker_callback),
             (("cp:",), self._handle_choice_picker_callback)):
             if data.startswith(prefixes):
                 chat_id = str(query.message.chat_id) if query.message else None
@@ -6519,6 +6768,16 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="text-enqueue")
             return
+        # 🔎 Search pending? Consume this message as the model query instead of dispatching it
+        # to the agent. Flat-menu only, and only for the chat the picker state belongs to.
+        if self._three_provider_menu_enabled():
+            text = (event.text or "").strip()
+            key = self._search_key_for_event(event)
+            if text and not text.startswith("/") and key:
+                search_state = self._take_pending_model_search(key)
+                if search_state is not None:
+                    asyncio.create_task(self._run_model_search(event, search_state, text))
+                    return
         super()._enqueue_text_event(event)
         self._accept_update()
 

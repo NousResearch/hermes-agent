@@ -234,9 +234,9 @@ describe('installDesktopPluginFromGit', () => {
         source: target
       })
 
-      for (const ref of ['0'.repeat(40), 'HEAD', sha.slice(0, 12), `${sha}\n`, '', '--upload-pack=other']) {
+      for (const ref of [undefined, '0'.repeat(40), 'HEAD', sha.slice(0, 12), `${sha}\n`, '', '--upload-pack=other']) {
         // A missing executable proves malformed refs are rejected before any Git invocation.
-        const gitBin = ref === '0'.repeat(40) ? 'git' : path.join(repo, 'missing-git')
+        const gitBin = ref === undefined || ref === '0'.repeat(40) ? 'git' : path.join(repo, 'missing-git')
         const failed = await installDesktopPluginFromGit(gitBin, identifier, appRoot, true, { ref, catalogName })
         expect(failed.ok, ref).toBe(false)
         expect(failed.error).toMatch(ref === '0'.repeat(40) ? /git.*failed/i : /40.*SHA/i)
@@ -327,6 +327,7 @@ describe('installDesktopPluginFromGit', () => {
     roots.push(appRoot)
 
     const result = await installDesktopPluginFromGit('git', pathToFileURL(repo).href, appRoot, false, {
+      ref: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim(),
       catalogName: 'standalone-catalog'
     })
 

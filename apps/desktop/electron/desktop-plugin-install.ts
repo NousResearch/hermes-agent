@@ -448,7 +448,10 @@ export async function installDesktopPluginFromGit(
   try {
     const { ref, catalogName } = options
     // Match the backend's exact-revision contract; reject before invoking Git.
-    if (ref !== undefined && (typeof ref !== 'string' || !/^[a-fA-F0-9]{40}$/.test(ref) || ref.length !== 40)) {
+    if (
+      (ref !== undefined || catalogName !== undefined) &&
+      (typeof ref !== 'string' || !/^[a-fA-F0-9]{40}$/.test(ref) || ref.length !== 40)
+    ) {
       throw new Error('--ref must be a full 40-character commit SHA.')
     }
     if (

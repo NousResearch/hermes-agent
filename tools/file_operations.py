@@ -1273,18 +1273,18 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # silent — information only, no auto-fix or content change.
         rewrite_warning: Optional[str] = None
         if not caller_supplied_pre_content and pre_content:
-            import difflib
             pre_lines = pre_content.splitlines()
-            post_lines = content.splitlines()
-            diff_lines = list(difflib.unified_diff(pre_lines, post_lines, lineterm=""))
-            changed = sum(1 for line in diff_lines if line.startswith(("+", "-"))
-                          and not line.startswith(("+++", "---")))
-            if changed and changed >= max(10, len(pre_lines) // 4):
+            opcodes = difflib.SequenceMatcher(None, pre_lines, content.splitlines()).get_opcodes()
+            # Count previous lines removed or replaced (pure insertions leave prior content
+            # intact), so the count is bounded by the previous line count and the warning
+            # fires on rewriting at least a quarter of the old file (min 10 lines).
+            replaced = sum(i2 - i1 for tag, i1, i2, _, _ in opcodes if tag in ("replace", "delete"))
+            if replaced >= max(10, len(pre_lines) // 4):
                 rewrite_warning = (
                     f"write_file replaced an existing file with no structural check against its "
-                    f"prior content: ~{changed} of {len(pre_lines)} previous lines differ. If this "
-                    "was meant to be a small edit, re-read the file to confirm the rewrite is "
-                    "correct — a hand-retyped file has no diff/fuzzy-match safety net."
+                    f"prior content: {replaced} of {len(pre_lines)} previous lines were removed or "
+                    "replaced. If this was meant to be a small edit, re-read the file to confirm "
+                    "the rewrite is correct — a hand-retyped file has no diff/fuzzy-match safety net."
                 )
         return WriteResult(
             bytes_written=len(content_bytes), dirs_created=dirs_created, verified=content_verified,
@@ -1351,7 +1351,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         raw_content = read_result.stdout
         content, _ = _strip_bom(raw_content)
 
-        from tools.fuzzy_match import fuzzy_find_and_replace
+        from tools.fuzzy_match import SIMILARITY_STRATEGIES, fuzzy_find_and_replace
         new_content, match_count, strategy, error = fuzzy_find_and_replace(
             content, old_string, new_string, replace_all)
         if error or match_count == 0:
@@ -1368,19 +1368,18 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if verify_error is not None:
             return verify_error
         lint_result = self._check_lint_delta(path, pre_content=content, post_content=new_content)
-        # Only "exact" guarantees the spliced span equals old_string's literal boundaries;
-        # every other strategy computes an approximate line-window and can shift the edit by
-        # a line (observed: a duplicated closing delimiter/brace landing just outside the
-        # intended region). Post-write byte-identity verification above cannot catch this —
-        # it only confirms the intended new_content landed, not that new_content itself was
-        # correctly bounded. Surface which strategy fired so the caller can weigh the diff
-        # against its own intent rather than assuming an exact splice.
+        # The similarity strategies accept a window whose lines only resemble old_string, so
+        # the spliced span can land a line off (observed: a duplicated closing delimiter/brace
+        # just outside the intended region). The normalizing strategies still match every
+        # line, so their boundaries are exact — and they fire on routine edits (e.g. missing
+        # base indentation), where a note would teach the model to ignore it. Post-write
+        # verification above cannot catch a shifted span: it only confirms new_content landed.
         boundary_note = (
             f"Non-exact match (strategy: {strategy}). The edit span was located approximately, "
             "not matched to old_string's literal boundaries — review the diff below to confirm "
             "the change landed exactly where intended (a shifted boundary can duplicate or drop "
             "a line just outside the edited region)."
-            if strategy != "exact" else None
+            if strategy in SIMILARITY_STRATEGIES else None
         )
         return PatchResult(
             success=True, diff=self._unified_diff(content, new_content, path), files_modified=[path],

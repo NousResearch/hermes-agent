@@ -28,7 +28,9 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
-    _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    _fs_path, _hermes_credential_roots, _is_sensitive_path, _managed_file_entry,
+    _managed_response_meta, _raise_for_protected_tree_delete,
+    _raise_for_sensitive_target, _resolve_managed_path,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
@@ -57,51 +59,14 @@ _FS_READDIR_HIDDEN = {
     "build", "dist", "node_modules", "target", "venv",
 }
 
-# Basenames the managed-files API must never list, read or download: credential
-# stores that become live secrets in the browsable tree the moment an operator
-# points the managed root at HERMES_HOME. Mirrors the two canonical guards
-# (agent.file_safety.get_read_block_error, gateway.platforms.base
-# ._ROOT_CREDENTIAL_FILES) so the Files tab never lags behind them.
-# These typically contain credentials (API keys, tokens) and exposing them through the dashboard file
-# browser is a security leak — see issue #57505.
-_SENSITIVE_MANAGED_FILE_BASENAMES = frozenset({
-    "auth.json", "auth.lock", "credentials", "config.yaml", ".anthropic_oauth.json",
-    "google_token.json", "google_oauth_pending.json", "google_oauth.json",
-    "webhook_subscriptions.json", "bws_cache.json", "bws_cache.enc.json",
-    ".git-credentials",  # git's credential-store cache (file_safety blocks it too)
-})
-
-# Directory names whose whole subtree is credential material (the canonical
-# guards deny these as trees: _ROOT_CREDENTIAL_DIRS and the mcp-tokens/ prefix
-# match). The browser can descend into subdirs, so a basename-only guard would
-# still expose ``mcp-tokens/<server>.json``; match on ANY path component so the
-# trees are blocked wherever they sit under the root, no HERMES_HOME resolution.
-_SENSITIVE_MANAGED_DIR_NAMES = frozenset({"mcp-tokens", "pairing"})
-
-
-def _is_sensitive_filename(name: str) -> bool:
-    """Basename denylist: ``.env`` / ``.env.<suffix>`` / ``.envrc`` plus the
-    credential-store basenames. Case-insensitive so ``.ENV`` / ``Auth.JSON``
-    on case-insensitive mounts can't slip past. Basename-only — call sites use
-    :func:`_is_sensitive_path`, which adds the credential-directory check."""
-    lowered = name.lower()
-    if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
-        return True
-    return lowered in _SENSITIVE_MANAGED_FILE_BASENAMES
-
-
-def _is_sensitive_path(path: Path) -> bool:
-    """True when the basename is sensitive OR any path component (case-
-    insensitive) is a credential directory. Read-side guard (list/read/
-    download); the write endpoints are a separate threat class.
-
-    Read-side only: this guards list/read/download (the #57505 exfil surface). The write endpoints
-    (upload/mkdir/delete) are a separate threat class handled by the write-path checks; extending this guard
-    to them is out of scope for this fix.
-    """
-    if _is_sensitive_filename(path.name):
-        return True
-    return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
+# The sensitive-path denylist lives in ``hermes_cli.web_server_files`` (imported
+# above) so the managed and free-fs surfaces share one seam: ``_resolve_managed_path``
+# applies it to every managed WRITE op, while managed reads stay guarded at their
+# call sites so a directory listing filters rather than hard-fails.
+# ``_fs_regular_file``/``fs_list``/``fs_write_text`` apply it here. Write
+# endpoints additionally get the canonical write guard via
+# ``_raise_for_sensitive_target`` (the dashboard has no approval channel, so
+# approval-gated paths like ~/.ssh/config fail closed).
 
 
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
@@ -170,8 +135,7 @@ def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
         raise HTTPException(status_code=400, detail="Path points to a directory")
     if not stat.S_ISREG(st.st_mode):
         raise HTTPException(status_code=400, detail="Only regular files can be read")
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    _raise_for_sensitive_target(target)
     return target, st
 
 
@@ -283,10 +247,7 @@ async def get_media(path: str):
     """Return a gateway-local image as a base64 data URL for remote clients
     that can't read this machine's disk. Auth-gated; restricted to the image
     allowlist, a size cap AND the resolved (symlink-safe) media roots."""
-    try:
-        target = Path(path).expanduser().resolve()
-    except (OSError, RuntimeError):
-        raise HTTPException(status_code=400, detail="Invalid path")
+    target = _fs_path(path)
 
     if target.suffix.lower() not in _MEDIA_CONTENT_TYPES:
         raise HTTPException(status_code=415, detail="Unsupported media type")
@@ -402,11 +363,12 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
     if not target.is_dir():
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
+    roots = _hermes_credential_roots()
     with _io_errors("Directory is not readable", "Could not read directory"), os.scandir(target) as scan:
         entries = [
             _managed_file_entry(policy, Path(entry.path))
             for entry in scan
-            if not _is_sensitive_path(Path(entry.path))
+            if not _is_sensitive_path(Path(entry.path), roots)
         ]
 
     entries.sort(key=lambda item: (not item["is_directory"], str(item["name"]).lower()))
@@ -425,11 +387,10 @@ def _managed_readable_file(request: Request, path: str) -> tuple[Any, Path, str,
     from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES
     policy, target, display_path = _resolve_managed_path(path, request)
     if not target.exists():
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail="Path not found")
     if not target.is_file():
         raise HTTPException(status_code=400, detail="Path is not a file")
-    if _is_sensitive_path(target):
-        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+    _raise_for_sensitive_target(target)
     mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     return policy, target, display_path, _MANAGED_FILE_MAX_BYTES, mime_type
 
@@ -617,7 +578,7 @@ async def create_managed_directory(payload: ManagedDirectoryCreate, request: Req
 
 @router.delete("/api/files")
 async def delete_managed_file(payload: ManagedFileDelete, request: Request):
-    policy, target, display_path = _resolve_managed_path(payload.path, request)
+    policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
     if policy.locked_root is not None and target == policy.locked_root:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
     if target.parent == target:
@@ -627,6 +588,7 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
 
     try:
         if target.is_dir():
+            _raise_for_protected_tree_delete(target)
             if payload.recursive:
                 shutil.rmtree(target)
             else:
@@ -651,9 +613,10 @@ async def fs_list(path: str):
     target = _fs_path(path)
     try:
         entries = []
+        roots = _hermes_credential_roots()
         with os.scandir(target) as scan:
             for entry in scan:
-                if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path)):
+                if entry.name in _FS_READDIR_HIDDEN or _is_sensitive_path(Path(entry.path), roots):
                     continue
                 entries.append({
                     "name": entry.name,
@@ -692,13 +655,17 @@ async def fs_read_text(path: str):
 async def fs_write_text(payload: FsWriteText):
     """Overwrite (or create) a UTF-8 text file for the in-app spot editor.
 
-    Mirrors the Electron ``hermes:fs:writeText`` hardening: path validated by
-    ``_fs_path``, the parent must already exist (never build trees), only
-    regular files may be replaced, payload size-capped, staged to a sibling
-    temp file and ``os.replace``-d so a crash can't truncate the original.
-    Stale-on-disk detection is the client's job (re-read before save).
+    Counterpart to the Electron ``hermes:fs:writeText`` endpoint, hardened for
+    the dashboard's shared-host threat model: path validated by ``_fs_path``,
+    the sensitive-path denylist plus the canonical write guard refuse
+    credential/system targets, the parent must already exist (never build
+    trees), only regular files may be replaced, payload size-capped, staged to
+    a sibling temp file and ``os.replace``-d so a crash can't truncate the
+    original. Stale-on-disk detection is the client's job (re-read before
+    save).
     """
     target = _fs_path(payload.path)
+    _raise_for_sensitive_target(target, write=True)
     text = payload.content or ""
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")

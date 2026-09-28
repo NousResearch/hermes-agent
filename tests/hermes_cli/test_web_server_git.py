@@ -267,3 +267,50 @@ def test_worktree_add_from_origin_base_does_not_track(client, repo_with_remote):
         cwd=repo_with_remote, capture_output=True, text=True,
     )
     assert probe.returncode != 0
+
+
+def test_review_diff_rejects_a_file_outside_the_repo(client, repo, tmp_path):
+    """``git diff --no-index -- /dev/null <abs>`` serves ANY absolute path as an
+    all-add diff, so ``file`` must resolve inside the worktree or the route is
+    an arbitrary file read."""
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOPSECRET=12345")
+
+    for route in ("/api/git/review/diff", "/api/git/file-diff"):
+        response = client.get(route, params={"path": str(repo), "file": str(secret)})
+        assert response.status_code == 400, route
+        assert "TOPSECRET" not in response.text
+        response = client.get(route, params={"path": str(repo), "file": "../secret.txt"})
+        assert response.status_code == 400, route
+
+
+def test_review_diff_rejects_a_sensitive_repo_file(client, repo):
+    """A credential-basename file inside the repo is still dashboard-denied."""
+    (repo / "auth.json").write_text("{}")
+
+    for route in ("/api/git/review/diff", "/api/git/file-diff"):
+        response = client.get(route, params={"path": str(repo), "file": "auth.json"})
+        assert response.status_code == 403, route
+
+
+def test_review_diff_rejects_a_repo_symlink_pointing_outside(client, repo, tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOPSECRET=12345")
+    (repo / "link.txt").symlink_to(secret)
+
+    response = client.get("/api/git/review/diff", params={"path": str(repo), "file": "link.txt"})
+
+    assert response.status_code == 400
+    assert "TOPSECRET" not in response.text
+
+
+def test_review_diff_still_serves_repo_files(client, repo):
+    tracked = client.get("/api/git/review/diff", params={"path": str(repo), "file": "a.txt"})
+    untracked = client.get("/api/git/review/diff", params={"path": str(repo), "file": "new.py"})
+    head = client.get("/api/git/file-diff", params={"path": str(repo), "file": "a.txt"})
+
+    assert tracked.status_code == 200
+    assert untracked.status_code == 200
+    assert "print(1)" in untracked.json()["diff"]
+    assert head.status_code == 200
+    assert "three" in head.json()["diff"]

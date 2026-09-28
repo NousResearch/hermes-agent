@@ -353,7 +353,8 @@ class PlatformRegistry:
         loading deferred adapters; the child-env scrub reads this on every spawn."""
         with self._lock:
             entries, _deferred = self._scope_maps(self.current_scope_key())
-            return {n for e in (*self._entries.values(), *entries.values()) for n in e.required_env}
+            return {n for e in (*self._entries.values(), *entries.values())
+                    for n in e.required_env if isinstance(n, str)}
 
     def is_registered(self, name: str) -> bool:
         # A deferred (not-yet-imported) platform still counts as registered so cheap membership

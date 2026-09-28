@@ -110,10 +110,11 @@ OPERATOR_SECRETS = ["MY_APP_KEY", "DEPLOY_WEBHOOK_SECRET", "SLACK_USER_TOKEN", "
 
 @pytest.mark.parametrize("builder", ["foreground", "background", "nonterminal"])
 def test_adapter_and_provider_profile_secrets_never_reach_children(child_env, monkeypatch, builder):
-    from providers import bundled_provider_profiles
+    from providers import list_providers
     from tools.env_passthrough import is_env_passthrough, register_env_passthrough
     secrets = set(ADAPTER_SECRETS)
-    secrets.update(name for profile in bundled_provider_profiles() for name in (profile.env_vars or ()))
+    # child_env's HERMES_HOME has no provider plugins, so these are the bundled profiles.
+    secrets.update(name for profile in list_providers() for name in (profile.env_vars or ()))
     secrets.discard("CLAUDE_CODE_OAUTH_TOKEN")  # operator's subscription, not Hermes inference
     for name in [*secrets, *OPERATOR_SECRETS]:
         monkeypatch.setenv(name, "fake-" + name)
@@ -128,6 +129,58 @@ def test_adapter_and_provider_profile_secrets_never_reach_children(child_env, mo
     register_env_passthrough(sorted(secrets | set(OPERATOR_SECRETS)))
     assert not any(is_env_passthrough(name) for name in secrets)
     assert all(is_env_passthrough(name) for name in OPERATOR_SECRETS)
+
+
+def _user_platform_plugin(home, name, secret):
+    plugin = home / "plugins" / "platforms" / name
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(
+        f"name: {name}\nkind: platform\nrequires_env:\n  - name: {secret}\n    password: true\n",
+        encoding="utf-8")
+
+
+def test_user_platform_plugin_secrets_belong_to_their_own_profile(child_env, monkeypatch):
+    """A profile's user-installed platform plugin declares secrets for that profile only: bound to
+    it, the name is stripped from every child and refused for passthrough; bound to a sibling
+    profile, the sibling's own same-named value is its user variable and reaches its children."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tools.env_passthrough import is_env_passthrough, register_env_passthrough
+    a, b = child_env / "profiles" / "a", child_env / "profiles" / "b"
+    _user_platform_plugin(a, "chatx", "CHATX_SIGNING_SECRET")
+    b.mkdir(parents=True)
+    monkeypatch.setenv("CHATX_SIGNING_SECRET", "fake-value")
+    register_env_passthrough(["CHATX_SIGNING_SECRET"])
+    seen = {}
+    for home in (a, b):
+        token = set_hermes_home_override(home)
+        try:
+            seen[home.name] = (
+                "CHATX_SIGNING_SECRET" in local.hermes_subprocess_env(inherit_credentials=True),
+                "CHATX_SIGNING_SECRET" in local._make_run_env({}),
+                is_env_passthrough("CHATX_SIGNING_SECRET"))
+        finally:
+            reset_hermes_home_override(token)
+    assert seen == {"a": (False, False, False), "b": (True, True, True)}
+
+
+@pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0,  # windows-footgun: ok — short-circuits on nt
+                    reason="needs POSIX permissions as non-root")
+def test_unreadable_platform_manifest_fails_closed(tmp_path):
+    """A manifest that cannot be read might declare secrets, so the policy scan raises rather than
+    returning a set without them. A malformed one declares nothing and is skipped."""
+    from hermes_cli.config import platform_manifest_secret_envs
+    _user_platform_plugin(tmp_path, "chatx", "CHATX_SIGNING_SECRET")
+    broken = tmp_path / "plugins" / "platforms" / "broken"
+    broken.mkdir()
+    (broken / "plugin.yaml").write_text("name: [unclosed\n", encoding="utf-8")
+    assert platform_manifest_secret_envs(tmp_path, bundled=False, strict=True) == {"CHATX_SIGNING_SECRET"}
+    manifest = tmp_path / "plugins" / "platforms" / "chatx" / "plugin.yaml"
+    manifest.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            platform_manifest_secret_envs(tmp_path, bundled=False, strict=True)
+    finally:
+        manifest.chmod(0o644)
 
 
 def test_inheriting_child_gets_provider_keys_but_never_adapter_secrets(child_env, monkeypatch):
@@ -185,7 +238,7 @@ def test_passthrough_accepted_before_an_adapter_owns_the_name_stops_forwarding_i
     else:
         home = child_env / "hermes"
         home.mkdir(exist_ok=True)
-        (home / "config.yaml").write_text("terminal:\n  env_passthrough: [%s]\n" % ", ".join(names))
+        (home / "config.yaml").write_text("terminal:\n  env_passthrough: [%s]\n" % ", ".join(names), encoding="utf-8")
     builders = [lambda: local._make_run_env({}), lambda: local._sanitize_subprocess_env(dict(os.environ)),
                 lambda: _scrub_child_env(dict(os.environ))]
     assert [observe_child(b(), names) for b in builders] == [

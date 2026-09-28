@@ -61,7 +61,7 @@ def _openviking_server_seen(child_env, monkeypatch, names):
     state, _ = ov._start_local_openviking_server("http://127.0.0.1:1933")
     assert state == ov._LOCAL_SERVER_STARTED
     children[0].wait(timeout=30)
-    return json.loads(out.read_text(encoding="utf-8"))
+    return json.loads(out.read_text(encoding="utf-8-sig"))
 
 
 def test_compute_host_is_hermes_and_keeps_its_full_environment(child_env, monkeypatch):
@@ -136,7 +136,7 @@ def test_third_party_children_never_see_hermes_credentials(child_env, monkeypatc
             adapter._spawn_bridge(4321)
         adapter._bridge_process.wait(timeout=30)
 
-    seen = json.loads(out.read_text(encoding="utf-8"))
+    seen = json.loads(out.read_text(encoding="utf-8-sig"))
     assert {k: seen[k] for k in (*_TIER1, _PROVIDER)} == dict.fromkeys((*_TIER1, _PROVIDER))
     assert seen[own]  # the child's own configuration still arrives
     user_home = site in ("raft_bridge", "buzz_cli")

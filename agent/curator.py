@@ -914,7 +914,7 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
 
 def run_curator_review(
     on_summary: Optional[Callable[[str], None]] = None, synchronous: bool = False,
-    dry_run: bool = False, consolidate: Optional[bool] = None,
+    dry_run: bool = False, consolidate: Optional[bool] = None, trigger: str = "manual",
 ) -> Dict[str, Any]:
     """Execute a single curator review pass: (1) automatic state transitions (no LLM); (2) if *consolidate* and there are
     candidates, fork an AIAgent on the review prompt; (3) update .curator_state; (4) call *on_summary*.
@@ -924,6 +924,7 @@ def run_curator_review(
     recorded in ``state.last_report_path`` so users can read what WOULD have happened."""
     consolidate = get_consolidate() if consolidate is None else consolidate
     start = datetime.now(timezone.utc)
+    hermes_home = get_hermes_home()  # the LLM pass may run on a thread with no profile binding
     if dry_run:  # count candidates without mutating state
         counts = {"checked": len(_safe_curated_report()), "marked_stale": 0, "archived": 0, "reactivated": 0}
     else:
@@ -969,16 +970,18 @@ def run_curator_review(
         elapsed = (datetime.now(timezone.utc) - start).total_seconds()
         state2 = {**load_state(), "last_run_duration_seconds": elapsed, "last_run_summary": final_summary}
         # Per-run report, best-effort; path recorded for `hermes curator status`.
+        after_report = _safe_curated_report()
         try:
             report_path = _write_run_report(
                 started_at=start, elapsed_seconds=elapsed, auto_counts=counts, auto_summary=auto_summary,
-                before_report=before_report, before_names=before_names, after_report=_safe_curated_report(), llm_meta=llm_meta,
+                before_report=before_report, before_names=before_names, after_report=after_report, llm_meta=llm_meta,
             )
             if report_path is not None:
                 state2["last_report_path"] = str(report_path)
         except Exception as e:
             logger.debug("Curator report write failed: %s", e, exc_info=True)
         save_state(state2)
+        _record_run_metric(trigger, dry_run, counts, before_report, after_report, llm_meta, hermes_home)
         _notify(on_summary, f"curator: {final_summary}")
 
     if synchronous:
@@ -998,6 +1001,21 @@ def run_curator_review(
 
 
 # --- Provider/model resolution for the review fork ---
+
+def _record_run_metric(trigger, dry_run, counts, before_report, after_report, llm_meta, hermes_home) -> None:
+    from hermes_cli.observability.shared_metrics_loop import record_curator_run
+
+    def what_changed() -> Dict[str, int]:
+        before, after = _by_name(before_report), _by_name(after_report)
+        diff = _diff_and_classify(set(before), set(after), llm_meta.get("tool_calls") or [], llm_meta.get("final") or "")
+        patched = sum(int(after[n].get("patch_count") or 0) > int(before[n].get("patch_count") or 0)
+                      for n in diff.after_names & set(before))
+        return {"archived": int(counts.get("archived", 0)) + len(diff.removed), "created": len(diff.added),
+                "merged": len(diff.consolidated), "patched": patched}
+
+    outcome = "skipped" if dry_run else "failed" if llm_meta.get("error") else "success"
+    record_curator_run(trigger=trigger, outcome=outcome, counts=what_changed, hermes_home=hermes_home)
+
 
 class _ReviewRuntimeBinding(NamedTuple):
     """Provider/model for the curator review fork plus per-slot overrides."""
@@ -1184,9 +1202,11 @@ def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: O
         if not should_run_now() or (idle_for_seconds is not None and idle_for_seconds < get_min_idle_hours() * 3600.0):
             return None
         if not _claim_run():
+            from hermes_cli.observability.shared_metrics_loop import record_curator_run
+            record_curator_run(trigger="scheduled", outcome="skipped")  # another process holds this home's pass
             return None
         try:
-            return run_curator_review(on_summary=on_summary)
+            return run_curator_review(on_summary=on_summary, trigger="scheduled")
         finally:
             _release_run_claim()
     except Exception as e:

@@ -1394,6 +1394,8 @@ def terminal_tool(
     ``_host_local`` forces the local backend for Hermes-owned control-plane
     children (kept in a separate env cache from the configured backend).
     """
+    from hermes_cli.observability.shared_metrics_loop import record_terminal_backend as _metered
+    plan = None
     try:
         plan = _plan_execution(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
@@ -1462,18 +1464,18 @@ def terminal_tool(
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
-            return result
-        return _run_foreground(
+            return _metered(None if _host_local else plan, result)
+        return _metered(None if _host_local else plan, _run_foreground(
             command, env, plan,
             task_id=task_id, session_id=session_id, session_key=session_key,
             workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
-        )
+        ))
     except _Rejected as r:
         return r.result_json
     except EnvironmentConnectionError as e:
-        return _degraded_result(e, task_id)
+        return _metered(None if _host_local else plan, _degraded_result(e, task_id), error_class="tool_error")
     except Exception as e:
-        return _fatal_error_json(e)
+        return _metered(None if _host_local else plan, _fatal_error_json(e), error_class="exception")
 
 
 def check_terminal_requirements() -> bool:

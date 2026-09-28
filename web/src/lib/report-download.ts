@@ -21,9 +21,10 @@ export function rewriteReportLinks(source: string, reportId: string, basePath: s
   const bridgePrefix = `${basePath}/api/reports/`;
   const bridge = `<script>(()=>{const p=${JSON.stringify(bridgePrefix)};window.addEventListener('click',e=>{const a=e.target.closest&&e.target.closest('a[href]');if(!a||!a.getAttribute('href').startsWith(p))return;e.preventDefault();window.parent.postMessage({type:a.pathname.endsWith('/f001-details.html')?'hermes-report-detail':'hermes-report-download',url:a.href},'*')})})()</script>`;
   const policy = `<meta http-equiv="Content-Security-Policy" content="sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'">`;
+  const narrowLayout = `<style>body{overflow-wrap:anywhere}</style>`;
   const withPolicy = /<head\b[^>]*>/i.test(rewritten)
-    ? rewritten.replace(/<head\b[^>]*>/i, (tag) => `${tag}${policy}`)
-    : `${policy}${rewritten}`;
+    ? rewritten.replace(/<head\b[^>]*>/i, (tag) => `${tag}${policy}${narrowLayout}`)
+    : `${policy}${narrowLayout}${rewritten}`;
   return /<\/head>/i.test(withPolicy)
     ? withPolicy.replace(/<\/head>/i, `${bridge}</head>`)
     : `${withPolicy}${bridge}`;

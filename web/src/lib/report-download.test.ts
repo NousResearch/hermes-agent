@@ -20,6 +20,12 @@ describe("rewriteReportLinks", () => {
     expect(html.indexOf("<h1>Executive summary</h1>")).toBeGreaterThan(html.indexOf("<meta "));
   });
 
+  it("wraps long report labels in a narrow iframe without changing the CSP", () => {
+    const html = rewriteReportLinks('<head></head><body><span>long-report-route</span></body>', "report-1", "");
+    expect(html).toContain('<style>body{overflow-wrap:anywhere}</style>');
+    expect(html).toContain("base-uri 'none'\">");
+  });
+
   it("bridges a bound standalone detail and relative downloads under the configured base path", () => {
     const html = rewriteReportLinks(
       '<head></head><a href="/reports/report-1/f001-details.html">Details</a><a href="findings.csv">CSV</a>',

@@ -194,6 +194,31 @@ class TestGatewayPidState:
         assert status.get_running_pid() is None
         assert pid_path.exists() and lock_path.exists()
 
+    def test_unscoped_live_cross_home_pid_file_is_unlinked_but_held_lock_stays(
+        self, tmp_path, monkeypatch
+    ):
+        """A live gateway.pid that names ANOTHER home's gateway is poison inside this home and goes
+        on refusal (#89315); the HELD gateway.lock is the holder's and stays (#125610)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        record = {
+            "pid": 4242, "kind": "hermes-gateway", "start_time": 123,
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "hermes_home": str((tmp_path / "other-home").resolve()),
+        }
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        pid_path.write_text(json.dumps(record), encoding="utf-8")
+        lock_path.write_text("", encoding="utf-8")
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda _path=None: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: "python -m hermes_cli.main gateway run")
+        monkeypatch.setattr(status, "get_runtime_status_running_pid", lambda: None)
+
+        assert status.get_running_pid() is None
+        assert not pid_path.exists()
+        assert lock_path.exists()
+
 
 class TestScopedGatewayPidQuery:
     """get_running_pid(pid_path) is a scoped query into another home's identity files (#106406):

@@ -1015,12 +1015,15 @@ def _file_cache_signature(path: Path) -> tuple[bool, Optional[int], Optional[int
     return (True, st.st_mtime_ns, st.st_size)
 
 
-def _cleanup_invalid_pid_path(pid_path: Path, *, cleanup_stale: bool) -> None:
-    """Force-unlink a stale PID file + sibling lock (lock confirmed inactive, so no pid check)."""
+def _cleanup_invalid_pid_path(
+    pid_path: Path, *, cleanup_stale: bool, unlink_lock: bool = True
+) -> None:
+    """Force-unlink a stale PID file + sibling lock (lock confirmed inactive, so no pid check).
+    ``unlink_lock=False`` drops only the PID file: the caller saw the lock HELD."""
     if not cleanup_stale:
         return
     _clear_running_pid_cache()
-    for path in (pid_path, _get_gateway_lock_path(pid_path)):
+    for path in (pid_path, _get_gateway_lock_path(pid_path)) if unlink_lock else (pid_path,):
         with contextlib.suppress(Exception):
             path.unlink(missing_ok=True)
 
@@ -2074,10 +2077,12 @@ def get_running_pid(
     """PID of a running gateway (lock + PID file verified against the live process), or None.
     An explicit ``pid_path`` is a scoped query into that home's identity files: records are
     validated against the probed home (not the serve process's) (#106406). While the runtime lock
-    is HELD, a live recorded PID is never cleanup-unlinked, scoped or not: the holder is a gateway
-    whatever its command line reads as, and unlinking a held ``gateway.lock`` leaves it locking a
-    deleted inode so the next starter double-runs (#125610, #123109). Dead records and inactive-lock
-    metadata still take the poison-file cleanup (#89315)."""
+    is HELD, a live SAME-home record the identity matcher rejects is never cleanup-unlinked, scoped
+    or not: the holder is a gateway whatever its command line reads as, and unlinking a held
+    ``gateway.lock`` leaves it locking a deleted inode so the next starter double-runs (#125610,
+    #123109). Unscoped, a live ``gateway.pid`` that truthfully names ANOTHER home's gateway is
+    poison inside this home and is unlinked on refusal — the held lock stays (#89315). Dead
+    records and inactive-lock metadata still take the full poison-file cleanup."""
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     if is_gateway_runtime_lock_active(resolved_lock_path):
@@ -2086,6 +2091,7 @@ def get_running_pid(
         )
         expected_home = pid_path.parent if pid_path is not None else None
         saw_live_pid = False
+        foreign_live_pid = False
         for record in records:
             pid = _live_pid_from_record(record)
             if pid is None:
@@ -2098,12 +2104,18 @@ def get_running_pid(
                 record, pid, expected_home=expected_home
             ):
                 return pid
-            # A live record we could not adopt may still be a real gateway (an identity matcher
-            # that lags a new launcher shape, a record written by an older version): an identity
-            # rejection is not stale-file authority while the PID is alive and the lock held.
-            saw_live_pid = True
+            # A same-home record the matcher could not adopt may still be a real gateway (an
+            # identity matcher that lags a new launcher shape, a record written by an older
+            # version): that rejection is not stale-file authority while the PID is alive and the
+            # lock held. A scoped poll never unlinks the other home's files either (#106406).
+            if home_ok or expected_home is not None:
+                saw_live_pid = True
+            else:
+                foreign_live_pid = True
         if not saw_live_pid:
-            _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)
+            _cleanup_invalid_pid_path(
+                resolved_pid_path, cleanup_stale=cleanup_stale, unlink_lock=not foreign_live_pid
+            )
         return get_runtime_status_running_pid() if pid_path is None else None
     # Lock inactive: the runtime-status fallback runs BEFORE cleanup here.
     runtime_pid = get_runtime_status_running_pid() if pid_path is None else None

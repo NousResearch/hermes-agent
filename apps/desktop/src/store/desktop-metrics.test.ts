@@ -55,6 +55,8 @@ const stored = () => {
   return key ? window.localStorage.getItem(key) : null
 }
 
+const SCHEMA = { 'display.show_reasoning': {}, 'display.skin': {} }
+
 const methods = (calls: Call[]) => calls.map(([method]) => method)
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
 
@@ -94,7 +96,7 @@ function exerciseEverything() {
   recordAction('composer.send', 'click')
   recordAction('composer.send', 'click')
   recordDislike('feature_disabled', 'tips')
-  recordSettingsSaved({ display: { show_reasoning: false } })
+  recordSettingsSaved({ display: { show_reasoning: false } }, SCHEMA)
   recordFeatureToggle('tips', true, false)
   trackFlow('command_palette', true)
   trackFlow('command_palette', false)
@@ -396,7 +398,11 @@ describe('dislike signals', () => {
 
     setDesktopMetricsGate('on')
     bindDesktopMetrics(request)
-    recordSettingsSaved({ display: { show_reasoning: false, skin: 'secret-skin-name' } }, 'work')
+    recordSettingsSaved(
+      { display: { show_reasoning: false, skin: 'secret-skin-name' }, providers: { 'acme-internal': { api_key: 'k' } } },
+      SCHEMA,
+      'work'
+    )
     recordFeatureToggle('tips', false, true)
     recordFeatureToggle('tips', true, false)
     await flush()
@@ -407,6 +413,7 @@ describe('dislike signals', () => {
       { signal: 'feature_disabled', target: 'tips' }
     ])
     expect(JSON.stringify(calls)).not.toContain('secret-skin-name')
+    expect(JSON.stringify(calls)).not.toContain('acme-internal')
     expect(configPatchKeys({ a: { b: [1, 2], c: { d: null } } })).toEqual(['a.b', 'a.c.d'])
   })
 
@@ -473,5 +480,51 @@ describe('per profile, per window', () => {
 
     expect(JSON.parse(stored()!).today.actions).toEqual({ 'composer.send|shortcut': 3, 'session.new|shortcut': 1 })
     w2.resetDesktopMetricsForTests()
+  })
+
+  it('never keeps a plugin action id: unknown presses and rage-click targets are `other`', async () => {
+    const { calls, request } = requester()
+
+    setDesktopMetricsGate('on')
+    bindDesktopMetrics(request)
+
+    for (const at of [0, 100, 200]) {
+      recordAction('acme-plugin.secretCommand', 'click', DAY1 + at)
+    }
+
+    await flush()
+    expect(stored()).not.toContain('acme')
+    expect(JSON.parse(stored()!).today.actions).toEqual({ 'other|click': 3 })
+    expect(calls.map(([, p]) => p)).toEqual([{ signal: 'rage_click', target: 'other' }])
+  })
+
+  it('onboarding before the consent answer is held in memory, sent on a yes and dropped on a no', async () => {
+    const { calls, request } = requester()
+
+    bindDesktopMetrics(request)
+    setDesktopMetricsGate('off', false) // first-run offer not answered yet
+    recordOnboarding('intro', 'reached')
+    recordOnboarding('intro', 'completed')
+    recordOnboarding('provider_oauth', 'reached')
+    closeOnboardingStep('provider_oauth')
+    await flush()
+    expect(calls).toEqual([])
+    expect(stored()).toBeNull()
+
+    setDesktopMetricsGate('on')
+    await flush()
+    expect(calls.map(([, p]) => `${p.step}:${p.event}`)).toEqual(['intro:reached', 'intro:completed', 'provider_oauth:reached'])
+    expect(JSON.parse(stored()!).onboarding.open).toEqual({})
+
+    setDesktopMetricsGate('off')
+    resetDesktopMetricsForTests()
+    const later = requester()
+
+    bindDesktopMetrics(later.request)
+    setDesktopMetricsGate('off') // a decided no
+    recordOnboarding('guide', 'reached')
+    setDesktopMetricsGate('on')
+    await flush()
+    expect(later.calls).toEqual([])
   })
 })

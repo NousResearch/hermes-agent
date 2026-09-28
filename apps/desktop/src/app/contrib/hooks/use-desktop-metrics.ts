@@ -127,7 +127,7 @@ export function useDesktopMetrics({
       void readSharedMetricsConsent(request).then(consent => {
         // An unreadable answer (older backend, flap) keeps the last known gate.
         if (!cancelled && consent) {
-          setDesktopMetricsGate(gateFor(consent))
+          setDesktopMetricsGate(gateFor(consent), consent.decided)
         }
       })
 
@@ -149,7 +149,7 @@ export function useDesktopMetrics({
 
     return $sharedMetricsConsent.listen(consent => {
       if (consent) {
-        setDesktopMetricsGate(gateFor(consent))
+        setDesktopMetricsGate(gateFor(consent), consent.decided)
       }
     })
   }, [enabled])

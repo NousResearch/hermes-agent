@@ -12,6 +12,10 @@
  * another (connection, profile) forgets the gate until that profile's switch is
  * read, so nothing of one profile is ever kept or sent under another's.
  *
+ * Before the first-run consent answer, onboarding transitions are held in memory
+ * only (never persisted or sent) and replayed if the user opts in during that
+ * app session; a known "no" drops them.
+ *
  * Every value is a code-defined id from the closed sets below (mirrored by
  * hermes_cli/observability/shared_metrics_contract.py, which collapses any
  * stranger to `other`). Never a session id, path, message, bot name or setting
@@ -28,6 +32,7 @@
 import { atom } from 'nanostores'
 
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
+import { KEYBIND_ACTION_IDS, KEYBIND_READONLY } from '@/lib/keybinds/actions'
 import { readJson, writeJson } from '@/lib/storage'
 
 import type { SharedMetricsRequester } from './shared-metrics'
@@ -271,6 +276,14 @@ export const DESKTOP_BUTTON_ACTIONS = {
 
 export type DesktopActionVia = 'click' | 'menu' | 'palette' | 'shortcut'
 
+/** Built-in action ids (DESKTOP_ACTION_IDS on the backend); anything else — a plugin's palette
+ *  command or keybinding, a numbered slot (`profile.switch.3`) — is `other`. */
+const ACTION_IDS: ReadonlySet<string> = new Set(
+  [...KEYBIND_ACTION_IDS, ...KEYBIND_READONLY.map(action => action.id), ...Object.values(DESKTOP_BUTTON_ACTIONS)].filter(
+    id => !/\.\d+$/.test(id)
+  )
+)
+
 export type DesktopDislikeSignal =
   | 'cancelled'
   | 'feature_disabled'
@@ -320,6 +333,7 @@ const RAGE_CLICK_COUNT = 3
 export const ACTIVE_IDLE_GAP_MS = 5 * 60_000
 const PENDING_DAYS_MAX = 7
 const QUEUE_MAX = 50
+const PRE_CONSENT_MAX = 100
 const DROP_SETTLE_MS = 3000
 
 // ── state ─────────────────────────────────────────────────────────────────────
@@ -358,6 +372,8 @@ let scope = scopeKey('|default')
 let request: SharedMetricsRequester | null = null
 let queue: [string, Record<string, unknown>][] = []
 let flushingDays = false
+/** Onboarding transitions before the consent answer (memory only); null once the answer is known. */
+let preConsent: (() => void)[] | null = []
 let botCount = 0
 let lastInteractionAt = 0
 const areaOpenedAt = new Map<string, number>()
@@ -649,10 +665,13 @@ export function configPatchKeys(patch: unknown, prefix = ''): string[] {
   )
 }
 
-/** A Settings autosave landed. Only the keys go out; the backend reads the saved
- *  values itself and records whether each moved to or away from its default. */
-export function recordSettingsSaved(patch: unknown, profile?: null | string): void {
-  for (const key of configPatchKeys(patch).slice(0, MAX_SETTING_KEYS_PER_SAVE)) {
+/** A Settings autosave landed. Only keys the config schema publishes go out (never a key below a
+ *  user-named container such as `providers.<name>`); the backend reads the saved values itself and
+ *  records whether each moved to or away from its default. */
+export function recordSettingsSaved(patch: unknown, published: Readonly<Record<string, unknown>>, profile?: null | string): void {
+  const keys = configPatchKeys(patch).filter(key => Object.hasOwn(published, key))
+
+  for (const key of keys.slice(0, MAX_SETTING_KEYS_PER_SAVE)) {
     recordDislike('setting_off_default', 'setting', key, profile)
   }
 }
@@ -665,7 +684,9 @@ export function recordFeatureToggle(toggle: DesktopFeatureToggle, wasOn: boolean
 }
 
 /** A button/shortcut/palette/menu press, aggregated per day and reported once in the daily report. */
-export function recordAction(action: string, via: DesktopActionVia, now = Date.now()): void {
+export function recordAction(rawAction: string, via: DesktopActionVia, now = Date.now()): void {
+  const action = ACTION_IDS.has(rawAction) ? rawAction : 'other'
+
   withState(current => {
     const key = `${action}|${via}`
 
@@ -725,10 +746,27 @@ export function setDesktopBotCount(count: number): void {
   })
 }
 
+/** Hold a first-run transition until the consent answer: true when held (or dropped: no is known). */
+function heldForConsent(replay: () => void): boolean {
+  if ($desktopMetricsGate.get() === 'on') {
+    return false
+  }
+
+  if (preConsent && preConsent.length < PRE_CONSENT_MAX) {
+    preConsent.push(replay)
+  }
+
+  return true
+}
+
 /** One first-run step transition, once per (step, event) per profile. A step
  *  reached but not completed is remembered; if it is still open on a later
  *  load, it was abandoned. */
 export function recordOnboarding(step: DesktopOnboardingStep, event: DesktopOnboardingEvent): void {
+  if (heldForConsent(() => recordOnboarding(step, event))) {
+    return
+  }
+
   withState(current => {
     const open = { ...current.onboarding.open }
 
@@ -755,6 +793,10 @@ export function recordOnboarding(step: DesktopOnboardingStep, event: DesktopOnbo
 /** A step ended without an event of its own (skipped past, cancelled): no
  *  longer open, so the next launch does not call it abandoned. */
 export function closeOnboardingStep(step: DesktopOnboardingStep): void {
+  if (heldForConsent(() => closeOnboardingStep(step))) {
+    return
+  }
+
   withState(current => {
     const open = { ...current.onboarding.open }
 
@@ -882,8 +924,13 @@ function forgetInMemory(): void {
   cancelPendingBackendDrop()
 }
 
-/** Apply the focused profile's collection switch. Off purges everything local. */
-export function setDesktopMetricsGate(next: DesktopMetricsGate): void {
+/** Apply the focused profile's collection switch. Off purges everything local. `decided` false
+ *  (first-run offer unanswered) keeps the pre-consent onboarding transitions for a later yes. */
+export function setDesktopMetricsGate(next: DesktopMetricsGate, decided = true): void {
+  if (next === 'off' && decided) {
+    preConsent = null
+  }
+
   if (next === $desktopMetricsGate.get()) {
     return
   }
@@ -899,8 +946,12 @@ export function setDesktopMetricsGate(next: DesktopMetricsGate): void {
   }
 
   if (next === 'on') {
+    const held = preConsent ?? []
+
+    preConsent = null
     tellMain(true)
     flushDesktopMetrics()
+    held.forEach(replay => replay())
   }
 }
 
@@ -913,6 +964,7 @@ export function bindDesktopMetrics(next: SharedMetricsRequester | null, profileS
   if (nextScope !== scope) {
     forgetInMemory()
     scope = nextScope
+    preConsent = []
     $desktopMetricsGate.set(null)
   }
 
@@ -929,6 +981,7 @@ export function tickDesktopMetrics(now = Date.now()): void {
 /** Test-only: forget in-memory state (localStorage is the test's to clear). */
 export function resetDesktopMetricsForTests(): void {
   scope = scopeKey('|default')
+  preConsent = []
   request = null
   queue = []
   flushingDays = false

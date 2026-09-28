@@ -235,7 +235,7 @@ function ConfigSettingsInner({
           writeConfigCache(snapshot)
           const savedScope = writeScope ?? scopeProfile
 
-          recordSettingsSaved(patch, typeof savedScope === 'string' ? savedScope : savedScope?.profile)
+          recordSettingsSaved(patch, schema ?? {}, typeof savedScope === 'string' ? savedScope : savedScope?.profile)
 
           if (saveVersionRef.current === v) {
             // The repo-discovery scan reads the ACTIVE profile's workspace

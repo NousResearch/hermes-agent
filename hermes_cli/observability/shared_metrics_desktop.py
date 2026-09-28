@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 # up as "a lot", but cannot flood the store.
 FRICTION_DAILY_CAP = 50
 ONBOARDING_LATCH_DIRNAME = "desktop_onboarding"
-DAILY_ACTION_ROWS_MAX = 200
+# Room for every distinct (action, via) the renderer can send once it collapses unknown ids to `other`.
+DAILY_ACTION_ROWS_MAX = len(contract.DESKTOP_ACTION_IDS) * len(contract.DESKTOP_ACTION_VIAS)
 DAILY_REPORT_STATE_KEY = "desktop_daily_reported"
 # The renderer holds a finished day for at most 7 days; anything older (or in the future) is settled
 # unrecorded, which keeps the durable per-day latch bounded.

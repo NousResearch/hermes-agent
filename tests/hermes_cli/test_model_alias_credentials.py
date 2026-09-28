@@ -756,3 +756,46 @@ class TestOneshotPassesAliasCredential:
 
         assert captured["explicit_base_url"] == ALIAS_HOST
         assert captured["explicit_api_key"] == "sk-theta-ALIAS"
+
+
+class TestPersistedAliasPickKeepsItsCredential:
+    """``/model <alias> --global`` persists the alias's route; the next launch must authenticate
+    against the alias host the way the session did, not with no key at all."""
+
+    ALIAS_SECRET = "sk-theta-FROM-ENV"
+
+    def _persist_alias_pick(self, monkeypatch, credential: str):
+        from hermes_cli.config import get_config_path
+        import hermes_cli.model_switch as ms
+
+        path = get_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "model:\n  default: claude-sonnet-4-6\n  provider: anthropic\n"
+            "model_aliases:\n  theta:\n    model: theta-1\n    provider: custom\n"
+            f"    base_url: {ALIAS_HOST}\n    {credential}\n",
+            encoding="utf-8")
+        monkeypatch.setenv("THETA_API_KEY", self.ALIAS_SECRET)
+        monkeypatch.setattr(
+            "hermes_cli.models_validate.validate_requested_model",
+            lambda *a, **k: {"accepted": True, "persist": True, "recognized": True, "message": ""})
+        result = ms.switch_model(
+            raw_input="theta", current_provider="anthropic", current_model="claude-sonnet-4-6",
+            current_base_url="https://api.anthropic.com", current_api_key="sk-ant-SESSION", is_global=True)
+        assert result.success, result.error_message
+        assert result.api_key == self.ALIAS_SECRET
+        ms.persist_model_selection(result)
+        return path
+
+    @pytest.mark.parametrize("credential", ["key_env: THETA_API_KEY", "api_key: ${THETA_API_KEY}"])
+    def test_next_launch_resolves_the_alias_credential(self, monkeypatch, credential):
+        self._persist_alias_pick(monkeypatch, credential)
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider()
+        assert runtime["base_url"] == ALIAS_HOST
+        assert runtime["api_key"] == self.ALIAS_SECRET
+
+    def test_env_reference_is_persisted_as_a_reference(self, monkeypatch):
+        path = self._persist_alias_pick(monkeypatch, "api_key: ${THETA_API_KEY}")
+        assert self.ALIAS_SECRET not in path.read_text(encoding="utf-8")

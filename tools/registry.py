@@ -902,11 +902,18 @@ class ToolRegistry:
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
             # plugin handler is not broken by every field the dispatcher injects (#68318).
             kwargs = _kwargs_accepted_by(entry.handler, kwargs)
+            args_via_kwargs, merged_kwargs = _args_via_kwargs(entry.handler, args, kwargs)
             if entry.is_async:
                 from model_tools import _run_async
-                result = _run_async(entry.handler(args, **kwargs))
+                if args_via_kwargs:
+                    result = _run_async(entry.handler(**merged_kwargs))
+                else:
+                    result = _run_async(entry.handler(args, **kwargs))
             else:
-                result = entry.handler(args, **kwargs)
+                if args_via_kwargs:
+                    result = entry.handler(**merged_kwargs)
+                else:
+                    result = entry.handler(args, **kwargs)
             return self._normalize_handler_result(name, result)
         except Exception as e:
             # exc_info already renders the exception, so keep the message copy bounded.
@@ -1041,3 +1048,33 @@ def _kwargs_accepted_by(handler: Callable, kwargs: dict) -> dict:
         return kwargs
     keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
     return {k: v for k, v in kwargs.items() if k in parameters and parameters[k].kind in keyword_kinds}
+
+
+def _args_via_kwargs(handler: Callable, args: dict, kwargs: dict) -> tuple[bool, dict]:
+    """Return (True, merged_kw) when *handler* takes no positional argument for ``args`` and so cannot
+    accept the positional the dispatcher passes; otherwise (False, kwargs) — call normally.
+
+    The dispatcher calls ``handler(args, **kwargs)``. That works for any handler that declares an
+    explicit positional/keyword ``args`` first parameter (``def h(args)``, ``def h(args, **kw)``,
+    ``def h(args, task_id=None)``). It does NOT work for the canonical plugin shape
+    ``def handle(**kwargs)`` — ``**kwargs`` parameters reject positional arguments in Python, so
+    every ``**kwargs``-only handler raises ``TypeError: takes 0 positional arguments but 1 was
+    given``. For those we merge the request body directly into the kwarg dict so named tool
+    parameters (``query``, ``mode``, ``top_k``, ...) flow through. Injected context fields
+    (task_id, session_id, user_task, ...) are already in ``kwargs`` and pass through unchanged.
+    """
+    try:
+        parameters = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return False, kwargs
+    has_var_keyword = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+    if has_var_keyword:
+        # **kwargs accepts everything — but we still need the explicit args param, if any.
+        has_explicit_args = any(
+            p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.POSITIONAL_ONLY)
+            for p in parameters.values()
+        )
+        if not has_explicit_args:
+            return True, {**args, **kwargs}
+        return False, kwargs
+    return False, kwargs

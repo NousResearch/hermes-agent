@@ -42,7 +42,7 @@ from gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
     platform_gate_env as _scoped_gate_env, send_error
 )
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, continuation_start
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
@@ -2514,15 +2514,17 @@ class SlackAdapter(BasePlatformAdapter):
                 # Same server-side seal the native task-card stream hits on a long turn
                 # (see _slack_error_is's other caller above): the sealed message is a
                 # regular message now, so reopen a fresh stream in the same thread seeded
-                # with ONLY the text past the sealed message (the prefix is already visible);
-                # ``sent`` keeps the full segment so later deltas still diff correctly. One
-                # reopen per frame; a second rejection propagates as a real failure, same as
-                # the task-card twin.
+                # with ONLY the text past the sealed message (the prefix is already visible),
+                # starting at the word the seal cut through so it is not split across the two
+                # messages (the gateway's continuation seam); ``sent`` keeps the full segment
+                # so later deltas still diff correctly. One reopen per frame; a second
+                # rejection propagates as a real failure, same as the task-card twin.
                 logger.info(
                     "[Slack] Native draft stream %s expired (message_not_in_streaming_state); "
                     "reopening a fresh stream for chat %s", stream["ts"], chat_id)
                 return await self._start_stream(
-                    client, stream_key, draft_id, text, metadata, base=len(sent))
+                    client, stream_key, draft_id, text, metadata,
+                    base=continuation_start(text, len(sent)))
             stream["sent"] = text
             return SendResult(success=True, message_id=stream["ts"])
         except Exception as e:  # pragma: no cover - network/API errors

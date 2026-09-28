@@ -21,12 +21,7 @@ pytestmark = [
     pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group gateway harness"),
 ]
 
-_MIDWORD = (r"the continuation after a rejected finalize resumed mid-word",
-            "#124219 a stream reopened after message_not_in_streaming_state resumes mid-word (word split across "
-            "two messages)")
 KNOWN: dict[str, tuple[str, str]] = {
-    "stream_finalize_rejected": _MIDWORD,
-    "stream_finalize_rejected_group": _MIDWORD,
     "planned_restart_notice": (
         r"a redelivered /restart restarted the gateway again|a second restart ack means the replayed /restart was obeyed",
         "#121325 a replayed /restart restarts the gateway again (guard needs Telegram update ids)"),

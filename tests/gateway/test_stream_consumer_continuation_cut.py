@@ -12,6 +12,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
@@ -49,6 +51,31 @@ class TestContinuationWordBoundary:
         consumer._last_sent_text = "у" * 100
         final_text = ("у" * 100) + ("д" * 20)
         assert consumer._continuation_text(final_text) == "д" * 20
+
+    @pytest.mark.asyncio
+    async def test_segment_tail_flush_starts_at_a_word_boundary(self):
+        # #124219 class: the unseen tail flushed before a segment reset is a
+        # continuation too; a preview frozen mid-word must not split the word.
+        consumer = _make_consumer()
+        consumer._fallback_final_send = True
+        consumer._last_sent_text = "Here is the expla ▉"
+        consumer._accumulated = "Here is the explanation you asked for."
+        await consumer._flush_segment_tail_on_edit_failure()
+        assert consumer.adapter.send.await_args.kwargs["content"] == "explanation you asked for."
+
+    @pytest.mark.asyncio
+    async def test_planned_overflow_split_without_newline_splits_between_words(self):
+        # #124219 class: sealing an overflowing message plans its own split; with no
+        # newline to split on it must cut between words, not at the raw budget.
+        consumer = _make_consumer()
+        consumer._len_fn, consumer._safe_limit = len, 40
+        consumer._message_id = "m"
+        text = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo"
+        consumer._accumulated = text
+        await consumer._seal_overflow_heads()
+        head = consumer.adapter.edit_message.await_args.kwargs["content"]
+        assert head + consumer._accumulated == text
+        assert head.endswith(" ") and len(head) <= 40
 
     def test_whole_word_prefix_is_not_resent(self):
         # The preview ends exactly on a word; the continuation must not repeat it.

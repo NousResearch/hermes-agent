@@ -179,7 +179,10 @@ class TestSendDraft:
         draft streaming for the run (#_send_draft_frame's "any failure
         permanently disables drafts"): drop the dead ts and start a fresh stream
         in the same thread seeded with ONLY the text past the sealed message (the
-        prefix is already visible there), while later deltas still resume correctly."""
+        prefix is already visible there), while later deltas still resume correctly.
+        The seam follows the gateway's continuation rule (#124219): a sealed message
+        ending mid-word ("Hello wo") reopens at that word's start, so the new
+        message reads "world!" instead of "rld!"."""
         adapter, client = _make_adapter()
         await adapter.send_draft("D1", 7, "Hello wo", metadata=META)
 
@@ -193,11 +196,11 @@ class TestSendDraft:
         assert result.success
         assert result.message_id == "124.000"
         kwargs = client.chat_startStream.await_args.kwargs
-        assert kwargs["markdown_text"] == "rld!"  # sealed message already shows "Hello wo"
+        assert kwargs["markdown_text"] == "world!"  # the word straddling the seal, whole
         (reopened,) = _open_streams(adapter)  # same per-thread key, dead ts replaced
         assert reopened["ts"] == "124.000"
         assert reopened["sent"] == "Hello world!"  # full segment: deltas diff against it
-        assert reopened["base"] == len("Hello wo")
+        assert reopened["base"] == len("Hello ")
         assert kwargs["thread_ts"] == META["thread_id"]
         assert adapter._native_stream_unsupported is False  # not the feature-gate path
 

@@ -9,6 +9,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
+from gateway.platforms.helpers import continuation_start
 from gateway.stream_consumer_fences import ensure_closed_code_fences
 
 logger = logging.getLogger("gateway.stream_consumer")
@@ -51,23 +52,9 @@ class StreamFallbackMixin:
         """Return only the part of final_text the user has not already seen."""
         prefix = self._fallback_prefix or self._visible_prefix()
         if prefix and final_text.startswith(prefix):
-            cut = len(prefix)
-            # ``prefix`` is whatever the last successful edit put on screen. Edits
-            # fire on a throttle tick, not at a word boundary, so that prefix can
-            # end inside a word.  Back the cut up to the last space or newline so
-            # the continuation re-sends the broken word's tail and reads as an
-            # ordinary continuation.  A prefix with no boundary (one very long
-            # token) keeps the original cut rather than re-sending the whole reply.
-            # A prefix that already ends on a whole word needs no back-up: doing it
-            # re-sent that word at the seam.
-            if cut < len(final_text) and not final_text[cut].isspace() and not final_text[cut - 1].isspace():
-                boundary = max(
-                    final_text.rfind(" ", 0, cut),
-                    final_text.rfind("\n", 0, cut),
-                )
-                if boundary >= 0:
-                    cut = boundary + 1
-            return final_text[cut:].lstrip()
+            # ``prefix`` is whatever the last successful edit put on screen; edits fire
+            # on a throttle tick, so it can end inside a word (#116312).
+            return final_text[continuation_start(final_text, len(prefix)):].lstrip()
         return final_text
 
     @staticmethod
@@ -318,7 +305,7 @@ class StreamFallbackMixin:
         visible = self._fallback_prefix or self._visible_prefix()
         tail = self._accumulated
         if visible and tail.startswith(visible):
-            tail = tail[len(visible):].lstrip()
+            tail = tail[continuation_start(tail, len(visible)):].lstrip()
         tail = self._clean_for_display(tail)
         if not tail.strip():
             return

@@ -1957,8 +1957,29 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             restart.incomplete = True
             # A proven-stale survivor must not keep running (its ticker yields every tick and
             # nothing else restarts it, #117275): hand it to the drain-first restart path.
-            from hermes_cli.update_cmd_stale_survivors import signal_stale_fleet_survivors
-            signal_stale_fleet_survivors(_fleet_snapshot, restart, _gateway_drain_budget())
+            from hermes_cli.update_cmd_stale_survivors import (
+                report_unsettled_survivors,
+                settle_survivor_restarts,
+                signal_stale_fleet_survivors,
+            )
+            _survivors_signalled = signal_stale_fleet_survivors(_fleet_snapshot, restart, _gateway_drain_budget())
+            if _survivors_signalled:
+                # Supervision is judged by OUTCOME: a drained gateway's supervisor replaces it
+                # asynchronously (launchd KeepAlive / systemd restart) — on macOS the job's
+                # registered pid is the osascript launcher, so any pid-set comparison reads the
+                # mid-flight swap as "manual" and fails a restart that completes seconds later.
+                # Settle, then let the same verified evidence the happy path uses decide:
+                # successors Current clear the failure; anything else keeps it.
+                _survivors_settled, _fresh_fleet = settle_survivor_restarts(
+                    _fleet_snapshot,
+                    lambda: _collect_fleet_snapshot(restart, _fleet_rows_expected),
+                )
+                if _survivors_settled:
+                    print("  ✓ Stale gateways restarted onto the new code during the escalation — update complete.")
+                    _fleet_snapshot = _fresh_fleet
+                    restart.incomplete = False
+                else:
+                    report_unsettled_survivors(_fleet_snapshot, _fresh_fleet)
         elif not _fleet_snapshot and _fleet_rows_expected:
             # collect_fleet_versions() swallows every failure, so zero rows with
             # expected runtimes is indistinguishable from health — fail (partial, exit 1).

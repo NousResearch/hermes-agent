@@ -32,6 +32,25 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     return snapshot, collect_acceptance(contract, published_pr)
 
 
+def resolve_handoff_binding(contract, metadata):
+    """Decide a review handoff's contract bind: the exact PR URL to bind, a
+    ``(supplied_repo, contracted_repo)`` mismatch to reject the handoff with,
+    or ``None`` when there is nothing to bind.
+
+    The bind-once leg in :func:`prepare_acceptance` only runs at completion,
+    where a reviewer lane whose own metadata contract forbids ``published_pr``
+    can never fire it. The handoff that published the PR is the moment the
+    evidence exists, so the binding moves there; the caller applies it inside
+    its own write transaction."""
+    if not contract or contract == "local-only" or _PR.fullmatch(contract):
+        return None
+    published_pr = metadata.get("published_pr") if isinstance(metadata, dict) else None
+    match = _PR.fullmatch(published_pr) if isinstance(published_pr, str) else None
+    if match is None:
+        return None
+    return published_pr if match[1] == contract else (match[1], contract)
+
+
 def record_acceptance(conn, task_id, acceptance):
     """Called under complete_task's write_txn, before its terminal UPDATE."""
     from hermes_cli.kanban_db import _append_event

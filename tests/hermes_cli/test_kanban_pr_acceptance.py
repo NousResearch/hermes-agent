@@ -129,3 +129,56 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             assert kb.get_task(conn, tid).status != "done"
             assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 0
             github.pop("race")
+
+
+@pytest.mark.linux_only
+def test_review_handoff_binds_contract_before_reviewer_completion(github):
+    github.update(conclusion="success")
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Publish", completion_contract="acme/repo")
+        assert kb.request_review(
+            conn, tid, summary="published", reviewer="r",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+        )
+        task = kb.get_task(conn, tid)
+        assert task.status == "review"
+        assert task.completion_contract == "https://github.com/acme/repo/pull/7"
+        event = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='review_requested'",
+            (tid,)).fetchone()[0])
+        assert event["contract_bound"] == "https://github.com/acme/repo/pull/7"
+        # A reviewer lane that may not carry published_pr still completes (#121551).
+        assert kb.complete_task(conn, tid, result="verified")
+        assert kb.get_task(conn, tid).status == "done"
+
+
+def test_review_handoff_contract_binding_gates(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    kb.init_db()
+    with connect() as conn:
+        tid = kb.create_task(conn, title="Publish", completion_contract="acme/repo")
+
+        ok, reason = kb.request_review(
+            conn, tid, summary="s", reviewer="r", with_reason=True,
+            metadata={"published_pr": "https://github.com/other/repo/pull/1"},
+        )
+        assert not ok and "other/repo" in reason and "acme/repo" in reason
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"  # the whole transition rolled back
+        assert task.completion_contract == "acme/repo"
+        assert conn.execute(
+            "SELECT count(*) FROM task_events WHERE task_id=? AND kind='review_requested'",
+            (tid,)).fetchone()[0] == 0
+
+        # No URL evidence: unchanged behaviour, the bare contract survives to completion.
+        assert kb.request_review(conn, tid, summary="s", reviewer="r")
+        assert kb.get_task(conn, tid).completion_contract == "acme/repo"
+
+        # Exact-URL and local-only contracts are already terminal shapes: never rebound.
+        for contract in ("https://github.com/acme/repo/pull/7", "local-only"):
+            other = kb.create_task(conn, title="Publish", completion_contract=contract)
+            assert kb.request_review(
+                conn, other, summary="s", reviewer="r",
+                metadata={"published_pr": "https://github.com/acme/repo/pull/9"},
+            )
+            assert kb.get_task(conn, other).completion_contract == contract

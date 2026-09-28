@@ -3383,6 +3383,7 @@ def request_review(
     # must be durable BEFORE anything can clean the scratch workspace up: for a
     # review-bound card the reviewer's completion is the cleanup trigger.
     metadata = _merge_completion_prose_artifacts(conn, task_id, metadata, summary=summary, result=None)
+    from hermes_cli.kanban_pr_acceptance_store import resolve_handoff_binding
     now = int(time.time())
     # Staged copies live outside the txn: a rollback after staging must not
     # leave orphans that make the retry stage ``name_1.ext`` beside them.
@@ -3393,7 +3394,7 @@ def request_review(
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
                 "SELECT assignee, status, claim_lock, current_run_id, worker_pid, "
-                "worker_started_at FROM tasks WHERE id = ?", (task_id,),
+                "worker_started_at, completion_contract FROM tasks WHERE id = ?", (task_id,),
             ).fetchone()
             if trow is None:
                 return _ret(False, "task not found")
@@ -3432,6 +3433,16 @@ def request_review(
                 implementer = arow["profile"] if arow else None
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
+            # A bare OWNER/REPO contract binds to the exact PR URL here — the
+            # handoff carries the evidence, while the reviewer lane completing
+            # later may be forbidden to carry published_pr at all (#121551).
+            binding = resolve_handoff_binding(trow["completion_contract"], metadata)
+            if isinstance(binding, tuple):
+                return _ret(
+                    False, f"metadata.published_pr targets {binding[0]}, not the task's "
+                    f"contracted repository {binding[1]}; supply the PR URL for the "
+                    "contracted repository",
+                )
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (
@@ -3455,6 +3466,17 @@ def request_review(
                 return _ret(
                     False, "task is not in running/ready (or expected_run_id did not match the current run)",
                 )
+            if binding:
+                # Bind-once, like prepare_acceptance: a retry cannot swap the
+                # task's PR for a green sibling once the handoff has bound it.
+                # The WHERE guard is defensive: write_txn serializes writers
+                # and a racing handoff is already refused by the status
+                # UPDATE's rowcount check above, so the guarded row always
+                # matches here and a rowcount re-check would be dead code.
+                conn.execute(
+                    "UPDATE tasks SET completion_contract=? WHERE id=? AND completion_contract=?",
+                    (binding, task_id, trow["completion_contract"]),
+                )
             if isinstance(metadata, dict):
                 staged_copies = _stage_completion_artifacts(
                     conn, task_id, metadata, now, uploaded_by="kanban_request_review",
@@ -3472,6 +3494,11 @@ def request_review(
             staged = _cleaned_artifact_paths(metadata)
             if staged:
                 payload["artifacts"] = staged
+            if binding:
+                # Audit trail only, no code consumer yet: an operator reading
+                # the event stream can confirm the contract bound at the
+                # review handoff instead of re-deriving it from the task row.
+                payload["contract_bound"] = binding
             _append_event(conn, task_id, "review_requested", payload, run_id=run_id)
     except Exception:
         if staged_copies:

@@ -211,14 +211,114 @@ async def test_internal_event_keeps_channel_prompt_and_parent_override(monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result_key", "interrupted"),
+    (("pending_steer", False), ("interrupt_message", True)),
+    ids=("leftover-steer", "interrupt-text"),
+)
+@pytest.mark.parametrize("channel_prompt", ["Channel hint.", "", None], ids=("hint", "empty", "none"))
+async def test_eventless_followup_keeps_effective_prompt_through_next_human(
+    monkeypatch, result_key, interrupted, channel_prompt
+):
+    config = GatewayConfig()
+    config.platforms[Platform.DISCORD] = PlatformConfig(
+        enabled=True,
+        channel_overrides={PARENT_ID: ChannelOverride(system_prompt="Parent persona.")},
+    )
+    runner = _make_runner(monkeypatch, config)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._refresh_agent_cache_message_count = AsyncMock()
+
+    adapter = MagicMock()
+    adapter.get_pending_message.return_value = None
+    adapter._active_sessions = {}
+    source = _human_thread_source()
+
+    await _drive(runner, ((False, source),), channel_prompt=channel_prompt)
+    first = calls[0]
+    turn_ctx = TurnContext(
+        source=first["source"],
+        context_prompt=first["context_prompt"],
+        channel_prompt=first["channel_prompt"],
+        session_key=first["session_key"],
+        session_id=first["session_id"],
+        run_generation=1,
+        history=[],
+    )
+    result = {
+        "final_response": "done",
+        "messages": [],
+        result_key: "follow up",
+        "interrupted": interrupted,
+    }
+
+    pending_event, pending = await runner._run_agent_drain_pending(result, adapter, source, KEY)
+    assert pending_event is None
+    assert pending == "follow up"
+    await runner._run_agent_queued_followup(
+        turn_ctx, adapter, pending, pending_event, "done", result, None
+    )
+    await _drive(runner, ((False, source),), channel_prompt=channel_prompt)
+
+    assert [call["channel_prompt"] for call in calls] == [channel_prompt] * 3
+    ephemeral = [_effective_ephemeral(runner, call) for call in calls]
+    assert "Parent persona." in ephemeral[0]
+    assert ephemeral[0] == ephemeral[1] == ephemeral[2]
+
+
+@pytest.mark.asyncio
+async def test_event_backed_followup_overrides_inherited_channel_prompt(monkeypatch):
+    runner = _make_runner(monkeypatch)
+    calls: list[dict] = []
+    _capture(runner, calls)
+    runner._run_agent_deliver_first_response = AsyncMock()
+    runner._refresh_agent_cache_message_count = AsyncMock()
+    runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="queued")
+    runner._session_key_for_source = lambda source: KEY
+
+    source = _human_source()
+    adapter = MagicMock()
+    adapter._active_sessions = {}
+    pending_event = MessageEvent(
+        text="queued",
+        source=source,
+        message_id="queued-message-1",
+        channel_prompt="Queued event prompt.",
+    )
+    turn_ctx = TurnContext(
+        source=source,
+        context_prompt="ctx",
+        channel_prompt="Inherited prompt.",
+        session_key=KEY,
+        session_id="sess-wiring",
+        run_generation=1,
+        history=[],
+    )
+    result = {"final_response": "done", "messages": []}
+
+    await runner._run_agent_queued_followup(
+        turn_ctx, adapter, "queued", pending_event, "done", result, None
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["channel_prompt"] == "Queued event prompt.", "event prompt must win over the inherited one"
+
+
+@pytest.mark.asyncio
 async def test_synthetic_non_internal_event_reuses_channel_pin(monkeypatch):
     """Goal continuation / heartbeat due-prompt / ``/goal`` resume events are non-internal (they
     must still pass authorization, unlike the kanban-wake ``internal=True`` case covered above)
     but carry no channel inputs of their own — ``_synthetic_prompt_event`` always sets
     ``channel_prompt=None``. Regression for #126109: without ``inherit_channel_pin``, that
     ``None`` overwrote the session's ``channel_pin``, and the human turn after it lost its
-    channel prompt / parent-override too (A->B->A on ``channel_prompt``, independent of the
-    session-context pin covered by ``internal`` above)."""
+    channel prompt / parent-override too. Also asserts full ephemeral byte-equality: the
+    synthetic turn strips ``message_id`` too, which is a ``_ephemeral_change_key`` input on
+    Discord, so without feeding the same ``inherit_channel_pin`` decision into
+    ``_pinned_session_context_prompt`` the session-context block re-renders shorter on the
+    synthetic turn and back on the human turn after it (A->B->A on the full ephemeral prompt,
+    not just ``channel_prompt``)."""
     config = GatewayConfig()
     config.platforms[Platform.DISCORD] = PlatformConfig(
         enabled=True,
@@ -252,8 +352,8 @@ async def test_synthetic_non_internal_event_reuses_channel_pin(monkeypatch):
     assert resolved_channel_prompts == ["Channel hint."] * 3, (
         f"channel pin flipped across the turn sequence: {resolved_channel_prompts}"
     )
-    # The parent-chat channel override ("Parent persona.") depends on parent_chat_id surviving
-    # onto the synthetic turn's resolved source too.
+    # Full ephemeral byte-equality: the parent-chat override AND the session-context block must
+    # stay identical across human -> synthetic -> human, not just contain the same substrings.
     eph = [_effective_ephemeral(runner, kw) for kw in calls]
-    for text in eph:
-        assert "Channel hint." in text and "Parent persona." in text
+    assert "Channel hint." in eph[0] and "Parent persona." in eph[0]
+    assert eph[0] == eph[1] == eph[2], "synthetic turn toggled the ephemeral prompt bytes"

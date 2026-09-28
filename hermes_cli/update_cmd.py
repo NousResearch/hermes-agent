@@ -166,6 +166,31 @@ def _updates_config() -> dict:
     return section if isinstance(section, dict) else {}
 
 
+def _map_ssl_cert_file_for_git(git_cmd) -> None:
+    """Point git's libcurl at the same CA bundle Python already trusts.
+
+    git ignores ``SSL_CERT_FILE`` (its libcurl reads only ``GIT_SSL_CAINFO`` /
+    ``http.sslCAInfo``), so on a network with a TLS-inspecting proxy whose
+    corporate root lives only in that variable the channel read succeeds and
+    the very next ``git fetch`` dies with "certificate signer not trusted" —
+    half the updater trusting a bundle the other half refuses. Written into
+    ``os.environ`` once so every git child the updater spawns sees it: the
+    network fetches (via ``_no_prompt_git_kwargs``) and the partial-clone
+    checkout's lazy promisor fetches (which inherit the process env).
+
+    An explicit ``GIT_SSL_CAINFO`` or a configured ``http.sslCAInfo`` wins:
+    the env var outranks the config file in git's precedence, so mapping over
+    either would silently override a deliberate choice.
+    """
+    bundle = os.environ.get("SSL_CERT_FILE")
+    if not bundle or os.environ.get("GIT_SSL_CAINFO"):
+        return
+    configured = _git_run(git_cmd, ["config", "--get", "http.sslCAInfo"])
+    if configured.returncode == 0 and configured.stdout.strip():
+        return
+    os.environ["GIT_SSL_CAINFO"] = bundle
+
+
 def _no_prompt_git_kwargs() -> dict:
     """``subprocess.run`` kwargs for the updater's network git calls.
 
@@ -596,6 +621,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
         sys.exit(1)
 
     git_cmd = _base_git_cmd()
+    # The check fetches over HTTPS too; give git the same CA bundle Python
+    # uses, or --check fails where the apply path succeeds (see
+    # _map_ssl_cert_file_for_git).
+    _map_ssl_cert_file_for_git(git_cmd)
     _check.clear_git_debris(root)
 
     selected_channel = _source_update_channel(channel=channel, branch_explicit=branch_explicit)
@@ -1114,6 +1143,10 @@ def _prepare_git_command() -> tuple[bool, list, bool]:
     git_cmd = _base_git_cmd()
     if sys.platform == "win32" and git_dir.exists():
         _git_run(git_cmd, ["config", "windows.appendAtomically", "false"])
+    # One CA story for the whole update: git's libcurl must trust what the
+    # channel read already trusts, or the fetch dies mid-update behind a
+    # TLS-inspecting proxy (see _map_ssl_cert_file_for_git).
+    _map_ssl_cert_file_for_git(git_cmd)
     # A broken Git-for-Windows trampoline refuses every call with a "BUG (fork bomb)" guard;
     # swap in a real binary up front so git survives instead of degrading to ZIP.
     # See #87876.

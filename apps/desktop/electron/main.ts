@@ -267,7 +267,7 @@ import { resolveGatewayVersion } from './gateway-version'
 import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-probe'
 import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
-import { desktopBackendSpawnEnv, guestOnboardingEnabled, skipIntroEnabled } from './guest-onboarding'
+import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   assertExistingPathForOpen,
@@ -311,7 +311,6 @@ import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
-import { createIntroRevealWindowController } from './intro-reveal-window'
 import { applyLaunchProfileOverride } from './launch-profile'
 import { CURL_TITLE_WRITE_OUT, parseCurlTitleResponse } from './link-title-curl'
 import { canonicalTitleCacheKey, isFetchableHttpUrl } from './link-title-url'
@@ -1086,7 +1085,6 @@ const BOOT_FAKE_ERROR = process.env.HERMES_DESKTOP_BOOT_FAKE_ERROR || ''
 const SKIP_QUIT_CONFIRM = process.env.HERMES_DESKTOP_SKIP_QUIT_CONFIRM === '1'
 // One launch decision must reach both the renderer and every backend spawn.
 const GUEST_ONBOARDING: boolean = guestOnboardingEnabled()
-const SKIP_INTRO: boolean = skipIntroEnabled()
 
 const BOOT_FAKE_STEP_MS = (() => {
   const raw = Number.parseInt(String(process.env.HERMES_DESKTOP_BOOT_FAKE_STEP_MS || ''), 10)
@@ -13893,22 +13891,6 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
 })
 
-const introRevealController: ReturnType<typeof createIntroRevealWindowController> = createIntroRevealWindowController({
-  devServer: DEV_SERVER,
-  enabled: GUEST_ONBOARDING,
-  isMac: IS_MAC,
-  loadWindowUrl,
-  log: rememberLog,
-  mainWindow: (): BrowserWindow | null => mainWindow,
-  preloadPath: PRELOAD_PATH,
-  rendererIndex: resolveRendererIndex,
-  showMain: (): void => {
-    mainWindow.show()
-    mainWindow.focus()
-  },
-  wireWindow: (window: BrowserWindow): void => wireCommonWindowHandlers(window, zoomWiringForWindowKind('petOverlay'))
-})
-
 registerChatOnboardingWindow({ enabled: GUEST_ONBOARDING, mainWindow: (): BrowserWindow | null => mainWindow })
 registerMachineProfile()
 
@@ -15028,7 +15010,6 @@ function createWindow() {
   mainWindow.on('closed', () => {
     closePetOverlay()
     wakeIndicatorController.close()
-    introRevealController.destroy()
 
     if (mainWindow === createdMainWindow) {
       mainWindow = null
@@ -17816,8 +17797,7 @@ ipcMain.on('hermes:feature-flags', (event: IpcMainEvent): void => {
       argv: process.argv,
       canary: resolveUpdaterChannelFromStamp() === 'canary'
     }),
-    guestOnboarding: GUEST_ONBOARDING,
-    skipIntro: SKIP_INTRO
+    guestOnboarding: GUEST_ONBOARDING
   }
 })
 
@@ -19152,7 +19132,6 @@ app.on('before-quit', event => {
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
   wakeIndicatorController.close()
-  introRevealController.destroy()
 
   // Same for the HUD — an always-on-top panel outliving the app would leave a
   // floating composer with nothing behind it. Close it directly rather than via

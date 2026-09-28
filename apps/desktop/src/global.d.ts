@@ -116,14 +116,6 @@ declare global {
         grow: (request: GrowRequest) => void
         soloBoot: () => void
       }
-      introReveal?: {
-        open: (payload?: { hideMain?: boolean }) => Promise<{ ok: boolean }>
-        close: (payload?: { showMain?: boolean }) => Promise<{ ok: boolean }>
-        skip: () => void
-        ready: () => void
-        onSkip: (callback: () => void) => () => void
-        onClosed: (callback: () => void) => () => void
-      }
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
@@ -365,9 +357,6 @@ declare global {
       guestOnboardingEnabled?: boolean
       /** Sanitized local `display.skin`, available before any gateway connects. */
       localSkin?: { profile: string; skin: HermesSkin } | null
-      /** Launch flag: skip the first-run film (HERMES_SKIP_INTRO=1 or
-       *  --skip-intro) so a fresh HERMES_HOME lands on the guided chat. */
-      skipIntro?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       minimizeToTray?: {

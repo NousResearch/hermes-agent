@@ -1913,7 +1913,10 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     # Restart a managed dashboard via systemd or stop stale manual ones (raw-killing
     # a systemd-owned PID reads as clean stop and leaves the Cloudflare origin dead).
     # Already-restarted units aren't redone.
-    _refresh_dashboard_after_update(already_restarted_units=set(restart.restarted_services))
+    # A dashboard it stopped and could not bring back is a promised restart that did not happen.
+    _dashboards_down = _refresh_dashboard_after_update(already_restarted_units=set(restart.restarted_services))
+    if _dashboards_down:
+        restart.incomplete = True
 
     # Success-path twin of the abort-recovery probe: the restart phase only touches
     # units, so a unit-less `hermes serve` keeps stale sys.modules. Runs AFTER
@@ -1996,6 +1999,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                     if _stale_serve_rows is not None
                     else None
                 ),
+                failed_respawn_pids=_dashboards_down,
             )
             from dataclasses import asdict
             from hermes_cli.update_serve_obligations import defer_manual_serve

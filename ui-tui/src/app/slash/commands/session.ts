@@ -548,29 +548,58 @@ export const sessionCommands: SlashCommand[] = [
           )
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', reasoningConfigPayload(arg, ctx.sid ?? '')).then(
-        ctx.guarded<ConfigSetResponse>(r => {
-          if (!r.value) {
-            return
-          }
+      // Same confirm handshake as /model: the gateway withholds an effort change
+      // that would re-read a large cached context until the client resends with
+      // confirm_expensive_model (hermes_cli.model_selection_guards).
+      const setReasoning = (confirmExpensiveModel = false) =>
+        ctx.gateway
+          .rpc<ConfigSetResponse>('config.set', {
+            ...reasoningConfigPayload(arg, ctx.sid ?? ''),
+            ...(confirmExpensiveModel ? { confirm_expensive_model: true } : {})
+          })
+          .then(
+            ctx.guarded<ConfigSetResponse>(r => {
+              if (r.confirm_required) {
+                patchOverlayState({
+                  confirm: {
+                    cancelLabel: 'Cancel',
+                    confirmLabel: 'Change anyway',
+                    danger: true,
+                    detail:
+                      r.confirm_message ||
+                      r.warning ||
+                      'Changing reasoning effort re-reads this large context uncached.',
+                    onConfirm: () => setReasoning(true),
+                    title: 'Large context reasoning change'
+                  }
+                })
 
-          if (r.value === 'hide') {
-            patchUiState(state => ({
-              ...state,
-              sections: { ...state.sections, thinking: 'hidden' },
-              showReasoning: false
-            }))
-          } else if (r.value === 'show') {
-            patchUiState(state => ({
-              ...state,
-              sections: { ...state.sections, thinking: 'expanded' },
-              showReasoning: true
-            }))
-          }
+                return
+              }
 
-          ctx.transcript.sys(`reasoning: ${r.value}`)
-        })
-      )
+              if (!r.value) {
+                return
+              }
+
+              if (r.value === 'hide') {
+                patchUiState(state => ({
+                  ...state,
+                  sections: { ...state.sections, thinking: 'hidden' },
+                  showReasoning: false
+                }))
+              } else if (r.value === 'show') {
+                patchUiState(state => ({
+                  ...state,
+                  sections: { ...state.sections, thinking: 'expanded' },
+                  showReasoning: true
+                }))
+              }
+
+              ctx.transcript.sys(`reasoning: ${r.value}`)
+            })
+          )
+
+      setReasoning()
     }
   },
 

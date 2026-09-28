@@ -287,6 +287,21 @@ def _set_yolo(rid, params, key, value, session):
     return _kv(rid, key, "1" if enable else "0", scope=scope if scope == "global" else "session")
 
 
+def _reasoning_effort_confirm(agent, effort: str) -> str | None:
+    """Warning text when changing to ``effort`` on a live ``agent`` would re-read a large cached
+    context (``hermes_cli.model_selection_guards``), else None (fail-soft: guards never block)."""
+    try:
+        from hermes_cli.model_selection_guards import (
+            reasoning_effort_cache_warning, selection_context_for_agent)
+        warning = reasoning_effort_cache_warning(
+            effort, model=getattr(agent, "model", "") or "",
+            current_reasoning_config=getattr(agent, "reasoning_config", None),
+            selection_context=selection_context_for_agent(agent))
+    except Exception:
+        return None
+    return warning.message if warning is not None else None
+
+
 # /reasoning display words: (accepted inputs, reported value, display field, sections.thinking,
 # session show_reasoning or None). full/clamp mirror the CLI's reasoning_full toggle.
 _REASONING_DISPLAY_WORDS = (
@@ -310,6 +325,12 @@ def _set_reasoning(rid, params, key, value, session):
     parsed = parse_reasoning_effort(arg)
     if parsed is None:
         return _err(rid, 4002, f"unknown reasoning value: {value}")
+    if not params.get("confirm_expensive_model") and session and session.get("agent") is not None:
+        # Same deferred-confirm envelope as the model switch: a large cached context re-reads uncached
+        # when the effort changes, so the client confirms and resends with confirm_expensive_model.
+        confirm = _reasoning_effort_confirm(session["agent"], arg)
+        if confirm is not None:
+            return _kv(rid, key, arg, warning=confirm, confirm_required=True, confirm_message=confirm)
     if scope == "global" or session is None:
         _write_config_key("agent.reasoning_effort", arg)
         if session is not None:

@@ -66,6 +66,8 @@ model:
 
 Re-selecting the model you're already on never prompts (the cache stays warm), and sessions with no measured context (fresh sessions, non-live surfaces) are exempt.
 
+The same guard covers **`/reasoning <level>`** on Claude and OpenAI reasoning models (`gpt-*`, `o*`, `codex`): both vendors render the effort setting into the cached prompt prefix ([Anthropic](https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting), [OpenAI](https://developers.openai.com/api/docs/guides/prompt-caching)), so changing it mid-session is the same one-time full re-read. The CLI, TUI, Desktop model menu and a typed gateway `/reasoning` confirm above the threshold; unchanged effort, display toggles (`show`/`hide`), and model families with no documented effort-to-cache link never prompt.
+
 ### Unattended data-training tiers
 
 Models with a `-contributor` suffix (e.g. `muse-spark-1.2-contributor`, `muse-spark-1.3-contributor`) are discounted because the vendor may train on your prompts and completions. Interactive model selection always shows a confirmation prompt. Non-interactive startup paths such as Kanban workers and cron agents fail closed because they cannot ask that question.

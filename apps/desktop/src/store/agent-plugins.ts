@@ -18,6 +18,7 @@ import { notifyError } from '@/store/notifications'
 export type AgentPluginServerState =
   | 'connected'
   | 'app_not_running'
+  | 'hermes_not_connected'
   | 'endpoint_unavailable'
   | 'no_interactive_session'
   | 'version_too_old'
@@ -289,6 +290,8 @@ export async function toggleAgentPlugin(
 export interface AgentPluginInstallResult {
   ok: boolean
   installed?: boolean
+  /** The client stopped waiting; the backend may still finish the install. */
+  timedOut?: boolean
   pluginName?: string
   warnings?: string[]
   missingEnv?: string[]
@@ -312,6 +315,12 @@ export interface AgentPluginLiveNow {
 }
 
 const NO_LIVE: AgentPluginLiveNow = { mcpServers: [], skills: [] }
+
+// Installing a catalog package can clone a repository and resolve Python dependencies.
+// The ordinary Desktop RPC deadline is 30s, which can expire after the backend
+// has already begun an install that will succeed. Keep this wait bounded while
+// giving normal installs time to return their authoritative result.
+const PLUGIN_INSTALL_REQUEST_TIMEOUT_MS = 120_000
 
 export async function installAgentPlugin(
   request: GatewayRequest,
@@ -355,7 +364,8 @@ export async function installAgentPlugin(
           ...(opts.ref ? { ref: opts.ref } : {})
         },
         opts.profile
-      )
+      ),
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
     )
 
     if (!result?.ok) {
@@ -383,12 +393,14 @@ export async function installAgentPlugin(
     }
   } catch (e) {
     const data = (e as { data?: { installed?: boolean; plugin_name?: string; error?: string } } | null)?.data
+    const message = e instanceof Error ? e.message : String(e)
 
     return {
       ok: false,
       installed: data?.installed,
       pluginName: data?.plugin_name,
-      error: data?.error || (e instanceof Error ? e.message : String(e)),
+      timedOut: /^request timed out after \d+s: plugins\.manage$/.test(message),
+      error: data?.error || message,
       live: NO_LIVE,
       nextChat: false
     }

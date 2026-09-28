@@ -130,9 +130,27 @@ export async function selectAll(input: PreviewInputHandle): Promise<void> {
   await wait(KEY_MS)
 }
 
-/** Type `text` a character at a time into whatever currently has focus. */
-export async function typeText(input: PreviewInputHandle, text: string): Promise<void> {
+/** Type `text` a character at a time into whatever currently has focus.
+ *
+ *  Checks `signal` between characters. A timeout or interrupt aborts the
+ *  signal while this loop is still queued; without the check those keystrokes
+ *  keep landing after the tool has already given up. The character in flight
+ *  has already been sent — the rest are not. */
+export async function typeText(input: PreviewInputHandle, text: string, signal?: AbortSignal): Promise<number> {
+  let typed = 0
+
   for (const character of text) {
+    if (signal?.aborted) {
+      return typed
+    }
+
     await pressKey(input, character)
+    typed += 1
+
+    if (signal?.aborted) {
+      return typed
+    }
   }
+
+  return typed
 }

@@ -5,6 +5,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 """
 
 import asyncio
+import concurrent.futures
 import logging
 from typing import Optional
 
@@ -50,6 +51,41 @@ def _load_config_scoped(profile: Optional[str]) -> dict:
         return load_config()
 
 
+# Blocking budget for /api/model/info's context-length resolution. The resolver
+# chain (agent.model_metadata.get_model_context_length) runs several sequential
+# provider probes, each with its own multi-second timeout, so an unreachable or
+# blackholed model.base_url can hold this response for tens of seconds — and the
+# Desktop Model Settings page waits on it (#63214).
+_MODEL_INFO_PROBE_BUDGET_S = 5.0
+
+
+def _bounded_context_length_probe(model: str, base_url: str, provider: str) -> int:
+    """``get_model_context_length`` with the route's blocking budget.
+
+    On timeout the abandoned probe keeps running in its worker thread (bounded
+    by its own per-request timeouts) while the response degrades to
+    ``auto_context_length = 0`` ("auto-detected: unknown").
+    """
+    from agent.model_metadata import get_model_context_length
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-info-probe")
+    try:
+        return pool.submit(
+            get_model_context_length, model=model, base_url=base_url, provider=provider,
+            config_context_length=None
+        ).result(timeout=_MODEL_INFO_PROBE_BUDGET_S)
+    except concurrent.futures.TimeoutError:
+        _log.warning(
+            "GET /api/model/info: context-length probe for %r at %s exceeded %.1fs — returning unknown",
+            model, base_url or "<default>", _MODEL_INFO_PROBE_BUDGET_S,
+        )
+        return 0
+    finally:
+        # wait=False: never block the response (or interpreter exit) on the
+        # abandoned probe.
+        pool.shutdown(wait=False)
+
+
 @router.get("/api/model/info")
 def get_model_info(profile: Optional[str] = None):
     """Resolved metadata for the configured model: auto-detected vs configured
@@ -65,10 +101,10 @@ def get_model_info(profile: Optional[str] = None):
             return dict(_EMPTY_MODEL_INFO, provider=provider)
 
         try:
-            from agent.model_metadata import get_model_context_length
-            # config_context_length=None: ignore the override — we want the auto value
-            auto_ctx = get_model_context_length(model=model_name, base_url=base_url, provider=provider,
-                                                config_context_length=None)
+            # config_context_length=None: ignore the override — we want the auto value.
+            # Bounded: the resolver's provider probes can hang for tens of seconds
+            # when model.base_url is unreachable (#63214).
+            auto_ctx = _bounded_context_length_probe(model_name, base_url, provider)
         except Exception:
             auto_ctx = 0
 

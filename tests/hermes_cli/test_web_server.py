@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import (
     reload_env,
@@ -906,28 +906,19 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert "api_key" not in provider_config
 
 
-    def test_post_memory_provider_setup_routes_pip_through_lazy_deps(self, monkeypatch):
-        """NS-605: dashboard pip installs must use the environment-aware
-        lazy_deps pipeline (durable-target redirect on immutable hosted
-        images), never a direct `pip install --python sys.executable`."""
+    def test_post_memory_provider_setup_routes_python_deps_through_pm(self, monkeypatch):
+        """Dashboard dependency setup publishes through PM, never direct pip."""
         import subprocess as _subprocess
 
         import hermes_cli.web_server as web_server
-        from tools import lazy_deps as ld
+        from hermes_cli import memory_setup
 
-        # honcho declares pip_dependencies: [honcho-ai]; force it missing.
-        monkeypatch.setattr(_web_server_memory, "_dependency_importable", lambda dep: False)
-
-        installed = []
-
-        def fake_install_specs(specs, *, timeout=300):
-            installed.append(tuple(specs))
-            return ld.InstallSpecsResult(
-                ok=True, command="uv pip install --target /opt/data/lazy-packages honcho-ai",
-                stdout="ok", stderr="",
-            )
-
-        monkeypatch.setattr(ld, "install_specs", fake_install_specs)
+        prepared = []
+        monkeypatch.setattr(
+            memory_setup,
+            "prepare_memory_provider_dependencies",
+            lambda name: (prepared.append(name) or ({}, "installed")),
+        )
 
         # Any direct pip/uv subprocess from the memory-provider pip path is
         # a regression; external-dep checks may still run subprocess, so only
@@ -947,8 +938,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         data = resp.json()
         pip_rows = [row for row in data["results"] if row["kind"] == "pip"]
         assert pip_rows and pip_rows[0]["status"] == "installed"
-        assert "--target /opt/data/lazy-packages" in pip_rows[0]["command"]
-        assert installed == [("honcho-ai",)]
+        assert pip_rows[0]["command"] == "hermes pm install"
+        assert prepared == ["honcho"]
 
 
     def test_put_memory_provider_config_writes_config_and_secret(self):
@@ -2063,7 +2054,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         secret by the time Save sees it. Migrating it would duplicate the
         user's secret into a second env var they never asked for.
         """
-        import yaml
+        import hermes_yaml as yaml
 
         from hermes_cli.config import custom_endpoint_key_env, get_config_path, get_env_value
 
@@ -2141,6 +2132,73 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         endpoint = next(e for e in resp.json()["endpoints"] if e["id"] == "proxy")
         assert endpoint["has_api_key"] is True
         assert "sk-in-env" not in (endpoint["api_key_preview"] or "")
+
+    def test_env_rejects_its_redacted_preview(self):
+        """Invariant: a GET preview (sentinel or legacy bare mask) never gains write
+        authority, even after another actor rotates the secret behind it."""
+        from hermes_cli.config import load_env, save_env_value
+
+        key = "OPENAI_API_KEY"
+        real = "sk-live-secret-abcdef1234567890"
+        save_env_value(key, real)
+        preview = self.client.get("/api/env").json()[key]["redacted_value"]
+        assert preview.startswith("«redacted")
+
+        response = self.client.put("/api/env", json={"key": key, "value": preview})
+        assert response.status_code == 400
+        assert load_env()[key] == real
+
+        rotated = "sk-rotated-secret-0987654321"
+        save_env_value(key, rotated)
+        for stale in (preview, redact_key(real)):
+            response = self.client.put("/api/env", json={"key": key, "value": stale})
+            assert response.status_code == 400
+            assert load_env()[key] == rotated
+
+    def test_messaging_and_custom_endpoint_reject_stale_previews(self):
+        """Invariant: preview rejection runs before any mutation (messaging clear+set),
+        and custom-endpoint display strings (``${KEY_ENV}`` / legacy plaintext preview)
+        are refused even after the entry rotated underneath them."""
+        from hermes_cli.config import load_config, load_env, save_config, save_env_value
+
+        key = "DISCORD_BOT_TOKEN"
+        real = "discord-live-secret-abcdef1234567890"
+        save_env_value(key, real)
+        response = self.client.put(
+            "/api/messaging/platforms/discord",
+            json={"clear_env": [key], "env": {key: redact_key(real)}},
+        )
+        assert response.status_code == 400
+        assert load_env()[key] == real
+
+        save_env_value("OLD_ENDPOINT_KEY", "old-secret-1234567890")
+        save_env_value("NEW_ENDPOINT_KEY", "new-secret-0987654321")
+        cfg = load_config()
+        cfg["providers"] = {
+            "env-preview": {"name": "Env Preview", "base_url": "https://env-preview.example.com/v1",
+                            "model": "m", "key_env": "OLD_ENDPOINT_KEY", "models": {"m": {}}},
+            "legacy-preview": {"name": "Legacy Preview", "base_url": "https://legacy-preview.example.com/v1",
+                               "model": "m", "api_key": "legacy-secret-A-1234567890", "models": {"m": {}}},
+        }
+        save_config(cfg)
+        endpoints = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
+        assert endpoints["env-preview"]["api_key_preview"] == "${OLD_ENDPOINT_KEY}"
+        assert endpoints["legacy-preview"]["api_key_preview"].startswith("«redacted")
+
+        cfg = load_config()
+        cfg["providers"]["env-preview"]["key_env"] = "NEW_ENDPOINT_KEY"
+        cfg["providers"]["legacy-preview"]["api_key"] = "legacy-secret-B-0987654321"
+        save_config(cfg)
+        for endpoint_id, base_url in (("env-preview", "https://env-preview.example.com/v1"),
+                                      ("legacy-preview", "https://legacy-preview.example.com/v1")):
+            response = self.client.post("/api/providers/custom-endpoints", json={
+                "id": endpoint_id, "name": "x", "base_url": base_url, "model": "m",
+                "api_key": endpoints[endpoint_id]["api_key_preview"],
+            })
+            assert response.status_code == 400
+        providers = load_config()["providers"]
+        assert providers["env-preview"]["key_env"] == "NEW_ENDPOINT_KEY"
+        assert providers["legacy-preview"]["api_key"] == "legacy-secret-B-0987654321"
 
     def test_activating_an_endpoint_carries_its_credential_either_way(self):
         """Activate must work for both key_env and pre-#69449 plaintext entries."""
@@ -2547,7 +2605,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         original_get_messages = SessionDB.get_messages
 
         def tracked_get_messages(self, session_id, *args, **kwargs):
-            calls.append((kwargs.get("limit"), kwargs.get("after_id")))
+            calls.append((kwargs.get("limit"), kwargs.get("after_id"), kwargs.get("include_inactive")))
             return original_get_messages(self, session_id, *args, **kwargs)
 
         monkeypatch.setattr(SessionDB, "get_messages", tracked_get_messages)
@@ -2559,7 +2617,8 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert len(payload["messages"]) == 501
         assert payload["messages"][0]["content"] == "msg 0"
         assert payload["messages"][-1]["content"] == "msg 500"
-        assert calls == [(500, 0), (500, 500)]
+        # Transfer projection: archived rows ride along with their flags (import re-archives them).
+        assert calls == [(500, 0, True), (500, 500, True)]
 
 
 # ---------------------------------------------------------------------------
@@ -3106,6 +3165,56 @@ class TestNewEndpoints:
         assert top_skill["manage_count"] == 0
         assert top_skill["total_count"] == 1
         assert top_skill["last_used_at"] is not None
+
+    def _daily_for_local_starts(self, tz_name, local_starts):
+        """Seed one session per naive local start in ``tz_name``; return the daily buckets."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for i, local in enumerate(local_starts):
+                db.create_session(session_id=f"day-bucket-{i}", source="cli")
+                db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
+                                 (local.replace(tzinfo=ZoneInfo(tz_name)).timestamp(), f"day-bucket-{i}"))
+            db._conn.commit()
+        finally:
+            db.close()
+        original_tz = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = tz_name
+            time.tzset()
+            resp = self.client.get("/api/analytics/usage?days=365")
+        finally:
+            if original_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = original_tz
+            time.tzset()
+        assert resp.status_code == 200
+        return {row["day"]: row["sessions"] for row in resp.json()["daily"]}
+
+    @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
+    def test_analytics_daily_buckets_use_local_day(self):
+        """A session at 02:00 IST is counted on that local day, as /insights counts it (not the UTC day before)."""
+        from datetime import datetime, timedelta
+
+        yesterday = (datetime.now() - timedelta(days=1)).replace(hour=2, minute=0, second=0, microsecond=0)
+        daily = self._daily_for_local_starts("Asia/Kolkata", [yesterday])
+        assert daily == {yesterday.strftime("%Y-%m-%d"): 1}
+
+    @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
+    def test_analytics_daily_buckets_follow_dst_offset_per_session(self):
+        """23:30 local stays on its own day in both EST and EDT; one fixed offset for the range misplaces one."""
+        from datetime import datetime, timedelta
+
+        # The latest past day in January (EST) and in July (EDT), both inside the 365-day window.
+        recent = [(datetime.now() - timedelta(days=n)).replace(hour=23, minute=30, second=0, microsecond=0) for n in range(2, 360)]
+        starts = [next(d for d in recent if d.month == m) for m in (1, 7)]
+        daily = self._daily_for_local_starts("America/New_York", starts)
+        assert daily == {s.strftime("%Y-%m-%d"): 1 for s in starts}
 
 
 # ---------------------------------------------------------------------------
@@ -4064,6 +4173,76 @@ class TestDeleteSessionEndpoint:
         assert resp.status_code == 200
         assert resp.json().get("ok") is True
 
+    def test_delete_existing_session_scrubs_row_and_disk(self):
+        # The CLI delete path threads the sessions dir so transcript
+        # artifacts are removed with the row; the endpoint historically
+        # didn't, leaving secret-bearing session_<id>.json snapshots and
+        # request dumps orphaned on disk after a UI delete.
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session("disk-scrub", source="cli")
+        finally:
+            db.close()
+
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        for name, body in (
+            ("session_disk-scrub.json", '{"messages": [{"content": "secret-token"}]}'),
+            ("disk-scrub.jsonl", "{}\n"),
+            ("request_dump_disk-scrub_001.json", "{}"),
+        ):
+            (sessions_dir / name).write_text(body, encoding="utf-8")
+        # Another session's artifacts must survive.
+        (sessions_dir / "session_disk-scrub-neighbour.json").write_text("{}", encoding="utf-8")
+
+        resp = self.auth_client.delete("/api/sessions/disk-scrub")
+
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db.get_session("disk-scrub") is None
+        finally:
+            db.close()
+        assert not (sessions_dir / "session_disk-scrub.json").exists()
+        assert not (sessions_dir / "disk-scrub.jsonl").exists()
+        assert not (sessions_dir / "request_dump_disk-scrub_001.json").exists()
+        assert (sessions_dir / "session_disk-scrub-neighbour.json").exists()
+
+    def test_delete_named_profile_session_scrubs_profile_disk(self):
+        from hermes_cli import profiles as profiles_mod
+        from hermes_state import SessionDB
+
+        profile_home = profiles_mod.get_profile_dir("worker")
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").touch()  # identity marker: bare dirs are not profiles
+        sessions_dir = profile_home / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        db_path = profile_home / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session("profile-scrub", source="cli")
+        finally:
+            db.close()
+        (sessions_dir / "session_profile-scrub.json").write_text(
+            '{"messages": [{"content": "secret-token"}]}', encoding="utf-8"
+        )
+
+        resp = self.auth_client.delete("/api/sessions/profile-scrub?profile=worker")
+
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db.get_session("profile-scrub") is None
+        finally:
+            db.close()
+        assert not (sessions_dir / "session_profile-scrub.json").exists()
+
 
 class TestBulkDeleteSessionsEndpoint:
     """Tests for ``POST /api/sessions/bulk-delete`` — backs the
@@ -4119,7 +4298,7 @@ class TestBulkDeleteSessionsEndpoint:
             "/api/sessions/bulk-delete", json={"ids": ["a", "b"]}
         )
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "deleted": 2}
+        assert resp.json() == {"ok": True, "deleted": 2, "skipped_active": []}
 
         db = SessionDB()
         try:
@@ -4312,6 +4491,92 @@ class TestPluginAPIAuth:
         # attacker can't fingerprint plugin names by status codes.
         resp = self.client.get("/api/plugins/_definitely_not_a_plugin_/anything")
         assert resp.status_code == 401
+
+
+class TestPluginAPISecretScopeProductionMount:
+    """#120310: a plugin API handler's ``get_secret()`` must resolve the *requested*
+    profile's credentials under multi-profile hosting, verified through the REAL mount
+    path — discovery → import → ``_mount_plugin_api_routes()`` (which attaches
+    ``_plugin_route_secret_scope``) → a live request against ``app`` — not a hand-built
+    ``include_router``. The dedicated ``test_plugin_api_secret_scope.py`` suite proves the
+    dependency in isolation; this closes the actual reported surface end-to-end and pins
+    that the launch profile and a ``?profile=`` request read distinct secrets, that the
+    request profile does not leak back into the launch profile, and that an unknown
+    profile is rejected in the dependency before the handler runs.
+    """
+
+    _PROBE_KEY = "EXAMPLE_PLUGIN_PROBE_KEY"
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli import profiles
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        default_home = get_hermes_home()
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", default_home / "state.db")
+
+        # Anchor the named-profiles root to the isolated home so ``?profile=workerb``
+        # resolves inside the test sandbox (mirrors test_web_server_skills_profiles).
+        profiles_root = default_home / "profiles"
+        monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
+        monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
+
+        # Named profile B: a live profile (``.env`` is both an identity marker and the
+        # secret source) with its OWN value for the probe key.
+        worker_home = profiles_root / "workerb"
+        worker_home.mkdir(parents=True, exist_ok=True)
+        (worker_home / ".env").write_text(f"{self._PROBE_KEY}=sk-workerb\n", encoding="utf-8")
+
+        # Launch profile A: an env-only credential (systemd ``Environment=`` style), frozen
+        # into the launch scope when multi-profile hosting activates.
+        monkeypatch.setenv(self._PROBE_KEY, "sk-launch-a")
+
+        import tui_gateway.launch_profile_policy as lpp
+        from agent.secret_scope import is_multiplex_active, set_multiplex_active
+
+        monkeypatch.setattr(lpp, "_snapshot", None)  # freeze the launch env fresh
+        self._previous_multiplex = is_multiplex_active()
+        lpp.activate_multi_profile_hosting()  # freezes os.environ + flips multiplex on
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        try:
+            yield
+        finally:
+            set_multiplex_active(self._previous_multiplex)
+
+    def _probe(self, profile=None):
+        params = {"profile": profile} if profile is not None else None
+        return self.client.get("/api/plugins/example/whoami", params=params)
+
+    def test_launch_and_requested_profile_read_distinct_secrets(self):
+        # No ``?profile=`` → the launch profile's frozen env-only credential.
+        resp = self._probe()
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "key": "sk-launch-a"}
+
+        # ``?profile=workerb`` → that profile's own credential, through the real mount.
+        resp = self._probe("workerb")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "key": "sk-workerb"}
+
+        # Back to the launch profile: the request scope reset, so B never leaks into A.
+        resp = self._probe()
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "key": "sk-launch-a"}
+
+    def test_unknown_profile_rejected_before_handler(self):
+        # The dependency raises HTTPException(404) before the handler runs, so this is a
+        # 404 — NOT the handler's folded ``{"ok": False}`` no-data contract.
+        resp = self._probe("ghost")
+        assert resp.status_code == 404
 
 
 class TestDashboardPluginManifestExtensions:
@@ -4603,6 +4868,7 @@ def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
     import hermes_cli.main_tui_launch as tui_launch
     import hermes_cli.web_server as ws
 
+    monkeypatch.setenv("PATH", "/run/current-system/sw/bin:/usr/bin")
     monkeypatch.setattr(
         tui_launch,
         "_make_tui_argv",

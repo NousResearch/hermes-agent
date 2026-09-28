@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
+import { $freeTierSignIn } from '@/store/free-tier-sign-in'
 
 import { formatMoney } from './billing-amounts'
 import {
@@ -595,13 +596,18 @@ describe('BillingSettings', () => {
     )
   })
 
-  it('renders logged-out as a connect card without normal account rows', async () => {
+  it('renders logged-out as a connect card whose sign-in opens the shared dialog', async () => {
     apiMocks.fetchBillingState.mockResolvedValue(okBilling(loggedOutBillingState))
     apiMocks.fetchSubscriptionState.mockResolvedValue(okSubscription(loggedOutSubscriptionState))
+    $freeTierSignIn.set({ status: 'closed' })
 
     renderBilling()
 
     expect(await screen.findByText('Connect your Nous account')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect($freeTierSignIn.get()).toEqual({ status: 'requested' })
+    expect(apiMocks.openExternal).not.toHaveBeenCalled()
+    $freeTierSignIn.set({ status: 'closed' })
     expect(screen.queryByText('Payment method')).toBeNull()
     expect(screen.queryByText('Usage')).toBeNull()
   })

@@ -235,13 +235,15 @@ class _CuaDriverSession:
                 execution.check()
             launch = execution.context.computer_use if execution else None
             driver_cmd = (launch.driver_command if launch else None) or _driver.resolve_cua_driver_cmd()
-            if not driver_cmd:
+            # A session-owned execution target never falls back to the sandbox placement.
+            if not driver_cmd and (execution is not None or _cb.sandbox_mcp_invocation() is None):
                 raise RuntimeError(_driver.cua_driver_install_hint())
             self._startup_phase = "manifest-discovery"
             daemon = self._embedded_daemon
             (command, args), child_env = (
                 (daemon.proxy_invocation(), daemon.child_env()) if daemon is not None
-                else (_driver._resolve_mcp_invocation(driver_cmd), _cb.cua_driver_child_env()))
+                else (None if execution is not None else _cb.sandbox_mcp_invocation())
+                or (_driver._resolve_mcp_invocation(driver_cmd), _cb.cua_driver_child_env()))
             _t_manifest = _time.monotonic()
             if execution is not None:
                 command, *args = execution.wrap_argv([command, *args], computer_use=True)

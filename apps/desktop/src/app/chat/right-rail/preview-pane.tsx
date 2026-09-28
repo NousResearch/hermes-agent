@@ -138,6 +138,9 @@ interface GuestContextMenuParams {
 
 interface PreviewPaneProps {
   embedded?: boolean
+  /** Closes this preview's tab. Offered by body states that are a dead end
+   *  (a file that no longer exists) so the way out is not only the strip. */
+  onClose?: () => void
   onRestartServer?: (url: string, context?: string) => Promise<string>
   reloadRequest?: number
   /** The preview tab this pane renders. Keys the per-tab console store the
@@ -186,6 +189,20 @@ function isModuleMimeError(message: string): boolean {
 
   return lower.includes('failed to load module script') && lower.includes('mime type')
 }
+
+/**
+ * #101880: a guest page's `window.print()` (e.g. a Google Doc's Print
+ * button) reaches the macOS native print panel, whose construction
+ * segfaults inside PrintCore — the whole app dies before any dialog
+ * appears. Stub `print` in the guest so the native panel is never built;
+ * the warn surfaces in the preview console via the existing pipe. The
+ * `__hermesPrintGuard` flag keeps re-arms idempotent. Full print-to-PDF
+ * routing is the follow-up; this stops the crash.
+ */
+const PREVIEW_PRINT_GUARD_SCRIPT =
+  '(function(){if(window.__hermesPrintGuard)return;window.__hermesPrintGuard=true;' +
+  'window.print=function(){console.warn("[Hermes] Printing is disabled in the in-app preview. ' +
+  'Open the page in your browser to print.");};})()'
 
 function PreviewLoadError({
   consoleHeight = 0,
@@ -240,7 +257,14 @@ function PreviewLoadError({
   )
 }
 
-export function PreviewPane({ embedded = false, onRestartServer, reloadRequest = 0, tabId, target }: PreviewPaneProps) {
+export function PreviewPane({
+  embedded = false,
+  onClose,
+  onRestartServer,
+  reloadRequest = 0,
+  tabId,
+  target
+}: PreviewPaneProps) {
   const { t } = useI18n()
   const copy = t.preview.web
   // The console store belongs to the TAB, not this render: the toggles live on
@@ -1194,6 +1218,15 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       notePage()
     }
 
+    // #101880: arm the print guard for every new guest document — a fresh
+    // load gets a fresh window object, so the stub must be re-injected.
+    const armPrintGuard = () => {
+      void webview.executeJavaScript?.(PREVIEW_PRINT_GUARD_SCRIPT)?.catch(() => {
+        // Guest tore down mid-arm (a navigation raced the injection) — the
+        // next dom-ready arms it again.
+      })
+    }
+
     // The WEBVIEW is the source of truth for DevTools, not our click handler:
     // closing the DevTools window itself fires devtools-closed with no click,
     // and the glyph was left stuck "on" when we tracked it locally.
@@ -1291,6 +1324,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     // SPAs title themselves long after the load settles, and a route change
     // renames the page without navigating at all.
     webview.addEventListener('page-title-updated', notePage)
+    // #101880: never let a guest reach the native print panel.
+    webview.addEventListener('dom-ready', armPrintGuard)
     host.appendChild(webview)
     webviewRef.current = webview
 
@@ -1312,6 +1347,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.removeEventListener('did-start-loading', onStart)
       webview.removeEventListener('did-stop-loading', onStop)
       webview.removeEventListener('page-title-updated', notePage)
+      webview.removeEventListener('dom-ready', armPrintGuard)
       webview.remove()
       setAnnotate(session => (session.mode ? { ...endAnnotateMode(session), stack: emptyAnnotateStack() } : session))
     }
@@ -1437,9 +1473,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
           )}
           {!isWebPreview &&
             (target.kind === 'artifact' ? (
-              <ArtifactPreview target={target} />
+              <ArtifactPreview onClose={onClose} target={target} />
             ) : (
               <LocalFilePreview
+                onClose={onClose}
                 onSelectRendered={canRenderHtmlFile ? () => selectRenderMode('preview') : undefined}
                 reloadKey={localReloadKey}
                 target={target}

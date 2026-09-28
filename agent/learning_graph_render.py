@@ -11,6 +11,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
+from agent.learning_graph import memory_node_id
 from hermes_time import safe_strftime
 
 LEAD_IN = 0.06  # time-axis.ts LEAD_IN: the oldest node sits just off recency 0.
@@ -260,7 +261,8 @@ def _build_chart_buckets(nodes: list[dict[str, Any]], rec: dict[str, Any], max_r
 
 def _bucket_rows(buckets: list[_ChartBucket], payload: dict[str, Any]) -> list[dict[str, Any]]:
     cmap = category_color_map(payload)
-    memory_lookup = {f"memory:{card.get('source')}:{idx}": card for idx, card in enumerate(payload.get("memory", []) or []) if isinstance(card, dict)}
+    memory_lookup = {memory_node_id(card, idx): card
+                     for idx, card in enumerate(payload.get("memory", []) or []) if isinstance(card, dict)}
 
     def node_row(node: dict[str, Any]) -> dict[str, Any]:
         card, memory = _node_card(node), memory_lookup.get(_node_id(node))

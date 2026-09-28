@@ -270,8 +270,21 @@ def _write_or_exit(payload: dict, reason: str) -> None:
 def main():
     # stdout is this process's JSON-RPC client channel: peer-less global broadcasts belong on it.
     server._stdio_is_rpc_channel = True
+    try:
+        server.install_tui_message_injector()
+    except Exception:
+        logger.warning("TUI message injector did not install", exc_info=True)
     _close_rpc_stdin_on_exec()
     _install_sidecar_publisher()
+
+    # One TLS authority: trust the OS store process-wide before any
+    # outbound call resolves a CA bundle (see agent/ssl_verify.py).
+    try:
+        from agent.ssl_verify import install_truststore
+
+        install_truststore()
+    except Exception:
+        logger.debug("truststore install skipped", exc_info=True)
 
     # The heartbeat row lets the orphan sweep tell "live but idle" from "truly orphaned",
     # so it must start BEFORE the sweep.

@@ -26,7 +26,6 @@ import pytest
 from hermes_cli import mcp_startup
 from hermes_constants import hermes_home_key
 
-
 @pytest.fixture(autouse=True)
 def _reset_mcp_startup_state():
     saved_started = mcp_startup._mcp_discovery_started
@@ -42,9 +41,7 @@ def _reset_mcp_startup_state():
         mcp_startup._mcp_discovery_started = saved_started
         mcp_startup._mcp_discovery_thread = saved_thread
 
-
 # ── _resolve_discovery_timeout: single_query bound ──────────────────────────
-
 
 def test_resolve_discovery_timeout_single_query_uses_larger_bound(monkeypatch):
     """Single-query mode reads the larger mcp_single_query_discovery_timeout."""
@@ -60,7 +57,6 @@ def test_resolve_discovery_timeout_single_query_uses_larger_bound(monkeypatch):
     )
     assert mcp_startup._resolve_discovery_timeout(None) == 1.5
     assert mcp_startup._resolve_discovery_timeout(None, single_query=True) == 25.0
-
 
 def test_resolve_discovery_timeout_single_query_falls_back(monkeypatch):
     """Bad/absent single-query value falls back to DEFAULT_CONFIG, never hangs."""
@@ -80,14 +76,11 @@ def test_resolve_discovery_timeout_single_query_falls_back(monkeypatch):
     monkeypatch.setattr(cfg, "load_config", lambda: {})
     assert mcp_startup._resolve_discovery_timeout(None, single_query=True) == default
 
-
 def test_resolve_discovery_timeout_explicit_overrides_single_query():
     """An explicit timeout always wins, even in single-query mode."""
     assert mcp_startup._resolve_discovery_timeout(5.0, single_query=True) == 5.0
 
-
 # ── ensure_mcp_discovery_before_agent_build ─────────────────────────────────
-
 
 def _stub_mcp_modules(monkeypatch):
     """Stub MCP-related modules for helper tests."""
@@ -114,7 +107,6 @@ def _stub_mcp_modules(monkeypatch):
         ),
     )
 
-
 def test_ensure_helper_starts_discovery_and_waits(monkeypatch):
     """The helper starts background discovery if not yet started, then waits."""
     _stub_mcp_modules(monkeypatch)
@@ -140,13 +132,10 @@ def test_ensure_helper_starts_discovery_and_waits(monkeypatch):
     # Wait was called with single_query=True
     assert any(call[1] is True for call in waited)
 
-
-
     # Second call didn't create a new thread (first one completed, status shows connected)
     # or if it did, it's because the first exited with zero connected — but we stubbed
     # get_mcp_status to return connected=True, so no retry.
     # The key invariant: no exception, no hang.
-
 
 def test_ensure_helper_swallows_errors(monkeypatch):
     """A broken MCP config never aborts agent construction."""
@@ -164,16 +153,9 @@ def test_ensure_helper_swallows_errors(monkeypatch):
     # Should not raise
     mcp_startup.ensure_mcp_discovery_before_agent_build(logger=logger)
 
-
 # ── oneshot ordering: discovery before AIAgent ──────────────────────────────
 
-
-
-
 # ── _init_agent ordering: discovery before AIAgent (CLI path) ───────────────
-
-
-
 
 def test_init_agent_forwards_single_query_flag(monkeypatch):
     """Single-query mode forwards single_query=True to the discovery wait."""
@@ -204,7 +186,6 @@ def test_init_agent_forwards_single_query_flag(monkeypatch):
     assert cli._init_agent() is True
     assert seen.get("single_query") is True
 
-
 def test_init_agent_defaults_to_interactive(monkeypatch):
     """Without _single_query_mode, the helper uses interactive (short) bound."""
     import cli as cli_mod
@@ -233,9 +214,7 @@ def test_init_agent_defaults_to_interactive(monkeypatch):
     assert cli._init_agent() is True
     assert seen.get("single_query") is False
 
-
 # ── bounded wait: slow server doesn't freeze startup ────────────────────────
-
 
 def test_wait_stays_bounded_when_discovery_is_slow(monkeypatch):
     """A slow/dead MCP server must not freeze startup: the wait is capped."""
@@ -259,5 +238,3 @@ def test_wait_stays_bounded_when_discovery_is_slow(monkeypatch):
         f"wait blocked {elapsed:.2f}s on a stuck MCP server — the wait must "
         "stay bounded by mcp_single_query_discovery_timeout"
     )
-
-

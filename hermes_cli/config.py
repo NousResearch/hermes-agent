@@ -31,7 +31,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.colors import Colors, color
@@ -53,6 +53,22 @@ from hermes_cli.config_read_errors import (
     _yaml_error_location)
 
 logger = logging.getLogger(__name__)
+
+
+def is_uv_tool_install() -> bool:
+    # Shim to stop the old updater doing work until relaunch, not select uv tool.
+    return False
+
+
+def is_unsupported_install_method(method: str) -> bool:
+    # Shim to stop the old updater doing work until relaunch. no legacy detection.
+    return False
+
+
+def format_unsupported_install_warning(method: str) -> str:
+    # Shim to stop the old updater doing work until relaunch. no obsolete advice.
+    return ""
+
 
 class InvalidUserConfigError(RuntimeError):
     """Raised when a run that cannot repair config finds invalid user YAML."""
@@ -242,7 +258,7 @@ _SUPPORTED_INSTALL_METHODS = frozenset({"apt", "docker", "nix", "nixos", "home-m
 
 def _install_method_stamp(path: Path) -> Optional[str]:
     try:
-        method = path.read_text(encoding="utf-8").strip().lower()
+        method = path.read_text(encoding="utf-8-sig").strip().lower()
     except OSError:
         return None
     return method if method in _SUPPORTED_INSTALL_METHODS else None
@@ -257,11 +273,12 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     ``hermes update`` refuse to run. A legacy ``docker`` value is therefore ignored unless we are
     really inside a container, and being in a container alone never implies 'docker'.
 
-    The supported installs self-identify via the code-scoped stamp: - the curl installer
-    (scripts/install.sh, the README/website install command) git-clones the repo and stamps ``git`` next to
-    the code; - the published ``nousresearch/hermes-agent`` image bakes a ``docker`` stamp into
-    ``/opt/hermes`` at build time. An unsupported manual install dropped into a container (no stamp) falls
-    through to the ``.git`` checks and behaves like any off-path install. See issue #34397.
+    Source installers clone a git checkout and publish ``install-stamp.json``;
+    the ``.git`` fallback identifies it as a source install. Older installations
+    may carry ``.install_method``, which remains authoritative for compatibility.
+    The published image bakes a ``docker`` marker into ``/opt/hermes``. A manual
+    clone in a container still resolves via ``.git``, not container presence alone.
+    See issue #34397.
     """
     # The stamp is a property of the running code tree (parent of hermes_cli/), NOT of $HERMES_HOME,
     # so it survives two installs sharing a home.
@@ -289,7 +306,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     # A .git directory, or a ``gitdir:`` pointer file for worktrees.
     git_path = root / ".git"
     try:
-        if git_path.is_dir() or git_path.read_text(encoding="utf-8").strip().startswith("gitdir:"):
+        if git_path.is_dir() or git_path.read_text(encoding="utf-8-sig").strip().startswith("gitdir:"):
             return "git"
     except OSError:
         pass
@@ -398,7 +415,7 @@ def get_container_exec_info() -> Optional[dict]:
 
     try:
         info = {}
-        with open(get_hermes_home() / ".container-mode", "r", encoding="utf-8") as f:
+        with open(get_hermes_home() / ".container-mode", "r", encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if "=" in line and not line.startswith("#"):
@@ -432,7 +449,7 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
 
     config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             data = fast_safe_load(f)
     except FileNotFoundError:
         return
@@ -495,13 +512,29 @@ def _secure_file(path):
         pass
 
 
+def seed_config_file(config_path: Path, template: Optional[Path] = None) -> bool:
+    """Create a missing config.yaml the way the installers do: copy cli-config.yaml.example (the display keys
+    there are commented out), else write stripped DEFAULT_CONFIG. Never DEFAULT_CONFIG verbatim -- the gateway
+    merges no defaults, so every written display key becomes a global that beats each platform's own default
+    (#121230). Shared by ``hermes config edit`` and ``hermes doctor --fix`` so the seeders cannot drift.
+    Returns True when the template was copied (the fallback, like save_config, writes get_config_path())."""
+    template = template or get_project_root() / "cli-config.yaml.example"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    if template.exists():
+        shutil.copy2(template, config_path)
+        _secure_file(config_path)
+        return True
+    save_config(DEFAULT_CONFIG)
+    return False
+
+
 def _ensure_default_soul_md(home: Path) -> None:
     """Seed DEFAULT_SOUL_MD on first run; upgrade a legacy comment-only scaffold in place.
     A SOUL.md the user actually customized is never touched."""
     soul_path = home / "SOUL.md"
     if soul_path.exists():
         try:
-            existing = soul_path.read_text(encoding="utf-8")
+            existing = soul_path.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             return
         if not is_legacy_template_soul(existing):
@@ -910,21 +943,19 @@ def _coerce_config_version(value: Any) -> int:
     return max(version, 0)
 
 
-def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, int]:
-    """Return ``(current_version, latest_version)`` from the raw on-disk config.
-    Reads the raw file rather than ``load_config()``: the deep-merge would make a file lacking
-    ``_config_version`` inherit the latest version, hiding that the schema was never migrated.
-    Invalid YAML gets a parse warning, not an automatic schema rewrite. Tolerant runtime status
-    callers keep the historical latest/latest fallback for malformed YAML; mutation and explicit
-    validation paths set ``raise_on_parse_error`` so a parse failure or a non-mapping root cannot
-    be mistaken for an up-to-date config."""
+def _read_config_version_stamp(*, raise_on_parse_error: bool = False) -> Tuple[Optional[int], int]:
+    """Single raw read behind ``check_config_version()``: ``(stamp, latest_version)`` where
+    *stamp* is ``None`` when config.yaml parsed but carries no ``_config_version`` key (a
+    never-stamped current-schema file, not an ancient install — ``migrate_config()`` gives it only
+    the legacy-key steps). A missing file, or malformed YAML under a tolerant caller, reads as
+    ``latest`` exactly as ``check_config_version()`` always reported it."""
     latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
     config_path = get_config_path()
     if not config_path.exists():
         return latest, latest
 
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             config = fast_safe_load(f)
     except Exception as e:
         _warn_config_parse_failure(config_path, e)
@@ -945,7 +976,21 @@ def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, in
                 f"a mapping, got {type(config).__name__}"
             )
         config = {}
+    if "_config_version" not in config:
+        return None, latest
     return _coerce_config_version(config.get("_config_version")), latest
+
+
+def check_config_version(*, raise_on_parse_error: bool = False) -> Tuple[int, int]:
+    """Return ``(current_version, latest_version)`` from the raw on-disk config.
+    Reads the raw file rather than ``load_config()``: the deep-merge would make a file lacking
+    ``_config_version`` inherit the latest version, hiding that the schema was never migrated.
+    Invalid YAML gets a parse warning, not an automatic schema rewrite. Tolerant runtime status
+    callers keep the historical latest/latest fallback for malformed YAML; mutation and explicit
+    validation paths set ``raise_on_parse_error`` so a parse failure or a non-mapping root cannot
+    be mistaken for an up-to-date config. A file with no version key reads as 0."""
+    stamp, latest = _read_config_version_stamp(raise_on_parse_error=raise_on_parse_error)
+    return (0 if stamp is None else stamp), latest
 
 
 # ---- Config structure validation ----
@@ -1299,7 +1344,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # Validate config.yaml before any migration side effect: sanitize_env_file() rewrites .env,
     # which must not happen when the migration will be refused for malformed YAML.
-    current_ver, latest_ver = check_config_version(raise_on_parse_error=True)
+    stamp, latest_ver = _read_config_version_stamp(raise_on_parse_error=True)
+    current_ver = 0 if stamp is None else stamp
 
     try:
         fixes = sanitize_env_file()
@@ -1310,17 +1356,14 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # Auto-migration support floor (v12): an EXPLICIT on-disk ``_config_version`` below the
     # floor is NOT migrated and NOT rewritten — surface a message and leave the file untouched
-    # (deep-merge supplies defaults at read time). A config with NO version key is a fresh
-    # minimal config, not an ancient install: it gets the normal ladder and a version stamp.
+    # (deep-merge supplies defaults at read time). A config with NO version key is not an
+    # ancient install: it gets only the legacy-key steps and a version stamp.
     # Missing/unparseable files never trip the floor gate.
     # Imported lazily because the steps call back into this module.
     from hermes_cli.config_migrations import (
         SUPPORT_FLOOR_VERSION, run_migrations, support_floor_message)
 
-    try:
-        has_explicit_version = "_config_version" in read_user_config_raw()
-    except Exception:
-        has_explicit_version = False
+    has_explicit_version = stamp is not None
     floor_refused = (
         has_explicit_version and current_ver < SUPPORT_FLOOR_VERSION and current_ver < latest_ver)
     if floor_refused:
@@ -1331,7 +1374,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if not quiet:
             print(f"  ⚠ {msg}")
     else:
-        run_migrations(current_ver, results, quiet)
+        run_migrations(current_ver, results, quiet, unversioned=not has_explicit_version)
 
     _disable_suspicious_mcp_servers(results, quiet)
     _warn_invalid_platform_toolsets(results, quiet)
@@ -1925,7 +1968,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             return copy.deepcopy(hit) if want_deepcopy else hit
 
         try:
-            with open(config_path, encoding="utf-8") as f:
+            with open(config_path, encoding="utf-8-sig") as f:
                 data = fast_safe_load(f) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
@@ -1954,7 +1997,7 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
     if config_path is None:
         config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             data = fast_safe_load(f) or {}
     except FileNotFoundError:
         return {}
@@ -1984,7 +2027,7 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         raise _refuse_overwrite(config_path, "cannot be accessed", exc, _FIX_PERMS) from exc
 
     try:
-        with open(config_path, encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8-sig") as f:
             loaded = fast_safe_load(f)
     except OSError as exc:
         raise _refuse_overwrite(config_path, "cannot be read", exc, _FIX_PERMS) from exc
@@ -2129,6 +2172,14 @@ def apply_terminal_config_to_env(
     if not (config is not None or "backend" in raw_terminal_cfg):
         backend_sources = backend_sources[::-1]  # env wins when the file did not set backend
     terminal_backend = str(backend_sources[0] or backend_sources[1] or "")
+    # Whether docker_image is the user's choice (config.yaml key, or TERMINAL_DOCKER_IMAGE set before
+    # any bridge ran) or the shipped default. DockerEnvironment recreates a persisted container on
+    # image mismatch only for a pinned image; a default flip keeps the user's sandbox and asks.
+    # Children inherit both vars, so a launcher's verdict is kept unless the file pins it.
+    if should_override and "docker_image" in explicit_keys:
+        target["TERMINAL_DOCKER_IMAGE_PINNED"] = "1"
+    elif "TERMINAL_DOCKER_IMAGE_PINNED" not in target:
+        target["TERMINAL_DOCKER_IMAGE_PINNED"] = "1" if "TERMINAL_DOCKER_IMAGE" in target else "0"
 
     for cfg_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
         if cfg_key not in terminal_cfg:
@@ -2285,7 +2336,7 @@ def _load_config_impl(*, want_deepcopy: bool, home: Optional[Path] = None) -> Di
 
         if user_sig is not None:
             try:
-                with open(config_path, encoding="utf-8") as f:
+                with open(config_path, encoding="utf-8-sig") as f:
                     user_config = fast_safe_load(f) or {}
                 _CONFIG_PARSE_FAILURES.pop(path_key, None)  # the file reads now (a transient error left the record)
 
@@ -2462,6 +2513,18 @@ def load_env() -> Dict[str, str]:
     return load_env_file(get_env_path())
 
 
+def _parse_env_value(raw_value: str) -> str:
+    """Frozen compat surface name (tests/compat/old_updater_surface.json).
+
+    Pre-PM updaters lazy-import ``hermes_cli.config._parse_env_value`` after the
+    checkout swap. The tokenizer moved to ``agent.secret_scope._parse_env_value``
+    (c849bc383a), so this forwards there — behavior-preserving by construction.
+    """
+    from agent.secret_scope import _parse_env_value as _parse
+
+    return _parse(raw_value)
+
+
 def invalidate_env_cache() -> None:
     """Drop the ``.env`` memo so the next ``load_env()`` sees a write even on coarse-mtime filesystems
     (save_env_value / remove_env_value / sanitize_env_file call this)."""
@@ -2621,20 +2684,34 @@ def _publish_env_value(key: str, value: Optional[str]) -> None:
             target[key] = value
 
 
-def _env_write_blocked(key: str, action: str) -> bool:
-    """Shared write-lock check for ``.env`` writers; prints the refusal and returns True when blocked.
+def env_write_refusal(key: str, action: str) -> Optional[str]:
+    """The ``.env`` write-lock refusal for ``key``, or None when the write is allowed.
     Two distinct locks: ``is_managed()`` (package-manager install) and the managed *scope*
     (administrator-pinned env key — the managed .env wins at load anyway)."""
     if is_managed():
-        managed_error(f"{action} {key}")
-        return True
-
+        return format_managed_message(f"{action} {key}")
     if managed_scope.is_env_managed(key):
-        print(
+        return (
             f"Cannot {action} {key}: it is managed by your administrator ({_managed_source('.env')}) "
-            f"and cannot be changed.", file=sys.stderr)
-        return True
-    return False
+            "and cannot be changed.")
+    return None
+
+
+def _env_write_blocked(key: str, action: str) -> bool:
+    """Shared write-lock check for ``.env`` writers; prints the refusal and returns True when blocked."""
+    refusal = env_write_refusal(key, action)
+    if refusal:
+        print(refusal, file=sys.stderr)
+    return refusal is not None
+
+
+def require_env_writable(key: str, action: str) -> None:
+    """Raise ``ValueError`` with the refusal when the ``.env`` write lock forbids ``key``.
+    ``save_env_value`` / ``remove_env_value`` refuse by returning, which their caller cannot tell
+    from success, so a writer that also touches config.yaml or the credential pool must ask first."""
+    refusal = env_write_refusal(key, action)
+    if refusal:
+        raise ValueError(refusal)
 
 
 def _managed_source(filename: str):
@@ -2914,7 +2991,7 @@ def _show_terminal_section(config: Dict[str, Any]) -> None:
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
 
     configured = lambda *names: 'configured' if all(get_env_value(n) for n in names) else '(not set)'  # noqa: E731
-    default_img = 'nikolaik/python-nodejs:python3.11-nodejs20'
+    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_img
     backend_lines = {
         'docker': lambda: [f"  Docker image: {terminal.get('docker_image', default_img)}"],
         'singularity': lambda: [f"  Image:        {terminal.get('singularity_image', 'docker://' + default_img)}"],
@@ -3044,7 +3121,7 @@ def edit_config():
         return
     config_path = get_config_path()
     if not config_path.exists():
-        save_config(DEFAULT_CONFIG, strip_defaults=False)
+        seed_config_file(config_path)
         print(f"Created {config_path}")
 
     # Windows lands on notepad even without Git Bash/nano; POSIX prefers nano/vim, which headless
@@ -3504,7 +3581,10 @@ def set_config_value(key: str, value: str, force: bool = False):
 
         # Unified lifecycle: also rotates any config.yaml mirror of the old value so a stale
         # higher-precedence copy can't win (#62269).
-        save_provider_env_credential(key.upper(), value)
+        try:
+            save_provider_env_credential(key.upper(), value)
+        except ValueError as exc:
+            _exit_invalid(f"✗ {exc}")
         print(f"✓ Set {key} in {get_env_path()}")
         return
     from hermes_cli.config_env_routing import is_env_setting_key, save_env_setting
@@ -3671,7 +3751,11 @@ def unset_config_value(key: str):
         # See #51071.
         from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
-        if not remove_provider_env_credential(key.upper()).get("found"):
+        try:
+            found = remove_provider_env_credential(key.upper()).get("found")
+        except ValueError as exc:
+            _exit_invalid(f"✗ {exc}")
+        if not found:
             _exit_invalid(f"Config key not set: {key}")
         print(f"✓ Unset {key} from {get_env_path()}")
         return
@@ -3679,7 +3763,11 @@ def unset_config_value(key: str):
 
     if is_env_setting_key(key):
         # Also drops a stale top-level config.yaml copy left by older `config set` runs (#111848).
-        if not remove_env_setting(key):
+        try:
+            found = remove_env_setting(key)
+        except ValueError as exc:
+            _exit_invalid(f"✗ {exc}")
+        if not found:
             _exit_invalid(f"Config key not set: {key}")
         print(f"✓ Unset {key} from {get_env_path()}")
         return
@@ -3929,7 +4017,7 @@ def _platform_plugin_manifests():
             if manifest_path is None:
                 continue
             try:
-                with open(manifest_path, "r", encoding="utf-8") as f:
+                with open(manifest_path, "r", encoding="utf-8-sig") as f:
                     manifest = fast_safe_load(f) or {}
             except Exception:
                 continue

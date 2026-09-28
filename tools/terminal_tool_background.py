@@ -87,9 +87,10 @@ def _stamp_gateway_routing(proc_session, get_session_env) -> None:
 
 
 def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, task_id,
-           session_key, effective_pty):
+           session_key, effective_pty, persist_on_release: bool = False):
     common = dict(command=command, cwd=cwd, task_id=effective_task_id,
-                  owner_task_id=task_id or effective_task_id, session_key=session_key)
+                  owner_task_id=task_id or effective_task_id, session_key=session_key,
+                  persist_on_release=persist_on_release)
     if env_type == "local":
         return process_registry.spawn_local(
             env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty,
@@ -147,6 +148,8 @@ def spawn_background_process(
     pty_disabled_reason: Optional[str], routed: bool = False,
     cwd_record_key: Optional[str] = None,
     heartbeat_seconds: int = 0,
+    persist_on_release: bool = False,
+    mounted_host: Optional[str] = None,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
@@ -162,15 +165,19 @@ def spawn_background_process(
         workdir=workdir, default_cwd=cwd,
         session_key=cwd_record_key if cwd_record_key is not None else session_key, env_type=env_type,
         routed=routed,
+        mounted_host=mounted_host if mounted_host is not None else getattr(env, "host_cwd", None),
+        env=env,
     )
     try:
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
-            effective_pty=effective_pty,
+            effective_pty=effective_pty, persist_on_release=persist_on_release,
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
+        if persist_on_release:
+            result_data["persist_on_release"] = True
         if approval_note:
             result_data["approval"] = approval_note
         if pty_disabled_reason:

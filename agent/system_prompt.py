@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
-    DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    ASYNC_HANDOFF_GUIDANCE, DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
     PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
@@ -195,7 +195,8 @@ def _session_start_like(agent: Any, now: Any) -> Any:
     def _to_display_tz(dt: Any) -> Any:
         if dt.tzinfo is None:
             try:
-                dt = dt.replace(tzinfo=datetime.now().astimezone().tzinfo)
+                # The offset in force at dt, not today's: a stamp from the other DST half differs by an hour.
+                dt = dt.astimezone()
             except (ValueError, OSError):
                 pass
         if getattr(now, "tzinfo", None) is not None and dt.tzinfo is not None:
@@ -575,6 +576,10 @@ def _guidance_parts(agent: Any) -> List[str]:
     if _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
         from agent.prompt_builder import execution_guidance_text
         parts.append(execution_guidance_text())
+    # delegate_task background delivery is intentionally between turns. Put this after the generic persistence
+    # blocks so their "keep working" rule cannot turn the required yield into no-op/polling activity.
+    if "delegate_task" in agent.valid_tool_names:
+        parts.append(ASYNC_HANDOFF_GUIDANCE)
     return parts
 
 
@@ -691,7 +696,7 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
 def _post_workspace_parts(agent: Any) -> List[str]:
     """Blocks that follow the worktree-specific context: environment probe
     (config.yaml agent.environment_probe; one line, nothing when clean, skipped
-    for remote backends), bot-mode protocol, profile line, platform hint."""
+    for remote backends), bot-mode protocol, platform hint."""
     parts: List[str] = []
     if getattr(agent, "_environment_probe", True):
         try:
@@ -701,7 +706,7 @@ def _post_workspace_parts(agent: Any) -> List[str]:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    parts += [_active_profile_line(agent), platform_hint(agent)]
+    parts.append(platform_hint(agent))
     return parts
 
 
@@ -709,13 +714,15 @@ def _context_files_part(agent: Any, ctx_len: Optional[int], soul_loaded: bool) -
     """Project context files (AGENTS.md etc.) for the context tier. TERMINAL_CWD
     when set (gateway); None lets discovery fall back to the launch dir.  The
     install-tree fallback is only legitimate for cli/tui where the launch dir
-    IS the user's shell cwd; desktop-pinned launch dirs are treated as the
-    fallback they really are so the guard can reject Hermes's bundled AGENTS.md."""
+    IS the user's shell cwd. Desktop launch artifacts skip the session cwd but
+    still honor the profile-scoped TERMINAL_CWD; without one, the fallback guard
+    can reject Hermes's bundled AGENTS.md."""
     if agent.skip_context_files:
         return []
     launch_artifact = getattr(agent, "_context_cwd_is_launch_artifact", False)
+    cwd = resolve_context_cwd(include_session_override=not launch_artifact)
     return [_pb.build_context_files_prompt(
-        cwd=None if launch_artifact else resolve_context_cwd(), skip_soul=soul_loaded, context_length=ctx_len,
+        cwd=cwd, skip_soul=soul_loaded, context_length=ctx_len,
         allow_install_tree_fallback=agent.platform in ("cli", "tui"), home_override=_agent_home(agent))]
 
 
@@ -777,6 +784,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Plugin sections are confined to one coarse anchor in the volatile tail so
     # a resumed process can reconstruct the stable prefix without re-running plugins.
     volatile_parts.extend(_plugin_section_blocks(_frozen_plugin_prompt_sections(agent), "after_memory"))
+    # The profile line names this home's path, so it rides in the volatile tier: the stable
+    # prefix then stays byte-identical across every profile (and home) on the host.
+    volatile_parts.append(_active_profile_line(agent))
     volatile_parts.append(_timestamp_line(agent))
     # Keep the renderer-owned runtime anchor after all user/plugin prose so quoted
     # host examples cannot shadow it during persisted-prompt validation.

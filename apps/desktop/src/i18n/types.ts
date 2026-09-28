@@ -59,9 +59,78 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  externalOpenFailed: {
+    title: string
+    message: string
+    copyUrl: string
+    close: string
+    missing: {
+      title: string
+      message: string
+    }
+  }
   intro: {
     stock: Record<string, string[]>
     custom: (label: string) => string[]
+  }
+  catalog: {
+    add: string
+    added: string
+    discover: string
+    featured: string
+    explorePlugins: string
+    exploreSkills: string
+    mostStarred: string
+    newest: string
+    recentlyUpdated: string
+    alphabetical: string
+    sortBy: string
+    seeAll: string
+    related: string
+    tags: string
+    screenshots: string
+    listView: string
+    cardView: string
+    installTitle: (name: string) => string
+    installDescription: string
+    installTo: string
+    thisComputer: string
+    installing: string
+    installComplete: (name: string) => string
+    destinationChanged: string
+    installed: string
+    searchSkills: string
+    searchPlugins: string
+    allSources: string
+    allCategories: string
+    about: string
+    author: string
+    source: string
+    category: string
+    version: string
+    platforms: string
+    requires: string
+    tools: string
+    hooks: string
+    middleware: string
+    commands: string
+    license: string
+    addedDate: string
+    updatedDate: string
+    repository: string
+    documentation: string
+    noResults: string
+    tryAnother: string
+    clearFilters: string
+    filters: string
+    loadFailed: string
+    retry: string
+    more: string
+    pinned: string
+    snapshotHint: string
+    installHint: string
+    results: (count: number) => string
+    back: string
   }
   connectors: {
     title: string
@@ -461,6 +530,8 @@ export interface Translations {
       back: string
       openLogs: string
       repairHint: string
+      bundledReinstallHint: string
+      reinstallApp: string
       remoteSignInHint: (signInLabel: string) => string
       signOutAndSignIn: string
       remoteFailureHint: string
@@ -483,6 +554,7 @@ export interface Translations {
   }
 
   notifications: {
+    sharedProfileWarning: string
     region: string
     hide: string
     show: string
@@ -491,14 +563,19 @@ export interface Translations {
     dismiss: string
     details: string
     copyDetail: string
+    compressDeferredDone: string
     copyDetailFailed: string
     backendOutOfDateTitle: string
     backendOutOfDateMessage: string
+    desktopOutOfDateTitle: string
+    desktopOutOfDateMessage: string
+    updateDesktopApp: string
     installMethodUnsupportedTitle: string
     updateHermes: string
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
     updateReadyMessageUnknown: string
+    updateReadyMessageAppInstaller: string
     seeWhatsNew: string
     mcp: {
       needsAuthTitle: string
@@ -637,6 +714,7 @@ export interface Translations {
     rebind: string
     reset: string
     resetAll: string
+    clear: string
     pressKey: string
     set: string
     conflictWith: (label: string) => string
@@ -682,6 +760,7 @@ export interface Translations {
       keysSettings: string
       mcp: string
       archivedChats: string
+      sessions: string
       about: string
       billing: string
       notifications: string
@@ -756,6 +835,7 @@ export interface Translations {
         agentSuccess: (name: string) => string
         desktopSuccess: (name: string) => string
         agentFailed: string
+        installUncertain: string
         desktopFailed: string
         missingEnv: (name: string, vars: string) => string
       }
@@ -929,6 +1009,8 @@ export interface Translations {
       toursDesc: string
       composerPopoutTitle: string
       composerPopoutDesc: string
+      fileBrowserTitle: string
+      fileBrowserDesc: string
       vibeHeartsTitle: string
       vibeHeartsDesc: string
       embedsTitle: string
@@ -1064,38 +1146,7 @@ export interface Translations {
       driverHealth: string
     }
     about: {
-      heading: string
-      version: (value: string) => string
-      versionUnavailable: string
-      bundleOutOfSync: string
-      bundleOutOfSyncDesc: string
-      bundleOutOfSyncAction: string
-      bundleSwapPending: string
-      bundleSwapPendingDesc: string
-      bundleSwapPendingAction: string
       updates: string
-      checkNow: string
-      checking: string
-      seeWhatsNew: string
-      updateNow: string
-      releaseNotes: string
-      onLatest: string
-      installing: string
-      cantUpdate: string
-      cantReach: string
-      tapCheck: string
-      updateReady: (count: number) => string
-      updateReadyUnknown: string
-      lastChecked: (age: string) => string
-      justNowSuffix: string
-      automaticUpdates: string
-      automaticUpdatesDesc: string
-      branchCommit: (branch: string, commit: string) => string
-      never: string
-      justNow: string
-      minAgo: (count: number) => string
-      hoursAgo: (count: number) => string
-      daysAgo: (count: number) => string
     }
     config: {
       minimizeToTrayTitle: string
@@ -1121,6 +1172,8 @@ export interface Translations {
       keepAwakeDesc: string
       disableF12Title: string
       disableF12Desc: string
+      alwaysExternalLinksTitle: string
+      alwaysExternalLinksDesc: string
       attachmentSizeTitle: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string
@@ -1469,6 +1522,8 @@ export interface Translations {
       provider: string
       model: string
       applying: string
+      mainAppliedTitle: string
+      mainAppliedMessage: (model: string) => string
       defaultsLabel: string
       reasoning: string
       reasoningOff: string
@@ -1498,6 +1553,7 @@ export interface Translations {
       tasks: Record<string, AuxTaskCopy>
     }
     localModels: {
+      connectionChanged: string
       title: string
       runtimeTitle: string
       runtimeReady: (backend: string) => string
@@ -1525,6 +1581,17 @@ export interface Translations {
       downloaded: string
       downloadAction: (size: string) => string
       downloadProgress: (done: string, total: string) => string
+      downloadStatusRunning: string
+      downloadSpeed: (rate: string) => string
+      downloadEta: (time: string) => string
+      /** Duration units the ETA is composed from; hours carries its
+       *  remainder so a locale orders the two parts itself. */
+      downloadEtaSeconds: (count: number) => string
+      downloadEtaMinutes: (count: number) => string
+      downloadEtaHours: (hours: number, minutes: number) => string
+      downloadPausedLabel: string
+      downloadPauseAction: string
+      downloadResumeAction: string
       downloadDoneToast: (model: string) => string
       installDoneToast: string
       quickstartTitle: string
@@ -1567,6 +1634,8 @@ export interface Translations {
       activateFailed: (model: string) => string
       activateDoneToast: (model: string) => string
       downloadFailed: (model: string) => string
+      downloadPauseFailed: (model: string) => string
+      downloadResumeFailed: (model: string) => string
       pillFitsGpu: string
       pillUsesRam: string
       pillTooBig: string
@@ -1715,6 +1784,7 @@ export interface Translations {
       state: {
         notice: {
           loggedOut: { title: string; message: string; action: string }
+          openPortal: string
           noCard: { title: string; message: string; action: string }
         }
         paymentMethod: {
@@ -2053,11 +2123,15 @@ export interface Translations {
       emptyHint: string
       loadFailed: string
       toggleFailed: (name: string) => string
+      toolsetOn: (name: string, profile: string) => string
+      toolsetOff: (name: string, profile: string) => string
+      toolsetToggleFailed: (name: string) => string
       legacyBackend: string
       portableBadge: string
       serverStates: {
         connected: string
         app_not_running: string
+        hermes_not_connected: string
         endpoint_unavailable: string
         no_interactive_session: string
         version_too_old: string
@@ -2307,7 +2381,6 @@ export interface Translations {
     mcpServers: string
     archivedChats: string
     sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
-    sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
     nav: Record<'newChat' | 'settings' | 'capabilities' | 'messaging' | 'artifacts', { title: string; detail: string }>
     sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
@@ -2408,6 +2481,7 @@ export interface Translations {
 
   messaging: {
     search: string
+    statusFilter: Record<'all' | 'bad' | 'good' | 'muted' | 'warn', string>
     loading: string
     loadFailed: string
     states: Record<string, string>
@@ -2592,6 +2666,20 @@ export interface Translations {
       onGateway: (name: string, gateway: string) => string
       switchTo: (name: string, gateway: string) => string
       deleteOn: (gateway: string) => string
+      /** At-rest local default pill: device, not Home, and the click's consequence. */
+      localDevice: string
+      switchDeviceTitle: string
+      switchDeviceDesc: string
+      switchDeviceConfirm: string
+      installDeviceTitle: string
+      installDeviceDesc: string
+      installDeviceConfirm: string
+      connectExistingInstead: string
+    }
+    status: {
+      unread: (count: number) => string
+      needsInput: (count: number) => string
+      working: (count: number) => string
     }
     remoteOverride: {
       menuItem: string
@@ -2649,6 +2737,7 @@ export interface Translations {
     skillsLabel: string
     notSet: string
     soulDesc: string
+    soulMissing: string
     soulOptional: string
     soulPlaceholder: (mode: string) => string
     soulPlaceholderCloned: string
@@ -2767,6 +2856,8 @@ export interface Translations {
     nameLabel: string
     namePlaceholder: string
     promptLabel: string
+    scriptLabel: string
+    scriptBadge: string
     promptPlaceholder: string
     frequencyLabel: string
     deliverLabel: string
@@ -3026,6 +3117,7 @@ export interface Translations {
       branchFrom: string
       rename: string
       archive: string
+      unarchive: string
       newWindow: string
       openInTerminal: string
       hideTabBar: string
@@ -3040,6 +3132,7 @@ export interface Translations {
       backgroundRunning: string
       draftSession: string
       handoffOrigin: (platform: string) => string
+      continuationOrigin: string
       ownedByProfile: (profile: string) => string
       renamed: string
       renameFailed: string
@@ -3147,6 +3240,8 @@ export interface Translations {
     queueResumeTip: string
     queueStuckTitle: string
     queueStuckBody: string
+    queueDroppedTitle: string
+    queueDroppedBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
@@ -3224,6 +3319,7 @@ export interface Translations {
     goalWaiting: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
+    previousTodos: (done: number, total: number) => string
     running: string
     stop: string
     dismiss: string
@@ -3365,6 +3461,12 @@ export interface Translations {
   }
 
   updates: {
+    discontinuedTitle: string
+    discontinuedBody: string
+    channels: { stable: string; canary: string }
+    bundleSwapPending: string
+    bundleSwapPendingDesc: string
+    bundleSwapPendingAction: string
     stages: Record<string, string>
     checking: string
     checkFailedTitle: string
@@ -3383,12 +3485,16 @@ export interface Translations {
     availableTitleBackend: string
     availableBodyBackend: string
     availableBodyNoChangelog: string
+    availableBodyAppInstaller: string
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
     manualTitle: string
+    manualUnavailableTitle: string
     manualBody: string
+    manualBodyBackend: string
     manualPickedUp: string
+    manualPickedUpBackend: string
     /** GUI/backend skew (#45205): backend updated but the running desktop app
      *  package (AppImage/.deb/.rpm) was not changed and must be reinstalled. */
     guiSkewTitle: string
@@ -3399,6 +3505,10 @@ export interface Translations {
     applyingBody: string
     applyingBodyBackend: string
     applyingClose: string
+    applyingBodyAppInstaller: string
+    applyingCloseAppInstaller: string
+    checkUnknownTitleAppInstaller: string
+    checkUnknownBodyAppInstaller: string
     errorTitle: string
     errorBody: string
     blockerTitle: string
@@ -3437,6 +3547,52 @@ export interface Translations {
       failed: string
       noReturn: string
     }
+    /** Update-status overlay + version-details (mechanism-aware update UI):
+     * the overlay reads these off t.updates directly. */
+    appName: string
+    version: (value: string) => string
+    versionUnavailable: string
+    checkNow: string
+    seeWhatsNew: string
+    releaseNotes: string
+    onLatest: string
+    installing: string
+    cantReach: string
+    tapCheck: string
+    updateReady: (count: number) => string
+    updateReadyUnknown: string
+    availableBodyRelease: (tag: string) => string
+    lastChecked: (age: string) => string
+    never: string
+    justNow: string
+    minAgo: (count: number) => string
+    hoursAgo: (count: number) => string
+    daysAgo: (count: number) => string
+    justNowSuffix: string
+    bundleOutOfSync: string
+    bundleOutOfSyncDesc: string
+    bundleOutOfSyncAction: string
+    checkingShort: string
+    releaseAvailable: (tag: string) => string
+    versionDetailsTitle: string
+    versionDetailsBody: string
+    versionDetailsVersion: string
+    versionDetailsCommit: string
+    versionDetailsBuildOrigin: string
+    versionDetailsDistribution: string
+    versionDetailsDistributionDesktop: string
+    versionDetailsDistributionDesktopMsix: string
+    versionDetailsDistributionDesktopInstaller: string
+    versionDetailsDistributionSourceInstaller: string
+    versionDetailsDistributionSourceInstallerDesktop: string
+    versionDetailsDistributionSource: string
+    versionDetailsDistributionSourceDesktop: string
+    versionDetailsDistributionStore: string
+    versionDetailsRuntime: string
+    versionDetailsRuntimeEmbedded: string
+    versionDetailsRuntimeExternal: string
+    versionDetailsInstallId: string
+    versionDetailsUncommittedChanges: string
   }
 
   /** The guided first run's pre-written opening line — banked, not generated,
@@ -3467,11 +3623,15 @@ export interface Translations {
     retryAfterRun: string
     setupChoiceTitle: string
     setupChoiceDesc: string
+    setupChoiceDescLocal: string
     connectExistingTitle: string
     connectExistingShort: string
     connectExistingDesc: string
     installLocalTitle: string
     installLocalDesc: string
+    useLocalTitle: string
+    useLocalDesc: string
+    bundledLocalDesc: string
     localStartUnavailable: string
     remoteSetupTitle: string
     remoteSetupDesc: string
@@ -3544,6 +3704,7 @@ export interface Translations {
     replaceCurrent: string
     pasteApiKey: string
     localApiKeyPlaceholder: string
+    localModelNamePlaceholder: string
     couldNotSave: string
     connecting: string
     update: string
@@ -3684,6 +3845,10 @@ export interface Translations {
     addProvider: string
     addCustomModel: string
     removeCustomModel: string
+    resetToDefaults: string
+    resetConfirm: string
+    resetDescription: string
+    resetAction: string
   }
 
   shell: {
@@ -3694,6 +3859,7 @@ export interface Translations {
       search: string
       noModels: string
       editModels: string
+      followDefault: string
       refreshModels: string
       fast: string
     }
@@ -3747,6 +3913,7 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      releaseAvailable: (tag: string) => string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string
@@ -3829,7 +3996,8 @@ export interface Translations {
         title: string
         tokenSummary: (used: string, max: string) => string
       }
-      session: string
+      focusedSince: string
+      focusedSinceTitle: string
       yoloOn: string
       yoloOff: string
       modelNone: string
@@ -3852,6 +4020,11 @@ export interface Translations {
     remotePickerTitle: string
     remotePickerDescription: string
     remotePickerSelect: string
+    remotePickerNewFolder: string
+    remotePickerFolderName: string
+    remotePickerCreateFolder: string
+    remotePickerInvalidFolderName: string
+    remotePickerCreateFolderFailed: (error: string) => string
     folderTip: (cwd: string) => string
     openFolder: string
     refreshTree: string
@@ -4163,6 +4336,8 @@ export interface Translations {
       preparingAudio: string
       stopReading: string
       readAloud: string
+      copyFullResponse: string
+      readAloudFullResponseHint: string
       editMessage: string
       expandMessage: string
       scrollToBottom: string
@@ -4186,6 +4361,7 @@ export interface Translations {
       openSafetySettings: string
       run: string
       command: string
+      commandDetails: string
       moreOptions: string
       allowSession: string
       alwaysAllowMenu: string
@@ -4211,6 +4387,7 @@ export interface Translations {
       lateAnswer: (question: string, choice: string) => string
       lateAnswerTip: string
       lateAnswerHint: string
+      notDelivered: string
     }
     catalogInstall: {
       preparing: string
@@ -4362,6 +4539,8 @@ export interface Translations {
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string
+    staleSessionTitle: string
+    staleSessionBody: string
     providerCredentialRequired: string
     emptySlashCommand: string
     desktopCommands: string
@@ -4401,6 +4580,8 @@ export interface Translations {
     deleteFailed: string
     archived: string
     archiveFailed: string
+    restored: string
+    unarchiveFailed: string
     cwdChangeFailed: string
     cwdStagedTitle: string
     cwdStagedMessage: string
@@ -4467,6 +4648,11 @@ export interface Translations {
   ui: {
     search: {
       clear: string
+    }
+    logs: {
+      bottom: string
+      search: string
+      top: string
     }
     pagination: {
       label: string

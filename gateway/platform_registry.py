@@ -48,19 +48,27 @@ class PlatformEntry:
     # PASSIVE dependency probe (deps importable RIGHT NOW); must be side-effect free since it
     # runs from status displays and the config enablement pass, which may never pip-install.
     check_fn: Callable[[], bool]
-    validate_config: Optional[Callable[[Any], bool]] = None  # None = let connect() fail descriptively
-    # ACTIVE installer, run by ``create_adapter()`` only when ``check_fn`` is False (platform
-    # enabled+configured, about to connect); None = a False check_fn is a hard block. Split
-    # from check_fn because one field either installed from every status display or never.
-    # ACTIVE dependency installer: make the platform's dependencies available, installing them (pip /
-    # lazy_deps) if needed. Returns True once deps are importable, False if they could not be installed.
-    # None = no auto-install; a False ``check_fn`` is then a hard block (correct for platforms with no
-    # optional deps). Why two fields (#79812): when the ACTIVE installer was registered as ``check_fn``,
-    # every status display pip-installed SDKs as a side effect (desktop boot-loop at 94%, see
-    # gateway/config.py enablement comments); when the PASSIVE probe was registered instead,
-    # ``create_adapter()`` returned None before ``connect()`` could lazy-install, so the deps never
-    # installed at all (Teams deadlock). Splitting the two roles makes both call sites correct by
-    # construction.
+
+    # Optional: given a PlatformConfig, is it properly configured?
+    # If None, the registry skips config validation and lets the adapter
+    # fail at connect() time with a descriptive error.
+    validate_config: Optional[Callable[[Any], bool]] = None
+
+    # ACTIVE dependency installer: make the platform's dependencies available,
+    # installing them (pm.sync_venv) if needed.  Returns True once deps are
+    # importable, False if they could not be installed.  Called by
+    # ``create_adapter()`` when ``check_fn`` returns False — i.e. exactly at
+    # the moment the gateway is about to bring the platform up and the user
+    # has it enabled/configured.  None = no auto-install; a False ``check_fn``
+    # is then a hard block (correct for platforms with no optional deps).
+    #
+    # Why two fields (#79812): when the ACTIVE installer was registered as
+    # ``check_fn``, every status display pip-installed SDKs as a side effect
+    # (desktop boot-loop at 94%, see gateway/config.py enablement comments);
+    # when the PASSIVE probe was registered instead, ``create_adapter()``
+    # returned None before ``connect()`` could lazy-install, so the deps
+    # never installed at all (Teams deadlock).  Splitting the two roles makes
+    # both call sites correct by construction.
     ensure_deps_fn: Optional[Callable[[], bool]] = None
     # Connected/configured for this PlatformConfig (``get_connected_platforms``, setup UI);
     # None falls back to ``validate_config`` or ``check_fn``.

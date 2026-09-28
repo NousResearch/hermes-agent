@@ -11,7 +11,6 @@ import logging
 import agent.auxiliary_client as ac
 from agent.auxiliary_client import resolve_provider_client
 
-
 class TestUnknownProviderDedup:
     def setup_method(self):
         ac._LOGGED_UNKNOWN_PROVIDER_KEYS.clear()
@@ -40,8 +39,6 @@ class TestUnknownProviderDedup:
         ]
         # Three calls, one log line — dedup suppressed the repeats.
         assert len(recs) == 1
-
-
 
 class TestUnhandledAuthTypeDedup:
     def setup_method(self):
@@ -75,5 +72,3 @@ class TestUnhandledAuthTypeDedup:
         assert len(recs) == 1
         assert recs[0].levelno == logging.DEBUG
         assert not any(r.levelno >= logging.WARNING for r in recs)
-
-

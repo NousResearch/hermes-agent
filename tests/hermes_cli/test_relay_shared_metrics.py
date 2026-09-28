@@ -1469,7 +1469,7 @@ def test_schema_initialization_waits_for_an_existing_writer(tmp_path):
     assert store.counter_snapshot() == []
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX permission modes are unavailable")
+@pytest.mark.platforms("posix")  # POSIX permission modes are unavailable
 def test_store_and_export_are_owner_only(tmp_path):
     database_path = tmp_path / "private-store" / "metrics.sqlite3"
     outbox_directory = tmp_path / "private-outbox"

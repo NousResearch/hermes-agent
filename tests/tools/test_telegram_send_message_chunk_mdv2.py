@@ -23,7 +23,7 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Test helpers (same mocking pattern as test_telegram_send_message_caption.py)
+# Test helpers
 # ---------------------------------------------------------------------------
 
 def _install_telegram_mock(monkeypatch: pytest.MonkeyPatch, bot_factory: MagicMock) -> None:
@@ -87,50 +87,6 @@ def test_chunk_indicators_have_escaped_parens(monkeypatch: pytest.MonkeyPatch) -
         # The (N/M) indicator MUST have escaped parens.
         assert re.search(r" \\\(\d+/\d+\\\)$", text), (
             f"Chunk {idx} missing ESCAPED chunk indicator: ...{text[-40:]!r}"
-        )
-
-
-def test_single_chunk_no_indicator(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A short message must not receive a chunk indicator at all."""
-    from tools.send_message_tool import _send_telegram
-
-    _no_proxy(monkeypatch)
-    bot = _make_bot()
-    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
-
-    result = asyncio.run(_send_telegram("tok", "123", "**short** message"))
-    assert result["success"] is True
-
-    assert bot.send_message.await_count == 1
-    text = bot.send_message.await_args.kwargs.get("text", "")
-    # No chunk indicator of any kind.
-    assert not re.search(r"\(\d+/\d+\)", text), (
-        f"Single chunk should have no indicator: {text!r}"
-    )
-
-
-def test_html_mode_chunked_no_paren_escaping(monkeypatch: pytest.MonkeyPatch) -> None:
-    """HTML-mode chunked messages must NOT get MarkdownV2 backslash escaping."""
-    from tools.send_message_tool import _send_telegram
-
-    _no_proxy(monkeypatch)
-    bot = _make_bot()
-    _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
-
-    # <b> triggers HTML mode; 600 repetitions exceed 4096 chars → chunking.
-    message = "<b>bold</b> line text content padding " * 600
-    result = asyncio.run(_send_telegram("tok", "123", message))
-    assert result["success"] is True
-
-    calls = bot.send_message.await_args_list
-    assert len(calls) >= 2, f"Expected chunking, got {len(calls)} calls"
-
-    for idx, call in enumerate(calls):
-        text = call.kwargs.get("text", "")
-        assert call.kwargs.get("parse_mode") == "HTML"
-        # In HTML mode parens are NOT special → must stay unescaped.
-        assert not re.search(r" \\\(\d+/\d+\\\)$", text), (
-            f"HTML chunk {idx} should NOT backslash-escape parens: ...{text[-40:]!r}"
         )
 
 

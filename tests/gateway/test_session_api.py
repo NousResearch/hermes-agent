@@ -3,6 +3,7 @@
 import asyncio
 import json
 import threading
+from contextlib import suppress
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -52,6 +53,7 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
     return app
+
 
 
 @pytest.mark.asyncio
@@ -1991,3 +1993,291 @@ async def test_session_stream_real_approval_round_trip_releases_wait(adapter, se
     assert turn_finished.is_set()
     final = [s for s in adapter._run_statuses.values()][0]
     assert final["status"] == "completed"
+
+
+# ---------------------------------------------------------------------------
+# Review round 2 (andrexibiza, head 2438e7e930b2) — three findings, each with
+# the sequence the reviewer specified.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_stream_busy_rejection_releases_receipt(adapter, session_db):
+    """Reviewer P1: a busy-session 409 must not leave a durable "queued" receipt.
+
+    A (no key) is live; B1 (key-B) is reserved by the store, then rejected by
+    the busy session claim; A terminates; B2 retries (key-B, same body). The
+    released receipt must NOT make B2 a 202 replay of the never-launched B1 —
+    B2 re-enters admission and, the slot now free, executes.
+    """
+    session_id = session_db.create_session("busy-receipt-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+    agents_created = {"count": 0}
+
+    async def fake_run(**kwargs):
+        del kwargs
+        agents_created["count"] += 1
+        run_started.set()
+        await asyncio.to_thread(allow_finish.wait, 15)
+        return {"final_response": "A done", "session_id": session_id}, {"total_tokens": 1}
+
+    from aiohttp.test_utils import TestClient, TestServer
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            # A live (no key); its SSE body is read concurrently.
+            a_task = asyncio.create_task(cli.post(
+                f"/api/sessions/{session_id}/chat/stream", json={"message": "A"}))
+            for _ in range(80):
+                if run_started.is_set():
+                    break
+                await asyncio.sleep(0.05)
+            assert run_started.is_set()
+
+            # B1: fresh key-B -> reserved by the store, then busy-rejected.
+            resp_b1 = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "B"}, headers={"Idempotency-Key": "key-B"})
+            assert resp_b1.status == 409
+            assert json.loads(await resp_b1.text())["error"]["code"] == "run_already_active"
+
+            # A terminal.
+            allow_finish.set()
+            for _ in range(200):
+                if not any(s.get("status") in ("queued", "running", "stopping")
+                           for s in adapter._run_statuses.values()):
+                    break
+                await asyncio.sleep(0.05)
+            a_task.cancel()
+            with suppress(Exception):
+                await a_task
+
+# B2: same key-B + same body. With the release, B2 is NOT a replay of
+                # the never-launched B1 — it is admitted and a new SSE stream
+                # begins (200 + run.started), not a 202 replay ack.
+                run_started.clear()
+                resp_b2 = await cli.post(
+                    f"/api/sessions/{session_id}/chat/stream",
+                    json={"message": "B"}, headers={"Idempotency-Key": "key-B"})
+                assert resp_b2.status == 200, (
+                    f"B2 should execute as a stream, got {resp_b2.status}")
+                body_b2 = await resp_b2.text()
+                assert "replayed" not in body_b2
+                assert "run.started" in body_b2
+                for _ in range(80):
+                    if run_started.is_set():
+                        break
+                    await asyncio.sleep(0.05)
+            assert run_started.is_set(), "B2 should execute, not replay a phantom run"
+            allow_finish.set()
+
+
+@pytest.mark.asyncio
+async def test_session_stream_same_key_changed_model_conflicts(adapter, session_db):
+    """Reviewer P2: the fingerprint binds the full canonical execution request.
+
+    Same key + same message but a different model is a 409 idempotency_key_conflict,
+    never a silent replay of a run executed with a different model.
+    """
+    session_id = session_db.create_session("model-conflict-session", "api_server")
+    run_started = threading.Event()
+    allow_finish = threading.Event()
+
+    async def fake_run(**kwargs):
+        del kwargs
+        run_started.set()
+        await asyncio.to_thread(allow_finish.wait, 15)
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    from aiohttp.test_utils import TestClient, TestServer
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            first = asyncio.create_task(cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "m", "model": "model-x"},
+                headers={"Idempotency-Key": "key-model"}))
+            for _ in range(80):
+                if run_started.is_set():
+                    break
+                await asyncio.sleep(0.05)
+            assert run_started.is_set()
+            allow_finish.set()
+            for _ in range(200):
+                if not any(s.get("status") in ("queued", "running", "stopping")
+                           for s in adapter._run_statuses.values()):
+                    break
+                await asyncio.sleep(0.05)
+            first.cancel()
+            with suppress(Exception):
+                await first
+
+            # Same key, same message, DIFFERENT model -> conflict, not replay.
+            second = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "m", "model": "model-y"},
+                headers={"Idempotency-Key": "key-model"})
+            assert second.status == 409
+            assert json.loads(await second.text())["error"]["code"] == "idempotency_key_conflict"
+
+
+def test_session_stream_reserve_race_conflict_not_replay(adapter):
+    """Reviewer P2: a fingerprint conflict AFTER reserve() classifies as
+    conflict, not replay — mirrors the lookup() branch."""
+    store = adapter._run_idempotency_store
+    scope = "test-scope"
+    outcome, _ = store.reserve(scope, "race-key", "fp-A", "run-A", {"status": "queued"})
+    assert outcome == "created"
+    outcome, record = store.reserve(scope, "race-key", "fp-B", "run-B", {"status": "queued"})
+    assert outcome == "conflict", "post-reserve race must classify as conflict, not replay"
+    assert record["run_id"] == "run-A"
+
+
+@pytest.mark.asyncio
+async def test_session_stream_disconnect_during_approval_then_stop(
+    adapter, session_db, monkeypatch):
+    """Combined witness (review round 2 evidence gap): the client disconnects
+    while the turn waits for approval. The run stays alive server-side in
+    ``waiting_for_approval``, is rediscoverable via GET /api/sessions/{id}
+    (durable active_run_id), and is terminable via POST /v1/runs/{id}/stop."""
+    # Cap the approval timeout: the poll thread must ALWAYS self-unwind well
+    # before asyncio's executor shutdown joins it (that join is what hangs an
+    # unbounded 300s wait at loop close). approval_gateway_wait reads
+    # tools.approval_context._get_approval_timeout() through its `_ctx` alias,
+    # so patch the function on that module.
+    import tools.approval_context as _approval_context
+    monkeypatch.setattr(_approval_context, "_get_approval_timeout", lambda: 3)
+
+    session_id = session_db.create_session("approval-disconnect", "api_server")
+    run_started = threading.Event()
+    turn_done = threading.Event()
+    decision_box = {}
+    gate_thread_idents = []
+    def _gate_thread_ident():
+        assert gate_thread_idents, "poll thread never recorded its ident"
+        return gate_thread_idents[-1]
+
+
+    async def _approval_gate(**kwargs):
+        from tools.approval_gateway_wait import _await_gateway_decision
+        notify = kwargs.get("approval_notify_callback")
+        approval_session_key = kwargs.get("approval_session_key")
+        run_started.set()
+
+        def _notifying(data):
+            # notify fires synchronously inside _await_gateway_decision right
+            # before the poll loop — THIS thread must receive the thread-scoped
+            # interrupt (asyncio.to_thread hops frames across executor workers,
+            # so the gate entry thread is the wrong target).
+            gate_thread_idents.append(threading.get_ident())
+            return notify(data)
+
+        decision = await asyncio.to_thread(
+            _await_gateway_decision, approval_session_key, _notifying,
+            {"command": "rm -rf /tmp/x", "description": "dangerous test"})
+        decision_box["decision"] = decision
+        turn_done.set()
+        # A real agent marks the turn interrupted when its approval wait was
+        # cancelled (stop requested) — mirror that so the terminal mapping is
+        # exercised the same way.
+        if decision.get("cancelled"):
+            return ({"final_response": "", "session_id": session_id,
+                     "interrupted": True}, {"total_tokens": 1})
+        return {"final_response": "done", "session_id": session_id}, {"total_tokens": 1}
+
+    class DisconnectOnFirstWrite:
+        """SSE response that drops the connection on the first write."""
+
+        async def prepare(self, request):
+            del request
+
+        async def write(self, payload):
+            del payload
+            raise ConnectionResetError("client dropped during approval wait")
+
+    request = MagicMock()
+    request.headers = {}
+    request.match_info = {"session_id": session_id}
+
+    with patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": session_id}, None)), \
+            patch.object(adapter, "_read_json_body", return_value=({"message": "dangerous!"}, None)), \
+            patch.object(adapter, "_run_agent", side_effect=_approval_gate), \
+            patch("gateway.platforms.api_server_openai_routes.web.StreamResponse",
+                  return_value=DisconnectOnFirstWrite()), \
+            patch("gateway.platforms.api_server.web.StreamResponse",
+                  return_value=DisconnectOnFirstWrite()):
+        handler_task = asyncio.create_task(adapter._handle_session_chat_stream(request))
+        for _ in range(80):
+            if run_started.is_set():
+                break
+            await asyncio.sleep(0.05)
+        assert run_started.is_set()
+
+        for _ in range(80):
+            statuses = [s.get("status") for s in adapter._run_statuses.values()]
+            if "waiting_for_approval" in statuses:
+                break
+            await asyncio.sleep(0.05)
+        assert "waiting_for_approval" in [
+            s.get("status") for s in adapter._run_statuses.values()]
+        run_id = next(iter(adapter._run_statuses))
+
+        # The first write fails -> handler detaches (does NOT cancel the turn).
+        await asyncio.wait_for(handler_task, timeout=5)
+
+    # The detached run is STILL waiting for approval, not cancelled.
+    assert adapter._run_statuses[run_id]["status"] == "waiting_for_approval"
+
+    # Rediscover via the session resource (durable active_run_id).
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/sessions/{session_id}")
+        assert resp.status == 200
+        payload = await resp.json()
+    assert payload["session"]["active_run_id"] == run_id
+    # The durable coarse status records the turn as still executing (it is —
+    # approval is a wait INSIDE the running turn); the fine-grained
+    # waiting_for_approval lives on the run status.
+    assert payload["session"]["active_run_status"] in ("running", "waiting_for_approval")
+
+    # Stop the rediscovered run; the approval wait must unwind as interrupted.
+    # A stub agent is registered under the run id (what _run_agent does when the
+    # turn starts); its hard_interrupt trips tools.interrupt for the worker
+    # thread sitting in _await_gateway_decision's poll loop.
+    import tools.interrupt as _interrupt_mod
+
+    class StubAgent:
+        def __init__(self, worker_tid):
+            self._worker_tid = worker_tid
+            self.interrupted = False
+
+        def hard_interrupt(self, message=None, *, tool_reason=None):
+            self.interrupted = True
+            _interrupt_mod.set_interrupt(True, self._worker_tid,
+                                         reason="stop requested via API")
+
+        def interrupt(self, message=None):
+            self.hard_interrupt(message)
+
+    stub = StubAgent(_gate_thread_ident())
+    adapter._active_run_agents[run_id] = stub
+    stop_request = MagicMock()
+    stop_request.match_info = {"run_id": run_id}
+    stop_resp = await adapter._handle_stop_run(stop_request)
+    assert stop_resp.status == 200
+    assert stub.interrupted
+
+    for _ in range(100):
+        if turn_done.is_set():
+            break
+        await asyncio.sleep(0.1)
+    assert turn_done.is_set(), (
+        "stop during approval wait must release the turn; statuses=%r"
+        % [s.get("status") for s in adapter._run_statuses.values()])
+    decision = decision_box.get("decision") or {}
+    # The wait ended because of OUR stop, fail-closed: the command was denied
+    # (never executed) and the cancel cause names the stop.
+    assert decision.get("choice") == "deny", decision
+    assert "stop" in str(decision.get("cancelled")), decision
+    assert adapter._run_statuses[run_id]["status"] == "cancelled"

@@ -107,14 +107,29 @@ def session_request_fingerprint(
     session_id: str,
     user_message: Any,
     system_prompt: Optional[str],
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    model_options: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Fingerprint of the request BODY for an explicit-idempotency session run.
+    """Fingerprint of the canonical execution request for an idempotency key.
 
     Key vs fingerprint mirrors POST /v1/runs: the idempotency KEY identifies
     the client's retry token, the FINGERPRINT identifies what was asked. A
-    replayed key with a changed body is a conflict, not a replay.
+    replayed key with a changed request is a conflict, not a replay. The
+    fingerprint binds everything that changes execution (review P2):
+    session, system prompt, message, model, provider and model options —
+    a same-key retry with a different model silently replaying the old
+    run would violate the contract.
     """
-    seed = repr((session_id, system_prompt or "", user_message))
+    canonical = {
+        "session_id": session_id,
+        "system_prompt": system_prompt or "",
+        "user_message": user_message,
+        "model": model,
+        "provider": provider,
+        "model_options": model_options,
+    }
+    seed = repr(sorted(canonical.items(), key=lambda kv: kv[0]))
     return f"fp-{sha256(seed.encode('utf-8')).hexdigest()}"
 
 
@@ -171,12 +186,43 @@ async def replay_or_reserve_header_run(
     outcome, record = store.reserve(
         scope, run_key, fingerprint, run_id, initial_status,
         owner_pid=adapter._run_owner_pid, owner_started=adapter._run_owner_started)
+    if outcome == "conflict":
+        # Lost a reserve race against a different fingerprint — deterministic
+        # conflict, NOT a replay (review P2: the post-reserve branch used to
+        # fold every non-created outcome into "replay").
+        return ("conflict", {
+            "error": {
+                "message": "Idempotency-Key was already used with a different request payload",
+                "type": "invalid_request_error",
+                "param": None,
+                "code": "idempotency_key_conflict",
+                "run_id": str(record["run_id"]) if record else None,
+            },
+        })
     if outcome != "created":
         original = str(record["run_id"])
         status = adapter._durable_run_status(request, original) or record["status"]
         return ("replay", replayed_session_run_payload(original, status))
     adapter._run_idempotency_ids.add(run_id)
     return None
+
+
+def release_header_run_reservation(
+    adapter: Any,
+    request: "web.Request",
+    run_key: str,
+    fingerprint: str,
+    run_id: str,
+) -> None:
+    """Compensating delete: drop the receipt reserved for ``run_id`` when the
+    admission is refused AFTER the reserve (busy session claim). Only the
+    owner run id's row is removed, and only while it is non-terminal — a
+    terminal receipt is a real execution and must stay (review P1: a 409
+    rejection must never leave a durable "queued" receipt behind)."""
+    store = adapter._run_idempotency_store
+    scope = adapter._run_idempotency_scope(request)
+    with suppress(Exception):
+        store.release(scope, run_key, fingerprint, run_id)
 
 
 def run_already_active_error(run_id: str) -> Dict[str, Any]:
@@ -322,24 +368,34 @@ async def admit_session_stream_run(
       body (``idempotency_key_conflict``); caller answers 409.
     - ``{"replay": True, "payload": {...}}`` — same key + same body after (or
       during) execution; caller answers 202 with the original run id.
+
+    On every pre-launch rejection the just-reserved receipt is released, so a
+    refused request never leaves a durable "queued" receipt behind (review P1).
     """
     body = ctx["body"]
     system_prompt = body.get("system_message") or body.get("instructions")
+    # Fingerprint binds the FULL canonical execution request (review P2): model,
+    # provider and model options change what the turn will do, so a same-key
+    # retry with different execution parameters is a conflict, not a replay.
+    request_fingerprint = session_request_fingerprint(
+        session_id=session_id,
+        user_message=user_message,
+        system_prompt=system_prompt,
+        model=body.get("model"),
+        provider=body.get("provider"),
+        model_options=body.get("model_options"),
+    )
     run_key = session_run_key(
         session_id=session_id,
         user_message=user_message,
         system_prompt=system_prompt,
         idempotency_header=request.headers.get("Idempotency-Key"),
     )
-    if request.headers.get("Idempotency-Key"):
+    idempotency_header = request.headers.get("Idempotency-Key")
+    reserved = bool(idempotency_header)
+    if idempotency_header:
         receipt = await replay_or_reserve_header_run(
-            adapter, request, run_key,
-            session_request_fingerprint(
-                session_id=session_id,
-                user_message=user_message,
-                system_prompt=system_prompt,
-            ),
-            run_id,
+            adapter, request, run_key, request_fingerprint, run_id,
             adapter._run_statuses[run_id],
         )
         if receipt is not None:
@@ -349,6 +405,11 @@ async def admit_session_stream_run(
         adapter, session_id, run_id, run_key
     )
     if conflict_run_id:
+        # Pre-launch rejection: release the just-reserved receipt so the
+        # refused request never 202-replays later (review P1).
+        if reserved:
+            release_header_run_reservation(
+                adapter, request, run_key, request_fingerprint, run_id)
         return {"conflict": True, "payload": run_already_active_error(conflict_run_id)}
     return None
 

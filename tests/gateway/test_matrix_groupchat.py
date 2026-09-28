@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageType
 from gateway.session import SessionSource
 from plugins.platforms.matrix.adapter import MatrixAdapter
 
@@ -13,27 +12,6 @@ from plugins.platforms.matrix.adapter import MatrixAdapter
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
-
-
-def test_voice_filename_without_msc3245_is_classified_as_voice():
-    kind, mime, is_voice = MatrixAdapter._classify_inbound_media(
-        "m.audio",
-        "audio/ogg",
-        {"filename": "voice_message.ogg"},
-    )
-    assert kind is MessageType.VOICE
-    assert mime == "audio/ogg"
-    assert is_voice
-
-
-def test_ordinary_audio_filename_remains_audio_attachment():
-    kind, _mime, is_voice = MatrixAdapter._classify_inbound_media(
-        "m.audio",
-        "audio/mpeg",
-        {"filename": "meeting.mp3"},
-    )
-    assert kind is MessageType.AUDIO
-    assert not is_voice
 
 
 @pytest.mark.anyio

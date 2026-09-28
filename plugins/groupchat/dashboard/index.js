@@ -20,7 +20,7 @@
     "logDirectoryHelp": "For the selected profile. Filenames identify the channel and filter; files are created when decisions are recorded.",
     "contextDirectory": "Persistent score-1 context directory",
     "contextDirectoryHelp": "Restart-durable private state is stored as passive-context.<channel>.json with owner-only permissions. It contains retained message text and is removed after successful delivery to the agent.",
-    "attribution": "Groupchat coordination was developed by RechnerLotsen.",
+    "attribution": "The Groupchat plugin was developed by RechnerLotsen.",
     "patterns": "Message patterns",
     "patternHelp": "One Python regular expression per line. Changes replace the defaults. Use ^...$ for a whole-message match. Empty lists disable these patterns, not AI checks or lifecycle handling. Only use trusted patterns; complex expressions can slow message processing.",
     "inboundPatterns": "System-message patterns",

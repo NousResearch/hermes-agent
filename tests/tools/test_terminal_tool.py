@@ -60,11 +60,99 @@ def test_headless_sudo_never_runs_backend_nopasswd_probe(monkeypatch):
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
     terminal_tool.set_sudo_password_callback(None)
 
-    def _fail_probe():
+    def _fail_probe(_target):
         raise AssertionError("headless sudo must not probe the backend")
 
     assert terminal_tool_sudo._transform_sudo_command("sudo true", sudo_nopasswd_check=_fail_probe) == (
         "sudo true", None)
+
+
+def test_scoped_nopasswd_probe_asks_the_actual_invocation(monkeypatch):
+    """`sudo -n true` cannot see `ALL=(svcuser) NOPASSWD: tool` sudoers rules; the probe must
+    re-ask the exact invocation or a scoped least-privilege setup stalls on a 45s prompt."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    terminal_tool.set_sudo_password_callback(None)
+    asked = []
+
+    def _scoped_probe(target):
+        asked.append(target)
+        return target == "-u svcuser -- /usr/local/lib/tool/tool --help"
+
+    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(
+        "sudo -u svcuser /usr/local/lib/tool/tool --help", sudo_nopasswd_check=_scoped_probe)
+
+    assert transformed == "sudo -u svcuser /usr/local/lib/tool/tool --help"
+    assert sudo_stdin is None
+    assert asked == ["-u svcuser -- /usr/local/lib/tool/tool --help"]
+
+
+def test_root_command_scoped_nopasswd_rule_skips_the_prompt(monkeypatch):
+    """A command-scoped root rule (`NOPASSWD: /usr/bin/systemctl restart x`) must not prompt
+    either — the old probe asked only "passwordless root anything?"."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    terminal_tool.set_sudo_password_callback(None)
+
+    def _fail_prompt(*_args, **_kwargs):
+        raise AssertionError("command-scoped NOPASSWD must not reach the prompt")
+
+    monkeypatch.setattr(terminal_tool_sudo, "_prompt_for_sudo_password", _fail_prompt)
+    assert terminal_tool_sudo._transform_sudo_command(
+        "sudo systemctl restart foo", sudo_nopasswd_check=lambda target: target == "-- systemctl restart foo"
+    ) == ("sudo systemctl restart foo", None)
+
+
+def test_scoped_probe_denied_still_prompts(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    terminal_tool.set_sudo_password_callback(None)
+    monkeypatch.setattr(
+        terminal_tool_sudo, "_prompt_for_sudo_password", lambda *args, **kwargs: "pw")
+
+    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(
+        "sudo -u svcuser tool", sudo_nopasswd_check=lambda target: False)
+
+    assert transformed == "sudo -S -p '' -u svcuser tool"
+    assert sudo_stdin == "pw\n"
+
+
+def test_unparseable_sudo_spelling_falls_back_to_the_root_probe(monkeypatch):
+    """`sudo env …` / option-heavy spellings can't be re-asked exactly; they must degrade to
+    today's `sudo -n true` question (target None), never to a wider one."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    terminal_tool.set_sudo_password_callback(None)
+    asked = []
+
+    def _probe(target):
+        asked.append(target)
+        return True
+
+    assert terminal_tool_sudo._transform_sudo_command(
+        "sudo env X=1 tool", sudo_nopasswd_check=_probe) == ("sudo env X=1 tool", None)
+    assert asked == [None]
+
+
+def test_every_sudo_invocation_is_probed_before_the_prompt_is_skipped(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    terminal_tool.set_sudo_password_callback(None)
+    monkeypatch.setattr(
+        terminal_tool_sudo, "_prompt_for_sudo_password", lambda *args, **kwargs: "pw")
+    asked = []
+
+    def _probe(target):
+        asked.append(target)
+        return target == "-- a"
+
+    transformed, sudo_stdin = terminal_tool_sudo._transform_sudo_command(
+        "sudo a; sudo b", sudo_nopasswd_check=_probe)
+
+    # `sudo b` was not covered by NOPASSWD, so the password path (prompt here) still applies.
+    assert asked == ["-- a", "-- b"]
+    assert transformed == "sudo -S -p '' a; sudo -S -p '' b"
+    assert sudo_stdin == "pw\npw\n"
 
 
 def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():

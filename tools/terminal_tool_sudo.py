@@ -310,23 +310,69 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
         i = end
 
 
-def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
+def _sudo_probe_target(words: list[str]) -> str | None:
+    """``sudo -n -l`` probe target (the argv that follows ``-l``) for one sudo invocation's
+    argument words (raw shell spellings), or None when the spelling is anything but a plain,
+    optionally ``-u USER``-prefixed command. The probe must re-ask the exact invocation —
+    never a wider one — so env indirection (``sudo env …``), env assignments, sudo options we
+    don't model, or an option-looking command all return None (the caller falls back to the
+    ``sudo -n true`` root probe, i.e. today's behavior)."""
+    if not words:
+        return None
+    head = words[0]
+    user: str | None = None
+    command_words = words
+    if head in ("-u", "--user"):
+        if len(words) < 2 or words[1].startswith("-"):
+            return None
+        user, command_words = words[1], words[2:]
+    elif head.startswith("--user="):
+        user, command_words = head.partition("=")[2], words[1:]
+    elif head.startswith("-u") and len(head) > 2:
+        user, command_words = head[2:], words[1:]
+    elif head.startswith("-"):
+        return None
+    if not command_words or command_words[0] == "env" or _looks_like_env_assignment(command_words[0]):
+        return None
+    prefix = f"-u {user} " if user is not None else ""
+    return f"{prefix}-- {' '.join(command_words)}"
+
+
+def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int, list[str | None]]:
     """Rewrite literal sudo executable words, preserving their spelling and arguments.
 
     Follow ordinary env options/assignments, not shell payloads or env split strings:
     interpreting those requires a second parser and rewriting inside another quoting layer.
+
+    Also returns, per rewritten sudo invocation, a ``_sudo_probe_target`` argument list (None
+    when that spelling can't be re-asked) so the NOPASSWD probe can question the actual
+    invocation instead of only root-level ``sudo -n true``.
     """
     out: list[str] = []
     sudo_count = 0
+    probe_targets: list[str | None] = []
+    probe_words: list[str] | None = None  # words since the current sudo word, for its probe
     in_env = env_operand = env_options = False
     value_options = {"-u", "--unset", "-C", "--chdir", "-a", "--argv0"}
     flag_options = {"-i", "--ignore-environment", "-0", "--null", "-v", "--debug"}
+
+    def settle_probe() -> None:
+        nonlocal probe_words
+        if probe_words is not None:
+            probe_targets.append(_sudo_probe_target(probe_words))
+            probe_words = None
+
     for kind, start, end, at_start in _scan_shell(command):
         text = command[start:end]
         out.append(text)
         if kind == "op" or (kind == "ws" and text == "\n"):
+            settle_probe()
             in_env = env_operand = env_options = False
-        if kind != "word" or not (at_start or in_env):
+        if kind != "word":
+            continue
+        if probe_words is not None:
+            probe_words.append(text)
+        if not (at_start or in_env):
             continue
         try:
             words = shlex.split(text)
@@ -366,7 +412,9 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
         if executable == "sudo":
             out[-1] += " -S -p ''"
             sudo_count += 1
-    return "".join(out), sudo_count
+            probe_words = []
+    settle_probe()
+    return "".join(out), sudo_count, probe_targets
 
 
 def _count_real_sudo_invocations(command: str) -> int:
@@ -431,7 +479,7 @@ def _rewrite_compound_background(command: str) -> str:
 
 def _transform_sudo_command(
     command: str | None,
-    sudo_nopasswd_check: Callable[[], bool] | None = None,
+    sudo_nopasswd_check: Callable[[str | None], bool] | None = None,
 ) -> tuple[str | None, str | None]:
     """Rewrite command-position ``sudo`` executables to ``sudo -S -p ''`` when a password is available (shared by every
     execution environment). Returns ``(command, sudo_stdin)``: ``sudo_stdin`` is one password
@@ -443,11 +491,13 @@ def _transform_sudo_command(
     is required". Password sources, in order: configured SUDO_PASSWORD, the session cache, then
     an interactive prompt (45s timeout, cached on success) when a UI is reachable.
     ``sudo_nopasswd_check`` (supplied by ``BaseEnvironment``) runs ``sudo -n true`` inside the
-    selected backend; a True result skips the prompt and the ``-S`` rewrite entirely."""
+    selected backend — or ``sudo -n -l <target>`` with the invocation's probe target, so
+    scoped sudoers rules (``ALL=(user) NOPASSWD: cmd``) are asked about the exact command —
+    and a True result skips the prompt and the ``-S`` rewrite entirely."""
     from tools.terminal_tool import _get_sudo_password_callback
     if command is None:
         return None, None
-    transformed, sudo_count = _rewrite_real_sudo_invocations(command)
+    transformed, sudo_count, probe_targets = _rewrite_real_sudo_invocations(command)
     if sudo_count == 0:
         return command, None
 
@@ -471,8 +521,13 @@ def _transform_sudo_command(
         # sudoers NOPASSWD must not be forced through the prompt or the -S pipe. The probe is
         # a round trip on the selected backend (an ssh exec for SSH), so it only runs when a
         # prompt would otherwise fire: headless callers end up at ``(command, None)`` either
-        # way. Re-probed every call so an expired sudo timestamp cannot silently block.
-        if sudo_nopasswd_check is not None and sudo_nopasswd_check():
+        # way. Re-probed every call so an expired sudo timestamp cannot silently block. Each
+        # invocation is probed via its own target (None = unparseable spelling falls back to
+        # the root ``sudo -n true`` question); every sudo in the command must be covered, or a
+        # password is still needed for the rest.
+        if sudo_nopasswd_check is not None and all(
+            sudo_nopasswd_check(target) for target in dict.fromkeys(probe_targets)
+        ):
             return command, None
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45, command=command)
         if sudo_password:

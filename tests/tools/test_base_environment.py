@@ -43,7 +43,7 @@ def test_prepare_command_uses_selected_environment_for_nopasswd(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.setenv("HERMES_INTERACTIVE", "1")
     env = _TestableEnv()
-    monkeypatch.setattr(env, "_sudo_nopasswd_works", lambda: True)
+    monkeypatch.setattr(env, "_sudo_nopasswd_works", lambda *args, **kwargs: True)
 
     def _fail_prompt(*_args, **_kwargs):
         raise AssertionError("interactive sudo prompt should not run for NOPASSWD")
@@ -70,6 +70,18 @@ def test_nopasswd_probe_runs_sudo_n_inside_backend_only_when_supported(
     assert run.called is probed
     if probed:
         assert run.call_args.args[0] == "sudo -n true"
+
+
+def test_nopasswd_probe_with_target_asks_sudo_n_l_for_the_invocation(monkeypatch):
+    """A scoped target (from the sudo rewriter) turns the probe into `sudo -n -l <target>`
+    inside the backend, still failing closed on a non-zero exit."""
+    env = _TestableEnv()
+    run = MagicMock(return_value=object())
+    monkeypatch.setattr(env, "_run_bash", run)
+    monkeypatch.setattr(env, "_wait_for_process", MagicMock(return_value={"returncode": 1}))
+
+    assert env._sudo_nopasswd_works("-u svcuser -- /usr/local/lib/tool/tool --help") is False
+    assert run.call_args.args[0] == "sudo -n -l -u svcuser -- /usr/local/lib/tool/tool --help"
 
 
 class TestBoundedOutputCollector:

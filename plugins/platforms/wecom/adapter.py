@@ -757,8 +757,19 @@ async def _callback_standalone_send(pconfig, chat_id, message, *, thread_id=None
     to *receive* callbacks, and ``connect()`` refuses outright when the gateway
     already holds the port. Only the outbound HTTP client is opened, and it is
     closed again afterwards (also on failure).
+
+    Media is not supported on this path, and is reported rather than dropped:
+    a cron job told its attachment was delivered would be worse than one that
+    fails visibly. ``thread_id``/``force_document`` are genuinely inapplicable
+    to a stateless proactive send and are still discarded.
     """
-    del thread_id, media_files, force_document  # text-only proactive send
+    del thread_id, force_document  # inapplicable to a stateless proactive send
+    if media_files:
+        return send_error(
+            "WeCom Callback standalone send is text-only: "
+            f"{len(media_files)} attachment(s) cannot be delivered out-of-process. "
+            "Send the text without media, or route this through the gateway."
+        )
     from plugins.platforms.wecom.callback_adapter import (
         check_wecom_callback_requirements,
     )

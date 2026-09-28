@@ -216,3 +216,240 @@ def test_callback_sender_reports_a_failed_send(monkeypatch):
 
     assert "error" in result
     assert client.closed, "the client is closed even when the send fails"
+
+
+# ── Multi-app routing (#125092) ──────────────────────────────────────────────
+# The standalone sender never binds a listener, so ``_user_app_map`` — whose
+# only writer is the inbound HTTP handler — is always empty for it. Routing a
+# send through ``_resolve_app_for_chat`` therefore fell all the way through to
+# the ``self._apps[0]`` default, and every outbound delivery in a multi-app
+# config used the FIRST app's appid: dept-b's user was sent under dept-a's
+# chat_agent_id, into the wrong enterprise, while the caller was told
+# ``{"success": True}``.
+
+
+def _multi_app_adapter_class():
+    from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+
+    return WecomCallbackAdapter
+
+
+def _multi_app_pair(client):
+    """Two apps shaped like ``_normalize_apps`` output for a multi-app config."""
+    WecomCallbackAdapter = _multi_app_adapter_class()
+    adapter = WecomCallbackAdapter.__new__(WecomCallbackAdapter)
+    adapter._apps = [
+        {
+            "name": "dept-a",
+            "corp_id": "ww_corp_a",
+            "corp_secret": "secret-a",
+            "agent_id": "1000002",
+            "token": "",
+            "encoding_aes_key": "",
+        },
+        {
+            "name": "dept-b",
+            "corp_id": "ww_corp_b",
+            "corp_secret": "secret-b",
+            "agent_id": "1000003",
+            "token": "",
+            "encoding_aes_key": "",
+        },
+    ]
+    adapter._http_client = client
+    adapter._access_tokens = {}
+    adapter._user_app_map = {}
+    return adapter
+
+
+def _token_params(client):
+    """The corpid each token request asked for — i.e. which app authenticated."""
+    return [payload["params"].get("corpid") for name, payload in client.calls if name == "GET"]
+
+
+def test_dept_b_user_is_not_sent_through_dept_a(monkeypatch):
+    """The reviewer's repro table: dept-b must authenticate as dept-b.
+
+    Before the fix both rows resolved to ``apps[0]``, so the dept-b row
+    requested dept-a's token and carried dept-a's agentid.
+    """
+    client = _RecordingClient()
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: client, raising=True)
+
+    adapter = _multi_app_pair(client)
+    monkeypatch.setattr(
+        wecom_adapter, "_build_callback_adapter", lambda pconfig: adapter, raising=True
+    )
+
+    sender = _callback_registration()["standalone_sender_fn"]
+
+    result = asyncio.run(sender(None, "ww_corp_b:zhangsan", "hi dept-b"))
+
+    assert result.get("success") is True, result
+    assert _token_params(client) == ["ww_corp_b"], (
+        "dept-b delivery must authenticate against dept-b's corp_id"
+    )
+    post_body = next(payload for name, payload in client.calls if name == "POST")
+    assert post_body["json"]["agentid"] == 1000003, "dept-b's own agentid must be used"
+    assert post_body["json"]["touser"] == "zhangsan", "the user id itself is unchanged"
+
+
+def test_dept_a_user_still_resolves_dept_a(monkeypatch):
+    """The second row of the table: dept-a must keep working, and independently."""
+    client = _RecordingClient()
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: client, raising=True)
+
+    adapter = _multi_app_pair(client)
+    monkeypatch.setattr(
+        wecom_adapter, "_build_callback_adapter", lambda pconfig: adapter, raising=True
+    )
+
+    sender = _callback_registration()["standalone_sender_fn"]
+
+    result = asyncio.run(sender(None, "ww_corp_a:zhangsan", "hi dept-a"))
+
+    assert result.get("success") is True, result
+    assert _token_params(client) == ["ww_corp_a"]
+    post_body = next(payload for name, payload in client.calls if name == "POST")
+    assert post_body["json"]["agentid"] == 1000002
+
+
+def test_unknown_corp_id_fails_instead_of_defaulting(monkeypatch):
+    """A corp prefix no app owns must error, NOT silently fall back to apps[0]."""
+    client = _RecordingClient()
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: client, raising=True)
+
+    adapter = _multi_app_pair(client)
+    monkeypatch.setattr(
+        wecom_adapter, "_build_callback_adapter", lambda pconfig: adapter, raising=True
+    )
+
+    sender = _callback_registration()["standalone_sender_fn"]
+
+    result = asyncio.run(sender(None, "ww_corp_c:zhangsan", "are you there?"))
+
+    assert result.get("success") is not True, result
+    assert "ww_corp_c" in (result.get("error") or ""), (
+        "the error must name the corp it could not route, so the operator can fix the config"
+    )
+    assert not [c for c in client.calls if c[0] == "POST"], "no message may be sent on a failed route"
+
+
+def test_bare_user_id_in_multi_app_does_not_guess(monkeypatch):
+    """A legacy bare user_id cannot be routed among several apps — fail loudly.
+
+    Guessing ``apps[0]`` here is the same cross-corp misdelivery as the
+    corp-scoped case, just without a prefix to detect it by.
+    """
+    client = _RecordingClient()
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: client, raising=True)
+
+    adapter = _multi_app_pair(client)
+    monkeypatch.setattr(
+        wecom_adapter, "_build_callback_adapter", lambda pconfig: adapter, raising=True
+    )
+
+    sender = _callback_registration()["standalone_sender_fn"]
+
+    result = asyncio.run(sender(None, "zhangsan", "hi"))
+
+    assert result.get("success") is not True, result
+    assert "error" in result, result
+    assert not [c for c in client.calls if c[0] == "POST"], "no message may be sent on a failed route"
+
+
+def test_single_app_still_defaults_for_a_bare_user_id(monkeypatch):
+    """The pre-scoping config must keep working: one app is not a guess."""
+    client = _RecordingClient()
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: client, raising=True)
+
+    WecomCallbackAdapter = _multi_app_adapter_class()
+    adapter = WecomCallbackAdapter.__new__(WecomCallbackAdapter)
+    adapter._apps = [
+        {
+            "name": "default",
+            "corp_id": "wwcorp",
+            "corp_secret": "secret",
+            "agent_id": "1000002",
+            "token": "",
+            "encoding_aes_key": "",
+        }
+    ]
+    adapter._http_client = client
+    adapter._access_tokens = {}
+    adapter._user_app_map = {}
+    monkeypatch.setattr(
+        wecom_adapter, "_build_callback_adapter", lambda pconfig: adapter, raising=True
+    )
+
+    sender = _callback_registration()["standalone_sender_fn"]
+
+    result = asyncio.run(sender(None, "zhangsan", "hi"))
+
+    assert result.get("success") is True, result
+    assert _token_params(client) == ["wwcorp"]
+
+
+def test_inbound_bound_user_wins_over_the_prefix(monkeypatch):
+    """The inbound map stays authoritative when it has an entry.
+
+    ``_user_app_map`` is written by the inbound handler with the corp the user
+    actually belongs to; a prefix collision must not override that truth.
+    """
+    client = _RecordingClient()
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: client, raising=True)
+
+    adapter = _multi_app_pair(client)
+    # The inbound handler bound this exact chat_key to dept-a — that is the
+    # corp the user's callback actually arrived from.
+    adapter._user_app_map = {"ww_corp_b:zhangsan": "dept-a"}
+    monkeypatch.setattr(
+        wecom_adapter, "_build_callback_adapter", lambda pconfig: adapter, raising=True
+    )
+
+    sender = _callback_registration()["standalone_sender_fn"]
+
+    result = asyncio.run(sender(None, "ww_corp_b:zhangsan", "hi"))
+
+    assert result.get("success") is True, result
+    post_body = next(payload for name, payload in client.calls if name == "POST")
+    assert post_body["json"]["agentid"] == 1000002, (
+        "a bound user must stay on the corp the inbound handler recorded"
+    )
+
+
+def test_media_is_reported_not_silently_dropped(monkeypatch):
+    """Attachments must fail loudly, not vanish into a ``success: True``.
+
+    The sender used to ``del media_files`` — the caller was told the message
+    was delivered while the attachment was gone.
+    """
+    client = _RecordingClient()
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: client, raising=True)
+
+    adapter = _multi_app_pair(client)
+    monkeypatch.setattr(
+        wecom_adapter, "_build_callback_adapter", lambda pconfig: adapter, raising=True
+    )
+
+    sender = _callback_registration()["standalone_sender_fn"]
+
+    result = asyncio.run(sender(None, "ww_corp_a:zhangsan", "see attached", media_files=["/tmp/a.png"]))
+
+    assert result.get("success") is not True, result
+    assert "text-only" in (result.get("error") or "")
+    assert not client.calls, "nothing may be sent when the request cannot be honoured"

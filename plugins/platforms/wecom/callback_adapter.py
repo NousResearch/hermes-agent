@@ -189,7 +189,14 @@ class WecomCallbackAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """One text message per MAX_MESSAGE_LENGTH-byte chunk; stops at the first failure."""
-        app = self._resolve_app_for_chat(chat_id)
+        try:
+            # Resolving the app can raise (multi-app config with an
+            # unresolvable corp prefix) — keep that inside the try so an
+            # unroutable chat_id reports as a failed send rather than a
+            # crash, and never as a delivery made with the wrong app.
+            app = self._resolve_app_for_chat(chat_id)
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
         chunks = self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=_utf8_len)
         return await send_chunks(chunks, lambda chunk: self._send_text(app, chat_id, chunk))
 
@@ -211,11 +218,65 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     def _resolve_app_for_chat(self, chat_id: str) -> Dict[str, Any]:
+        """Pick the app that owns *chat_id*'s corp.
+
+        Three ways in, in priority order. The first is the one the inbound
+        handler records: ``_user_app_map`` maps ``corp_id:user_id`` to an app
+        name, so a reply to a user we have seen goes to the corp that user
+        actually belongs to.
+
+        The second matters because ``_user_app_map`` is only written by the
+        inbound HTTP handler (line 243), so a sender that never binds a
+        listener — the standalone ``_callback_standalone_send``, cron jobs and
+        ``send_message`` running out-of-process — always sees an empty map.
+        For those the corp prefix in the chat_id is the only identity
+        available, and it is authoritative: ``_user_app_key`` builds it from
+        the same corp_id the app is configured with.
+
+        The last two are legacy compatibility (a bare ``user_id`` with no corp
+        prefix, from before scoping) and the single-app case, where any app
+        is right by definition. Both are guarded on there being exactly one
+        app, because under a multi-app config a silent ``apps[0]`` would send
+        dept-b's user through dept-a's token — the wrong enterprise accepts
+        the message and the caller gets ``success: True``.
+        """
         app_name = self._user_app_map.get(chat_id)
+        if app_name:
+            resolved = self._get_app_by_name(app_name)
+            if resolved:
+                return resolved
+        if ":" in chat_id:
+            # corp-scoped id with no bound entry (or one pointing at an app no
+            # longer configured) — resolve it from the prefix directly.
+            corp_id = chat_id.split(":", 1)[0]
+            matching = [app for app in self._apps if str(app.get("corp_id") or "") == corp_id]
+            if len(matching) == 1:
+                return matching[0]
+            if len(matching) > 1:
+                raise ValueError(
+                    f"WeCom Callback: corp_id {corp_id!r} is configured on more than one app "
+                    f"({', '.join(sorted(str(a.get('name') or 'default') for a in matching))}); "
+                    "cannot pick a delivery app"
+                )
+            raise ValueError(
+                f"WeCom Callback: no app configured for corp_id {corp_id!r} "
+                f"(configured: {', '.join(sorted(str(a.get('corp_id') or '') for a in self._apps)) or 'none'})"
+            )
         if not app_name and ":" not in chat_id:  # legacy bare user_id — unique match only
             matching = [k for k in self._user_app_map if k.endswith(f":{chat_id}")]
             app_name = self._user_app_map.get(matching[0]) if len(matching) == 1 else app_name
-        return self._get_app_by_name(app_name) or self._apps[0]
+        if len(self._apps) == 1:
+            return self._apps[0]
+        if not self._user_app_map:
+            raise ValueError(
+                "WeCom Callback: chat_id has no corp_id prefix and this adapter has never "
+                "received an inbound message from that user, so no app can be resolved "
+                f"({len(self._apps)} apps configured)"
+            )
+        raise ValueError(
+            "WeCom Callback: cannot resolve an app for "
+            f"{chat_id!r} — use the corp-scoped form 'corp_id:user_id'"
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "dm"}

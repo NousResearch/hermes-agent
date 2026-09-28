@@ -1,59 +1,65 @@
-"""Managed-scope gateway.profile_routes must reach the satellite preflight (#121212)."""
+"""Managed-scope ``gateway.profile_routes`` must reach the satellite cron path (#121212).
 
-from types import SimpleNamespace
+The primary gateway reads routes through the layered loader (user file + managed overlay), so
+on a centrally-managed install the routes live only in ``/etc/hermes/config.yaml``. The
+satellite-side helper shared by preflight rescue and delivery-time ``SharedRouteAdapters`` read
+the raw user file alone, false-blocking every routed job and failing delivery closed.
+"""
 
-import cron.scheduler_preflight as preflight
+import hermes_yaml as yaml
+import pytest
 
-
-def _route(profile="sat"):
-    return SimpleNamespace(enabled=True, profile=profile)
-
-
-def _setup(monkeypatch, tmp_path, user_raw, managed_raw):
-    import hermes_constants
-    import hermes_cli.config as cfg
-    import hermes_cli.managed_scope as ms
-    import hermes_cli.profiles as profiles
-    import gateway.profile_routing as pr
-
-    primary = tmp_path / "primary"
-    primary.mkdir()
-    (primary / "config.yaml").write_text("gateway: {}\n")
-    monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: primary)
-    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: str(tmp_path / "satellite"))
-    monkeypatch.setattr(cfg, "read_user_config_raw", lambda path=None: user_raw)
-    monkeypatch.setattr(ms, "load_managed_config", lambda: managed_raw)
-    monkeypatch.setattr(pr, "parse_profile_routes", lambda routes: [_route()])
-    monkeypatch.setattr(profiles, "profile_matches_home", lambda p: True)
+from cron.scheduler_preflight import (
+    SharedRouteAdapters,
+    _delivery_platform_routed_from_primary_gateway,
+    _primary_profile_routes_for_current_home,
+)
+from hermes_cli import managed_scope
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
-def test_managed_scope_routes_resolve(monkeypatch, tmp_path):
-    _setup(
-        monkeypatch, tmp_path,
-        user_raw={"gateway": {}},
-        managed_raw={"gateway": {"profile_routes": [{"profile": "sat", "platforms": ["whatsapp"]}]}},
-    )
-    assert len(preflight._primary_profile_routes_for_current_home()) == 1
+def _routes(*entries):
+    return {"gateway": {"multiplex_profiles": True, "profile_routes": list(entries)}}
 
 
-def test_user_file_routes_still_resolve_without_managed_scope(monkeypatch, tmp_path):
-    _setup(
-        monkeypatch, tmp_path,
-        user_raw={"profile_routes": [{"profile": "sat", "platforms": ["whatsapp"]}]},
-        managed_raw={},
-    )
-    assert len(preflight._primary_profile_routes_for_current_home()) == 1
+WA_ROUTE = {"name": "sat-wa", "platform": "whatsapp", "chat_id": "123@g.us", "profile": "sat"}
+TG_ROUTE = {"name": "sat-tg", "platform": "telegram", "chat_id": "-100", "profile": "sat"}
 
 
-def test_managed_scope_wins_over_user_file(monkeypatch, tmp_path):
-    calls = []
-    import gateway.profile_routing as pr
+@pytest.fixture
+def satellite_home(tmp_path, monkeypatch):
+    """Serve profile ``sat`` under a primary root whose managed scope pins the routes."""
+    root = tmp_path / "root"
+    sat_home = root / "profiles" / "sat"
+    sat_home.mkdir(parents=True)
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda: root)
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    managed_scope.invalidate_managed_cache()
+    token = set_hermes_home_override(str(sat_home))
+    try:
+        yield root, managed_dir
+    finally:
+        reset_hermes_home_override(token)
+        managed_scope.invalidate_managed_cache()
 
-    _setup(
-        monkeypatch, tmp_path,
-        user_raw={"profile_routes": [{"profile": "from-user"}]},
-        managed_raw={"gateway": {"profile_routes": [{"profile": "from-managed"}]}},
-    )
-    monkeypatch.setattr(pr, "parse_profile_routes", lambda routes: (calls.append(routes) or [_route()]))
-    assert len(preflight._primary_profile_routes_for_current_home()) == 1
-    assert calls == [[{"profile": "from-managed"}]]
+
+def test_managed_scope_routes_reach_satellite_preflight_and_delivery(satellite_home):
+    root, managed_dir = satellite_home
+    (root / "config.yaml").write_text(
+        yaml.safe_dump({"platforms": {"whatsapp": {"enabled": True}}}), encoding="utf-8")
+    (managed_dir / "config.yaml").write_text(yaml.safe_dump(_routes(WA_ROUTE)), encoding="utf-8")
+
+    assert _delivery_platform_routed_from_primary_gateway("whatsapp")
+    shared = SharedRouteAdapters({"whatsapp": object()}, _primary_profile_routes_for_current_home())
+    assert shared  # delivery-time fallback no longer fails closed
+    assert shared.get("whatsapp", {"chat_id": "123@g.us"}) is not None
+
+
+def test_managed_routes_replace_user_file_routes(satellite_home):
+    root, managed_dir = satellite_home
+    (root / "config.yaml").write_text(yaml.safe_dump(_routes(TG_ROUTE)), encoding="utf-8")
+    (managed_dir / "config.yaml").write_text(yaml.safe_dump(_routes(WA_ROUTE)), encoding="utf-8")
+
+    assert [r.platform for r in _primary_profile_routes_for_current_home()] == ["whatsapp"]

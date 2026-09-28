@@ -256,6 +256,11 @@ def _record_pre_update_backup_outcome(args, snapshot_id) -> None:
     _record_update_step("pre_update_backup", False, "no snapshot captured")
 
 
+def _record_snapshot_stage(args, snapshot_id) -> None:
+    skipped = not snapshot_id and _resolve_pre_update_backup_mode(args) == "off"
+    _completion_receipt.record_stage("snapshot", "success" if snapshot_id else "skipped" if skipped else "failed")
+
+
 
 def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
@@ -729,6 +734,8 @@ def _complete_source_update(request: dict | None) -> None:
     if unrestored:
         request["completion_message"] = unrestored
     from copy import deepcopy
+    _completion_receipt.record_stage(
+        "apply", "skipped" if request.get("completion_message") else "success", mode=request.get("apply_mode", "git"))
     current = _completion_receipt._current.get()
     if current is not None:
         request["receipt"] = deepcopy(current.data)
@@ -1198,6 +1205,7 @@ def _begin_update_receipt_and_plan(args):
         # See #74973, #81193, #85753, #88848, #91277.
         from hermes_cli.update_receipt import begin_update_receipt
         begin_update_receipt()
+        _record_update_initiator()
 
     # Plan phase: snapshot runtimes/supervisors/version (read-only; probe failure records
     # nothing). Re-read AFTER the restart phase to reconcile — the plan is the worklist.
@@ -1215,8 +1223,18 @@ def _begin_update_receipt_and_plan(args):
             _n = len(_pre_update_plan.runtimes)
             _profiles = ", ".join(sorted({r.profile for r in _pre_update_plan.runtimes}))
             print(f"→ Fleet: {_n} running service(s) across profiles: {_profiles}")
-
+    _completion_receipt.record_stage("plan", "failed" if _pre_update_plan is None else "success")
     return _pre_update_plan
+
+
+def _record_update_initiator() -> None:
+    """We hold the update lock, so a live claim naming another pid is our orchestrator's: the
+    Desktop hand-off (posix shim, windows script, Tauri updater) — the metric's ``kind``."""
+    with _best_effort('Update initiator unavailable: %s'):
+        from hermes_cli.update_lock import read_live_update
+        holder = read_live_update()
+        if holder is not None and holder.pid != os.getpid():
+            _completion_receipt.record_fact("initiator", "desktop")
 
 
 def _prepare_git_command() -> tuple[bool, list, bool]:
@@ -1422,6 +1440,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # reason, not as a failed step (see _record_pre_update_backup_outcome).
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
+    _record_snapshot_stage(args, pre_update_snapshot_id)
 
     _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:

@@ -125,6 +125,13 @@ class UpdateReceipt:
     def skip(self, name: str, reason: str) -> None:
         self.data["skips"].append({"name": name, "reason": reason, "at": _utc_now_iso()})
 
+    def stage(self, name: str, outcome: str, **facts: str) -> None:
+        # Stage END marks: a stage's duration is the gap since the previous mark (or started_at).
+        self.data.setdefault("stages", []).append({"name": name, "outcome": outcome, "at": _utc_now_iso(), **facts})
+
+    def fact(self, key: str, value: Any) -> None:
+        self.data[key] = value
+
     def gateway_restart_result(
         self, *, restarted_services: list | None = None, relaunched_profiles: list | None = None,
         externally_supervised_profiles: list | None = None, killed_pids: list | None = None,
@@ -232,6 +239,16 @@ def record_skip(name: str, reason: str) -> None:
     _record("skip", f"update skip {name}", name, reason)
 
 
+def record_stage(name: str, outcome: str, **facts: str) -> None:
+    """Mark the END of a pipeline stage (``success``/``failed``/``skipped``) with a timestamp."""
+    _record("stage", f"update stage {name}", name, outcome, **facts)
+
+
+def record_fact(key: str, value: Any) -> None:
+    """Set one top-level receipt field (e.g. ``initiator``)."""
+    _record("fact", f"update fact {key}", key, value)
+
+
 def record_gateway_restart(**kwargs: Any) -> None:
     """Record the gateway restart phase outcome (see UpdateReceipt)."""
     _record("gateway_restart_result", "gateway restart result", **kwargs)
@@ -315,6 +332,7 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         with suppress(Exception):  # stable pointer for the dashboard/desktop
             _atomic_bytes(directory / "latest.json", payload)
         _prune_old_receipts(directory)
+        _publish_shared_metrics(receipt.data)
         return path
     except Exception as exc:
         # Visible, not debug: a run that pulled code and left no receipt is exactly the run
@@ -322,6 +340,27 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         logger.warning("Could not write update receipt (%s): %s", outcome, exc)
         print(f"  ⚠ Update receipt not written: {exc}")
         return None
+
+
+def _publish_shared_metrics(data: dict[str, Any]) -> None:
+    """hermes.update.run/stage from this FINAL receipt; must never fail or slow the update."""
+    with suppress(Exception):
+        pre, post = data.get("pre_update") or {}, data.get("post_update") or {}
+        if data.get("pid") == os.getpid() and not (pre.get("sha") and pre.get("sha") == post.get("sha")):
+            # This interpreter began the run before the checkout swap: importing now would load
+            # pulled code into it. Park the receipt (stdlib only); the next Hermes start records it.
+            from hermes_constants import get_hermes_home
+            from hermes_cli.runtime_state import _atomic_bytes
+
+            store = get_hermes_home() / "telemetry" / "shared_metrics"
+            if store.is_dir():  # never enabled on this profile: nothing to park
+                pending = store / "pending_updates"  # = shared_metrics_update.PENDING_DIRNAME
+                pending.mkdir(exist_ok=True)
+                _atomic_bytes(pending / f"{data.get('update_id')}.json", json.dumps(data, default=str).encode())
+            return
+        from hermes_cli.observability.shared_metrics_update import record_update_receipt
+
+        record_update_receipt(data)
 
 
 def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason: str = "") -> Optional[Path]:

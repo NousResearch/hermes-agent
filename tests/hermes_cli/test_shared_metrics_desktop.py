@@ -1,11 +1,13 @@
 """v5 desktop: hermes.desktop.{feature_use,friction,onboarding,dislike,mode_use,action_use}.
 
-Every value the Desktop sends collapses onto a closed code-defined set, the backend latches again so a
-replay cannot inflate a row, and a disabled profile writes nothing (not even a latch file)."""
+Every value the Desktop sends collapses onto a closed code-defined set, the backend latches again (durably,
+in the profile's store, for feature use and the daily report) so a replay, a second window or a backend
+restart cannot inflate a row, and a disabled profile writes nothing (not even a latch file)."""
 
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +16,10 @@ import pytest
 from hermes_cli.observability import relay_shared_metrics
 from hermes_cli.observability import shared_metrics_contract as contract
 from hermes_cli.observability import shared_metrics_desktop as desktop
+from hermes_cli.observability.shared_metrics import SharedMetricsStore
 import tui_gateway.server as server
+
+TODAY = "2026-09-27"
 
 
 @pytest.fixture
@@ -37,8 +42,14 @@ def marks(tmp_path, monkeypatch):
 
     monkeypatch.setattr(relay_shared_metrics, "record_process_marks_saved", saved, raising=False)
     monkeypatch.setattr(desktop, "_daily", {})
-    monkeypatch.setattr(desktop, "_reported_days", set())
+    monkeypatch.setattr(desktop, "_utc_day", lambda: TODAY)
     yield SimpleNamespace(rows=captured, policy=policy, home=home, store=store)
+
+
+def _stored(metric: str) -> list[tuple[str, dict, int]]:
+    """``(period_start, dimensions, value)`` rows the profile's store holds for one metric."""
+    return [(r["period_start"], r["dimensions"], r["value"])
+            for r in SharedMetricsStore().counter_snapshot() if r["metric_name"] == metric]
 
 
 def _rpc(method: str, **params) -> dict:
@@ -54,9 +65,8 @@ def test_feature_use_counts_each_area_once_per_day_and_collapses_unknown_areas(m
     for area in ("terminal_pane", "terminal_pane", "settings_config_voice", "settings_brand_new_tab", "/Users/x"):
         assert _rpc("shared_metrics.desktop_feature_use", area=area)["result"] == {"ok": True}
 
-    assert [data["area"] for _, data in marks.rows] == [
-        "terminal_pane", "settings_config_voice", "settings_other", "other"]
-    _assert_valid(marks.rows)
+    assert sorted((dims["area"], value) for _, dims, value in _stored(contract.DESKTOP_FEATURE_USE_METRIC)) == [
+        ("other", 1), ("settings_config_voice", 1), ("settings_other", 1), ("terminal_pane", 1)]
 
 
 def test_friction_detail_is_checked_against_its_own_kind_and_capped_per_day(marks):
@@ -94,14 +104,14 @@ def test_disabled_profile_records_nothing_and_leaves_no_latch(marks):
     daily = _rpc("shared_metrics.desktop_daily", day="2026-09-26",
                  modes=[{"mode": "sessions", "active_ms": 60_000, "messages_sent": 3}])
 
-    assert daily["result"] == {"recorded": True}  # settled: the client drops the day
+    assert daily["result"] == {"recorded": False}  # never "settled" into another profile's off switch
     assert marks.rows == []
-    assert desktop._daily == {} and desktop._reported_days == set()
+    assert desktop._daily == {}
     assert not (marks.home / "telemetry").exists()
 
     marks.policy["on"] = True  # the earlier calls claimed nothing, so opting in later still counts
     _rpc("shared_metrics.desktop_feature_use", area="projects")
-    assert [d["area"] for _, d in marks.rows] == ["projects"]
+    assert [dims["area"] for _, dims, _ in _stored(contract.DESKTOP_FEATURE_USE_METRIC)] == ["projects"]
 
 
 def test_daily_report_records_used_modes_and_bucketed_actions_once_per_day(marks):
@@ -120,24 +130,39 @@ def test_daily_report_records_used_modes_and_bucketed_actions_once_per_day(marks
     assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
     assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}  # replay: no rows
 
-    assert marks.rows == [
-        (contract.DESKTOP_MODE_USE_MARK, {"active_minutes_bucket": "30m_to_2h", "bot_count_bucket": "3_to_5",
-                                          "messages_sent_bucket": "11_to_25", "mode": "sessions"}),
-        (contract.DESKTOP_ACTION_USE_MARK, {"action": "other", "count_bucket": "1", "via": "palette"}),
-        (contract.DESKTOP_ACTION_USE_MARK, {"action": "view.toggleSidebar", "count_bucket": "2", "via": "click"}),
-        (contract.DESKTOP_ACTION_USE_MARK, {"action": "view.toggleSidebar", "count_bucket": "26_to_100",
-                                            "via": "shortcut"}),
+    assert _stored(contract.DESKTOP_MODE_USE_METRIC) == [
+        ("2026-09-26", {"active_minutes_bucket": "30m_to_2h", "bot_count_bucket": "3_to_5",
+                        "messages_sent_bucket": "11_to_25", "mode": "sessions"}, 1)]
+    assert _stored(contract.DESKTOP_ACTION_USE_METRIC) == [
+        ("2026-09-26", {"action": "other", "count_bucket": "1", "via": "palette"}, 1),
+        ("2026-09-26", {"action": "view.toggleSidebar", "count_bucket": "2", "via": "click"}, 1),
+        ("2026-09-26", {"action": "view.toggleSidebar", "count_bucket": "26_to_100", "via": "shortcut"}, 1),
     ]
-    _assert_valid(marks.rows)
 
 
-def test_daily_report_that_the_store_refuses_stays_with_the_client(marks):
-    marks.store["saves"] = False
+def test_a_day_and_an_area_count_once_across_windows_and_backend_restarts_in_the_usage_days_period(marks, monkeypatch):
+    day = {"day": "2026-09-20", "modes": [{"mode": "sessions", "active_ms": 60_000, "messages_sent": 3}],
+           "actions": [{"action": "composer.send", "count": 4, "via": "shortcut"}]}
+    for _ in range(2):  # two windows / a restarted backend: nothing of the first process survives
+        monkeypatch.setattr(desktop, "_daily", {})
+        monkeypatch.setattr(desktop, "_reported_days", set(), raising=False)
+        assert _rpc("shared_metrics.desktop_daily", **day)["result"] == {"recorded": True}
+        _rpc("shared_metrics.desktop_feature_use", area="terminal_pane")
+
+    assert [(p, v) for p, _, v in _stored(contract.DESKTOP_ACTION_USE_METRIC)] == [("2026-09-20", 1)]
+    assert [(p, v) for p, _, v in _stored(contract.DESKTOP_MODE_USE_METRIC)] == [("2026-09-20", 1)]
+    assert [v for _, _, v in _stored(contract.DESKTOP_FEATURE_USE_METRIC)] == [1]
+
+
+def test_daily_report_that_the_store_refuses_stays_with_the_client(marks, monkeypatch):
+    real = SharedMetricsStore.update_rollup_state
+    monkeypatch.setattr(SharedMetricsStore, "update_rollup_state",
+                        lambda self, *a: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")))
     params = {"day": "2026-09-26", "modes": [{"mode": "bots", "active_ms": 1, "messages_sent": 0}]}
     assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": False}
-    marks.store["saves"] = True
+    monkeypatch.setattr(SharedMetricsStore, "update_rollup_state", real)
     assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
-    assert [d["active_minutes_bucket"] for _, d in marks.rows] == ["lt_5m"]
+    assert [d["active_minutes_bucket"] for _, d, _ in _stored(contract.DESKTOP_MODE_USE_METRIC)] == ["lt_5m"]
 
 
 def test_dislike_targets_are_closed_per_signal(marks):

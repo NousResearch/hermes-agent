@@ -1825,7 +1825,8 @@ def switch_model(
     return _build_switch_result(st)
 
 
-def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg: Any) -> dict[str, Any]:
+def model_selection_config_updates(
+        result: ModelSwitchResult, current_model_cfg: Any, alias_credential: Optional[dict] = None) -> dict[str, Any]:
     """The ONE config.yaml shape a persisted model selection produces, as ``model.<key>`` -> value
     (``None`` = clear). ``current_model_cfg`` is the on-disk ``model:`` block (raw).
 
@@ -1842,7 +1843,9 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     route changed: left behind it routes the NEW provider's requests to the OLD endpoint's env
     var, but a same-provider same-base_url model re-pick keeps it whatever the provider is. The
     dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
-    (``model_assignment.apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
+    (``model_assignment.apply_main_model_assignment`` / ``_resolve_assignment_credentials``).
+    ``alias_credential`` is the picked user alias's own credential field as written on disk (see
+    :func:`_alias_credential_on_disk`); it is applied last, over the stale-key clears."""
     from hermes_cli.route_identity import ENDPOINT_CREDENTIAL_KEYS, ENDPOINT_KEY_POINTER_KEYS, should_clear_context_pin
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
     updates: dict[str, Any] = {
@@ -1862,7 +1865,34 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     for key in stale:
         if key in model_cfg:
             updates[key] = None
+    if target.startswith("custom"):
+        updates.update(alias_credential or {})
     return updates
+
+
+def _alias_credential_on_disk(raw_cfg: Any, alias_name: str) -> dict[str, str]:
+    """``{"api_key": ...}`` or ``{"key_env": ...}`` from user alias *alias_name*'s on-disk entry.
+
+    The session authenticated with the alias's own credential; persisting the route without it
+    makes the next launch resolve that endpoint with no key. Read from the raw file, never from the
+    loaded alias, whose ``api_key: "${VAR}"`` is already expanded — persisting that would write the
+    secret itself. Same lookup and precedence as :func:`_load_direct_aliases` /
+    :func:`direct_alias_api_key`."""
+    name = _clean(alias_name).lower()
+    if not name or not isinstance(raw_cfg, dict):
+        return {}
+    model_cfg = raw_cfg.get("model")
+    sections = [raw_cfg.get("model_aliases")]
+    if name not in _BUILTIN_DIRECT_ALIASES and isinstance(model_cfg, dict):
+        sections.append(model_cfg.get("aliases"))
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        entry = next((v for k, v in section.items() if str(k).strip().lower() == name), None)
+        if isinstance(entry, dict) and _clean(entry.get("model")):
+            field = next((f for f in ("api_key", "key_env") if _clean(entry.get(f))), None)
+            return {field: _clean(entry[field])} if field else {}
+    return {}
 
 
 def selection_route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
@@ -1938,8 +1968,10 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     from hermes_cli.config import _CONFIG_LOCK, atomic_config_replace, get_config_path, read_user_config_raw
     from hermes_cli.config_backend import supports_file_tooling, write_config_keys
     path = Path(config_path) if config_path else get_config_path()
-    planned_from = read_user_config_raw(path).get("model")
-    updates = model_selection_config_updates(result, planned_from)
+    raw_cfg = read_user_config_raw(path)
+    planned_from = raw_cfg.get("model")
+    alias_credential = _alias_credential_on_disk(raw_cfg, getattr(result, "resolved_via_alias", ""))
+    updates = model_selection_config_updates(result, planned_from, alias_credential)
     if not supports_file_tooling():
         # No config file (Remote Config): one keyed write, so a lock on any key refuses the whole
         # switch instead of a document save silently omitting the locked part. The planned-from
@@ -1958,7 +1990,7 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
         config = read_user_config_raw(path)
         model_cfg = config.get("model")
         if model_cfg != planned_from:
-            updates = model_selection_config_updates(result, model_cfg)
+            updates = model_selection_config_updates(result, model_cfg, alias_credential)
         merged = _merge_selection_updates(model_cfg, updates)
         if isinstance(model_cfg, dict):
             # A YAML anchor on ``model:`` reused elsewhere (``vision: *route``) loads as ONE shared

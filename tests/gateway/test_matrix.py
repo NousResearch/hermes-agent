@@ -5970,8 +5970,8 @@ class TestMatrixDispatchSyncIsolation:
         adapter._client = client
 
         with caplog.at_level(logging.WARNING):
-            # Must not raise despite the failing handler.
-            await adapter._dispatch_sync({"next_batch": "s1"})
+            with pytest.raises(RuntimeError, match="handler boom"):
+                await adapter._dispatch_sync({"next_batch": "s1"})
 
         assert ran["ok"] is True  # the sibling handler still ran
 

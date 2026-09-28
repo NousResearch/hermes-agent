@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from gateway.platforms.event import MessageEvent, TurnContextUpdate
 from plugins.platforms.matrix.reply_context import (
@@ -185,7 +185,8 @@ class MatrixRichContentMixin:
     _text_batch_delay_seconds: float
     _build_inbound_event: Callable[..., Awaitable[MessageEvent | None]]
     _enqueue_text_event: Callable[[MessageEvent], None]
-    handle_message: Callable[[MessageEvent], Awaitable[Any]]
+    if TYPE_CHECKING:
+        async def handle_message(self, event: MessageEvent) -> None: ...
 
     async def _handle_emote_message(
         self,

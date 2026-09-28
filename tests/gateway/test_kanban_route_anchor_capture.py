@@ -68,3 +68,45 @@ def test_kanban_slash_binds_current_session_instead_of_stale_process_id(monkeypa
     monkeypatch.setattr(kanban, "run_slash", lambda _text: seen.append(get_session_env("HERMES_SESSION_ID")) or "ok")
     assert asyncio.run(runner._handle_kanban_command(MessageEvent(text="/kanban list", source=source))) == "ok"
     assert seen == ["current-chat"]
+
+
+def test_kanban_slash_create_persists_served_profile_and_current_session(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    from pathlib import Path
+    from types import SimpleNamespace
+    from gateway.platforms.event import MessageEvent
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from hermes_state import SessionDB
+
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "nyra"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile))
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-other-chat")
+    state = SessionDB(db_path=profile / "state.db")
+    try:
+        state.create_session(session_id="current-chat", source="gateway")
+    finally:
+        state.close()
+    kb.init_db()
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(get_connected_platforms=lambda: [],
+                                    get_home_channel=lambda _platform: None)
+    runner.adapters = {}
+    async def get_or_create_session(_source):
+        return SimpleNamespace(session_key="slash-session-key", session_id="current-chat",
+                               created_at=0, updated_at=0)
+    runner.session_store = object()
+    runner._async_session_store = SimpleNamespace(_store=runner.session_store,
+                                                  get_or_create_session=get_or_create_session)
+    source = SessionSource(platform=Platform.LOCAL, chat_id="chat", profile="nyra")
+    output = asyncio.run(runner._handle_kanban_command(
+        MessageEvent(text="/kanban create slash-origin --initial-status blocked --json", source=source)))
+    task_id = json.loads(output)["id"]
+    with kbc.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+    assert task.created_by == "nyra"
+    assert task.session_id == "current-chat"
+    assert task.status == "blocked"

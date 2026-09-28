@@ -155,24 +155,32 @@ def _forward_relay_fronted_run(job: Dict[str, Any], extra_prompt: Optional[str] 
     })
 
 
-def _manual_run_delivery_note(deliver: str, refreshed: Dict[str, Any]) -> str:
-    """Parenthetical delivery note for a manual run's summary; follows the refreshed record's
-    ``last_delivery_error`` so the summary never claims success over a failed delivery.
-
-    Follows the refreshed job record (#83993): ``run_one_job`` writes ``last_delivery_error`` via
-    ``mark_job_run`` when the post-run delivery (telegram/discord/…) failed, and the summary must not claim
-    success over that record — the calling agent relays this line to the user. Local jobs never deliver; an
-    empty/missing error keeps the legacy wording byte-for-byte.
-    """
-    # Falsy deliver ("", stored JSON null) is normalized to "local" at fire time -> saved
-    # locally. Whitespace-only values fall through so the fire-time "no target" error surfaces.
+def _manual_run_delivery_note(
+    deliver: str, refreshed: Dict[str, Any], outcome: Optional[str] = None,
+) -> str:
+    """Render the exact execution's outcome; no error is not proof of delivery."""
+    suffixes = {
+        "delivered": "delivery confirmed by the scheduler",
+        "suppressed": "delivery suppressed by the scheduler",
+        "suppressed_acked": "delivery suppressed by incident notification policy",
+        "failed": "delivery FAILED; output was not confirmed delivered",
+        "not_configured": "no destination was resolved; output was not delivered",
+        "queued": "output queued for Bot Chat; completion unverified, do not resend",
+    }
+    if outcome == "failed" and refreshed.get("last_delivery_error"):
+        return f" (⚠ delivery FAILED: {str(refreshed['last_delivery_error'])[:200]})"
+    if outcome in suffixes and (deliver != "local" or outcome != "suppressed"):
+        return f" ({suffixes[outcome]})"
+    # Local configuration alone cannot prove persistence after a dispatch failure.
     if not deliver or deliver == "local":
-        return " (output saved locally only)"
+        if outcome == "suppressed":
+            return " (output saved locally only)"
+        return " (local-only output; persistence unverified)"
     err = str(refreshed.get("last_delivery_error") or "").strip()
     if not err:
         if refreshed.get("last_delivery_queued"):
             return " (output queued for Bot Chat; completion unverified, do not resend)"
-        return " (output was delivered there by the job itself)"
+        return " (delivery outcome unverified; output was not confirmed delivered)"
     return f" (⚠ delivery FAILED: {err[:200]})"
 
 
@@ -267,7 +275,7 @@ def _run_heartbeat(job_name: str):
 def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Dict[str, Any]:
     """Fire an already-claimed job through the shared ``run_one_job`` body (split from
     ``_execute_job_now`` so the background path can claim synchronously and hand the run
-    to a worker). Returns {"claimed": True, "success": bool, "error": ...}."""
+    to a worker). Returns run status plus the exact attempt's delivery outcome and lane."""
     job_id = job["id"]
     _registered = False
     fire_owner = None
@@ -325,7 +333,19 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         if execution is not None and execution.get("status") != "completed":
             ok = False
             run_error = execution.get("error") or f"execution ended in {execution.get('status') or 'unknown'} state"
-        return {"claimed": True, "success": bool(processed and ok), "error": run_error}
+        from cron.scheduler_delivery import _delivery_lane_value, _normalize_deliver_value
+
+        # Delivery errors do not select the failure lane: the execution status reflects
+        # the agent/script result, unlike the job's combined delivery_failed status.
+        delivery_target = _normalize_deliver_value(_delivery_lane_value(
+            job, for_failure=(execution or {}).get("status") == "failed"))
+        return {
+            "claimed": True, "success": bool(processed and ok), "error": run_error,
+            "delivery_outcome": (execution or {}).get("delivery_outcome"),
+            "delivery_target": delivery_target,
+            "last_delivery_error": refreshed.get("last_delivery_error"),
+            "last_delivery_queued": refreshed.get("last_delivery_queued"),
+        }
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
         if _registered:
@@ -431,11 +451,13 @@ def _manual_run_completion(
     """Async-delegation completion block for a finished background manual run."""
     duration = round(time.time() - started_at, 2)
     refreshed = get_job(job_id) or {}
+    deliver = res.get("delivery_target", deliver)
     lines = [
         f"Cron job '{job_name}' ({job_id}) finished its manual run.",
         f"Result: {'ok' if res.get('success') else 'FAILED'}"
         + (f" — {res.get('error')}" if res.get("error") else ""),
-        f"Delivery target: {deliver}" + _manual_run_delivery_note(deliver, refreshed),
+        f"Delivery target: {deliver}"
+        + _manual_run_delivery_note(deliver, res, res.get("delivery_outcome")),
     ]
     if refreshed.get("next_run_at"):
         lines.append(f"Next scheduled run: {refreshed['next_run_at']}")

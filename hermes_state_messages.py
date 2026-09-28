@@ -28,8 +28,8 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
-                   display_metadata, display_identity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   display_metadata, display_identity, reasoning_shared)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -266,6 +266,11 @@ class SessionMessagesMixin:
         ``message_id`` (yuanbao's message-dict convention)."""
         _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None  # noqa: E731
         _reasoning = lambda key: msg.get(key) if keep_reasoning else None  # noqa: E731
+        reasoning = _scrub_surrogates(_reasoning("reasoning"))
+        reasoning_content = _scrub_surrogates(_reasoning("reasoning_content"))
+        # Keep the provider replay field literal; a flag distinguishes an omitted
+        # duplicate from legacy NULL reasoning and survives pure-SQL row clones.
+        reasoning_shared = isinstance(reasoning, str) and reasoning == reasoning_content
         encoded_content = self._encode_content(msg.get("content"))
         encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
         encoded_tool_name = _scrub_surrogates(msg.get("tool_name"))
@@ -279,13 +284,13 @@ class SessionMessagesMixin:
         return (session_id, role, encoded_content, msg.get("tool_call_id"),
             encoded_tool_calls, encoded_tool_name,
             msg.get("effect_disposition"), message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
-            _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
+            None if reasoning_shared else reasoning, reasoning_content,
             *(self._reasoning_json_text(_reasoning(k))
               for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
             msg.get("platform_message_id") or msg.get("message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
-            display_metadata, self._display_identity(self._display_dedupe_key(identity_row)))
+            display_metadata, self._display_identity(self._display_dedupe_key(identity_row)), int(reasoning_shared))
 
     def _serialized_message_row(
         self, session_id: str, msg: Dict[str, Any], message_timestamp: float
@@ -1296,6 +1301,8 @@ class SessionMessagesMixin:
         msg = dict(row)
         msg.pop("display_identity", None)
         msg.pop("display_order", None)
+        if msg.pop("reasoning_shared", 0):
+            msg["reasoning"] = msg["reasoning_content"]
         if summary_flag and msg.pop("_compressed_summary", 0):
             msg["_compressed_summary"] = True
         msg["content"] = self._decode_content(msg["content"])
@@ -1545,6 +1552,8 @@ class SessionMessagesMixin:
                 msg["observed"] = True
             if row["role"] == "assistant":
                 msg.update((col, row[col]) for col in ("finish_reason", "reasoning") if row[col])
+                if row["reasoning_shared"] and row["reasoning_content"]:
+                    msg["reasoning"] = row["reasoning_content"]
                 if row["reasoning_content"] is not None:
                     msg["reasoning_content"] = row["reasoning_content"]
                 msg.update(

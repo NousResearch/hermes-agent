@@ -439,6 +439,7 @@ CREATE TABLE IF NOT EXISTS messages (
     finish_reason TEXT,
     reasoning TEXT,
     reasoning_content TEXT,
+    reasoning_shared INTEGER NOT NULL DEFAULT 0,
     reasoning_details TEXT,
     codex_reasoning_items TEXT,
     codex_message_items TEXT,

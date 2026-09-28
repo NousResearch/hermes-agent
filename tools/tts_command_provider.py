@@ -142,8 +142,17 @@ def run_command_provider(
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.environments.local import hermes_subprocess_env
     scrubbed = hermes_subprocess_env(inherit_credentials=False)
+    # Own-process env is itself secret-scrubbed; command-provider env_passthrough may
+    # forward declared names even when the parent process env has them scrubbed
+    # (the value lives in the .env load or profile secret scope instead).
     for key in env_passthrough or []:
         value = os.environ.get(key)
+        if value is None:
+            try:
+                from tools.env_passthrough import resolve_passthrough_value
+                value = resolve_passthrough_value(key)
+            except Exception:
+                value = None
         if value is not None:
             scrubbed[key] = value
     # Own process group so the whole tree can be signalled on idle timeout. Lossy UTF-8 decode:

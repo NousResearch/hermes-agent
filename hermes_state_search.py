@@ -15,7 +15,7 @@ from agent.skill_commands import describe_skill_invocation
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
-    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
+    MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS, casefold_sql,
     escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
 
@@ -45,14 +45,7 @@ _QUOTED_PHRASE_RE = re.compile(r'"[^"]*"')
 # Column list shared by every search route (snippet + metadata, never content).
 _SEARCH_SELECT_TAIL = "m.timestamp, m.tool_name, s.source, s.model, s.started_at AS session_started"
 _LIKE_SNIPPET_SQL = "substr(m.content, max(1, instr(m.content, ?) - 40), 120) AS snippet"
-_LIKE_ANY_COLUMN_SQL = (
-    "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
-)
-_LIKE_COALESCED_COLUMN_SQL = (
-    "(COALESCE(m.content, '') LIKE ? ESCAPE '\\' OR "
-    "COALESCE(m.tool_name, '') LIKE ? ESCAPE '\\' OR "
-    "COALESCE(m.tool_calls, '') LIKE ? ESCAPE '\\')"
-)
+_LIKE_COLUMNS = ("m.content", "m.tool_name", "m.tool_calls")
 # ``sort`` -> ORDER BY for the FTS routes; unknown values are rank-only (user input passes through).
 _FTS_ORDER_BY = {"newest": "ORDER BY m.timestamp DESC, rank", "oldest": "ORDER BY m.timestamp ASC, rank"}
 # Indexed neighbor seeks avoid scanning whole sessions for a sparse set of hits.
@@ -101,9 +94,17 @@ def _quote_fts_tokens(raw_query: str) -> str:
     )
 
 
-def _like_params(term: str) -> List[str]:
-    """One ``%term%`` bind per column of ``_LIKE_ANY_COLUMN_SQL``."""
-    return [f"%{_escape_like(term)}%"] * 3
+def _like_any_column(term: str, *, coalesce: bool = False) -> Tuple[str, List[str]]:
+    """``%term%`` on content, tool_name or tool_calls -> (predicate, one bind per column).
+
+    SQLite's LIKE folds ASCII case only, so a term with a non-ASCII cased letter ("Ошибка",
+    "Straße") compares both sides casefolded (``casefold_sql``). Other terms (ASCII, CJK) keep
+    the plain LIKE: no per-row Python call on these full-table scans."""
+    columns = [f"COALESCE({col}, '')" if coalesce else col for col in _LIKE_COLUMNS]
+    if any(not ch.isascii() and ch.lower() != ch.upper() for ch in term):
+        columns, term = [casefold_sql(col) for col in columns], term.casefold()
+    predicate = " OR ".join(f"{col} LIKE ? ESCAPE '\\'" for col in columns)
+    return f"({predicate})", [f"%{_escape_like(term)}%"] * len(columns)
 
 
 def _strip_cjk_wildcards(raw_query: str) -> str:
@@ -997,8 +998,9 @@ class SessionSearchMixin:
                 continue
             clauses: List[str] = []
             for term, negated in group:
-                clauses.append(f"NOT {_LIKE_COALESCED_COLUMN_SQL}" if negated else _LIKE_COALESCED_COLUMN_SQL)
-                params.extend(_like_params(term))
+                predicate, term_params = _like_any_column(term, coalesce=True)
+                clauses.append(f"NOT {predicate}" if negated else predicate)
+                params.extend(term_params)
                 if snippet_term is None and not negated:
                     snippet_term = term
             compiled_groups.append(f"({' AND '.join(clauses)})")
@@ -1208,8 +1210,9 @@ class SessionSearchMixin:
             if matches is not None:
                 return matches
         non_op_tokens = _non_operator_tokens(raw_query) or [raw_query]
-        like_params: list = [p for tok in non_op_tokens for p in _like_params(tok)]
-        like_where = [f"({' OR '.join([_LIKE_ANY_COLUMN_SQL] * len(non_op_tokens))})"]
+        token_likes = [_like_any_column(tok) for tok in non_op_tokens]
+        like_params: list = [p for _, binds in token_likes for p in binds]
+        like_where = [f"({' OR '.join(sql for sql, _ in token_likes)})"]
         filters = {k: route[k] for k in ("include_inactive", "source_filter", "exclude_sources", "role_filter",
                                          "after_ts", "before_ts")}
         _search_filter_clauses(like_where, like_params, **filters)
@@ -1228,8 +1231,9 @@ class SessionSearchMixin:
                  if tok and tok.upper() not in _LIKE_SKIP_TOKENS]
         if not terms:
             return []
-        where = ["m.id > ? AND m.id <= ?", *([_LIKE_ANY_COLUMN_SQL] * len(terms))]
-        params: list = [status["indexed"], status["total"], *(p for term in terms for p in _like_params(term))]
+        term_likes = [_like_any_column(term) for term in terms]
+        where = ["m.id > ? AND m.id <= ?", *(sql for sql, _ in term_likes)]
+        params: list = [status["indexed"], status["total"], *(p for _, binds in term_likes for p in binds)]
         _search_filter_clauses(where, params, **filters)
         return self._like_rows(where, [terms[0], *params, limit], order_by="ORDER BY m.timestamp DESC",
                                limit_sql="LIMIT ?")

@@ -531,12 +531,18 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     media_files = media_files or []
     metadata = {"thread_id": thread_id} if thread_id else None
     from gateway.config import Platform
-    _, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
+    runner, live_adapter = _live_adapter(Platform.MATRIX, lookup_failed_warning=(
         "Matrix: live gateway adapter lookup failed; falling back to an "
         "ephemeral connect (may re-init E2EE per send)"))
     if live_adapter is not None:
         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
-        return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)
+        from tools.send_message_tool import _dispatch_on_gateway_loop
+
+        return await _dispatch_on_gateway_loop(
+            runner,
+            lambda: _matrix_send_core(live_adapter, chat_id, message, media_files, metadata),
+            "send_message: failed to schedule Matrix send on gateway loop",
+        )
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:
@@ -556,20 +562,49 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
 
 async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
     """Core send logic shared by live and ephemeral Matrix adapters."""
-    last_result = None
-    if message.strip():
-        last_result = await adapter.send(chat_id, message, metadata=metadata)
-        if not last_result.success:
-            return _error(f"Matrix send failed: {last_result.error}")
-    for media_path, is_voice in media_files:
-        if not os.path.exists(media_path):
-            return _error(f"Media file not found: {media_path}")
-        ext = os.path.splitext(media_path)[1].lower()
-        method, _ = _adapter_media_method(ext, (ext in _VOICE_EXTS and is_voice) or ext in _AUDIO_EXTS)
-        last_result = await getattr(adapter, method)(chat_id, media_path, metadata=metadata)
-        if not last_result.success:
-            return _error(f"Matrix media send failed: {last_result.error}")
-    return {"error": _NO_DELIVERABLE} if last_result is None else _success("matrix", chat_id, message_id=last_result.message_id)
+    from gateway.config import Platform
+    from gateway.delivery import DeliveryTransport
+    from gateway.session import SessionSource
+    from gateway.session_context import get_session_env
+    from hermes_cli.profiles import get_active_profile_name
+
+    thread_id = (metadata or {}).get("thread_id")
+    target = f"{chat_id}/{thread_id}" if thread_id else chat_id
+    try:
+        destination = await DeliveryTransport(adapter, None, Platform.MATRIX).resolve_destination(
+            SessionSource(
+                platform=Platform.MATRIX, chat_id=chat_id, thread_id=thread_id,
+                user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None,
+                profile=get_active_profile_name(),
+            )
+        )
+        adapter, source = destination.transport.adapter, destination.source
+        if source.chat_id != chat_id or source.thread_id != thread_id:
+            metadata = {**(metadata or {}), "_original_target": target}
+            if source.thread_id:
+                metadata["thread_id"] = source.thread_id
+            else:
+                metadata.pop("thread_id", None)
+        chat_id = source.chat_id
+        last_result = None
+        if message.strip():
+            last_result = await adapter.send(chat_id, message, metadata=metadata)
+            if not last_result.success:
+                return _error(f"Matrix send failed: {last_result.error}")
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                return _error(f"Matrix target '{target}': Media file not found: {media_path}")
+            ext = os.path.splitext(media_path)[1].lower()
+            method, _ = _adapter_media_method(ext, (ext in _VOICE_EXTS and is_voice) or ext in _AUDIO_EXTS)
+            last_result = await getattr(adapter, method)(chat_id, media_path, metadata=metadata)
+            if not last_result.success:
+                return _error(f"Matrix media send failed: {last_result.error}")
+        if last_result is None:
+            return {"error": _NO_DELIVERABLE}
+        return _success("matrix", chat_id, message_id=last_result.message_id,
+                        **({"thread_id": source.thread_id} if source.thread_id else {}))
+    except Exception as exc:
+        return _error(f"Matrix target '{target}': {exc}")
 
 
 def _gateway_platform_module(name, *, unavailable, unmet):

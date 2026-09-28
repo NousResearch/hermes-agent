@@ -36,6 +36,7 @@ async def test_alias_reaches_connected_native_adapter(monkeypatch, token):
         "platform": "matrix",
         "chat_id": alias,
         "message_id": "$sent",
+        "thread_id": "$root",
     }
     adapter.send.assert_awaited_once_with(
         alias, "report", metadata={"thread_id": "$root"}

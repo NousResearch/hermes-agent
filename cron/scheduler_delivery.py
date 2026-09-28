@@ -329,23 +329,35 @@ def _seed_cron_session(
 def _seed_cron_thread_session(
     job: dict, adapter, platform_name: str, chat_id: str, thread_id: str, mirror_text: str,
     chat_name: Optional[str] = None, is_dm: bool = False, scope_id: Optional[str] = None,
-    *, destination_source: Optional[SessionSource] = None,
+    *, destination_source: Optional[SessionSource] = None, user_id: Optional[str] = None,
 ) -> None:
-    """Seed the cron delivery's thread session with the brief (never raises), else the
-    user's in-thread reply resolves to a transcript without it. Threads are participant-shared
-    (no real user_id); a DM thread must seed ``chat_type="dm"`` — DM-thread replies route through
-    the DM arm (``…:dm:<chat>:<thread>``), so a "thread"-typed seed is a row no DM reply hits.
+    """Seed the cron delivery's reply session with the brief (never raises).
+    Participant-isolated threads require the originating user. A DM thread must seed
+    ``chat_type="dm"`` because DM-thread replies use the DM session key.
     Non-DM threads seed the slot the platform's adapter puts on an in-thread reply
     (``_THREAD_REPLY_CHAT_TYPE``)."""
     text = (mirror_text or "").strip()
     if not text:
+        return
+    session_config = getattr(getattr(adapter, "_session_store", None), "config", None)
+    if (
+        not is_dm
+        and getattr(session_config, "group_sessions_per_user", True) is not False
+        and getattr(session_config, "thread_sessions_per_user", False) is True
+        and not user_id
+    ):
+        logger.warning(
+            "Job '%s': thread seed skipped for %s:%s thread=%s without an originating participant",
+            job.get("id", "?"), platform_name, chat_id, thread_id,
+        )
         return
     try:
         ok = _seed_cron_session(
             job, adapter, platform_name, chat_id, text,
             thread_id=str(thread_id),
             chat_type="dm" if is_dm else _THREAD_REPLY_CHAT_TYPE.get(platform_name.lower(), "thread"),
-            user_id="system:cron", user_name="Cron", chat_name=chat_name, scope_id=scope_id,
+            user_id=user_id or "system:cron", user_name=None if user_id else "Cron",
+            chat_name=chat_name, scope_id=scope_id,
             discord_keys_on_thread=True, destination_source=destination_source)
         if ok:
             logger.info(
@@ -1600,7 +1612,7 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
     if seed_thread_id:
         _seed_cron_thread_session(
             job, t.runtime_adapter, t.platform_name, t.chat_id, seed_thread_id, t.mirror_text,
-            destination_source=t.resolved_source, **seed_kwargs,
+            destination_source=t.resolved_source, user_id=t.origin_user_id, **seed_kwargs,
         )
         thread_seeded = True
     # in_channel: CREATE + seed the flat session (the mirror only APPENDS to an existing one). Same
@@ -1621,7 +1633,7 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
             _seed_cron_thread_session(
                 job, t.runtime_adapter, t.platform_name, t.chat_id, str(delivered_message_id),
                 t.mirror_text,
-                destination_source=t.resolved_source, **seed_kwargs)
+                destination_source=t.resolved_source, user_id=t.origin_user_id, **seed_kwargs)
     elif t.in_channel_surface and not t.inchannel_continuable:
         logger.warning(
             "Job '%s': in_channel delivery to %s:%s is not a "

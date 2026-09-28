@@ -133,9 +133,13 @@ class TestStripMention:
 
 class TestOutboundMentions:
     def setup_method(self):
+        class MissingEncryptionState(Exception):
+            errcode = "M_NOT_FOUND"
+
         self.adapter = _make_adapter()
         self.mock_client = MagicMock()
         self.mock_client.send_message_event = AsyncMock(return_value="$evt1")
+        self.mock_client.get_state_event = AsyncMock(side_effect=MissingEncryptionState())
         self.adapter._client = self.mock_client
 
     @staticmethod

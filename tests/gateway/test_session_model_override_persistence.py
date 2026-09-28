@@ -15,11 +15,12 @@ Covers:
   - api_key is NEVER serialized to sessions.json
 """
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import (
     SessionEntry,
     SessionSource,
@@ -139,6 +140,55 @@ def test_runner_rehydrates_override_after_restart(store_factory):
     assert runtime["max_tokens"] == 32_768
     route = runner._resolve_turn_agent_config("", model, runtime)
     assert route["runtime"]["capabilities"] == {"openai_native_compaction": True}
+
+
+@pytest.mark.asyncio
+async def test_slack_model_command_rehydrates_persisted_route_before_resolving_target(
+    store_factory, tmp_path, monkeypatch,
+):
+    """After restart, `/model <alias>` must resolve from the Slack session's persisted provider.
+
+    Alias resolution is provider-sensitive, so starting from the global route can send a valid
+    shorthand to the wrong provider even though the session's selected provider was persisted.
+    """
+    import yaml
+
+    store = store_factory()
+    source = SessionSource(
+        platform=Platform.SLACK, user_id="U1", chat_id="D1", chat_type="dm",
+    )
+    session_key = store.get_or_create_session(source).session_key
+    store.set_model_override(session_key, {
+        "model": "claude-opus-5", "provider": "anthropic", "base_url": "https://api.anthropic.example/v1",
+    })
+
+    runner = _make_runner(store_factory())
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "model": {"default": "global-model", "provider": "openrouter"}, "providers": {},
+    }), encoding="utf-8")
+    import gateway.run as gateway_run
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs_for_provider",
+        lambda provider, target_model=None: {
+            "provider": provider, "api_key": "test-key", "base_url": "https://api.anthropic.example/v1",
+        },
+    )
+
+    captured = {}
+
+    async def capture_switch(ctx, raw_input, explicit_provider, command_source):
+        captured.update(provider=ctx.current_provider, model=ctx.current_model, target=raw_input)
+        return None, "stop after route capture"
+
+    runner._perform_model_switch = AsyncMock(side_effect=capture_switch)
+    event = MessageEvent(text="/model opus", message_type=MessageType.TEXT, source=source)
+
+    result = await runner._handle_model_command_locked(event)
+
+    assert result == "stop after route capture"
+    assert captured == {"provider": "anthropic", "model": "claude-opus-5", "target": "opus"}
 
 
 def test_rehydrate_llamacpp_override_follows_live_managed_port(store_factory):

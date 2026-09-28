@@ -347,22 +347,3 @@ def find_entry_for_model(model_id: str) -> "tuple[CatalogEntry, QuantVariant] | 
 def entry_for_model(model_id: str) -> "CatalogEntry | None":
     hit = find_entry_for_model(model_id)
     return hit[0] if hit is not None else None
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import re  # noqa: F401,E402
-
-def find_variant(entry_id: str, model_id: str) -> QuantVariant | None:
-    entry = catalog_by_id().get(entry_id)
-    if entry is None:
-        return None
-    return next((v for v in entry.variants if v.model_id == model_id), None)
-
-def recommended_id(budget: HardwareBudget,
-                   entries: "tuple[CatalogEntry, ...] | None" = None) -> str | None:
-    picked = recommended_entry(budget, entries)
-    return picked[0].id if picked is not None else None
-# ---- END PLUGIN-COMPAT ----

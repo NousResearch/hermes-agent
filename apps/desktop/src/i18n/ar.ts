@@ -1161,6 +1161,7 @@ export const ar = defineLocale({
       restartFailed: 'تعذر إعادة تشغيل الخلفية',
       auxiliaryTitle: 'النماذج المساعدة',
       resetAllToMain: 'إعادة تعيين الكل إلى النموذج الرئيسي',
+      staleAuxDismiss: 'عدم الإظهار مجددًا',
       auxiliaryDesc: 'تعمل المهام المساعدة على النموذج الرئيسي افتراضيا. عيّن نموذجا مخصصا لأي مهمة لتجاوز ذلك.',
       setToMain: 'ضبط على الرئيسي',
       change: 'تغيير',
@@ -1451,11 +1452,6 @@ export const ar = defineLocale({
       system: 'النظام',
       usage: 'الاستخدام'
     },
-    sectionDescriptions: {
-      sessions: 'البحث في الجلسات وإدارتها',
-      system: 'الحالة والسجلات وإجراءات النظام',
-      usage: 'نشاط الرموز والتكلفة والمهارات عبر الزمن'
-    },
     nav: {
       newChat: {
         title: 'جلسة جديدة',
@@ -1520,6 +1516,7 @@ export const ar = defineLocale({
     actionStartedWaiting: 'بدأ الإجراء، جار الانتظار...',
     loadingStatus: 'جار تحميل الحالة',
     recentLogs: 'السجلات الأخيرة',
+    logSearchPlaceholder: 'البحث في سطور السجل...',
     noLogs: 'لا توجد سجلات',
     days: count => `${count} يوم`,
     statSessions: 'الجلسات',
@@ -1542,6 +1539,13 @@ export const ar = defineLocale({
   },
   messaging: {
     search: 'بحث',
+    statusFilter: {
+      all: 'الكل',
+      bad: 'أخطاء',
+      good: 'متصل',
+      muted: 'غير نشط',
+      warn: 'يحتاج انتباهًا'
+    },
     loading: 'جار التحميل...',
     loadFailed: 'فشل التحميل',
     states: {
@@ -2382,6 +2386,8 @@ export const ar = defineLocale({
     restoredDraftNotice: 'تمت استعادة رسالتك غير المُرسلة',
     restoredDraftUndo: 'تراجع',
     queueEdit: 'تحرير الرسالة المجدولة',
+    queueExpand: 'توسيع',
+    queueCollapse: 'طي',
     queueSendNext: 'إرسالها تاليا',
     queueSteer: 'توجيه — تصحيح الدور الجاري فورا',
     queueSend: 'إرسالها الآن',
@@ -3687,6 +3693,11 @@ export const ar = defineLocale({
   ui: {
     search: {
       clear: 'مسح البحث'
+    },
+    logs: {
+      bottom: 'أسفل السجل',
+      search: 'البحث في السجلات…',
+      top: 'أعلى السجل'
     },
     pagination: {
       label: 'ترقيم الصفحات',

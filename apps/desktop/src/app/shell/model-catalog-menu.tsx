@@ -13,6 +13,7 @@ import {
   useState
 } from 'react'
 
+import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
@@ -702,12 +703,9 @@ export function ModelCatalogMenu({
                               <HighlightMatches foldSeparators query={search} text={name} />
                             </span>
                             {metaTags.map(chip => (
-                              <span
-                                className="shrink-0 rounded-sm border border-(--ui-stroke-secondary) bg-(--chrome-action-hover) px-1 py-px text-[0.625rem] font-medium uppercase leading-none tracking-wide text-(--ui-text-tertiary)"
-                                key={chip}
-                              >
+                              <Badge className="shrink-0 uppercase tracking-wide" key={chip} size="xs" variant="muted">
                                 {chip}
-                              </span>
+                              </Badge>
                             ))}
                           </span>
                           {loadProgress ? (

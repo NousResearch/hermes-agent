@@ -74,6 +74,31 @@ def test_acp_explicit_provider_prefix_becomes_explicit_provider(monkeypatch):
     assert made["requested_provider"] == "anthropic" and made["base_url"] == "https://api.anthropic.com"
 
 
+def test_acp_legacy_named_provider_model_id_is_upgraded(monkeypatch):
+    seen: dict = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"providers": {"9router": {"name": "9Router", "base_url": "https://router.example/v1"}}},
+    )
+
+    def _switch(**kw):
+        seen.update(kw)
+        return ModelSwitchResult(
+            success=True, new_model=kw["raw_input"], target_provider=kw["explicit_provider"]
+        )
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+    agent, _made = _acp_agent()
+    state = _state()
+    state.agent.provider = "custom"
+    old, new_provider, model = agent._switch_model(state, "9router:tflow/model")
+
+    assert seen["explicit_provider"] == "custom:9router"
+    assert seen["raw_input"] == "tflow/model"
+    assert (old, new_provider, model) == ("custom", "custom:9router", "tflow/model")
+
+
 def test_acp_set_session_model_runs_switch_model_off_the_event_loop(monkeypatch):
     """``switch_model`` does ~10 s of sync network I/O on a cold cache; ACP must run it on a
     worker thread (like the gateway) or every session in the process stalls."""

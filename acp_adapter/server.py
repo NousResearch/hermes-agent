@@ -49,6 +49,38 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 _LIST_SESSIONS_PAGE_SIZE = 50
 
 
+def _canonicalize_legacy_named_model_id(raw_model: str, config: Any) -> str:
+    """Upgrade pre-canonical ACP ids like ``<providers-key>:<model>``.
+
+    Older ACP catalogs exposed a configured ``providers:`` key directly. Keep those ids
+    usable when a client sends a cached choice after the catalog now advertises
+    ``custom:<key>:<model>``; canonical ids and ordinary vendor/model strings pass through.
+    """
+    raw = str(raw_model or "").strip()
+    providers = config.get("providers") if isinstance(config, dict) else None
+    if not raw or not isinstance(providers, dict):
+        return raw
+
+    lowered = raw.lower()
+    for key, entry in sorted(providers.items(), key=lambda item: len(str(item[0])), reverse=True):
+        provider_key = str(key or "").strip()
+        if not provider_key or not isinstance(entry, dict):
+            continue
+        prefix = provider_key.lower()
+        if not lowered.startswith(prefix + ":"):
+            continue
+        model = raw[len(provider_key) + 1 :].strip()
+        if not model or prefix == "custom":
+            continue
+        from hermes_cli.models import CANONICAL_PROVIDERS, normalize_provider
+        from hermes_cli.providers import custom_provider_slug
+
+        if normalize_provider(prefix) in {item.slug for item in CANONICAL_PROVIDERS}:
+            return raw
+        return f"{custom_provider_slug(str(entry.get('name') or provider_key), provider_key)}:{model}"
+    return raw
+
+
 def _flatten_history_text(value: Any) -> str:
     """Persisted content/reasoning (str, or list of ``{"text"}`` / ``{"type": "text", "content"}``
     parts) -> one stripped string; whitespace-only collapses to ``""`` ("nothing to emit")."""
@@ -301,7 +333,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         model = str(state.model or getattr(state.agent, "model", "") or "").strip()
         provider = getattr(state.agent, "provider", None) or detect_provider() or "openrouter"
         try:
-            picker = build_model_state(model, provider, str(getattr(state.agent, "base_url", "") or ""))
+            picker = build_model_state(
+                model,
+                provider,
+                str(getattr(state.agent, "base_url", "") or ""),
+                requested_provider=getattr(state.agent, "requested_provider", None),
+            )
             if picker is not None:
                 return picker
         except Exception:
@@ -326,9 +363,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         from hermes_cli.model_switch import switch_model
         from hermes_cli.models import parse_model_input
 
+        cfg = load_config()
+        raw_model = _canonicalize_legacy_named_model_id(raw_model, cfg)
         current_provider = getattr(state.agent, "provider", None)
         explicit_provider, model_input = parse_model_input(raw_model, "")
-        cfg = load_config()
         result = switch_model(
             raw_input=model_input, explicit_provider=explicit_provider,
             current_provider=current_provider or "openrouter", current_model=str(state.model or ""),

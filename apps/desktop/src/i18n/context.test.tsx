@@ -5,6 +5,8 @@ import type { HermesConfigRecord } from '@/hermes'
 
 import { TRANSLATIONS } from './catalog'
 import { type I18nConfigClient, I18nProvider, useI18n } from './context'
+import { registerAppLocale } from './registry'
+import { $requestedLocale } from './runtime'
 import type { Locale } from './types'
 
 function LanguageProbe({ target = 'zh' }: { target?: Locale }) {
@@ -138,6 +140,63 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale').textContent).toBe('en')
     expect(screen.getByTestId('label').textContent).toBe('Language')
     expect(configClient.saveConfig).not.toHaveBeenCalled()
+    // …but remembers the ask so a backend pack for it can be fetched.
+    expect($requestedLocale.get()).toBe('it')
+  })
+
+  it('promotes a saved pack-only language once its pack registers, then drops back when it is removed', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'pl' } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+    expect(screen.getByTestId('locale').textContent).toBe('en')
+
+    const dispose = registerAppLocale(
+      'pl',
+      { endonym: 'Polski', translations: { language: { label: 'Język' } } },
+      'backend'
+    )
+
+    try {
+      await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('pl'))
+      expect(screen.getByTestId('label').textContent).toBe('Język')
+      // Unregistered keys fall back to English, never to the raw key.
+      expect(screen.getByTestId('save').textContent).toBe(TRANSLATIONS.en.common.save)
+      expect(document.documentElement.lang).toBe('pl')
+      expect(configClient.saveConfig).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+
+    // The pack is gone (profile switch): strings fall back to English while the
+    // chosen id stays put for the next sync.
+    await waitFor(() => expect(screen.getByTestId('label').textContent).toBe('Language'))
+    expect(screen.getByTestId('locale').textContent).toBe('pl')
+  })
+
+  it('mirrors a registered language’s direction onto the document', async () => {
+    const dispose = registerAppLocale('he', { endonym: 'עברית', rtl: true }, 'plugin:hermes-lang-he')
+
+    try {
+      render(
+        <I18nProvider configClient={null} initialLocale="he">
+          <LanguageProbe />
+        </I18nProvider>
+      )
+
+      expect(screen.getByTestId('locale').textContent).toBe('he')
+      expect(document.documentElement.dir).toBe('rtl')
+    } finally {
+      dispose()
+    }
   })
 
   it('reads latest config before saving language and preserves unrelated values', async () => {

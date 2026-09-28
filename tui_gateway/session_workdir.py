@@ -453,8 +453,10 @@ def _persist_branch_seed(session: dict) -> None:
     ``history`` and must never re-append it."""
     if not (key := session.get("session_key")) or not session.get("seeded") or session.get("_branch_seed_persisted"):
         return
-    with session["history_lock"]:
-        seed = [dict(msg) for msg in (session.get("history") or [])]
+    from agent.message_metadata import message_identity
+    with session["history_lock"]:  # message_identity stamps the live dicts
+        seed = [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
+                 **message_identity(msg)} for msg in (session.get("history") or [])]
     if not seed:
         return
     with _session_db(session) as db:
@@ -465,9 +467,7 @@ def _persist_branch_seed(session: dict) -> None:
             # partial seed with _branch_seed_persisted unset.
             # Bounded-chunk transactions (see #23254): a branch seed can be hundreds of rows; chunking keeps
             # each BEGIN IMMEDIATE short so concurrent writers aren't starved.
-            db.append_messages_batch(
-                key, [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS}} for msg in seed],
-                chunk_rows=500)
+            db.append_messages_batch(key, seed, chunk_rows=500)
             session["_branch_seed_persisted"] = True
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
@@ -483,7 +483,7 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -
     if not key or not isinstance(text, str) or not text.strip():
         return None
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from agent.message_metadata import stamp_message_timestamp
+    from agent.message_metadata import stamp_message_timestamp, stamp_message_uid
     staged = stamp_message_timestamp({"role": "user", "content": text})
     if display_kind:
         staged["display_kind"] = display_kind
@@ -492,7 +492,8 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -
             return None
         try:
             staged["_row_id"] = db.append_message(
-                key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"])
+                key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
+                message_uid=stamp_message_uid(staged))  # the live dict the turn adopts carries the row's uid
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
             return None

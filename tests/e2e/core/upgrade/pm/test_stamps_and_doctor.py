@@ -11,8 +11,8 @@ is not the installer's. Then:
 * ``hermes doctor`` on that healthy install reports nothing wrong with the command installation
   (#124050 is the false positive class) and ``hermes pm status`` reports the update as a success;
 * real drift is caught and healed: a user uninstalls fastapi (the ``web`` extra the dashboard
-  imports) from the selected environment. ``hermes doctor`` must say so (gated on #124214: it
-  reports nothing), and ``hermes pm repair`` must bring the dashboard's import back;
+  imports) from the selected environment. ``hermes doctor`` must say so, and ``hermes pm repair``
+  must bring the dashboard's import back;
 * a dependency update that cannot resolve fails loudly, ``hermes pm status`` reports it as failed,
   and the previous generation stays selected and working.
 """
@@ -82,11 +82,9 @@ def test_managed_env_hermes_can_check_for_updates(updated):
     exe = _venv_hermes(sb)
     assert Path(exe).is_file(), f"harness: selected generation ships no hermes console script: {exe}"
     cp = sb.run([exe, "update", "--check"], timeout=300)
-    with known_failure(r"`hermes update --check` from the managed environment: .*Not a git repository",
-                       "gated on #122627: PROJECT_ROOT resolves to the PM workspace copy"):
-        assert cp.returncode == 0 and "Not a git repository" not in cp.stdout + cp.stderr, (
-            "`hermes update --check` from the managed environment: " + (cp.stdout + cp.stderr).strip()[-400:]
-            + "\n" + I.describe(cp))
+    assert cp.returncode == 0 and "Not a git repository" not in cp.stdout + cp.stderr, (
+        "`hermes update --check` from the managed environment: " + (cp.stdout + cp.stderr).strip()[-400:]
+        + "\n" + I.describe(cp))
 
 
 def test_managed_env_hermes_reports_the_checkout_as_the_install(updated):
@@ -139,10 +137,8 @@ def test_doctor_reports_web_extra_drift(drifted):
     flagged = [line for line in cp.stdout.splitlines()
                if re.search(r"(?i)fastapi|dashboard|web extra|\bweb\b.*(missing|not installed)", line)
                and line.lstrip().startswith(("⚠", "✗"))]
-    with known_failure(r"hermes doctor is silent about fastapi missing from the selected environment",
-                       "gated on #124214: web-extra dependency drift is invisible to doctor"):
-        assert flagged, ("hermes doctor is silent about fastapi missing from the selected environment "
-                         f"(rc={cp.returncode})\n" + I.describe(cp))
+    assert flagged, ("hermes doctor is silent about fastapi missing from the selected environment "
+                     f"(rc={cp.returncode})\n" + I.describe(cp))
 
 
 def test_pm_repair_heals_the_drift(drifted):

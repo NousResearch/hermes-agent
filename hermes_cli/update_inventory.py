@@ -511,12 +511,3 @@ def record_plan_in_receipt(plan: UpdatePlan) -> None:
             current.data["plan"] = plan.to_dict()
     except Exception as exc:
         logger.debug("Could not record plan in receipt: %s", exc)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import Path  # noqa: F401,E402
-import os  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

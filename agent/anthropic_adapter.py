@@ -101,6 +101,13 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-son
 # 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
 _MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",)
+# Families whose "off" is ``thinking: {"type": "between_tools"}``: ``disabled`` answers HTTP 400 and
+# ``between_tools`` (no up-front thinking, short progress notes between tool calls) is the lowest
+# setting. It takes no other thinking field and 400s at xhigh/max effort, so the disable path sends
+# it bare with no ``output_config`` (API default effort: high). Off anthropic.com (Nous Portal, whose
+# own Messages validation 400s on the new type; Bedrock and Azure are unverified) these families keep
+# the mandatory-thinking omission, which fails safe: thinking stays on instead of the turn 400ing.
+_BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS = ("claude-sonnet-5-5", "claude-sonnet-5.5")
 
 
 def _is_claude_model(model: str | None) -> bool:
@@ -191,6 +198,7 @@ def _accepts_thinking_disable(model: str) -> bool:
         _is_claude_model(model)
         and _supports_adaptive_thinking(model)
         and not _model_matches(model, _MANDATORY_THINKING_CLAUDE_SUBSTRINGS)
+        and not _model_matches(model, _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS)
     )
 
 
@@ -580,7 +588,9 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
     return system
 
 
-def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int) -> Dict[str, Any]:
+def _thinking_kwargs(
+    reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int, *, base_url: str | None,
+) -> Dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
     Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
     manual-only compat endpoints (MiniMax) get budget_tokens. Haiku has no extended thinking. On
@@ -590,6 +600,8 @@ def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max
         # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
         # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the
         # omission: a silently-ignored disable beats a dead turn.
+        if _model_matches(model, _BETWEEN_TOOLS_OFF_CLAUDE_SUBSTRINGS):
+            return {} if _is_third_party_anthropic_endpoint(base_url) else {"thinking": {"type": "between_tools"}}
         return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
     if "haiku" in model.lower():
         return {}
@@ -663,7 +675,7 @@ def build_anthropic_kwargs(
     # reasoning blocks stay populated — matching 4.6 behavior and preserving the activity-feed UX during
     # long tool runs.
     if reasoning_config and isinstance(reasoning_config, dict):
-        kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens))
+        kwargs.update(_thinking_kwargs(reasoning_config, model, effective_max_tokens, base_url=base_url))
     # Safety net so upstream 4.6 -> 4.7 migrations don't need coordinated edits everywhere callers
     # (auxiliary_client, ...) set sampling params.
     if _forbids_sampling_params(model):

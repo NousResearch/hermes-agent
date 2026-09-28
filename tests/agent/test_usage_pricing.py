@@ -902,3 +902,14 @@ def test_anthropic_fast_response_without_a_fast_rate_is_unknown():
     result = estimate_usage_cost("claude-sonnet-4-6", _anthropic_usage("fast"), provider="anthropic")
     assert result.amount_usd is None
     assert result.status == "unknown"
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "anthropic/claude-sonnet-5.5"])
+def test_sonnet_5_5_bills_at_sonnet_5_rates(model):
+    """Anthropic's migration guide: Sonnet 5.5 "has the same prices as Claude Sonnet 5"."""
+    new = get_pricing_entry(model, provider="anthropic")
+    old = get_pricing_entry("claude-sonnet-5", provider="anthropic")
+    assert new is not None and old is not None
+    fields = ("input_cost_per_million", "output_cost_per_million", "cache_read_cost_per_million",
+              "cache_write_cost_per_million")
+    assert [getattr(new, f) for f in fields] == [getattr(old, f) for f in fields]

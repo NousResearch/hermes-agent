@@ -64,6 +64,35 @@ class TestThinkingOffIsSentExplicitly:
         kwargs = _kwargs("anthropic/claude-fable-5", {"enabled": False})
         assert "thinking" not in kwargs
 
+    @pytest.mark.parametrize(
+        "model", ["claude-sonnet-5-5", "anthropic/claude-sonnet-5.5", "claude-sonnet-5-5-20260928"]
+    )
+    def test_between_tools_families_send_their_lowest_setting(self, model: str) -> None:
+        """Sonnet 5.5 400s on ``disabled``; ``between_tools`` is its off, sent bare because it
+        rejects every other thinking field and xhigh/max effort."""
+        kwargs = _kwargs(model, {"enabled": False, "effort": "xhigh"})
+        assert kwargs["thinking"] == {"type": "between_tools"}
+        assert "output_config" not in kwargs
+
+    def test_between_tools_prefix_does_not_capture_sonnet_5(self) -> None:
+        """``claude-sonnet-5`` still accepts ``disabled``: the ``-5`` minor is load-bearing."""
+        assert _kwargs("claude-sonnet-5", {"enabled": False})["thinking"] == {"type": "disabled"}
+
+    @pytest.mark.parametrize(
+        "base_url, expected",
+        [
+            (None, {"type": "between_tools"}),
+            ("https://api.anthropic.com", {"type": "between_tools"}),
+            # Portal's /v1/messages 400s on ``between_tools`` ("Invalid Anthropic Messages API
+            # request") and on ``disabled`` ("Reasoning is mandatory"); omission is the only 200.
+            ("https://inference-api.nousresearch.com/v1", None),
+            ("https://bedrock-runtime.us-east-1.amazonaws.com", None),
+        ],
+    )
+    def test_between_tools_off_shape_follows_the_endpoint(self, base_url, expected) -> None:
+        kwargs = _kwargs("anthropic/claude-sonnet-5.5", {"enabled": False}, base_url=base_url)
+        assert kwargs.get("thinking") == expected
+
     def test_legacy_manual_thinking_models_keep_the_omission(self) -> None:
         """Pre-4.6 thinking is opt-in via budget_tokens: absence IS off."""
         kwargs = _kwargs("claude-sonnet-4-5", {"enabled": False})

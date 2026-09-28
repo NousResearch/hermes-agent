@@ -117,7 +117,8 @@ def cwd_follows_host_mount(cwd: str, mount: str) -> bool:
         return True
     return cwd == "/workspace" and mount != "/workspace"
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox", "kubernetes"})
+
 _BUILTIN_BACKENDS = _CONTAINER_BACKENDS | {"local", "ssh", "managed_modal"}
 
 

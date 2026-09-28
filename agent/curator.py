@@ -190,6 +190,19 @@ def _cron_referenced_skills() -> Set[str]:
         return set()
 
 
+def _kanban_referenced_skills() -> Set[str]:
+    """Skill names an unfinished kanban card assigned to this profile will force-load. A worker exits with
+    ``Unknown skill(s)`` when one is archived, so the card auto-blocks after ``kanban.failure_limit`` spawns.
+    Best-effort like the cron lookup: any kanban error yields an empty set, never a crash."""
+    try:
+        from hermes_cli.kanban_db_skills import referenced_skill_names as _refs
+        from hermes_cli.profiles import get_active_profile_name
+        return _refs(get_active_profile_name())
+    except Exception as e:
+        logger.debug("Curator could not read kanban skill references: %s", e, exc_info=True)
+        return set()
+
+
 def _archive_as_curator(_u, name: str) -> bool:
     """Archive via skill_usage with the ledger actor tagged 'curator', so the ledger entry reads as an autonomous transition, not a foreground call."""
     try:
@@ -214,9 +227,9 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     now = now or datetime.now(timezone.utc)
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
-    # Cron-referenced skills are in use by definition (usage only bumps when a
-    # job fires, so paused/rare jobs would age them out). Treat as pinned.
-    protected = _cron_referenced_skills()
+    # Cron- and kanban-referenced skills are in use by definition (usage only bumps when a
+    # job fires or a card's worker loads them, so paused jobs and queued cards would age them out). Treat as pinned.
+    protected = _cron_referenced_skills() | _kanban_referenced_skills()
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
 
     def _set(name: str, state: str, key: str) -> None:
@@ -330,6 +343,10 @@ CURATOR_REVIEW_PROMPT = (
     "run. You MAY still consolidate it into an umbrella — but only because "
     "the curator rewrites cron job skill references to follow consolidations; "
     "never simply prune it.\n"
+    "3d. DO NOT archive, prune, consolidate, move, or rename any skill marked "
+    "`kanban=yes`. An unfinished kanban card names it and its worker refuses "
+    "to start when the name no longer resolves; card references are not "
+    "rewritten.\n"
     "4. DO NOT use usage counters as a reason to skip consolidation. The "
     "counters are new and often mostly zero. Judge overlap on CONTENT, "
     "not on use_count. 'use=0' is not evidence a skill is valuable; it's "
@@ -851,9 +868,11 @@ def _render_candidate_list() -> str:
     if not rows:
         return "No agent-created skills to review."
     cron_referenced = _cron_referenced_skills()
+    kanban_referenced = _kanban_referenced_skills()
     return "\n".join([f"Agent-created skills ({len(rows)}):\n"] + [
         f"- {r['name']}  provenance={r.get('provenance', 'agent')}  state={r['state']}  "
         f"pinned={'yes' if r.get('pinned') else 'no'}  cron={'yes' if r['name'] in cron_referenced else 'no'}  "
+        f"kanban={'yes' if r['name'] in kanban_referenced else 'no'}  "
         f"activity={r.get('activity_count', 0)}  use={r.get('use_count', 0)}  view={r.get('view_count', 0)}  "
         f"patches={r.get('patch_count', 0)}  last_activity={r.get('last_activity_at') or 'never'}"
         for r in rows

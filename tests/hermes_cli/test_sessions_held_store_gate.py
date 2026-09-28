@@ -97,6 +97,21 @@ def test_store_rewrites_refuse_and_name_the_holder_until_forced(action, state_db
     assert "Refusing" not in capsys.readouterr().out
 
 
+def test_exact_selection_prune_is_held_store_gated_before_the_plan_is_read(
+    state_db, foreign_holder, tmp_path, capsys
+):
+    args = _args("prune", force=False)
+    args.selection_file = tmp_path / "missing-plan.json"
+    assert sessions_cmd.cmd_sessions(args) == 1
+    out = capsys.readouterr().out
+    assert "Refusing `hermes sessions prune`" in out and "--force" in out
+
+    args.force = True
+    assert sessions_cmd.cmd_sessions(args) == 1
+    out = capsys.readouterr().out
+    assert "Refusing" not in out and "Error:" in out
+
+
 def test_prune_preview_passes_the_delete_waits_for_a_quiet_store(state_db, foreign_holder, capsys):
     # A preview never rewrites anything, so it is answered even while the holder lives.
     prune_preview = _args("prune", force=False)

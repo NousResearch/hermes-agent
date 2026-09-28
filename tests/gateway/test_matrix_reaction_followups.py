@@ -290,11 +290,12 @@ def test_watch_claim_is_scoped_atomic_and_expires_without_sleep(tmp_path):
 
 @pytest.mark.parametrize("bound_session", [False, True])
 def test_existing_watch_database_discards_rows_without_delivery_event(tmp_path, bound_session):
+    from contextlib import closing
     import json
     import sqlite3
 
     path = tmp_path / "watches.sqlite"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("""
             CREATE TABLE watches (
                 event_id TEXT PRIMARY KEY, turn_id TEXT NOT NULL,

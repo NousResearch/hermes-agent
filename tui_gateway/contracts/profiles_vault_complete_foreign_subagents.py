@@ -48,10 +48,13 @@ method("complete.path", params=CompletePathParams, result=CompletionItemsResult,
 
 
 class CompleteSlashParams(Params):
-    """``session_id`` binds skill completions to that session's profile and workspace (project skills)."""
+    """``session_id`` binds skill completions to that session's profile and workspace (project skills).
+    ``profile`` scopes a request with no session yet (a new-chat draft); a resolved ``session_id``
+    always wins over it."""
 
     text: str | None = None
     session_id: str | None = None
+    profile: str | None = None
 
 
 class CompleteSlashResult(Result):

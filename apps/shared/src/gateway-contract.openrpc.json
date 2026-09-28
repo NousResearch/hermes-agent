@@ -8060,7 +8060,7 @@
       },
       "CompleteSlashParams": {
         "additionalProperties": false,
-        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills).",
+        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills).\n``profile`` scopes a request with no session yet (a new-chat draft); a resolved ``session_id``\nalways wins over it.",
         "properties": {
           "text": {
             "anyOf": [
@@ -8085,6 +8085,18 @@
             ],
             "default": null,
             "title": "Session Id"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
           }
         },
         "title": "CompleteSlashParams",

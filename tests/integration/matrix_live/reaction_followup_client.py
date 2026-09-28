@@ -235,7 +235,9 @@ async def _exchange(
             await asyncio.to_thread(
                 (home / "room-input-published").write_text, root, encoding="utf-8"
             )
-        await _send_text(client, room_id, "Prime encrypted thread", root=root)
+        prime_id = await _send_text(
+            client, room_id, "Prime encrypted thread", root=root
+        )
         await _next_reply(client, room_id, replies, "Matrix live reply", root)
         intake_id = await _send_text(
             client, room_id, "Watch the split answer", root=root
@@ -248,6 +250,7 @@ async def _exchange(
         ]
         return {
             "root": root,
+            "prime_id": prime_id,
             "intake_id": intake_id,
             "event_ids": [chunk.event_id for chunk in chunks],
         }

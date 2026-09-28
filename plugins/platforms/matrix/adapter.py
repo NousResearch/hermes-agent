@@ -863,6 +863,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         # because _absorb_sync clears that cache whenever a sync response includes joined rooms.
         self._room_state_values: dict[str, dict[str, Optional[str]]] = {}
         self._event_context_cache = MatrixEventContextCache()
+        self._text_batch_intakes: dict[int, list[tuple[str, asyncio.Future[bool]]]] = {}
         self._thread_fallbacks = ThreadFallbackTracker()
         try:
             self._thread_backfill_limit = max(0, min(100, int(config.extra.get("thread_backfill_limit", 20))))
@@ -1441,6 +1442,12 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         dispatch = getattr(self._client, "hermes_sync", None)
         if isinstance(dispatch, SyncDispatch):
             await dispatch.cancel()
+        batch_tasks = tuple(self._pending_text_batch_tasks.values())
+        for task in batch_tasks:
+            task.cancel()
+        await asyncio.gather(*batch_tasks, return_exceptions=True)
+        self._pending_text_batches.clear()
+        self._text_batch_intakes.clear()
         for tasks in (self._invite_join_tasks.values(), self._reaction_redaction_tasks):
             pending = list(tasks)
             for task in pending:
@@ -1532,7 +1539,8 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
                 is_ephemeral_response=is_ephemeral_response)
             if result.success and result.message_id:
                 ids = (*result.continuation_message_ids, result.message_id)
-                replay = self.on_streamed_final_delivery(event.source, session_key, ids, text_content)
+                replay = self._register_followup_delivery(
+                    event.source, session_key, ids, text_content, delivery_adapter)
                 if replay is not None:
                     await replay
             return result, delivery_adapter
@@ -1542,6 +1550,12 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
     def on_streamed_final_delivery(
         self, source: SessionSource, session_key: str, ids: tuple[str, ...], text_content: str,
     ) -> Awaitable[None] | None:
+        return self._register_followup_delivery(source, session_key, ids, text_content, self)
+
+    def _register_followup_delivery(
+        self, source: SessionSource, session_key: str, ids: tuple[str, ...],
+        text_content: str, delivery_adapter: BasePlatformAdapter,
+    ) -> Awaitable[None] | None:
         action = self._reaction_followup_actions.get(session_key)
         if not action or source.chat_id != action.room_id:
             return
@@ -1550,9 +1564,12 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             return
         if action.pending.registered:
             return
+        if not isinstance(delivery_adapter, MatrixAdapter):
+            self._discard_followup_action(session_key)
+            return
         delivery_event_id = (
-            self._followup_delivery_events.latest(action.room_id, ids)
-            if hasattr(self, "_followup_delivery_events") else ids[-1])
+            delivery_adapter._followup_delivery_events.latest(action.room_id, ids)
+            if hasattr(delivery_adapter, "_followup_delivery_events") else ids[-1])
         if not delivery_event_id:
             self._discard_followup_action(session_key)
             return
@@ -1562,7 +1579,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             saved_source["profile"] = action.profile
         else:
             saved_source.pop("profile", None)
-        self._followup_store().arm(
+        delivery_adapter._followup_store().arm(
             action.turn_id, ids, profile=action.profile, room_id=action.room_id,
             thread_id=action.thread_id, session_key=session_key, session_id=action.session_id,
             requester=action.requester, source=saved_source,
@@ -1571,18 +1588,19 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         )
         action.pending.registered = True
         if action.pending.events:
-            return self._replay_followup_reactions(session_key, action, ids)
+            return self._replay_followup_reactions(session_key, action, ids, delivery_adapter)
         self._discard_followup_action(session_key)
 
     async def _replay_followup_reactions(
         self, session_key: str, action: _MatrixFollowupChoice, ids: tuple[str, ...],
+        delivery_adapter: MatrixAdapter,
     ) -> None:
         try:
             async with asyncio.timeout(REGISTRATION_REPLAY_SECONDS):
                 for reaction in tuple(action.pending.events.values()):
                     if reaction.target_event_id not in ids or not action.pending.eligible(reaction.event_id):
                         continue
-                    await self._dispatch_reaction(
+                    await delivery_adapter._dispatch_reaction(
                         action.room_id, reaction.target_event_id, reaction.emoji,
                         reaction.sender, reaction.event_id, pending=action.pending,
                     )
@@ -2258,8 +2276,13 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             self._clock_skew_warned = True
 
     async def handle_message(self, event: MessageEvent) -> None:
+        if getattr(event, "_hermes_startup_restore_replay", False) is True:
+            await super().handle_message(event)
+            return
         store = getattr(self._client, "sync_store", None)
         event_id = str(event.message_id or "")
+        receipts = self._text_batch_intakes.get(id(event), [])
+        event_ids = tuple(receipt_id for receipt_id, _receipt in receipts) or (event_id,)
         if not isinstance(store, DurableSyncStore) or not event_id.startswith("$"):
             await super().handle_message(event)
             return
@@ -2269,7 +2292,10 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         try:
             await super().handle_message(event)
             if getattr(event, "_gateway_accepted", False):
-                await store.accept_intake(event_id)
+                if receipts:
+                    await store.accept_intakes(event_ids)
+                else:
+                    await store.accept_intake(event_id)
         finally:
             store.release_intake(event_id)
 
@@ -2648,9 +2674,48 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         self._event_context_cache.store(room_id, event_id, MatrixEventContext(sender, msg_event.text))
         if msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(msg_event)
-            return False
+            pending = self._pending_text_batches.get(self._text_batch_key(msg_event))
+            if pending is None:
+                return False
+            receipt: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+            self._text_batch_intakes.setdefault(id(pending), []).append((event_id, receipt))
+            try:
+                return await receipt
+            except asyncio.CancelledError:
+                key = self._text_batch_key(msg_event)
+                if self._pending_text_batches.get(key) is pending:
+                    self._pending_text_batches.pop(key, None)
+                    task = self._pending_text_batch_tasks.pop(key, None)
+                    if task is not None:
+                        task.cancel()
+                    for _event_id, sibling in self._text_batch_intakes.pop(id(pending), []):
+                        sibling.cancel()
+                raise
         await self.handle_message(msg_event)
         return getattr(msg_event, "_gateway_accepted", False)
+
+    async def _dispatch_text_batch(self, event: MessageEvent) -> None:
+        dispatch = getattr(self._client, "hermes_sync", None)
+        task = asyncio.current_task()
+        if isinstance(dispatch, SyncDispatch) and task is not None:
+            dispatch.own_tasks([task])
+        receipts = self._text_batch_intakes.get(id(event), [])
+        try:
+            await self.handle_message(event)
+        except BaseException as exc:
+            for _event_id, receipt in receipts:
+                if not receipt.done():
+                    if isinstance(exc, asyncio.CancelledError):
+                        receipt.cancel()
+                    else:
+                        receipt.set_exception(exc)
+            raise
+        else:
+            for _event_id, receipt in receipts:
+                if not receipt.done():
+                    receipt.set_result(getattr(event, "_gateway_accepted", False))
+        finally:
+            self._text_batch_intakes.pop(id(event), None)
 
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,

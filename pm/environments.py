@@ -35,6 +35,17 @@ def install_state_dir(project_root: Path) -> Path:
     return installs_root() / install_key(project_root)
 
 
+def install_state_permission_message(project_root: Path, exc: PermissionError) -> str | None:
+    """Describe an access failure inside this install's dependency state."""
+    if not exc.filename:
+        return None
+    denied = Path(exc.filename).resolve()
+    if not denied.is_relative_to(install_state_dir(project_root).resolve()):
+        return None
+    return (f"install state is not writable by this user ({denied}); "
+            "run as the install owner or grant write access")
+
+
 def runtime_facts_path(project_root: Path) -> Path:
     return install_state_dir(project_root) / "facts.json"
 
@@ -343,8 +354,13 @@ def activate_dependencies(project_root: Path) -> None:
     os.environ["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
     os.environ.pop("VIRTUAL_ENV", None)
     executable_dir = venv_bin_dir(environment)
-    if executable_dir.is_dir():
-        os.environ["PATH"] = os.pathsep.join([str(executable_dir), os.environ.get("PATH", "")])
+    # The venv's own `hermes`/`hermes-acp` console scripts are editable installs bound to
+    # the build-time source snapshot, not this checkout (#124627): a child that resolves
+    # `hermes` off PATH must hit the checkout's own launcher first, never the venv's copy.
+    prefix = [str(path) for path in (project_root.resolve() / ".hermes" / "bin", executable_dir)
+              if path.is_dir()]
+    if prefix:
+        os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
 
 
 def activation_environment(project_root: Path) -> dict[str, str]:

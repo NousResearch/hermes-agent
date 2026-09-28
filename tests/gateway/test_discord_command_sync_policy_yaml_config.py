@@ -68,13 +68,27 @@ def test_adapter_reads_policy_from_extra_without_env(adapter_mod, monkeypatch):
 
 
 def test_yaml_bare_off_parses_as_bool_false(adapter_mod, monkeypatch):
-    """YAML 1.1 turns a bare ``off`` into False; the policy must still resolve to ``off``."""
+    """YAML 1.1 turns a bare ``off`` into False; the policy must still resolve to ``off``.
+
+    Drives the real writer path — ``fast_safe_load`` on a config.yaml document (what
+    ``hermes config set discord.command_sync_policy off`` writes) funnels the bool False
+    through ``_apply_yaml_config`` — so the seeded ``extra`` holds what production holds.
+    """
     monkeypatch.delenv("DISCORD_COMMAND_SYNC_POLICY", raising=False)
     monkeypatch.setattr(
         adapter_mod, "_scoped_gate_env", lambda name, default="": default
     )
 
-    adapter = _fake_adapter(adapter_mod, {"command_sync_policy": False})
+    from utils import fast_safe_load
+
+    yaml_cfg = fast_safe_load("discord:\n  command_sync_policy: off\n")
+    assert yaml_cfg["discord"]["command_sync_policy"] is False  # YAML 1.1 bool, as loaded
+
+    seeded = _seed(adapter_mod, yaml_cfg, yaml_cfg["discord"])
+    assert seeded is not None
+    assert seeded.get("command_sync_policy") == "off"
+
+    adapter = _fake_adapter(adapter_mod, seeded)
 
     assert adapter._get_discord_command_sync_policy() == "off"
 

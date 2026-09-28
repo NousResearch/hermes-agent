@@ -7272,7 +7272,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         value = discord_cfg[key] if key in discord_cfg else (platform_extra_cfg.get(key) if from_platform_extra else None)
         if value is None:
             return
-        text = str(value).lower() if lower else _csv(value)
+        # YAML 1.1 seeds a bare ``off`` as the bool False; stringify it as "off" before
+        # lowering (same trap as reply_to_mode) so word-matching readers stay reachable.
+        text = ("off" if value is False else str(value)).lower() if lower else _csv(value)
         seeded_extra[key] = text
         _env_default(env_key, text)
 

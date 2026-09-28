@@ -1,14 +1,10 @@
-import './home-orbit.css'
-
 import { useStore } from '@nanostores/react'
 
-import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { ImageIcon, LayoutDashboard, Mic, Newspaper, Search, Sparkles, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $character } from '@/store/character'
 import { requestBriefing } from '@/store/composer'
-import { $liveVoiceChoice, $voiceEngine } from '@/store/voice-prefs'
 
 import { requestComposerInsert } from '../chat/composer/focus'
 
@@ -16,7 +12,6 @@ import { greetingFor } from './characters'
 import { JarvisCore } from './core'
 import { DesktopOrbToggle } from './desktop-orb-toggle'
 import { $jarvisRailVisible } from './focus-mode'
-import { plasmaTone } from './plasma'
 import { JarvisQuickAccess } from './quick-access'
 import { $jarvisUi } from './store'
 import type { JarvisVoiceState } from './types'
@@ -45,6 +40,7 @@ export interface JarvisHomeHeroProps {
   connected: boolean
   listening: boolean
   onStartListening: () => void
+  /** Ends the live conversation; the hero's chip becomes this action while it runs. */
   onStopListening?: () => void
   profileDisplayName?: string
 }
@@ -52,6 +48,10 @@ export interface JarvisHomeHeroProps {
 /**
  * The orb follows backend and microphone state. Action chips fill the composer
  * for review; quick access lives in the rail or here when there is no rail.
+ *
+ * The hero carries no status line: whatever the orb is doing is already on the
+ * orb and in the conversation's own status strip, and a second copy of it under
+ * the greeting only competed with the actions.
  */
 export function JarvisHomeHero({
   className,
@@ -77,19 +77,11 @@ export function JarvisHomeHero({
   // state with `listening` would freeze the orb while Gemini actually speaks.
   // The fallback still shows a just-opened conversation as listening.
   const orbVoice: JarvisVoiceState = listening && state.voice === 'idle' ? 'listening' : state.voice
-  const tone = plasmaTone(orbVoice, state.task.phase)
-
-  const hint = !connected
-    ? copy.offline
-    : tone === 'working' && state.task.phase === 'planning'
-      ? copy.orbStatus.thinking
-      : copy.orbStatus[tone]
-
-  const engine = useStore($voiceEngine)
-  const live = useStore($liveVoiceChoice)
-
-  const voiceName =
-    engine === 'realtime' ? `${copy.voiceEngine[live.provider]} · ${live.model}` : copy.voiceEngine.classic
+  // One microphone on the screen at a time. The dashboard's voice dock (the
+  // pill with the meter, the mute and the end-conversation button) appears the
+  // moment this conversation is live — so the hero's own talk button stands
+  // down then, instead of putting a second microphone control beside it.
+  const showTalk = !listening
 
   return (
     // Laid out by the chat column's width, not the window's: the sidebar, the
@@ -113,82 +105,67 @@ export function JarvisHomeHero({
           <p className="text-base text-(--ui-text-secondary) @2xl:text-lg">{copy.subtitle}</p>
         </div>
 
-        <div aria-label={copy.actionsLabel} className="jarvis-home__actions flex flex-wrap justify-center gap-2" role="group">
+        {/* One line, never wrapped: the whole bar shrinks with the column. */}
+        <div aria-label={copy.actionsLabel} className="jarvis-home__actions" role="group">
           {HOME_ACTIONS.map(({ icon: Icon, id }) => (
             <button
-              className={cn(
-                'jarvis-glass jarvis-glass-hover flex min-h-11 items-center gap-2 rounded-full px-3 text-xs font-medium text-(--ui-text-primary)',
-                FOCUS_RING
-              )}
+              className={cn('jarvis-action', FOCUS_RING)}
               key={id}
               onClick={() => requestComposerInsert(copy.actions[id].prompt, { mode: 'prefix', target: 'main' })}
               type="button"
             >
-              <Icon className="size-4 text-(--ui-accent)" />
+              <Icon className="text-(--ui-accent)" />
               {copy.actions[id].label}
             </button>
           ))}
-        </div>
 
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          <DesktopOrbToggle compact />
-          <Button
-            aria-pressed={listening}
-            className={cn('min-h-12 rounded-full px-7 text-base font-semibold', !listening && 'jarvis-cta')}
-            disabled={!connected}
-            onClick={() => (listening ? onStopListening?.() : onStartListening())}
-            type="button"
-            variant={listening ? 'secondary' : 'default'}
-          >
-            {listening ? <Square /> : <Mic />}
-            {listening ? copy.stopTalking : copy.talk}
-          </Button>
-          <Button
-            className="min-h-11 jarvis-glass jarvis-glass-hover rounded-full px-4 text-(--ui-text-primary)"
+          <span aria-hidden="true" className="jarvis-home__actions-split" />
+
+          {listening ? (
+            // The conversation is live: this is the end-conversation action, so
+            // the chip stops being a microphone — the voice dock below already
+            // owns that control, and two microphones on one screen is the
+            // duplicate this screen exists without.
+            <button
+              aria-pressed
+              className={cn('jarvis-action', FOCUS_RING)}
+              onClick={onStopListening}
+              type="button"
+            >
+              <Square />
+              {copy.stopTalking}
+            </button>
+          ) : (
+            <button
+              className={cn('jarvis-action jarvis-action--talk', FOCUS_RING)}
+              disabled={!connected}
+              onClick={onStartListening}
+              type="button"
+            >
+              <Mic />
+              {copy.talk}
+            </button>
+          )}
+
+          <button
+            className={cn('jarvis-action', FOCUS_RING)}
             disabled={!connected}
             onClick={() => requestBriefing({ speak: true })}
             title={briefingCopy.buttonHint}
             type="button"
-            variant="secondary"
           >
-            <Newspaper />
+            <Newspaper className="text-(--ui-accent)" />
             {briefingCopy.button}
-          </Button>
+          </button>
+
+          <span className="jarvis-home__orb-toggle">
+            <DesktopOrbToggle compact />
+          </span>
         </div>
 
-        <div
-          className="jarvis-home__orb relative my-2 grid w-(--jarvis-hero-size) max-w-full shrink-0 place-items-center"
-          data-tone={tone}
-        >
-          <span aria-hidden="true" className="jarvis-home__orbit" />
+        <div className="jarvis-home__orb relative my-2 grid w-(--jarvis-hero-size) max-w-full shrink-0 place-items-center">
           <JarvisCore live taskPhase={state.task.phase} variant="hero" voice={orbVoice} />
         </div>
-
-        <div
-          aria-live="polite"
-          className="jarvis-home__caption flex items-center gap-2 rounded-full px-3 py-1 text-xs text-(--ui-text-secondary)"
-          data-testid="jarvis-home-status"
-        >
-          <span
-            aria-hidden="true"
-            className={cn(
-              'size-2 rounded-full',
-              !connected
-                ? 'bg-(--ui-text-tertiary)'
-                : tone === 'idle'
-                  ? 'bg-emerald-400'
-                  : 'animate-pulse bg-(--ui-accent)'
-            )}
-          />
-          {hint}
-        </div>
-        <p
-          className="jarvis-home__caption rounded-full px-3 py-1 text-xs text-(--ui-text-secondary)"
-          data-testid="jarvis-home-voice-engine"
-          title={copy.voiceEngine.hint}
-        >
-          {copy.voiceEngine.label}: <span className="text-(--ui-text-secondary)">{voiceName}</span>
-        </p>
 
         {railVisible ? null : (
           <div className="flex w-full max-w-sm flex-col gap-2 pt-2 text-left">

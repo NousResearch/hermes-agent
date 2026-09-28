@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { act, cleanup, render, screen } from '@testing-library/react'
 import type { ReactElement } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -6,6 +9,19 @@ import { I18nProvider, type Locale } from '@/i18n'
 import { publishMicLevel, resetMicLevel } from '@/store/voice-level'
 
 import { JarvisCore } from './core'
+
+/** The jarvis stylesheets sit next to these tests; vitest module URLs are not file URLs. */
+function readJarvisCss(file: string): string {
+  for (const from of ['src/app/jarvis', 'apps/desktop/src/app/jarvis']) {
+    try {
+      return readFileSync(resolve(process.cwd(), from, file), 'utf8')
+    } catch {
+      // Try the next root the runner may have been started from.
+    }
+  }
+
+  throw new Error(`could not read ${file}`)
+}
 
 function renderCore(ui: ReactElement, locale: Locale = 'pl') {
   return render(
@@ -158,5 +174,25 @@ describe('Agent CzesiekCore', () => {
     act(() => publishMicLevel(1))
 
     expect(Number(core.style.getPropertyValue('--jarvis-audio-level'))).toBeCloseTo(0.5, 2)
+  })
+
+  it('draws no outer ring or frame around the orb: the glass sphere is its whole edge', () => {
+    const { container } = renderCore(<JarvisCore live taskPhase="idle" voice="idle" />)
+
+    expect(container.querySelector('.jarvis-core__outer-ring')).toBeNull()
+    expect(screen.getByTestId('jarvis-core').querySelector('circle.jarvis-core__outer-ring')).toBeNull()
+
+    // The measured level ring stays: that one carries information, not ornament.
+    expect(container.querySelector('.jarvis-core__level-ring')).not.toBeNull()
+    expect(container.querySelector('.jarvis-core__glass')).not.toBeNull()
+  })
+
+  it('ships no drifting speck field over the backdrop photography', () => {
+    const css = readJarvisCss('core.css')
+
+    // The scattered dots around the orb came from this layer; the photo alone is
+    // the backdrop now.
+    expect(css).not.toContain('.jarvis-space::after')
+    expect(css).not.toContain('jarvis-particles-drift')
   })
 })

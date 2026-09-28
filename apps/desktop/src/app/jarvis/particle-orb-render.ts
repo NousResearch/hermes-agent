@@ -169,8 +169,30 @@ function drawLinks(
   }
 }
 
+/**
+ * Whether a projected point has fallen outside the glass body's silhouette.
+ * The outline carries one radius per angular bin (see `ParticleOrb.traceOutline`),
+ * so the bin the point falls in holds the cloud's edge in that direction.
+ */
+function outsideBody(cx: number, cy: number, state: OrbRenderState, x: number, y: number): boolean {
+  const bins = state.outline.length
+
+  if (bins === 0) {
+    return false
+  }
+
+  const dx = x - cx
+  const dy = y - cy
+  const angle = Math.atan2(dy, dx) + Math.PI
+  const bin = Math.min(bins - 1, Math.floor((angle / (Math.PI * 2)) * bins))
+
+  return Math.hypot(dx, dy) > state.outline[bin] * 1.02
+}
+
 function drawParticles(
   ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
   state: OrbRenderState,
   palette: PlasmaPalette,
   light: boolean,
@@ -195,7 +217,7 @@ function drawParticles(
     for (let index = 0; index < count; index += 7) {
       const i3 = index * 3
 
-      if (out[i3 + 2] < 0.65) {
+      if (out[i3 + 2] < 0.65 || outsideBody(cx, cy, state, out[i3], out[i3 + 1])) {
         continue
       }
 
@@ -215,6 +237,14 @@ function drawParticles(
     const depth = out[i3 + 2]
 
     if (depth >= 0.5 !== near) {
+      continue
+    }
+
+    // A dot projected past the glass outline would read as a speck floating
+    // beside the orb instead of part of it. The outline smooths the cloud's
+    // silhouette (and perspective pushes the nearest points outward), so a
+    // handful of dots always landed outside it: drop those.
+    if (outsideBody(cx, cy, state, out[i3], out[i3 + 1])) {
       continue
     }
 
@@ -287,12 +317,12 @@ export function drawOrb(
 ): void {
   const light = surface === 'light'
   drawLinks(ctx, state, palette, light, false)
-  drawParticles(ctx, state, palette, light, false, radius)
+  drawParticles(ctx, cx, cy, state, palette, light, false, radius)
   ctx.save()
   ctx.globalCompositeOperation = 'source-over'
   drawBody(ctx, cx, cy, radius, state.outline, palette, light, state.level, time)
   ctx.restore()
   drawLinks(ctx, state, palette, light, true)
-  drawParticles(ctx, state, palette, light, true, radius)
+  drawParticles(ctx, cx, cy, state, palette, light, true, radius)
   drawElectrons(ctx, state, palette, light, radius)
 }

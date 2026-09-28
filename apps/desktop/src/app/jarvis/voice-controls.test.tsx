@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type React from 'react'
 import { afterEach, describe, expect, it, test, vi } from 'vitest'
@@ -6,6 +9,19 @@ import { I18nProvider } from '@/i18n'
 import { publishMicLevel, resetMicLevel } from '@/store/voice-level'
 
 import { VoiceControls } from './voice-controls'
+
+/** The jarvis stylesheets sit next to these tests; vitest module URLs are not file URLs. */
+function readJarvisCss(file: string): string {
+  for (const from of ['src/app/jarvis', 'apps/desktop/src/app/jarvis']) {
+    try {
+      return readFileSync(resolve(process.cwd(), from, file), 'utf8')
+    } catch {
+      // Try the next root the runner may have been started from.
+    }
+  }
+
+  throw new Error(`could not read ${file}`)
+}
 
 function controlsProps(overrides: Partial<React.ComponentProps<typeof VoiceControls>> = {}) {
   return {
@@ -151,5 +167,31 @@ describe('VoiceControls', () => {
     renderControls({ taskRunning })
 
     expect(screen.getByRole('button', { name: 'Zatrzymaj zadanie' })).toHaveProperty('disabled', !taskRunning)
+  })
+
+  it('keeps one microphone in the dock: the mute is never a second mic, and the row never wraps', () => {
+    renderControls({ listening: true, toggleMute: vi.fn() })
+
+    // The only control that opens or closes the microphone…
+    expect(screen.getAllByRole('button', { name: 'Przestań słuchać' })).toHaveLength(1)
+    // …the mute is its own, distinctly labelled control (slashed icon in both
+    // states, so an idle dock cannot show two identical microphones)…
+    const mute = screen.getByRole('button', { name: 'Wycisz mikrofon' })
+
+    expect(mute.getAttribute('aria-pressed')).toBe('false')
+    expect(screen.queryByRole('button', { name: 'Włącz mikrofon' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Zacznij słuchać' })).toBeNull()
+
+    // …and every control wears the same moulded 3D material.
+    for (const name of ['Przestań słuchać', 'Wycisz mikrofon', 'Przestań mówić', 'Zatrzymaj zadanie']) {
+      expect(screen.getByRole('button', { name }).className).toContain('jarvis-icon-btn')
+    }
+
+    const dock = screen.getByTestId('jarvis-voice-controls')
+
+    expect(dock.className).toContain('jarvis-voice-dock')
+    expect(dock.className).not.toContain('flex-wrap')
+    expect(dock.firstElementChild?.getAttribute('data-testid')).toBe('jarvis-mic-meter')
+    expect(readJarvisCss('glass.css')).toMatch(/\.jarvis-voice-dock\s*\{[^}]*flex-wrap:\s*nowrap/)
   })
 })

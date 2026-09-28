@@ -223,4 +223,60 @@ describe('ParticleOrb', () => {
     expect(body).toBeGreaterThan(operations.indexOf('link'))
     expect(operations.lastIndexOf('link')).toBeGreaterThan(body)
   })
+
+  it('never paints a dot past the glass outline, so none floats beside the orb', () => {
+    const arcs: { x: number; y: number }[] = []
+
+    class TestPath {
+      moveTo() {}
+      quadraticCurveTo() {}
+      closePath() {}
+    }
+    vi.stubGlobal('Path2D', TestPath)
+    const gradient = () => ({ addColorStop() {} })
+
+    const ctx = {
+      arc(x: number, y: number) {
+        arcs.push({ x, y })
+      },
+      beginPath() {},
+      clip() {},
+      createConicGradient: gradient,
+      createLinearGradient: gradient,
+      createRadialGradient: gradient,
+      fill() {},
+      fillRect() {},
+      lineTo() {},
+      moveTo() {},
+      restore() {},
+      save() {},
+      stroke() {}
+    } as unknown as CanvasRenderingContext2D
+
+    // One dot sits well outside the silhouette, three inside it.
+    const orb = new ParticleOrb(4)
+
+    const state = {
+      count: 4,
+      electrons: [],
+      level: 0,
+      links: [],
+      motion: orb.motion,
+      outline: new Float32Array(48).fill(10),
+      positions: new Float32Array(12),
+      projected: new Float32Array([0, 0, 0.8, 6, 6, 0.8, 0, -5, 0.8, 40, 0, 0.8])
+    }
+
+    try {
+      drawOrb(ctx, 0, 0, 10, plasmaPalette('idle'), 'light', 0, state)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+
+    expect(arcs.length).toBeGreaterThan(0)
+
+    for (const dot of arcs) {
+      expect(Math.hypot(dot.x, dot.y)).toBeLessThanOrEqual(10)
+    }
+  })
 })

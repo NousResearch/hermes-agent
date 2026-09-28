@@ -96,20 +96,26 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
 
     # A live gateway on THIS backend's HERMES_HOME owns cron delivery with live platform
-    # adapters (#52202): let it tick, and start nothing here. Without this, the fail-open
+    # adapters (#52202): start nothing here while it runs. Without this, the fail-open
     # paths below (profile enumeration failure, empty served set, external provider) start
     # an ungated single-store ticker that races the gateway's tick-lock; when the desktop
     # wins, delivery has no live adapter and the cold send hangs until script_timeout.
+    # The stand-down is a wait, not an exit (#126822): this thread is the only failover
+    # for the cron stores on this home, so a one-shot probe here would leave nothing
+    # ticking after that gateway later dies. Re-probe every interval and fall through
+    # once it is gone; the per-tick profile_gate below stands back down if a gateway
+    # returns, so taking over cannot race a healthy gateway on the multiplex path.
     try:
         from hermes_constants import get_hermes_home
         from hermes_cli.profiles import _check_gateway_running
 
-        if _check_gateway_running(Path(get_hermes_home())):
+        while not stop_event.is_set() and _check_gateway_running(Path(get_hermes_home())):
             _log.info(
-                "Desktop cron scheduler not started: live gateway owns cron on this "
-                "HERMES_HOME; the gateway ticks with live adapters"
+                "Desktop cron scheduler standing down: a live gateway owns cron on this "
+                "HERMES_HOME; it ticks with live adapters — re-probing every %ds", interval,
             )
-            return
+            if stop_event.wait(interval):
+                return
     except Exception:
         # Liveness probe failed: fall through to the existing per-tick gating, which
         # still stands down profile-by-profile for gateway-owned homes.

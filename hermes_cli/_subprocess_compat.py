@@ -35,6 +35,7 @@ __all__ = [
     "NO_LAZY_FETCH_ENV",
     "pid_is_hermes",
     "pid_exists_stdlib",
+    "unescape_ps_command",
 ]
 
 # Flags that neutralize *attribute-scoped* diff drivers on any diff-rendering git command. A
@@ -531,6 +532,23 @@ def pid_exists_stdlib(pid: int) -> bool:
     except OSError:  # ProcessLookupError included
         return False
     return True
+
+
+def unescape_ps_command(command: str) -> str:
+    """Restore control characters macOS ``ps`` prints as literal backslash-octal (#126887).
+
+    BSD ``ps`` renders a newline embedded in argv as the four literal characters ``\\012``
+    (a tab as ``\\011``) so each process stays on one output line. Every matcher downstream
+    of a ``ps`` text read (``_hermes_holder_subcommand``, ``_gateway_command_subcommand``,
+    ``_parse_dashboard_runtime``, the dashboard/orphan scans) then receives a corrupted inline
+    bootstrap source — the bootstrap regexes anchor on real whitespace — and goes blind on
+    POSIX-launcher processes. Undo that escaping at the read boundary so matchers see the real
+    characters. Off macOS the text passes through unchanged: procps ``ps`` does not
+    octal-escape, and Linux readers prefer ``/proc`` anyway.
+    """
+    if sys.platform != "darwin":
+        return command
+    return command.replace("\\012", "\n").replace("\\011", "\t")
 
 
 def _process_start_time(pid: int) -> int | None:

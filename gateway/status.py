@@ -525,7 +525,10 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             )
             if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
+                # macOS ps prints argv-embedded newlines as literal ``\012``; restore them so
+                # the gateway command matcher sees the real bootstrap source (#126887).
+                from hermes_cli._subprocess_compat import unescape_ps_command
+                return unescape_ps_command(result.stdout.strip())
     return None
 
 

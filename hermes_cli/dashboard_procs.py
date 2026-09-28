@@ -59,10 +59,13 @@ def _iter_process_table() -> list[tuple[int, str]]:
     # ps, not `pgrep -f "hermes.*dashboard"` (greedy regex; consistent with gateway pid scan).
     result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS)
     if result.returncode == 0:
+        # macOS ps prints argv-embedded newlines as literal ``\012``; restore them so the
+        # holder matcher downstream sees the real bootstrap source (#126887).
+        from hermes_cli._subprocess_compat import unescape_ps_command
         for line in getattr(result, "stdout", "").split("\n"):
             parts = line.strip().split(None, 1)
             if len(parts) == 2 and "grep" not in line:
-                _append_row(rows, parts[0], parts[1])
+                _append_row(rows, parts[0], unescape_ps_command(parts[1]))
     return rows
 
 

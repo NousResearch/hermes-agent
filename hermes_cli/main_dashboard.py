@@ -368,6 +368,10 @@ def _dashboard_cmdline_for_pid(pid: int) -> list[str] | None:
         command = (result.stdout or "").strip()
         if not command:
             return None
+        # macOS ps prints argv-embedded newlines as literal ``\012``; restore them so the
+        # respawn/runtime matchers downstream see the real bootstrap source (#126887).
+        from hermes_cli._subprocess_compat import unescape_ps_command
+        command = unescape_ps_command(command)
         try:
             argv = shlex.split(command)
         except ValueError:

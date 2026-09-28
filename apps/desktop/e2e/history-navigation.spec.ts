@@ -77,26 +77,61 @@ with SessionDB(db_path=Path(sys.argv[1]) / 'state.db') as db:
       })).toBeLessThanOrEqual(2)
       await expect(rail.getByRole('button', { name, exact: true })).toHaveAttribute('aria-current', 'location')
     }
+    const anchorChecks: Array<{ key: string; offset: number; error: number }> = []
+    const pageWithAnchor = async (button: ReturnType<typeof viewport.getByRole>) => {
+      // Playwright scrolls a button into view before clicking it. Capture only
+      // after that explicit user movement, not from the previous reading spot.
+      await button.scrollIntoViewIfNeeded()
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+      const anchor = await viewport.evaluate(element => {
+        const bounds = element.getBoundingClientRect()
+        const seen = new Map<string, number>()
+        const candidates: Array<{ key: string; occurrence: number; offset: number }> = []
+        for (const node of element.querySelectorAll<HTMLElement>('[data-history-anchor]')) {
+          const key = node.dataset.historyAnchor!
+          const occurrence = seen.get(key) ?? 0
+          seen.set(key, occurrence + 1)
+          if (node.dataset.slot === 'aui_message-group') continue
+          const box = node.getBoundingClientRect()
+          if (box.height > 0 && box.bottom > bounds.top && box.top < bounds.bottom) {
+            candidates.push({ key, occurrence, offset: box.top - bounds.top })
+          }
+        }
+        return candidates.sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset))[0] ?? null
+      })
+      expect(anchor, 'page changes must preserve a concrete visible transcript part').not.toBeNull()
+      if (!anchor) throw new Error('No visible history anchor before paging')
+      const before = await viewport.textContent()
+      await button.click()
+      await expect.poll(() => viewport.textContent()).not.toBe(before)
+      const error = () => viewport.evaluate((element, saved) => {
+        const node = element.querySelectorAll<HTMLElement>(`[data-history-anchor="${CSS.escape(saved.key)}"]`)[saved.occurrence]
+        if (!node || !node.getBoundingClientRect().height) return Number.MAX_SAFE_INTEGER
+        return Math.abs(node.getBoundingClientRect().top - element.getBoundingClientRect().top - saved.offset)
+      }, anchor)
+      await expect.poll(error).toBeLessThanOrEqual(2)
+      anchorChecks.push({ key: anchor.key, offset: anchor.offset, error: await error() })
+      expect(await viewport.locator('[data-message-id^="history-"]').count()).toBeGreaterThan(0)
+      expect(await viewport.locator('[data-message-id]').count()).toBeLessThanOrEqual(360)
+    }
     await expectPromptAtTop(0, 1)
     await expectPromptAtTop(10, 21)
     await expectPromptAtTop(0, 1)
     await page.screenshot({ path: testInfo.outputPath('exact-history-target.png') })
     const later = viewport.getByRole('button', { name: 'Show later messages' })
     for (let pageNumber = 0; pageNumber < 4; pageNumber += 1) {
-      const before = await viewport.textContent()
-      await later.click()
-      await expect.poll(() => viewport.textContent()).not.toBe(before)
-      expect(await viewport.locator('[data-message-id]').count()).toBeLessThanOrEqual(360)
+      await pageWithAnchor(later)
+      if (pageNumber === 2) {
+        await viewport.evaluate(element => { element.scrollTop = 0 })
+        await expect(rail.getByRole('button', { name: 'NAV prompt 20', exact: true })).toHaveAttribute('aria-current', 'location')
+      }
     }
     await expect(viewport).toContainText('NAV prompt 39')
     await expect(later).toHaveCount(0)
     await expect(viewport.getByRole('button', { name: 'Show earlier messages' })).toBeVisible()
     // Return through adjacent pages, not by jumping to another prompt or live.
     for (let pageNumber = 0; pageNumber < 2; pageNumber += 1) {
-      const before = await viewport.textContent()
-      await viewport.getByRole('button', { name: 'Show earlier messages' }).click()
-      await expect.poll(() => viewport.textContent()).not.toBe(before)
-      expect(await viewport.locator('[data-message-id]').count()).toBeLessThanOrEqual(360)
+      await pageWithAnchor(viewport.getByRole('button', { name: 'Show earlier messages' }))
     }
     await expect(viewport).toContainText('NAV prompt 00')
     await expect(viewport.getByRole('button', { name: 'Show earlier messages' })).toHaveCount(0)
@@ -104,6 +139,7 @@ with SessionDB(db_path=Path(sys.argv[1]) / 'state.db') as db:
     await page.getByRole('button', { name: 'Jump to latest', exact: true }).click()
     await expect(viewport.locator('[data-message-id^="history-"]')).toHaveCount(0)
     await expect(viewport).toContainText('NAV prompt 39')
+    await testInfo.attach('history-anchor-checks.json', { body: JSON.stringify(anchorChecks, null, 2), contentType: 'application/json' })
     await page.screenshot({ path: testInfo.outputPath('returned-live-tail.png') })
   } finally {
     await app?.close().catch(() => undefined)

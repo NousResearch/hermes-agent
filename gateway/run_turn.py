@@ -2199,7 +2199,6 @@ class GatewayTurnMixin:
             # Internal events reuse the last human turn's channel inputs (see _pinned_channel_inputs).
             _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(
                 session_key, event.channel_prompt, source, internal=event.internal,
-                expected_session_id=_run_start_session_id,
             )
             if not event.internal:
                 # Persist the coherent context+channel pair before execution: a crash during the

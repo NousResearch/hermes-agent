@@ -320,7 +320,6 @@ async def test_event_backed_followup_overrides_inherited_channel_prompt(monkeypa
     assert len(calls) == 1
     assert calls[0]["channel_prompt"] == "Queued event prompt.", "event prompt must win over the inherited one"
 
-
 @pytest.mark.asyncio
 async def test_first_internal_event_after_restart_rehydrates_durable_prompt_pins(monkeypatch):
     config = GatewayConfig()
@@ -370,6 +369,7 @@ async def test_human_first_after_restart_ignores_stale_durable_prompt_pin(monkey
             "version": 1,
             "context_key": "stale-key",
             "context_prompt": "STALE CONTEXT",
+            "redact_pii": False,
             "channel_prompt": "Stale channel prompt.",
             "parent_chat_id": "stale-parent",
         }
@@ -395,17 +395,27 @@ async def test_human_first_after_restart_ignores_stale_durable_prompt_pin(monkey
 
 
 @pytest.mark.asyncio
-async def test_unchanged_human_prompt_pin_does_not_rewrite_durable_store(monkeypatch):
-    durable: dict = {}
+async def test_internal_event_never_reuses_prompt_pin_from_another_privacy_policy(monkeypatch):
+    """A pin rendered with redact_pii off must not reach the model once redaction is on, not even
+    through the internal-event reuse path after a restart."""
+    import gateway.run as gr
+
+    monkeypatch.setattr(gr, "_load_gateway_config", lambda: {"privacy": {"redact_pii": True}})
+    durable = {
+        "value": {
+            "version": 1,
+            "context_key": "unredacted-key",
+            "context_prompt": "UNREDACTED CONTEXT",
+            "redact_pii": False,
+            "channel_prompt": "Channel hint.",
+            "parent_chat_id": None,
+        }
+    }
     runner = _make_runner(monkeypatch, durable_prompt_pin=durable)
     calls: list[dict] = []
     _capture(runner, calls)
 
-    await _drive(
-        runner,
-        ((False, _human_source()), (False, _human_source())),
-        channel_prompt="Stable channel prompt.",
-    )
+    await _drive(runner, ((True, _wake_source()),))
 
-    assert len(calls) == 2
-    assert runner.session_store.set_prompt_pin.call_count == 1
+    assert calls[0]["context_prompt"] != "UNREDACTED CONTEXT"
+    assert calls[0]["channel_prompt"] == "Channel hint."

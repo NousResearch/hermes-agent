@@ -1541,6 +1541,7 @@ class TestGatewayRoutingTable:
             "version": 1,
             "context_key": "ctx-key",
             "context_prompt": "exact session context",
+            "redact_pii": False,
             "channel_prompt": "Channel hint.",
             "parent_chat_id": "parent-1",
         }
@@ -1570,37 +1571,13 @@ class TestGatewayRoutingTable:
             entry.session_key, stale, expected_session_id=old_session_id,
         )
         assert restarted.get_prompt_pin(entry.session_key) is None
-        restarted._db.close()
-
-    def test_prompt_pin_read_is_fenced_to_the_resolved_session(self, tmp_path):
-        config = GatewayConfig()
-        store = SessionStore(sessions_dir=tmp_path, config=config)
-        entry = store.get_or_create_session(self._source())
-        old_session_id = entry.session_id
-        old_pin = {
-            "version": 1,
-            "context_key": "old-key",
-            "context_prompt": "old context",
-            "channel_prompt": "Old channel.",
-            "parent_chat_id": "old-parent",
-        }
-        assert store.set_prompt_pin(entry.session_key, old_pin, expected_session_id=old_session_id)
-
-        fresh = store.reset_session(entry.session_key)
-        assert fresh is not None and fresh.session_id != old_session_id
-        new_pin = dict(old_pin, context_key="new-key", context_prompt="new context")
-        assert store.set_prompt_pin(
-            entry.session_key, new_pin, expected_session_id=fresh.session_id,
-        )
 
         # A turn that resolved before the boundary must not consume the new conversation's pin.
-        assert store.get_prompt_pin(
-            entry.session_key, expected_session_id=old_session_id,
-        ) is None
-        assert store.get_prompt_pin(
-            entry.session_key, expected_session_id=fresh.session_id,
-        ) == new_pin
-        store._db.close()
+        new_pin = dict(pin, context_key="new-key", context_prompt="new context")
+        assert restarted.set_prompt_pin(entry.session_key, new_pin, expected_session_id=fresh.session_id)
+        assert restarted.get_prompt_pin(entry.session_key, expected_session_id=old_session_id) is None
+        assert restarted.get_prompt_pin(entry.session_key, expected_session_id=fresh.session_id) == new_pin
+        restarted._db.close()
 
     def test_switch_session_preserves_prompt_pin_unless_boundary_requests_clear(self, tmp_path):
         config = GatewayConfig()
@@ -1610,6 +1587,7 @@ class TestGatewayRoutingTable:
             "version": 1,
             "context_key": "ctx-key",
             "context_prompt": "exact session context",
+            "redact_pii": False,
             "channel_prompt": None,
             "parent_chat_id": None,
         }

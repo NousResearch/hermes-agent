@@ -477,27 +477,34 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
     return cleaned or None
 
 
-_PROMPT_PIN_VERSION = 1
+PROMPT_PIN_VERSION = 1
 
 
 def sanitize_prompt_pin(pin: Any) -> Optional[Dict[str, Any]]:
-    """Validated durable snapshot of the exact ephemeral inputs reused by internal turns."""
-    if not isinstance(pin, dict) or pin.get("version") != _PROMPT_PIN_VERSION:
+    """Validated durable snapshot of the exact ephemeral inputs reused by internal turns.
+
+    ``redact_pii`` is the ``privacy.redact_pii`` the context bytes were rendered under; a pin
+    without it cannot prove which privacy policy produced them and is refused."""
+    if not isinstance(pin, dict) or pin.get("version") != PROMPT_PIN_VERSION:
         return None
     context_key = pin.get("context_key")
     context_prompt = pin.get("context_prompt")
+    redact_pii = pin.get("redact_pii")
     channel_prompt = pin.get("channel_prompt")
     parent_chat_id = pin.get("parent_chat_id")
     if not isinstance(context_key, str) or not context_key or not isinstance(context_prompt, str):
+        return None
+    if not isinstance(redact_pii, bool):
         return None
     if channel_prompt is not None and not isinstance(channel_prompt, str):
         return None
     if parent_chat_id is not None and not isinstance(parent_chat_id, str):
         return None
     return {
-        "version": _PROMPT_PIN_VERSION,
+        "version": PROMPT_PIN_VERSION,
         "context_key": context_key,
         "context_prompt": context_prompt,
+        "redact_pii": redact_pii,
         "channel_prompt": channel_prompt,
         "parent_chat_id": parent_chat_id,
     }
@@ -1145,8 +1152,7 @@ class SessionStore(
             return dict(entry.model_override) if entry and entry.model_override else None
 
     def set_prompt_pin(
-        self, session_key: str, pin: Optional[Dict[str, Any]], *,
-        expected_session_id: Optional[str] = None,
+        self, session_key: str, pin: Dict[str, Any], *, expected_session_id: Optional[str] = None,
     ) -> bool:
         """Persist effective prompt inputs without letting a stale turn cross a boundary.
 
@@ -1154,24 +1160,19 @@ class SessionStore(
         is the turn's launch identity: a concurrent reset or resume makes this a no-op instead of
         writing the old conversation's system bytes onto the new one.
         """
+        from dataclasses import replace
+
         cleaned = sanitize_prompt_pin(pin)
-        if pin is not None and cleaned is None:
+        if cleaned is None:
             return False
         with self._lock:
             entry = self._entry_locked(session_key)
-            if entry is None:
+            if entry is None or (expected_session_id is not None and entry.session_id != expected_session_id):
                 return False
-            if expected_session_id is not None and entry.session_id != expected_session_id:
-                return False
-            if entry.prompt_pin == cleaned:
-                return True
-            candidate = entry.to_dict()
-            if cleaned is None:
-                candidate.pop("prompt_pin", None)
-            else:
-                candidate["prompt_pin"] = cleaned
-            self._save_entry(session_key, entry_data=candidate, lock_held=True)
-            entry.prompt_pin = dict(cleaned) if cleaned is not None else None
+            if entry.prompt_pin != cleaned:
+                self._save_entry(
+                    session_key, entry_data=replace(entry, prompt_pin=cleaned).to_dict(), lock_held=True)
+                entry.prompt_pin = cleaned
             return True
 
     def get_prompt_pin(

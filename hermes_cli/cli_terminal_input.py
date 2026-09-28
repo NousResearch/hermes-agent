@@ -150,12 +150,13 @@ def _detect_file_drop(user_input: str) -> "dict | None":
     if not stripped:
         return None
 
-    # Optionally quoted; then /, ~, ./, ../, a Windows drive prefix, or (unquoted) file://.
+    # Optionally quoted; then /, ~, ./, ../, a Windows drive prefix, a UNC share, or (unquoted) file://.
     quoted = stripped[:1] in {"'", '"'}
     unquoted = stripped[1:] if quoted else stripped
     starts_like_path = (
         unquoted.startswith(("/", "~", "./", "../"))
         or (not quoted and unquoted.startswith("file://"))
+        or unquoted.startswith("\\\\")
         or (len(unquoted) >= 3 and unquoted[1] == ":" and unquoted[2] in {"\\", "/"} and unquoted[0].isalpha())
     )
     if not starts_like_path:

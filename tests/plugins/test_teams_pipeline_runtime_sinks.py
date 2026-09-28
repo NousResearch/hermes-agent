@@ -111,3 +111,47 @@ def test_disabled_sinks_do_not_construct_writers(runtime_factory, monkeypatch, c
     monkeypatch.setattr(pipeline_module._HttpSinkWriter, "__init__", unexpected)
     pipeline = runtime_factory(config)
     assert run(pipeline).status == "completed"
+
+
+@pytest.mark.parametrize("sink,key", [("notion", "NOTION_API_KEY"), ("linear", "LINEAR_API_KEY")])
+def test_unscoped_multiplex_startup_uses_runtime_home(runtime_factory, monkeypatch, tmp_path, sink, key):
+    from agent import secret_scope
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text(f"{key}=owner-key\n", encoding="utf-8")
+    monkeypatch.setenv(key, "wrong-process-key")
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    token = secret_scope.set_secret_scope(None)
+    try:
+        pipeline = runtime_factory({sink: {"enabled": True}})
+        assert getattr(pipeline, f"{sink}_writer").api_key == "owner-key"
+        assert secret_scope.current_secret_scope() is None
+    finally:
+        secret_scope.reset_secret_scope(token)
+
+
+@pytest.mark.parametrize("sink,key", [("notion", "NOTION_API_KEY"), ("linear", "LINEAR_API_KEY")])
+def test_multiplex_runtime_preserves_scope_and_never_borrows_process_key(runtime_factory, monkeypatch, sink, key):
+    from agent import secret_scope
+
+    monkeypatch.setenv(key, "wrong-process-key")
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    first_scope = {key: "profile-a-key"}
+    token = secret_scope.set_secret_scope(first_scope)
+    try:
+        first = runtime_factory({sink: {"enabled": True}})
+        assert secret_scope.current_secret_scope() is first_scope
+        second_token = secret_scope.set_secret_scope({})
+        try:
+            second = runtime_factory({sink: {"enabled": True}})
+            assert getattr(second, f"{sink}_writer").api_key == ""
+            assert getattr(first, f"{sink}_writer").api_key == "profile-a-key"
+            job = run(second)
+            assert job.status == "failed"
+            assert key in job.error_info["message"]
+        finally:
+            secret_scope.reset_secret_scope(second_token)
+    finally:
+        secret_scope.reset_secret_scope(token)

@@ -47,6 +47,29 @@ def build_pipeline_runtime_config(gateway_config: Any) -> dict[str, Any]:
     return pipeline_config
 
 
+def _build_sink_writer(writer_type: type[NotionWriter] | type[LinearWriter]):
+    """Capture credentials from the same profile that owns the runtime config.
+
+    Gateway startup is unscoped even in multiplex mode. Respect an existing
+    caller scope, otherwise bind the runtime home rather than borrowing process
+    credentials. The writer retains its own key after this scope is reset.
+    """
+    from agent.secret_scope import (
+        build_profile_secret_scope, current_secret_scope, is_multiplex_active,
+        reset_secret_scope, set_secret_scope,
+    )
+    from hermes_constants import get_hermes_home
+
+    if not is_multiplex_active() or current_secret_scope() is not None:
+        return writer_type()
+    home = get_hermes_home()
+    token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
+    try:
+        return writer_type()
+    finally:
+        reset_secret_scope(token)
+
+
 def build_pipeline_runtime(gateway: Any) -> TeamsMeetingPipeline:
     teams_sender = None
     teams_config = gateway.config.platforms.get(Platform("teams"))
@@ -61,8 +84,8 @@ def build_pipeline_runtime(gateway: Any) -> TeamsMeetingPipeline:
     return TeamsMeetingPipeline(
         graph_client=build_graph_client(), store=TeamsPipelineStore(resolve_teams_pipeline_store_path()),
         config=pipeline_config, teams_sender=teams_sender,
-        notion_writer=NotionWriter() if (pipeline_config.get("notion") or {}).get("enabled") else None,
-        linear_writer=LinearWriter() if (pipeline_config.get("linear") or {}).get("enabled") else None,
+        notion_writer=_build_sink_writer(NotionWriter) if (pipeline_config.get("notion") or {}).get("enabled") else None,
+        linear_writer=_build_sink_writer(LinearWriter) if (pipeline_config.get("linear") or {}).get("enabled") else None,
     )
 
 

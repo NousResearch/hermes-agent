@@ -262,11 +262,11 @@ def test_the_live_list_walk_binds_a_result_to_the_nearest_call_that_names_it():
 
     result = {"role": "tool", "content": "r", "tool_call_id": "call_x"}
     # Nearest call wins over an older one with the same provider id.
-    assert tool_call_uid_from_history([call("1" * UID_LEN), result, call("2" * UID_LEN), result], 3) == "2" * UID_LEN
+    assert tool_call_uid_from_history([call("1" * UID_LEN), result, call("2" * UID_LEN), result], 3, {}) == "2" * UID_LEN
     # A nearer call without a map (legacy) owns the result: no uid, never the older occurrence's.
-    assert tool_call_uid_from_history([call("1" * UID_LEN), result, call(), result], 3) is None
+    assert tool_call_uid_from_history([call("1" * UID_LEN), result, call(), result], 3, {}) is None
     # Never across a user turn.
-    assert tool_call_uid_from_history([call("1" * UID_LEN), {"role": "user", "content": "q"}, result], 2) is None
+    assert tool_call_uid_from_history([call("1" * UID_LEN), {"role": "user", "content": "q"}, result], 2, {}) is None
 
 
 def test_a_superseded_verification_candidate_is_not_a_witness_constituent():

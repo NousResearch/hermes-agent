@@ -10,10 +10,9 @@ from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (
-    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
-    copy_identity_fields)
+    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields)
 from hermes_state_common import _id_chunks, _placeholders
-from hermes_state_identity import _uid_map
+from hermes_state_identity import _restore_row_identity
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
 
 
@@ -159,14 +158,7 @@ def resolve_and_repair_transcript_batch(
         msg["timestamp"] = final_row["timestamp"]
         # A row-addressed rewrite keeps the row's identity: the stored uid wins over whatever the live dict
         # carried (a restored dict without one, or a dict stamped before a rolled-back insert).
-        if final_row[MESSAGE_UID]:
-            msg[MESSAGE_UID] = final_row[MESSAGE_UID]
-        if stored_tool_uids := _uid_map(final_row["tool_call_uids"]):
-            # Stored pairings win; pairings only the live list knows (an un-persisted merge's union) stay.
-            live_tool_uids = msg.get(TOOL_CALL_UIDS)
-            msg[TOOL_CALL_UIDS] = {**(live_tool_uids if isinstance(live_tool_uids, dict) else {}), **stored_tool_uids}
-        if final_row["tool_call_uid"]:
-            msg[TOOL_CALL_UID] = final_row["tool_call_uid"]
+        _restore_row_identity(final_row, msg)
         msg[DB_ROW_SNAPSHOT] = transcript_row_snapshot(final_row)
         if adopt:
             canonical = decode_row_fn(final_row)

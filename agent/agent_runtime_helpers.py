@@ -382,9 +382,8 @@ def _is_codex_interim(m: Dict) -> bool:
 
 
 def _merge_assistant_into(prev: Dict, msg: Dict) -> bool:
-    """Fold a consecutive assistant ``msg`` into ``prev`` (union tool_calls, concat text). Returns whether
-    ``msg``'s text lives on in ``prev``: multimodal (list) content is never joined, so a non-empty ``msg``
-    content beside a list (or a list beside non-empty text) is discarded and must earn no merge witness."""
+    """Fold consecutive assistant *msg* into *prev* (union tool_calls, concat text). Returns whether *msg*'s
+    text survives: multimodal (list) content is never joined."""
     from agent.context_compressor import _DB_PERSISTED_MARKER
 
     prev_calls = list(prev.get("tool_calls") or [])
@@ -393,8 +392,8 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> bool:
     if new_calls:
         prev["tool_calls"] = prev_calls + new_calls
         # The absorbed turn's calls keep the per-occurrence ids they were persisted with.
-        if isinstance(msg.get(TOOL_CALL_UIDS), dict) and msg[TOOL_CALL_UIDS]:
-            prev[TOOL_CALL_UIDS] = merge_tool_call_uids(prev.get(TOOL_CALL_UIDS) or {}, msg[TOOL_CALL_UIDS])
+        if extra := msg.get(TOOL_CALL_UIDS):
+            prev[TOOL_CALL_UIDS] = merge_tool_call_uids(prev.get(TOOL_CALL_UIDS) or {}, extra)
         calls_changed = True
     elif prev_calls:
         prev["tool_calls"] = prev_calls
@@ -459,15 +458,10 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> bool:
     return text_kept
 
 
-def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *, folded: bool = True) -> None:
-    """Record durable ids a merge folded into *survivor* and then dropped from the list.
-
-    Both the physical ``_row_id`` (``_absorbed_row_ids``, consumed by the in-place archive) and the durable
-    ``message_uid`` (``_absorbed_message_uids``, the merge witness context engines read) are recorded; the
-    survivor keeps its own uid, so a composite is "first constituent + absorbed". No-op when the dropped
-    dict names no row and no uid. An empty incoming turn still merges, and stamping an empty list would
-    change a message that absorbed nothing.
-    """
+def _remember_absorbed_row(survivor: Dict[str, Any], dropped: Dict[str, Any], *, folded: bool) -> None:
+    """Retire *dropped*'s row ids onto *survivor*; record its uid as a merge witness only when *folded* (its
+    text survives). An empty incoming turn still merges; stamping an empty list would change a message that
+    absorbed nothing."""
     ids = []
     row_id = dropped.get("_row_id")
     if isinstance(row_id, int) and not isinstance(row_id, bool) and row_id > 0:
@@ -626,7 +620,7 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # reproduces the persisted bytes (e.g. an empty incoming turn) keeps its stamp.
             if merged_content != prev_content or had_api_sidecar:
                 prev.pop(_DB_PERSISTED_MARKER, None)
-            _remember_absorbed_row(prev, msg)
+            _remember_absorbed_row(prev, msg, folded=True)
             repairs += 1
             continue
         merged.append(msg)

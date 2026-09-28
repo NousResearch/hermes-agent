@@ -8,7 +8,6 @@ import json
 import logging
 import re
 import time
-import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.context_compressor import (
@@ -16,15 +15,15 @@ from agent.context_compressor import (
     _newest_checkpoint_carrier, split_user_originated_turn)
 from agent.memory_manager import sanitize_context
 from agent.message_metadata import (
-    ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
-    index_tool_call_uids, message_uid_or_none, resolve_tool_call_uid, stamp_message_uid)
+    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
+    index_tool_call_uids, message_uid_or_none, resolve_tool_call_uid, mint_uid, stamp_message_uid)
 from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_id
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_identity import (
-    _restore_identity_columns, _tool_call_uid_or_none, _tool_call_uids_json, _uid_list_json, _uid_map)
+    _absorbed_uids_json, _restore_identity_columns, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -283,7 +282,7 @@ class SessionMessagesMixin:
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
-            message_uid_or_none(msg), _uid_list_json(msg, ABSORBED_MESSAGE_UIDS, "absorbed_message_uids"),
+            message_uid_or_none(msg), _absorbed_uids_json(msg),
             _tool_call_uids_json(msg), _tool_call_uid_or_none(msg))
 
     @staticmethod
@@ -295,11 +294,11 @@ class SessionMessagesMixin:
         (``tool_call_uid_from_history``) or, on restore, from the preceding assistant row."""
         role = msg.get("role")
         if role == "assistant" and tool_calls:
-            uids = _uid_map(msg.get(TOOL_CALL_UIDS) if TOOL_CALL_UIDS in msg else msg.get("tool_call_uids"))
+            uids = _tool_call_uid_map(msg)
             for tc in tool_calls:
                 call_id = coalesce_tool_call_id(tc)
                 if call_id and call_id not in uids:
-                    uids[call_id] = uuid.uuid4().hex
+                    uids[call_id] = mint_uid()
             if uids:
                 msg[TOOL_CALL_UIDS] = uids
             index_tool_call_uids(batch_index, msg)  # this row's ids shadow any earlier occurrence's
@@ -1810,7 +1809,7 @@ class SessionMessagesMixin:
             if target_row.get("role") != "user":
                 raise ValueError(
                     f"rewind target must be a 'user' message (got role={target_row.get('role')!r}, id={target_message_id})")
-            replacement_message_id = replacement_message_uid = replacement = None
+            replacement = None
             if preserve_compaction_handoff or expected_target_content is not None:
                 replacement = self._split_rewind_target(target_row, expected_target_content, preserve_compaction_handoff)
             ids = [r[0] for r in conn.execute("SELECT id FROM messages WHERE session_id = ? AND id >= ? AND active = 1",
@@ -1818,22 +1817,21 @@ class SessionMessagesMixin:
             if ids:
                 conn.execute(f"UPDATE messages SET active = 0 WHERE id IN ({_placeholders(ids)})", ids)
             if replacement is not None:
-                self._insert_message_rows(conn, session_id, [replacement])
-                replacement_message_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
-                replacement_message_uid = message_uid_or_none(replacement)  # stamped by the insert
+                self._insert_message_rows(conn, session_id, [replacement])  # stamps _row_id and message_uid
             conn.execute(
                 "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?", (session_id,))
             message_count, tool_call_count = self._active_transcript_counts(conn, session_id)
             conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
             head_id = conn.execute(
                 "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1", (session_id,)).fetchone()[0]
-            return target_row, ids, head_id, replacement_message_id, replacement_message_uid
-        target_row, rewound, new_head_id, replacement_message_id, replacement_message_uid = self._execute_write(_do)
+            return target_row, ids, head_id, replacement
+        target_row, rewound, new_head_id, replacement = self._execute_write(_do)
         # Decode for the prompt-buffer prefill without a second fallible DB operation.
         target_row["content"] = self._decode_content(target_row.get("content"))
         return {"rewound_count": len(rewound), "target_message": target_row, "new_head_id": new_head_id,
-                **({"replacement_message_id": replacement_message_id,
-                    "replacement_message_uid": replacement_message_uid} if preserve_compaction_handoff else {})}
+                **({"replacement_message_id": replacement and replacement["_row_id"],
+                    "replacement_message_uid": replacement and message_uid_or_none(replacement)}
+                   if preserve_compaction_handoff else {})}
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""

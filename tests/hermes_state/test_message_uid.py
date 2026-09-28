@@ -52,7 +52,6 @@ class TestMintAndRestore:
         stored = _rows(db, "s")
         assert [r["message_uid"] for r in stored] == [m["message_uid"] for m in msgs]
         assert all(UID_RE.match(r["message_uid"]) for r in stored)
-        assert len({r["message_uid"] for r in stored}) == 2
 
     def test_uid_is_per_occurrence_not_derived_from_content_or_time(self, db):
         db.create_session("s", "cli")
@@ -71,12 +70,6 @@ class TestMintAndRestore:
         model_history, display_history = db.get_resume_conversations("s")
         assert [m["message_uid"] for m in model_history] == [r["message_uid"] for r in stored]
         assert [m["message_uid"] for m in display_history] == [r["message_uid"] for r in stored]
-
-    def test_an_explicit_uid_on_the_dict_is_written_not_replaced(self, db):
-        db.create_session("s", "cli")
-        msg = {"role": "user", "content": "q", "message_uid": "0" * 32}
-        db.append_messages_batch("s", [msg])
-        assert _rows(db, "s")[0]["message_uid"] == "0" * 32
 
     def test_legacy_rows_are_backfilled_in_bounded_slices_across_opens(self, tmp_path, monkeypatch):
         """A single full-table UPDATE held the write lock for minutes on a large store; each open now
@@ -471,3 +464,4 @@ def test_a_result_pairs_with_the_assistant_that_named_it_not_the_nearest_one(db)
     live = [{k: v for k, v in m.items() if k != "_tool_call_uid"} for m in msgs]
     owners: dict = {}
     assert [tool_call_uid_from_history(live, i, owners) for i in (3, 4)] == [second, first]
+

@@ -42,6 +42,23 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
 ) | REPAIR_BOOKKEEPING_FIELDS
 
 
+def without_persistence_fields(msg: Mapping[str, Any]) -> Mapping[str, Any]:
+    """*msg* itself when it carries no persistence-only field, else a shallow copy without them."""
+    if PERSISTENCE_ONLY_MESSAGE_FIELDS.isdisjoint(msg):
+        return msg
+    return {k: v for k, v in msg.items() if k not in PERSISTENCE_ONLY_MESSAGE_FIELDS}
+
+
+def mint_uid() -> str:
+    """A fresh durable id (message or tool-call occurrence): random, never derived from content."""
+    return uuid4().hex
+
+
+def uid_list(value: Any) -> List[str]:
+    """The unique non-empty string uids of a live list, in order; anything else is ``[]``."""
+    return list(dict.fromkeys(u for u in (value if isinstance(value, list) else ()) if isinstance(u, str) and u))
+
+
 def message_uid_or_none(msg: Mapping[str, Any]) -> Optional[str]:
     """The dict's ``message_uid`` when it is a non-empty string, else ``None`` (never coerced: an int or a
     blank would be a bug upstream of the write, not an identity)."""
@@ -50,7 +67,7 @@ def message_uid_or_none(msg: Mapping[str, Any]) -> Optional[str]:
 
 
 def stamp_message_uid(msg: MutableMapping[str, Any]) -> str:
-    """The dict's ``message_uid``, minting one (``uuid4().hex``) when it carries none.
+    """The dict's ``message_uid``, minting one (``mint_uid``) when it carries none.
 
     Minted ONCE per logical message, at its first insert, and stamped on the caller's dict so every later
     insert of that dict (compaction generation, rotation handoff, replace) writes the same uid. Never
@@ -58,12 +75,8 @@ def stamp_message_uid(msg: MutableMapping[str, Any]) -> str:
     """
     uid = message_uid_or_none(msg)
     if uid is None:
-        uid = msg[MESSAGE_UID] = uuid4().hex
+        uid = msg[MESSAGE_UID] = mint_uid()
     return uid
-
-
-def _absorbed_uids(msg: Mapping[str, Any]) -> List[str]:
-    return [u for u in (msg.get(ABSORBED_MESSAGE_UIDS) or ()) if isinstance(u, str) and u]
 
 
 _IDENTITY_FIELD_TYPES = ((MESSAGE_UID, str), (ABSORBED_MESSAGE_UIDS, list), (TOOL_CALL_UIDS, dict), (TOOL_CALL_UID, str))
@@ -108,24 +121,17 @@ def record_absorbed_message(
     dropped_uid = message_uid_or_none(dropped)
     if dropped_leads and dropped_uid:
         survivor[MESSAGE_UID] = dropped_uid
-        ordered = _absorbed_uids(dropped) + ([survivor_uid] if survivor_uid else []) + _absorbed_uids(survivor)
+        ordered = uid_list(dropped.get(ABSORBED_MESSAGE_UIDS)) + ([survivor_uid] if survivor_uid else []) + uid_list(
+            survivor.get(ABSORBED_MESSAGE_UIDS))
     else:
-        ordered = _absorbed_uids(survivor) + ([dropped_uid] if dropped_uid else []) + _absorbed_uids(dropped)
+        ordered = uid_list(survivor.get(ABSORBED_MESSAGE_UIDS)) + ([dropped_uid] if dropped_uid else []) + uid_list(
+            dropped.get(ABSORBED_MESSAGE_UIDS))
     absorbed: List[str] = []
     for uid in ordered:
         if uid != survivor.get(MESSAGE_UID) and uid not in absorbed:
             absorbed.append(uid)
     if absorbed:
         survivor[ABSORBED_MESSAGE_UIDS] = absorbed
-
-
-def _named_tool_call_variants(assistant: Any) -> List[str]:
-    """Every pairing-id variant of every tool call an assistant dict names."""
-    from agent.message_sanitization import tool_call_id_variants
-
-    if not isinstance(assistant, dict):
-        return []
-    return [variant for tc in assistant.get("tool_calls") or () for variant in tool_call_id_variants(tc)]
 
 
 def merge_tool_call_uids(into: Mapping[str, Any], extra: Mapping[str, Any]) -> dict:
@@ -142,29 +148,33 @@ def _uid_occurrences(value: Any) -> list:
     return list(value) if isinstance(value, list) else [value]
 
 
-def index_tool_call_uids(index: MutableMapping[str, str], assistant: Any) -> None:
+def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str, Any]) -> frozenset:
     """Register an assistant dict's ``_tool_call_uids`` under every pairing-id variant of its tool calls, so a
     later tool-result row can be resolved by any spelling of its ``tool_call_id``. Provider ids repeat, so
     every id this assistant names first shadows an earlier occurrence's entry: a result pairs with the
     NEAREST preceding call, and a call without a uid (a legacy row) pairs its result with nothing. A
-    provider id repeated inside one row (two folded turns) maps each call to its own occurrence's uid."""
+    provider id repeated inside one row (two folded turns) maps each call to its own occurrence's uid.
+    Returns every pairing-id variant the assistant names."""
     from agent.message_sanitization import coalesce_tool_call_id, tool_call_id_variants
 
-    for variant in _named_tool_call_variants(assistant):
+    calls = [(tc, tool_call_id_variants(tc)) for tc in assistant.get("tool_calls") or ()]
+    named = frozenset(variant for _, variants in calls for variant in variants)
+    for variant in named:
         index.pop(variant, None)
-    uids = assistant.get(TOOL_CALL_UIDS) if isinstance(assistant, dict) else None
+    uids = assistant.get(TOOL_CALL_UIDS)
     if not isinstance(uids, dict) or not uids:
-        return
+        return named
     occurrence: dict = {}  # provider id -> calls seen so far: a list value holds one uid per occurrence
-    for tc in assistant.get("tool_calls") or ():
+    for tc, variants in calls:
         call_id = coalesce_tool_call_id(tc)
         uid = uids.get(call_id)
         if isinstance(uid, list):
             nth = occurrence[call_id] = occurrence.get(call_id, -1) + 1
             uid = uid[nth] if nth < len(uid) else None
         if isinstance(uid, str) and uid:
-            for variant in tool_call_id_variants(tc):
+            for variant in variants:
                 index[variant] = uid
+    return named
 
 
 def resolve_tool_call_uid(index: MutableMapping[str, str], tool_call_id: Any) -> Optional[str]:
@@ -180,15 +190,12 @@ def resolve_tool_call_uid(index: MutableMapping[str, str], tool_call_id: Any) ->
     return None
 
 
-def tool_call_uid_from_history(messages: Any, tool_index: int, owners: Optional[dict] = None) -> Optional[str]:
+def tool_call_uid_from_history(messages: List[dict], tool_index: int, owners: dict) -> Optional[str]:
     """Resolve a tool-result dict's uid from the nearest preceding assistant dict in ``messages`` that
     named its ``tool_call_id`` (the cross-flush case: the assistant row landed in an earlier batch).
     ``owners`` memoizes each assistant's (named variants, uid index) across one flush's results, so K
     parallel results of one assistant cost O(K) variant work instead of O(K^2)."""
-    if not isinstance(messages, list) or not (0 <= tool_index < len(messages)):
-        return None
-    tool_msg = messages[tool_index]
-    tool_call_id = tool_msg.get("tool_call_id") if isinstance(tool_msg, dict) else None
+    tool_call_id = messages[tool_index].get("tool_call_id")
     if not isinstance(tool_call_id, str) or not tool_call_id:
         return None
     from agent.message_sanitization import tool_result_id_variants
@@ -202,13 +209,9 @@ def tool_call_uid_from_history(messages: Any, tool_index: int, owners: Optional[
             return None  # a tool result never pairs across a user turn
         if prior.get("role") != "assistant":
             continue
-        entry = owners.get(id(prior)) if owners is not None else None
-        if entry is None:
+        if (entry := owners.get(id(prior))) is None:
             index: dict = {}
-            index_tool_call_uids(index, prior)
-            entry = (frozenset(_named_tool_call_variants(prior)), index)
-            if owners is not None:
-                owners[id(prior)] = entry
+            entry = owners[id(prior)] = (index_tool_call_uids(index, prior), index)
         named, index = entry
         if result_variants.isdisjoint(named):
             continue

@@ -5,10 +5,15 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, MutableMapping, Optional
 
-from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS
+from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
 from hermes_state_common import _json_or
+
+
+def _live_or_column(msg: Mapping[str, Any], live_key: str, column: str) -> Any:
+    """Flushed dicts and batch rows carry the live key; import payloads carry the column name."""
+    return msg.get(live_key) if live_key in msg else msg.get(column)
 
 
 def _uid_list(value: Any) -> List[str]:
@@ -16,19 +21,10 @@ def _uid_list(value: Any) -> List[str]:
     strings in order; anything else is ``[]``."""
     if isinstance(value, str):
         value = _json_or(value, [], "Failed to deserialize a message uid list, falling back to []")
-    if not isinstance(value, list):
-        return []
-    return list(dict.fromkeys(item for item in value if isinstance(item, str) and item))
+    return uid_list(value)
 
 
-def _uid_list_json(msg: Dict[str, Any], live_key: str, column: str) -> Optional[str]:
-    """JSON text for a uid-list column, read from the live key first (flushed dicts, batch rows) and the
-    column name second (import payloads); ``None`` when empty."""
-    uids = _uid_list(msg.get(live_key) if live_key in msg else msg.get(column))
-    return json.dumps(uids) if uids else None
-
-
-def _uid_map(value: Any) -> Dict[str, str]:
+def _uid_map(value: Any) -> Dict[str, Any]:
     """Normalize a ``{tool call id: uid}`` map (a live dict, or the JSON text an export/import carries): a
     non-empty string uid, or a list of them for a provider id repeated inside one row (one per occurrence,
     see ``merge_tool_call_uids``); anything else is dropped, and a non-map is ``{}``."""
@@ -40,23 +36,40 @@ def _uid_map(value: Any) -> Dict[str, str]:
         (isinstance(v, str) and v) or (isinstance(v, list) and v and all(isinstance(u, str) and u for u in v)))}
 
 
-def _restore_identity_columns(row: Any, msg: Dict[str, Any]) -> None:
-    """The stored identity columns onto a restored dict under their live keys (NULL/empty add nothing)."""
+def _tool_call_uid_map(msg: Mapping[str, Any]) -> Dict[str, Any]:
+    return _uid_map(_live_or_column(msg, TOOL_CALL_UIDS, "tool_call_uids"))
+
+
+def _absorbed_uids_json(msg: Mapping[str, Any]) -> Optional[str]:
+    uids = _uid_list(_live_or_column(msg, ABSORBED_MESSAGE_UIDS, "absorbed_message_uids"))
+    return json.dumps(uids) if uids else None
+
+
+def _tool_call_uids_json(msg: Mapping[str, Any]) -> Optional[str]:
+    uids = _tool_call_uid_map(msg)
+    return json.dumps(uids, sort_keys=True) if uids else None
+
+
+def _tool_call_uid_or_none(msg: Mapping[str, Any]) -> Optional[str]:
+    uid = _live_or_column(msg, TOOL_CALL_UID, "tool_call_uid")
+    return uid if isinstance(uid, str) and uid else None
+
+
+def _restore_row_identity(row: Any, msg: MutableMapping[str, Any]) -> None:
+    """A stored row's uid and tool-call uids onto its live dict: the stored value wins; pairings only the live
+    dict knows (an un-persisted merge's union) stay."""
     if row[MESSAGE_UID]:
         msg[MESSAGE_UID] = row[MESSAGE_UID]
-    if absorbed := _uid_list(row["absorbed_message_uids"]):
-        msg[ABSORBED_MESSAGE_UIDS] = absorbed
-    if tool_uids := _uid_map(row["tool_call_uids"]):
-        msg[TOOL_CALL_UIDS] = tool_uids
+    if row["tool_call_uids"] and (stored := _uid_map(row["tool_call_uids"])):
+        live = msg.get(TOOL_CALL_UIDS)
+        live = live if isinstance(live, dict) else {}
+        msg[TOOL_CALL_UIDS] = {**live, **stored}
     if row["tool_call_uid"]:
         msg[TOOL_CALL_UID] = row["tool_call_uid"]
 
 
-def _tool_call_uids_json(msg: Dict[str, Any]) -> Optional[str]:
-    uids = _uid_map(msg.get(TOOL_CALL_UIDS) if TOOL_CALL_UIDS in msg else msg.get("tool_call_uids"))
-    return json.dumps(uids, sort_keys=True) if uids else None
-
-
-def _tool_call_uid_or_none(msg: Dict[str, Any]) -> Optional[str]:
-    uid = msg.get(TOOL_CALL_UID) if TOOL_CALL_UID in msg else msg.get("tool_call_uid")
-    return uid if isinstance(uid, str) and uid else None
+def _restore_identity_columns(row: Any, msg: MutableMapping[str, Any]) -> None:
+    """The stored identity columns onto a restored dict under their live keys (NULL/empty add nothing)."""
+    _restore_row_identity(row, msg)
+    if row["absorbed_message_uids"] and (absorbed := _uid_list(row["absorbed_message_uids"])):
+        msg[ABSORBED_MESSAGE_UIDS] = absorbed

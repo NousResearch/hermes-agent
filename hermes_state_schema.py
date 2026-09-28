@@ -28,6 +28,7 @@ from hermes_state_common import (
 )
 from hermes_state_fts import _drop_orphan_fts_shadow_tables
 from hermes_state_holders import _read_proc_argv
+from hermes_state_search import _delete_meta, _meta_row
 from hermes_state_errors import is_sqlite_lock_error
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -1116,11 +1117,9 @@ class SessionSchemaMixin:
         writer connection is autocommit) and an open spends at most ``_MESSAGE_UID_BACKFILL_BUDGET_S``
         after its first chunk, so a large store converges over later opens. Until then a legacy row
         simply has no uid, which every reader already treats as "no identity yet"."""
-        if cursor.execute(
-            "SELECT 1 FROM state_meta WHERE key = ? LIMIT 1", (_MESSAGE_UID_BACKFILL_DONE,)
-        ).fetchone() is not None:
+        if _meta_row(cursor, _MESSAGE_UID_BACKFILL_DONE) is not None:
             return
-        row = cursor.execute("SELECT value FROM state_meta WHERE key = ?", (_MESSAGE_UID_BACKFILL_CURSOR,)).fetchone()
+        row = _meta_row(cursor, _MESSAGE_UID_BACKFILL_CURSOR)
         done_through = int(row[0]) if row else 0
         high = cursor.execute("SELECT MAX(id) FROM messages").fetchone()[0] or 0
         deadline = time.monotonic() + _MESSAGE_UID_BACKFILL_BUDGET_S
@@ -1134,7 +1133,7 @@ class SessionSchemaMixin:
                 self.set_meta(_MESSAGE_UID_BACKFILL_CURSOR, str(done_through), cursor=cursor)
                 return
         self.set_meta(_MESSAGE_UID_BACKFILL_DONE, "1", cursor=cursor)
-        cursor.execute("DELETE FROM state_meta WHERE key = ?", (_MESSAGE_UID_BACKFILL_CURSOR,))
+        _delete_meta(cursor, _MESSAGE_UID_BACKFILL_CURSOR)
 
     def _migrate_v22_session_model_usage(self, cursor: sqlite3.Cursor) -> None:
         """v22: ``task`` joins the session_model_usage PRIMARY KEY ('' = main loop; aux calls

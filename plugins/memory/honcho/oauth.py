@@ -13,13 +13,15 @@ import hashlib
 import json
 import logging
 import os
-import re
 import threading
 import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from agent.redact import redact_sensitive_text, register_redaction_patterns
+from utils import read_json_or_empty
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +38,10 @@ _REFRESH_TOTAL_BUDGET_SECONDS = 20.0
 _REFRESH_FAILURE_COOLDOWN_SECONDS = 30.0
 # OAuth error codes a retry can never fix — the grant itself is dead.
 _PERMANENT_OAUTH_ERRORS = frozenset({"invalid_grant", "invalid_client", "unauthorized_client"})
-# Derived from the canonical prefixes so a prefix change can't silently break redaction.
-_TOKEN_VALUE_RE = re.compile(rf"({re.escape(ACCESS_TOKEN_PREFIX)}|{re.escape(REFRESH_TOKEN_PREFIX)})[A-Za-z0-9._~+/=-]+")
-
-def redact_tokens(text: str) -> str:
-    """Replace any embedded token values with their prefix plus a placeholder."""
-    return _TOKEN_VALUE_RE.sub(lambda m: f"{m.group(1)}[redacted]", text)
+# Registered with the shared redactor so EVERY log/tool-output surface masks Honcho tokens, not only
+# this module's own error strings. Built from the constants so a prefix rename can't split them.
+register_redaction_patterns([f"{p}[A-Za-z0-9._~+/=-]{{8,}}" for p in (ACCESS_TOKEN_PREFIX, REFRESH_TOKEN_PREFIX)],
+                            source="plugin:honcho")
 
 class OAuthRefreshError(Exception):
     """Token endpoint rejected the refresh. ``permanent`` means re-login is required."""
@@ -107,15 +107,20 @@ def _mark_grant_dead(key: tuple[str, str], cred: OAuthCredential) -> None:
     _dead_grants[key] = hashlib.sha256(cred.refresh_token.encode("utf-8")).hexdigest()
     _reauth_check_cache.pop(key, None)  # verdict changed without a config rewrite
 
-def _read_config(path: Path) -> dict[str, Any]:
+def _read_config_strict(path: Path) -> dict[str, Any]:
+    """Reader for the write paths: a missing file is ``{}``, an unreadable one raises. A write seeded
+    from ``{}`` would replace every other host's credentials."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as exc:
+        logger.warning("Honcho config at %s exists but could not be read (%s); refusing to overwrite it.", path, exc)
+        raise
 
 def _load_cred(path: Path, host: str, raw: dict[str, Any] | None = None) -> OAuthCredential | None:
     """Credential from ``host``'s block in ``raw`` (or the file at ``path``)."""
-    source = raw if raw is not None else _read_config(path)
+    source = raw if raw is not None else read_json_or_empty(path)
     return OAuthCredential.from_host_block((source.get("hosts") or {}).get(host) or {})
 
 def reauth_required(path: Path, host: str) -> bool:
@@ -229,7 +234,7 @@ def _exchange_refresh_token(
     if status >= 400:
         error, description = str(body.get("error") or ""), str(body.get("error_description") or "")
         detail = " — ".join(p for p in (error, description) if p) or "no error body"
-        message = redact_tokens(f"token endpoint returned HTTP {status}: {detail}")
+        message = redact_sensitive_text(f"token endpoint returned HTTP {status}: {detail}", force=True)
         raise OAuthRefreshError(message, error=error, permanent=error in _PERMANENT_OAUTH_ERRORS)
     return OAuthCredential.from_token_response(
         body, now=now, client_id=cred.client_id, token_endpoint=cred.token_endpoint,
@@ -249,7 +254,7 @@ def _exchange_with_retry(cred: OAuthCredential, *, now: float) -> OAuthCredentia
     remaining = deadline - time.monotonic() - _REFRESH_RETRY_DELAY_SECONDS
     if remaining <= 0:
         raise first
-    logger.warning("Honcho OAuth token exchange failed, retrying once: %s", redact_tokens(str(first)))
+    logger.warning("Honcho OAuth token exchange failed, retrying once: %s", redact_sensitive_text(str(first), force=True))
     time.sleep(_REFRESH_RETRY_DELAY_SECONDS)
     return _exchange_refresh_token(cred, now=now, timeout=min(remaining, _REFRESH_TIMEOUT_SECONDS))
 
@@ -259,17 +264,31 @@ def _rotate_and_persist(
     """Exchange ``cred`` and persist the rotation; ``None`` on failure (logged). A permanent OAuth error
     marks the grant dead so later calls skip the endpoint until a new login rotates the refresh token."""
     try:
+        # Read before spending the single-use refresh token: an exchange that cannot be persisted loses the grant.
+        raw = _read_config_strict(path)
+    except (OSError, ValueError):
+        _refresh_failure_at[key] = time.monotonic()
+        return None
+    try:
         rotated = _exchange_with_retry(cred, now=now)
     except Exception as exc:
         if isinstance(exc, OAuthRefreshError) and exc.permanent:
+            # The file lock is best-effort: a sibling may have rotated first, so adopt what it wrote instead.
+            disk = _load_cred(path, host)
+            if disk is not None and disk.refresh_token != cred.refresh_token:
+                _dead_grants.pop(key, None)
+                _expiry_cache[key] = (disk.expires_at, disk.access_token)
+                logger.info("Honcho OAuth %s for host %s lost a rotation race; "
+                            "adopted the newer on-disk grant", op_label, host)
+                return disk
             _mark_grant_dead(key, cred)
             logger.error("Honcho OAuth grant for host %s is no longer valid (%s); "
                          "run 'hermes honcho setup' to re-authenticate", host, exc)
             return None
         _refresh_failure_at[key] = time.monotonic()
-        logger.warning("Honcho OAuth %s failed for host %s: %s", op_label, host, redact_tokens(str(exc)))
+        logger.warning("Honcho OAuth %s failed for host %s: %s", op_label, host, redact_sensitive_text(str(exc), force=True))
         return None
-    _persist_credential(path, host, rotated)
+    _persist_credential(path, host, rotated, raw=raw)
     return rotated
 
 def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
@@ -281,11 +300,11 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
     return base
 
 def _persist_credential(path: Path, host: str, cred: OAuthCredential, raw: dict[str, Any] | None = None) -> None:
-    """Write ``cred`` into ``host``'s block (apiKey + oauth) of ``raw`` (default:
-    the file's current content), leaving the rest intact; marks the grant live."""
+    """Write ``cred`` into ``host``'s block of ``raw`` (default: a strict read of the file) and mark
+    the grant live."""
     from utils import atomic_json_write
 
-    raw = _read_config(path) if raw is None else raw
+    raw = _read_config_strict(path) if raw is None else raw
     block = raw.setdefault("hosts", {}).setdefault(host, {})
     block["apiKey"], block["oauth"] = cred.access_token, cred.oauth_block()
     atomic_json_write(path, raw, mode=0o600)
@@ -329,9 +348,10 @@ def ensure_fresh_token(
             logger.info("Honcho OAuth token refreshed for host %s", host)
         return (rotated.access_token, True) if rotated is not None else (current.access_token, False)
 
-def force_refresh_token(path: Path, host: str) -> str | None:
-    """Rotate ``host``'s token now, ignoring local expiry (recovers a 401 on a
-    token the local clock still thinks is valid)."""
+def force_refresh_token(path: Path, host: str, *, failed_access_token: str | None = None) -> str | None:
+    """Rotate ``host``'s token now, ignoring local expiry (recovers a 401 on a token the local clock
+    still thinks is valid). When disk no longer holds ``failed_access_token`` a sibling rotated first:
+    adopt its grant, since replaying the single-use refresh token can revoke the whole grant."""
     now = time.time()
     key = (str(path), host)
     with _refresh_lock, _config_refresh_lock(path):
@@ -339,14 +359,17 @@ def force_refresh_token(path: Path, host: str) -> str | None:
         if cred is None:
             _expiry_cache.pop(key, None)
             return None
+        # Adopting a sibling's rotation is a disk read, so it comes before the exchange gates: disk, not
+        # the expiry cache, is the signal (the cache is empty in sibling processes).
+        cached = _expiry_cache.get(key)
+        moved_off_failed = failed_access_token and cred.access_token != failed_access_token
+        moved_off_cached = cached is not None and cred.access_token != cached[1]
+        if (moved_off_failed or moved_off_cached) and not cred.is_expired(now=now):
+            _expiry_cache[key] = (cred.expires_at, cred.access_token)
+            return cred.access_token
         # Dead grant, or an exchange just failed transiently: callers fail open.
         if _grant_is_dead(key, cred) or _in_failure_cooldown(key):
             return None
-        cached = _expiry_cache.get(key)
-        # Another thread or process already rotated: adopt the newer on-disk token.
-        if cached is not None and cred.access_token != cached[1] and not cred.is_expired(now=now):
-            _expiry_cache[key] = (cred.expires_at, cred.access_token)
-            return cred.access_token
         rotated = _rotate_and_persist(path, host, key, cred, now=now, op_label="forced refresh")
         if rotated is not None:
             logger.info("Honcho OAuth token force-refreshed for host %s after an auth failure", host)
@@ -358,16 +381,18 @@ def install_grant(
 ) -> OAuthCredential:
     """Apply a fresh OAuth grant (an OAuthTokenResponse dict) to ``path`` for ``host``: deep-merge the
     grant's ``config`` into the file root (preserving other hosts and root keys), then write the host's
-    ``apiKey`` and ``oauth`` block. ``apply_config=False`` stores tokens only."""
+    ``apiKey`` and ``oauth`` block. ``apply_config=False`` stores tokens only. Holds the refresh locks so a
+    login cannot interleave with a sibling's read-modify-write."""
     now = time.time() if now is None else now
     cred = OAuthCredential.from_token_response(grant, now=now, client_id=client_id, token_endpoint=token_endpoint)
-    raw = _read_config(path)
-    granted_config = grant.get("config")
-    if isinstance(granted_config, dict):
-        cred.consent_peer_name = granted_config.get("peerName")
-        if apply_config:
-            _deep_merge(raw, granted_config)
-    _persist_credential(path, host, cred, raw)
+    with _refresh_lock, _config_refresh_lock(path):
+        raw = _read_config_strict(path)
+        granted_config = grant.get("config")
+        if isinstance(granted_config, dict):
+            cred.consent_peer_name = granted_config.get("peerName")
+            if apply_config:
+                _deep_merge(raw, granted_config)
+        _persist_credential(path, host, cred, raw)
     return cred
 
 def apply_token_to_client(client: Any, token: str) -> bool:

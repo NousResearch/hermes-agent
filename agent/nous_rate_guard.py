@@ -15,6 +15,7 @@ import os
 import time
 from typing import Any, Mapping, Optional
 from utils import atomic_write_text
+from agent.retry_utils import parse_retry_after_seconds
 from agent.rate_limit_tracker import (
     _BUCKET_TAGS, _fmt_seconds, _safe_float, _safe_int, has_rate_limit_headers, lower_headers,
 )
@@ -24,33 +25,42 @@ logger = logging.getLogger(__name__)
 # Reset windows shorter than this are transient upstream jitter, not a quota
 # exhaustion worth a cross-session breaker trip.
 _MIN_RESET_FOR_BREAKER_SECONDS = 60.0
+# The welcome tier's structured ``rate_limited`` refusal: a reset at or above this is an exhausted
+# allowance (stop, tell the user when it refreshes and that signing in lifts it); below it the
+# turn simply waits it out. The gateway's fairshare bucket names honest resets from a few seconds
+# up to a minute, so the split sits where a quiet wait stops being quiet.
+WELCOME_LONG_WAIT_SECONDS = 20.0
 
 format_remaining = _fmt_seconds
 
 
-def _state_path() -> str:
+def _state_path(*, anonymous: bool = False) -> str:
     """Path to the Nous rate limit state file."""
     try:
         from hermes_constants import get_hermes_home
         base = get_hermes_home()
     except ImportError:
         base = os.path.join(os.path.expanduser("~"), ".hermes")
-    return os.path.join(base, "rate_limits", "nous.json")
+    # Signing in must not inherit the anonymous allowance's cooldown (or clear it for
+    # another anonymous session). Keep the existing named-account file unchanged.
+    return os.path.join(base, "rate_limits", "nous-anonymous.json" if anonymous else "nous.json")
 
 
 def _parse_reset_seconds(headers: Optional[Mapping[str, str]]) -> Optional[float]:
     """Best reset estimate (seconds from now) from hourly, per-minute, then retry-after headers."""
     lowered = lower_headers(headers)
-    for key in ("x-ratelimit-reset-requests-1h", "x-ratelimit-reset-requests", "retry-after"):
+    for key in ("x-ratelimit-reset-requests-1h", "x-ratelimit-reset-requests"):
         val = _safe_float(lowered.get(key), 0.0)
         if val > 0:
             return val
-    return None
+    retry_after = parse_retry_after_seconds(lowered.get("retry-after"))
+    return retry_after if retry_after else None
 
 
 def record_nous_rate_limit(
     *, headers: Optional[Mapping[str, str]] = None, error_context: Optional[dict[str, Any]] = None,
     default_cooldown: float = 300.0,
+    anonymous: bool = False,
 ) -> None:
     """Record that Nous Portal is rate-limited in the shared state file.
 
@@ -71,17 +81,17 @@ def record_nous_rate_limit(
 
     state = {"reset_at": reset_at, "recorded_at": now, "reset_seconds": reset_at - now}
     try:
-        atomic_write_text(_state_path(), json.dumps(state))
+        atomic_write_text(_state_path(anonymous=anonymous), json.dumps(state))
         logger.info("Nous rate limit recorded: resets in %.0fs (at %.0f)", reset_at - now, reset_at)
     except Exception as exc:
         logger.debug("Failed to write Nous rate limit state: %s", exc)
 
 
-def nous_rate_limit_remaining() -> Optional[float]:
+def nous_rate_limit_remaining(*, anonymous: bool = False) -> Optional[float]:
     """Seconds remaining until reset, or None if not rate-limited (expired state is removed)."""
-    path = _state_path()
+    path = _state_path(anonymous=anonymous)
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             state = json.load(f)
         remaining = state.get("reset_at", 0) - time.time()
         if remaining > 0:
@@ -93,10 +103,10 @@ def nous_rate_limit_remaining() -> Optional[float]:
         return None
 
 
-def clear_nous_rate_limit() -> None:
+def clear_nous_rate_limit(*, anonymous: bool = False) -> None:
     """Clear the rate limit state (e.g., after a successful Nous request)."""
     try:
-        os.unlink(_state_path())
+        os.unlink(_state_path(anonymous=anonymous))
     except FileNotFoundError:
         pass
     except OSError as exc:
@@ -127,6 +137,19 @@ def is_genuine_nous_rate_limit(
     if _has_exhausted_bucket(_parse_buckets_from_headers(headers)):
         return True
     return last_known_state is not None and _has_exhausted_bucket_in_object(last_known_state)
+
+
+def is_long_welcome_rate_limit(error_context: Any) -> bool:
+    """True for a Nous welcome-tier ``rate_limited`` refusal whose reset is long enough to be an
+    exhausted allowance (``WELCOME_LONG_WAIT_SECONDS``), as parsed into ``error_context``
+    (``welcome_refusal`` from ``hermes_cli.anon_auth.parse_welcome_refusal``). Capacity refusals
+    (``at_capacity`` / ``admission_closed``) are never this: they are retried in place."""
+    if not isinstance(error_context, dict):
+        return False
+    refusal = error_context.get("welcome_refusal")
+    if not isinstance(refusal, dict) or refusal.get("reason") != "rate_limited":
+        return False
+    return _safe_float(refusal.get("retry_after"), 0.0) >= WELCOME_LONG_WAIT_SECONDS
 
 
 def _parse_buckets_from_headers(

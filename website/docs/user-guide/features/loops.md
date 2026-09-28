@@ -83,7 +83,7 @@ Examples:
 | `/loop stop` | End the loop. |
 | `/proactive …` | Alias for `/loop` (Claude Code parity). |
 
-Works on the CLI, the TUI (`hermes --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies.
+Works on the CLI, the TUI (`hermes --tui`), the web dashboard chat, the desktop app, and every gateway platform (Telegram, Discord, Slack, WhatsApp, …). On messaging platforms the gateway fires wakeups even between your messages — the loop belongs to the chat's session, and its results arrive as ordinary replies — also when that session is open in the TUI / Desktop app, which leaves the routed wakeup to the gateway.
 
 ## Mixing with `/goal`
 
@@ -93,7 +93,7 @@ A real user message always wins over both — wakeups only fire while the sessio
 
 ## Behavior details
 
-- **A wakeup is a normal user-role turn.** No system-prompt mutation, no toolset swap — prompt caching stays intact.
+- **A wakeup is a normal user-role turn.** No system-prompt mutation, no toolset swap — prompt caching stays intact. In the messaging gateway a wakeup is not a reply to the message that set the loop, so its output is posted to the chat/topic without quoting that message.
 - **Survives `/resume` and compression.** Loop state persists per session and migrates across context-compression boundaries, same as `/goal`.
 - **One loop per session.** Setting a new `/loop` replaces the old one. Run several loops by running several sessions (or use cron for a fleet of schedules).
 - **Interrupting a wakeup turn (Ctrl+C) pauses the loop** — recoverable with `/loop resume`, so cancel actually means cancel.

@@ -494,7 +494,8 @@ export function actInPageCore(
       acted: 'looking at ' + describe(el),
       point: { x: spot.clientX, y: spot.clientY },
       success: true,
-      // Real typing starts with a triple-click to clear the field. On anything
+      tag,
+      // Real typing starts with a select-all to clear the field. On anything
       // that is not a field that gesture selects the paragraph under it
       // instead, which is how the agent ended up highlighting whole pages.
       typable: tag === 'TEXTAREA' || tag === 'INPUT' || el.isContentEditable === true
@@ -604,6 +605,19 @@ export function actInPageCore(
 
     if (!key) {
       return fail('Pass the key to press, e.g. "Enter" or "Escape".')
+    }
+
+    // A printable key on the page root is a shortcut, not text entry. Named
+    // keys (Enter, Escape, arrows) stay allowed; the caller opts in for the
+    // rest.
+    const root = el.tagName === 'BODY' || el.tagName === 'HTML'
+
+    if (key.length === 1 && root && action.allowShortcut !== true) {
+      return fail(
+        'Refused to press a printable key on ' +
+          el.tagName +
+          '. That would be a page shortcut; pass allowShortcut to opt in.'
+      )
     }
 
     const init = { bubbles: true, cancelable: true, code: key.length === 1 ? 'Key' + key.toUpperCase() : key, key }

@@ -32,7 +32,7 @@ def test_url_only_route_hydrates_valid_github_identities_without_checkout(monkey
         with lock:
             active -= 1
         return True, json.dumps({"headRefName": "feature", "isDraft": True,
-                                 "number": 42, "state": "MERGED", "title": args[2], "url": args[2]})
+                                 "number": 42, "state": "MERGED", "title": args[2], "url": args[2]}), ""
 
     monkeypatch.setattr(web_git, "_gh", gh)
     app = FastAPI()
@@ -67,11 +67,11 @@ def test_failed_url_reads_are_not_authoritative_but_legacy_results_survive(tmp_p
 
     def gh(cwd, args):
         if args[0] == "repo":
-            return True, "owner/repo"
+            return True, "owner/repo", ""
         if args[0] == "api":
             queries.append(args[3])
-            return True, json.dumps({"data": {"repository": {"b0": {"nodes": [known]}, "n0": known}}})
-        return True, "not JSON"
+            return True, json.dumps({"data": {"repository": {"b0": {"nodes": [known]}, "n0": known}}}), ""
+        return True, "not JSON", ""
 
     monkeypatch.setattr(web_git, "_gh", gh)
     legacy = web_git.review_pr_list(str(tmp_path), ["feature"], [42])
@@ -82,5 +82,5 @@ def test_failed_url_reads_are_not_authoritative_but_legacy_results_survive(tmp_p
     failed = web_git.review_pr_list(str(tmp_path), ["feature"], [42], ["https://github.com/other/repo/pull/42"])
     assert known["url"] in [pr["url"] for pr in failed["prs"]]
     assert failed["ghReady"] is False
-    monkeypatch.setattr(web_git, "_gh", lambda *_: (False, "network unavailable"))
+    monkeypatch.setattr(web_git, "_gh", lambda *_: (False, "", "network unavailable"))
     assert web_git.review_pr_list("", [], [], [known["url"]]) == {"ghReady": False, "prs": []}

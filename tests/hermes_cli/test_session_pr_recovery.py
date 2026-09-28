@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from hermes_cli.web_routers import profiles
 from hermes_state import SessionDB
+from hermes_state_health import reset_storage_state
 
 URL = "https://github.com/example/base/pull/7"
 REPLACEMENT = "https://github.com/example/base/pull/8"
@@ -116,9 +117,9 @@ def test_scan_uses_real_profile_discovery(tmp_path, monkeypatch, inventory_failu
         db.create_session("discovered", "desktop")
         _persist(db, "discovered", "terminal", {"command": "gh pr create --fill"}, _terminal())
     if inventory_failure:
-        def unavailable():
+        def unavailable(*args, **kwargs):
             raise OSError("inventory unavailable")
-        monkeypatch.setattr(profiles_mod, "list_profiles", unavailable)
+        monkeypatch.setattr(profiles_mod, "profiles_to_serve", unavailable)
     app = FastAPI()
     app.include_router(profiles.sessions_router)
     with TestClient(app) as client:
@@ -151,6 +152,8 @@ def test_unread_profiles_remain_retryable_until_real_read_succeeds(tmp_path, mon
         assert "unread-session" not in first.json()["pull_requests"]
         if unavailable == "corrupt":
             (unread / "state.db").unlink()
+            # Restored file = restarted process; the corruption latch is process-wide.
+            reset_storage_state(unread / "state.db")
         with SessionDB(unread / "state.db") as db:
             db.create_session(session_id="unread-session", source="desktop")
             _persist(db, "unread-session", "terminal", {"command": "gh pr create --fill"}, _terminal())

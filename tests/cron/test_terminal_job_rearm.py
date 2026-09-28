@@ -232,3 +232,135 @@ class TestRecurringJobStuckInErrorStateIsRecoverable:
         assert claim_job_for_fire(job["id"], return_job=True) is False
         assert advance_next_runs([job["id"]]) == 0
         assert get_due_jobs() == []
+
+
+class TestExhaustedRecurringJobIsRevivable:
+    """A recurring job with a finite ``repeat.times`` budget ("every 30m x48" burn-in watchdogs,
+    "every monday 9am x12" campaigns) retires through the SAME repeat-limit branch as a spent
+    one-shot: ``_complete_job_record`` sets ``state=completed``, ``enabled=False``,
+    ``next_run_at=None``. That is right for the automatic paths — a spent budget must not
+    resurrect itself — but it left no path back in for the user: ``resume_job`` refused it as
+    terminal while ``--run-now``/``--at`` demand a one-shot schedule, so the only exit was
+    deleting and recreating the job (losing its output directory and history).
+
+    These tests pin the repair: an explicit ``resume_job`` restarts the series (counter reset,
+    budget preserved, run history kept) while every automatic path, the ``update_job`` guard and
+    the spent one-shot control keep their existing behaviour.
+
+    Sibling of ``_is_recoverable_error_job`` (#16265) for ``state=error`` recurring jobs.
+    """
+
+    @staticmethod
+    def _exhaust(job_id, times):
+        for _ in range(times):
+            mark_job_run(job_id, success=True)
+
+    def test_interval_job_resume_restarts_the_series(self, tmp_cron_dir):
+        job = create_job("burnin", "every 30m", name="burn-in", repeat=3)
+        self._exhaust(job["id"], 3)
+        assert get_job(job["id"])["state"] == "completed"
+
+        resumed = resume_job(job["id"])
+        assert resumed is not None
+
+        assert resumed["state"] == "scheduled"
+        assert resumed["enabled"] is True
+        assert resumed["next_run_at"] is not None
+        assert resumed["repeat"]["completed"] == 0, (
+            "the counter the job retired on must be reset, or it retires again immediately"
+        )
+        assert resumed["repeat"]["times"] == 3, (
+            "the budget is the user's intent — resuming must not silently make it unlimited"
+        )
+
+    def test_cron_schedule_job_resume_restarts_the_series(self, tmp_cron_dir):
+        """Sibling call path: the same repair must hold for a 5-field cron schedule, not just an
+        interval."""
+        job = create_job("campaign", "0 9 * * 1", name="weekly x2", repeat=2)
+        self._exhaust(job["id"], 2)
+        assert get_job(job["id"])["state"] == "completed"
+
+        resumed = resume_job(job["id"])
+        assert resumed is not None
+
+        assert resumed["state"] == "scheduled"
+        assert resumed["enabled"] is True
+        assert resumed["repeat"]["completed"] == 0
+        assert resumed["next_run_at"] is not None
+
+    def test_resume_preserves_run_history(self, tmp_cron_dir):
+        job = create_job("burnin", "every 30m", name="burn-in", repeat=2)
+        self._exhaust(job["id"], 2)
+        finished = get_job(job["id"])
+
+        resumed = resume_job(job["id"])
+        assert resumed is not None
+
+        assert resumed["last_run_at"] == finished["last_run_at"] is not None
+        assert resumed["last_status"] == finished["last_status"]
+
+    def test_revived_job_is_schedulable_again(self, tmp_cron_dir):
+        """The contract that matters: after resume the scheduler can advance and fire it again."""
+        job = create_job("burnin", "every 30m", name="burn-in", repeat=2)
+        self._exhaust(job["id"], 2)
+        assert advance_next_run(job["id"]) is False
+
+        resume_job(job["id"])
+
+        assert advance_next_run(job["id"]) is True, (
+            "a resumed series must be admitted back into the ordinary advance/dispatch path"
+        )
+
+    def test_exhausted_job_does_not_resurrect_itself(self, tmp_cron_dir):
+        """Control: revival is user-initiated only. Nothing about the fix may make a spent budget
+        restart on its own."""
+        job = create_job("burnin", "every 30m", name="burn-in", repeat=2)
+        self._exhaust(job["id"], 2)
+        before = copy.deepcopy(load_jobs())
+
+        assert get_due_jobs() == []
+        assert advance_next_run(job["id"]) is False
+        assert advance_next_runs([job["id"]]) == 0
+        assert claim_job_for_fire(job["id"], return_job=True) is False
+        assert load_jobs() == before
+
+    def test_update_job_still_refuses_to_reactivate_exhausted_recurring(self, tmp_cron_dir):
+        """Control: the terminal-job guard keeps its teeth for every caller except ``resume_job``
+        (the ``cronjob`` tool, the dashboard, ``cron edit``)."""
+        job = create_job("burnin", "every 30m", name="burn-in", repeat=2)
+        self._exhaust(job["id"], 2)
+
+        with pytest.raises(ValueError, match="terminal"):
+            update_job(job["id"], {"enabled": True})
+        with pytest.raises(ValueError, match="terminal"):
+            update_job(job["id"], {"state": "scheduled", "next_run_at": None})
+
+    def test_spent_oneshot_resume_is_refused_but_rearm_still_works(self, tmp_cron_dir):
+        """Control: a one-shot has genuinely no future occurrence, so the repair must not extend to
+        it — ``resume`` keeps refusing and its own sanctioned path (re-arm at a new time) still
+        works. That pair is exactly what the recurring case was missing."""
+        job = create_job("done", "in 30m", repeat=1)
+        mark_job_run(job["id"], success=True)
+
+        with pytest.raises(ValueError, match="terminal"):
+            resume_job(job["id"])
+
+        rearmed = rearm_oneshot(
+            job["id"], (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+        )
+        assert rearmed is not None
+        assert rearmed["state"] == "scheduled"
+        assert rearmed["repeat"]["completed"] == 0
+
+    def test_unlimited_recurring_job_resume_unchanged(self, tmp_cron_dir):
+        """Control: a job with no finite budget (repeat times=None) never exhausts and keeps the
+        plain resume behaviour."""
+        job = create_job("forever", "every 1h")
+
+        resumed = resume_job(job["id"])
+        assert resumed is not None
+
+        assert resumed["state"] == "scheduled"
+        assert resumed["enabled"] is True
+        assert resumed["repeat"]["times"] is None
+        assert resumed["next_run_at"] is not None

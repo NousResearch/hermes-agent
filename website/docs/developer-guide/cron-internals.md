@@ -162,6 +162,10 @@ dropped silently. The mechanics, in the order the due scan applies them
    re-anchoring from now (and logs that it did), so the first tick after
    resume applies rules 3–5 to it — one late/catch-up run, or a logged skip.
    One-shots and future instants recompute from now on resume.
+   A recurring job whose finite `repeat.times` budget is spent is retired as
+   `state=completed` and stays stopped through every automatic path; an explicit
+   `resume_job` restarts the series by resetting `repeat.completed` while keeping
+   `repeat.times`, so the budget runs again rather than becoming unlimited.
 
 The same store fields drive every topology: a standalone `hermes -p X gateway
 run` and a profile served by the host gateway (`_start_multiplex` ticks each

@@ -28,3 +28,23 @@ def test_restore_runs_once_on_first_drain(monkeypatch):
     registry.drain_notifications("sess")
     assert registry.restore_completions() == 0
     assert calls == [registry.completion_queue]  # first consumer restores, exactly once
+
+
+def test_first_drain_under_secondary_scope_replays_the_launch_ledger(monkeypatch, tmp_path):
+    """Under multi-profile ``hermes serve`` the first consumer is a session bound to a secondary
+    profile (TUI poller / prompt_turn drain); the once-per-process replay must still read the LAUNCH
+    ledger, or it is never replayed for the life of the process."""
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    from tools import async_delegation, process_registry as pr_mod
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
+    ledgers = []
+    monkeypatch.setattr(async_delegation, "restore_undelivered_completions",
+                        lambda q: ledgers.append(async_delegation._db_path()) or 0)
+    registry = pr_mod.ProcessRegistry()
+    token = set_hermes_home_override(tmp_path / "launch" / "profiles" / "b")
+    try:
+        registry.drain_notifications("sess")
+        assert get_hermes_home() == tmp_path / "launch" / "profiles" / "b"  # caller scope untouched
+    finally:
+        reset_hermes_home_override(token)
+    assert ledgers == [tmp_path / "launch" / "state.db"]

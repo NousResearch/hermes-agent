@@ -1908,18 +1908,26 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return not (is_async_delegation and evt.get("restored"))
 
     def restore_completions(self) -> int:
-        """Rehydrate durable delegation completions from the launch profile's ledger, once per
+        """Rehydrate durable delegation completions from the LAUNCH profile's ledger, once per
         process. Called by the first consumer that drains the queue (CLI/TUI drain, gateway boot,
-        TUI poller) so a mere ``import model_tools`` never touches state.db (#123265)."""
+        TUI poller) so a mere ``import model_tools`` never touches state.db (#123265). The replay
+        always runs in the launch scope: the TUI poller / prompt_turn drain call this under the
+        session's profile binding, and a once-per-process replay taken under a secondary's scope
+        would leave the launch ledger unreplayed for the life of the process. Secondaries are
+        replayed by the gateway's ``_restore_secondary_completion_ledgers``."""
         if self._completions_restored:
             return 0
         self._completions_restored = True
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(None)
         try:
             from tools.async_delegation import restore_undelivered_completions
             return restore_undelivered_completions(self.completion_queue)
         except Exception as exc:
             logger.warning("Could not restore async delegation completions: %s", exc)
             return 0
+        finally:
+            reset_hermes_home_override(token)
 
     def drain_notifications(
         self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,

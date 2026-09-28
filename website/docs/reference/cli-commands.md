@@ -417,7 +417,7 @@ Options:
 | Option | Description |
 |--------|-------------|
 | `--quick` | On returning-user runs: only prompt for items that are missing or unset. Skip items you already have configured. |
-| `--non-interactive` | Use defaults / environment values without prompts. |
+| `--non-interactive` | Print guidance for configuring Hermes without the wizard (`hermes config set …` or provider environment variables) and exit; nothing is changed. This also happens automatically when no TTY is attached. |
 | `--reset` | Reset configuration to defaults before setup. |
 | `--reconfigure` | Backwards-compat alias — bare `hermes setup` on an existing install now does this by default. |
 | `--portal` | One-shot Nous Portal setup: log in via OAuth, set Nous as the inference provider, and opt into the [Tool Gateway](../user-guide/features/tool-gateway.md). Skips the rest of the wizard. |

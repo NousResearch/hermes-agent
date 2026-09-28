@@ -45,3 +45,31 @@ class TestSpawnGatewayRestartReapsOrphans:
 
         mock_spawn.assert_called_once()
         assert proc is mock_proc
+
+    @pytest.mark.parametrize("child_running", [True, False], ids=["in-flight", "cooldown"])
+    @patch("hermes_cli.web_server_gateway._gateway_subcommand", return_value=["gateway", "restart"])
+    @patch("hermes_cli.web_server_gateway._spawn_hermes_action")
+    def test_reused_restart_is_never_reaped(self, mock_spawn, mock_subcmd, child_running):
+        """A repeat request that reuses the last restart must not reap first: until that
+        child writes gateway.pid it matches the unsupervised scan, so the reap killed it."""
+        mock_proc = MagicMock(spec=subprocess.Popen)
+        mock_proc.poll.return_value = None if child_running else 0
+        procs, commands = {}, {}
+
+        def _spawn(subcommand, name):
+            procs[name] = mock_proc
+            commands[name] = tuple(subcommand)
+            return mock_proc
+
+        mock_spawn.side_effect = _spawn
+        from hermes_cli.web_server import _spawn_gateway_restart
+
+        with patch("hermes_cli.web_server_gateway._ACTION_PROCS", procs), patch(
+            "hermes_cli.web_server_gateway._ACTION_COMMANDS", commands
+        ), patch("hermes_cli.gateway._reap_unsupervised_gateway_orphans") as mock_reap:
+            first = _spawn_gateway_restart()
+            second = _spawn_gateway_restart()
+
+        assert first == (mock_proc, False)
+        assert second == (mock_proc, True)
+        mock_reap.assert_called_once()

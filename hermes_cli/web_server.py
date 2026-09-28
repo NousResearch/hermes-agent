@@ -896,16 +896,11 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
     Concurrent children race each other on the kill-and-start path, so a live
     child is reused; requests within ``GATEWAY_RESTART_COOLDOWN_SECONDS`` for the
     same profile coalesce onto the last spawn too (#89034). Orphaned gateways
-    are reaped first so the fresh one doesn't stack a duplicate (#77276).
-    Returns ``(proc, reused)``.
+    are reaped right before a fresh spawn so it doesn't stack a duplicate
+    (#77276) — never on a reuse: until the in-flight child writes gateway.pid it
+    matches the unsupervised scan itself, and reaping first killed the restart
+    being reused. Returns ``(proc, reused)``.
     """
-    try:
-        from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
-
-        _reap_unsupervised_gateway_orphans()
-    except Exception:
-        pass  # best-effort — don't block the restart on a reap failure
-
     global _LAST_GATEWAY_RESTART
 
     subcommand = _gateway_mod._gateway_subcommand(profile, "restart")
@@ -929,6 +924,13 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
                 getattr(recent_proc, "pid", "?"),
             )
             return recent_proc, True
+
+    try:
+        from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
+
+        _reap_unsupervised_gateway_orphans()
+    except Exception:
+        pass  # best-effort — don't block the restart on a reap failure
 
     proc = _gateway_mod._spawn_hermes_action(subcommand, "gateway-restart")
     _LAST_GATEWAY_RESTART = (time.monotonic(), proc, tuple(subcommand))

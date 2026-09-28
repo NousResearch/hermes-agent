@@ -65,9 +65,15 @@ def test_restart_retires_the_never_drained_accept_row(monkeypatch, tmp_path):
         finally:
             fresh.close()
         # The never-run prompt is retired (inactive), never deleted: durable history keeps it.
-        every = db.get_messages_as_conversation(key, include_inactive=True, include_row_ids=True)
-        retired = [r for r in every if "RESTART-MARKER" in str(r["content"])]
-        assert len(retired) == 1
+        # Raw row order/roles/active state, not just a count (#125577 review): the accept-time
+        # row sits between turn A's rows, exactly where the busy-queue accepted it, and only
+        # it went inactive — the restart retired the never-drained prompt, nothing else.
+        raw = db.get_messages(key, include_inactive=True)
+        assert [(r["role"], r["active"], "RESTART-MARKER" in str(r["content"])) for r in raw] == [
+            ("user", 1, False),          # prompt A
+            ("user", 0, True),            # queued prompt B — never drained, retired by reopen
+            ("assistant", 1, False),      # reply A
+        ]
     finally:
         server._sessions.pop(sid, None)
         db.close()

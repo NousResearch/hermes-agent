@@ -104,7 +104,7 @@ export function renamePublication(staged, out, deps = {}) {
 
 // Never delete the last successful product before a compiler succeeds. The
 // staging and backup directories are siblings so publication stays on one FS.
-export function publishDirectory(staged, out, { source } = {}) {
+export function publishDirectory(staged, out, { source, rename, sleep } = {}) {
   // The destination may have been occupied while the compiler was running.
   requireOwnedOutput(out, source)
   writeFileSync(path.join(staged, productMarker), productOwner)
@@ -112,7 +112,7 @@ export function publishDirectory(staged, out, { source } = {}) {
   const previous = existsSync(out)
   if (previous) renameSync(out, backup)
   try {
-    renamePublication(staged, out)
+    renamePublication(staged, out, { rename, sleep })
   } catch (error) {
     if (previous) renameSync(backup, out)
     throw error

@@ -43,10 +43,14 @@ export function ProfileTag({
       {showName ? (
         // Tab lead only: the status dot follows, so keep a hair of room after
         // the name, and cap its width — a long profile name must not eat the
-        // tab's title (PaneTab caps the whole tab at max-w-48).
-        <span className="mr-1 flex shrink-0 items-center gap-1">
+        // tab's title (PaneTab caps the whole tab at max-w-48). The name is
+        // aria-hidden: the glyph's "Profile: <name>" label already says it.
+        <span className="mr-1 flex min-w-0 shrink items-center gap-1">
           {glyph}
-          <span className="block min-w-0 max-w-20 truncate text-[9px] font-medium tracking-wide uppercase text-(--ui-text-secondary)">
+          <span
+            aria-hidden="true"
+            className="block min-w-0 max-w-16 truncate text-[10px] font-medium tracking-wide uppercase text-(--ui-text-secondary)"
+          >
             {key}
           </span>
         </span>

@@ -180,9 +180,10 @@ deploy/host/smoke.sh                             # needs a Docker daemon
 
 The model is a stub OpenAI-compatible server inside the container (`smoke/stub_model.py`), so the turn runs through the real gateway, the `litco_turn` platform, `HermesTurnRunner`, and `AIAgent`. The unit tests in `tests/litco/` already cover the turn server with the fake runner.
 
-## Not verified, because no droplet was created
+## Not verified
 
-- `build-image.sh` has never run against DigitalOcean. Its doctl flags, the SSH wait, and the snapshot and delete sequence are checked only as a dry-run plan.
+The first cloud build ran on 2026-09-28, and `BUILD_LOG.md` records it. `build-image.sh`, the droplet-only install steps, and `cloud-init clean` are now verified: a droplet booted from the snapshot ran cloud-init fresh. The rest of this list is still open unless `BUILD_LOG.md` says otherwise.
+
 - `install-host.sh` has run only in an arm64 Ubuntu 24.04 container with `--container`. The droplet-only steps have never run: the Tailscale install, `loginctl enable-linger`, fail2ban, unattended-upgrades, the sshd drop-in with `sshd -t`, persistent journald, and the x86_64 package set.
 - cloud-init on a real droplet has not run. That covers `write_files` with `b64`, the hostname, `tailscale up --auth-key=file:` (the `file:` form needs a recent Tailscale), ufw on a real kernel, and the restart ordering. The rendered YAML is parsed in tests, not by cloud-init.
 - `cloud-init clean --logs --machine-id` before the snapshot, and whether droplets from the snapshot then run their user-data, is unverified. That exact failure made LitKit's first worker image boot useless in July 2026.

@@ -13,9 +13,11 @@ import {
   buildWindowsManagedUpdateLaunch,
   fenceManagedSshBootstrapPublication,
   ManagedConnectionUpdateGate,
+  managedSshRecoveryDisposition,
   managedSshRecoveryScopes,
   managedSshScopeRole,
   managedSshTokenPersistencePlan,
+  MAX_MANAGED_SSH_RECOVERY_ATTEMPTS,
   parseRemoteUpdateObservation,
   RECEIPT_GRACE_MS,
   recoverManagedSshScopes,
@@ -100,12 +102,103 @@ test('inactive SSH crash recovery keeps ordinary dials fenced until positive cle
   assert.throws(() => relaunchedGate.assertCanDial('homelab'), /paused/)
   assert.equal(journalCleared, false)
   releaseClearance()
-  const results = await recovery
+  const { disposition, results } = await recovery
 
+  assert.equal(disposition, 'complete')
   assert.deepEqual(results, [])
   assert.equal(restoreCalls, 0)
   assert.equal(journalCleared, true)
   assert.doesNotThrow(() => relaunchedGate.assertCanDial('homelab'))
+})
+
+test('durable recovery disposition is bounded once the remote install is clear', () => {
+  const max = MAX_MANAGED_SSH_RECOVERY_ATTEMPTS
+
+  assert.equal(managedSshRecoveryDisposition({ attempts: 0, restoreFailures: 0, updateSucceeded: false }), 'complete')
+  assert.equal(managedSshRecoveryDisposition({ attempts: 1, restoreFailures: 1, updateSucceeded: false }), 'retry')
+  assert.equal(
+    managedSshRecoveryDisposition({ attempts: max - 1, restoreFailures: 1, updateSucceeded: false }),
+    'retry'
+  )
+  assert.equal(managedSshRecoveryDisposition({ attempts: max, restoreFailures: 1, updateSucceeded: false }), 'abandon')
+  assert.equal(managedSshRecoveryDisposition({ attempts: 1, restoreFailures: 2, updateSucceeded: true }), 'abandon')
+  assert.equal(
+    managedSshRecoveryDisposition({ attempts: 2, maxAttempts: 5, restoreFailures: 1, updateSucceeded: false }),
+    'retry'
+  )
+})
+
+async function relaunchRecoveryWithStuckScope(options: {
+  attempts: number
+  clearance?: { exitCode: null | number; receipt: null | { correlationId: string; outcome: string } }
+}) {
+  let durableOwner: string | null = CORRELATION
+  let recordedAttempts: null | number = null
+  const gate = new ManagedConnectionUpdateGate(id => (id === 'homelab' ? durableOwner : null))
+
+  const outcome = await recoverManagedSshScopes({
+    attempts: options.attempts,
+    scopes: [{ profile: 'default' }, { profile: 'stuck' }],
+    awaitClearance: async () => options.clearance ?? { exitCode: null, receipt: null },
+    restoreScope: async scope => {
+      if (scope.profile === 'stuck') {
+        throw new Error('serve never became healthy')
+      }
+    },
+    recordFailedAttempt: async next => {
+      recordedAttempts = next
+    },
+    completeRecovery: async () => {
+      durableOwner = null
+    }
+  })
+
+  return { gate, outcome, recordedAttempts }
+}
+
+test('a scope that never restores stops fencing the connection after bounded relaunch attempts (#107827)', async () => {
+  const first = await relaunchRecoveryWithStuckScope({ attempts: 0 })
+
+  assert.equal(first.outcome.disposition, 'retry')
+  assert.equal(first.recordedAttempts, 1)
+  assert.throws(() => first.gate.assertCanDial('homelab'), /paused/)
+  assert.throws(() => first.gate.assertCanMutate('homelab'), /edited or removed/)
+
+  const last = await relaunchRecoveryWithStuckScope({ attempts: MAX_MANAGED_SSH_RECOVERY_ATTEMPTS - 1 })
+
+  assert.equal(last.outcome.disposition, 'abandon')
+  assert.equal(last.outcome.attempts, MAX_MANAGED_SSH_RECOVERY_ATTEMPTS)
+  assert.equal(last.recordedAttempts, null)
+  assert.deepEqual(
+    last.outcome.results.map(result => result.status),
+    ['fulfilled', 'rejected']
+  )
+  assert.doesNotThrow(() => last.gate.assertCanDial('homelab'))
+  assert.doesNotThrow(() => last.gate.assertCanMutate('homelab'))
+})
+
+test('a correlated remote exit 0 ends durable recovery on the first failed restore', async () => {
+  const success = await relaunchRecoveryWithStuckScope({
+    attempts: 0,
+    clearance: { exitCode: 0, receipt: { correlationId: CORRELATION, outcome: 'success' } }
+  })
+
+  assert.equal(success.outcome.disposition, 'abandon')
+  assert.doesNotThrow(() => success.gate.assertCanDial('homelab'))
+
+  // Reported shape: `.update_exit_code.<correlation>` is 0 but no receipt was written.
+  const exitOnly = await relaunchRecoveryWithStuckScope({ attempts: 0, clearance: { exitCode: 0, receipt: null } })
+
+  assert.equal(exitOnly.outcome.disposition, 'abandon')
+  assert.doesNotThrow(() => exitOnly.gate.assertCanDial('homelab'))
+
+  const failed = await relaunchRecoveryWithStuckScope({
+    attempts: 0,
+    clearance: { exitCode: 1, receipt: { correlationId: CORRELATION, outcome: 'failed' } }
+  })
+
+  assert.equal(failed.outcome.disposition, 'retry')
+  assert.throws(() => failed.gate.assertCanDial('homelab'), /paused/)
 })
 
 test('managed update joins a pre-claim bootstrap until its final gate check rolls back the serve', async () => {
@@ -777,6 +870,59 @@ test('managed lifecycle attempts every drain and every restore when one ownershi
   assert.deepEqual(restored, ['default', 'research'])
   assert.equal(updateCalled, false)
   assert.match(result.error || '', /foreign owner/)
+})
+
+async function updateWithStuckRestore(exitCode: number, outcome: string) {
+  let journalCleared = false
+
+  const result = await runManagedSshUpdate({
+    connectionId: 'home',
+    correlationId: CORRELATION,
+    scopes: [
+      { key: 'a', profile: 'default' },
+      { key: 'b', profile: 'stuck' }
+    ],
+    preflightRemote: async () => {},
+    prepareRecovery: async () => {},
+    drainScope: async () => {},
+    updateRemote: async () => ({ exitCode, receipt: { correlationId: CORRELATION, outcome } }),
+    awaitRestoreClearance: async () => {},
+    closeTransports: async () => {},
+    restoreScope: async scope => {
+      if (scope.profile === 'stuck') {
+        throw new Error('serve never became healthy')
+      }
+    },
+    completeRecovery: async () => {
+      journalCleared = true
+    },
+    releaseGate: () => {}
+  })
+
+  return { journalCleared, result }
+}
+
+test('a successful update clears the journal even when one scope fails to restore (#107827)', async () => {
+  const { journalCleared, result } = await updateWithStuckRestore(0, 'success')
+
+  assert.equal(journalCleared, true)
+  assert.equal(result.updateOk, true)
+  assert.equal(result.restoreOk, false)
+  assert.equal(result.outcome, 'restore-failed')
+  assert.deepEqual(
+    result.scopes.map(scope => [scope.profile, scope.restored]),
+    [
+      ['default', true],
+      ['stuck', false]
+    ]
+  )
+})
+
+test('a failed update keeps the journal for relaunch recovery when a scope fails to restore', async () => {
+  const { journalCleared, result } = await updateWithStuckRestore(1, 'failed')
+
+  assert.equal(journalCleared, false)
+  assert.equal(result.outcome, 'update-and-restore-failed')
 })
 
 test('managed lifecycle journals before drain and leaves scopes stopped when clearance cannot be proved', async () => {

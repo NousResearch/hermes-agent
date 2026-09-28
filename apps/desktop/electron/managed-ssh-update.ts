@@ -22,6 +22,9 @@ const DEFAULT_REMOTE_UPDATE_TIMEOUT_MS = 60 * 60 * 1000
 const DEFAULT_REMOTE_CLEARANCE_TIMEOUT_MS = 5 * 60 * 1000
 const DEFAULT_REMOTE_UPDATE_POLL_MS = 1_000
 const RECEIPT_GRACE_MS = 15_000
+// Durable recovery retries a scope that failed to restore on each launch, but
+// only this many times: after that the journal stops fencing the connection.
+const MAX_MANAGED_SSH_RECOVERY_ATTEMPTS = 3
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 type ManagedUpdateOutcome = 'updated' | 'update-failed' | 'restore-failed' | 'update-and-restore-failed' | 'refused'
@@ -96,7 +99,7 @@ interface ManagedUpdateDeps<TScope extends ManagedSshScope = ManagedSshScope> {
   preflightRemote: () => Promise<void>
   drainScope: (scope: TScope) => Promise<void>
   updateRemote: () => Promise<RemoteUpdateProof>
-  awaitRestoreClearance: () => Promise<void>
+  awaitRestoreClearance: () => Promise<unknown>
   closeTransports: () => Promise<void>
   restoreScope: (scope: TScope) => Promise<unknown>
   releaseGate: () => void
@@ -716,7 +719,7 @@ async function waitForManagedRemoteClearance(
     sleep?: (ms: number) => Promise<void>
     requireTerminal?: boolean
   } = {}
-): Promise<void> {
+): Promise<RemoteUpdateObservation> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_REMOTE_CLEARANCE_TIMEOUT_MS
   const pollMs = options.pollMs ?? DEFAULT_REMOTE_UPDATE_POLL_MS
   const now = options.now || Date.now
@@ -741,7 +744,7 @@ async function waitForManagedRemoteClearance(
           observation.exitCode !== null ||
           observation.receipt !== null
         ) {
-          return
+          return observation
         }
       }
     } catch {
@@ -759,6 +762,40 @@ async function waitForManagedRemoteClearance(
 
     await sleep(pollMs)
   }
+}
+
+type ManagedSshRecoveryDisposition = 'abandon' | 'complete' | 'retry'
+
+// Only meaningful once the remote install marker is positively clear: the
+// mutator is gone, so the durable fence protects nothing except the retry of
+// scopes that failed to restore. Bound that retry instead of fencing forever
+// (#107827). A correlated exit 0 ends it at once; otherwise stop
+// after MAX_MANAGED_SSH_RECOVERY_ATTEMPTS failed attempts. An abandoned scope
+// is just a stopped service: the next ordinary dial starts it again.
+function managedSshRecoveryDisposition(input: {
+  attempts: number
+  maxAttempts?: number
+  restoreFailures: number
+  updateSucceeded: boolean
+}): ManagedSshRecoveryDisposition {
+  if (input.restoreFailures === 0) {
+    return 'complete'
+  }
+
+  if (input.updateSucceeded || input.attempts >= (input.maxAttempts ?? MAX_MANAGED_SSH_RECOVERY_ATTEMPTS)) {
+    return 'abandon'
+  }
+
+  return 'retry'
+}
+
+// The correlated terminal exit code is proof on its own: some backends exit 0
+// without writing a receipt (#101516). A receipt that reports a non-success
+// outcome still vetoes it.
+function remoteUpdateSucceeded(observation: null | Pick<RemoteUpdateObservation, 'exitCode' | 'receipt'> | void) {
+  return Boolean(
+    observation && observation.exitCode === 0 && (!observation.receipt || observation.receipt.outcome === 'success')
+  )
 }
 
 function errorMessage(error: unknown): string {
@@ -858,7 +895,16 @@ async function runManagedSshUpdate<TScope extends ManagedSshScope>(
     }
 
     try {
-      if (recoveryPrepared && !restorationBlocked && restoreResults.every(result => result.restored)) {
+      const disposition = managedSshRecoveryDisposition({
+        attempts: 0,
+        restoreFailures: restoreResults.filter(result => !result.restored).length,
+        updateSucceeded: remoteUpdateSucceeded(proof)
+      })
+
+      // A scope that fails to restore after a proven-successful update must not
+      // leave the connection fenced until relaunch; its failure is reported in
+      // `scopes` and the next dial starts it again.
+      if (recoveryPrepared && !restorationBlocked && disposition !== 'retry') {
         await deps.completeRecovery?.()
       }
     } catch (error) {
@@ -930,23 +976,42 @@ async function waitForManagedUpdateOperations(getOperations: () => Iterable<Prom
 
 async function recoverManagedSshScopes<TScope>(deps: {
   afterClearance?: () => Promise<void>
-  awaitClearance: () => Promise<void>
+  // Failed attempts already recorded in the journal, not counting this one.
+  attempts?: number
+  awaitClearance: () => Promise<null | Pick<RemoteUpdateObservation, 'exitCode' | 'receipt'> | void>
   completeRecovery: () => Promise<void>
+  maxAttempts?: number
+  recordFailedAttempt?: (attempts: number) => Promise<void>
   restoreScope: (scope: TScope) => Promise<unknown>
   scopes: TScope[]
-}): Promise<PromiseSettledResult<unknown>[]> {
-  await deps.awaitClearance()
+}): Promise<{
+  attempts: number
+  disposition: ManagedSshRecoveryDisposition
+  results: PromiseSettledResult<unknown>[]
+}> {
+  const clearance = await deps.awaitClearance()
   await deps.afterClearance?.()
   const results = await Promise.allSettled(deps.scopes.map(scope => deps.restoreScope(scope)))
+  const restoreFailures = results.filter(result => result.status === 'rejected').length
+  const attempts = (deps.attempts ?? 0) + (restoreFailures > 0 ? 1 : 0)
 
-  if (results.every(result => result.status === 'fulfilled')) {
+  const disposition = managedSshRecoveryDisposition({
+    attempts,
+    maxAttempts: deps.maxAttempts,
+    restoreFailures,
+    updateSucceeded: remoteUpdateSucceeded(clearance)
+  })
+
+  if (disposition === 'retry') {
+    await deps.recordFailedAttempt?.(attempts)
+  } else {
     // This intentionally runs for an empty scope list. An inactive connection
     // still journals the detached mutator so a crash/relaunch remains fenced;
     // positive marker clearance is what authorizes removing that durable gate.
     await deps.completeRecovery()
   }
 
-  return results
+  return { attempts, disposition, results }
 }
 
 async function fenceManagedSshBootstrapPublication<T>(deps: {
@@ -1056,6 +1121,7 @@ export {
   launchManagedRemoteUpdate,
   ManagedConnectionUpdateGate,
   type ManagedConnectionUpdateResult,
+  managedSshRecoveryDisposition,
   type ManagedSshRecoveryScope,
   managedSshRecoveryScopes,
   type ManagedSshScope,
@@ -1066,6 +1132,7 @@ export {
   type ManagedUpdateReceiptSummary,
   type ManagedUpdateScopeResult,
   markerIsClear,
+  MAX_MANAGED_SSH_RECOVERY_ATTEMPTS,
   observeManagedRemoteUpdate,
   parseRemoteUpdateObservation,
   RECEIPT_GRACE_MS,

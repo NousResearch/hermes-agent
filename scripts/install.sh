@@ -32,6 +32,7 @@ NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
 VERBOSE=false
 SKIP_BROWSER=false
+SKIP_COMPUTER_USE=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -54,6 +55,7 @@ while [ $# -gt 0 ]; do
         --non-interactive|-NonInteractive) NON_INTERACTIVE=true; shift ;;
         --skip-setup) NON_INTERACTIVE=true; shift ;;
         --skip-browser|--no-playwright|-SkipBrowser) SKIP_BROWSER=true; shift ;;
+        --skip-computer-use|-SkipComputerUse) SKIP_COMPUTER_USE=true; shift ;;
         --include-desktop|-IncludeDesktop) INCLUDE_DESKTOP=true; shift ;;
         --verbose|-Verbose) VERBOSE=true; shift ;;
         -h|--help)
@@ -61,11 +63,14 @@ while [ $# -gt 0 ]; do
             echo "                  [--hermes-home PATH]"
             echo "                  [--manifest] [--stage NAME] [--json]"
             echo "                  [--non-interactive] [--include-desktop] [--verbose]"
-            echo "                  [--skip-browser]"
+            echo "                  [--skip-browser] [--skip-computer-use]"
             echo
             echo "  --skip-browser  Do not install the browser tools (agent-browser + Chromium)."
-            echo "                  Alias: --no-playwright. Remembered by later installs and"
-            echo "                  'hermes update'; undo with 'hermes pm install agent-browser'."
+            echo "                  Alias: --no-playwright. Remembered by later"
+            echo "                  installs and 'hermes update'; undo with 'hermes pm install agent-browser'."
+            echo "  --skip-computer-use"
+            echo "                  Do not install the computer-use driver (cua-driver). Remembered"
+            echo "                  the same way; undo with 'hermes pm install cua-driver'."
             exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
@@ -250,21 +255,6 @@ uv_bootstrap_target() {
     esac
 }
 
-# version_at_least HAVE WANT: dotted numeric comparison; a pre-release or
-# build suffix on a component is ignored ("0.12.3-rc1" reads as 0.12.3).
-version_at_least() {
-    local have="$1" want="$2" h w
-    while [ -n "$want" ]; do
-        h="${have%%.*}"; h="${h%%[!0-9]*}"
-        w="${want%%.*}"; w="${w%%[!0-9]*}"
-        [ "${h:-0}" -gt "${w:-0}" ] && return 0
-        [ "${h:-0}" -lt "${w:-0}" ] && return 1
-        case "$have" in *.*) have="${have#*.}" ;; *) have="" ;; esac
-        case "$want" in *.*) want="${want#*.}" ;; *) want="" ;; esac
-    done
-    return 0
-}
-
 # Provision uv for this host from the pinned pm/lock.json artifact. Stages
 # the EXACT artifact pm itself uses into the same store slot
 # (<store>/uv-<version>-<target>/, the store pm's store_root() resolves),
@@ -273,24 +263,14 @@ version_at_least() {
 UV_CMD=""
 ensure_uv() {
     [ -n "$UV_CMD" ] && return 0
-    local _path_uv _path_version
-    if _path_uv="$(command -v uv 2>/dev/null)"; then
-        # Developer shortcut: a uv on PATH fetches nothing, but only one at
-        # least as new as the pin -- the bootstrap passes flags older uv
-        # lacks (`python install --no-bin` arrived in 0.7).
-        _path_version="$("$_path_uv" --version 2>/dev/null | awk '{print $2}')"
-        if [ -n "$_path_version" ] && version_at_least "$_path_version" "$UV_PIN_VERSION"; then
-            UV_CMD="$_path_uv"
-            return 0
-        fi
-        log_warn "uv on PATH (${_path_version:-does not run}) is older than the pinned $UV_PIN_VERSION; staging the pin"
-    fi
+    # Always the pinned artifact, never a uv already on PATH: Hermes runs only
+    # its own packaged toolchain.
     local _target
     if ! _target="$(uv_bootstrap_target)"; then
-        fail "no pinned uv build for this platform ($(uname -s) $(uname -m)); install uv manually: https://docs.astral.sh/uv/"
+        fail "no pinned uv build for this platform ($(uname -s) $(uname -m)); Hermes does not support this host"
     fi
     if ! uv_bootstrap_pin "$_target"; then
-        fail "no pinned uv artifact for $_target; install uv manually: https://docs.astral.sh/uv/"
+        fail "no pinned uv artifact for $_target; Hermes does not support this host"
     fi
     local _store="${HERMES_RUNTIME_DIR:-$HERMES_HOME/tools}"
     local _entry="$_store/uv-$UV_PIN_VERSION-$_target"
@@ -480,7 +460,11 @@ stage_repository() {
         if [ -n "${HERMES_REPO_URL:-}" ]; then
             git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL" || fail "cannot point origin at $REPO_URL"
         fi
-        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "$BRANCH" || fail "git fetch failed"
+        # Explicit refspec: a tag-pinned --single-branch checkout from an older
+        # installer maps only the tag, so a by-name fetch writes FETCH_HEAD and
+        # never the origin/$BRANCH everything below resolves (#125112).
+        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
+            || fail "git fetch failed"
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"
         # Park local work BEFORE switching branches: checkout refuses a dirty
@@ -500,7 +484,15 @@ stage_repository() {
                 || fail "could not stash local changes in $INSTALL_DIR; commit or move them aside, then rerun"
             log_warn "local changes stashed as hermes-install-autostash-$stamp"
         fi
-        run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed"
+        # checkout's branch guess only sees remote refs the refspec maps, so a
+        # narrow checkout (detached at its tag, no local branch) gets the branch
+        # created at the fetched tip.
+        if git -C "$INSTALL_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+            run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout "$BRANCH" || fail "git checkout failed"
+        else
+            run_logged "Checking out $BRANCH" git -C "$INSTALL_DIR" checkout -b "$BRANCH" "origin/$BRANCH" \
+                || fail "git checkout failed"
+        fi
         if ! run_logged --may-fail "Fast-forwarding to origin/$BRANCH" \
             git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH"; then
             # A release cut off the main line, a force-pushed remote, or the
@@ -638,9 +630,10 @@ bootstrap_python() {
 bootstrap_pm() {
     local boot_py
     local pm_args=(install)
-    # PM records the opt-out, so later installs and `hermes update` keep the
-    # browser tools off until `hermes pm install agent-browser` opts back in.
+    # PM records the opt-outs, so later installs and `hermes update` keep the
+    # tools off until `hermes pm install <name>` opts back in.
     [ "$SKIP_BROWSER" = true ] && pm_args+=(--without agent-browser)
+    [ "$SKIP_COMPUTER_USE" = true ] && pm_args+=(--without cua-driver)
     bootstrap_python
     (cd "$INSTALL_DIR" && run_logged "Installing dependencies (hash-verified via uv.lock)" \
         "$boot_py" -m pm.cli "${pm_args[@]}") \

@@ -521,6 +521,16 @@ def _absorb_entry_models(grp: dict, entry: dict, active_model: Any) -> None:
     if _models_config_is_allowlist(models_field, _entry_models_discovered(entry)):
         grp["has_explicit_models"] = True
     _extend_unique(grp["models"], _declared_model_ids(models_field))
+    _split_chain_entries(grp["models"])
+
+
+def _split_chain_entries(models: list) -> None:
+    """Split comma-separated fallback chains (``default_model: a,b,c`` — e.g. the volcengine
+    agent plans) into individually selectable ids. The raw chain stays first so the server-side
+    fallback behaviour itself remains the default pick; the split ids follow it. Fixes #50557."""
+    for model in list(models):
+        if isinstance(model, str) and "," in model:
+            _extend_unique(models, [part.strip() for part in model.split(",")])
 
 
 def _extend_unique(target: list, items) -> None:

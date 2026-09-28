@@ -503,6 +503,8 @@ def refresh_codex_oauth_pure(
     refresh_payload, refreshed_access = _refresh_payload_access_token(
         response, provider="openai-codex", invalid_response=None,
         invalid_json=("Codex token refresh returned invalid JSON.", "codex_refresh_invalid_json"),
+        # A 200 with a non-JSON body is an edge/proxy misfire, not a revoked grant: never relogin.
+        invalid_json_relogin=False,
         missing_access=(
             "Codex token refresh response was missing access_token.",
             "codex_refresh_missing_access_token"))

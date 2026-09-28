@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def _serve_unit_recovery_available() -> bool:
-    """Can a fresh process restart ``hermes-serve*`` units on this host?"""
+    """Can a fresh process restart ``hermes-serve*``/``hermes-dashboard*`` units on this host?"""
     return sys.platform == "linux" and bool(shutil.which("systemctl"))
 
 

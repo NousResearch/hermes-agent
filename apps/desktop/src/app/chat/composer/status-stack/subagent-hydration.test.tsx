@@ -58,7 +58,10 @@ it('hydrates the empty owner composer and exposes an extended owner-routed trans
   expect(request).toHaveBeenCalledWith('remote-owner', 'research', 'subagent.list', { session_id: 'parent' })
   expect($subagentsBySession.get().parent[0].startedAt).toBe(1000000)
   fireEvent.click(screen.getByRole('button', { name: /Recovered work/ }))
-  await waitFor(() => expect(document.querySelector('[data-slot="subagent-transcript"]')?.textContent).toContain(text))
+  await waitFor(() => expect(document.querySelector('[data-testid="agent-typing"]')).toBeTruthy())
+  // The extended panel used to print the child's raw tail here; it now shows
+  // the animated stand-in only — the output itself must never reach the DOM.
+  expect(document.querySelector('[data-slot="subagent-transcript"]')?.textContent).not.toContain(text)
   expect(request).toHaveBeenCalledWith('remote-owner', 'research', 'subagent.tail', {
     session_id: 'parent',
     subagent_id: 'worker'

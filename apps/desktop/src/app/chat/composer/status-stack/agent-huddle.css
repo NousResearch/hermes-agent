@@ -1,0 +1,532 @@
+/*
+ * Agent huddle — the wordless "narada" scene that stands in for the text of a
+ * worker's report above the composer.
+ *
+ * Everything here animates `transform` and `opacity` only: no layout, no
+ * filters, no per-frame JS, so the compositor does the work while the thread
+ * streams underneath. The scene is state-driven: the container's `data-state`
+ * (waiting | talking | thinking | done) gates which keyframes run, and
+ * `data-motion="reduced"` (or the media query, for safety) parks it as a calm
+ * still picture.
+ */
+
+.agent-huddle {
+  --huddle-figure: 1.55rem;
+  --huddle-spread: 2.6rem;
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.45rem 0.5rem 0.3rem;
+}
+
+.agent-huddle__stage {
+  align-items: flex-end;
+  display: flex;
+  gap: 0.85rem;
+  height: 3.1rem;
+  justify-content: center;
+  position: relative;
+  width: 100%;
+}
+
+/* The soft "conversation line" the packets travel along. */
+.agent-huddle__link {
+  background: linear-gradient(90deg, transparent, var(--ui-stroke-tertiary, rgb(255 255 255 / 12%)), transparent);
+  border-radius: 999px;
+  height: 1px;
+  left: 12%;
+  position: absolute;
+  right: 12%;
+  top: 38%;
+}
+
+/* ——— one character ————————————————————————————————————————————— */
+
+.agent-huddle__figure {
+  --huddle-tint-a: #7dd3a0;
+  --huddle-tint-b: #1f9d63;
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  transform-origin: 50% 100%;
+  width: var(--huddle-figure);
+  z-index: 1;
+}
+
+.agent-huddle__figure--main {
+  --huddle-figure: 1.75rem;
+  --huddle-tint-a: #86efac;
+  --huddle-tint-b: #15803d;
+}
+
+.agent-huddle__figure--peer {
+  --huddle-tint-a: #c4b5fd;
+  --huddle-tint-b: #6d28d9;
+}
+
+.agent-huddle__figure--helper {
+  --huddle-figure: 1.3rem;
+  --huddle-tint-a: #a5d8f3;
+  --huddle-tint-b: #0e7490;
+  opacity: 0.92;
+}
+
+.agent-huddle__body {
+  background: linear-gradient(180deg, var(--huddle-tint-a), var(--huddle-tint-b));
+  border-radius: 999px 999px 45% 45%;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 45%),
+    0 6px 12px -8px rgb(0 0 0 / 55%);
+  height: calc(var(--huddle-figure) * 1.42);
+  position: relative;
+  width: 100%;
+}
+
+/* Two dot eyes — enough to read as a face at 20px, no more. */
+.agent-huddle__eyes {
+  display: flex;
+  gap: calc(var(--huddle-figure) * 0.2);
+  left: 50%;
+  position: absolute;
+  top: 26%;
+  transform: translateX(-50%);
+}
+
+.agent-huddle__eye {
+  background: rgb(255 255 255 / 92%);
+  border-radius: 999px;
+  height: calc(var(--huddle-figure) * 0.15);
+  width: calc(var(--huddle-figure) * 0.15);
+}
+
+.agent-huddle__shadow {
+  background: radial-gradient(closest-side, rgb(0 0 0 / 32%), transparent);
+  border-radius: 999px;
+  height: 0.28rem;
+  margin-top: 0.12rem;
+  width: 78%;
+}
+
+.agent-huddle__name {
+  color: var(--ui-text-tertiary, rgb(255 255 255 / 45%));
+  font-size: 0.58rem;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  margin-top: 0.1rem;
+  max-width: 4.6rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ——— speech: the "…" bubble over a head ——————————————————————————— */
+
+.agent-huddle__bubble {
+  align-items: center;
+  background: var(--composer-fill, rgb(255 255 255 / 8%));
+  border: 1px solid var(--ui-stroke-tertiary, rgb(255 255 255 / 14%));
+  border-radius: 999px;
+  display: flex;
+  gap: 0.12rem;
+  opacity: 0;
+  padding: 0.14rem 0.26rem;
+  position: absolute;
+  top: -0.55rem;
+}
+
+.agent-huddle__bubble span {
+  background: var(--ui-text-secondary, rgb(255 255 255 / 65%));
+  border-radius: 999px;
+  display: block;
+  height: 0.14rem;
+  width: 0.14rem;
+}
+
+/* ——— speech: the sound wave beside a speaking head ————————————————— */
+
+.agent-huddle__wave {
+  align-items: flex-end;
+  display: flex;
+  gap: 0.07rem;
+  height: 0.5rem;
+  opacity: 0;
+  position: absolute;
+  right: -0.42rem;
+  top: 30%;
+}
+
+.agent-huddle__wave span {
+  animation: huddle-wave 0.9s ease-in-out infinite;
+  background: var(--huddle-tint-a);
+  border-radius: 999px;
+  height: 100%;
+  transform-origin: 50% 100%;
+  width: 0.1rem;
+}
+
+.agent-huddle__wave span:nth-child(2) {
+  animation-delay: 0.12s;
+  height: 62%;
+}
+
+.agent-huddle__wave span:nth-child(3) {
+  animation-delay: 0.24s;
+  height: 80%;
+}
+
+/* ——— speech: the packets flying between two heads ————————————————— */
+
+.agent-huddle__packet {
+  background: var(--ui-text-secondary, rgb(255 255 255 / 62%));
+  border-radius: 999px;
+  height: 0.18rem;
+  left: 50%;
+  opacity: 0;
+  position: absolute;
+  top: 40%;
+  width: 0.18rem;
+}
+
+/* ——— the shared pulse ring at their feet ————————————————————————— */
+
+.agent-huddle__ring {
+  border: 1px solid var(--ui-stroke-tertiary, rgb(255 255 255 / 16%));
+  border-radius: 999px;
+  bottom: 0.55rem;
+  height: 0.9rem;
+  left: 50%;
+  opacity: 0;
+  position: absolute;
+  transform: translateX(-50%);
+  width: 6rem;
+}
+
+/* ——— states ————————————————————————————————————————————————————— */
+
+/* waiting: they breathe, looking around for work. */
+.agent-huddle[data-state='waiting'] .agent-huddle__body {
+  animation: huddle-idle 3.2s ease-in-out infinite;
+  animation-delay: calc(var(--huddle-index, 0) * -0.5s);
+}
+
+.agent-huddle[data-state='waiting'] .agent-huddle__figure--peer .agent-huddle__bubble,
+.agent-huddle[data-state='thinking'] .agent-huddle__figure--peer .agent-huddle__bubble {
+  animation: huddle-bubble 1.6s ease-in-out infinite;
+  opacity: 1;
+}
+
+.agent-huddle[data-state='waiting'] .agent-huddle__bubble span,
+.agent-huddle[data-state='thinking'] .agent-huddle__bubble span {
+  animation: huddle-think-dot 1.4s ease-in-out infinite;
+}
+
+.agent-huddle[data-state='waiting'] .agent-huddle__bubble span:nth-child(2),
+.agent-huddle[data-state='thinking'] .agent-huddle__bubble span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.agent-huddle[data-state='waiting'] .agent-huddle__bubble span:nth-child(3),
+.agent-huddle[data-state='thinking'] .agent-huddle__bubble span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+/* talking: they lean in and bob, packets cross between them, the speaker's
+   wave shows, the ring beats once per exchange. */
+.agent-huddle[data-state='talking'] .agent-huddle__figure--main .agent-huddle__body,
+.agent-huddle[data-state='talking'] .agent-huddle__figure--peer .agent-huddle__body {
+  animation: huddle-chat 1.35s ease-in-out infinite;
+  animation-delay: calc(var(--huddle-index, 0) * -0.42s);
+}
+
+.agent-huddle[data-state='talking'] .agent-huddle__figure--main .agent-huddle__wave,
+.agent-huddle[data-state='talking'] .agent-huddle__figure--peer .agent-huddle__wave {
+  animation: huddle-wave-in 1.7s ease-in-out infinite;
+}
+
+.agent-huddle[data-state='talking'] .agent-huddle__figure--peer .agent-huddle__wave {
+  animation-delay: 0.85s;
+}
+
+.agent-huddle[data-state='talking'] .agent-huddle__packet {
+  animation: huddle-packet 1.7s ease-in-out infinite;
+}
+
+.agent-huddle[data-state='talking'] .agent-huddle__packet--back {
+  animation-delay: 0.85s;
+  animation-name: huddle-packet-back;
+}
+
+.agent-huddle[data-state='talking'] .agent-huddle__ring {
+  animation: huddle-ring 1.7s ease-out infinite;
+}
+
+/* thinking: the heads tilt towards each other and hold still. */
+.agent-huddle[data-state='thinking'] .agent-huddle__figure--peer .agent-huddle__body {
+  animation: huddle-tilt 2.8s ease-in-out infinite;
+}
+
+/* done: one short, satisfied hop and then they simply stand there. */
+.agent-huddle[data-state='done'] .agent-huddle__body {
+  animation: huddle-hop 0.75s cubic-bezier(0.2, 0.7, 0.3, 1.2) 2 both;
+  animation-delay: calc(var(--huddle-index, 0) * -0.12s);
+}
+
+.agent-huddle[data-state='done'] .agent-huddle__figure--main .agent-huddle__wave,
+.agent-huddle[data-state='done'] .agent-huddle__figure--peer .agent-huddle__wave {
+  animation: huddle-wave-in 1.5s ease-in-out 1 both;
+}
+
+/* ——— caption ————————————————————————————————————————————————————— */
+
+.agent-huddle__caption {
+  color: var(--ui-text-tertiary, rgb(255 255 255 / 45%));
+  font-size: 0.66rem;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+  margin: 0;
+}
+
+/* ——— the tiny strip the extended-transcript panel uses ————————————— */
+
+.agent-huddle-typing {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.3rem;
+  height: 1.1rem;
+}
+
+.agent-huddle-typing__bar {
+  animation: huddle-wave 0.95s ease-in-out infinite;
+  background: var(--huddle-tint-a, #a5d8f3);
+  border-radius: 999px;
+  display: block;
+  height: 0.7rem;
+  transform-origin: 50% 100%;
+  width: 0.13rem;
+}
+
+.agent-huddle-typing__bar:nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.agent-huddle-typing__bar:nth-child(3) {
+  animation-delay: 0.28s;
+}
+
+.agent-huddle-typing[data-active='false'] .agent-huddle-typing__bar {
+  animation: none;
+  height: 0.2rem;
+  opacity: 0.45;
+}
+
+/* ——— keyframes ————————————————————————————————————————————————— */
+
+@keyframes huddle-idle {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scaleY(1);
+  }
+
+  50% {
+    transform: translate3d(0, -0.06rem, 0) scaleY(1.02);
+  }
+}
+
+@keyframes huddle-chat {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(-1.5deg);
+  }
+
+  50% {
+    transform: translate3d(0, -0.2rem, 0) rotate(1.5deg);
+  }
+}
+
+@keyframes huddle-hop {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scaleY(1);
+  }
+
+  35% {
+    transform: translate3d(0, -0.34rem, 0) scaleY(1.08);
+  }
+
+  70% {
+    transform: translate3d(0, 0, 0) scaleY(0.94);
+  }
+}
+
+@keyframes huddle-tilt {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+
+  50% {
+    transform: translate3d(-0.14rem, -0.08rem, 0) rotate(-4deg);
+  }
+}
+
+@keyframes huddle-wave {
+  0%,
+  100% {
+    transform: scaleY(0.45);
+  }
+
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes huddle-wave-in {
+  0%,
+  100% {
+    opacity: 0;
+  }
+
+  20%,
+  70% {
+    opacity: 0.9;
+  }
+}
+
+@keyframes huddle-bubble {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translate3d(0, 0.06rem, 0) scale(0.92);
+  }
+
+  50% {
+    opacity: 1;
+    transform: translate3d(0, -0.1rem, 0) scale(1);
+  }
+}
+
+@keyframes huddle-think-dot {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+
+  40% {
+    opacity: 1;
+    transform: translateY(-0.12rem);
+  }
+}
+
+@keyframes huddle-packet {
+  0% {
+    opacity: 0;
+    transform: translate3d(calc(-1 * var(--huddle-spread)), 0, 0) scale(0.6);
+  }
+
+  25% {
+    opacity: 1;
+  }
+
+  75% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(var(--huddle-spread), -0.3rem, 0) scale(1);
+  }
+}
+
+@keyframes huddle-packet-back {
+  0% {
+    opacity: 0;
+    transform: translate3d(var(--huddle-spread), -0.3rem, 0) scale(0.6);
+  }
+
+  25% {
+    opacity: 1;
+  }
+
+  75% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(calc(-1 * var(--huddle-spread)), 0, 0) scale(1);
+  }
+}
+
+@keyframes huddle-ring {
+  0% {
+    opacity: 0.5;
+    transform: translateX(-50%) scale(0.7);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) scale(1.15);
+  }
+}
+
+/*
+ * Reduced motion: the same scene, held still — figures evenly upright, the
+ * packets parked mid-air at low opacity so the "they are talking" reading
+ * survives without a single moving pixel.
+ */
+.agent-huddle[data-motion='reduced'] .agent-huddle__body,
+.agent-huddle[data-motion='reduced'] .agent-huddle__bubble,
+.agent-huddle[data-motion='reduced'] .agent-huddle__bubble span,
+.agent-huddle[data-motion='reduced'] .agent-huddle__packet,
+.agent-huddle[data-motion='reduced'] .agent-huddle__ring,
+.agent-huddle[data-motion='reduced'] .agent-huddle__wave,
+.agent-huddle[data-motion='reduced'] .agent-huddle__wave span,
+.agent-huddle-typing[data-motion='reduced'] .agent-huddle-typing__bar {
+  animation: none;
+}
+
+.agent-huddle[data-motion='reduced'] .agent-huddle__figure--peer .agent-huddle__bubble {
+  opacity: 1;
+}
+
+.agent-huddle[data-motion='reduced'] .agent-huddle__bubble span {
+  opacity: 0.6;
+}
+
+.agent-huddle[data-motion='reduced'] .agent-huddle__packet {
+  opacity: 0.4;
+}
+
+.agent-huddle[data-motion='reduced'] .agent-huddle__wave {
+  opacity: 0.7;
+}
+
+.agent-huddle-typing[data-motion='reduced'] .agent-huddle-typing__bar {
+  height: 0.35rem;
+  opacity: 0.6;
+}
+
+/* The harness's reduced-motion switch (styles.css) and the OS setting both
+   have to land here too, in case the media query never reaches the component. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-huddle .agent-huddle__body,
+  .agent-huddle .agent-huddle__bubble,
+  .agent-huddle .agent-huddle__bubble span,
+  .agent-huddle .agent-huddle__packet,
+  .agent-huddle .agent-huddle__ring,
+  .agent-huddle .agent-huddle__wave,
+  .agent-huddle .agent-huddle__wave span,
+  .agent-huddle-typing .agent-huddle-typing__bar {
+    animation: none;
+  }
+}
+
+/* A hidden/minimized window stops painting the scene (main.tsx owns the
+   attribute): a parked huddle must not keep the compositor awake. */
+:root[data-renderer-animations-paused] .agent-huddle *,
+:root[data-renderer-animations-paused] .agent-huddle-typing * {
+  animation-play-state: paused;
+}

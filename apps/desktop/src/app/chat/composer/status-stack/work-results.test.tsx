@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -7,9 +7,11 @@ import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 import { ComposerStatusStack } from './index'
 
 // A finished worker's report is a model answer with tables, bold and code in
-// it. It used to be painted as `whitespace-pre-wrap` text, so the panel above
-// the composer showed the markdown source: literal `**bold**`, `| a | b |` and
-// backticks. It has to render as markdown.
+// it — and it used to be painted right above the composer (first as
+// `whitespace-pre-wrap` text, later as markdown). Either way the user was
+// reading what Hermes answered. The lane now shows the animated huddle of the
+// agents talking instead; the report still exists in the store (and is spoken
+// by the Live agent — see agent-huddle-loop.test.tsx).
 
 vi.mock('@/lib/use-enter-animation', () => ({ useEnterAnimation: () => undefined }))
 
@@ -46,7 +48,7 @@ function renderStack() {
   )
 }
 
-it('renders a finished worker report as rich markdown, not the markdown source', async () => {
+it('shows the agent huddle instead of the finished worker report', () => {
   act(() => {
     upsertSubagent('owner', {
       files_written: ['C:/Users/ostry/hermes-vault/CORE_MEMORY.md'],
@@ -58,30 +60,37 @@ it('renders a finished worker report as rich markdown, not the markdown source',
   })
 
   const { container } = renderStack()
-
-  await waitFor(() => {
-    expect(container.querySelector('table')).toBeTruthy()
-  })
-
   const text = container.textContent ?? ''
 
+  expect(container.querySelector('[data-testid="agent-huddle"]')?.getAttribute('data-state')).toBe('done')
+  expect(text).toContain('Narada zakończona')
+  // Neither the markdown source, nor its rendered prose, nor the file list.
   expect(text).not.toContain('**pusta**')
   expect(text).not.toContain('|---|')
-  expect(text).not.toContain('`hermes-home/memories/`')
-  expect(container.querySelector('th')?.textContent).toContain('Warstwa')
-  expect(container.querySelectorAll('tbody tr').length).toBe(1)
-  expect(container.querySelector('strong, [data-streamdown="strong"], .font-semibold')).toBeTruthy()
-  expect(container.querySelector('li')?.textContent).toContain('Vault')
-  expect(container.textContent).toContain('Pamięć trwała (user + memory)')
-  expect(container.textContent).toContain('pusta — zero faktów')
+  expect(text).not.toContain('hermes-home/memories/')
+  expect(text).not.toContain('Pamięć trwała')
+  expect(text).not.toContain('CORE_MEMORY.md')
+  expect(container.querySelector('pre')).toBeNull()
+  expect(container.querySelector('table')).toBeNull()
+  expect(container.querySelector('[data-slot="subagent-transcript"]')).toBeNull()
 })
 
-it('keeps the no-report fallback as plain copy', () => {
+it('stands the agents up while the work is still running', () => {
   act(() => {
-    upsertSubagent('owner', { goal: 'Zbadaj system pamięci', status: 'failed', subagent_id: 'child-2' })
+    upsertSubagent('owner', { goal: 'Zbadaj system pamięci', status: 'running', subagent_id: 'child-3' })
+    upsertSubagent('owner', { subagent_id: 'child-3', text: 'Czytam pliki' }, false, 'subagent.progress')
   })
 
-  renderStack()
+  const { container } = renderStack()
+  const huddle = container.querySelector('[data-testid="agent-huddle"]')
 
-  expect(screen.getByText(/Backend nie dostarczył raportu wyniku/)).toBeTruthy()
+  expect(huddle?.getAttribute('data-state')).toBe('talking')
+  expect(container.querySelector('[data-testid="agent-huddle"]')).toBeTruthy()
+})
+
+it('has no lane at all when no worker is on the roster', () => {
+  const { container } = renderStack()
+
+  expect(container.querySelector('[data-slot="composer-status-stack"]')).toBeNull()
+  expect(screen.queryByTestId('agent-huddle')).toBeNull()
 })

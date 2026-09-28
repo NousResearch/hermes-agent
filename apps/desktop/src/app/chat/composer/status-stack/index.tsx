@@ -179,7 +179,11 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
 
   const sections: { key: string; node: ReactNode }[] = []
 
-  if (sessionId && workers.some(item => ['completed', 'failed', 'interrupted'].includes(item.status))) {
+  // The huddle replaces the old "finished report" block: it needs to be up
+  // while the work runs (that is the whole point of the scene), and it stays
+  // until the roster is pruned at the next turn — so render it for any worker,
+  // not only the settled ones.
+  if (sessionId && workers.length) {
     sections.push({ key: 'work-results', node: <WorkResults sessionId={sessionId} /> })
   }
 

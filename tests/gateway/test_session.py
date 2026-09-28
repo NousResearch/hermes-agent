@@ -1579,6 +1579,28 @@ class TestGatewayRoutingTable:
         assert restarted.get_prompt_pin(entry.session_key, expected_session_id=fresh.session_id) == new_pin
         restarted._db.close()
 
+    def test_prompt_pin_follows_compression_child_recovered_after_crash(self, tmp_path):
+        """A crash between publishing the compression child and advancing the route leaves the
+        entry on the ended parent; restart recovery repoints it and must keep the pin."""
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        pin = {
+            "version": 1, "context_key": "ctx-key", "context_prompt": "exact session context",
+            "redact_pii": False, "channel_prompt": "Channel hint.", "parent_chat_id": None,
+        }
+        assert store.set_prompt_pin(entry.session_key, pin, expected_session_id=entry.session_id)
+        assert store._db.try_acquire_compression_lock(entry.session_id, "compressor")
+        store._db.publish_compression_child(
+            parent_session_id=entry.session_id, child_session_id="compressed-child", source="telegram",
+            messages=[{"role": "user", "content": "summary"}], compression_lock_holder="compressor",
+        )
+        store._db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        assert restarted.get_prompt_pin(entry.session_key, expected_session_id="compressed-child") == pin
+        restarted._db.close()
+
     def test_switch_session_preserves_prompt_pin_unless_boundary_requests_clear(self, tmp_path):
         config = GatewayConfig()
         store = SessionStore(sessions_dir=tmp_path, config=config)

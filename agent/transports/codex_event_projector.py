@@ -1,8 +1,8 @@
 """Projects codex app-server ``item/*`` notifications into OpenAI-shaped messages.
 
 userMessage → user; agentMessage → assistant; reasoning → stashed onto the next
-assistant entry; commandExecution / fileChange / mcpToolCall / dynamicToolCall →
-assistant tool_call + tool result; anything else → opaque assistant note.
+assistant entry; commandExecution / fileChange / mcpToolCall / dynamicToolCall /
+webSearch → assistant tool_call + tool result; anything else → opaque assistant note.
 Each item yields AT MOST one assistant + one tool entry (message-alternation
 invariant). ``is_tool_iteration`` ticks once per completed tool-shaped item.
 """
@@ -149,8 +149,10 @@ class CodexEventProjector:
     def _web_search_spec(item: dict) -> tuple[str, str, dict, str]:
         # Codex ran the search itself; the result names it so a later non-Codex
         # turn does not read this as a Hermes web_search call.
-        content = json.dumps({"provider": "codex", "status": item.get("status") or "completed"})
-        return "web_search", "web_search", {"query": item.get("query") or ""}, content
+        result = {"provider": "codex"}
+        if item.get("status"):
+            result["status"] = item["status"]
+        return "web_search", "web_search", {"query": item.get("query") or ""}, json.dumps(result, ensure_ascii=False)
 
     _TOOL_PROJECTIONS: dict[str, Callable[[dict], tuple[str, str, dict, str]]] = {
         "commandExecution": _command_spec,

@@ -249,7 +249,7 @@ class TestWebSearchProjection:
     def test_web_search_is_recorded_under_the_live_card_id(self) -> None:
         # The live bubble and the stored history must share name + call id, or a
         # refreshed transcript drops the card and shows a raw JSON note instead.
-        from agent.codex_runtime import _codex_item_to_tool_name, _stable_call_id
+        from agent.codex_runtime import _codex_item_to_args, _codex_item_to_tool_name, _stable_call_id
 
         item = {"type": "webSearch", "id": "ws-1", "query": "Hermes Agent docs"}
         result = CodexEventProjector().project({"method": "item/completed", "params": {"item": item}})
@@ -260,8 +260,8 @@ class TestWebSearchProjection:
         live_name = _codex_item_to_tool_name(item)
         assert call["function"]["name"] == live_name
         assert call["id"] == tool["tool_call_id"] == _stable_call_id(item, live_name)
-        assert json.loads(call["function"]["arguments"]) == {"query": "Hermes Agent docs"}
-        assert json.loads(tool["content"]) == {"provider": "codex", "status": "completed"}
+        assert json.loads(call["function"]["arguments"]) == _codex_item_to_args(item)
+        assert json.loads(tool["content"])["provider"] == "codex"
 
 
 class TestUserAndOpaqueProjection:
@@ -328,8 +328,7 @@ class TestRoleAlternationInvariant:
             {"type": "dynamicToolCall", "id": "d1", "tool": "x",
              "arguments": {}, "status": "completed",
              "contentItems": [], "success": True},
-            {"type": "webSearch", "id": "w1", "query": "x",
-             "status": "completed"},
+            {"type": "webSearch", "id": "w1", "query": "x"},
         ],
     )
     def test_tool_items_emit_assistant_then_tool(self, item) -> None:

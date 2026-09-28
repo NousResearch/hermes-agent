@@ -692,8 +692,9 @@ def _append_unconfigured_rows(
     """Empty setup skeletons for canonical providers missing from ``rows`` — except the *current* one:
     if config.yaml still points at it but credentials are gone, keep a row carrying the saved model so
     GUI pickers don't silently snap to another provider."""
-    from hermes_cli.models import _PROVIDER_ALIASES, _model_requires_account_discovery
+    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_ALIASES, _model_requires_account_discovery
     from hermes_cli.models_catalog_static import listed_canonical_providers
+    from hermes_cli.model_switch_providers import _picker_model_family_conflicts
 
     seen = {r["slug"].lower() for r in rows}
     cur = (ctx.current_provider or "").lower()
@@ -716,7 +717,9 @@ def _append_unconfigured_rows(
         if current_only and entry.slug.lower() != cur:
             continue
         if entry.slug.lower() == cur:
-            saved_model = "" if _model_requires_account_discovery(entry.slug, cur_model) else cur_model
+            skeleton = {"slug": entry.slug, "models": [], "source": "configured-current"}
+            saved_model = ("" if _model_requires_account_discovery(entry.slug, cur_model)
+                           or _picker_model_family_conflicts(skeleton, cur_model) else cur_model)
             auth_type, key_env = _provider_auth_hint(entry.slug)
             tail = (
                 "Astra requires successful account-scoped model discovery."

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import uuid
 from collections.abc import Iterator
@@ -161,7 +162,12 @@ def _row_resource(row: sqlite3.Row) -> dict[str, str]:
 
 def _ensure_private(path: Path, mode: int) -> None:
     if mode == 0o700:
-        path.mkdir(parents=True, exist_ok=True, mode=mode)
+        if os.name == "nt":
+            # 0o700 on Windows applies a *protected* DACL that can strand the dir for the
+            # same user's other processes; inherit the parent ACL instead.
+            path.mkdir(parents=True, exist_ok=True)
+        else:
+            path.mkdir(parents=True, exist_ok=True, mode=mode)
     else:
         path.touch(mode=mode, exist_ok=True)
     try:

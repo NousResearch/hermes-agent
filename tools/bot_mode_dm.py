@@ -342,7 +342,12 @@ def _dm_dir() -> Path:
     uid_getter = getattr(os, "getuid", None)
     uid = uid_getter() if callable(uid_getter) else None
     path = Path(tempfile.gettempdir()) / (f"{_DM_DIR_NAME}-{uid}" if uid is not None else _DM_DIR_NAME)
-    path.mkdir(mode=0o700, exist_ok=True)
+    if os.name == "nt":
+        # 0o700 on Windows applies a *protected* DACL that can strand the dir for the
+        # same user's other processes; inherit the parent ACL instead.
+        path.mkdir(exist_ok=True)
+    else:
+        path.mkdir(mode=0o700, exist_ok=True)
     # Shared POSIX temp roots need a per-user directory. Fail closed if an
     # attacker pre-created the expected path or replaced it with a symlink.
     info = path.lstat()
@@ -350,7 +355,7 @@ def _dm_dir() -> Path:
         raise PermissionError(f"DM temp path is not a directory: {path}")
     if uid is not None and info.st_uid != uid:
         raise PermissionError(f"DM temp directory is owned by another user: {path}")
-    if stat.S_IMODE(info.st_mode) != 0o700:
+    if os.name != "nt" and stat.S_IMODE(info.st_mode) != 0o700:
         path.chmod(0o700)
     return path
 

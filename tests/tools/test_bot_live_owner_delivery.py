@@ -238,7 +238,7 @@ def test_non_dict_ticket_is_skipped_by_scans_and_fails_exact_id_reads_closed(tmp
         mailbox.deliver_to_live_owner(tmp_path, owner, "same id", delivery_id="e" * 32)
     with pytest.raises(ValueError):
         mailbox.read_delivery_result(tmp_path, "e" * 32)
-    assert bad.read_text(encoding="utf-8") == '"oops"'
+    assert bad.read_text(encoding="utf-8-sig") == '"oops"'
 
 def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
     """Valid JSON that lost a field must degrade like corrupt JSON: skipped, warned once, never raised."""
@@ -274,7 +274,7 @@ def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
         for _ in range(3):
             assert mailbox.claim_pending_delivery(tmp_path, owner) is None
     assert admitted["sequence"] == queued["sequence"] + 1
-    assert {path: path.read_text(encoding="utf-8") for path in damaged} == damaged
+    assert {path: path.read_text(encoding="utf-8-sig") for path in damaged} == damaged
     skipped = [r.message for r in caplog.records if r.message.startswith("bot_live_delivery: skipping unreadable ticket")]
     assert len(skipped) == len(damaged), "each damaged ticket warns once per process, not per scan"
 

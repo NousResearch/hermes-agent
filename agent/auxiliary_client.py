@@ -3484,6 +3484,9 @@ def _is_model_not_found_error(exc: Exception) -> bool:
     return _contains_any(err_lower, (
         "model does not exist", "does not exist in our configuration", "openrouter catalog",
         "is not a valid model", "no such model", "model not found",
+        "no endpoints found for",  # OpenRouter delisted-model 404: the bare form names
+        # the model; capability-scoped cousins ("that support ...", "matching ...") keep
+        # their own routing and must not match this phrase.
         "the model `",            # OpenAI-style: "The model `X` does not exist"
         "model_not_found", "unknown model",
     ))
@@ -7567,6 +7570,10 @@ class _LadderStep(NamedTuple):
 _FALLBACK_REASONS: tuple[tuple[Callable[[Exception], bool], str], ...] = (
     (_is_auth_error, "auth error"), (_is_payment_error, "payment error"),
     (_is_rate_limit_error, "rate limit"), (_is_model_incompatible_error, "model incompatible with route"),
+    # A delisted model is a capacity problem, not a request constraint: the provider
+    # cannot serve this request regardless of user intent, so explicit routes may leave
+    # through their configured task chain like any other capacity error.
+    (_is_model_not_found_error, "model not found"),
     (_is_invalid_aux_response_error, "invalid provider response"),
     # A status-less in-stream ``error`` event (SSE committed 200) is a route failure (#101538).
     (_is_statusless_structured_provider_error, "structured provider error"),

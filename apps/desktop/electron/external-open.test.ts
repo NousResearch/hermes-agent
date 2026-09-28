@@ -11,7 +11,7 @@ import { EventEmitter } from 'node:events'
 
 import { test } from 'vitest'
 
-import { type ExternalOpenDeps, openExternalUrl, reportPreOpenStatFailure } from './external-open'
+import { type ExternalOpenDeps, isUnsafeWslLaunchArgument, openExternalUrl, reportPreOpenStatFailure } from './external-open'
 
 function makeDeps(overrides: Partial<ExternalOpenDeps> = {}) {
   const calls = {
@@ -157,7 +157,7 @@ test('opens protocol-relative URLs as https, never as local paths', async () => 
   assert.equal(calls.localOpened.length, 0)
 })
 
-test('wsl: spawns cmd.exe and resolves ok on the happy path', async () => {
+test('wsl: hands the URL to rundll32 and resolves ok on the happy path', async () => {
   const spawned: string[] = []
   const proc = new EventEmitter() as unknown as ChildProcess
 
@@ -173,11 +173,67 @@ test('wsl: spawns cmd.exe and resolves ok on the happy path', async () => {
   const result = await openExternalUrl('https://example.com', deps)
 
   assert.deepEqual(result, { ok: true })
-  assert.equal(spawned[0], 'cmd.exe')
-  assert.ok(spawned.some(arg => arg === 'https://example.com/'))
+  assert.equal(spawned[0], 'rundll32.exe')
+  assert.deepEqual(spawned.slice(1), ['url.dll,FileProtocolHandler', 'https://example.com/'])
 })
 
-test('wsl: falls back to openExternal and notifies when cmd.exe fails to spawn', async () => {
+test('wsl: a URL with shell metacharacters stays one argument — no cmd.exe to interpret it (#126939)', async () => {
+  const spawns: Array<{ cmd: string; args: string[] }> = []
+  const proc = new EventEmitter() as unknown as ChildProcess
+
+  const { deps } = makeDeps({
+    isWsl: true,
+    spawn: (cmd, args) => {
+      spawns.push({ cmd, args: [...args] })
+
+      return proc
+    }
+  })
+
+  // `&` is what cmd.exe would have parsed as a command separator; `%2F` and
+  // `^` are the other characters a quoting-only fix cannot make safe there.
+  const url = 'https://example.com/x&calc?^q=1%2F2'
+  const result = await openExternalUrl(url, deps)
+
+  assert.deepEqual(result, { ok: true })
+  assert.equal(spawns.length, 1)
+  assert.equal(spawns[0].cmd, 'rundll32.exe')
+  // The URL travels as a single argv element to a non-shell sink, so nothing
+  // re-parses it — there is no cmd.exe command line to escape from.
+  assert.deepEqual(spawns[0].args, ['url.dll,FileProtocolHandler', 'https://example.com/x&calc?^q=1%2F2'])
+  assert.ok(!spawns[0].args.includes('cmd.exe'))
+  assert.ok(!spawns[0].args.includes('start'))
+})
+
+test('wsl guard: quotes, whitespace, and control characters make a launch argument unsafe', () => {
+  for (const url of [
+    'https://example.com/a"b',
+    'https://example.com/a b',
+    'https://example.com/a\nb',
+    'https://example.com/a\rb',
+    'https://example.com/a\tb',
+    'https://example.com/a\x00b',
+    'https://example.com/a\x1fb',
+    'https://example.com/a\x7fb'
+  ]) {
+    assert.equal(isUnsafeWslLaunchArgument(url), true, url)
+  }
+})
+
+test('wsl guard: URL metacharacters that rundll32 never interprets stay allowed', () => {
+  for (const url of [
+    'https://example.com/x&calc',
+    'https://example.com/?a=1&b=2',
+    'https://example.com/a|b',
+    'https://example.com/a^b',
+    'https://example.com/a%2Fb',
+    'mailto:user@example.com?subject=hi%20there'
+  ]) {
+    assert.equal(isUnsafeWslLaunchArgument(url), false, url)
+  }
+})
+
+test('wsl: falls back to openExternal and notifies when rundll32 fails to spawn', async () => {
   const proc = new EventEmitter() as unknown as ChildProcess
   const { deps, calls } = makeDeps({ isWsl: true, spawn: () => proc })
 

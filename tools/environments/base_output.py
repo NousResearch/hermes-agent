@@ -23,7 +23,29 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 # never evicts, so bounded and unbounded modes share one code path.
 _UNBOUNDED_CAPTURE_CHARS = 2**63 - 1
 
+# Fallback spill age only (unreadable config); the real default is the session
+# retention window — see _spill_retention_seconds().
 _SPILL_MAX_AGE_S = 7 * 86400
+
+# Floor for the retention-derived spill window; matches the spillover-archive
+# floor (#126351): a zero/negative retention prunes ended sessions at once but
+# must not delete the file an open session's transcript points at.
+_SPILL_MIN_AGE_S = 24 * 3600
+
+
+def _spill_retention_seconds() -> int:
+    """Terminal spill lifetime = the session retention window (``sessions.retention_days``).
+
+    The durable transcript tells the model to page these files "instead of re-running
+    the command", and sessions are kept far longer (default 90 days) than any cache
+    TTL, so the prune default follows the session retention setting (#126441).
+    Falls back to the legacy 7-day age when the config is unreadable."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        days = float((load_config_readonly().get("sessions") or {}).get("retention_days", 90))
+    except Exception:
+        return _SPILL_MAX_AGE_S
+    return max(_SPILL_MIN_AGE_S, int(days * 86400))
 
 
 class _BoundedOutputCollector:
@@ -170,8 +192,8 @@ def _new_output_collector(proc, bounded_capture: bool) -> _BoundedOutputCollecto
     """Build the collector for one ``_wait_for_process`` call. ``bounded_capture`` (foreground
     terminal path only) caps retention at ``tool_output.max_bytes`` and tees overflow to a
     spill file under ``$HERMES_HOME/cache/terminal-output`` (created only on actual overflow;
-    spills older than 7 days are pruned opportunistically). Otherwise the collector is
-    effectively unbounded so internal consumers keep full-fidelity output."""
+    spills older than the session retention window are pruned opportunistically). Otherwise
+    the collector is effectively unbounded so internal consumers keep full-fidelity output."""
     if not bounded_capture:
         return _BoundedOutputCollector(_UNBOUNDED_CAPTURE_CHARS)
     try:
@@ -184,7 +206,7 @@ def _new_output_collector(proc, bounded_capture: bool) -> _BoundedOutputCollecto
         spill_dir = get_hermes_home() / "cache" / "terminal-output"
         spill_path = spill_dir / f"out-{int(time.time())}-{os.getpid()}-{id(proc) & 0xffff:x}.log"
         if spill_dir.is_dir():
-            cutoff = time.time() - _SPILL_MAX_AGE_S
+            cutoff = time.time() - _spill_retention_seconds()
             for old in spill_dir.glob("out-*.log"):
                 try:
                     if old.stat().st_mtime < cutoff:

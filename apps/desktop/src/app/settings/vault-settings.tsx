@@ -25,10 +25,11 @@ import { $activeConnectionId } from '@/store/connections'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $gatewayState } from '@/store/session'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsRequestProfile, $settingsScopeProfile } from '@/store/settings-scope'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
+import { SettingsProfileScope } from './profile-scope'
 
 // Vault data is private to one (connection, profile); the cache key carries that owner so a
 // late response from profile A can never paint under profile B.
@@ -167,15 +168,24 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   // remounts it: dialogs close and drafts (including a typed master password) are gone by
   // construction rather than by cleanup code.
   const scopeProfile = useStore($settingsScopeProfile)
+  const requestProfile = useStore($settingsRequestProfile)
   const connectionId = useStore($activeConnectionId)
   const owner = vaultOwnerKey(connectionId, scopeProfile)
 
   const requestGateway = useCallback(
     <T,>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForAgent<T>(connectionId, scopeProfile, method, params, undefined, undefined, {
-        spawnPriority: 'foreground'
-      }),
-    [connectionId, scopeProfile]
+      requestGatewayForAgent<T>(
+        connectionId,
+        scopeProfile,
+        method,
+        requestProfile === undefined ? params : { ...params, profile: requestProfile },
+        undefined,
+        undefined,
+        {
+          spawnPriority: 'foreground'
+        }
+      ),
+    [connectionId, requestProfile, scopeProfile]
   )
 
   const VAULT_QUERY_KEY = useMemo(() => vaultQueryKey(owner), [owner])
@@ -389,6 +399,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
 
   return (
     <SettingsContent>
+      <SettingsProfileScope className="mb-5" />
       {(subpage === undefined || subpage === 'credentials') && (
         <>
           <SectionHeading

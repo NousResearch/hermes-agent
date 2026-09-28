@@ -372,7 +372,10 @@ function CronJobSidebarRow({
               onClick={onTogglePeek}
             >
               <SidebarRowLead>
-                <StatusDot className={state === 'running' ? 'animate-pulse' : undefined} tone={STATE_TONE[state] ?? 'muted'} />
+                <StatusDot
+                  className={state === 'running' ? 'size-1.5 animate-pulse' : 'size-1'}
+                  tone={STATE_TONE[state] ?? 'muted'}
+                />
               </SidebarRowLead>
               <SidebarRowLabel className="group-hover/cron:text-foreground">{label}</SidebarRowLabel>
               <DisclosureCaret

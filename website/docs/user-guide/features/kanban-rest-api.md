@@ -15,7 +15,9 @@ The API is deliberately workflow-oriented and safe by default. Task bodies,
 results, comment text, workspace paths, claim locks, worker PIDs, session IDs,
 raw event payloads, run metadata/errors/summaries, and unredacted logs are not
 returned. The log endpoint returns only a bounded excerpt after Hermes secret
-redaction and absolute-path removal.
+redaction and absolute-path removal. The one exception is the
+[run transcript](#run-transcripts-opt-in), which is off unless the operator
+enables it.
 
 ## Authentication
 
@@ -62,7 +64,7 @@ Paths below are relative to `/api/plugins/kanban/v1`.
 | Tasks | `GET /tasks`, `POST /tasks`, `GET /tasks/{id}`, `PATCH /tasks/{id}` |
 | Actions | `POST /tasks/{id}/comment`, `/complete`, `/block`, `/unblock`, `/archive` |
 | Dependencies | `POST /tasks/{parent}/links/{child}`, `DELETE /tasks/{parent}/links/{child}` |
-| Observation | `GET /tasks/{id}/events`, `/runs`, `/log` |
+| Observation | `GET /tasks/{id}/events`, `/runs`, `/log`, `/transcript` (opt-in) |
 
 `GET /profiles` returns the sanitized assignee roster: each entry carries only
 `name`, `description` (the operator-facing text from `profile.yaml`, the same
@@ -197,3 +199,47 @@ The interactive Kanban dashboard keeps its richer internal routes directly under
 `/api/plugins/kanban` (outside `/v1`). That surface is for the first-party
 operator UI and may change without notice; external integrations should use only
 the sanitized `/v1` endpoints documented here.
+
+## Run transcripts (opt-in)
+
+`GET /tasks/{id}/transcript` returns a worker's step-by-step session for one
+run: reasoning, tool calls and results, and replies. That includes the task
+body (the worker's first prompt) and its output, so it is **disabled by
+default** — the endpoint returns 404 and `GET /capabilities` omits
+`transcript` from `observability`. Enable it in the Hermes deployment's
+`config.yaml`:
+
+```yaml
+kanban:
+  api_expose_transcripts: true
+```
+
+Every text field goes through the same secret redaction and absolute-path
+removal as the log excerpt. Tool results are capped at 4,000 characters and
+other fields at 20,000 (`truncated: true` marks a cut). System messages are
+never returned, and neither is the worker's session ID.
+
+| Query | Default | Meaning |
+|---|---|---|
+| `run_id` | latest run | A run of this task (`GET /tasks/{id}/runs`); a run of another task is 404. |
+| `after_id` | `0` | Return steps after this cursor. Pass the previous `next_after_id` to poll. |
+| `limit` | `200` | Page size, 1–500. |
+| `latest` | `false` | Return the newest `limit` steps instead (`after_id` is ignored; `has_more` then means older steps exist). |
+
+The transcript is available while the run is still going: the worker links
+its session to the run when it starts, and continuations after context
+compression are followed. A run started before this link existed, or one
+whose worker has not started yet, returns an empty `messages` list.
+
+```bash
+# Poll a running task: repeat with after_id = the previous next_after_id.
+curl -fsS \
+  "$HERMES_URL/api/plugins/kanban/v1/tasks/$CHILD_A/transcript?board=default&after_id=0" \
+  -H "$AUTH" | jq '{run_status, next_after_id, has_more, steps: [.messages[] | {id, role, tool_calls: [.tool_calls[].name], truncated}]}'
+```
+
+Each message carries `id`, `role` (`user`, `assistant`, or `tool`),
+`content`, `reasoning`, `tool_calls` (`id`, `name`, `arguments`),
+`tool_name`, `tool_call_id`, `timestamp`, and `truncated`. The response
+wraps them with `task_id`, `run_id`, `run_status`, `next_after_id`, and
+`has_more`.

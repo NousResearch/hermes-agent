@@ -930,6 +930,11 @@ class CLICommandsMixin:
             from tools.async_delegation import interrupt_all
             print(f"  ✅ Interrupted {interrupt_all(reason='/stop')} background delegation(s).")
 
+    def _handle_detach_command(self, cmd_original: str = ""):
+        """Handle /detach — same as the detach key (``display.background_key``, default Ctrl+]):
+        the running foreground terminal command keeps running as a tracked background process."""
+        self._detach_foreground()
+
     def _handle_agents_command(self):
         """Handle /agents — show background processes and agent status."""
         from tools.process_registry import format_uptime_short, process_registry

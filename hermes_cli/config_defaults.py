@@ -827,6 +827,10 @@ DEFAULT_CONFIG = {
         # calls: ...]` lines; False shows them inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        # Key that sends the running foreground terminal command to the background without killing
+        # it (same as /detach). ctrl+<key> or alt+<key>; ctrl+] is free in both prompt_toolkit and
+        # the TUI. Must differ from voice.record_key (voice wins on a clash).
+        "background_key": "ctrl+]",
         # steer mode: false hides only the "Steered into current run" bubble; steering itself still
         # happens.
         "busy_steer_ack_enabled": True,

@@ -1914,6 +1914,15 @@ display:
   # Toggle at runtime with /busy <interrupt|queue|steer>.
   busy_input_mode: interrupt
 
+  # Key that sends the running foreground terminal command to the background
+  # WITHOUT killing it (same as /detach). Classic CLI only; active while a turn
+  # runs. Format: ctrl+<key> or alt+<key>; "off" disables it. Must differ from
+  # voice.record_key (on a clash the voice key wins and this one is disabled).
+  # Terminals that remap Ctrl+punctuation by physical key position (e.g. the
+  # VS Code terminal on non-US layouts) may not deliver Ctrl+] — pick another
+  # key here or see the keybindings docs.
+  background_key: "ctrl+]"
+
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use
   # terminal(background=true, notify_on_complete=true) from Telegram/Discord/etc.

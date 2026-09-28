@@ -51,12 +51,19 @@ def test_redirect_mid_command_yields_it_to_background_without_killing_it(tmp_pat
         with agent._tool_worker_threads_lock:
             agent._tool_worker_threads.add(threading.current_thread().ident)
         t0 = time.monotonic()
-        res["result"] = json.loads(terminal_tool("echo started; sleep 60; echo done", task_id="yield-test", timeout=90))
+        res["result"] = json.loads(terminal_tool(
+            f"echo started; touch '{(tmp_path / 'ready').as_posix()}'; sleep 60; echo done",
+            task_id="yield-test", timeout=90))
         res["elapsed"] = time.monotonic() - t0
 
     t = threading.Thread(target=worker, daemon=True)
     t.start()
-    time.sleep(1.5)
+    # Wait until the shell really printed (Git Bash cold start on Windows can exceed a fixed sleep).
+    ready = tmp_path / "ready"
+    end = time.monotonic() + 60
+    while not ready.exists() and time.monotonic() < end:
+        time.sleep(0.05)
+    assert ready.exists(), "command never started"
     assert agent.redirect("also, check the session ids") is True
     assert agent._pending_steer == "also, check the session ids"  # still delivered as a steer
 
@@ -68,7 +75,7 @@ def test_redirect_mid_command_yields_it_to_background_without_killing_it(tmp_pat
         assert r["exit_code"] is None and "started" in r["output"]
         assert r["notify_on_complete"] is True
         # The process is alive and tracked: poll/wait/kill and the completion notification work.
-        assert os.path.exists(f"/proc/{r['pid']}")
+        assert psutil.pid_exists(r["pid"])
         assert process_registry.poll(r["session_id"])["status"] == "running"
         assert not interrupt_mod.is_thread_yield_requested(t.ident)
         descendants = psutil.Process(r["pid"]).children(recursive=True)

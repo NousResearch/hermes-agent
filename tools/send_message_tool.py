@@ -286,6 +286,9 @@ def _handle_send(args):
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
         if isinstance(result, dict) and result.get("success"):
+            if platform_name == "matrix":
+                chat_id = result.get("chat_id", chat_id)
+                thread_id = result.get("thread_id", thread_id)
             if used_home_channel:
                 result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
             if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id):
@@ -300,11 +303,13 @@ def _handle_send(args):
         if isinstance(result, dict) and media_dropped:
             result["media_dropped"] = media_dropped
         if isinstance(result, dict) and "error" in result:
-            if home_target and home_target != chat_id:
-                result["error"] = f"Target '{home_target}': {result['error']}"
+            if platform_name == "matrix":
+                result["error"] = f"Target '{home_target or target}': {result['error']}"
             result["error"] = _sanitize_error_text(result["error"])
         return json.dumps(result)
     except Exception as e:
+        if platform_name == "matrix":
+            return json.dumps(_error(f"Send to '{home_target or target}' failed: {e}"))
         return json.dumps(_error(f"Send failed: {e}"))
 
 

@@ -303,15 +303,30 @@ def _seed_cron_thread_session(
     scope_id: Optional[str] = None,
     *,
     destination_source: Optional[SessionSource] = None,
+    user_id: Optional[str] = None,
 ) -> None:
-    """Seed the cron delivery's thread session with the brief (never raises), else the
-    user's in-thread reply resolves to a transcript without it. Threads are participant-shared
-    (no real user_id); a DM thread must seed ``chat_type="dm"`` — DM-thread replies route through
-    the DM arm (``…:dm:<chat>:<thread>``), so a "thread"-typed seed is a row no DM reply hits.
+    """Seed the cron delivery's reply session with the brief (never raises).
+    Participant-isolated threads require the originating user. A DM thread must seed
+    ``chat_type="dm"`` because DM-thread replies use the DM session key.
     Non-DM threads seed the slot the platform's adapter puts on an in-thread reply
     (``_THREAD_REPLY_CHAT_TYPE``)."""
     text = (mirror_text or "").strip()
     if not text:
+        return
+    session_config = getattr(getattr(adapter, "_session_store", None), "config", None)
+    if (
+        not is_dm
+        and getattr(session_config, "group_sessions_per_user", True) is not False
+        and getattr(session_config, "thread_sessions_per_user", False) is True
+        and not user_id
+    ):
+        logger.warning(
+            "Job '%s': thread seed skipped for %s:%s thread=%s without an originating participant",
+            job.get("id", "?"),
+            platform_name,
+            chat_id,
+            thread_id,
+        )
         return
     try:
         ok = _seed_cron_session(
@@ -324,8 +339,8 @@ def _seed_cron_thread_session(
             chat_type="dm"
             if is_dm
             else _THREAD_REPLY_CHAT_TYPE.get(platform_name.lower(), "thread"),
-            user_id="system:cron",
-            user_name="Cron",
+            user_id=user_id or "system:cron",
+            user_name=None if user_id else "Cron",
             chat_name=chat_name,
             scope_id=scope_id,
             discord_keys_on_thread=True,
@@ -441,6 +456,7 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
             seed_thread_id,
             t.mirror_text,
             destination_source=t.resolved_source,
+            user_id=t.origin_user_id,
             **seed_kwargs,
         )
         thread_seeded = True
@@ -477,6 +493,7 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
                 str(delivered_message_id),
                 t.mirror_text,
                 destination_source=t.resolved_source,
+                user_id=t.origin_user_id,
                 **seed_kwargs,
             )
     elif t.in_channel_surface and not t.inchannel_continuable:

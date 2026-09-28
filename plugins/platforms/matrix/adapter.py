@@ -1532,16 +1532,16 @@ class MatrixAdapter(MatrixDeliveryMixin,MatrixApprovalMixin, MatrixReactionPromp
             except Exception as exc:
                 if not (self._encryption and getattr(self._client, "crypto", None)):
                     logger.error("Matrix: failed to send to %s: %s", chat_id, exc)
-                    return SendResult(success=False, error=str(exc))
+                    return SendResult(success=False, error=f"Matrix target '{target}': {exc}")
                 try:  # E2EE error: retry once after sharing keys
-                    await self._client.crypto.share_keys()
+                    await asyncio.wait_for(self._client.crypto.share_keys(), timeout=45)
                     last_event_id = await self._send_room_message(
                         chat_id, msg_content, notice=notice, finalize=not (metadata or {}).get("expect_edits", False))
                     event_ids.append(last_event_id)
                     logger.info("Matrix: sent event %s to %s (after key share)", last_event_id, chat_id)
                 except Exception as retry_exc:
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
-                    return SendResult(success=False, error=str(retry_exc))
+                    return SendResult(success=False, error=f"Matrix target '{target}': {retry_exc}")
         return SendResult(success=True, message_id=last_event_id,
                           continuation_message_ids=tuple(event_ids[:-1]))
 
@@ -1775,7 +1775,11 @@ class MatrixAdapter(MatrixDeliveryMixin,MatrixApprovalMixin, MatrixReactionPromp
             if not result.success:
                 logger.warning("Matrix: failed to send image %d/%d: %s", idx, total, result.error)
             delivered = delivered or result.success
-        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
+        target = (metadata or {}).get("_original_target", chat_id)
+        return SendResult(
+            success=delivered,
+            error=None if delivered else f"Matrix target '{target}': all images failed to send",
+        )
 
     async def send_document(
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
@@ -1900,13 +1904,13 @@ class MatrixAdapter(MatrixDeliveryMixin,MatrixApprovalMixin, MatrixReactionPromp
                 upload_data, encrypted_file = encrypt_attachment(data)
             except Exception as exc:
                 logger.error("Matrix: attachment encryption failed: %s", exc)
-                return SendResult(success=False, error=str(exc))
+                return SendResult(success=False, error=f"Matrix target '{target}': {exc}")
         try:
-            mxc_url = await self._client.upload_media(
-                upload_data, mime_type=content_type, filename=filename, size=len(upload_data))
+            mxc_url = await asyncio.wait_for(self._client.upload_media(
+                upload_data, mime_type=content_type, filename=filename, size=len(upload_data)), timeout=45)
         except Exception as exc:
             logger.error("Matrix: upload failed: %s", exc)
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=f"Matrix target '{target}': {exc}")
         msg_content: dict[str, Any] = {
             "msgtype": msgtype, "body": caption or filename, "info": {"mimetype": content_type, "size": len(data)}}
         if encrypted_file is not None:
@@ -1922,24 +1926,25 @@ class MatrixAdapter(MatrixDeliveryMixin,MatrixApprovalMixin, MatrixReactionPromp
             if audio_metadata:
                 msg_content["org.matrix.msc1767.audio"] = audio_metadata
         self._apply_relation_metadata(room_id, msg_content, reply_to=reply_to, metadata=metadata)
-        return await self._send_content_event(room_id, msg_content)
+        return await self._send_content_event(room_id, msg_content, original_target=target)
 
     def _media_too_large(self, size: int) -> SendResult:
         return SendResult(
             success=False, error=f"Media file exceeds Matrix limit ({size} > {self._max_media_bytes} bytes)")
 
     async def _send_content_event(
-        self, room_id: str, msg_content: dict[str, Any], *, finalize: bool = True,
+        self, room_id: str, msg_content: dict[str, Any], *, finalize: bool = True, original_target: Optional[str] = None,
     ) -> SendResult:
         """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
         try:
             await self._check_room_encryption(room_id)
-            event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
+            event_id = await asyncio.wait_for(
+                self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
             self._thread_fallbacks.remember_sent(room_id, msg_content, str(event_id))
             self._remember_followup_delivery(room_id, str(event_id), msg_content, finalize=finalize)
             return SendResult(success=True, message_id=str(event_id))
         except Exception as exc:
-            return SendResult(success=False, error=str(exc), error_kind=_matrix_send_error_kind(exc))
+            return SendResult(success=False, error=f"Matrix target '{original_target or room_id}': {exc}", error_kind=_matrix_send_error_kind(exc))
 
     async def _send_local_file(
         self, room_id: str, file_path: str, msgtype: str, caption: Optional[str] = None,

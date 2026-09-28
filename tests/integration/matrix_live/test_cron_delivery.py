@@ -17,7 +17,7 @@ from nio import (
 )
 from testcontainers.core.container import DockerContainer
 
-from tests.integration.matrix_live.conftest import LiveRoom, _wait_for
+from tests.integration.matrix_live.conftest import LiveRoom, _register, _wait_for
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 
 
@@ -208,8 +208,11 @@ import asyncio
 import json
 import signal
 from cron.scheduler_delivery import _deliver_result
-from gateway.config import load_gateway_config
+from gateway.config import Platform, load_gateway_config
 from gateway.run import GatewayRunner
+from gateway.session import SessionSource
+from gateway.session_context import set_session_vars, clear_session_vars
+from tools.send_message_tool import send_message_tool
 
 async def main():
     config = load_gateway_config()
@@ -220,12 +223,40 @@ async def main():
         loop = asyncio.get_running_loop()
         stopped = asyncio.Event()
         loop.add_signal_handler(signal.SIGTERM, stopped.set)
-        error = await asyncio.to_thread(
-            _deliver_result,
-            {'id': 'alias-continuation', 'deliver': TARGET, 'attach_to_session': True},
-            BRIEF, runner.adapters, loop,
+        source = SessionSource(
+            platform=Platform.MATRIX, chat_id=ROOM, thread_id=THREAD,
+            chat_type='group', user_id=PARTICIPANT,
         )
-        assert error is None, error
+        if PER_USER:
+            entry = runner.session_store.get_or_create_session(source)
+            runner.session_store.append_to_transcript(entry.session_id, {
+                'role': 'user', 'content': 'Remember the existing participant context.',
+            })
+            runner.session_store.append_to_transcript(entry.session_id, {
+                'role': 'assistant', 'content': 'Existing participant context',
+            })
+        if TOOL_SEND:
+            tokens = set_session_vars(platform='matrix', user_id=PARTICIPANT)
+            try:
+                result = json.loads(await asyncio.to_thread(
+                    send_message_tool, {'target': TARGET, 'message': BRIEF},
+                ))
+            finally:
+                clear_session_vars(tokens)
+            assert result.get('success') and result.get('mirrored'), result
+            assert (result['chat_id'], result['thread_id']) == (ROOM, THREAD), result
+        else:
+            error = await asyncio.to_thread(
+                _deliver_result,
+                {
+                    'id': 'alias-continuation', 'deliver': TARGET, 'attach_to_session': True,
+                    'origin': source.to_dict() if PER_USER else None,
+                },
+                BRIEF, runner.adapters, loop,
+            )
+            assert error is None, error
+        if PER_USER:
+            assert list(runner.session_store._entries) == [entry.session_key]
         print(json.dumps({'cron_ready': True}), flush=True)
         await stopped.wait()
     finally:
@@ -235,18 +266,28 @@ asyncio.run(main())
 """
 
 
+@pytest.mark.parametrize("delivery", ["shared_cron", "per_user_cron", "per_user_tool"])
 def test_alias_thread_reply_receives_seeded_cron_brief(
-    gateway_image, synapse, live_room: LiveRoom, tmp_path: Path
+    gateway_image, synapse, live_room: LiveRoom, tmp_path: Path, delivery: str
 ):
+    alias_localpart = f"cron-continuation-{delivery}"
+
     async def create():
         client = live_room.observer.client(live_room.homeserver)
         try:
             room = await client.room_create(
-                alias="cron-continuation",
+                alias=alias_localpart,
                 name="Cron continuation",
                 preset=RoomPreset.public_chat,
             )
             assert isinstance(room, RoomCreateResponse), room
+            peer = await _register(live_room.homeserver, "cron-peer")
+            peer_client = peer.client(live_room.homeserver)
+            try:
+                joined = await peer_client.join(room.room_id)
+                assert isinstance(joined, JoinResponse), joined
+            finally:
+                await peer_client.close()
             root = await client.room_send(
                 room.room_id,
                 "m.room.message",
@@ -258,7 +299,7 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
             await client.close()
 
     room_id, root_id = asyncio.run(asyncio.wait_for(create(), timeout=15))
-    alias = "#cron-continuation:matrix.test"
+    alias = f"#{alias_localpart}:matrix.test"
     brief = "The cron-only launch code is basil-otter-47."
     home = tmp_path / "continuation-home"
     _, _, network = synapse
@@ -268,6 +309,7 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
             f"http://host.docker.internal:{model.port}/v1",
             extra_config=(
                 "cron:\n  wrap_response: false\n"
+                f"thread_sessions_per_user: {str(delivery != 'shared_cron').lower()}\n"
                 "updates:\n  check: false\n"
                 "platforms:\n  matrix:\n    enabled: true\n"
                 "    extra:\n      e2ee_mode: 'off'\n      require_mention: false\n"
@@ -281,7 +323,11 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
                 f"MATRIX_ALLOWED_USERS={live_room.observer.user_id}\n"
             )
         code = (
-            f"TARGET = {f'matrix:{alias}/{root_id}'!r}\nBRIEF = {brief!r}\n" + _CONTINUE
+            f"TARGET = {f'matrix:{alias}/{root_id}'!r}\nBRIEF = {brief!r}\n"
+            f"ROOM = {room_id!r}\nTHREAD = {root_id!r}\n"
+            f"PARTICIPANT = {live_room.observer.user_id!r}\n"
+            f"PER_USER = {delivery != 'shared_cron'!r}\n"
+            f"TOOL_SEND = {delivery == 'per_user_tool'!r}\n" + _CONTINUE
         )
         with (
             DockerContainer(
@@ -364,13 +410,25 @@ def test_alias_thread_reply_receives_seeded_cron_brief(
                                 requests = model.main_requests()
                                 assert len(requests) == 1
                                 messages = requests[0]["messages"]
+                                brief_role = (
+                                    "assistant"
+                                    if delivery == "per_user_tool"
+                                    else "user"
+                                )
                                 assert any(
-                                    message.get("role") == "user"
-                                    and "[Cron delivery: alias-continuation]"
-                                    in str(message.get("content"))
+                                    message.get("role") == brief_role
                                     and brief in str(message.get("content"))
                                     for message in messages
                                 ), messages
+                                if delivery != "per_user_tool":
+                                    assert (
+                                        "[Cron delivery: alias-continuation]"
+                                        in json.dumps(messages)
+                                    )
+                                if delivery != "shared_cron":
+                                    assert "Existing participant context" in json.dumps(
+                                        messages
+                                    )
                                 assert question in json.dumps(messages)
                                 return
                 finally:

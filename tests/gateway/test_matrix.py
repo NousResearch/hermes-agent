@@ -3416,7 +3416,7 @@ class TestMatrixRequirements:
 
 class TestMatrixAccessTokenAuth:
     @pytest.mark.asyncio
-    async def test_connect_with_access_token_and_encryption(self):
+    async def test_connect_with_access_token_and_encryption(self, monkeypatch):
         """connect() should call whoami, set user_id/device_id, set up crypto."""
         from plugins.platforms.matrix.adapter import MatrixAdapter
 
@@ -3470,9 +3470,8 @@ class TestMatrixAccessTokenAuth:
 
         # Patch Client constructor to return our mock
         fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
-        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
-
         import plugins.platforms.matrix.adapter as matrix_mod
+        monkeypatch.setattr(matrix_mod, "create_sync_olm_machine", MagicMock(return_value=mock_olm))
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -3631,7 +3630,7 @@ class TestMatrixDeviceId:
         assert adapter._device_id == "FROM_CONFIG"
 
     @pytest.mark.asyncio
-    async def test_connect_keeps_configured_device_id_on_adapter(self):
+    async def test_connect_keeps_configured_device_id_on_adapter(self, monkeypatch):
         """MATRIX_DEVICE_ID stays on the adapter regardless of whoami.
 
         Note: this test previously asserted that the configured device_id
@@ -3687,9 +3686,8 @@ class TestMatrixDeviceId:
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
-        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
-
         import plugins.platforms.matrix.adapter as matrix_mod
+        monkeypatch.setattr(matrix_mod, "create_sync_olm_machine", MagicMock(return_value=mock_olm))
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -4189,9 +4187,8 @@ class TestMatrixDiagnostics:
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
-        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
-
         import plugins.platforms.matrix.adapter as matrix_mod
+        monkeypatch.setattr(matrix_mod, "create_sync_olm_machine", MagicMock(return_value=mock_olm))
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -4266,7 +4263,7 @@ class TestJoinedRoomsReference:
 
 class TestMatrixEncryptedEventHandler:
     @pytest.mark.asyncio
-    async def test_connect_registers_encrypted_event_handler_when_encryption_on(self):
+    async def test_connect_registers_encrypted_event_handler_when_encryption_on(self, monkeypatch):
         from plugins.platforms.matrix.adapter import MatrixAdapter
 
         config = PlatformConfig(
@@ -4311,9 +4308,8 @@ class TestMatrixEncryptedEventHandler:
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
-        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
-
         import plugins.platforms.matrix.adapter as matrix_mod
+        monkeypatch.setattr(matrix_mod, "create_sync_olm_machine", MagicMock(return_value=mock_olm))
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -5205,7 +5201,7 @@ class TestDeviceIdNoneResolution:
     """connect() should resolve device_id when whoami returns None."""
 
     @pytest.mark.asyncio
-    async def test_none_device_id_resolved_via_query_keys(self):
+    async def test_none_device_id_resolved_via_query_keys(self, monkeypatch):
         """query_keys({mxid: []}) with exactly one device should adopt that ID."""
         from plugins.platforms.matrix.adapter import MatrixAdapter
 
@@ -5260,9 +5256,8 @@ class TestDeviceIdNoneResolution:
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
-        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
-
         import plugins.platforms.matrix.adapter as matrix_mod
+        monkeypatch.setattr(matrix_mod, "create_sync_olm_machine", MagicMock(return_value=mock_olm))
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -5363,7 +5358,7 @@ class TestDeviceIdRecoveryOnReconnect:
     recovery after a failed resolution clears the stuck-true flag."""
 
     @pytest.mark.asyncio
-    async def test_flag_clears_when_second_connect_resolves_device_id(self):
+    async def test_flag_clears_when_second_connect_resolves_device_id(self, monkeypatch):
         """Same adapter, first connect fails to resolve, second succeeds. Flag
         must be False afterward and server verification must run on the second
         call."""
@@ -5413,9 +5408,8 @@ class TestDeviceIdRecoveryOnReconnect:
         mock_olm1.account.identity_keys = {"ed25519": "fake_key"}
 
         fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client1)
-        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm1)
-
         import plugins.platforms.matrix.adapter as matrix_mod
+        monkeypatch.setattr(matrix_mod, "create_sync_olm_machine", MagicMock(return_value=mock_olm1))
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
                 with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
@@ -5462,7 +5456,7 @@ class TestDeviceIdRecoveryOnReconnect:
         mock_olm2.account.identity_keys = {"ed25519": "fake_ed25519_key2"}
 
         fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client2)
-        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm2)
+        monkeypatch.setattr(matrix_mod, "create_sync_olm_machine", MagicMock(return_value=mock_olm2))
 
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
             with patch.dict("sys.modules", fake_mautrix_mods):
@@ -5570,7 +5564,7 @@ class TestCryptoStoreResetOnDeviceChange:
 
     @pytest.mark.asyncio
     async def test_connect_resets_store_when_token_device_differs_from_config(
-        self, caplog
+        self, caplog, monkeypatch
     ):
         """Rotated token, stale MATRIX_DEVICE_ID.
 
@@ -5653,11 +5647,8 @@ class TestCryptoStoreResetOnDeviceChange:
         mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         fake_mautrix_mods["mautrix.client"].Client = _client_factory(mock_client)
-        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(
-            return_value=mock_olm
-        )
-
         import plugins.platforms.matrix.adapter as matrix_mod
+        monkeypatch.setattr(matrix_mod, "create_sync_olm_machine", MagicMock(return_value=mock_olm))
 
         with caplog.at_level(logging.WARNING), patch.object(
             matrix_mod, "_check_e2ee_deps", return_value=True

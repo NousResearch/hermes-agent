@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -22,7 +24,24 @@ def gateway_config() -> str:
     return (
         "platforms:\n  matrix:\n    enabled: true\n    max_message_length: 500\n"
         "streaming:\n  enabled: false\nupdates:\n  check: false\n"
+        "plugins:\n  enabled: [matrix-restart-barriers]\n"
     )
+
+
+@pytest.fixture
+def gateway_home_setup() -> Callable[[Path], None]:
+    def setup(home: Path) -> None:
+        plugin = home / "plugins" / "matrix-restart-barriers"
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text(
+            "name: matrix-restart-barriers\nversion: 0.1.0\n", encoding="utf-8"
+        )
+        (plugin / "__init__.py").write_text(
+            Path(__file__).with_name("restart_barriers.py").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+
+    return setup
 
 
 def test_reaction_to_encrypted_split_final_resumes_after_restart(
@@ -119,17 +138,58 @@ def test_reaction_to_encrypted_split_final_resumes_after_restart(
             "from reaction_followup_state import persisted_state; "
             f"print(json.dumps(persisted_state(Path('/opt/data'), {room_id!r}, {thread_id!r})))"
         )
-        result = gateway.container.get_wrapped_container().exec_run(
-            ["/opt/hermes/.venv/bin/python", "-c", code]
-        )
+        result = gateway.container.get_wrapped_container().exec_run([
+            "/opt/hermes/.venv/bin/python",
+            "-c",
+            code,
+        ])
         output = result.output.decode(errors="replace")
         assert result.exit_code == 0, output
         return json.loads(output.splitlines()[-1])
 
     started = time.monotonic()
     try:
-        delivered = exchange()
+
+        def key_import_blocked() -> bool:
+            shared = gateway.home / "key-shared"
+            imported = gateway.home / "key-import-blocked"
+            if not shared.exists() or not imported.exists():
+                return False
+            session_id = shared.read_text(encoding="utf-8")
+            return bool(session_id) and session_id == imported.read_text(
+                encoding="utf-8"
+            )
+
+        with ThreadPoolExecutor(max_workers=1) as clients:
+            delivery = clients.submit(exchange, barrier_home="/gateway-barriers")
+            _wait_for(
+                key_import_blocked,
+                "native key import before restart",
+                timeout=10,
+                details=failure_details,
+            )
+            shared_session = (gateway.home / "key-shared").read_text(encoding="utf-8")
+            assert (gateway.home / "key-import-blocked").read_text(
+                encoding="utf-8"
+            ) == shared_session
+            assert not (gateway.home / "room-input-published").exists()
+            assert gateway.model.main_requests() == []
+            gateway.restart()
+            assert (gateway.home / "key-import-blocked-cancelled").read_text(
+                encoding="utf-8"
+            ) == shared_session
+            assert (gateway.home / "key-import-restored").read_text(
+                encoding="utf-8"
+            ) == shared_session
+            assert not (gateway.home / "room-input-published").exists()
+            assert gateway.model.main_requests() == []
+            (gateway.home / "room-input-release").touch()
+            delivered = delivery.result()
         root = delivered["root"]
+        assert (gateway.home / "room-input-published").read_text(
+            encoding="utf-8"
+        ) == root
+        intake_id = delivered["intake_id"]
         event_ids = delivered["event_ids"]
         assert len(set(event_ids)) == 3
 
@@ -153,10 +213,30 @@ def test_reaction_to_encrypted_split_final_resumes_after_restart(
         ]
         assert len(gateway.model.main_requests()) == 4
 
+        _wait_for(
+            lambda: (gateway.home / "intake-blocked").exists(),
+            "durable intake with incomplete native sibling",
+            timeout=10,
+            details=failure_details,
+        )
+        assert (gateway.home / "intake-blocked").read_text(
+            encoding="utf-8"
+        ) == intake_id
+        checkpoints = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in gateway.home.rglob("sync-*.json")
+        ]
+        assert len(checkpoints) == 1
+        assert intake_id in checkpoints[0]["accepted_events"]
         gateway.restart()
+        assert (gateway.home / "intake-blocked-cancelled").exists()
+        assert all(
+            "accepted_events" not in json.loads(path.read_text(encoding="utf-8"))
+            for path in gateway.home.rglob("sync-*.json")
+        )
         restored = persisted_state(live_room.room_id, root)
-        assert restored["watches"] == before["watches"]
-        assert restored["sessions"] == before["sessions"]
+        assert restored == before
+        assert len(gateway.model.main_requests()) == 4
         reacted = exchange(root=root, target=event_ids[-1])
 
         def followup_persisted() -> bool:
@@ -182,7 +262,11 @@ def test_reaction_to_encrypted_split_final_resumes_after_restart(
 
         requests = gateway.model.main_requests()
         assert len(requests) == 5, [
-            [message.get("content") for message in request["messages"] if message.get("role") == "user"]
+            [
+                message.get("content")
+                for message in request["messages"]
+                if message.get("role") == "user"
+            ]
             for request in requests
         ]
         messages = requests[-1]["messages"]

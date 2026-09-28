@@ -100,7 +100,7 @@ from plugins.platforms.matrix.reply_context import (
 from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY, PreviousTurnCheck, fetch_thread_entries
 from plugins.platforms.matrix.read_context import SessionAccess, check_session_access, read_matrix_context
 from plugins.platforms.matrix.sync_transport import (
-    DurableSyncStore, SyncDispatch, create_sync_client, is_invalid_sync_cursor,
+    DurableSyncStore, SyncDispatch, create_sync_client, create_sync_olm_machine, is_invalid_sync_cursor,
 )
 from plugins.platforms.matrix.reaction_followups import (
     FinalDeliveryEvents, PendingFollowupReactions, ReactionWatchStore,
@@ -1249,7 +1249,6 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             return True
         phase = "import"
         try:
-            from mautrix.crypto import OlmMachine
             from mautrix.crypto.store.asyncpg import PgCryptoStore
             from mautrix.util.async_db import Database
             self._store_dir.mkdir(parents=True, exist_ok=True)
@@ -1277,7 +1276,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 logger.warning("Matrix: crypto pickle migration failed — E2EE may not work correctly")
             from plugins.platforms.matrix.adapter_crypto import _CryptoStateStore
             crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
-            olm = OlmMachine(client, crypto_store, crypto_state)
+            olm = create_sync_olm_machine(client, crypto_store, crypto_state)
             olm.share_keys_min_trust = TrustState.UNVERIFIED
             olm.send_keys_min_trust = TrustState.UNVERIFIED
             await olm.load()
@@ -1431,6 +1430,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             state_type = getattr(EventType, state_type_name, None)
             if state_type is not None:
                 client.add_event_handler(state_type, self._on_room_state, wait_sync=True)
+        client.hermes_sync.intake_handlers = {self._on_room_message, self._on_reaction}
         self._startup_ts = time.time()
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
         self._closing = False
@@ -1447,6 +1447,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 logger.warning("Matrix: initial key share failed: %s", exc)
         self._sync_task = asyncio.create_task(self._sync_loop())
         self._mark_connected()
+        logger.info("Matrix: connected after initial dispatch checkpoint")
         return True
 
     async def disconnect(self) -> None:
@@ -1459,6 +1460,9 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 await self._sync_task
             except (asyncio.CancelledError, Exception):
                 pass
+        dispatch = getattr(self._client, "hermes_sync", None)
+        if isinstance(dispatch, SyncDispatch):
+            await dispatch.cancel()
         for tasks in (self._invite_join_tasks.values(), self._reaction_redaction_tasks):
             pending = list(tasks)
             for task in pending:
@@ -2126,7 +2130,6 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         self._warn_encrypted_drops(rooms_join, client)
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
         if initial:
-            logger.info("Matrix: initial sync complete, joined %d rooms", len(self._joined_rooms))
             await self._refresh_dm_cache()
         await self._dispatch_sync(sync_data)
         self._schedule_pending_invite_joins(sync_data)
@@ -2136,6 +2139,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             if isinstance(dispatch, SyncDispatch):
                 dispatch.acknowledge()
             self._resuming_sync = True
+        if initial:
+            logger.info("Matrix: initial dispatch checkpoint complete, joined %d rooms", len(self._joined_rooms))
         return nb
 
     def _warn_encrypted_drops(self, rooms_join: dict[str, Any], client: Any) -> None:
@@ -2273,7 +2278,23 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
                 "`timedatectl set-ntp true` (or sync NTP) and restart the bot.", self._late_grace_drops, skew)
             self._clock_skew_warned = True
 
-    async def _on_room_message(self, event: Any) -> None:
+    async def handle_message(self, event: MessageEvent) -> None:
+        store = getattr(self._client, "sync_store", None)
+        event_id = str(event.message_id or "")
+        if not isinstance(store, DurableSyncStore) or not event_id.startswith("$"):
+            await super().handle_message(event)
+            return
+        if not store.reserve_intake(event_id):
+            event._gateway_accepted = True
+            return
+        try:
+            await super().handle_message(event)
+            if getattr(event, "_gateway_accepted", False):
+                await store.accept_intake(event_id)
+        finally:
+            store.release_intake(event_id)
+
+    async def _on_room_message(self, event: Any) -> bool | None:
         room_id = str(getattr(event, "room_id", ""))
         sender = str(getattr(event, "sender", ""))
         # DEBUG-level proof the callback fires at all (silent-inbound troubleshooting).
@@ -2333,11 +2354,11 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         if msgtype == "m.notice" and not self._process_notices:
             return
         if msgtype in ("m.image", "m.audio", "m.video", "m.file"):
-            await self._handle_media_message(
+            return await self._handle_media_message(
                 room_id, sender, event_id, event_ts, source_content, relates_to, msgtype,
                 reply_parent=reply_parent)
         elif msgtype in ("m.text", "m.notice"):
-            await self._handle_text_message(
+            return await self._handle_text_message(
                 room_id, sender, event_id, event_ts, source_content, relates_to,
                 reply_parent=reply_parent)
 
@@ -2595,7 +2616,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
-        relates_to: dict, *, reply_parent: MatrixEventContext | None = None) -> None:
+        relates_to: dict, *, reply_parent: MatrixEventContext | None = None) -> bool | None:
         body = source_content.get("body", "") or ""
         if not body:
             return
@@ -2623,13 +2644,14 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
         self._event_context_cache.store(room_id, event_id, MatrixEventContext(sender, msg_event.text))
         if msg_event.message_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(msg_event)
-        else:
-            await self.handle_message(msg_event)
+            return False
+        await self.handle_message(msg_event)
+        return getattr(msg_event, "_gateway_accepted", False)
 
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
         relates_to: dict, msgtype: str, mention_claimed: bool = False, *,
-        reply_parent: MatrixEventContext | None = None) -> None:
+        reply_parent: MatrixEventContext | None = None) -> bool | None:
         body = source_content.get("body", "") or ""
         url = source_content.get("url", "")
         if url and not str(url).startswith("mxc://"):
@@ -2691,6 +2713,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             metadata={"matrix_mention_claimed": True} if mention_claimed else {})
         if msg_event is not None:
             await self.handle_message(msg_event)
+            return getattr(msg_event, "_gateway_accepted", False)
 
     @staticmethod
     def _classify_inbound_media(
@@ -3000,7 +3023,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             self._schedule_reaction_redaction(room_id, eyes_event_id, "processing complete")
         await self._send_reaction(room_id, msg_id, "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c")
 
-    async def _on_reaction(self, event: Any) -> None:
+    async def _on_reaction(self, event: Any) -> bool | None:
         sender = str(getattr(event, "sender", ""))
         if self._is_self_sender(sender):
             return
@@ -3021,23 +3044,23 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             reacts_to = str(getattr(relates_to, "event_id", ""))
             key = str(getattr(relates_to, "key", ""))
         logger.info("Matrix: reaction %s from %s on %s in %s", key, sender, reacts_to, room_id)
-        await self._dispatch_reaction(room_id, reacts_to, key, sender, event_id)
+        return await self._dispatch_reaction(room_id, reacts_to, key, sender, event_id)
 
     async def _dispatch_reaction(
         self, room_id: str, reacts_to: str, key: str, sender: str, event_id: str,
         *, pending: PendingFollowupReactions | None = None,
-    ) -> None:
+    ) -> bool | None:
         for handler in (self._handle_approval_reaction, self._handle_model_picker_reaction,
                         self._handle_choice_picker_reaction):
             if await handler(room_id, reacts_to, key, sender):
                 return
-        await self._handle_followup_reaction(
+        return await self._handle_followup_reaction(
             room_id, reacts_to, key, sender, event_id, pending=pending)
 
     async def _handle_followup_reaction(
         self, room_id: str, target_event_id: str, emoji: str, sender: str,
         reaction_event_id: str, *, pending: PendingFollowupReactions | None = None,
-    ) -> None:
+    ) -> bool | None:
         store = self._followup_store()
         candidate = store.candidate(room_id, target_event_id)
         if candidate is None:
@@ -3110,6 +3133,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             },
         )
         await self.handle_message(followup)
+        return getattr(followup, "_gateway_accepted", False)
 
     async def _claim_reaction_prompt(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,

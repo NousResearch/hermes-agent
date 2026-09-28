@@ -161,6 +161,26 @@ def test_counts_are_honest_without_fetch(installation, tip_kind, compare, expect
         assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/main"]
 
 
+def test_probe_entrypoint_passive_flag_honours_the_opt_out(installation, monkeypatch, capsys):
+    # The Desktop spawns this module's main(); --passive is the flag its
+    # background checks ride on (#126888). A disabled check must answer
+    # reason=disabled without touching the network.
+    import sys
+
+    from hermes_cli import source_check
+
+    root, _linked, home, _base, _head, _responses, requests, _git = installation
+    (home / "config.yaml").write_text("updates: {check: false}\n")
+
+    monkeypatch.setattr(sys, "argv", [
+        "source_check", "--install-root", str(root), "--home", str(home), "--passive",
+    ])
+    source_check.main()
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["reason"] == "disabled"
+    assert requests == []
+
 def test_cache_force_expiry_and_passive_opt_out(installation, monkeypatch):
     from hermes_cli import source_check
     root, linked, home, base, head, responses, requests, git = installation

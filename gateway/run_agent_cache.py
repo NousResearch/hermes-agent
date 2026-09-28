@@ -723,7 +723,9 @@ class GatewayAgentCacheMixin:
         it reuses an existing pin verbatim (restored by ``_rehydrate_prompt_pins`` after a restart or an eviction); with
         no pin yet it renders and pins as usual. The pin records the ``privacy.redact_pii`` it was
         rendered under: bytes from another privacy policy are never reused, even by an internal
-        event."""
+        event. Callers pass ``event.internal or event.inherit_channel_pin`` (synthetic
+        goal/heartbeat/resume turns strip ``message_id``) so this pin and ``_pinned_channel_inputs``
+        reuse on the same decision."""
         _pin_state = self._peek_session_state(session_key) if session_key else None
         _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
         if _eph_pin is not None and _eph_pin[2] != redact_pii:

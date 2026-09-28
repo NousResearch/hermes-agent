@@ -370,7 +370,7 @@ _SSH_RUNTIME_MARKER_NAME = re.compile(
     r"\.hermes-ssh-runtime-[0-9a-f]{16}(?:-(?P<pid>[1-9][0-9]*)-[0-9a-f]{16})?"
 )
 _SSH_RUNTIME_MARKER_PAYLOAD_RE = re.compile(
-    r"pid=([1-9][0-9]*)\n(?:create_time=([0-9]+(?:\.[0-9]+)?)\n?)?"
+    r"pid=([1-9][0-9]*)\n(?:create_time=([0-9]+\.[0-9]+)\n)?"
 )
 
 
@@ -423,7 +423,7 @@ def _torn_ssh_runtime_marker_pid(payload: str, named_pid: Optional[str]) -> Opti
         return None
     create_time_prefix = payload[len(expected_pid_line) :]
     if "create_time=".startswith(create_time_prefix) or re.fullmatch(
-        r"create_time=[0-9]+\.", create_time_prefix
+        r"create_time=[0-9]+(?:\.[0-9]*)?", create_time_prefix
     ):
         return pid
     return None

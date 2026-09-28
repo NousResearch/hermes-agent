@@ -371,6 +371,7 @@ def test_ssh_runtime_marker_sweep_removes_torn_prefixes_for_dead_named_pid(
         "pid=",
         f"pid={exited.pid}",
         f"pid={exited.pid}\ncreate_time=",
+        f"pid={exited.pid}\ncreate_time=17",
         f"pid={exited.pid}\ncreate_time=17.",
     )
     markers = []
@@ -384,6 +385,33 @@ def test_ssh_runtime_marker_sweep_removes_torn_prefixes_for_dead_named_pid(
     web_server._sweep_dead_ssh_runtime_markers(str(purelib))
 
     assert not any(marker.exists() for marker in markers)
+
+
+def test_ssh_runtime_marker_sweep_keeps_live_torn_create_time_prefixes(tmp_path):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    pid = os.getpid()
+    create_time = web_server._process_create_time(pid)
+    assert create_time is not None
+    create_time_text = str(create_time)
+    integer_prefix, dot, fraction = create_time_text.partition(".")
+    assert dot == "."
+    assert len(fraction) > 1
+    prefixes = (integer_prefix, create_time_text[:-1])
+    markers = []
+    for index, prefix in enumerate(prefixes):
+        marker = purelib / (
+            f".hermes-ssh-runtime-fedcba9876543210-{pid}-{index:016x}"
+        )
+        marker.write_text(
+            f"pid={pid}\ncreate_time={prefix}",
+            encoding="utf-8",
+        )
+        markers.append(marker)
+
+    web_server._sweep_dead_ssh_runtime_markers(str(purelib))
+
+    assert all(marker.is_file() for marker in markers)
 
 
 def test_ssh_runtime_marker_sweep_skips_pid_too_large_to_parse(tmp_path):

@@ -505,3 +505,16 @@ def test_batch_approval_preview_shows_the_evidence_change(tmp_path):
     assert "success_count: 12" in preview, preview[:300]
     assert preview.strip() != "( on '')"
     assert "( on '')" not in preview
+
+
+def test_evidence_schema_branch_requires_a_nonempty_delta():
+    """A patch with no patch payload must not satisfy the evidence branch.
+
+    The branch used to declare required=() and no minProperties, so {"action":"patch",
+    "name":"x"} validated it even though it carries no evidence at all. Runtime rejected it, but a
+    grammar-constrained backend trusts the schema, so the schema has to be right.
+    """
+    branch = _evidence_schema_branch()
+    assert "evidence_merge" in branch["required"], branch["required"]
+    assert branch["properties"]["evidence_merge"].get("minProperties") == 1
+    assert branch["additionalProperties"] is False

@@ -660,8 +660,10 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
         staged_kwargs = dict(payload_kwargs)
         if (evidence_merge := staged_kwargs.get("evidence_merge")) is not None:
             # Compute the merged candidate NOW, against the current source, and bind it to that
-            # source's digest. Approval then previews exactly the bytes that will be written, and
-            # the replay refuses to write if the skill changed in between.
+            # source's digest. Approval then previews exactly what the replay will write, and the
+            # replay refuses to write if the skill changed in between. (The digest is over the text
+            # as read with utf-8-sig, which strips a BOM and normalises newlines, so it identifies
+            # the decoded content rather than the raw bytes on disk.)
             skill = _find_skill(name)
             if skill is None:
                 raise ValueError(f"Skill '{name}' was not found.")
@@ -786,8 +788,8 @@ def _act_patch(a):
         target = Path(found["path"]) / "SKILL.md"
         merged = a["evidence_merge"]
         try:
-            # Replay of an APPROVED candidate: write the exact bytes that were previewed, and
-            # refuse if the source moved since approval (a concurrent writer would be lost).
+            # Replay of an APPROVED candidate: write exactly what was previewed, and refuse if the
+            # source moved since approval (a concurrent writer would be lost).
             #
             # A set bypass token does NOT by itself mean "approved": the batch path also sets it
             # while running its own already-staged ops, and a caller could otherwise hand us a
@@ -1035,8 +1037,11 @@ SKILL_MANAGE_SCHEMA = {
                                                    "description": "Why the version changed."}},
                                     "required": ["from", "to", "date", "reason"]}},
                             },
+                            # An evidence op with an empty object validates the branch but carries no
+                            # delta, so require at least one field.
+                            "minProperties": 1,
                         },
-                    }, ()),
+                    }, ("evidence_merge",)),
                     _op_schema("write_file", {
                         "file_path": _FILE_PATH,
                         "file_content": {"type": "string", "description": "Full text of the supporting file."},

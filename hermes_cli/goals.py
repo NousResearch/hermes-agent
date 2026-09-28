@@ -1241,7 +1241,7 @@ class GoalManager:
             return None
         if self._state.status not in ("done", "cleared"):
             return None
-        next_goal = self._state.queued_goals.pop(0)
+        next_goal = self.pop_queued_goal()
         self._state = GoalState(
             goal=next_goal, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
             max_turns=self.default_max_turns,

@@ -190,3 +190,56 @@ def test_dispatch_queue_remove_requires_index():
     result = dispatch_goal_command(mgr, "queue remove 1", authorize_gate=lambda: None)
     assert "kept goal" in result.output
     assert mgr.state.queued_goals == []
+
+
+def test_dispatch_queue_list_spelling_lists_instead_of_queueing():
+    """Regression: ``/goal queue list`` must LIST the queue, not queue the literal word "list".
+
+    The docs table advertises both spellings (``/goal queue`` or ``/goal queue list``), and the
+    sibling ``_gate`` handler accepts ``list`` — but the queue verb branch only stripped
+    remove/rm/clear, so ``list`` fell through to ``queue_goal("list")``. The damage was deferred:
+    the junk entry sat in the queue and got PROMOTED to the active goal once the current goal
+    reached a terminal verdict. This test fails on the pre-fix code.
+    """
+    mgr = _mgr_with_goal("queue-list-spelling-sid")
+    mgr.queue_goal("real objective")
+
+    result = dispatch_goal_command(mgr, "queue list", authorize_gate=lambda: None)
+    assert "real objective" in result.output
+    assert result.error is False
+    assert mgr.state.goal == "first goal"                      # active goal untouched
+    assert mgr.state.queued_goals == ["real objective"]        # no literal "list" entry
+
+    # And the junk entry must not surface later via promotion either.
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "done", False, None, False)):
+        mgr.evaluate_after_turn("done")
+    assert mgr.state.goal == "real objective"                  # promotes the REAL goal, not "list"
+
+
+def test_dispatch_queue_list_case_insensitive():
+    """``/goal queue LIST`` (any casing) lists rather than queueing the literal text."""
+    mgr = _mgr_with_goal("queue-list-upper-sid")
+    result = dispatch_goal_command(mgr, "queue LIST", authorize_gate=lambda: None)
+    assert result.error is False
+    assert mgr.state.goal == "first goal"
+    assert mgr.state.queued_goals == []
+
+
+def test_promotion_via_pop_queued_goal_persists_across_reload():
+    """Regression: _promote_queued pops via pop_queued_goal (its public API) so the pop lands in
+    persistence. Previously _promote_queued did its own list.pop(0) with no save of the popped
+    state, leaving pop_queued_goal as dead code whose only exercise was a direct-call unit test —
+    apparent coverage of the pop-during-promotion path with the production path untested."""
+    sid = "queue-promote-reload-sid"
+    mgr = _mgr_with_goal(sid)
+    mgr.queue_goal("promoted later")
+
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "done", False, None, False)):
+        mgr.evaluate_after_turn("done")
+
+    assert mgr.state.goal == "promoted later"
+    assert mgr.state.queued_goals == []
+    # The pop must survive a manager reload (state_meta round-trip), not just the in-memory list.
+    reloaded = GoalManager(session_id=sid)
+    assert reloaded.state.goal == "promoted later"
+    assert reloaded.state.queued_goals == []

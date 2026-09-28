@@ -169,6 +169,7 @@ describe('workspace-only sidebar refresh', () => {
       for (const store of [$sessions, $cronSessions, $messagingSessions]) {
         expect(store.get()[0]?.[field]).toBe('/new')
       }
+
       const snapshots = [$sessions.get(), $cronSessions.get(), $messagingSessions.get()]
       await act(async () => {
         await result.current.refreshSessions()

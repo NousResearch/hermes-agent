@@ -33,11 +33,7 @@ import { SESSION_SEARCH_FOCUS_EVENT } from '@/store/layout'
 import { $profiles, $profilesByConnection, normalizeProfileKey } from '@/store/profile'
 import { $modelPickerOpen, $sessionPickerOpen } from '@/store/session'
 import { $switcherOpen } from '@/store/session-switcher'
-import {
-  $sharedMetricsConsent,
-  readSharedMetricsConsent,
-  type SharedMetricsConsent
-} from '@/store/shared-metrics'
+import { $sharedMetricsConsent, readSharedMetricsConsent, type SharedMetricsConsent } from '@/store/shared-metrics'
 
 import { observeOnboardingMetrics } from './desktop-onboarding-metrics'
 
@@ -61,7 +57,12 @@ function observeSlowFrames(): () => void {
   }
 
   const types = PerformanceObserver.supportedEntryTypes ?? []
-  const type = types.includes('long-animation-frame') ? 'long-animation-frame' : types.includes('longtask') ? 'longtask' : null
+
+  const type = types.includes('long-animation-frame')
+    ? 'long-animation-frame'
+    : types.includes('longtask')
+      ? 'longtask'
+      : null
 
   if (!type) {
     return () => undefined
@@ -155,7 +156,12 @@ export function useDesktopMetrics({
   }, [enabled])
 
   useEffect(() => {
-    const area = enabled ? routeArea(pathname, contributedRoutes().map(route => route.path)) : null
+    const area = enabled
+      ? routeArea(
+          pathname,
+          contributedRoutes().map(route => route.path)
+        )
+      : null
 
     if (area) {
       recordFeatureUse(area)
@@ -167,13 +173,14 @@ export function useDesktopMetrics({
       return
     }
 
-    const overlay = (area: 'command_palette' | 'model_picker' | 'session_picker' | 'session_switcher') => (open: boolean) => {
-      if (open) {
-        recordFeatureUse(area)
-      }
+    const overlay =
+      (area: 'command_palette' | 'model_picker' | 'session_picker' | 'session_switcher') => (open: boolean) => {
+        if (open) {
+          recordFeatureUse(area)
+        }
 
-      trackFlow(area, open)
-    }
+        trackFlow(area, open)
+      }
 
     let findActive = $findInPage.get().active
     const onSessionSearch = () => recordFeatureUse('session_search')

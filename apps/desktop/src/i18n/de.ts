@@ -14,9 +14,12 @@ export const deOverrides = {
     collectedModels: 'Modellrouten und Token-Summen',
     collectedNames: 'Namen integrierter Tools, Befehle und Katalogeinträge',
     collectedMilestones: 'Gruppierte Einrichtungszahlen',
-    collectedReliability: 'Update-Ergebnisse und -Dauer, Abstürze, Start- und Antwortzeiten, Zustand der Messaging-Plattformen',
-    collectedUsage: 'Wie Hermes genutzt wird: Genauigkeit und Effizienz des Agenten (Treffer bei Bearbeitungen, Schleifen, Erholung nach Fehlern, Tokens und Tool-Aufrufe pro Aufgabe, Cache-Brüche), aktive Zeit pro Oberfläche und Desktop-Modus, welche App-Bereiche, Aktionen und Einstellungen genutzt, schnell geschlossen oder abgeschaltet werden, sowie Ergebnisse der Anbietereinrichtung',
-    collectedMachine: 'Grobe Gerätedaten: RAM-Bereich, GPU-Typ, Alter und Kanal der Hermes-Version, Anzahl ausstehender Updates, ob ein lokaler Modellserver genutzt wird',
+    collectedReliability:
+      'Update-Ergebnisse und -Dauer, Abstürze, Start- und Antwortzeiten, Zustand der Messaging-Plattformen',
+    collectedUsage:
+      'Wie Hermes genutzt wird: Genauigkeit und Effizienz des Agenten (Treffer bei Bearbeitungen, Schleifen, Erholung nach Fehlern, Tokens und Tool-Aufrufe pro Aufgabe, Cache-Brüche), aktive Zeit pro Oberfläche und Desktop-Modus, welche App-Bereiche, Aktionen und Einstellungen genutzt, schnell geschlossen oder abgeschaltet werden, sowie Ergebnisse der Anbietereinrichtung',
+    collectedMachine:
+      'Grobe Gerätedaten: RAM-Bereich, GPU-Typ, Alter und Kanal der Hermes-Version, Anzahl ausstehender Updates, ob ein lokaler Modellserver genutzt wird',
     installId:
       'Beim Senden wird jedes Tagespaket an den Nous-Telemetriedienst hochgeladen. Pakete tragen die Installations-ID dieses Profils: eine feste zufällige UUID ohne persönliche Daten, zurückgesetzt durch Löschen des Shared-Metrics-Ordners.',
     consentWindow:
@@ -729,7 +732,7 @@ export const deOverrides = {
       'view.toggleProfileRail': 'Profil-Leiste ein-/ausblenden',
       'view.toggleSimpleMode': 'Einfachen Modus umschalten',
       'view.showFiles': 'Dateibrowser anzeigen',
-      'view.showBrowser': 'Browser öffnen',
+      'view.showBrowser': 'Browser umschalten',
       'view.toggleHud': 'HUD-Modus umschalten',
       'hud.snapToPointer': 'HUD zum Zeiger bewegen (global, während HUD offen ist)',
       'view.showTerminal': 'Terminal umschalten',
@@ -3173,7 +3176,8 @@ export const deOverrides = {
     gatewayStopped: 'Messaging-Gateway gestoppt',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Aktive Sessions ${count}`,
     restartGateway: 'Gateway neu starten',
-    openBrowser: 'Browser öffnen',
+    openBrowser: 'Browser umschalten',
+    toggleBrowser: 'Browser umschalten',
     gatewayRestartFailed: 'Gateway-Neustart fehlgeschlagen.',
     sharedGatewayRestartTitle: 'Gemeinsames Gateway neu starten?',
     sharedGatewayRestartDescription: bots => `Alle Bots auf diesem Gerät verbinden sich neu: ${bots}`,
@@ -5025,7 +5029,8 @@ export const deOverrides = {
     removeCustomModel: 'Eigenes Modell entfernen',
     resetToDefaults: 'Auf Standard zurücksetzen',
     resetConfirm: 'Modellsichtbarkeit auf Standard zurücksetzen?',
-    resetDescription: 'Ihre Auswahl sichtbarer und ausgeblendeter Modelle wird gelöscht, und jeder Anbieter zeigt wieder seine Standardliste. Eigene Modelle bleiben erhalten und werden angezeigt.',
+    resetDescription:
+      'Ihre Auswahl sichtbarer und ausgeblendeter Modelle wird gelöscht, und jeder Anbieter zeigt wieder seine Standardliste. Eigene Modelle bleiben erhalten und werden angezeigt.',
     resetAction: 'Zurücksetzen'
   },
   shell: {
@@ -5362,6 +5367,7 @@ export const deOverrides = {
     hideTabStrip: 'Tabs ausblenden',
     showStripTab: title => `${title} anzeigen`,
     hideStripTab: title => `${title} ausblenden`,
+    zoneMenuLabel: title => `Zonenoptionen für ${title}`,
     lastTabKeptTitle: 'Letzter Tab bleibt',
     lastTabKeptBody:
       'Diese Zone braucht mindestens einen sichtbaren Tab. Zeigen Sie zuerst einen anderen Tab an oder klappen Sie die ganze Seitenleiste ein.',

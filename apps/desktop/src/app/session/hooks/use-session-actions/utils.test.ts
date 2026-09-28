@@ -10,10 +10,12 @@ import {
   $currentCwd,
   $currentModel,
   $currentProvider,
+  $currentUsage,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
+  setCurrentUsage,
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
@@ -148,6 +150,31 @@ describe('applyRuntimeInfo foreground scoping', () => {
     expect(patch).toMatchObject({ branch: 'bb/tile', cwd: '/other-worktree' })
   })
 
+  it('returns authoritative usage for a background runtime snapshot', () => {
+    const patch = applyRuntimeInfo(
+      { usage: { calls: 3, compressions: 4, input: 100, output: 20, total: 120 } },
+      { foreground: false }
+    )
+
+    expect(patch?.usage).toEqual({ calls: 3, compressions: 4, input: 100, output: 20, total: 120 })
+  })
+
+  it('clears a previous session compression count when the focused snapshot omits it', () => {
+    setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
+
+    applyRuntimeInfo({ usage: { calls: 0, input: 0, output: 0, total: 0 } })
+
+    expect($currentUsage.get().compressions).toBeUndefined()
+  })
+
+  it('does not let a background runtime clear the focused compression count', () => {
+    setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
+
+    applyRuntimeInfo({ usage: { calls: 0, input: 0, output: 0, total: 0 } }, { foreground: false })
+
+    expect($currentUsage.get().compressions).toBe(4)
+  })
+
   // #71254: `if (info.cwd)` treated '' as "no opinion", so a detached session
   // never released the previous project and the Files pane stayed on it forever.
   it('treats an empty runtime cwd as authoritative and releases ownership', () => {
@@ -194,6 +221,14 @@ describe('applyStoredSessionPreviewRuntimeInfo workspace paint', () => {
 
     expect($currentCwd.get()).toBe('/next-project')
     expect(workspaceCwdBelongsToSelectedSession()).toBe(true)
+  })
+
+  it('clears live-only compression usage as soon as a cold session switch starts', () => {
+    setCurrentUsage({ calls: 2, compressions: 4, input: 10, output: 5, total: 15 })
+
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '/next-project', model: 'gpt' }, 'session-next')
+
+    expect($currentUsage.get().compressions).toBeUndefined()
   })
 
   it('releases ownership when the selected session row reports no workspace', () => {

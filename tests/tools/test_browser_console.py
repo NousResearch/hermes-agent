@@ -228,6 +228,8 @@ class TestBrowserVisionConfig:
         assert result["meta"]["screenshot_path"] == str(screenshot)
         assert result["meta"]["annotations"] == annotations
         assert any(p.get("type") == "image_url" for p in result["content"])
+        visible = next(p["text"] for p in result["content"] if p.get("type") == "text")
+        assert str(screenshot) in visible
         assert f"Screenshot path: {screenshot}" in result["text_summary"]
         mock_get_vision_model.assert_not_called()
         mock_llm.assert_not_called()

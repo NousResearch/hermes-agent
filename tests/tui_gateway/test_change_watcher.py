@@ -82,6 +82,78 @@ def test_state_db_move_broadcasts_sessions_changed(watcher_home):
     assert ("sessions.changed", {}) in events
 
 
+def _seed_store(db_path):
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, started_at REAL, "
+        "message_count INTEGER, last_activity_at REAL, last_activity_description TEXT);"
+        "CREATE TABLE gateway_heartbeats (backend_id TEXT PRIMARY KEY, last_heartbeat REAL);"
+        "INSERT INTO sessions VALUES ('s1', 'hello', 1, 3, 1, NULL);"
+        "INSERT INTO gateway_heartbeats VALUES ('backend-1', 1);"
+    )
+    conn.commit()
+    conn.close()
+
+
+def _write(db_path, sql, *params):
+    conn = sqlite3.connect(db_path)
+    conn.execute(sql, params)
+    conn.commit()
+    conn.close()
+
+
+def test_activity_heartbeats_do_not_broadcast_sessions_changed(watcher_home):
+    """#98005: the gateway heartbeat and the session activity stamp rewrite state.db every
+    minute with no session change. Each used to fire sessions.changed, so the Desktop
+    Sessions panel refreshed on its own every heartbeat window."""
+    home, events = watcher_home
+    db = home / "state.db"
+    _seed_store(db)
+    server._broadcast_watched_changes(now=0.0)
+
+    for tick in range(1, 4):
+        time.sleep(0.02)
+        _write(db, "UPDATE gateway_heartbeats SET last_heartbeat = ?", tick * 60.0)
+        _write(db, "UPDATE sessions SET last_activity_at = ?, last_activity_description = ? "
+                   "WHERE id = 's1'", tick * 60.0, f"tool {tick}")
+        server._broadcast_watched_changes(now=tick * 10.0)
+
+    assert ("sessions.changed", {}) not in events
+
+
+@pytest.mark.parametrize("sql", [
+    "INSERT INTO sessions VALUES ('s2', 'new', 2, 0, 2, NULL)",
+    "UPDATE sessions SET title = 'renamed' WHERE id = 's1'",
+    "UPDATE sessions SET message_count = 4 WHERE id = 's1'",
+    "DELETE FROM sessions WHERE id = 's1'",
+])
+def test_session_row_changes_broadcast_sessions_changed(watcher_home, sql):
+    home, events = watcher_home
+    db = home / "state.db"
+    _seed_store(db)
+    server._broadcast_watched_changes(now=0.0)
+
+    time.sleep(0.02)
+    _write(db, sql)
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("sessions.changed", {}) in events
+
+
+def test_unreadable_store_keeps_last_digest(watcher_home):
+    """A locked/unreadable moment after a good read must not flip to the mtime signature:
+    digest -> mtime -> digest would broadcast twice for nothing."""
+    home, events = watcher_home
+    db = home / "state.db"
+    _seed_store(db)
+    server._broadcast_watched_changes(now=0.0)
+
+    db.write_text("not-sqlite")
+    server._broadcast_watched_changes(now=10.0)
+
+    assert ("sessions.changed", {}) not in events
+
+
 def test_projects_db_move_broadcasts_projects_changed(watcher_home):
     """#53046 / #56757: the CLI and other windows write projects.db directly, in
     processes that never touch this gateway's transports. Without a watch, a

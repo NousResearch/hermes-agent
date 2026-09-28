@@ -119,12 +119,14 @@ def _pet_changed_payload() -> dict:
     return {"enabled": False}
 
 
+# last_activity_at / _description are left out on purpose: the session activity heartbeat restamps
+# them mid-turn and on idle ticks, so hashing them re-fired sessions.changed every heartbeat window
+# (#98005). Liveness comes from session.active_list, and a real turn still moves message_count.
 _SESSION_SIGNATURE_FIELDS = (
     "id", "source", "session_key", "display_name", "model", "parent_session_id",
     "started_at", "ended_at", "end_reason", "message_count", "tool_call_count",
-    "cwd", "git_branch", "git_repo_root", "title", "title_source",
-    "last_activity_at", "last_activity_description", "profile_name", "archived",
-    "pinned", "hidden", "last_read_at", "handoff_state",
+    "cwd", "git_branch", "git_repo_root", "title", "title_source", "profile_name",
+    "archived", "pinned", "hidden", "last_read_at", "handoff_state",
 )
 # path -> (database/WAL mtime, session-table digest). The mtime guard keeps the
 # normal 0.5 s watch pass stat-only; SQLite is read only after another process
@@ -155,10 +157,11 @@ def _session_db_content_sig(db_path: Path):
     conn = None
     try:
         import hashlib
-        import sqlite3
-        from urllib.parse import quote
+        from hermes_state import _connect_tracked_db
+        from hermes_state_holders import read_only_db_uri
 
-        conn = sqlite3.connect(f"file:{quote(str(db_path))}?mode=ro", uri=True, timeout=0.05)
+        conn = _connect_tracked_db(read_only_db_uri(db_path), tracking_path=db_path,
+                                   uri=True, timeout=0.05)
         available = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
         fields = tuple(field for field in _SESSION_SIGNATURE_FIELDS if field in available)
         if not fields:
@@ -175,6 +178,10 @@ def _session_db_content_sig(db_path: Path):
                 digest.update(b"\0")
             signature = (fields, digest.digest())
     except Exception:  # noqa: BLE001 - preserve the old wake-up signal if the read probe cannot run
+        # A busy/locked read after a good one keeps the last digest and leaves the cached mtime
+        # stale so the next pass re-reads: digest -> mtime -> digest would broadcast twice.
+        if cached is not None and cached[1] is not None and cached[1][0] != "mtime-fallback":
+            return cached[1]
         signature = ("mtime-fallback", mtime)
     finally:
         if conn is not None:

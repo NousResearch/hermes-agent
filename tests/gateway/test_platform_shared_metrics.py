@@ -24,6 +24,8 @@ def rows(monkeypatch):
                         lambda mark, data: got.append((mark, dict(data), str(get_hermes_home()))))
     monkeypatch.setattr("gateway.platforms.base.random.uniform", lambda *_: 0.0)
     smg._reply_clocks.clear()
+    smg._chat_homes.clear()
+
 
     def read(metric, *, with_home=False):
         smg.drain()
@@ -123,6 +125,24 @@ def test_a_relay_delivered_turn_stops_the_clock_its_inbound_started(rows):
     assert rows("hermes.gateway.reply_latency") == [
         {"first_response_bucket": "lt_2s", "platform": "discord"}, {"first_response_bucket": "lt_2s", "platform": "slack"}]
     assert not smg._reply_clocks
+
+
+def test_a_delivery_sent_after_the_routed_scope_resets_lands_in_the_owning_profile(rows, tmp_path):
+    # Multiplexed gateway: the turn starts in profile B's scope, the final send runs after it is reset.
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home_b = tmp_path / "profiles" / "b"
+    token = set_hermes_home_override(str(home_b))
+    try:
+        smg.start_reply_clock(SimpleNamespace(platform=Platform.SLACK, chat_id="C9"))
+    finally:
+        reset_hermes_home_override(token)
+    asyncio.run(_Adapter(platform=Platform.SLACK)._send_with_retry("C9", "final answer", base_delay=0))
+    asyncio.run(_Adapter()._send_with_retry("unseen", "hi", base_delay=0))  # no turn: the caller's scope
+    assert rows("hermes.platform.delivery", with_home=True) == [
+        (str(home_b), {"failure_class": "none", "outcome": "sent", "platform": "slack"}),
+        (str(get_hermes_home()), {"failure_class": "none", "outcome": "sent", "platform": "telegram"}),
+    ]
 
 
 class _FatalRunner(GatewayAdapterLifecycleMixin):

@@ -230,13 +230,16 @@ def records_delivery(send: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(send)
     async def wrapper(self, *args: Any, **kwargs: Any) -> Any:
         chat_id = kwargs.get("chat_id", args[0] if args else None)
+        # The final send runs after the routed profile scope is reset: the row goes to the profile
+        # whose turn last started in this chat, not the launch profile.
+        home = _chat_home(self, chat_id)
         try:
             result = await send(self, *args, **kwargs)
         except Exception as exc:
-            _submit(_record_delivery, self, exc=exc, chat_id=chat_id)
+            _submit(_in_home, home, _record_delivery, self, exc=exc, chat_id=chat_id)
             raise
         if isinstance(getattr(result, "success", None), bool):
-            _submit(_record_delivery, self, result, chat_id=chat_id)
+            _submit(_in_home, home, _record_delivery, self, result, chat_id=chat_id)
         return result
 
     return wrapper
@@ -269,6 +272,9 @@ _REPLY_CLOCK_MAX_AGE = 3600.0
 # (platform value, chat id) -> (monotonic start, owning Hermes home). Keyed without the profile: the
 # send side may run outside the turn's scope, so the start side records whose row it is.
 _reply_clocks: OrderedDict[tuple[str, str], tuple[float, str]] = OrderedDict()
+# (platform value, chat id) -> the Hermes home whose turn last started there; outlives the clock so
+# later sends (busy acks, follow-ups) in the chat are attributed too.
+_chat_homes: OrderedDict[tuple[str, str], str] = OrderedDict()
 _reply_lock = threading.Lock()
 # One connector adapter fronting several platforms: the turn started under the platform the message
 # came in on (``discord``), its reply leaves through this adapter.
@@ -300,11 +306,28 @@ def start_reply_clock(source: Any, *, internal: bool = False) -> None:
         return
     from hermes_constants import get_hermes_home
 
+    home = str(get_hermes_home())
     with _reply_lock:
-        _reply_clocks.pop(key, None)
-        _reply_clocks[key] = (time.monotonic(), str(get_hermes_home()))
-        while len(_reply_clocks) > _REPLY_CLOCK_MAX:
-            _reply_clocks.popitem(last=False)
+        for table, value in ((_reply_clocks, (time.monotonic(), home)), (_chat_homes, home)):
+            table.pop(key, None)
+            table[key] = value
+            while len(table) > _REPLY_CLOCK_MAX:
+                table.popitem(last=False)
+
+
+def _chat_home(adapter: Any, chat_id: Any) -> str | None:
+    """The home owning ``chat_id``'s latest turn (a fronting adapter matches the one fronted chat),
+    else None (the caller's scope)."""
+    key = _clock_key(getattr(adapter, "platform", None), chat_id)
+    if key is None:
+        return None
+    with _reply_lock:
+        if key in _chat_homes:
+            return _chat_homes[key]
+        if key[0] in _FRONTING_PLATFORMS:
+            fronted = [home for k, home in _chat_homes.items() if k[1] == key[1]]
+            return fronted[0] if len(fronted) == 1 else None
+    return None
 
 
 def stop_reply_clock(adapter: Any, chat_id: Any, result: Any = None) -> None:

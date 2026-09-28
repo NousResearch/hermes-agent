@@ -81,6 +81,31 @@ cron stay scoped to that gateway; the app-managed window backend is still chosen
 by the connection-mode controls above. **Primary** is the registry fallback and
 does not switch the current workspace.
 
+## Organizing session groups
+
+In the Sessions sidebar's view menu, choose **Gateway & profile** while viewing
+all profiles. Each gateway gets its own collapsible section, with profile
+subsections containing their sessions. Two gateways with a `default` profile
+stay separate. Gateway headers start with the saved connection name; profile
+headers show the profile name.
+
+Use a gateway or profile section's menu to **Rename group**, **Reset name**, **Move up**, or
+**Move down**. Renaming changes only the sidebar label, not the gateway or profile.
+Gateways reorder as complete sections, and profiles reorder within their own gateway.
+Drag the section header anywhere (its icon, its name, or the empty space) to
+reorder it, or focus the header and use Space, arrow keys, then Space to place
+it. Names, order, and collapsed sections
+are remembered on this desktop. Collapsing a gateway preserves its profiles'
+individual collapse states. Each profile's new-session action targets that
+profile on its owning gateway.
+
+The Hermes Cloud panel also lists **Saved Cloud gateways** when portal discovery
+is signed out. **Use gateway** selects an existing saved connection without
+changing the default gateway; **Active in this window** identifies the current
+one. Adding a new instance uses its friendly Cloud name, while existing custom
+connection names are preserved. Saved connections still need valid gateway
+authentication; manage sign-in from the registered connection controls.
+
 ## Adding a connection, step by step
 
 1. Open **Settings → Gateways** and scroll to the connections registry (or
@@ -105,7 +130,16 @@ does not switch the current workspace.
    - *SSH only:*
      - **SSH host** — one composite field in `user@host:22` form (user and
        port optional). Your SSH key is used; the app adopts a dashboard
-       token over the tunnel.
+       token over the tunnel. Remote probes run under the account's login
+       shell; on a `zsh` login shell the probe watchdog cannot kill the whole
+       process group, so a hung probe's grandchildren may linger on the remote
+       (bash/sh remotes reap them).
+     - **Hermes path (optional)** — full path to the `hermes` executable on
+       the remote (for example `/opt/hermes/bin/hermes`). Leave blank to
+       auto-detect. Set it when the remote's non-interactive shell does not
+       have `hermes` on its `PATH` and **Test** reports *"Hermes is not
+       installed on the remote host"*; clearing the field restores
+       auto-detection.
 5. Click **Save connection** (or **Cancel**).
 6. Click **Test** on the new row and wait for *"Reachable"*.
 
@@ -157,6 +191,13 @@ Each `(connection, profile)` pair gets its own backend and socket, pooled
 with the same idle-reaping as local per-profile backends — background agents
 keep streaming while you look at another gateway.
 
+Approval buttons route back to the session's owning backend, not whichever
+profile is currently selected. For a local secondary profile, Desktop can use
+the socket that delivered the request even when the cached session binding is
+missing. Saved session ownership still takes precedence, and deleting or
+renaming that local profile clears this temporary route rather than reconnecting
+an obsolete backend.
+
 ### Switching and scoping
 
 The sidebar foot follows one hierarchy: **gateway → profile → sessions**.
@@ -173,12 +214,13 @@ that live on one gateway.
 - Selecting a gateway restores the last profile used there. The home pill
   returns to its default profile and the layers pill shows **All profiles on
   this gateway**. **Cmd/Ctrl+1–9** continue to switch profiles within the
-  active gateway.
+  active gateway whenever no pane has a tab strip to claim them.
 - In **All profiles on this gateway** every chat in the sidebar leads with
   the profile it belongs to — `inbox › Draft the release notes` — so the
   merged list still says who made what. The name sits in the same grey as
   the row's age until you hover or select the row, when it takes that
-  profile's colour (the colour of its rail square). Chats on the default
+  profile's colour (the colour of its rail square). Messaging chats keep the
+  profile's initial badge instead. Chats on the default
   profile carry no mark, and the name steps aside when the list is grouped
   by profile or narrowed to a single profile from the filter menu, where a
   header already says so.
@@ -218,11 +260,15 @@ that live on one gateway.
   are all scoped to the active `(gateway, profile)`. Switching from a Telegram
   gateway to a Signal gateway cannot leave the previous gateway's channel groups
   or sessions in the sidebar.
-- Merely displaying the switcher reads Electron's local connection registry.
-  Remote gateways are opened only when selected; there is no periodic fleet
-  polling.
+- Desktop loads the local connection registry at startup, even with the status
+  bar hidden, and keeps it current when gateways are saved or removed. Opening
+  Settings is not required. In Simple mode, the profile rail stays available
+  when more than one gateway is registered, even with only a default profile.
+  Loading the registry does not connect every gateway; there is no periodic
+  fleet polling.
 - Hovering an agent pre-warms its backend so the switch doesn't pay a cold
-  boot.
+  boot. SSH agents are the exception: hovering never dials the tunnel or
+  starts a remote backend — only opening one does.
 - The **Capabilities** page (Skills / Tools / MCP) has a matching scope: its
   **Configuring** selector lists every `(profile, device)` agent from the
   union roster, and picking one reads and writes **that machine's** skills,

@@ -1,4 +1,4 @@
-import { type ReactNode, type RefObject, useState } from 'react'
+import { type KeyboardEventHandler, type ReactNode, type RefObject, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -21,8 +21,16 @@ interface SearchFieldProps {
   inputClassName?: string
   loading?: boolean
   onClear?: () => void
+  onKeyDown?: KeyboardEventHandler<HTMLInputElement>
   inputRef?: RefObject<HTMLInputElement | null>
   trailingAction?: ReactNode
+  /**
+   * `underline` (default) recedes into chrome — sidebars, page headers.
+   * `box` is a standalone pill — visible stroke + quinary fill, the recipe
+   * the Appearance theme search uses — for when search IS the page's primary
+   * affordance, e.g. above a catalog grid.
+   */
+  variant?: 'underline' | 'box'
   'aria-label'?: string
 }
 
@@ -41,12 +49,15 @@ export function SearchField({
   inputClassName,
   loading = false,
   onClear,
+  onKeyDown,
   inputRef,
   trailingAction,
+  variant = 'underline',
   'aria-label': ariaLabel
 }: SearchFieldProps) {
   const { t } = useI18n()
   const clear = onClear ?? (() => onChange(''))
+  const boxed = variant === 'box'
 
   // One hint per mount, picked at random — fresh nudge every visit, no
   // mid-page carousel.
@@ -60,24 +71,36 @@ export function SearchField({
         // min-w-0 is load-bearing: without it the content-sized input sets the
         // container's flex min-width and the field bulldozes its siblings
         // instead of shrinking to fit its context.
-        'inline-flex min-w-0 max-w-full items-center gap-1.5 border-b border-transparent px-0.5 transition-[color,border-color,opacity]',
-        // Recede until the user reaches for it.
-        !value && 'opacity-30 focus-within:opacity-100',
+        'inline-flex min-w-0 max-w-full items-center gap-1.5 transition-[color,border-color,opacity]',
+        boxed
+          ? 'w-full gap-2 rounded-full border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3.5 py-2 hover:border-(--ui-stroke-secondary) focus-within:border-(--ui-stroke-secondary)'
+          : cn(
+              'border-b border-transparent px-0.5',
+              // Recede until the user reaches for it.
+              !value && 'opacity-30 focus-within:opacity-100'
+            ),
         containerClassName
       )}
     >
-      <Search className="pointer-events-none size-3.5 shrink-0 text-muted-foreground/70" />
+      <Search className={cn('pointer-events-none shrink-0 text-muted-foreground/70', boxed ? 'size-4' : 'size-3.5')} />
       <input
         aria-label={ariaLabel ?? placeholder}
         className={cn(
-          // `field-sizing: content` grows the input to fit the placeholder/typed
-          // text; min-w-0 lets it shrink back below content size when the
-          // context is narrower — long queries scroll inside the field.
+          // `field-sizing: content` sizes the input to its placeholder/typed
+          // text, so a width-less caller's row stays compact; `flex-1` +
+          // `min-w-0` make the input ABSORB the extra space when the caller
+          // does stretch the row (w-full/flex-1 callers), pinning the clear
+          // button to the row's right edge instead of trailing the typed
+          // text (#119204). Long queries scroll inside the field.
           // text-xs matches the form controls (Input/Select via controlVariants).
-          'h-7 min-w-0 max-w-full bg-transparent text-xs text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none',
+          'h-7 min-w-0 max-w-full flex-1 bg-transparent text-xs text-foreground [field-sizing:content] placeholder:text-muted-foreground focus:outline-none',
+          // Boxed: the wrapper owns the chrome, the input fills it (same as an
+          // adorned Input).
+          boxed && 'h-auto w-full flex-1 text-sm leading-5 [field-sizing:initial]',
           inputClassName
         )}
         onChange={event => onChange(event.target.value)}
+        onKeyDown={onKeyDown}
         placeholder={effectivePlaceholder}
         ref={inputRef}
         type="text"

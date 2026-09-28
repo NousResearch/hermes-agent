@@ -560,12 +560,15 @@ Existing threads retain their thread destination. Plain paragraphs and fenced
 code blocks become separate messages; replies containing loose lists, reference
 links, indented code or alternative fences stay together to preserve structure.
 The setting defaults to false. Generic sends (including cron reports and cards),
-internal notifications and slash-command replies keep their existing shape.
+internal notifications, slash-command replies and queued first responses keep
+their existing shape. The queued lane retains whole-response fallback semantics.
 
 The delivery ledger checkpoints the remaining text after each accepted bubble.
 If a later send fails, recovery sends only the unsent tail (which may be joined
 into one message). Cancellation stops pending sends; the ledger retains the tail
-for normal recovery. As with ordinary Slack sends, a lost acknowledgement or a
+until restart recovery (cancellation does not schedule a retry). If the active-turn
+marker cannot be cleared, delivery stays in one message so crash adoption still
+recognizes the full reply. As with ordinary Slack sends, a lost acknowledgement or a
 crash between Slack accepting a message and its checkpoint remains ambiguous.
 
 ### Native Streaming (live-typing replies)

@@ -1,6 +1,7 @@
 """Final DM delivery uses the real adapter, Slack SDK, HTTP and delivery ledger."""
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -11,6 +12,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig, StreamingCon
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 from gateway.run import GatewayRunner
+from gateway.run_turn_runner import TurnRunner
 from gateway import delivery_ledger as ledger
 from plugins.platforms.slack.adapter import SlackAdapter
 
@@ -68,6 +70,14 @@ async def test_final_reply_scope_and_structure(slack, enabled, channel, internal
         assert "a = 1\n\nb = 2" in slack.posts[1]["text"]
     else:
         assert "First" in slack.posts[0]["text"] or "guide" in slack.posts[0]["text"]
+    # A failed marker handoff must preserve full-content crash deduplication.
+    slack.posts.clear()
+    event._turn_marker_handoff = True
+    event._gateway_active_turn_token = "token"
+    adapter.gateway_runner = SimpleNamespace(_clear_durable_active_turn=AsyncMock(return_value=False))
+    result, _ = await adapter.send_final_ledgered(event, "stale-marker", body, {}, reply_to=None)
+    assert result.success and len(slack.posts) == 1
+    adapter.gateway_runner = None
     # Generic sends, including cron and cards, never enter the final-reply splitter.
     slack.posts.clear()
     await adapter.send(channel, body, metadata={"job_id": "routine", "notify": True})
@@ -79,13 +89,31 @@ async def test_final_reply_scope_and_structure(slack, enabled, channel, internal
     gateway._delivery_adapter_for = lambda _: adapter
     consumer = gateway._proxy_stream_consumer(source, event.message_id, {}, lambda: True)
     assert (consumer is None) is (enabled and channel.startswith("D"))
+    ctx = SimpleNamespace(
+        mute_notification_reply=False, streaming_tts_consumer_holder=[None],
+        resolve_display_setting=lambda *args: None, user_config={}, scheduled_heartbeat=False,
+        interim_assistant_messages_enabled=False, source=source, _status_thread_metadata={},
+        progress_queue=None, event_message_id=event.message_id, _run_still_current=lambda: True,
+        stream_consumer_holder=[None],
+    )
+    normal_consumer, _, _, _ = TurnRunner(gateway, ctx)._setup_stream_consumer("slack")
+    assert (normal_consumer is None) is (enabled and channel.startswith("D"))
+    # Queued first replies use whole-response fallback, including internal notifications.
+    slack.posts.clear()
+    sent = await gateway._deliver_queued_first_response(
+        body, source, adapter, metadata={"thread_id": source.thread_id},
+        event_message_id=event.message_id, session_key="queued", inbound_message_id="queued-id",
+        deliver_media=False,
+    )
+    assert sent and len(slack.posts) == 1
 
 
 @pytest.mark.asyncio
-async def test_partial_failure_recovery_and_cancellation_keep_only_unsent_tail(slack):
+@pytest.mark.parametrize("thread_id", [None, "123.456"])
+async def test_partial_failure_recovery_and_cancellation_keep_only_unsent_tail(slack, thread_id):
     adapter = SlackAdapter(PlatformConfig(extra={"dm_reply_bursts": True, "reply_in_thread": False}))
     adapter._app = SimpleNamespace(client=slack.client)
-    source = SessionSource(platform=Platform.SLACK, chat_id="DCHAT", thread_id="123.456")
+    source = SessionSource(platform=Platform.SLACK, chat_id="DCHAT", thread_id=thread_id)
     event = MessageEvent(text="Explain", source=source, message_id="123.789")
     slack.refuse = "Second"
     result, _ = await adapter.send_final_ledgered(event, "session", "First\n\nSecond\n\nThird",
@@ -104,7 +132,7 @@ async def test_partial_failure_recovery_and_cancellation_keep_only_unsent_tail(s
     }])
     assert recovered == 1
     assert [post["text"] for post in slack.posts] == ["First", "Second\n\nThird"]
-    assert all(post["thread_ts"] == source.thread_id for post in slack.posts)
+    assert all(post.get("thread_ts") == source.thread_id for post in slack.posts)
 
     task = asyncio.create_task(adapter.send_final_ledgered(
         event, "cancel-session", "Fourth\n\nFifth", {}, reply_to=None))
@@ -122,3 +150,6 @@ async def test_partial_failure_recovery_and_cancellation_keep_only_unsent_tail(s
     with pytest.raises(asyncio.CancelledError):
         await task
     assert not any(post["text"] == "Fifth" for post in slack.posts)
+    with ledger._connect() as conn:
+        cancelled = conn.execute("SELECT content, state FROM delivery_obligations WHERE session_key='cancel-session'").fetchone()
+    assert cancelled == ("Fifth", "attempting")  # retained for restart, no immediate replay

@@ -19,7 +19,7 @@ import {
   saveSelectedRosterBot
 } from './bot-state'
 import { isStaleBotChatTile, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
-import { $botMeta, botActivitySession, botRosterKey, botSelectionKey, newBotChat } from './data'
+import { $botMeta, $lastRoster, botActivitySession, botRosterKey, botSelectionKey, newBotChat } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
 import { openGroupChat } from './group-chat-view'
 import { liveGroupChatNames } from './group-membership'
@@ -125,37 +125,92 @@ export function trackInboundActivity(roster: RosterRow[]) {
   }
 }
 
-/** The open Bot Chat's canonical session moved on the gateway (a cron
- *  `bot-chat:` delivery, a teammate's `message_agent`, a group round, a CLI
- *  turn) — none of those arrive on this window's live stream, so the pane
- *  kept painting a stale transcript until an app restart (#99393). Re-run the
- *  same registry open the row click uses: it fronts the chat in place and
- *  forceResume re-pulls the transcript. Only while that chat is the FOCUSED
- *  session — a group room or another tab owning the center must not be
- *  yanked away by background activity — and never mid-turn, when the
- *  activity is the turn itself, already streaming.
- *
- *  BACKGROUND wake: passed through as `background` so the refresh runs
- *  refreshInPlace and never navigates — this fires on roster activity,
- *  not a user gesture, so whatever route is showing stays showing (issue
- *  121874). */
+// Focus epochs distinguish leaving and returning to the same cached tab. A
+// roster click and its focus edge share one flight rather than racing two reads.
+let botFocusEpoch = 0
+let focusedRefresh: { key: string; run: ReturnType<typeof openBotCanonicalChat> } | null = null
+
+/** Tab-strip/keyboard focus bypasses openRosterBot. Resolve the focused owner,
+ * not the selected roster row, after the tree's derived stores have settled. */
+export function refreshBotChatOnFocus(focusedId: null | string | undefined): void {
+  const epoch = ++botFocusEpoch
+
+  if (!focusedId) {
+    return
+  }
+
+  queueMicrotask(() => {
+    if (epoch !== botFocusEpoch || host.state.focusedStoredSessionId?.get?.() !== focusedId) {
+      return
+    }
+
+    const owner = host.state.focusedSessionOwner?.get?.()
+
+    const bot = owner && $lastRoster.get().find(row =>
+      botRosterKey(row) === `${owner.connectionId}::${owner.profile}` &&
+      [row.canonical_session?.id, row.canonical_session?.resolved_id].includes(focusedId)
+    )
+
+    if (bot) {
+      void refreshOpenBotChat(bot, { allowWhileBusy: true })
+    }
+  })
+}
+
+/** Reconcile off-window deliveries (#99393) on roster activity, roster click,
+ * or direct tab focus. All paths share hydration-before-ack and identity fences.
+ * Background refreshInPlace never navigates (#121874); activity polls also skip
+ * busy chats, whose current turn is already streaming. */
 function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowWhileBusy?: boolean } = {}) {
   const canonicalIds = [bot.canonical_session?.id, bot.canonical_session?.resolved_id].filter(Boolean).map(String)
   const focused = String(host.state.focusedStoredSessionId?.get?.() || '')
+  const owner = host.state.focusedSessionOwner?.get?.()
+  const key = botRosterKey(bot)
 
-  if (!focused || !canonicalIds.includes(focused) || (!allowWhileBusy && host.state.busy.get())) {
+  if (
+    !focused || !canonicalIds.includes(focused) || (!allowWhileBusy && host.state.busy.get()) ||
+    (owner && key !== `${owner.connectionId}::${owner.profile}`)
+  ) {
     return
   }
 
   const generation = getBotOpenGeneration()
+  const epoch = botFocusEpoch
+  const activity = rosterWatermarks.get(botSelectionKey(bot))
+  const flightKey = JSON.stringify([key, focused, generation, epoch, activity])
 
-  return openBotCanonicalChat(bot, {
-    background: true,
-    openingStillCurrent: () => generation === getBotOpenGeneration()
-  }).catch(() => {
-    /* the next click or reclaim event re-resolves it */
-    return undefined
-  })
+  if (focusedRefresh?.key === flightKey) {
+    return focusedRefresh.run
+  }
+
+  const stillCurrent = () => {
+    const currentOwner = host.state.focusedSessionOwner?.get?.()
+
+    return generation === getBotOpenGeneration() && epoch === botFocusEpoch &&
+      activity === rosterWatermarks.get(botSelectionKey(bot)) &&
+      host.state.focusedStoredSessionId?.get?.() === focused &&
+      (!owner || (currentOwner?.connectionId === owner.connectionId && currentOwner?.profile === owner.profile))
+  }
+
+  const run = openBotCanonicalChat(bot, { background: true, openingStillCurrent: stillCurrent })
+    .then(opened => {
+      if (opened && stillCurrent() && opened.registryId === String(bot.canonical_session?.id) && opened.openedId === focused) {
+        markSessionRead(focused)
+        ackStoredSessionId(focused, bot.name)
+      }
+
+      return opened
+    })
+    .catch(() => null) // A later user focus/click can retry; failure keeps unread.
+    .finally(() => {
+      if (focusedRefresh?.run === run) {
+        focusedRefresh = null
+      }
+    })
+
+  focusedRefresh = { key: flightKey, run }
+
+  return run
 }
 
 /** Release the pending-open mark, but only for the flight that set it: a
@@ -277,22 +332,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     // Front immediately, but do not acknowledge the cached transcript. A
     // background in-place re-resume actually waits for the tile's REST merge;
     // failure (or a newer click/activity/focus) keeps its unread marker.
-    const activityAtOpen = rosterWatermarks.get(botSelectionKey(bot))
-    void refreshOpenBotChat(bot, { allowWhileBusy: true })?.then(opened => {
-      if (
-        generation !== getBotOpenGeneration() ||
-        activityAtOpen !== rosterWatermarks.get(botSelectionKey(bot)) ||
-        !opened ||
-        opened.registryId !== fronted.registryId ||
-        opened.openedId !== fronted.storedSessionId ||
-        String(host.state.focusedStoredSessionId?.get?.() || '') !== fronted.storedSessionId
-      ) {
-        return
-      }
-
-      markSessionRead(fronted.storedSessionId)
-      ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
-    })
+    void refreshOpenBotChat(bot, { allowWhileBusy: true })
 
     return true
   }

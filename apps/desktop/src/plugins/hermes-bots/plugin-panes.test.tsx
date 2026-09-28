@@ -29,6 +29,7 @@ import { I18nProvider } from '@/i18n'
 
 import type * as DataModule from './data'
 import type * as RoutingModule from './routing'
+import type { RosterRow } from './types'
 
 const mocks = vi.hoisted(() => ({
   botChatOwnsWorkspace: vi.fn(() => false),
@@ -322,6 +323,109 @@ describe('returning to Sessions', () => {
     expect(mocks.setWorkspaceScope).toHaveBeenCalledWith('sessions')
 
     harness.dispose()
+  })
+})
+
+describe('direct Bot Chat tab focus', () => {
+  it('refreshes the focused source before acknowledging and preserves failed or superseded reads', async () => {
+    const { host } = await import('@hermes/plugin-sdk')
+    // Real tab-strip activation and unread stores; only the network hydration is gated.
+    const tree = await import('@/components/pane-shell/tree/store')
+    const model = await import('@/components/pane-shell/tree/model')
+    const states = await import('@/store/session-states')
+    const session = await import('@/store/session')
+    const { markSessionUnreadFinished } = await import('@hermes/plugin-sdk')
+    const { openBotCanonicalChat } = await import('./canonical-chat')
+    const { $lastRoster } = await import('./data')
+    const { rosterWatermarks } = await import('./bot-state')
+    const { bumpBotOpenGeneration } = await import('./shared')
+    const open = vi.mocked(openBotCanonicalChat)
+
+    const bot = {
+      name: 'ops', connectionId: 'focus-source-a', sourceScoped: true,
+      canonical_session: { id: 'focus-reg-a', resolved_id: 'focus-tip-a', last_active: 100 }
+    } as RosterRow
+
+    const twin = { ...bot, connectionId: 'focus-source-b' }
+    const paneId = 'session-tile:focus-tip-a'
+    const harness = recordingContext()
+    paneStores()
+    const previousTree = tree.$layoutTree.get()
+    const previousSelected = session.$selectedStoredSessionId.get()
+    const previousRoster = $lastRoster.get()
+    let resolve!: (value: { openedId: string; registryId: string }) => void
+    let reject!: (error: Error) => void
+    const result = { openedId: 'focus-tip-a', registryId: 'focus-reg-a' }
+    open.mockImplementation(() => new Promise((yes, no) => { resolve = yes; reject = no }))
+    session.$selectedStoredSessionId.set(null)
+    session.setSessionOwnerHint('focus-tip-a', { connectionId: bot.connectionId!, profile: bot.name, mode: 'remote' })
+    states.openSessionTile('focus-tip-a', 'center', 'workspace', undefined, {
+      workspaceMode: 'bots', workspaceOwnerKey: 'bot:focus-source-a::ops', workspaceTabTitle: 'Bot Chat',
+      ownerRoute: { connectionId: bot.connectionId!, profile: bot.name, mode: 'remote' }
+    })
+    tree.$layoutTree.set(model.group(['workspace', paneId], { active: 'workspace', id: 'focus-main' }))
+    tree.$activeTreeGroup.set('focus-main')
+    $lastRoster.set([twin, bot])
+    rosterWatermarks.set('focus-source-a::ops', 100)
+    plugin.register(harness.ctx)
+
+    try {
+      await settle()
+      markSessionUnreadFinished('focus-tip-a', 'ops')
+      tree.activateTreePane('focus-main', paneId)
+      await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1))
+      expect(open).toHaveBeenLastCalledWith(bot, { background: true, openingStillCurrent: expect.any(Function) })
+      expect(session.$unreadFinishedSessionIds.get()).toContain('focus-tip-a')
+      reject(new Error('transcript unavailable'))
+      await settle()
+      expect(session.$unreadFinishedSessionIds.get()).toContain('focus-tip-a')
+
+      tree.activateTreePane('focus-main', 'workspace')
+      tree.activateTreePane('focus-main', paneId)
+      await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(2))
+      expect(session.$unreadFinishedSessionIds.get()).toContain('focus-tip-a')
+      // A later activity poll invalidates this older read, even without navigation.
+      rosterWatermarks.set('focus-source-a::ops', 200)
+      resolve(result)
+      await settle()
+      expect(session.$unreadFinishedSessionIds.get()).toContain('focus-tip-a')
+
+      tree.activateTreePane('focus-main', 'workspace')
+      tree.activateTreePane('focus-main', paneId)
+      await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(3))
+      const stale = resolve
+      tree.activateTreePane('focus-main', 'workspace')
+      tree.activateTreePane('focus-main', paneId)
+      await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(4))
+      stale(result)
+      await settle()
+      expect(session.$unreadFinishedSessionIds.get()).toContain('focus-tip-a')
+      resolve(result)
+      await vi.waitFor(() => expect(session.$unreadFinishedSessionIds.get()).not.toContain('focus-tip-a'))
+      expect(host.state.focusedStoredSessionId.get()).toBe('focus-tip-a')
+
+      // Ordinary tabs retain focus-to-read and never invoke Bot hydration.
+      states.openSessionTile('focus-ordinary', 'center', 'workspace')
+      tree.$layoutTree.set(model.group(['workspace', paneId, 'session-tile:focus-ordinary'], {
+        active: paneId, id: 'focus-main'
+      }))
+      markSessionUnreadFinished('focus-ordinary')
+      tree.activateTreePane('focus-main', 'session-tile:focus-ordinary')
+      expect(session.$unreadFinishedSessionIds.get()).not.toContain('focus-ordinary')
+      await settle()
+      expect(open).toHaveBeenCalledTimes(4)
+    } finally {
+      harness.dispose()
+      bumpBotOpenGeneration()
+      states.discardSessionTile('focus-tip-a')
+      states.discardSessionTile('focus-ordinary')
+      tree.$layoutTree.set(previousTree)
+      session.$selectedStoredSessionId.set(previousSelected)
+      session.forgetSessionOwnerHintsForConnection('focus-source-a')
+      $lastRoster.set(previousRoster)
+      rosterWatermarks.delete('focus-source-a::ops')
+      open.mockReset()
+    }
   })
 })
 

@@ -70,7 +70,7 @@ import { annotateOrphanedGroupChatMembers } from './hygiene'
 import { BOTS_LOCALES } from './i18n'
 import { displayName } from './labels'
 import { startBotRelay, stopBotRelay } from './relay'
-import { $activityToasts } from './roster-actions'
+import { $activityToasts, refreshBotChatOnFocus } from './roster-actions'
 import {
   botChatOwnsWorkspace,
   BotsPane,
@@ -632,6 +632,7 @@ export default {
           ? focusStore.listen(id => {
               $botChatFocused.set(Boolean(id))
               releaseStaleOpenBotChat(id)
+              refreshBotChatOnFocus(id)
               syncRoutinesPane()
             })
           : null

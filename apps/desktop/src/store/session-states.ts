@@ -3080,8 +3080,9 @@ function stampTileSessionFocus(focused: null | string) {
 $focusedStoredSessionId.listen(focused => {
   if (focused) {
     // Bot Chat tiles may paint a cached transcript while their explicit roster
-    // open is still re-pulling newer off-window activity. Only that successful
-    // refresh acknowledges the mark; ordinary session tiles keep focus-to-read.
+    // open is still re-pulling newer off-window activity. The Bot plugin also
+    // refreshes direct tab focus; only a successful refresh acknowledges the
+    // mark. Ordinary session tiles keep focus-to-read.
     const cachedBotChat = $sessionTiles
       .get()
       .some(tile => tile.storedSessionId === focused && tile.workspaceMode === 'bots' && tile.workspaceTabTitle === 'Bot Chat')

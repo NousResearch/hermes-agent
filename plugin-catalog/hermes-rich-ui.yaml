@@ -5,19 +5,19 @@
 # v0.1.0 tag's 40-hex commit SHA); the loader rejects anything but a full SHA.
 name: hermes-rich-ui
 repo: https://github.com/jacobhausler/hermes-rich-ui
-sha: "754ae514005dc99bfaa9af67e7abb53cf2ed05a1"
+sha: "befd82ad3b888a628cb7111893618642408e50d8"
 subdir: ""
 description: "Rich, evidence-backed answer cards — tables, charts, metrics, timelines, sources — rendered inline in the desktop transcript"
 maintainer: jacobhausler
 tier: community
 category: desktop                       # README vocabulary: desktop|memory|platform|web|tools|voice|automation|models|general
 requires_hermes: ">=2026.9.24"
-version: "0.1.0"                        # cosmetic label; quoted per README
-image: "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-1.png"
+version: "0.1.1"                        # cosmetic label; quoted per README
+image: "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/befd82ad3b888a628cb7111893618642408e50d8/assets/screenshot-1.png"
 screenshots:
-- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-1.png"
-- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-2.png"
-- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/754ae514005dc99bfaa9af67e7abb53cf2ed05a1/assets/screenshot-3.png"
+- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/befd82ad3b888a628cb7111893618642408e50d8/assets/screenshot-1.png"
+- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/befd82ad3b888a628cb7111893618642408e50d8/assets/screenshot-2.png"
+- "https://raw.githubusercontent.com/jacobhausler/hermes-rich-ui/befd82ad3b888a628cb7111893618642408e50d8/assets/screenshot-3.png"
 readme: true
 platforms: []
 capabilities:

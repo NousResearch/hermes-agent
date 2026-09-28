@@ -321,6 +321,27 @@ on (the inbound's platform, else the platform the connector fronts), never
 | `hermes.update.stage` | stage, outcome, duration_bucket | Per-stage result and wall time of `hermes update` (plan, snapshot, apply, deps, build, restart, verify), from the receipt's stage timestamps. |
 | `hermes.process.exit` | process_kind, exit_kind, crash_class | How CLI / TUI / gateway / serve / cron-tick processes end (`clean`, `crash` with an exception family only, `killed`, `watchdog`), reported by the next start in the same profile from a local marker. Turns aborted by a turn watchdog also count as `exit_kind=watchdog`. |
 
+
+<!-- ---- v5 desktop ---- -->
+#### Desktop app: what gets used, what gets in the way, what gets turned off
+
+Recorded by the Desktop app into the focused profile's store, only while that
+profile's collection switch is on. With it off the app keeps no local record
+(switching it off deletes what was kept) and sends nothing. There is no rating
+prompt or other new UI; each fact comes from an interaction the app already has.
+Every value is a closed id defined in the app's code (area, action, notice, flow,
+toggle, step), a published config key, or a bucket. Message text, toast text,
+session/bot/profile names, paths and setting values never leave.
+
+| Metric | Dimensions | Question it answers |
+|---|---|---|
+| `hermes.desktop.feature_use` | area (panes, command palette, model/session pickers, voice, Bot Mode, skins, projects, each settings page, full pages, `other`) | Which Desktop areas are used at all, counted at most once per area per UTC day per install. |
+| `hermes.desktop.action_use` | action (the app's command/keybinding ids plus a few named buttons, else `other`), via (`click`/`shortcut`/`palette`/`menu`), count bucket | Which buttons and commands people press, and how: aggregated in the app and reported once per finished day (no per-press rows). |
+| `hermes.desktop.mode_use` | mode (`sessions`/`bots`), active-minutes bucket, messages-sent bucket, bot-count bucket | How Desktop time splits between Bot Mode and regular Sessions. One row per mode used that day; active time sums gaps between interactions of up to 5 minutes. |
+| `hermes.desktop.friction` | kind (`notice_dismissed`, `error_toast`, `renderer_crash`, `backend_disconnect`, `slow_frame`), detail (notice id, error category, crash reason, drop reason, frame-duration bucket) | What gets in the way. Error toasts carry only their code-defined category; renderer crashes are recorded by the app shell and reported after the window comes back; slow frames are long frames while the window is visible, capped per day. |
+| `hermes.desktop.dislike` | signal (`quick_close`, `cancelled`, `setting_off_default`, `rage_click`, `undo`, `feature_disabled`), target, setting, direction | Signals that a feature is unwanted: a pane closed within 5s of opening, a dialog/flow backed out of, a setting moved to or away from its default (the key only; the backend compares the saved value to the default itself), three clicks on one control within a second, an undo, a shipped feature switched off. Capped per signal per day. |
+| `hermes.desktop.onboarding` | step (first-run steps: provider picker, sign-in, API key, local endpoint, model pick, choose later, free-tier screen, guided setup cards, consent, first message), event (`reached`/`completed`/`abandoned`) | Where first run stops. Each step event once per install; `abandoned` is a step still open when the app next starts. |
+
 Sessions are summarized when they close (finalize, reset or process exit);
 delegated child sessions are not counted separately. Milestones latch in the
 local database, so each fires once per install however many processes reach it.

@@ -130,5 +130,65 @@ def _(rid, params: dict) -> dict:
 # ---- end v4 reliability ----
 
 
+# ---- v5 desktop ----
+@method("shared_metrics.desktop_feature_use")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Desktop reports each area the user opened, at most once per UTC day (latched on both sides).
+    Always ``{ok: true}``; a no-op unless shared metrics are on."""
+    from hermes_cli.observability.shared_metrics_desktop import record_desktop_feature_use
+
+    record_desktop_feature_use(area=params.get("area"))
+    return _ok(rid, {"ok": True})
+
+
+@method("shared_metrics.desktop_friction")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """One Desktop friction event (dismissed notice, error toast by category, renderer crash, backend
+    disconnect, slow frame), capped per day. Always ``{ok: true}``."""
+    from hermes_cli.observability.shared_metrics_desktop import record_desktop_friction
+
+    record_desktop_friction(kind=params.get("kind"), detail=params.get("detail"))
+    return _ok(rid, {"ok": True})
+
+
+@method("shared_metrics.desktop_onboarding")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """One Desktop first-run step transition, once per (step, event) per profile. Always ``{ok: true}``."""
+    from hermes_cli.observability.shared_metrics_desktop import record_desktop_onboarding
+
+    record_desktop_onboarding(step=params.get("step"), event=params.get("event"))
+    return _ok(rid, {"ok": True})
+
+
+@method("shared_metrics.desktop_dislike")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """One Desktop dislike signal (quick close, cancelled flow, setting changed vs default, rage click,
+    undo, feature disabled), capped per signal per day. For a setting the backend reads the saved value
+    and compares it to the default itself; only the key and the direction are recorded."""
+    from hermes_cli.observability.shared_metrics_desktop import record_desktop_dislike
+
+    record_desktop_dislike(signal=params.get("signal"), target=params.get("target"), setting=params.get("setting"))
+    return _ok(rid, {"ok": True})
+
+
+@method("shared_metrics.desktop_daily")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """One finished Desktop day: mode use (Bot Mode vs Sessions, with the bot count) and button presses
+    per action. ``{recorded: true}`` once settled, so the client drops the day; false keeps it."""
+    from hermes_cli.observability.shared_metrics_desktop import record_desktop_daily
+
+    recorded = record_desktop_daily(
+        day=params.get("day"), modes=params.get("modes"), actions=params.get("actions"),
+        bot_count=params.get("bot_count"),
+    )
+    return _ok(rid, {"recorded": recorded})
+# ---- end v5 desktop ----
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

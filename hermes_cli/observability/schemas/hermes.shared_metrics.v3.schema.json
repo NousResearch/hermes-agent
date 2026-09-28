@@ -237,6 +237,24 @@
           },
           {
             "$ref": "#/$defs/model_switch_after_counter"
+          },
+          {
+            "$ref": "#/$defs/desktop_feature_use_counter"
+          },
+          {
+            "$ref": "#/$defs/desktop_friction_counter"
+          },
+          {
+            "$ref": "#/$defs/desktop_onboarding_counter"
+          },
+          {
+            "$ref": "#/$defs/desktop_mode_use_counter"
+          },
+          {
+            "$ref": "#/$defs/desktop_action_use_counter"
+          },
+          {
+            "$ref": "#/$defs/desktop_dislike_counter"
           }
         ]
       }
@@ -3452,6 +3470,646 @@
         "251_to_1000",
         "gte_1001"
       ]
+    },
+    "desktop_feature_use_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.desktop.feature_use"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "area"
+          ],
+          "properties": {
+            "area": {
+              "enum": [
+                "agents",
+                "artifacts",
+                "bot_mode",
+                "browser_pane",
+                "capabilities",
+                "command_center",
+                "command_palette",
+                "cron",
+                "extension_page",
+                "file_pane",
+                "find_in_page",
+                "kanban",
+                "messaging",
+                "model_picker",
+                "other",
+                "profiles",
+                "projects",
+                "review_pane",
+                "session_import",
+                "session_picker",
+                "session_search",
+                "session_switcher",
+                "settings_about",
+                "settings_billing",
+                "settings_config_advanced",
+                "settings_config_appearance",
+                "settings_config_browser",
+                "settings_config_chat",
+                "settings_config_memory",
+                "settings_config_model",
+                "settings_config_safety",
+                "settings_config_voice",
+                "settings_config_workspace",
+                "settings_gateway",
+                "settings_keybinds",
+                "settings_keys",
+                "settings_notifications",
+                "settings_other",
+                "settings_providers",
+                "settings_sessions",
+                "settings_vault",
+                "skins",
+                "starmap",
+                "terminal_pane",
+                "voice_conversation",
+                "voice_dictation",
+                "webhooks"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "desktop_friction_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.desktop.friction"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "detail",
+            "kind"
+          ],
+          "properties": {
+            "detail": {
+              "enum": [
+                "100ms_to_250ms",
+                "1s_to_5s",
+                "250ms_to_1s",
+                "api_key_missing",
+                "api_key_rejected",
+                "artifacts_partial_load",
+                "backend_exit",
+                "backend_skew",
+                "background_queue_stuck",
+                "billing_banner",
+                "billing_block",
+                "build_discontinued",
+                "client_behind",
+                "composer_queue_stuck",
+                "crash",
+                "credits",
+                "disk_full",
+                "free_tier_notice",
+                "gateway_auth_failed",
+                "gateway_error",
+                "gte_5s",
+                "gui_skew",
+                "install_method",
+                "killed",
+                "mcp_health",
+                "method_not_allowed",
+                "microphone_permission",
+                "model_warning",
+                "network",
+                "onboarding_handoff",
+                "oom",
+                "other",
+                "pool_slot_timeout",
+                "restart_required",
+                "restored_draft",
+                "rpc_out_of_sync",
+                "runtime_not_ready",
+                "session_compress",
+                "storage_failure",
+                "terminal_backend",
+                "timeout",
+                "tip",
+                "unclassified",
+                "update_available",
+                "voice_live_unavailable",
+                "voice_stop_hint"
+              ]
+            },
+            "kind": {
+              "enum": [
+                "backend_disconnect",
+                "error_toast",
+                "notice_dismissed",
+                "renderer_crash",
+                "slow_frame"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "desktop_onboarding_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.desktop.onboarding"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "step"
+          ],
+          "properties": {
+            "event": {
+              "enum": [
+                "abandoned",
+                "completed",
+                "reached"
+              ]
+            },
+            "step": {
+              "enum": [
+                "choose_later",
+                "consent",
+                "first_message",
+                "free_tier_ready",
+                "guide",
+                "guide_connectors",
+                "guide_first_build",
+                "guide_layout",
+                "guide_look",
+                "guide_skip",
+                "intro",
+                "model_pick",
+                "provider_api_key",
+                "provider_local",
+                "provider_oauth",
+                "provider_setup",
+                "sign_in"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "desktop_mode_use_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.desktop.mode_use"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "active_minutes_bucket",
+            "bot_count_bucket",
+            "messages_sent_bucket",
+            "mode"
+          ],
+          "properties": {
+            "active_minutes_bucket": {
+              "enum": [
+                "0",
+                "2h_to_6h",
+                "30m_to_2h",
+                "5m_to_30m",
+                "gte_6h",
+                "lt_5m"
+              ]
+            },
+            "bot_count_bucket": {
+              "enum": [
+                "0",
+                "1",
+                "101_to_250",
+                "11_to_25",
+                "2",
+                "26_to_100",
+                "3_to_5",
+                "6_to_10",
+                "gte_251"
+              ]
+            },
+            "messages_sent_bucket": {
+              "enum": [
+                "0",
+                "1",
+                "101_to_250",
+                "11_to_25",
+                "2",
+                "26_to_100",
+                "3_to_5",
+                "6_to_10",
+                "gte_251"
+              ]
+            },
+            "mode": {
+              "enum": [
+                "bots",
+                "sessions"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "desktop_action_use_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.desktop.action_use"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "count_bucket",
+            "via"
+          ],
+          "properties": {
+            "action": {
+              "enum": [
+                "appearance.toggleMode",
+                "composer.attach",
+                "composer.cancel",
+                "composer.dictate",
+                "composer.focus",
+                "composer.help",
+                "composer.history",
+                "composer.mention",
+                "composer.modelPicker",
+                "composer.newline",
+                "composer.queue",
+                "composer.reasoningDown",
+                "composer.reasoningUp",
+                "composer.send",
+                "composer.sendQueued",
+                "composer.slash",
+                "composer.steer",
+                "composer.voice",
+                "conversation.scrollPageDown",
+                "conversation.scrollPageUp",
+                "hud.snapToPointer",
+                "keybinds.openPanel",
+                "message.copy",
+                "message.retry",
+                "nav.agents",
+                "nav.artifacts",
+                "nav.capabilities",
+                "nav.commandCenter",
+                "nav.commandPalette",
+                "nav.cron",
+                "nav.messaging",
+                "nav.profiles",
+                "nav.settings",
+                "other",
+                "profile.create",
+                "profile.default",
+                "profile.next",
+                "profile.prev",
+                "profile.toggleAll",
+                "session.archive",
+                "session.focusSearch",
+                "session.new",
+                "session.newTab",
+                "session.newWindow",
+                "session.next",
+                "session.prev",
+                "session.togglePin",
+                "view.closeTab",
+                "view.closeTerminal",
+                "view.cycleSidebarGrouping",
+                "view.findInPage",
+                "view.findNext",
+                "view.findPrevious",
+                "view.flipPanes",
+                "view.newTerminal",
+                "view.nextTerminal",
+                "view.prevTerminal",
+                "view.reopenTab",
+                "view.selectionToComposer",
+                "view.showBrowser",
+                "view.showFiles",
+                "view.showTerminal",
+                "view.terminalCopy",
+                "view.terminalPaste",
+                "view.toggleHud",
+                "view.toggleProfileRail",
+                "view.toggleReview",
+                "view.toggleRightSidebar",
+                "view.toggleSidebar",
+                "view.toggleSimpleMode",
+                "view.toggleStatusbar",
+                "view.toggleTabStrip",
+                "workspace.newWorktree",
+                "workspace.openFolder"
+              ]
+            },
+            "count_bucket": {
+              "enum": [
+                "0",
+                "1",
+                "101_to_250",
+                "11_to_25",
+                "2",
+                "26_to_100",
+                "3_to_5",
+                "6_to_10",
+                "gte_251"
+              ]
+            },
+            "via": {
+              "enum": [
+                "click",
+                "menu",
+                "palette",
+                "shortcut"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "desktop_dislike_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.desktop.dislike"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "direction",
+            "setting",
+            "signal",
+            "target"
+          ],
+          "properties": {
+            "direction": {
+              "enum": [
+                "away_from_default",
+                "none",
+                "to_default"
+              ]
+            },
+            "setting": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 96,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "signal": {
+              "enum": [
+                "cancelled",
+                "feature_disabled",
+                "quick_close",
+                "rage_click",
+                "setting_off_default",
+                "undo"
+              ]
+            },
+            "target": {
+              "enum": [
+                "agents",
+                "appearance.toggleMode",
+                "artifacts",
+                "backdrop",
+                "bot_activity_toasts",
+                "bot_mode",
+                "browser_pane",
+                "capabilities",
+                "closed_tab",
+                "command_center",
+                "command_palette",
+                "composer.attach",
+                "composer.cancel",
+                "composer.dictate",
+                "composer.focus",
+                "composer.help",
+                "composer.history",
+                "composer.mention",
+                "composer.modelPicker",
+                "composer.newline",
+                "composer.queue",
+                "composer.reasoningDown",
+                "composer.reasoningUp",
+                "composer.send",
+                "composer.sendQueued",
+                "composer.slash",
+                "composer.steer",
+                "composer.voice",
+                "composer_popout_gestures",
+                "conversation.scrollPageDown",
+                "conversation.scrollPageUp",
+                "cron",
+                "extension_page",
+                "file_pane",
+                "find_in_page",
+                "free_tier_sign_in",
+                "hud.snapToPointer",
+                "intro_splash",
+                "kanban",
+                "keybind_capture",
+                "keybinds.openPanel",
+                "message.copy",
+                "message.retry",
+                "messaging",
+                "model_picker",
+                "native_notifications",
+                "nav.agents",
+                "nav.artifacts",
+                "nav.capabilities",
+                "nav.commandCenter",
+                "nav.commandPalette",
+                "nav.cron",
+                "nav.messaging",
+                "nav.profiles",
+                "nav.settings",
+                "notification_kind",
+                "other",
+                "profile.create",
+                "profile.default",
+                "profile.next",
+                "profile.prev",
+                "profile.toggleAll",
+                "profiles",
+                "project_create",
+                "projects",
+                "provider_oauth",
+                "reactions",
+                "restored_draft",
+                "review_pane",
+                "session.archive",
+                "session.focusSearch",
+                "session.new",
+                "session.newTab",
+                "session.newWindow",
+                "session.next",
+                "session.prev",
+                "session.togglePin",
+                "session_import",
+                "session_picker",
+                "session_search",
+                "session_switcher",
+                "setting",
+                "settings_about",
+                "settings_billing",
+                "settings_config_advanced",
+                "settings_config_appearance",
+                "settings_config_browser",
+                "settings_config_chat",
+                "settings_config_memory",
+                "settings_config_model",
+                "settings_config_safety",
+                "settings_config_voice",
+                "settings_config_workspace",
+                "settings_gateway",
+                "settings_keybinds",
+                "settings_keys",
+                "settings_notifications",
+                "settings_other",
+                "settings_providers",
+                "settings_sessions",
+                "settings_vault",
+                "skins",
+                "starmap",
+                "terminal_pane",
+                "thread_timeline",
+                "tips",
+                "tours",
+                "vibe_hearts",
+                "view.closeTab",
+                "view.closeTerminal",
+                "view.cycleSidebarGrouping",
+                "view.findInPage",
+                "view.findNext",
+                "view.findPrevious",
+                "view.flipPanes",
+                "view.newTerminal",
+                "view.nextTerminal",
+                "view.prevTerminal",
+                "view.reopenTab",
+                "view.selectionToComposer",
+                "view.showBrowser",
+                "view.showFiles",
+                "view.showTerminal",
+                "view.terminalCopy",
+                "view.terminalPaste",
+                "view.toggleHud",
+                "view.toggleProfileRail",
+                "view.toggleReview",
+                "view.toggleRightSidebar",
+                "view.toggleSidebar",
+                "view.toggleSimpleMode",
+                "view.toggleStatusbar",
+                "view.toggleTabStrip",
+                "voice_conversation",
+                "voice_dictation",
+                "webhooks",
+                "workspace.newWorktree",
+                "workspace.openFolder"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     }
   }
 }

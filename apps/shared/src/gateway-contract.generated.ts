@@ -687,6 +687,54 @@ export interface SharedMetricsUpdateRunParams {
 export interface SharedMetricsUpdateRunResult {
   ok: boolean
 }
+/** ``area`` is a Desktop surface id (``command_palette``, ``terminal_pane``, ``settings_<view>`` …); the backend collapses anything outside its closed set to ``other``. */
+export interface SharedMetricsDesktopFeatureUseParams {
+  profile?: string | null
+  area: string
+}
+export interface OkResult {
+  ok?: boolean
+}
+/** ``kind`` notice_dismissed|error_toast|renderer_crash|backend_disconnect|slow_frame; ``detail`` a closed code-defined word for that kind (notice id, error category, crash reason, drop reason, frame duration bucket), never message text. */
+export interface SharedMetricsDesktopFrictionParams {
+  profile?: string | null
+  kind: string
+  detail: string
+}
+/** ``step`` a Desktop first-run step id; ``event`` reached|completed|abandoned. */
+export interface SharedMetricsDesktopOnboardingParams {
+  profile?: string | null
+  step: string
+  event: string
+}
+/** ``signal`` quick_close|cancelled|setting_off_default|rage_click|undo|feature_disabled; ``target`` a closed code-defined id for that signal (area, flow, action, undo path, feature toggle); ``setting`` a config key for setting_off_default only (the value is never sent — the backend compares it to the default). */
+export interface SharedMetricsDesktopDislikeParams {
+  profile?: string | null
+  signal: string
+  target?: string
+  setting?: string | null
+}
+/** One finished UTC day of Desktop use, aggregated on the client. ``day`` (YYYY-MM-DD) only latches a resend and is never recorded; the raw counts are bucketed by the backend. */
+export interface SharedMetricsDesktopDailyParams {
+  profile?: string | null
+  day: string
+  bot_count?: number
+  modes?: SharedMetricsDesktopModeDay[]
+  actions?: SharedMetricsDesktopActionDay[]
+}
+export interface SharedMetricsDesktopModeDay {
+  mode: 'bots' | 'sessions'
+  active_ms?: number
+  messages_sent?: number
+}
+export interface SharedMetricsDesktopActionDay {
+  action: string
+  via: 'click' | 'menu' | 'palette' | 'shortcut'
+  count: number
+}
+export interface SharedMetricsDesktopDailyResult {
+  recorded: boolean
+}
 export interface ModelOptionsParams {
   profile?: string | null
   session_id?: string | null
@@ -1701,9 +1749,6 @@ export interface BotRelayReplyParams {
   reply?: string | null
   error?: string | null
   reason?: string | null
-}
-export interface OkResult {
-  ok?: boolean
 }
 export interface BrowserControllerRegisterParams {
   session_id: string
@@ -5181,6 +5226,16 @@ export interface RpcMethods {
   'setup.runtime_check': { params: SetupRuntimeCheckParams; result: SetupRuntimeCheckResult }
   /** Loose provider check: is ANY provider auth state discoverable for the (launch or named) profile. */
   'setup.status': { params: ProfileParams; result: SetupStatusResult }
+  /** Record one finished Desktop day (mode use + button presses); recorded=false keeps it for a retry. */
+  'shared_metrics.desktop_daily': { params: SharedMetricsDesktopDailyParams; result: SharedMetricsDesktopDailyResult }
+  /** Count one Desktop dislike signal (fire-and-forget; capped per signal per day; a no-op unless on). */
+  'shared_metrics.desktop_dislike': { params: SharedMetricsDesktopDislikeParams; result: OkResult }
+  /** Count one Desktop area used today (fire-and-forget; once per area per UTC day; a no-op unless on). */
+  'shared_metrics.desktop_feature_use': { params: SharedMetricsDesktopFeatureUseParams; result: OkResult }
+  /** Count one Desktop friction event (fire-and-forget; capped per day; a no-op unless on). */
+  'shared_metrics.desktop_friction': { params: SharedMetricsDesktopFrictionParams; result: OkResult }
+  /** Count one Desktop first-run step transition (fire-and-forget; once per step+event; a no-op unless on). */
+  'shared_metrics.desktop_onboarding': { params: SharedMetricsDesktopOnboardingParams; result: OkResult }
   /** Write both shared-metrics opt-ins at once (send requires collection) and reconcile consent windows. */
   'shared_metrics.set': { params: SharedMetricsSetParams; result: SharedMetricsConsentResult }
   /** Count one user-typed slash command (fire-and-forget; a no-op unless shared metrics are on). */
@@ -5473,6 +5528,11 @@ export const RPC_METHODS = [
   'session.workspace.move',
   'setup.runtime_check',
   'setup.status',
+  'shared_metrics.desktop_daily',
+  'shared_metrics.desktop_dislike',
+  'shared_metrics.desktop_feature_use',
+  'shared_metrics.desktop_friction',
+  'shared_metrics.desktop_onboarding',
   'shared_metrics.set',
   'shared_metrics.slash_command',
   'shared_metrics.startup_latency',

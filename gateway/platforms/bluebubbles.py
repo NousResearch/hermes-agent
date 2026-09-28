@@ -341,16 +341,24 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 if (chat.get("chatIdentifier") or chat.get("identifier")) != target:
                     continue
                 if guid := chat.get("guid") or chat.get("chatGuid"):
-                    self._guid_cache[target] = guid
-                    while len(self._guid_cache) > _GUID_CACHE_SIZE:
-                        self._guid_cache.popitem(last=False)
+                    self._remember_chat_guid(target, guid)
                 return guid
         return None
 
+    def _remember_chat_guid(self, target: str, guid: str) -> None:
+        self._guid_cache[target] = guid
+        while len(self._guid_cache) > _GUID_CACHE_SIZE:
+            self._guid_cache.popitem(last=False)
+
     async def _create_chat_for_handle(self, address: str, message: str) -> SendResult:
-        """Create a new chat by sending the first message to *address*."""
-        return await self._post_message(
+        """Create a new chat by sending the first message to *address*. The new chat's GUID is cached so
+        the rest of a split reply follows into it instead of racing the server's chat index."""
+        result = await self._post_message(
             "/api/v1/chat/new", {"addresses": [address], "message": message, "tempGuid": _temp_guid()})
+        data = (result.raw_response or {}).get("data") if result.success else None
+        if isinstance(data, dict) and (guid := data.get("guid")):
+            self._remember_chat_guid(address, guid)
+        return result
 
     # --- Text sending ---
 
@@ -373,7 +381,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             guid = await self._resolve_chat_guid(chat_id)
             if not guid:
                 if self._private_api_enabled and ("@" in chat_id or _ADDRESS_RE.match(chat_id)):  # address → new chat
-                    return await self._create_chat_for_handle(chat_id, chunk)
+                    # The chat is created with this chunk; the loop goes on so the rest of the reply follows it.
+                    if not (last := await self._create_chat_for_handle(chat_id, chunk)).success:
+                        return last
+                    continue
                 return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
             payload: Dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
             if reply_to and self._private_api_enabled and self._helper_connected:

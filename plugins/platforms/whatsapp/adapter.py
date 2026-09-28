@@ -565,7 +565,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if returncode is None:
             return None
         # getattr-with-default: tests build the adapter via ``__new__`` without __init__.
-        if getattr(self, "_shutting_down", False) and returncode in {0, -2, -15}:
+        # SIGTERM (-15) always originates from the gateway/supervisor side (the Node bridge never TERMs itself), so it is
+        # an intentional exit even when the poll loop observes it before disconnect() flips ``_shutting_down`` —
+        # otherwise a supervisor's SIGTERM on shutdown races the flag and every restart crash-loops the gateway.
+        if returncode == -15 or (getattr(self, "_shutting_down", False) and returncode in {0, -2, -15}):
             logger.info("[%s] Bridge exited during shutdown (code %d).", self.name, returncode)
             return None
         message = f"WhatsApp bridge process exited unexpectedly (code {returncode})."

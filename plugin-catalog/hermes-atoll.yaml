@@ -1,0 +1,15 @@
+name: hermes-atoll
+repo: https://github.com/himanusia/hermes-atoll-plugin
+sha: 312e4f1b0811244b955b1a62ec271aaa6bedf388
+description: "Show Hermes session and turn status in the macOS notch through Atoll."
+maintainer: himanusia
+tier: community
+category: desktop
+version: "0.2.0"
+image: https://raw.githubusercontent.com/himanusia/hermes-atoll-plugin/312e4f1b0811244b955b1a62ec271aaa6bedf388/assets/hermes-atoll-thumbnail.jpg
+platforms: [macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: [on_session_start]
+  provides_middleware: []
+  requires_env: []

@@ -2,6 +2,7 @@
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,7 +11,10 @@ from agent.secret_scope import set_multiplex_active
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.run import _profile_runtime_scope
+from gateway.run import GatewayRunner
+from gateway.session import SessionSource
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.turn_context import TurnContext
 from plugins.platforms.matrix.adapter import MatrixAdapter
 
 
@@ -93,6 +97,165 @@ async def test_streamed_response_reply_policy_spans_consumer_chunks(
             }
         expected.append(relation)
     assert [message.get("m.relates_to") for _, message in messages] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "first", "all"])
+@pytest.mark.parametrize("thread_id", [None, "$root"])
+async def test_completed_commentary_reconciles_final_with_matrix_reply_policy(
+    monkeypatch, mode, thread_id
+):
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", AsyncMock())
+    room_id = "!room:example.org"
+    adapter = MatrixAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="syt_test",
+            reply_to_mode=mode,
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "auto_thread": False,
+                "max_message_length": 1000,
+            },
+        )
+    )
+    client = MagicMock()
+    client.send_message_event = AsyncMock(side_effect=[f"$sent{i}" for i in range(3)])
+    adapter._client = client
+    metadata = {"thread_id": thread_id} if thread_id else {}
+    final_text = "completed answer " * 150
+    consumer = GatewayStreamConsumer(
+        adapter,
+        room_id,
+        StreamConsumerConfig(cursor=""),
+        metadata=metadata,
+        initial_reply_to_id="$request",
+    )
+    consumer.on_commentary(final_text)
+    consumer.finish(final_text)
+    await consumer.run()
+
+    source = SessionSource(
+        platform=Platform.MATRIX, chat_id=room_id, thread_id=thread_id
+    )
+    turn_ctx = TurnContext(
+        source=source, session_key="matrix-turn", stream_consumer_holder=[consumer]
+    )
+    response = {"final_response": final_text}
+    runner = object.__new__(GatewayRunner)
+    runner._delivery_adapter_for = MagicMock(return_value=adapter)
+    runner._should_send_voice_reply = MagicMock(return_value=False)
+    runner._deliver_media_from_response = AsyncMock()
+    await runner._run_agent_mark_streamed_delivery(response, turn_ctx)
+    event = SimpleNamespace()
+    outgoing = await runner._hmwa_deliver_turn_response(
+        event,
+        source,
+        None,
+        turn_ctx.session_key,
+        1,
+        response,
+        [],
+        final_text,
+        "",
+        False,
+    )
+
+    expected = []
+    for index in range(3):
+        rich_reply = mode == "all" or (mode == "first" and index == 0)
+        relation = {"m.in_reply_to": {"event_id": "$request"}} if rich_reply else None
+        if thread_id:
+            relation = {
+                "rel_type": "m.thread",
+                "event_id": thread_id,
+                "m.in_reply_to": {
+                    "event_id": "$request"
+                    if rich_reply
+                    else (thread_id if index == 0 else f"$sent{index - 1}")
+                },
+                "is_falling_back": not rich_reply,
+            }
+        expected.append(relation)
+
+    assert {
+        "response": response,
+        "outgoing": outgoing,
+        "delivered": event._streamed_final_response,
+        "relations": [
+            call.args[2].get("m.relates_to")
+            for call in client.send_message_event.await_args_list
+        ],
+        "metadata": consumer.metadata,
+    } == {
+        "response": {"final_response": final_text, "already_sent": True},
+        "outgoing": None,
+        "delivered": final_text,
+        "relations": expected,
+        "metadata": metadata,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "first", "all"])
+@pytest.mark.parametrize("thread_id", [None, "$root"])
+async def test_segment_tail_retry_after_failed_first_send_preserves_matrix_reply_policy(
+    monkeypatch, mode, thread_id
+):
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", AsyncMock())
+    room_id = "!room:example.org"
+    adapter = MatrixAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="syt_test",
+            reply_to_mode=mode,
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "auto_thread": False,
+                "e2ee_mode": "off",
+            },
+        )
+    )
+    client = MagicMock()
+    client.send_message_event = AsyncMock(
+        side_effect=[RuntimeError("send refused"), "$tail", "$final"]
+    )
+    adapter._client = client
+    metadata = {"thread_id": thread_id} if thread_id else {}
+    consumer = GatewayStreamConsumer(
+        adapter,
+        room_id,
+        StreamConsumerConfig(cursor=""),
+        metadata=metadata,
+        initial_reply_to_id="$request",
+    )
+    tail = "Completed text before the tool boundary."
+    final_text = "The final answer after the tool boundary."
+    consumer.on_delta(tail)
+    consumer.on_segment_break()
+    consumer.on_delta(final_text)
+    consumer.finish(final_text)
+    await consumer.run()
+
+    expected = []
+    for body, fallback in [(tail, thread_id), (tail, thread_id), (final_text, "$tail")]:
+        rich_reply = mode != "off"
+        relation = {"m.in_reply_to": {"event_id": "$request"}} if rich_reply else None
+        if thread_id:
+            relation = {
+                "rel_type": "m.thread",
+                "event_id": thread_id,
+                "m.in_reply_to": {"event_id": "$request" if rich_reply else fallback},
+                "is_falling_back": not rich_reply,
+            }
+        expected.append({"body": body, "relation": relation})
+
+    assert [
+        {"body": call.args[2]["body"], "relation": call.args[2].get("m.relates_to")}
+        for call in client.send_message_event.await_args_list
+    ] == expected
 
 
 @pytest.mark.asyncio

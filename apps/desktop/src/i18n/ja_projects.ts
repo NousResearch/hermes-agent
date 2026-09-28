@@ -69,9 +69,9 @@ export const jaProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   removeWorktree: 'ワークツリーを削除',
   removeWorktreeFailed: 'ワークツリーを削除できませんでした（コミットされていない変更？）',
   removeWorktreeConfirm:
-    'git から削除（ワークツリーのディレクトリを削除しますが、ブランチは残ります）するか、サイドバーからレーンを隠してワークツリーをディスク上に残します。',
-  removeWorktreeDirty:
-    'このワークツリーにはコミットされていない変更があります。強制削除（変更を破棄）するか、レーンを隠してディスク上に残します。',
+    'git から削除（ワークツリーのディレクトリを削除し、作業がアップストリームにあればブランチも削除。未追跡ファイルは先にアーカイブ）するか、サイドバーからレーンを隠してワークツリーをディスク上に残します。',
+  removeWorktreeDirty: reason =>
+    `このワークツリーは保持されました: ${reason}。強制削除（作業を破棄）するか、レーンを隠してディスク上に残します。`,
   forceRemove: '強制削除',
   enter: label => `${label} を開く`
 }

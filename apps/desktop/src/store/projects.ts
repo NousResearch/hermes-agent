@@ -9,11 +9,11 @@ import {
   projectOwnerBySessionId,
   type SidebarProjectTree
 } from '@/app/chat/sidebar/projects/workspace-groups'
-import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
+import type { HermesGitBaseBranch, HermesGitBranch, HermesWorktreeReclaim } from '@/global'
 import { getHermesConfig, hermesApi, type HermesGateway, type SessionInfo } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
-import { desktopGit, desktopGitFor, type GitOwnerRoute } from '@/lib/desktop-git'
+import { desktopGit, desktopGitFor, type GitOwnerRoute, reclaimWorktree } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
@@ -1643,6 +1643,70 @@ export async function removeWorktreePath(
 
   await git.worktreeRemove(repoPath, worktreePath, options)
   bumpWorktrees()
+}
+
+// Remove a worktree the way `hermes worktree prune` would: never forced, the
+// branch deleted only when its content is upstream, kept-with-reason otherwise.
+// The lanes re-probe whether or not the tree went, so a verdict of "kept" still
+// repaints the sidebar from git's truth. `owner` sends it to the gateway the
+// repo lives on (same routing as `removeWorktreePath`).
+export async function reclaimWorktreePath(
+  repoPath: string,
+  worktreePath: string,
+  owner?: GitOwnerRoute
+): Promise<HermesWorktreeReclaim> {
+  try {
+    return await reclaimWorktree(repoPath, worktreePath, owner)
+  } finally {
+    bumpWorktrees()
+  }
+}
+
+export interface WorktreeLane {
+  repoPath: string
+  worktreePath: string
+  label: string
+  owner?: GitOwnerRoute
+}
+
+// The linked-worktree lane whose path is `cwd` (or contains it), with its repo
+// and owning gateway, for session verbs that act on the tree the session ran
+// in. Null for a main checkout, the kanban bucket, a plain folder, or a cwd no
+// lane covers — none of those is a tree a session may reclaim.
+export function worktreeLaneForCwd(cwd: string): null | WorktreeLane {
+  const target = (cwd || '').trim()
+
+  if (!target) {
+    return null
+  }
+
+  let best: null | WorktreeLane = null
+  let bestLen = -1
+
+  for (const project of $projectTree.get()) {
+    const owner = project.connectionId
+      ? { connectionId: project.connectionId, profile: project.profile || 'default' }
+      : undefined
+
+    for (const repo of project.repos) {
+      if (!repo.path) {
+        continue
+      }
+
+      for (const group of repo.groups) {
+        const path = (group.path || '').trim()
+
+        if (path && !group.isMain && !group.isKanban && group.isGit !== false && isUnderPath(path, target)) {
+          if (path.length > bestLen) {
+            bestLen = path.length
+            best = { label: group.label, owner, repoPath: repo.path, worktreePath: path }
+          }
+        }
+      }
+    }
+  }
+
+  return best
 }
 
 // Reveal a project/worktree path in the OS file manager (git-GUI standard).

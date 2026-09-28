@@ -2898,6 +2898,10 @@ export interface Translations extends NoticeTranslations {
       deleteDesc: (title: string) => string
       deleting: string
       deleted: string
+      archiveRemoveWorktree: string
+      worktreeRemovedBranchDeleted: (branch: string) => string
+      worktreeRemoved: (label: string) => string
+      worktreeKept: (label: string, reason: string) => string
       untitledChat: (id: string) => string
       messageCount: (count: number) => string
       todoProgress: string

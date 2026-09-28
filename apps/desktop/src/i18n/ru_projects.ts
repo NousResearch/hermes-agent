@@ -72,9 +72,9 @@ export const ruProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   removeWorktree: 'Удалить worktree',
   removeWorktreeFailed: 'Не удалось удалить worktree (есть незакоммиченные изменения?)',
   removeWorktreeConfirm:
-    'Удалить из git (сотрёт каталог worktree; ветка останется) или просто скрыть лану из боковой панели, оставив worktree на диске.',
-  removeWorktreeDirty:
-    'В этом worktree есть незакоммиченные изменения. Удалить принудительно (сбросит эти изменения) или просто скрыть лану и оставить на диске.',
+    'Удалить из git (сотрёт каталог worktree и, если работа уже в апстриме, его ветку; неотслеживаемые файлы сначала архивируются) или просто скрыть лану из боковой панели, оставив worktree на диске.',
+  removeWorktreeDirty: reason =>
+    `Этот worktree сохранён: ${reason}. Удалить принудительно (эта работа будет потеряна) или просто скрыть лану и оставить на диске.`,
   forceRemove: 'Удалить принудительно',
   enter: label => `Открыть ${label}`,
   reorder: label => `Изменить порядок ${label}`,

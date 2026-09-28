@@ -1065,6 +1065,51 @@ def test_touch_card_tap_opens_instead_of_dragging():
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
     assert "PASS" in result.stdout
 
+
+# Run clock: current run start, not first-ever start
 # ---------------------------------------------------------------------------
-# Diagnostic severity colours follow the dashboard theme
-# ---------------------------------------------------------------------------
+
+
+def test_board_card_exposes_current_run_start(client):
+    """#99819: after a review timeout + retry, the card must expose the fresh
+    run's start (not the task's first-ever start) so the run clock ticks from
+    the current attempt."""
+    now = int(time.time())
+    first_start = now - 7200  # task first started 2h ago
+    retry_start = now - 90  # retry run started 90s ago
+    conn = kbc.connect()
+    try:
+        t = kb.create_task(conn, title="retried", assignee="x")
+        lock = "lock-runclock"
+        future = now + 3600
+        conn.execute(
+            "UPDATE tasks SET status='running', started_at=?, claim_lock=?, "
+            "claim_expires=?, worker_pid=? WHERE id=?",
+            (first_start, lock, future, 99999, t),
+        )
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, claim_lock, claim_expires, "
+            "worker_pid, started_at) VALUES (?, 'running', ?, ?, ?, ?)",
+            (t, lock, future, 99999, retry_start),
+        )
+        run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute("UPDATE tasks SET current_run_id=? WHERE id=?", (run_id, t))
+        # A sibling task with no run at all: key present, null.
+        u = kb.create_task(conn, title="unclaimed", assignee="x")
+        conn.commit()
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200, r.text
+    columns = {c["name"]: c for c in r.json()["columns"]}
+    card = next(c for c in columns["running"]["tasks"] if c["id"] == t)
+    assert card["started_at"] == first_start
+    # Red on base: this key did not exist at all.
+    assert card["current_run_started_at"] == retry_start
+    todo = next(c for c in columns["ready"]["tasks"] if c["id"] == u)
+    assert todo["current_run_started_at"] is None
+
+    # The detail endpoint carries the same contract.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t}").json()["task"]
+    assert detail["current_run_started_at"] == retry_start

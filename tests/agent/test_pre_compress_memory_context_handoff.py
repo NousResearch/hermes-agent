@@ -4,6 +4,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from agent.compression_marker import _COMPRESSION_MARKER_RE
+
 
 def _make_agent(memory_manager, compressor):
     from run_agent import AIAgent
@@ -205,7 +207,7 @@ def test_provider_context_is_bounded_before_plugin_engine():
     assert len(context) <= 6_000
     assert context.startswith("HEAD-SENTINEL")
     assert context.endswith("TAIL-SENTINEL")
-    assert "[memory provider context truncated]" in context
+    assert _COMPRESSION_MARKER_RE.search(context)
 
 
 def test_internal_engine_type_error_propagates_after_one_call():

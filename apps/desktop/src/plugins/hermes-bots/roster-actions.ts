@@ -10,7 +10,14 @@
 
 import { ackStoredSessionId, atom, haptic, host, markSessionUnreadFinished } from '@hermes/plugin-sdk'
 
-import { $openBotChat, $selectedBot, lastToastedPreview, rosterWatermarks, saveSelectedRosterBot } from './bot-state'
+import {
+  $openBotChat,
+  $pendingBotOpen,
+  $selectedBot,
+  lastToastedPreview,
+  rosterWatermarks,
+  saveSelectedRosterBot
+} from './bot-state'
 import { CANONICAL_CHAT_TITLE, notifyBotOpenFailure, openBotCanonicalChat, prepareBotSource } from './canonical-chat'
 import { $botMeta, botActivitySession, botRosterKey, botSelectionKey, newBotChat } from './data'
 import { $groupChats, $groupChatWorkspace } from './group-chat'
@@ -132,7 +139,12 @@ export function trackInboundActivity(roster: RosterRow[]) {
  *  forceResume re-pulls the transcript. Only while that chat is the FOCUSED
  *  session — a group room or another tab owning the center must not be
  *  yanked away by background activity — and never mid-turn, when the
- *  activity is the turn itself, already streaming. */
+ *  activity is the turn itself, already streaming.
+ *
+ *  BACKGROUND wake: passed through as `background` so the refresh runs
+ *  refreshInPlace and never navigates — this fires on roster activity,
+ *  not a user gesture, so whatever route is showing stays showing (issue
+ *  121874). */
 function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowWhileBusy?: boolean } = {}) {
   const canonicalIds = [bot.canonical_session?.id, bot.canonical_session?.resolved_id].filter(Boolean).map(String)
   const focused = String(host.state.focusedStoredSessionId?.get?.() || '')
@@ -142,9 +154,20 @@ function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowW
   }
 
   const generation = getBotOpenGeneration()
-  void openBotCanonicalChat(bot, () => generation === getBotOpenGeneration()).catch(() => {
+  void openBotCanonicalChat(bot, {
+    background: true,
+    openingStillCurrent: () => generation === getBotOpenGeneration()
+  }).catch(() => {
     /* the next click or reclaim event re-resolves it */
   })
+}
+
+/** Release the pending-open mark, but only for the flight that set it: a
+ *  superseded flight settling late must not clear its successor's mark. */
+function settlePendingBotOpen(generation: number) {
+  if ($pendingBotOpen.get()?.generation === generation) {
+    $pendingBotOpen.set(null)
+  }
 }
 
 /** Front the bot's canonical Bot Chat when it is ALREADY open as a tab —
@@ -274,6 +297,11 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     return true
   }
 
+  // The click missed an already-open tab. Publish the target before the cold
+  // backend start so the row can acknowledge it in this same turn (#120277).
+  // Highlight, routing, drafts, and running turns are unchanged.
+  $pendingBotOpen.set({ generation, key })
+
   try {
     // Activation selects this row's source only. Canonical identity is resolved
     // after that by the owner profile's "Bot Chat" title registry.
@@ -285,17 +313,23 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       notifyBotOpenFailure(error, bot, 'reach')
     }
 
+    settlePendingBotOpen(generation)
+
     return false
   }
 
   if (generation !== getBotOpenGeneration()) {
+    settlePendingBotOpen(generation)
+
     return false
   }
 
   try {
-    const opened = await openBotCanonicalChat(bot, () => generation === getBotOpenGeneration())
+    const opened = await openBotCanonicalChat(bot, { openingStillCurrent: () => generation === getBotOpenGeneration() })
 
     if (generation !== getBotOpenGeneration()) {
+      settlePendingBotOpen(generation)
+
       return false
     }
 
@@ -312,6 +346,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
         openedRegistryId: opened.registryId,
         openedSessionId: opened.openedId
       })
+      settlePendingBotOpen(generation)
 
       return true
     }
@@ -322,6 +357,8 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
       notifyBotOpenFailure(error, bot, 'open', displayName(bot, meta))
     }
 
+    settlePendingBotOpen(generation)
+
     return false
   }
 
@@ -330,6 +367,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
   if (typeof host.newChat !== 'function') {
     $openBotChat.set(null)
     restorePreviousGroup()
+    settlePendingBotOpen(generation)
 
     return false
   }
@@ -339,6 +377,7 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     openedRegistryId: ''
   })
   newBotChat(bot)
+  settlePendingBotOpen(generation)
 
   return true
 }

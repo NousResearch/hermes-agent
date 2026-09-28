@@ -17,6 +17,7 @@ import json
 import time
 import types
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -326,6 +327,52 @@ class TestConcurrencyCap:
         if at_cap:
             assert response.headers.get("Retry-After")
             assert mock_run.await_count == 0, "the turn must not start once the cap is reached"
+
+
+class TestRuntimeStatusMetrics:
+    def test_completed_buffered_runs_are_not_reported_active(self, adapter):
+        adapter._run_statuses = {
+            "done": {"status": "completed"},
+            "failed": {"status": "failed"},
+        }
+        adapter._run_streams = {"done": object(), "failed": object()}
+        adapter._inflight_agent_runs = 0
+
+        assert adapter._api_server_status_payload()["active_runs"] == 0
+
+    def test_record_api_metrics_publishes_status(self, adapter):
+        adapter._running = True
+
+        with patch.object(adapter, "_write_runtime_status_safe") as mock_write:
+            adapter._record_api_metrics({"total_tokens": 17}, 0.125)
+
+        assert adapter._metrics_requests_today == 1
+        assert adapter._metrics_messages_today == 1
+        assert adapter._metrics_tokens_today == 17
+        mock_write.assert_called_once()
+        _, kwargs = mock_write.call_args
+        assert kwargs["platform_state"] == "connected"
+        metrics = kwargs["platform_metrics"]
+        assert metrics["metrics_today"]["requests"] == 1
+        assert metrics["metrics_today"]["messages"] == 1
+        assert metrics["metrics_today"]["tokens"] == 17
+        assert metrics["metrics_today"]["latency_p95_ms"] == 125.0
+        assert metrics["last_request_at"] is not None
+        assert metrics["last_heartbeat"] is not None
+
+    @pytest.mark.asyncio
+    async def test_heartbeat_loop_publishes_once_when_stopped(self, adapter):
+        adapter._running = True
+        calls = []
+
+        def publish_once():
+            calls.append(True)
+            adapter._running = False
+
+        with patch.object(adapter, "_publish_runtime_status", side_effect=publish_once):
+            await adapter._heartbeat_loop()
+
+        assert calls == [True]
 
 
 # ---------------------------------------------------------------------------
@@ -779,6 +826,9 @@ class TestHealthDetailedEndpoint:
     @pytest.mark.asyncio
     async def test_health_detailed_returns_ok(self, adapter):
         """GET /health/detailed returns status, platform, and runtime fields."""
+        adapter._running = True
+        with patch.object(adapter, "_write_runtime_status_safe"):
+            adapter._record_api_metrics({"total_tokens": 9}, 0.02)
         app = _create_app(adapter)
         with patch("gateway.status.read_runtime_status", return_value={
             "gateway_state": "running",
@@ -797,7 +847,10 @@ class TestHealthDetailedEndpoint:
                 assert data["status"] == "ok"
                 assert data["platform"] == "hermes-agent"
                 assert data["gateway_state"] == "running"
-                assert data["platforms"] == {"telegram": {"state": "connected"}}
+                assert data["platforms"]["telegram"] == {"state": "connected"}
+                assert data["platforms"]["api_server"]["metrics"]["metrics_today"]["requests"] == 1
+                assert data["metrics_today"]["tokens"] == 9
+                assert data["last_heartbeat"] is not None
                 assert data["active_agents"] == 2
                 # Derived busy/drainable: this endpoint is served BY the live
                 # gateway, so running + 2 agents ⇒ busy and drainable.
@@ -2261,6 +2314,41 @@ class TestCORS:
             assert resp.status == 200
             assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
             assert "Authorization" in resp.headers.get("Access-Control-Allow-Headers", "")
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("live_bot_chat", [False, True], ids=["agent_turn", "live_bot_chat"])
+    async def test_cors_headers_present_on_session_chat_stream(self, live_bot_chat):
+        """Both session SSE writers (agent turn and live Bot Chat hand-off) must
+        resolve CORS up front: the middleware can't touch headers after
+        ``prepare()`` flushes them (#72892).
+        """
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        admitted = (Path("unused"), {"delivery_id": "d1", "status": "queued"}) if live_bot_chat else None
+        settled = {"delivery_id": "d1", "status": "settled", "reply": "ok"}
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": "s1"}, None)),
+                patch.object(adapter, "_conversation_history_for_session", return_value=[]),
+                patch.object(adapter, "_admit_to_live_bot_chat", new_callable=AsyncMock, return_value=admitted),
+                patch.object(adapter, "_await_live_bot_chat_receipt", new_callable=AsyncMock, return_value=settled),
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+            ):
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/api/sessions/s1/chat/stream",
+                    json={"message": "hi"},
+                    headers={"Origin": "http://localhost:3000"},
+                )
+                assert resp.status == 200
+                await resp.text()  # consume SSE stream fully
+                assert mock_run.called is not live_bot_chat
+        assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
+        assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
 
 
 # ---------------------------------------------------------------------------

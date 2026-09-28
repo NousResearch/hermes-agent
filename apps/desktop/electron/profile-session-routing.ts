@@ -4,6 +4,21 @@ interface SessionListResponse {
   [key: string]: unknown
 }
 
+/** HTTP status an error carries (the REST helpers stamp `err.statusCode`), NaN when none. */
+function httpStatusOf(error: unknown): number {
+  return Number(error && typeof error === 'object' ? (error as { statusCode?: unknown }).statusCode : NaN)
+}
+
+/** True when a remote rejected a profile-scoped read because it cannot serve
+ * that scope: 400 (invalid profile param) or 404 (profile does not exist).
+ * Auth (401/403), transport, and 5xx failures are real errors — retrying
+ * those would just relabel the failure. */
+export function isRemoteProfileScopeError(error: unknown): boolean {
+  const status = httpStatusOf(error)
+
+  return status === 400 || status === 404
+}
+
 export interface ProfileSessionsResponse extends SessionListResponse {
   profile_totals: Record<string, number>
 }
@@ -367,13 +382,120 @@ export function spliceRegistrySessionRows(
   return { added }
 }
 
+/**
+ * The remote-profile query scope for a per-profile override read: the remote
+ * alias when the override is a managed SSH connection with a configured
+ * `remoteProfile` (the remote knows THAT name, not the Desktop label), else
+ * the Desktop profile name itself. Empty only for an empty profile — every
+ * concrete scope, `default` included, is named on the wire so a multi-profile
+ * backend opens that profile's state.db instead of its launch profile's.
+ */
+export function remoteProfileQueryScope(profile: string, remoteProfileAlias?: null | string): string {
+  const configured = String(remoteProfileAlias || '').trim()
+
+  if (configured && configured !== 'default') {
+    return configured
+  }
+
+  return String(profile || '').trim()
+}
+
+/** Options for {@link fetchRemoteProfileSessions}. */
+export interface RemoteProfileSessionsOptions {
+  /** Managed-SSH `remoteProfile` mapping, when the remote knows the profile
+   * under a different name than the Desktop label. */
+  remoteProfileAlias?: null | string
+}
+
+/**
+ * #64999: stamp a remote session list's rows WITHOUT manufacturing labels.
+ * The remote's own `profile` stamp is authoritative — overwriting it with the
+ * Desktop connection-scope name relabeled rows from the backend's other
+ * profiles (one remote URL shared by `wife` and `dad` scopes showed the launch
+ * profile's sessions under both). The legacy label only backfills rows an
+ * older remote returned unowned.
+ *
+ * Mutates and returns `rows` in place, mirroring the old splice behavior.
+ */
+export function tagRemoteSessionRows(rows: unknown[], scope: string): unknown[] {
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') {
+      continue
+    }
+
+    const session = row as Record<string, unknown>
+    const owned = typeof session.profile === 'string' && session.profile.trim() !== ''
+
+    if (!owned) {
+      session.profile = scope
+    }
+
+    if (session.profile === scope) {
+      session.is_default_profile = false
+    }
+  }
+
+  return rows
+}
+
+/**
+ * #64999: a per-session read/mutation against a per-profile override must be
+ * scoped for a multi-profile remote (an unscoped /api/sessions/{id} opens the
+ * backend's launch-profile state.db, so a resume 4007s even though the row
+ * exists — under its real owner). Returns the path with the owner scope
+ * applied; a legacy single-profile scope (`''`) keeps the path bare.
+ */
+export function pathWithRemoteOwnerScope(path: string, scope: string): string {
+  const scoped = String(scope || '').trim()
+
+  if (!scoped) {
+    return path
+  }
+
+  const url = new URL(path, 'http://hermes.local')
+  url.searchParams.set('profile', scoped)
+
+  return `${url.pathname}${url.search}${url.hash}`
+}
+
 export async function fetchRemoteProfileSessions(
   profile: string,
   searchParams: URLSearchParams,
-  fetchJsonForProfile: FetchJsonForProfile
+  fetchJsonForProfile: FetchJsonForProfile,
+  options: RemoteProfileSessionsOptions = {}
 ): Promise<SessionListResponse> {
   const params = new URLSearchParams(searchParams)
-  params.delete('profile') // the remote serves its own database
+  // #64999: a per-profile override can point at a MULTI-profile backend — one
+  // `hermes serve` hosting several profiles — and an unscoped /api/sessions
+  // reads whichever profile the backend process was launched under. Name the
+  // scope so the rows provably belong to it; the remote's own stamps then
+  // carry the authoritative identity (main.ts no longer relabels).
+  const scope = remoteProfileQueryScope(profile, options.remoteProfileAlias)
+
+  const fetchPage = async (pageParams: URLSearchParams): Promise<SessionListResponse> => {
+    pageParams.delete('profile')
+
+    if (scope) {
+      pageParams.set('profile', scope)
+
+      try {
+        return (await fetchJsonForProfile(profile, `/api/sessions?${pageParams}`)) as SessionListResponse
+      } catch (error) {
+        // A remote that rejects the scope (400 unknown profile / 404 profile
+        // does not exist) proves it serves a single launch profile natively —
+        // the legacy shape this code was written for. Fall back to the
+        // remote's own database exactly as before; auth/transport/5xx errors
+        // are real failures and propagate.
+        if (!isRemoteProfileScopeError(error)) {
+          throw error
+        }
+
+        pageParams.delete('profile')
+      }
+    }
+
+    return (await fetchJsonForProfile(profile, `/api/sessions?${pageParams}`)) as SessionListResponse
+  }
 
   const requestedLimit = Number(params.get('limit'))
   const requestedOffset = Number(params.get('offset') || '0')
@@ -385,7 +507,7 @@ export async function fetchRemoteProfileSessions(
     requestedOffset >= 0
 
   if (!needsPaging) {
-    return (await fetchJsonForProfile(profile, `/api/sessions?${params}`)) as SessionListResponse
+    return fetchPage(params)
   }
 
   const sessions: unknown[] = []
@@ -402,7 +524,7 @@ export async function fetchRemoteProfileSessions(
     pageParams.set('limit', String(pageLimit))
     pageParams.set('offset', String(pageOffset))
 
-    const page = (await fetchJsonForProfile(profile, `/api/sessions?${pageParams}`)) as SessionListResponse
+    const page = await fetchPage(pageParams)
     firstPage ??= page
 
     const total = nonNegativeNumber(page.total)

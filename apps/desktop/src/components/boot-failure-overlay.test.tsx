@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
@@ -115,6 +115,66 @@ describe('BootFailureOverlay', () => {
     fireEvent.click(screen.getByRole('button', { name: /back/i }))
     expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /back/i })).toBeNull()
+  })
+
+  it('hides the modal on dismiss without clearing the boot error', () => {
+    const { rerender } = render(<BootFailureOverlay />)
+    const error = $desktopBoot.get().error
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect($desktopBoot.get().error).toBe(error)
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    $desktopBoot.set({ ...$desktopBoot.get(), error: 'A different startup failure' })
+    rerender(<BootFailureOverlay />)
+    expect(screen.getByRole('dialog', { name: /Hermes couldn't start/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    $desktopBoot.set({ ...$desktopBoot.get(), error: null, running: false })
+    rerender(<BootFailureOverlay />)
+    $desktopBoot.set({ ...$desktopBoot.get(), error, running: false })
+    rerender(<BootFailureOverlay />)
+
+    expect(screen.getByRole('dialog', { name: /Hermes couldn't start/i })).toBeTruthy()
+  })
+
+  it('dismisses on Escape and keeps the boot error latched', () => {
+    render(<BootFailureOverlay />)
+    const error = $desktopBoot.get().error
+
+    fireEvent.keyDown(screen.getByRole('dialog', { name: /Hermes couldn't start/i }), { key: 'Escape' })
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect($desktopBoot.get().error).toBe(error)
+  })
+
+  it('dismisses from the embedded gateway settings view', async () => {
+    render(<BootFailureOverlay />)
+
+    fireEvent.click(screen.getByRole('button', { name: /gateway settings/i }))
+    expect(await screen.findByRole('dialog', { name: /gateway settings/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect($desktopBoot.get().error).toBeTruthy()
+  })
+
+  it('re-shows the same error after a retry starts and fails again', () => {
+    render(<BootFailureOverlay />)
+    const error = $desktopBoot.get().error
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    act(() => $desktopBoot.set({ ...$desktopBoot.get(), running: true }))
+    act(() => $desktopBoot.set({ ...$desktopBoot.get(), error, running: false }))
+
+    expect(screen.getByRole('dialog', { name: /Hermes couldn't start/i })).toBeTruthy()
   })
 
   it('drops local-only Repair and Use-local-gateway on a local failure', () => {

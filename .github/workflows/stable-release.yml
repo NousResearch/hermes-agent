@@ -69,12 +69,12 @@ jobs:
 
   docker:
     name: Docker build and tests
-    needs: [admit, ci]
+    needs: admit
     # The image publish-docker pushes is built here, so a claim that skipped
-    # tests still runs this job with its tests off.
+    # tests still runs this job with its tests off. It builds alongside the
+    # gates; only the acceptance join waits for CI.
     if: >-
       !cancelled() && needs.admit.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     uses: ./.github/workflows/docker.yml
     with:
       release-phase: test
@@ -83,23 +83,28 @@ jobs:
       version: ${{ needs.admit.outputs.version }}
 
   nix:
-    needs: [admit, ci, docker]
+    needs: admit
+    # The claim's policy removes it, not a gate it happens to need.
+    if: needs.admit.outputs.skip-tests != 'true'
     uses: ./.github/workflows/nix.yml
     with:
       release: true
       version: ${{ needs.admit.outputs.version }}
 
   pm-bundle:
-    needs: [admit, ci, docker]
-    # Needing ci already removes it under skip-tests.
-    if: needs.admit.outputs.skip-bundles != 'true'
+    needs: admit
+    # Bundle acceptance is a test of bundles, so either claim flag removes it.
+    if: >-
+      needs.admit.outputs.skip-bundles != 'true'
+      && needs.admit.outputs.skip-tests != 'true'
     uses: ./.github/workflows/pm-bundle.yml
     with:
       release: true
       ref: ${{ github.sha }}
 
   termux-checks:
-    needs: [ci, docker]
+    needs: admit
+    if: needs.admit.outputs.skip-tests != 'true'
     permissions:
       contents: read
       actions: read
@@ -108,14 +113,16 @@ jobs:
       release: true
 
   windows-live:
-    needs: [ci, docker]
+    needs: admit
+    if: needs.admit.outputs.skip-tests != 'true'
     uses: ./.github/workflows/windows-venv-e2e.yml
     with:
       release: true
 
   install-e2e:
     name: Install and update E2E
-    needs: [ci, docker]
+    needs: admit
+    if: needs.admit.outputs.skip-tests != 'true'
     permissions:
       contents: read
       actions: read
@@ -128,11 +135,10 @@ jobs:
 
   candidates-darwin-arm64:
     name: Build signed release candidates (darwin-arm64)
-    needs: [admit, ci, docker]
+    needs: admit
+    # Starts with the gates; the acceptance join is what requires CI.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
-      && needs.docker.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
@@ -149,11 +155,10 @@ jobs:
 
   candidates-darwin-x64:
     name: Build signed release candidates (darwin-x64)
-    needs: [admit, ci, docker]
+    needs: admit
+    # Starts with the gates; the acceptance join is what requires CI.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
-      && needs.docker.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
@@ -170,11 +175,10 @@ jobs:
 
   candidates-win32-arm64:
     name: Build signed release candidates (win32-arm64)
-    needs: [admit, ci, docker]
+    needs: admit
+    # Starts with the gates; the acceptance join is what requires CI.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
-      && needs.docker.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
@@ -191,11 +195,10 @@ jobs:
 
   candidates-win32-x64:
     name: Build signed release candidates (win32-x64)
-    needs: [admit, ci, docker]
+    needs: admit
+    # Starts with the gates; the acceptance join is what requires CI.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
-      && needs.docker.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
@@ -212,11 +215,10 @@ jobs:
 
   candidates-win32-bundle:
     name: Build signed release candidates (win32-bundle)
-    needs: [admit, ci, docker, candidates-win32-arm64, candidates-win32-x64]
+    needs: [admit, candidates-win32-arm64, candidates-win32-x64]
+    # Starts with the gates; the acceptance join is what requires CI.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
-      && needs.docker.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
       && needs.candidates-win32-arm64.result == 'success'
       && needs.candidates-win32-x64.result == 'success'
     permissions:
@@ -235,11 +237,10 @@ jobs:
 
   candidates-termux:
     name: Build signed release candidates (termux)
-    needs: [admit, ci, docker]
+    needs: admit
+    # Starts with the gates; the acceptance join is what requires CI.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
-      && needs.docker.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read

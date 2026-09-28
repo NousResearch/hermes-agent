@@ -6626,6 +6626,8 @@ def _define_discord_view_classes() -> None:
             )
 
         async def _on_cancel(self, interaction: discord.Interaction):
+            if not await self._gate(interaction, resolved_msg=None, unauth_msg=_UNAUTHORIZED):
+                return
             self.resolved = True
             self.clear_items()
             await self._edit(interaction, "Model selection cancelled.", color=discord.Color.greyple())

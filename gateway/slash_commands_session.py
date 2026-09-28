@@ -604,8 +604,10 @@ class GatewaySessionCommandsMixin:
                             session_id=session_id,
                             session_db=getattr(self._session_db, "_db", self._session_db))
         _seed_hygiene_system_prompt(tmp_agent, session_row)
-        # Real platform during construction (context engines bind correctly); afterwards a prompt
-        # rebuilt by compression is stamped as the provider-less fallback, stale for the next turn.
+        # Real platform during construction (context engines bind correctly); the stamp afterwards
+        # only marks this agent as no real surface. Since #104414 Platform is not a restore-identity
+        # field, so it no longer forces the next live turn to rebuild; the seed's retain flag is what
+        # keeps the reduced-toolset build out of the session row (#122822).
         tmp_agent.platform = _GATEWAY_HYGIENE_PLATFORM
         tmp_agent._print_fn = lambda *a, **kw: None
         # close() must not end the rotated session the gateway entry now points at.
@@ -1039,7 +1041,11 @@ class GatewaySessionCommandsMixin:
         # ``_branched_from`` keeps the branch visible in /resume and /sessions after the parent is
         # reopened and re-ended. ALL routing columns go in at CREATE time: a crash before
         # switch_session() records the peer would otherwise leave the branch unroutable.
+        # The child sends the parent's exact system prompt: a row without one makes the branch's
+        # first turn rebuild (re-probing the workspace) and forfeits the warm cache the copied
+        # transcript buys.
         try:
+            parent = await self._session_db.get_session(parent_session_id)
             await self._session_db.create_session(
                 session_id=new_session_id,
                 source=source.platform.value if source.platform else "gateway",
@@ -1048,7 +1054,7 @@ class GatewaySessionCommandsMixin:
                 parent_session_id=parent_session_id, user_id=dest_source.user_id,
                 session_key=dest_key, chat_id=dest_source.chat_id, chat_type=dest_source.chat_type,
                 thread_id=dest_source.thread_id, origin_json=_branch_origin_json,
-                display_name=current_entry.display_name)
+                display_name=current_entry.display_name, system_prompt=(parent or {}).get("system_prompt") or None)
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)
             return t("gateway.branch.create_failed", error=e)

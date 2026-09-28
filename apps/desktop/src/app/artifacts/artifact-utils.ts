@@ -30,7 +30,7 @@ export interface ArtifactLoadResult {
 
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
-const URL_RE = /https?:\/\/[^\s<>"')]+/g
+const URL_RE = /https?:\/\/[^\s<>"')`]+/g
 const PATH_RE = /(^|[\s("'`])((?:\/|~[\\/]|\.\.?[\\/]|\\\\)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const WINDOWS_PATH_RE = /(^|[\s("'`])([A-Za-z]:[\\/][^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
@@ -56,7 +56,40 @@ const SCREENSHOT_PATH_RE = /Screenshot path:\s*([^\r\n<>]+)/gi
 // scraped heuristically out of prose or a tool payload.
 type PushValue = (value: string, explicit?: boolean) => void
 
+// pip's own traffic, not session output (#52972): terminal output logs every
+// download (`Downloading https://<index>/packages/…/pkg-1.0-py3-none-any.whl`,
+// plus its `.whl.metadata`) and cached files live under pip's cache dir.
+const PIP_CACHE_DIR_RE = /\/(?:\.cache\/pip|library\/caches\/pip|appdata\/local\/pip\/cache)\//
+const WHEEL_RE = /\.whl(?:\.metadata)?$/
+const PACKAGE_INDEX_DIST_RE = /\/packages\/.+\.(?:tar\.gz|tar\.bz2|zip|egg)(?:\.metadata)?$/
+
+function artifactPathForFiltering(value: string): string {
+  if (/^(?:https?|file):\/\//i.test(value)) {
+    try {
+      return decodeURIComponent(new URL(value).pathname).toLowerCase()
+    } catch {
+      // Malformed URL: fall through to plain string normalization.
+    }
+  }
+
+  return value.replace(/\\/g, '/').toLowerCase()
+}
+
+function isPythonPackageDownload(value: string): boolean {
+  const path = artifactPathForFiltering(value)
+
+  return (
+    PIP_CACHE_DIR_RE.test(path) ||
+    WHEEL_RE.test(path) ||
+    (/^https?:\/\//i.test(value) && PACKAGE_INDEX_DIST_RE.test(path))
+  )
+}
+
 function looksLikeArtifact(value: string, explicit = false): boolean {
+  if (!explicit && isPythonPackageDownload(value)) {
+    return false
+  }
+
   if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
     return true
   }
@@ -81,7 +114,21 @@ function artifactSessionTitle(session: SessionInfo): string {
 }
 
 function normalizeValue(value: string): string {
-  return value.trim().replace(/[),.;]+$/, '')
+  let trimmed = value.trim()
+
+  for (let i = 0; i < 3; i += 1) {
+    const quote = trimmed[0]
+
+    if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
+      trimmed = trimmed.slice(1, -1).trim()
+
+      continue
+    }
+
+    break
+  }
+
+  return trimmed.replace(/[`*]+$/g, '').replace(/[),.;]+$/, '')
 }
 
 // Chat renders file refs as `[label](#media:<encoded path>)`. Decode before
@@ -404,9 +451,8 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
       // their non-index segments, and with no index the shell-output/explicit
       // key tests match the last real segment. Do NOT switch this to
       // exact-key matching — it would silently stop indexing those shapes.
-      const segments = keyPath
-        .split('.')
-        .filter(segment => segment && !/^\d+$/.test(segment))
+      const segments = keyPath.split('.').filter(segment => segment && !/^\d+$/.test(segment))
+
       const shellOutput = terminalTool && segments.some(segment => SHELL_OUTPUT_KEY_RE.test(segment))
 
       if (!shellOutput && !explicitToolArtifactKey(keyPath, producerTool)) {

@@ -264,8 +264,8 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float, *, on_progress
     """SIGUSR1 (drain-aware restart) a gateway PID and wait for exit; False if unsent or it outlived the timeout.
 
     gateway/run.py maps SIGUSR1 to ``request_restart(via_service=True)``: refuse new turns, drain,
-    ``stop()``, exit; the supervisor relaunches. ``drain_timeout`` must cover after-turn wait + drain
-    — pass ``resolve_restart_exit_wait_budget(...)``. ``on_progress`` (zero-arg) runs on every poll so
+    ``stop()``, exit; the supervisor relaunches. ``drain_timeout`` must cover after-turn wait + the full stop
+    envelope — pass ``resolve_restart_exit_wait_budget(...)``. ``on_progress`` (zero-arg) runs on every poll so
     a long wait can report what the gateway is still holding for (``update_cmd_drain_report``).
     """
     if not hasattr(signal, "SIGUSR1") or pid <= 0:
@@ -579,7 +579,9 @@ def _scan_gateway_pids(
         hermes_home_assignments,
         command_line_names_hermes_home,
     )
-    current_home = str(get_hermes_home().resolve())
+    from hermes_cli.dashboard_procs import _hermes_home_for_pid, _normalized_home_for_compare
+    current_home_path = get_hermes_home().resolve()
+    current_home = str(current_home_path)
     # Forward slashes on both sides of the HERMES_HOME= match (mirrors gateway.status), and no
     # trailing separator: the assignments parser strips one, so the systemd ``Environment=``
     # spelling (``HERMES_HOME=/root/.hermes/``) compares equal to the resolved home.
@@ -587,8 +589,11 @@ def _scan_gateway_pids(
     current_profile_arg = _profile_arg(current_home)
     current_profile_name = current_profile_arg.split()[-1] if current_profile_arg else ""
     current_profile_name_lc = current_profile_name.lower()
+    # ``_profile_arg`` is "" for ANY root, and get_default_hermes_root() calls a temp or Docker
+    # HERMES_HOME "the root itself", so only the home owning the bare service name is the default one.
+    current_home_is_native = not current_profile_name and _home_owns_bare_service_name(current_home_path)
 
-    def _matches_current_profile(command: str) -> bool:
+    def _matches_current_profile(pid: int, command: str) -> bool:
         command_lc = command.lower().replace("\\", "/")
         if current_profile_name:
             # Token equality, not substring: `-p ops` must not claim (or SIGTERM) an `-p ops-2` gateway.
@@ -596,20 +601,28 @@ def _scan_gateway_pids(
                 return True
             return command_line_names_hermes_home(command_lc, current_home_lc)
 
-        # Default profile: accept unless argv advertises another profile in any spelling the CLI
-        # pre-parser accepts (``--profile=ops`` slipped past a substring test, so a default-profile
-        # fallback stop could SIGTERM the named gateway). HERMES_HOME may come via env (invisible to
-        # wmic/CIM), so only a non-matching explicit HERMES_HOME= disqualifies.
+        # Root home: reject argv that advertises another profile in any spelling the CLI pre-parser
+        # accepts (``--profile=ops`` slipped past a substring test, so a default-profile fallback stop
+        # could SIGTERM the named gateway) or a HERMES_HOME= naming another home.
         if profile_flag_value(command_lc) is not None:
             return False
-        return (not hermes_home_assignments(command_lc)
-                or command_line_names_hermes_home(command_lc, current_home_lc))
+        if hermes_home_assignments(command_lc):
+            return command_line_names_hermes_home(command_lc, current_home_lc)
+        # No home on argv: it came through the environment (launchd plist, systemd unit, a test's
+        # child), so argv proves nothing. Treating that as "ours" let a temp-home web server's orphan
+        # reaper SIGTERM the operator's launchd gateway. The process's own environment decides.
+        owner_home = _hermes_home_for_pid(pid)
+        if owner_home is not None:
+            return _normalized_home_for_compare(owner_home) == _normalized_home_for_compare(current_home)
+        # Unreadable environment (another user, hardened /proc, an elevated process behind the
+        # wmic/CIM listing): only the native default home keeps the legacy bare-argv claim.
+        return current_home_is_native
 
     def _consider(pid: int, command: str) -> None:
         matches_runtime = looks_like_gateway_command_line(command) or (
             include_restart_managers and looks_like_gateway_runtime_command_line(command)
         )
-        if matches_runtime and (all_profiles or _matches_current_profile(command)):
+        if matches_runtime and (all_profiles or _matches_current_profile(pid, command)):
             _append_unique_pid(pids, pid, exclude_pids)
 
     try:
@@ -970,10 +983,78 @@ def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str]
 
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     """Relaunch a manually-run profile gateway after its current PID exits."""
-    return old_pid > 0 and _spawn_gateway_restart_watcher(old_pid, _gateway_run_args_for_profile(profile))
+    return old_pid > 0 and _spawn_gateway_restart_watcher(
+        old_pid,
+        _gateway_run_args_for_profile(profile),
+        host=profile == "default",
+    )
 
 
-def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
+GATEWAY_RESTART_WATCHER_TIMEOUT_S = 120
+"""How long the detached restart watcher waits for the old PID to exit before giving up.
+
+``hermes update``'s post-relaunch liveness check budgets against this: the watcher spawns the new
+gateway only AFTER the old PID is gone, so a verification window shorter than this can expire
+before the relaunch it is verifying has even started (#107002).
+"""
+
+
+def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
+    """True when *argv* relaunches the host multiplexer, not a named profile's own gateway.
+
+    ``--profile <name>`` (other than default) is that profile. A selector-less argv is
+    decided by ALREADY-SETTLED identity, never ambient coordinates alone (#93943):
+
+    1. this process's own settled multiplex verdict (``is_multiplex_active`` — set by
+       boot after ``resolve_multiplex_mode``; the gateway replaying its own restart);
+    2. the live host gateway's published rendezvous record (proof the RUNNING owner
+       settled multiplex — the update/fleet process replaying a foreign gateway's
+       captured argv has no settled flag of its own);
+    3. only then the compatibility default-root comparison.
+    """
+    if not argv or "gateway" not in argv:
+        return False
+    for flag in ("--profile", "-p"):
+        if flag in argv:
+            idx = argv.index(flag)
+            name = argv[idx + 1] if idx + 1 < len(argv) else ""
+            return name == "default"
+    if any(part == "--profile=default" for part in argv):
+        return True
+    if any(part.startswith("--profile=") and not part.endswith("=default") for part in argv):
+        return False
+    try:
+        from agent.secret_scope import is_multiplex_active
+        if is_multiplex_active():
+            return True
+    except Exception:
+        pass
+    # The publishing gateway's SETTLED served set, not this process's ambient home:
+    # a host launched from a named profile must be replayed as the host even though
+    # the replaying process (the updater) sits on the named profile's home.
+    try:
+        from gateway import host_rendezvous as hr
+        record = hr.read_record(hr.ROLE_GATEWAY)
+        if record is not None and hr.liveness_is_proven(record) and len(record.profiles) > 1:
+            return True
+    except Exception:
+        pass
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home
+        return get_hermes_home().resolve() == get_default_hermes_root().resolve()
+    except Exception:
+        return False
+
+
+def _host_gateway_watcher_env() -> dict[str, str]:
+    """Scrubbed default-profile env for a detached host-gateway respawn watcher."""
+    from tools.environments.local import host_gateway_child_env
+    env = host_gateway_child_env()
+    env.pop("_HERMES_GATEWAY", None)
+    return env
+
+
+def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None) -> bool:
     """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits. Watcher and respawn
     both need platform-appropriate detach: POSIX setsid; on Windows ``start_new_session`` does NOT detach
     (the watcher would die with the CLI console), so ``windows_detach_popen_kwargs()`` supplies flags."""
@@ -1005,19 +1086,23 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         import subprocess
         import sys
         import time
+        # Stdlib-only imports: the watcher runs on the updater's interpreter, which after the
+        # package-manager handoff is the bare store Python without the dependency environment.
+        # ``-c`` only puts the cwd on sys.path, so name the checkout explicitly.
+        sys.path.insert(0, {project_root_literal})
         from hermes_cli._subprocess_compat import (
-            _WINDOWS_GATEWAY_BREAKAWAY_ENV, windows_detach_flags, windows_detach_flags_without_breakaway,
+            _WINDOWS_GATEWAY_BREAKAWAY_ENV, pid_exists_stdlib, windows_detach_flags,
+            windows_detach_flags_without_breakaway,
         )
 
         pid = int(sys.argv[1])
         cmd = sys.argv[2:]
         _respawn_cwd = {respawn_cwd_literal}
         _respawn_env_overlay = {respawn_env_literal}
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + {watcher_timeout_literal}
         while time.monotonic() < deadline:
             # ``os.kill(pid, 0)`` is not a no-op on Windows — use the cross-platform existence check.
-            from gateway.status import _pid_exists
-            if not _pid_exists(pid):
+            if not pid_exists_stdlib(pid):
                 break
             time.sleep(0.2)
 
@@ -1027,7 +1112,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         _stdio_target = subprocess.DEVNULL
         _stdio_fh = None
         try:
-            from hermes_cli.config import get_hermes_home
+            from hermes_constants import get_hermes_home
             from pathlib import Path
             _log_dir = Path(get_hermes_home()) / "logs"
             _log_dir.mkdir(parents=True, exist_ok=True)
@@ -1073,13 +1158,21 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
                 except OSError:
                     pass
         """
-    ).strip().format(respawn_cwd_literal=json.dumps(respawn_cwd), respawn_env_literal=json.dumps(respawn_env_overlay))
+    ).strip().format(respawn_cwd_literal=json.dumps(respawn_cwd), respawn_env_literal=json.dumps(respawn_env_overlay),
+                     watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S),
+                     project_root_literal=json.dumps(str(PROJECT_ROOT)))
 
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    # Host respawn must not inherit a named launcher's dotenv. The watcher copies os.environ
+    # into the gateway child, so the scrub has to be the watcher's own environ.
+    watcher_env = _host_gateway_watcher_env() if (
+        _restart_argv_is_host_gateway(run_argv) if host is None else host
+    ) else None
+    popen_env = {"env": watcher_env} if watcher_env is not None else {}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:
-        subprocess.Popen(watcher_argv, **devnull, **windows_detach_popen_kwargs())
+        subprocess.Popen(watcher_argv, **devnull, **popen_env, **windows_detach_popen_kwargs())
     except OSError:
         # Parent job object rejected CREATE_BREAKAWAY_FROM_JOB; retry without it (Windows only —
         # ``start_new_session=True`` cannot raise OSError on POSIX).
@@ -1088,7 +1181,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
             else {"start_new_session": True}
         )
         try:
-            subprocess.Popen(watcher_argv, **devnull, **fallback_kwargs)
+            subprocess.Popen(watcher_argv, **devnull, **popen_env, **fallback_kwargs)
         except OSError:
             return False
     return True
@@ -1685,11 +1778,22 @@ def _reaper_candidate_is_supervisor_owned(pid: int) -> bool:
     return False
 
 
-def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool:
+def _reap_unsupervised_gateway_orphans(
+    extra_exclude: set | None = None, *, min_age_s: float = 0.0,
+) -> bool:
     """Kill no-supervisor gateway orphans the pidfile/runtime record can't see. On WSL/no-systemd hosts
     the restart fallback runs the gateway in-process under a ``gateway restart`` argv; a stale pidfile
     then lets a live orphan keep the webhook port while a restart stacks a duplicate. No-op where a
-    supervisor exists (there ``gateway restart`` is a transient command). ``extra_exclude``: already killed."""
+    supervisor exists (there ``gateway restart`` is a transient command). ``extra_exclude``: already killed.
+
+    ``min_age_s`` spares a candidate younger than the grace: a gateway claims
+    ``gateway.pid``/``gateway.lock`` only after imports + runner setup, so a process
+    that a previous Desktop generation (or a concurrent ``gateway start``) just launched
+    is scan-visible but not yet record-visible, and the argv sweep cannot tell it from
+    a corpse. Reaping it writes a planned-stop marker it consumes seconds later — a clean
+    exit 0 with no supervisor to revive it (#122533). The Desktop boot sweep passes a
+    grace; stop/restart keep reaping at once.
+    """
     try:
         supervised_host = supports_systemd_services()
     except Exception:
@@ -1721,6 +1825,16 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
         ]
     except Exception:
         return False
+    if min_age_s > 0:
+        from hermes_cli.dashboard_procs import _process_age_seconds
+
+        def _old_enough(pid: int) -> bool:
+            try:  # an undeterminable age must never widen the reap
+                return _process_age_seconds(pid) >= min_age_s
+            except Exception:
+                return False
+
+        orphans = [p for p in orphans if _old_enough(p)]
     if not orphans:
         return False
 
@@ -2126,6 +2240,11 @@ def _bare_unit_pinned_home() -> Path | None:
         return None
 
 
+def _home_owns_bare_service_name(home: Path) -> bool:
+    """True for the resolved ``home`` that owns the bare service name (see ``_profile_suffix``)."""
+    return home in _native_service_homes() or home == _bare_unit_pinned_home()
+
+
 def _profile_suffix() -> str:
     """Service-name suffix for HERMES_HOME: "" for a home that owns the bare name, the profile name for
     ``<root>/profiles/<name>``, else a short hash of the path.
@@ -2148,7 +2267,7 @@ def _profile_suffix() -> str:
     import hashlib
     from hermes_constants import get_default_hermes_root
     home = get_hermes_home().resolve()
-    if home in _native_service_homes() or home == _bare_unit_pinned_home():
+    if _home_owns_bare_service_name(home):
         return ""
     name = _profile_name_from_home(home, get_default_hermes_root().resolve())
     return name or hashlib.sha256(str(home).encode()).hexdigest()[:8]
@@ -3486,14 +3605,11 @@ def _get_cron_drain_timeout() -> float:
 def _get_restart_exit_wait_budget() -> float:
     """CLI wait for gateway exit after SIGUSR1 / self-restart (#77184)."""
     return resolve_restart_exit_wait_budget(
-        # TimeoutStopSec must cover the full stop budget, not just restart_drain_timeout. Cron work can
-        # legally wait cron_drain_timeout plus cleanup reserve before interrupt/teardown, and systemd
-        # SIGKILLs if the unit's deadline is shorter (#94759). 30s of post-drain headroom is preserved on
-        # top, with a 60s floor.
         _get_restart_drain_timeout(),
         _agent_timeout_setting(
             "HERMES_RESTART_AFTER_TURN_TIMEOUT", "restart_after_turn_timeout", parse_restart_after_turn_timeout
         ),
+        _get_cron_drain_timeout(),
     )
 
 

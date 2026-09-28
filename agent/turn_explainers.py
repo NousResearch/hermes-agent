@@ -122,12 +122,13 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
     # The forensic runbook for both (WAL generations, manifest.json, sidecars) lives in the
     # logger.error at hermes_state.py::_raise_if_db_replaced — never in the chat reply.
     "replaced": (
-        "the session database file was replaced while Hermes was running, so this "
-        "message was not saved (a copy is kept in {home}/sessions/). Stop Hermes "
-        "(`hermes {profile_arg}gateway stop`), run `hermes {profile_arg}doctor` — not "
+        "the session database file was replaced while Hermes was running (usually a sync client "
+        "such as iCloud Drive or Dropbox mirroring this profile to another machine, or a backup "
+        "copied over it), so this message was not saved (a copy is kept in {home}/sessions/). "
+        "Nothing is lost. Stop Hermes (`hermes {profile_arg}gateway stop`), stop whatever is "
+        "rewriting the file, run `hermes {profile_arg}doctor` — not "
         "`hermes {profile_arg}doctor --fix`, which would repair the wrong file in place — "
-        "then start it again and send your message once more. Advanced recovery steps are "
-        "in the log."
+        "then start it again and send your message once more. Guide: {recovery_docs}"
     ),
     "deleted_wal": (
         "another Hermes process still holds an old copy of the session database's write-ahead "

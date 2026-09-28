@@ -194,12 +194,20 @@ class DeletedWalGenerationError(StateDbReplacedError):
 # same path keeps st_ino and truncates+rewrites.
 _STATE_DB_APPLICATION_ID_OFFSET = 68
 _STATE_DB_GENERATION_KEY = "db_file_generation"
+STORAGE_RECOVERY_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/session-storage-recovery"
+
+# Same two layers as the WAL-generation message below. The usual replacer is a file-sync client
+# (iCloud Drive, Dropbox, OneDrive, Syncthing) mirroring ~/.hermes between two machines, or a
+# backup restored / `cp`'d over state.db while Hermes was running; the guide names both. The
+# phrase "was replaced underneath" is the classifier's RPC-wrapped fingerprint — keep it.
 _STATE_DB_REPLACED_MSG = (
     "FATAL: state.db was replaced underneath the gateway; refusing further "
-    "writes to this file. Divert transcripts to sessions/<id>.jsonl (and the "
-    "gateway pending_messages spool) and restore or reopen after operator intervention."
+    "writes to this file. Nothing is lost: transcripts are diverted to sessions/<id>.jsonl (and the "
+    "gateway pending_messages spool). Stop every Hermes process on this profile, find what rewrote "
+    "the file (a sync client mirroring this folder to another machine, a restored backup, a copy "
+    "over state.db), stop it doing so, then start Hermes again. "
+    f"Guide: {STORAGE_RECOVERY_DOCS_URL}#state-db-was-replaced"
 )
-STORAGE_RECOVERY_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/session-storage-recovery"
 
 # Two layers (#110054): the first sentence is for the person reading a chat bubble or a banner (what
 # happened, nothing is lost, the one thing to do); the rest is the operator detail. The phrase

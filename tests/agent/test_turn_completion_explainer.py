@@ -535,3 +535,17 @@ def test_classify_persistence_error_quarantined_handle_is_corrupt() -> None:
     from hermes_state import StateDbCorruptError, classify_persistence_error
 
     assert classify_persistence_error(StateDbCorruptError("quarantined")) == "corrupt"
+
+
+def test_replaced_cause_names_the_replacer_and_links_the_guide():
+    """A synced ~/.hermes (two machines) is the common way state.db gets replaced; the reply and
+    the FATAL log line both have to say so and point at the guide, or the user restarts into
+    the same refusal (Reddit r/hermesagent, Sep 2026)."""
+    from hermes_state_errors import _STATE_DB_REPLACED_MSG, STORAGE_RECOVERY_DOCS_URL
+
+    out = AIAgent._format_turn_completion_explanation("session_persistence_failed", "replaced")
+    assert STORAGE_RECOVERY_DOCS_URL in out
+    assert "sync" in out.lower()
+    assert "nothing is lost" in out.lower()
+    assert STORAGE_RECOVERY_DOCS_URL in _STATE_DB_REPLACED_MSG
+    assert "was replaced underneath" in _STATE_DB_REPLACED_MSG  # classifier fingerprint

@@ -1,6 +1,6 @@
 ---
 title: "Session Storage Recovery"
-description: "What to do when Hermes says another process holds an old copy of the session database's write-ahead log, and what the files beside state.db are"
+description: "What to do when Hermes says the session database was replaced underneath it or another process holds an old copy of its write-ahead log, and what the files beside state.db are"
 ---
 
 # Session storage recovery
@@ -17,8 +17,15 @@ purpose and every turn answers with a message like:
 > another Hermes process still holds an old copy of the session database's write-ahead log,
 > so Hermes stopped writing to keep the file safe …
 
-This page is the guide that message links to. Nothing is lost when you see it; the
-refusal exists precisely so nothing gets lost.
+or, when the main file itself was swapped out from under a running Hermes:
+
+> the session database file was replaced while Hermes was running …
+> (`FATAL: state.db was replaced underneath the gateway` in the log)
+
+This page is the guide both messages link to. Nothing is lost when you see either; the
+refusal exists precisely so nothing gets lost. The three steps below fix the first message.
+The second one has an extra step — finding what rewrote the file — covered in
+[state.db was replaced](#state-db-was-replaced).
 
 ## The fix in three steps
 
@@ -58,6 +65,36 @@ refusal exists precisely so nothing gets lost.
   (`hermes backup`) or `hermes sessions recover`, never `cp state.db somewhere/`.
 - **Do not ask the agent to fix it.** The agent's own session is in the same store; it will
   hit the same refusal.
+
+## state.db was replaced {#state-db-was-replaced}
+
+The second message means the *main* file changed identity under a running Hermes: the path
+`state.db` now names a different file (or a rewritten copy) than the one the gateway opened.
+Hermes refuses to keep writing because a write through the old handle would land in a file
+nobody reads any more — or corrupt the new one. Your unsaved turns are diverted to
+`sessions/<id>.jsonl` and the gateway's pending-messages spool, so nothing is lost, but
+restarting alone will not help: whatever replaced the file once will do it again.
+
+Find the replacer first. In practice it is one of these:
+
+| What replaced the file | How to tell | What to do |
+|---|---|---|
+| **A file-sync client** (iCloud Drive, Dropbox, OneDrive, Google Drive, Syncthing, a synced or network home directory) mirroring `~/.hermes` — typically because you run Hermes on two machines, e.g. a desktop and a laptop, and want the same conversations on both. | The message appears on the machine that was *not* the last one writing; the `~/.hermes` folder (or a parent) sits inside the sync client's tree, or is a network share. | Move `~/.hermes` out of the synced folder on every machine (or exclude it from sync). One store belongs to one host. To use the same conversations from a second machine, run **one** gateway and connect to it from the other device — the Desktop app's [Gateways page](./multi-connection-desktop.md), the dashboard, or a messaging platform — instead of syncing the files. |
+| **A backup or snapshot restored while Hermes was running** (`hermes backup restore`, `hermes sessions recover`, `state-snapshots/`, a Time Machine / rsync restore of the home folder). | You, a script, or a restore job touched `~/.hermes` within the last minutes. | Stop every Hermes process *before* restoring, then start again. Restores are safe with everything stopped. |
+| **A manual copy over the file** (`cp other.db ~/.hermes/state.db`, `mv`, an editor that writes a temp file and renames it into place). | Same as above; `ls -li ~/.hermes/state.db` shows a new inode or a modification time you did not expect. | Never copy `state.db` alone (the three files are one image). Use `hermes backup` and `hermes sessions recover`, with Hermes stopped. |
+
+Then recover:
+
+1. Quit every Hermes process on the profile (`hermes gateway stop`, the Desktop app, dashboard, cron).
+2. Stop the replacer: pause or exclude the sync client, or finish the restore.
+3. Run `hermes doctor` (not `--fix`) and start Hermes again. The gateway reopens whichever
+   file is now at `state.db`; if it is the old copy from before the replacement, the turns from
+   the gap are still in `sessions/<id>.jsonl` and `hermes sessions recover --source ... --inspect-only`
+   will tell you whether they can be merged.
+
+Do not run `hermes doctor --fix` or `hermes sessions optimize` while the file is still being
+swapped: an in-place repair of a file that is about to be overwritten again is how a refusal
+turns into real loss.
 
 ## Maintenance commands refuse while someone is writing
 

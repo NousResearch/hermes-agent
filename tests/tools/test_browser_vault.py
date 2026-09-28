@@ -865,6 +865,31 @@ class TestTwoFactor:
         from tools.browser_vault_tool import _TAB_PROBES
 
         probe = _TAB_PROBES["otp"]
-        assert "el.labels" in probe and "labelText" in probe, (
+        assert "el.labels" in probe and "labelOf" in probe, (
             "the otp tab probe must inspect associated <label> text, not just element attributes"
         )
+
+    def test_otp_tab_probe_bare_code_fallback_is_uniqueness_and_exclusion_gated(self):
+        """Self-review follow-up (2026-09-28, cw): the first cut of the tab probe's fallback matched a
+        bare "code" word unconditionally, which could focus the WRONG tab — e.g. a checkout tab with a
+        lone "Promo code" field, stealing focus away from the real login/OTP tab elsewhere. The probe
+        must mirror classify_otp_controls()'s gates: a bare "code" (no stronger OTP wording) only counts
+        when unique on the page AND not an obvious non-auth field. This test only checks the probe source
+        carries the same guard structure (single-candidate + exclusion regex), since evaluating the JS
+        against a live DOM isn't available in this pytest environment — see the manual live verification
+        in the PR description for the actual behavioral check against Facebook's page."""
+        from tools.browser_vault_tool import _TAB_PROBES
+
+        probe = _TAB_PROBES["otp"]
+        assert "inputs.length === 1" in probe, "bare-code fallback must require a single visible candidate"
+        assert "nonAuthRx" in probe, "bare-code fallback must exclude obvious non-auth fields (promo/coupon/...)"
+        assert "strongRx" in probe, "unambiguous OTP wording must still match regardless of candidate count"
+
+    def test_bare_single_field_excluded_for_referral_code(self):
+        """Self-review follow-up (2026-09-28, cw): the exclusion list originally covered promo/coupon/
+        voucher/gift card but missed "referral code" — an equally common non-auth single-field page
+        (e.g. a signup referral prompt) that must not be swallowed as an OTP guess."""
+        from agent.vault_login_classifier import LoginControl, classify_otp_controls
+
+        referral_field = LoginControl(autocomplete="", form_index=0, index=0, label="Referral code", name="", type="text")
+        assert classify_otp_controls([referral_field]) == []

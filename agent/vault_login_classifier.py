@@ -137,7 +137,7 @@ _RE_OTP = re.compile(
 # A field whose name/label clearly says what it actually is (search, coupon, zip, quantity, ...) must
 # never be swallowed as a guess just because it happens to be the only text input on the page.
 _RE_NONAUTH_EXCLUDE = re.compile(
-    r"\b(?:search|query|promo|coupon|discount|voucher|gift\s*card|zip|postal|address|quantity|qty|"
+    r"\b(?:search|query|promo|coupon|discount|voucher|referral|gift\s*card|zip|postal|address|quantity|qty|"
     r"price|amount|comment|message|note|subject|name|city|country|state|province)\b"
 )
 

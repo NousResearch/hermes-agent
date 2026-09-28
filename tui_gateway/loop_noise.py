@@ -40,9 +40,11 @@ def _is_closed_websocket(exc: object) -> bool:
 def _is_benign_teardown(context: dict[str, Any]) -> bool:
     """True when the loop error is a peer-hangup during transport teardown.
 
-    Gated on BOTH the exception type AND where it was reported from (the
-    ``_call_connection_lost`` callback, matched on repr, or asyncio's shielded-future
-    report) so the same error type raised elsewhere still reaches the default handler.
+    The two cases are gated differently. A ``_call_connection_lost`` error needs BOTH the
+    exception type AND the callback marker (matched on repr), so the same error type raised
+    elsewhere still reaches the default handler. The shielded-future case is gated on
+    asyncio's message and a websockets ``ConnectionClosed`` only, with no location check,
+    by design: a closed websocket is a peer hangup whichever ``shield()`` retrieved it.
     """
     exc = context.get("exception")
     if _SHIELDED_FUTURE_MESSAGE in str(context.get("message", "")):

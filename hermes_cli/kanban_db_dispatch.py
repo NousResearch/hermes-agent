@@ -2505,9 +2505,11 @@ def _module_hermes_argv() -> list[str]:
         launcher = _published_posix_launcher()
         if launcher:
             return [launcher]
-        from hermes_cli._launchers import runtime_command
+        from hermes_cli._runtime_command import bootstrap_runtime_command
 
-        return runtime_command(Path(__file__).resolve().parents[1], python=sys.executable)
+        return bootstrap_runtime_command(
+            Path(__file__).resolve().parents[1], python=sys.executable
+        )
     return [sys.executable, "-m", "hermes_cli.main"]
 
 
@@ -2591,6 +2593,12 @@ def _resolve_hermes_argv() -> list[str]:
         resolved_env_bin = _safe_which_no_cwd(env_bin)
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
+        return _module_hermes_argv()
+
+    # An isolated parent already proves this source installation is loaded.
+    # Its bootstrap is the only safe fallback; do not swallow a construction
+    # failure and select an unrelated PATH executable.
+    if _isolated_store_python():
         return _module_hermes_argv()
 
     try:

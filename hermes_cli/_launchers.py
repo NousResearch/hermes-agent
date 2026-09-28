@@ -21,6 +21,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pm.environments import store_root
+from hermes_cli._runtime_command import bootstrap_runtime_command
 
 
 def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",
@@ -34,20 +35,9 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
     """
     root = Path(repo_root).resolve()
     python = python or resolve_store_python(root) or Path(sys.executable)
-    entry = f"exec({code!r})" if code is not None else (
-        f"runpy.run_module({module!r}, run_name='__main__', alter_sys=True)")
-    default_home = (f"{str(home)!r}" if home is not None else
-                    "str(__import__('hermes_constants').get_default_hermes_root())")
-    bootstrap = (
-        "import os, sys, runpy; "
-        "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
-        "os.environ.pop('VIRTUAL_ENV', None); "
-        f"sys.path.insert(0, {str(root)!r}); "
-        f"os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or {default_home}; "
-        "import hermes_bootstrap; "
-        + entry
+    return bootstrap_runtime_command(
+        root, args, module=module, code=code, python=python, home=home
     )
-    return [str(python), "-I", "-c", bootstrap, *args]
 
 
 def print_runtime_command(repo_root: Path, argv: list[str]) -> None:

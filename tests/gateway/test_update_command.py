@@ -106,6 +106,61 @@ class TestHandleUpdateCommand:
 
         assert result == [sys.executable, "-m", "hermes_cli.main"]
 
+    def test_resolve_hermes_bin_isolated_bootstraps_from_unrelated_cwd(self, tmp_path):
+        """An isolated gateway re-exec remains bound to its source installation."""
+        import os
+        import subprocess
+        import sys
+        import gateway.run as gateway_run
+
+        source_root = tmp_path / "source"
+        (source_root / "gateway").mkdir(parents=True)
+        (source_root / "gateway" / "run.py").touch()
+        (source_root / "hermes_cli").mkdir()
+        (source_root / "hermes_cli" / "__init__.py").touch()
+        (source_root / "hermes_cli" / "main.py").write_text(
+            "from pathlib import Path\n"
+            "print(Path(__file__).resolve().parents[1])\n",
+            encoding="utf-8",
+        )
+        (source_root / "hermes_bootstrap.py").touch()
+        unrelated = tmp_path / "workspace"
+        unrelated.mkdir()
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key not in {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "HERMES_BIN"}
+        }
+        env["HERMES_HOME"] = str(tmp_path / "home")
+
+        original_flags = sys.flags
+
+        class IsolatedFlags:
+            isolated = 1
+
+            def __getattr__(self, name):
+                return getattr(original_flags, name)
+
+        with patch.object(gateway_run, "__file__", str(source_root / "gateway" / "run.py")), \
+             patch.object(sys, "flags", IsolatedFlags()), \
+             patch("importlib.util.find_spec", return_value=MagicMock()), \
+             patch("shutil.which", return_value="/tmp/attacker/hermes"):
+            argv = gateway_run._resolve_hermes_bin()
+
+        assert argv is not None
+        assert argv[0] == sys.executable
+        assert argv[1:3] == ["-I", "-c"]
+        result = subprocess.run(
+            argv,
+            cwd=unrelated,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(source_root)
+
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_falls_back_to_path_then_none(self):
         """Without an importable hermes_cli the argv degrades to PATH, then to None — never a

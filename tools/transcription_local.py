@@ -176,6 +176,20 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
         # Importing ctranslate2 can itself abort on Apple Silicon/Rosetta when
         # multiple Intel OpenMP runtimes are loaded — set before the import.
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    pinned = device != "auto" or compute_type != "auto"
+    if force_cpu and pinned:
+        # An explicit stt.local pin overrides the Apple Silicon default: the force
+        # exists to dodge native device AUTODETECTION crashes, and a pinned cpu
+        # config never autodetects. "cpu" alone still carries int8 unless the
+        # user pinned a compute_type.
+        safe_device, safe_compute = device, compute_type
+        if safe_device == "auto":
+            safe_device = "cpu"
+        if safe_compute == "auto":
+            safe_compute = "int8"
+        logger.info("Apple Silicon/Rosetta detected — loading faster-whisper on %s/%s "
+                    "(explicit stt.local pin)", safe_device, safe_compute)
+        return _create_whisper_model(model_name, device=safe_device, compute_type=safe_compute)
     if force_cpu:
         logger.info("Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
                     "(int8) to avoid native device autodetection crashes")

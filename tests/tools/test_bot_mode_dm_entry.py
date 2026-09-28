@@ -112,6 +112,49 @@ def test_delivery_runner_that_cannot_activate_names_the_repair_remedy(tmp_path, 
     assert dm_file.read_text(encoding="utf-8") == "hello teammate"
 
 
+@pytest.mark.parametrize("evidence,expected", [
+    ("none", "ambiguous"),
+    ("intent", "ambiguous"),
+    ("receipt", "ambiguous"),
+    ("unreadable_intent", "ambiguous"),
+    ("missing_dm", "ambiguous"),
+    ("unpinned_home", "ambiguous"),
+])
+def test_real_bootstrap_failure_reports_admission_evidence(tmp_path, uncommittable_home, evidence, expected):
+    """Exercise native activate_dependencies -> SystemExit, not an import replacement."""
+    _home, env = uncommittable_home
+    profile = tmp_path / "recipient"
+    profile.mkdir()
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("offline-message", encoding="utf-8")
+    from tools.bot_mode_dm import _dm_delivery_id
+    delivery_id = _dm_delivery_id(str(dm_file))
+    if evidence == "intent":
+        Path(str(dm_file) + ".live.json").write_text('{"status":"queued"}')
+    elif evidence == "unreadable_intent":
+        Path(str(dm_file) + ".live.json").write_text("")
+    elif evidence == "receipt":
+        receipt = profile / "runtime" / "bot_live_delivery" / f"{delivery_id}.json"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text('{"status":"queued"}')
+    elif evidence == "missing_dm":
+        dm_file.unlink()
+    argv = [*BARE, str(RUNNER), "--run-delivery", "query-file", str(dm_file)]
+    if evidence != "unpinned_home":
+        argv.extend(["--profile-home", str(profile)])
+    result = _run([*argv, sys.executable, "-c", "pass"], env)
+    assert result.returncode == 1, result
+    assert "hermes pm repair" in result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == expected
+    assert payload["delivery_id"] == delivery_id
+    if expected == "ambiguous":
+        assert payload["outcome"] == "UNKNOWN"
+        assert "Do not resend" in payload["detail"]
+    else:
+        assert dm_file.exists()
+
+
 @pytest.mark.parametrize("home", ["committed_home", "uncommittable_home"])
 def test_reply_waiter_prints_the_reply_whatever_the_dependency_state(tmp_path, request, home):
     """The relay's reply waiter shares the entry but is stdlib only, and its stdout is the

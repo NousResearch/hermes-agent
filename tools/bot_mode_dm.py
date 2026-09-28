@@ -823,6 +823,57 @@ def _session_title(agent: Any) -> str:
     return ""
 
 
+def _activation_failure_status(args: list[str], error: str) -> dict:
+    """Classify boot failure without mistaking a pre-admitted DM for non-delivery.
+
+    This absence proof assumes the supported one-runner-per-unique-DM-file model:
+    _write_dm_file creates a fresh file, the parent finishes _admit_live_dm before
+    spawning its runner, and _admit_live_dm creates the intent with O_EXCL before
+    delivery. If another process can concurrently admit this SAME file, lstat
+    absence is not atomic evidence; that unsupported race must be UNKNOWN.
+    """
+    def absent(path: Path) -> bool:
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            return True
+        except OSError:
+            return False
+        return False
+
+    rest = args[1:]
+    if rest[:1] == ["--author"] and len(rest) >= 2:
+        rest = rest[2:]
+    dm_file = rest[1] if len(rest) >= 2 and rest[0] in ("stdin", "query-file") else None
+    profile_home = rest[3] if len(rest) >= 4 and rest[2] == "--profile-home" else None
+    delivery_id = ""
+    evidence: dict[str, Any] = {}
+    proven_no_effect = False
+    if args[:1] == ["--run-delivery"] and dm_file:
+        try:
+            delivery_id = _dm_delivery_id(dm_file)
+            dm_present = Path(dm_file).is_file() and not Path(dm_file).is_symlink()
+        except OSError:
+            dm_present = False
+        intent_absent = absent(Path(dm_file + ".live.json"))
+        evidence.update(dm_file_present=dm_present, live_intent_absent=intent_absent)
+        receipt_absent = False
+        if profile_home is not None:
+            receipt = Path(profile_home) / "runtime" / "bot_live_delivery" / f"{delivery_id}.json"
+            receipt_absent = absent(receipt)
+            evidence["receipt_absent"] = receipt_absent
+        # Only a pinned home and the single-runner contract make absence meaningful.
+        proven_no_effect = dm_present and intent_absent and receipt_absent
+    if proven_no_effect:
+        return {"status": "not_delivered", "reason": "dependency_activation_failed",
+                "delivery_id": delivery_id, "error": f"{error}; run `hermes pm repair`",
+                "evidence": evidence, "detail": "No live intent or receipt was found; the runner stopped before transport. The DM file is kept."}
+    return {"status": "ambiguous", "outcome": "UNKNOWN", "reason": "dependency_activation_failed",
+            "delivery_id": delivery_id, "evidence_file": dm_file, "evidence": evidence,
+            "error": f"{error}; run `hermes pm repair`",
+            "detail": "The message may already be admitted to the live owner. Do not resend; reconcile the receipt and target transcript."}
+
+
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process
     # Spawned as a script with the sender's sys.executable, which under PM is the bare store
     # interpreter (dependencies are activated in-process, never inherited), so boot like every
@@ -830,6 +881,22 @@ if __name__ == "__main__":  # pragma: no cover - exercised as a background proce
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     # The reply waiter is stdlib only and its stdout is the sender's wake-up, so an activation
     # failure must never exit it before it can print the outcome.
-    if sys.argv[1:2] != ["--wait-reply"]:
-        import hermes_bootstrap  # noqa: F401
+    if sys.argv[1:2] == ["--run-delivery"]:
+        try:
+            import hermes_bootstrap  # noqa: F401
+        except SystemExit as exc:
+            # Bootstrap can exit after failed activation, but also after a legacy handoff
+            # or a Windows relaunch. An exit code alone cannot prove non-delivery.
+            # Keep the original zero/non-error exits intact; never catch KeyboardInterrupt.
+            if exc.code in (None, 0):
+                raise
+            status = _activation_failure_status(sys.argv[1:], "bootstrap exited before runner")
+            status.update(status="ambiguous", outcome="UNKNOWN", reason="bootstrap_exit_unknown",
+                          error="Bootstrap exited before runner; see stderr for the original cause",
+                          detail="Bootstrap exited before delivery status was known. Do not resend; reconcile the receipt and target transcript.")
+            print(json.dumps(status))
+            raise
+        except Exception as exc:
+            print(json.dumps(_activation_failure_status(sys.argv[1:], str(exc))))
+            raise SystemExit(1) from None
     raise SystemExit(_delivery_main(sys.argv[1:]))

@@ -1,6 +1,8 @@
 """Tests for agent/system_prompt.py — context-file cwd wiring."""
 
 import json
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -823,6 +825,31 @@ class TestSessionStartLike:
         )
         start = _session_start_like(agent, now)
         assert start.strftime("%Y-%m-%d") == "2026-01-01"
+
+    @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
+    def test_stamp_from_other_dst_half_keeps_its_own_offset(self):
+        """A naive stamp takes the UTC offset in force at that stamp, not today's:
+        a January 00:30 London session read on a summer day rendered as January 14.
+        Both halves are checked so the test bites whichever season it runs in."""
+        from agent.system_prompt import _session_start_like
+
+        london = ZoneInfo("Europe/London")
+        original_tz = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "Europe/London"
+            time.tzset()
+            for sid, now, expected in (
+                ("20260115_003000_jan", datetime(2026, 7, 16, 9, 0, tzinfo=london), "2026-01-15T00:30:00+00:00"),
+                ("20260715_003000_jul", datetime(2026, 12, 16, 9, 0, tzinfo=london), "2026-07-15T00:30:00+01:00"),
+            ):
+                start = _session_start_like(SimpleNamespace(session_id=sid), now)
+                assert start.isoformat() == expected
+        finally:
+            if original_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = original_tz
+            time.tzset()
 
 
 def test_conversation_start_uses_session_start_not_build_time(monkeypatch):

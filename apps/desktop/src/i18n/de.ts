@@ -685,6 +685,8 @@ export const deOverrides = {
       'composer.focus': 'Composer fokussieren',
       'composer.modelPicker': 'Modellauswahl öffnen',
       'composer.voice': 'Sprachkonversation starten / stoppen',
+      'composer.reasoningUp': 'Reasoning-Stufe erhöhen',
+      'composer.reasoningDown': 'Reasoning-Stufe senken',
       'view.toggleSidebar': 'Session-Sidebar umschalten',
       'view.cycleSidebarGrouping': 'Session-Gruppierung wechseln',
       'view.toggleRightSidebar': 'Dateibrowser umschalten',
@@ -2053,6 +2055,8 @@ export const deOverrides = {
       provider: 'Anbieter',
       model: 'Modell',
       applying: 'Wird angewendet…',
+      mainAppliedTitle: 'Hauptmodell aktualisiert',
+      mainAppliedMessage: model => `Neue Sitzungen verwenden ${model}.`,
       defaultsLabel: 'Voreinstellungen',
       reasoning: 'Denken',
       reasoningOff: 'Aus',
@@ -4988,7 +4992,11 @@ export const deOverrides = {
     noAuthenticatedProviders: 'Keine authentifizierten Anbieter.',
     addProvider: 'Anbieter hinzufügen…',
     addCustomModel: 'Eigenes Modell hinzufügen',
-    removeCustomModel: 'Eigenes Modell entfernen'
+    removeCustomModel: 'Eigenes Modell entfernen',
+    resetToDefaults: 'Auf Standard zurücksetzen',
+    resetConfirm: 'Modellsichtbarkeit auf Standard zurücksetzen?',
+    resetDescription: 'Ihre Auswahl sichtbarer und ausgeblendeter Modelle wird gelöscht, und jeder Anbieter zeigt wieder seine Standardliste. Eigene Modelle bleiben erhalten und werden angezeigt.',
+    resetAction: 'Zurücksetzen'
   },
   shell: {
     windowControls: 'Fenster-Bedienelemente',
@@ -5477,9 +5485,9 @@ export const deOverrides = {
             `${provider} hat einen Serverfehler zurückgegeben. Versuchen Sie es gleich erneut oder wechseln Sie den Anbieter.`
         },
         timeout: {
-          title: 'Die Antwort hat zu lange gebraucht',
+          title: 'Der KI-Dienst ist nicht erreichbar',
           body: provider =>
-            `${provider} hat nicht rechtzeitig geantwortet. Versuchen Sie es erneut, um die Nachricht noch einmal zu senden.`
+            `${provider} war nicht erreichbar oder hat nicht rechtzeitig geantwortet. Prüfen Sie Ihre Internetverbindung und versuchen Sie es erneut.`
         },
         stream_drop: {
           title: 'Die Antwort wurde abgebrochen',

@@ -1514,6 +1514,8 @@ export interface Translations {
       provider: string
       model: string
       applying: string
+      mainAppliedTitle: string
+      mainAppliedMessage: (model: string) => string
       defaultsLabel: string
       reasoning: string
       reasoningOff: string
@@ -3847,6 +3849,10 @@ export interface Translations {
     addProvider: string
     addCustomModel: string
     removeCustomModel: string
+    resetToDefaults: string
+    resetConfirm: string
+    resetDescription: string
+    resetAction: string
   }
 
   shell: {

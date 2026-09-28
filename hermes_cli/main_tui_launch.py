@@ -59,9 +59,13 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
         if db is not None:
             db.close()
 
-    print(f"\nResume this session with:\n  hermes --tui --resume {target}")
+    # Sessions live under the profile's HERMES_HOME — mirror cli_session_mixin::_print_exit_summary.
+    from hermes_cli.profiles import get_active_profile_name
+    active_profile = get_active_profile_name()
+    profile_flag = "" if active_profile in ("default", "custom") else f" -p {active_profile}"
+    print(f"\nResume this session with:\n  hermes --tui --resume {target}{profile_flag}")
     if title:
-        print(f'  hermes --tui -c "{title}"')
+        print(f'  hermes --tui -c "{title}"{profile_flag}')
     print(f"\nSession:        {target}")
     if title:
         print(f"Title:          {title}")

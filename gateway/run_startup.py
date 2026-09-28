@@ -16,7 +16,6 @@ import signal
 import time
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
-from datetime import datetime
 from pathlib import Path
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
@@ -577,16 +576,19 @@ class GatewayStartupMixin:
         ``_is_resume_pending`` injection path owns the wording). Sessions whose adapter is offline stay
         ``resume_pending`` for the reconnect watcher, which re-calls this scoped to that ``platform``;
         sessions with a running agent are skipped so none is resumed twice."""
-        from gateway.run import _AGENT_PENDING_SENTINEL, _auto_continue_freshness_window
+        from gateway.run import (
+            _AGENT_PENDING_SENTINEL, _auto_continue_freshness_window, _is_fresh_gateway_interruption,
+        )
         window = _auto_continue_freshness_window()
         candidates = self._resume_pending_candidates(platform)
         if candidates is None:
             return 0
-        now = datetime.now()
         scheduled = 0
         for entry in candidates:
+            # Epoch math: the marker was stamped naive-local by the previous process, possibly
+            # on the other side of a DST change; wall-clock subtraction is off by the shift.
             marker = entry.last_resume_marked_at or entry.updated_at
-            if marker is not None and (now - marker).total_seconds() > window:
+            if not _is_fresh_gateway_interruption(marker, window_secs=window):
                 continue
             # Already being resumed (e.g. scheduled at startup, still in-flight) — no second turn.
             if self._is_session_running(entry.session_key):
@@ -886,6 +888,7 @@ class GatewayStartupMixin:
                 disarm_startup_watchdog()
         logger.info("Session storage: %s", self.config.sessions_dir)
         self._start_log_systemd_timing_alignment()
+        self._start_log_retired_session_reset()
         self._log_agent_budget()
         # Warn prominently when redaction is opted out; the redactor snapshots its state at import time,
         # so this line is the source of truth for the process lifetime.
@@ -935,6 +938,19 @@ class GatewayStartupMixin:
             if _adv_msg:
                 logger.warning("%s", _adv_msg)
                 logger.warning("Run `hermes doctor` on the gateway host for full remediation steps.")
+
+    def _start_log_retired_session_reset(self) -> None:
+        """Warn per served profile whose config still declares an idle/daily ``session_reset``,
+        unless the plugin that honours it is enabled. Never raises."""
+        with _log_suppressed(logging.DEBUG, "retired session_reset check failed", exc_info=True):
+            from gateway.config_loader import read_yaml_layers
+            from hermes_cli.profiles import profiles_to_serve
+            from hermes_cli.session_reset_retirement import format_notice, reset_plugin_enabled, retired_reset_policy
+            hits = [(name, found) for name, home in profiles_to_serve(bool(self.config.multiplex_profiles))
+                    if (found := retired_reset_policy(read_yaml_layers(home)))]
+            if hits and not reset_plugin_enabled():
+                for name, (path, mode) in hits:
+                    logger.warning("Profile %s: %s", name, format_notice(path, mode))
 
     def _start_log_systemd_timing_alignment(self) -> None:
         """Warn when systemd's TimeoutStopSec does not cover the drain window (a unit file from before
@@ -1313,6 +1329,10 @@ class GatewayStartupMixin:
     ) -> Tuple[bool, int]:
         """Bring up multiplexed secondary-profile adapters. Returns (aborted, connected_count)."""
         from gateway.run import MultiplexConfigError
+        from tools.process_registry import process_registry as _pr
+        # The launch profile's durable completions replay here, not at import (#123265); the
+        # secondaries' ledgers are replayed by _restore_secondary_completion_ledgers below.
+        _pr.restore_completions()
         # Secondary-profile adapters connect under their own home + credential scope.
         try:
             connected_count += await self._start_secondary_profile_adapters()
@@ -1767,7 +1787,9 @@ class GatewayStartupMixin:
         # Ensure a session_store entry exists for this key; switch_session then re-points it.
         await self.async_session_store.get_or_create_session(dest.source)
         # switch_session ends the prior session and reopens the CLI session under the new key.
-        switched = await self.async_session_store.switch_session(session_key, cli_session_id)
+        switched = await self.async_session_store.switch_session(
+            session_key, cli_session_id, preserve_prompt_pin=False,
+        )
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {cli_session_id}")
         # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale

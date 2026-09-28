@@ -1,9 +1,10 @@
 """Gateway owner-loop maintenance against a real routing index and profile-scoped SQLite."""
 import asyncio
 import json
+import os
 import threading
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -307,3 +308,120 @@ async def test_codex_real_compressor_fence_blocks_stale_server_compact(owner, ch
     assert (await maintain_existing_session(runner, request(entry, "compact")))["status"] == "not_compacted"
     compact_thread.assert_not_called()
     assert store.lookup_by_session_key(key).session_id == ("successor" if changed == "route" else sid)
+
+
+def _native_maintenance_agent(db, sid):
+    """Real compressor and SQLite persistence, with only a fake key and no context-file reads."""
+    from run_agent import AIAgent
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        agent = AIAgent(api_key="test-key", base_url="https://openrouter.ai/api/v1",
+                        model="test/model", quiet_mode=True, session_db=db, session_id=sid,
+                        skip_context_files=True, skip_memory=True)
+    agent._compression_feasibility_checked = True
+    return agent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stale", [False, True], ids=["archive", "stale-before-commit"])
+async def test_native_maintenance_archives_only_under_current_binding(owner, monkeypatch, stale):
+    """Exercise the gateway's real compress_now -> AIAgent -> SQLite archive chain."""
+    from hermes_state import SessionDB
+    import agent.context_compressor as compressor_module
+    import gateway.session_maintenance as maintenance
+
+    runner, store, source = owner
+    entry = store.get_or_create_session(source)
+    sid, key = entry.session_id, entry.session_key
+    store._db.update_session_model(sid, "test/model")
+    original = []
+    for i in range(10):
+        for role, content in (("user", f"question {i} about fruit{i} " + "filler " * 40),
+                              ("assistant", f"answer {i} " + "lorem " * 400)):
+            content = content.strip()
+            store._db.append_message(sid, role=role, content=content)
+            original.append(content)
+    store.update_session(key, last_prompt_tokens=900, touch_activity=False)
+    initial_at = store.lookup_by_session_key(key).updated_at
+    resident = _native_maintenance_agent(store._db, sid)
+    resident.context_compressor.context_length = 1000
+    resident.context_compressor.last_prompt_tokens = 900
+    runner._agent_cache[key] = (resident, "signature")
+    runner._resolve_session_agent_runtime = lambda **kw: ("test/model", {"api_key": "test-key"})
+    runner._resolve_session_reasoning_config = lambda **kw: None
+    runner._run_in_executor_with_context = lambda fn: asyncio.to_thread(fn)
+    runner._evict_cached_agent = lambda key: runner._agent_cache.pop(key)
+    runner._cleanup_agent_resources_off_loop = lambda *a, **kw: asyncio.sleep(0)
+    built = []
+    async def build(session_id, model, runtime):
+        assert session_id == sid and model == "test/model"
+        assert runtime["gateway_session_key"] == key
+        agent = _native_maintenance_agent(store._db, sid)
+        built.append(agent)
+        return agent
+    runner._build_manual_compression_agent = build
+    adapter = Mock()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    summary = "## Goal\nNumbered fruit questions.\n## Progress\nEarly ones answered."
+    calls = []
+    def synthetic_llm(**kwargs):
+        calls.append(kwargs)
+        if stale:
+            # The provider returns after the route changed but before durable admission.
+            store._db.create_session("successor", source="telegram", model="test/model")
+            assert store.switch_session(key, "successor", expected_session_id=sid)
+            store.update_session(key, last_prompt_tokens=777, touch_activity=False)
+        response = Mock()
+        response.choices = [Mock(message=Mock(content=summary))]
+        return response
+    monkeypatch.setattr(compressor_module, "call_llm", synthetic_llm)
+    admissions = []
+    original_begin = maintenance._BindingFence.begin_commit
+    def observed_begin(self, cancel_event=None):
+        admitted = original_begin(self, cancel_event)
+        admissions.append(admitted)
+        return admitted
+    monkeypatch.setattr(maintenance._BindingFence, "begin_commit", observed_begin)
+
+    result = await maintain_existing_session(runner, request(entry, "compact"))
+    assert len(calls) == 1  # a synthetic provider response, not a mocked compressor
+    assert admissions == [not stale]  # refusal occurs at the real irreversible-commit gate
+    assert len(built) == 1 and built[0].compression_in_place is True
+    assert built[0].session_id == sid
+    assert adapter.mock_calls == []  # no Telegram delivery, even on the successful branch
+
+    # Reopen SQLite rather than trusting the gateway's in-memory transcript cache.
+    reopened = SessionDB(db_path=store._db.db_path)
+    reopened_route = SessionStore(store.sessions_dir, runner.config)
+    try:
+        rows = reopened._conn.execute(
+            "SELECT content, active, compacted FROM messages WHERE session_id = ? ORDER BY id", (sid,)
+        ).fetchall()
+        active = reopened.get_messages_as_conversation(sid)
+        resume, display = reopened.get_resume_conversations(sid)
+        if stale:
+            assert result["status"] == "not_compacted"
+            assert [(row[0], row[1]) for row in rows] == [(content, 1) for content in original]
+            assert [m["content"] for m in active] == original
+            assert [m["content"] for m in resume] == original
+            assert store.lookup_by_session_key(key).session_id == "successor"
+            assert store.lookup_by_session_key(key).last_prompt_tokens == 777
+            assert reopened_route.lookup_by_session_key(key).session_id == "successor"
+        else:
+            assert result["status"] == "compacted"
+            assert all(any(row[0] == content and row[1] == 0 for row in rows)
+                       for content in original)
+            assert any(row[1] == 0 and row[2] == 1 for row in rows)
+            assert any("Numbered fruit questions" in m["content"] for m in active)
+            assert [m["content"] for m in resume] == [m["content"] for m in active]
+            assert any(m["content"] == original[0] for m in display)
+            assert len(active) < len(original)
+            assert store.lookup_by_session_key(key).session_id == sid
+            assert store.lookup_by_session_key(key).last_prompt_tokens == 0
+            assert store.lookup_by_session_key(key).updated_at == initial_at
+            assert reopened_route.lookup_by_session_key(key).session_id == sid
+            assert reopened_route.lookup_by_session_key(key).updated_at == initial_at
+            assert reopened.get_session(sid)["id"] == sid
+    finally:
+        reopened_route._db.close()
+        reopened.close()

@@ -65,10 +65,12 @@ export async function syncApprovalModeForProfile(
 ): Promise<ApprovalMode> {
   const key = profileKey(profile)
   const revision = nextRevision(key)
+
   const result = (await requestGateway(
     'config.get',
     scopeToProfile(profile, { key: 'approvals.mode' })
   )) as { value?: string }
+
   const mode = normalizeApprovalMode(result?.value)
 
   if (revisions.get(key) === revision) {

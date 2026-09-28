@@ -362,8 +362,6 @@ def _relocate_lock_sources(lock: bytes, *, base: Path, root: Path) -> bytes:
     """
     import tomllib
 
-    import tomli_w
-
     try:
         document = tomllib.loads(lock.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError):
@@ -382,7 +380,13 @@ def _relocate_lock_sources(lock: bytes, *, base: Path, root: Path) -> bytes:
             if original.exists():
                 source[key] = original.resolve().as_posix()
                 rewritten = True
-    return tomli_w.dumps(document).encode("utf-8") if rewritten else lock
+    if not rewritten:
+        return lock
+    # tomli-w is a 3.14+ dependency (pyproject marker); no-op paths above must return the
+    # seed verbatim without touching it, so the import lives below the rewrite decision.
+    import tomli_w
+
+    return tomli_w.dumps(document).encode("utf-8")
 
 
 def _externally_anchored(value: str) -> bool:

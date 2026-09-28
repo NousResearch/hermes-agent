@@ -1211,14 +1211,3 @@ def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: s
         safe_name = tool_name[:9] if isinstance(tool_name, str) and tool_name else "tool"
         safe_duration = f"{duration:.1f}s" if isinstance(duration, (int, float)) else "done"
         return f"┊ ⚡ {safe_name:9} completed  {safe_duration}"
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def get_friendly_tool_labels() -> bool:
-    """Return whether friendly tool labels are enabled."""
-    return _friendly_tool_labels
-# ---- END PLUGIN-COMPAT ----

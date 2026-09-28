@@ -20,6 +20,7 @@ import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Kbd } from '@/components/ui/kbd'
+import { Loader } from '@/components/ui/loader'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
@@ -810,7 +811,7 @@ function ClarifyToolSinglePending({
   if (loading) {
     return (
       <ClarifyShell aria-label={copy.loadingQuestion} className="my-1.5 grid min-h-12 place-items-center" role="status">
-        <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
+        <Loader aria-hidden="true" className="size-6 text-(--ui-text-tertiary)" role="presentation" type="rose-curve" />
       </ClarifyShell>
     )
   }
@@ -934,7 +935,7 @@ function ClarifyToolSinglePending({
           </Button>
           <Button disabled={submitting || !ready || !pendingAnswer} size="xs" type="submit">
             {submitting ? (
-              <Loader2 className="size-3 animate-spin" />
+              <Loader2 className="animate-spin" />
             ) : (
               <>
                 {copy.continueLabel}
@@ -1286,7 +1287,7 @@ function ClarifyToolBatchPending({
   if (questions.length === 0) {
     return (
       <ClarifyShell aria-label={copy.loadingQuestion} className="my-1.5 grid min-h-12 place-items-center" role="status">
-        <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
+        <Loader aria-hidden="true" className="size-6 text-(--ui-text-tertiary)" role="presentation" type="rose-curve" />
       </ClarifyShell>
     )
   }
@@ -1333,7 +1334,7 @@ function ClarifyToolBatchPending({
           </Button>
           <Button disabled={disabled || !allStaged} size="xs" type="submit">
             {submitting ? (
-              <Loader2 className="size-3 animate-spin" />
+              <Loader2 className="animate-spin" />
             ) : (
               <>
                 {copy.confirmAndContinueLabel}

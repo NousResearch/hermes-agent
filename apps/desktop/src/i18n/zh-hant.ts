@@ -1379,6 +1379,7 @@ export const zhHant = defineLocale({
       restartFailed: '無法重新啟動後端',
       auxiliaryTitle: '輔助模型',
       resetAllToMain: '全部重設為主要模型',
+      staleAuxDismiss: '不再顯示',
       auxiliaryDesc: '輔助任務預設使用主要模型。您可以為任何任務指定專用模型。',
       setToMain: '設為主要模型',
       change: '變更',
@@ -2088,11 +2089,6 @@ export const zhHant = defineLocale({
     mcpServers: 'MCP 伺服器',
     archivedChats: '已封存聊天',
     sections: { sessions: '工作階段', system: '系統', usage: '使用量' },
-    sectionDescriptions: {
-      sessions: '搜尋和管理工作階段',
-      system: '狀態、記錄和系統動作',
-      usage: '一段時間內的詞元、費用和技能活動'
-    },
     nav: {
       newChat: { title: '新工作階段', detail: '開始新的工作階段' },
       settings: { title: '設定', detail: '設定 Hermes 桌面端' },
@@ -2133,6 +2129,7 @@ export const zhHant = defineLocale({
     actionStartedWaiting: '動作已啟動，等待狀態…',
     loadingStatus: '正在載入狀態…',
     recentLogs: '最近記錄',
+    logSearchPlaceholder: '搜尋記錄行…',
     noLogs: '尚未載入記錄。',
     days: count => `${count} 天`,
     statSessions: '工作階段',
@@ -2156,6 +2153,13 @@ export const zhHant = defineLocale({
 
   messaging: {
     search: '搜尋訊息平台…',
+    statusFilter: {
+      all: '全部',
+      bad: '錯誤',
+      good: '已連線',
+      muted: '未啟用',
+      warn: '需要注意'
+    },
     loading: '正在載入訊息平台…',
     loadFailed: '訊息平台載入失敗',
     states: {
@@ -3006,6 +3010,8 @@ export const zhHant = defineLocale({
     restoredDraftNotice: '已還原你未送出的訊息',
     restoredDraftUndo: '復原',
     queueEdit: '編輯',
+    queueExpand: '展開',
+    queueCollapse: '收起',
     queueSendNext: '下一個',
     queueSteer: '引導 — 立即修正目前回合',
     queueSend: '傳送',
@@ -4343,6 +4349,11 @@ export const zhHant = defineLocale({
   ui: {
     search: {
       clear: '清除搜尋'
+    },
+    logs: {
+      bottom: '記錄底端',
+      search: '搜尋記錄…',
+      top: '記錄頂端'
     },
     pagination: {
       label: '分頁',

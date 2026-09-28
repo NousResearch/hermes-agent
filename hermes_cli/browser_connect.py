@@ -1043,13 +1043,3 @@ def launch_chrome_debug(
             candidate, attempt.returncode, port,
             f"; stderr tail: {attempt.stderr_tail}" if attempt.stderr_tail else "")
     return result
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def try_launch_chrome_debug(port: int = DEFAULT_BROWSER_CDP_PORT, system: str | None = None) -> bool:
-    return launch_chrome_debug(port, system).launched
-# ---- END PLUGIN-COMPAT ----

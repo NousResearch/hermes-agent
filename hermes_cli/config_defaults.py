@@ -1719,10 +1719,6 @@ DEFAULT_CONFIG = {
         # skipped with the reason "load timed out" and the rest keep loading; the stuck worker thread is
         # abandoned. 0 = no deadline (load inline). Max 600.
         "load_timeout_seconds": 10,
-        # Keep loading external plugins that still import pre-decomposition module paths after the
-        # 2026-09-14 removal date (see COMPAT_MANIFEST.md, `hermes plugins compat`). Stopgap only: the
-        # old paths raise ImportError once the compat layer is actually removed.
-        "allow_deprecated_imports": False,
         # Read-only plugin update-check cadence, hours (gateway tick; 0 disables). Applying stays
         # explicit: `hermes plugins update <name>`, or auto_apply below (git-class plugins only,
         # scan-gated by that same pipeline).

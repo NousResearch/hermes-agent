@@ -485,28 +485,3 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
         "resolved_tools": resolved_tools, "tool_count": len(resolved_tools),
         "is_composite": bool(toolset["includes"]),
     }
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
-    """
-    Resolve multiple toolsets and combine their tools.
-
-    Args:
-        toolset_names (List[str]): List of toolset names to resolve
-
-    Returns:
-        List[str]: Combined list of all tool names (deduplicated)
-    """
-    all_tools = set()
-
-    for name in toolset_names:
-        tools = resolve_toolset(name)
-        all_tools.update(tools)
-
-    return sorted(all_tools)
-# ---- END PLUGIN-COMPAT ----

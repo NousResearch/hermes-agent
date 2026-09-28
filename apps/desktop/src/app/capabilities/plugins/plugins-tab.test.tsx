@@ -10,6 +10,7 @@ import { $agentPlugins, $agentPluginsStatus, type AgentPluginRow } from '@/store
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { $notifications } from '@/store/notifications'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
+import { $pluginMarketplaces, $pluginMarketplaceScope } from '@/store/plugin-marketplaces'
 import { $connection } from '@/store/session'
 
 import { PageSearchShell } from '../../page-search-shell'
@@ -99,6 +100,8 @@ beforeEach(() => {
   $pluginRecords.set({})
   $agentPlugins.set([])
   $agentPluginsStatus.set('ready')
+  $pluginMarketplaces.set([])
+  $pluginMarketplaceScope.set(null)
   $catalogCardView.set(false)
   seedCatalog([])
   closePluginInstallRequest()
@@ -120,6 +123,125 @@ afterEach(() => {
 })
 
 describe('PluginsTab', () => {
+  it.each([false, true])(
+    'adds a source without installing and browses its plugin in native views (cards=%s)',
+    async cards => {
+      $catalogCardView.set(cards)
+      seedCatalog([{ ...weatherEntry, name: 'team-plugin' }])
+
+      const team = {
+        id: 'team-123',
+        name: 'Team Plugins',
+        available: true,
+        stale: false,
+        entries: [
+          {
+            name: 'team-plugin',
+            display_name: 'team-plugin',
+            description: 'Team build',
+            version: '1',
+            maintainer: 'Team',
+            compatible: true,
+            incompatibility_reason: ''
+          }
+        ]
+      }
+
+      requestGateway.mockImplementation(async (_method, params) => {
+        if (params?.action === 'marketplaces') {return { marketplaces: [team] }}
+
+        if (params?.action === 'marketplace_add') {return { ok: true }}
+
+        if (params?.action === 'install') {return { ok: true, plugin_name: 'team-plugin' }}
+
+        return { plugins: $agentPlugins.get() }
+      })
+
+      renderPlugins({ profile: 'workbot' })
+      fireEvent.click(screen.getByRole('button', { name: 'Add marketplace' }))
+      fireEvent.change(screen.getByRole('textbox', { name: 'Marketplace repository URL' }), {
+        target: { value: 'https://github.com/team/plugins' }
+      })
+      fireEvent.click(screen.getByRole('button', { name: /^Add marketplace$/ }))
+      await waitFor(() =>
+        expect(requestGateway).toHaveBeenCalledWith('plugins.manage', {
+          action: 'marketplace_add',
+          url: 'https://github.com/team/plugins',
+          profile: 'workbot'
+        })
+      )
+      expect(requestGateway.mock.calls.some(([, params]) => params?.action === 'install')).toBe(false)
+      await screen.findByRole('button', { name: 'Team Plugins' })
+      fireEvent.click(screen.getByRole('button', { name: 'Team Plugins' }))
+      await selectCatalogEntry('team-plugin')
+      fireEvent.click(screen.getByRole('switch', { name: 'Add team-plugin' }))
+      expect(screen.getByRole('dialog').textContent).toContain('Team Plugins')
+      fireEvent.click(screen.getByRole('button', { name: /^Install$/ }))
+      await waitFor(() =>
+        expect(requestGateway).toHaveBeenCalledWith(
+          'plugins.manage',
+          expect.objectContaining({
+            action: 'install',
+            identifier: '',
+            marketplace_id: 'team-123',
+            marketplace_plugin_name: 'team-plugin',
+            profile: 'workbot'
+          }),
+          expect.any(Number)
+        )
+      )
+      expect($pluginInstallRequest.get()).toBeNull()
+    }
+  )
+
+  it('keeps a private installed variant separate from a public entry with the same name', async () => {
+    seedCatalog([{ ...weatherEntry, name: 'team-plugin' }])
+    $agentPlugins.set([
+      {
+        name: 'team-plugin',
+        key: 'team-plugin',
+        description: 'Team build',
+        source: 'git',
+        status: 'enabled',
+        version: '1',
+        marketplace_id: 'team-123',
+        marketplace_plugin_name: 'team-plugin'
+      }
+    ])
+    requestGateway.mockImplementation(async (_method, params) =>
+      params?.action === 'marketplaces'
+        ? {
+            marketplaces: [
+              {
+                id: 'team-123',
+                name: 'Team Plugins',
+                available: true,
+                stale: false,
+                entries: [
+                  {
+                    name: 'team-plugin',
+                    display_name: 'team-plugin',
+                    description: 'Team build',
+                    version: '1',
+                    maintainer: '',
+                    compatible: true,
+                    incompatibility_reason: ''
+                  }
+                ]
+              }
+            ]
+          }
+        : { plugins: $agentPlugins.get() }
+    )
+
+    renderPlugins({ profile: 'workbot' })
+    await screen.findByRole('button', { name: 'Team Plugins' })
+    expect(screen.getAllByRole('button', { name: 'team-plugin' })).toHaveLength(2)
+    expect(screen.getByRole('switch', { name: 'Add team-plugin' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('switch', { name: 'Add team-plugin' }))
+    expect($pluginInstallRequest.get()).toMatchObject({ catalogName: 'team-plugin', profile: 'workbot' })
+  })
+
   it('opens a non-first installed deep-link target from Browse and keeps that selection after consuming the link', async () => {
     Element.prototype.scrollIntoView = vi.fn()
     $agentPlugins.set(

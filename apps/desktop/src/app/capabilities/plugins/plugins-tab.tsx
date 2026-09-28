@@ -6,6 +6,15 @@ import { getToolsets, setToolsetEnabled } from '@/api/toolsets'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { $pluginRecords, type PluginRecord, setPluginEnabled } from '@/contrib/plugins-store'
@@ -14,7 +23,7 @@ import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { DESKTOP_PLUGIN_TOOLSETS } from '@/lib/desktop-toolsets'
 import { triggerHaptic } from '@/lib/haptics'
-import { FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
+import { FolderOpen, Loader2, Monitor, Package, Plus, RefreshCw, Trash2 } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { cn } from '@/lib/utils'
 import {
@@ -26,6 +35,7 @@ import {
   type AgentPluginServerState,
   type AgentPluginUpdateOutcome,
   type GatewayRequest,
+  installAgentPlugin,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
   removeAgentPlugin,
@@ -37,6 +47,14 @@ import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
+import {
+  $pluginMarketplaceBusy,
+  $pluginMarketplaces,
+  $pluginMarketplaceScope,
+  $pluginMarketplacesError,
+  addPluginMarketplace,
+  loadPluginMarketplaces
+} from '@/store/plugin-marketplaces'
 import { $connection } from '@/store/session'
 
 import { Pill } from '../../settings/primitives'
@@ -144,6 +162,10 @@ function KindBadge({ kind }: { kind: PackageKind }) {
 function ProvenancePill({ pkg }: { pkg: PluginPackage }) {
   const { t } = useI18n()
   const p = t.skills.plugins
+
+  if (pkg.agent?.marketplace_id) {
+    return <Pill>{pkg.agent.marketplace_id}</Pill>
+  }
 
   if (pkg.agent?.catalog_name) {
     return (
@@ -570,13 +592,69 @@ export const PluginsTab = memo(function PluginsTab({
   const status = useStore($agentPluginsStatus)
   const error = useStore($agentPluginsError)
   const busyKey = useStore($agentPluginBusy)
+  const savedMarketplaces = useStore($pluginMarketplaces)
+  const marketplaceScope = useStore($pluginMarketplaceScope)
+  const marketplaceBusy = useStore($pluginMarketplaceBusy)
+  const marketplaceError = useStore($pluginMarketplacesError)
 
   const scope = profileParam(profile)
+  const scopeKey = scope ?? 'default'
+
+  const marketplaces = useMemo(
+    () => (marketplaceScope === scopeKey ? savedMarketplaces : []),
+    [marketplaceScope, savedMarketplaces, scopeKey]
+  )
+
+  const [adding, setAdding] = useState(false)
+  const [marketplaceUrl, setMarketplaceUrl] = useState('')
+  const [pendingPrivateInstall, setPendingPrivateInstall] = useState<CatalogEntry | null>(null)
+  const [installingPrivate, setInstallingPrivate] = useState(false)
+  const [privateInstallError, setPrivateInstallError] = useState<string | null>(null)
   const label = scopeLabel ?? scope ?? t.skills.plugins.defaultProfile
 
   useEffect(() => {
     void loadAgentPlugins(requestGateway, scope)
+    void loadPluginMarketplaces(requestGateway, scope)
   }, [requestGateway, scope])
+
+  useEffect(() => {
+    setAdding(false)
+    setPendingPrivateInstall(null)
+    setInstallingPrivate(false)
+    setPrivateInstallError(null)
+    setMarketplaceUrl('')
+  }, [scopeKey])
+
+  const privateEntries = useMemo(
+    () =>
+      marketplaces.flatMap(marketplace =>
+        parseCatalog(
+          'plugins',
+          marketplace.entries.map(entry => ({
+            name: entry.display_name || entry.name,
+            identifier: entry.name,
+            description: entry.description,
+            version: entry.version,
+            maintainer: entry.maintainer,
+            category: 'general',
+            source: `marketplace:${marketplace.id}`
+          }))
+        ).map(entry => ({
+          ...entry,
+          sourceLabel: marketplace.name,
+          marketplaceId: marketplace.id,
+          marketplacePluginName: entry.identifier,
+          marketplaceAvailable: marketplace.available && !marketplace.stale,
+          marketplaceCompatible: marketplace.entries.find(item => item.name === entry.identifier)?.compatible ?? false
+        }))
+      ),
+    [marketplaces]
+  )
+
+  const sourceLabels = useMemo(
+    () => Object.fromEntries(marketplaces.map(marketplace => [`marketplace:${marketplace.id}`, marketplace.name])),
+    [marketplaces]
+  )
 
   const packages = useMemo(
     () => mergePluginPackages(Object.values(desktopRecords), agentRows.filter(isDesktopRelevantPlugin)),
@@ -623,6 +701,7 @@ export const PluginsTab = memo(function PluginsTab({
           identifier: pkg.key,
           description: pkg.description,
           category: pkg.kind === 'desktop' ? 'desktop' : 'general',
+          source: pkg.agent?.marketplace_id ? `marketplace:${pkg.agent.marketplace_id}` : undefined,
           tier: pkg.agent?.catalog_tier ?? pkg.agent?.source ?? pkg.desktop?.kind ?? '',
           repo: pkg.desktop?.packageOrigin?.repo ?? '',
           sha: pkg.agent?.installed_sha ?? pkg.desktop?.packageOrigin?.sha ?? '',
@@ -650,8 +729,18 @@ export const PluginsTab = memo(function PluginsTab({
   }, [installedEntries, packageById])
 
   const matchInstalled = useCallback(
-    (entry: CatalogEntry) => installedByCatalogName.get(entry.name),
-    [installedByCatalogName]
+    (entry: CatalogEntry) =>
+      entry.marketplaceId
+        ? installedEntries.find(installed => {
+            const row = packageById.get(installed.id)?.agent
+
+            return (
+              row?.marketplace_id === entry.marketplaceId &&
+              row?.marketplace_plugin_name === entry.marketplacePluginName
+            )
+          })
+        : installedByCatalogName.get(entry.name),
+    [installedByCatalogName, installedEntries, packageById]
   )
 
   const isInstalled = (entry: CatalogEntry) => packageById.has(entry.id)
@@ -739,81 +828,230 @@ export const PluginsTab = memo(function PluginsTab({
       </CatalogAlert>
     ) : null
 
+  const addMarketplace = async () => {
+    if (!marketplaceUrl.trim()) {
+      return
+    }
+
+    if (
+      (await addPluginMarketplace(requestGateway, marketplaceUrl.trim(), scope)) &&
+      $pluginMarketplaceScope.get() === scopeKey
+    ) {
+      setAdding(false)
+      setMarketplaceUrl('')
+      notify({ kind: 'success', message: 'Marketplace added' })
+    }
+  }
+
+  const installPrivate = async () => {
+    const entry = pendingPrivateInstall
+
+    if (
+      !entry?.marketplaceId ||
+      !entry.marketplacePluginName ||
+      !entry.marketplaceAvailable ||
+      !entry.marketplaceCompatible
+    ) {
+      return
+    }
+
+    setInstallingPrivate(true)
+    setPrivateInstallError(null)
+
+    const result = await installAgentPlugin(requestGateway, {
+      identifier: '',
+      marketplaceId: entry.marketplaceId,
+      marketplacePluginName: entry.marketplacePluginName,
+      profile: scope
+    })
+
+    if ($pluginMarketplaceScope.get() !== scopeKey) {
+      return
+    }
+
+    setInstallingPrivate(false)
+
+    if (!result.ok) {
+      setPrivateInstallError(result.error || `Could not install ${entry.name}`)
+
+      return
+    }
+
+    await rescanAll(requestGateway, scope)
+
+    if ($pluginMarketplaceScope.get() === scopeKey) {
+      setPendingPrivateInstall(null)
+      notify({ kind: 'success', message: `${entry.name} installed` })
+    }
+  }
+
   return (
-    <CatalogBrowser
-      headerActions={<PluginActions profile={profile} />}
-      installedEntries={installedEntries}
-      installedPending={status !== 'ready'}
-      isInstalled={isInstalled}
-      kind="plugins"
-      matchInstalled={matchInstalled}
-      notice={notice}
-      onInstall={entry => openCatalogPluginInstall(entry, scope)}
-      onQueryChange={onQueryChange}
-      query={query}
-      renderInstalledAction={entry => {
-        const pkg = packageById.get(entry.id)
-
-        return pkg ? packageSwitch(pkg) : null
-      }}
-      renderInstalledDetail={entry => {
-        const pkg = packageById.get(entry.id)
-
-        if (!pkg) {
-          return null
+    <>
+      <CatalogBrowser
+        additionalEntries={privateEntries}
+        headerActions={<PluginActions profile={profile} />}
+        installedEntries={installedEntries}
+        installedPending={status !== 'ready'}
+        isInstallDisabled={entry =>
+          Boolean(entry.marketplaceId && (!entry.marketplaceAvailable || !entry.marketplaceCompatible))
         }
+        isInstalled={isInstalled}
+        kind="plugins"
+        matchInstalled={matchInstalled}
+        notice={notice}
+        onInstall={entry => {
+          if (entry.marketplaceId) {
+            setPrivateInstallError(null)
+            setPendingPrivateInstall(entry)
+          } else {
+            openCatalogPluginInstall(entry, scope)
+          }
+        }}
+        onQueryChange={onQueryChange}
+        query={query}
+        renderInstalledAction={entry => {
+          const pkg = packageById.get(entry.id)
 
-        return (
-          <PackageRow
-            busy={pkg.agent ? agentBusy(pkg.agent) : false}
-            key={pkg.key}
-            onAgentRemove={handleAgentRemove}
-            onAgentToggle={(row, enable) => {
-              if (!row.key) {
-                return
-              }
+          return pkg ? packageSwitch(pkg) : null
+        }}
+        renderInstalledDetail={entry => {
+          const pkg = packageById.get(entry.id)
 
-              void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
-            }}
-            onAgentUpdate={row => {
-              const finish = (outcome: AgentPluginUpdateOutcome) => {
-                if (outcome.kind === 'applied') {
-                  notify({ kind: 'success', message: p.updated(row.name) })
-                  void rescanAll(requestGateway, scope)
-                }
-              }
+          if (!pkg) {
+            return null
+          }
 
-              void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(async outcome => {
-                if (outcome.kind !== 'consent') {
-                  finish(outcome)
-
+          return (
+            <PackageRow
+              busy={pkg.agent ? agentBusy(pkg.agent) : false}
+              key={pkg.key}
+              onAgentRemove={handleAgentRemove}
+              onAgentToggle={(row, enable) => {
+                if (!row.key) {
                   return
                 }
 
-                // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
-                // half); the backend changed nothing until the user confirms the delta.
-                const ok = await confirm({
-                  confirmLabel: p.updateConsentConfirm,
-                  description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
-                  title: p.updateConsentTitle(row.name)
-                })
-
-                if (ok) {
-                  finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
+                void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
+              }}
+              onAgentUpdate={row => {
+                const finish = (outcome: AgentPluginUpdateOutcome) => {
+                  if (outcome.kind === 'applied') {
+                    notify({ kind: 'success', message: p.updated(row.name) })
+                    void rescanAll(requestGateway, scope)
+                  }
                 }
-              })
+
+                void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(
+                  async outcome => {
+                    if (outcome.kind !== 'consent') {
+                      finish(outcome)
+
+                      return
+                    }
+
+                    // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
+                    // half); the backend changed nothing until the user confirms the delta.
+                    const ok = await confirm({
+                      confirmLabel: p.updateConsentConfirm,
+                      description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
+                      title: p.updateConsentTitle(row.name)
+                    })
+
+                    if (ok) {
+                      finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
+                    }
+                  }
+                )
+              }}
+              onDesktopRemove={handleDesktopRemove}
+              pkg={pkg}
+              profile={profile}
+              request={requestGateway}
+              scope={scope}
+              scopeLabel={label}
+              scopeSelector={scopeSelector}
+            />
+          )
+        }}
+        selectedEntryId={selectedEntryId}
+        sourceAction={
+          <Tip label="Add marketplace">
+            <Button aria-label="Add marketplace" onClick={() => setAdding(true)} size="icon-xs" variant="ghost">
+              <Plus className="size-3" />
+            </Button>
+          </Tip>
+        }
+        sourceLabels={sourceLabels}
+      />
+      <Dialog onOpenChange={setAdding} open={adding}>
+        <DialogContent className="max-w-lg">
+          <form
+            onSubmit={event => {
+              event.preventDefault()
+              void addMarketplace()
             }}
-            onDesktopRemove={handleDesktopRemove}
-            pkg={pkg}
-            profile={profile}
-            request={requestGateway}
-            scope={scope}
-            scopeLabel={label}
-            scopeSelector={scopeSelector}
-          />
-        )
-      }}
-      selectedEntryId={selectedEntryId}
-    />
+          >
+            <DialogHeader>
+              <DialogTitle>Add marketplace from URL</DialogTitle>
+              <DialogDescription>
+                Paste the HTTPS URL of a Git repository containing .claude-plugin/marketplace.json. The selected agent
+                uses its existing Git credentials.
+              </DialogDescription>
+            </DialogHeader>
+            <Input
+              aria-label="Marketplace repository URL"
+              autoFocus
+              className="mt-4"
+              onChange={event => setMarketplaceUrl(event.target.value)}
+              placeholder="https://github.com/owner/plugin-marketplace"
+              value={marketplaceUrl}
+            />
+            {marketplaceScope === scopeKey && marketplaceError && (
+              <p className="mt-2 text-xs text-destructive">{marketplaceError}</p>
+            )}
+            <DialogFooter className="mt-4">
+              <Button
+                disabled={marketplaceBusy === 'add'}
+                onClick={() => setAdding(false)}
+                type="button"
+                variant="ghost"
+              >
+                Cancel
+              </Button>
+              <Button disabled={marketplaceBusy === 'add' || !marketplaceUrl.trim()} type="submit">
+                {marketplaceBusy === 'add' && <Loader2 className="size-3 animate-spin" />}
+                Add marketplace
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        onOpenChange={open => {
+          if (!open && !installingPrivate) {setPendingPrivateInstall(null)}
+        }}
+        open={Boolean(pendingPrivateInstall)}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Install {pendingPrivateInstall?.name}?</DialogTitle>
+            <DialogDescription>
+              Hermes will install from {pendingPrivateInstall?.sourceLabel} at the exact commit resolved by the selected
+              agent.
+            </DialogDescription>
+          </DialogHeader>
+          {privateInstallError && <p className="text-xs text-destructive">{privateInstallError}</p>}
+          <DialogFooter>
+            <Button disabled={installingPrivate} onClick={() => setPendingPrivateInstall(null)} variant="ghost">
+              Cancel
+            </Button>
+            <Button disabled={installingPrivate} onClick={() => void installPrivate()}>
+              {installingPrivate && <Loader2 className="size-3 animate-spin" />}
+              {installingPrivate ? 'Installing…' : 'Install'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   )
 })

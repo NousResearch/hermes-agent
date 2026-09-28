@@ -45,6 +45,9 @@ export interface AgentPluginRow {
   /** Curated-catalog provenance (from the install sidecar), when present. */
   catalog_name?: string
   catalog_tier?: string
+  marketplace_id?: string
+  marketplace_plugin_name?: string
+  marketplace_available?: boolean
   installed_sha?: string
   /** Current catalog pin for this entry (backend-computed). */
   catalog_sha?: string
@@ -279,6 +282,8 @@ export async function installAgentPlugin(
     /** Curated-catalog install: the backend resolves repo + pinned SHA from
      *  its own plugin-catalog and records provenance in the sidecar. */
     catalogName?: string
+    marketplaceId?: string
+    marketplacePluginName?: string
     /** Pin a custom source to one full commit SHA (team-wide reproducible install). */
     ref?: string
     /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
@@ -308,6 +313,9 @@ export async function installAgentPlugin(
           force: Boolean(opts.force),
           enable: opts.enable ?? true,
           ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
+          ...(opts.marketplaceId && opts.marketplacePluginName
+            ? { marketplace_id: opts.marketplaceId, marketplace_plugin_name: opts.marketplacePluginName }
+            : {}),
           ...(opts.ref ? { ref: opts.ref } : {})
         },
         opts.profile

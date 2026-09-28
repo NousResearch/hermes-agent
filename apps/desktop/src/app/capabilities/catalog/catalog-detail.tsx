@@ -81,7 +81,9 @@ export function CatalogDetail({
               {action && <span className="shrink-0">{action}</span>}
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-(--ui-text-tertiary)">
-              <span className="min-w-0 truncate">{entry.author || catalogLabel(entry.source)}</span>
+              <span className="min-w-0 truncate">
+                {entry.author || entry.sourceLabel || catalogLabel(entry.source)}
+              </span>
               <CatalogHeaderMeta entry={entry} />
             </div>
           </div>

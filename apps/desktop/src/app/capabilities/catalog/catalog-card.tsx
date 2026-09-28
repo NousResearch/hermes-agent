@@ -102,7 +102,9 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
         {/* In a fixed-height grid cell the description is what gives way. */}
         <div className="flex min-h-0 min-w-0 flex-col gap-2">
           <span className="flex w-full items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            <span className="min-w-0 flex-1 truncate">{entry.author || catalogLabel(entry.source)}</span>
+            <span className="min-w-0 flex-1 truncate">
+              {entry.author || entry.sourceLabel || catalogLabel(entry.source)}
+            </span>
             <CatalogHeaderMeta entry={entry} />
           </span>
           <span className="line-clamp-4 min-h-0 text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">

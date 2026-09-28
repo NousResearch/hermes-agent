@@ -7,6 +7,11 @@ export type CatalogKind = 'skills' | 'plugins'
 
 export interface CatalogEntry {
   id: string
+  marketplaceId?: string
+  marketplacePluginName?: string
+  marketplaceAvailable?: boolean
+  marketplaceCompatible?: boolean
+  sourceLabel?: string
   name: string
   description: string
   overview: string
@@ -87,7 +92,7 @@ export function parseCatalog(kind: CatalogKind, data: unknown): CatalogEntry[] {
     }
 
     const name = text(row.name)
-    const source = text(kind === 'plugins' ? row.tier : row.source)
+    const source = text(kind === 'plugins' ? row.source || row.tier : row.source)
     const identifier = text(row.identifier) || name
     const id = `${source}:${identifier}`
     const caps = row.capabilities ?? {}

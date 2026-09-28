@@ -737,6 +737,7 @@ export const en: Translations = {
       'session.focusSearch': 'Search sessions',
       'session.togglePin': 'Pin / unpin current session',
       'session.archive': 'Archive current session',
+      'session.toggleUnread': 'Mark current session unread / read',
       'conversation.scrollPageUp': 'Scroll conversation up one page',
       'conversation.scrollPageDown': 'Scroll conversation down one page',
       'workspace.newWorktree': 'New worktree',

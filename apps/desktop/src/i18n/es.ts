@@ -680,6 +680,7 @@ export const esOverrides = {
       'session.focusSearch': 'Buscar sesiones',
       'session.togglePin': 'Fijar / desfijar sesión actual',
       'session.archive': 'Archivar la sesión actual',
+      'session.toggleUnread': 'Marcar la sesión actual como no leída / leída',
       'workspace.newWorktree': 'Nuevo worktree',
       'workspace.openFolder': 'Abrir carpeta como proyecto',
       'composer.focus': 'Enfocar compositor',

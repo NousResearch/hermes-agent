@@ -123,6 +123,8 @@ export interface KeybindRuntimeDeps {
   toggleSelectedPin: () => void
   /** Archive the active session. */
   archiveSelectedSession: () => void
+  /** Toggle the persisted unread flag of the selected session. */
+  toggleSelectedUnread: () => void
 }
 
 /** A handler returns `false` to decline the chord (see `passthrough`); any other
@@ -323,6 +325,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
     'session.archive': deps.archiveSelectedSession,
+    'session.toggleUnread': deps.toggleSelectedUnread,
     'conversation.scrollPageUp': () => requestThreadPageScroll(-1, $focusedStoredSessionId.get()),
     'conversation.scrollPageDown': () => requestThreadPageScroll(1, $focusedStoredSessionId.get()),
     // openWorktreeDialog resolves the target. There is no test for a repo

@@ -37,6 +37,16 @@ describe('KEYBIND_ACTIONS', () => {
     expect(KEYBIND_ACTIONS.filter(candidate => candidate.id === 'session.archive')).toHaveLength(1)
   })
 
+  it('registers the unread toggle bound to the Slack-style chord', () => {
+    expect(keybindAction('session.toggleUnread')).toMatchObject({
+      category: 'session',
+      defaults: ['mod+shift+u']
+    })
+    expect(defaultBindings()['session.toggleUnread']).toEqual(['mod+shift+u'])
+    expect(en.keybinds.actions['session.toggleUnread']).toBeTruthy()
+    expect(KEYBIND_ACTIONS.filter(candidate => candidate.id === 'session.toggleUnread')).toHaveLength(1)
+  })
+
   it('registers dictation with an English label and no default chord', () => {
     const action = keybindAction('composer.dictate')
 

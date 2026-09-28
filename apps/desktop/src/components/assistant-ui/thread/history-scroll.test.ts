@@ -15,6 +15,14 @@ const rect = (top: number, height: number) => ({
   toJSON: () => ({})
 })
 
+function stubCss(mode: string) {
+  if (mode === 'absent') {
+    vi.stubGlobal('CSS', undefined)
+  } else if (mode === 'no-escape') {
+    vi.stubGlobal('CSS', {})
+  }
+}
+
 beforeEach(() => {
   vi.stubGlobal('matchMedia', () => ({ matches: false }))
 })
@@ -26,7 +34,13 @@ afterEach(() => {
 })
 
 describe('bounded history geometry', () => {
-  it.each([800, -800])('keeps an exact visible occurrence after a %+i pixel append/eviction shift', shift => {
+  it.each([
+    { shift: 800, css: 'native' },
+    { shift: -800, css: 'native' },
+    { shift: 800, css: 'absent' },
+    { shift: 800, css: 'no-escape' }
+  ])('keeps an exact visible occurrence after a $shift pixel shift (CSS: $css)', ({ shift, css }) => {
+    stubCss(css)
     const viewport = document.createElement('div')
     viewport.innerHTML =
       '<div data-slot="aui_message-group" data-history-anchor="old-group"><div data-history-anchor="text-99"></div><div data-history-anchor="text-99"></div></div>'
@@ -39,6 +53,10 @@ describe('bounded history geometry', () => {
       rect(100 + displacement - viewport.scrollTop, 2000)
     )
     const children = Array.from(group.children) as HTMLElement[]
+    const key = 'text-[99]"quoted"'
+    children.forEach(child => {
+      child.dataset.historyAnchor = key
+    })
     vi.spyOn(children[0], 'getBoundingClientRect').mockImplementation(() =>
       rect(200 + displacement - viewport.scrollTop, 100)
     )
@@ -46,7 +64,7 @@ describe('bounded history geometry', () => {
       rect(1000 + displacement - viewport.scrollTop, 200)
     )
     const anchors = captureHistoryScroll(viewport)
-    expect(anchors[0]).toEqual({ key: 'text-99', occurrence: 1, offset: 100 })
+    expect(anchors[0]).toEqual({ key, occurrence: 1, offset: 100 })
     group.dataset.historyAnchor = 'new-group' // the old folded assistant head was evicted
     displacement = shift
     expect(restoreHistoryScroll(viewport, anchors)).toBe(true)
@@ -64,7 +82,13 @@ describe('bounded history geometry', () => {
     expect(measure).not.toHaveBeenCalled()
   })
 
-  it.each([false, true])('retargets the selected prompt as deferred layout changes (cancel=%s)', async cancel => {
+  it.each([
+    { cancel: false, css: 'native' },
+    { cancel: true, css: 'native' },
+    { cancel: false, css: 'absent' },
+    { cancel: false, css: 'no-escape' }
+  ])('retargets the selected prompt through layout changes (cancel: $cancel, CSS: $css)', async ({ cancel, css }) => {
+    stubCss(css)
     const frames = new Map<number, FrameRequestCallback>()
     let serial = 0
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
@@ -87,6 +111,8 @@ describe('bounded history geometry', () => {
     const viewport = document.createElement('div')
     viewport.innerHTML =
       '<div data-slot="aui_message-group"><div data-slot="aui_turn-pair"><div data-message-id="exact-row"></div></div></div>'
+    const id = 'exact-["row"]'
+    viewport.querySelector('[data-message-id]')!.setAttribute('data-message-id', id)
     document.body.append(viewport)
     Object.defineProperty(viewport, 'scrollHeight', { value: 6000 })
     Object.defineProperty(viewport, 'clientHeight', { value: 600 })
@@ -96,21 +122,26 @@ describe('bounded history geometry', () => {
     let layoutTop = 1800
     vi.spyOn(group, 'getBoundingClientRect').mockImplementation(() => rect(layoutTop - viewport.scrollTop, 900))
     const controller = new AbortController()
-    const pending = scrollTimelineTarget(viewport, 'exact-row', controller.signal)
-    tick(100)
-    layoutTop = 2600 // earlier skipped turns acquired their real height
+    const pending = scrollTimelineTarget(viewport, id, controller.signal)
 
-    if (cancel) {
+    try {
+      tick(100)
+      layoutTop = 2600 // earlier skipped turns acquired their real height
+
+      if (cancel) {
+        controller.abort()
+      }
+
+      const stoppedAt = viewport.scrollTop
+      tick(200)
+      tick(220)
+      tick(240)
+      expect(await pending).toBe(!cancel)
+      expect(viewport.scrollTop).toBe(cancel ? stoppedAt : 2592)
+      expect(group.style.contentVisibility).toBe('auto')
+      expect(frames.size).toBe(0)
+    } finally {
       controller.abort()
     }
-
-    const stoppedAt = viewport.scrollTop
-    tick(200)
-    tick(220)
-    tick(240)
-    expect(await pending).toBe(!cancel)
-    expect(viewport.scrollTop).toBe(cancel ? stoppedAt : 2592)
-    expect(group.style.contentVisibility).toBe('auto')
-    expect(frames.size).toBe(0)
   })
 })

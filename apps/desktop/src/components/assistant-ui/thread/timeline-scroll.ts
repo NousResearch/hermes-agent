@@ -41,7 +41,7 @@ export function scrollTimelineTarget(viewport: HTMLElement, id: string, signal: 
         return finish(false)
       }
 
-      const node = viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
+      const node = viewport.querySelector<HTMLElement>(`[data-message-id="${cssEscape(id)}"]`)
 
       if (!node) {
         return finish(false)

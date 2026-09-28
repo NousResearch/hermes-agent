@@ -54,7 +54,7 @@ export function captureHistoryScroll(viewport: HTMLElement): HistoryScrollAnchor
 
 export function restoreHistoryScroll(viewport: HTMLElement, anchors: readonly HistoryScrollAnchor[]): boolean {
   for (const anchor of anchors) {
-    const node = viewport.querySelectorAll<HTMLElement>(`[data-history-anchor="${CSS.escape(anchor.key)}"]`)[
+    const node = viewport.querySelectorAll<HTMLElement>(`[data-history-anchor="${cssEscape(anchor.key)}"]`)[
       anchor.occurrence
     ]
 

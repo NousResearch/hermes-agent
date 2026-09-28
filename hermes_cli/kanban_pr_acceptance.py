@@ -1,4 +1,4 @@
-"""Exact-head GitHub acceptance for explicitly declared PR tasks.
+"""Exact-head GitHub / GitLab acceptance for explicitly declared PR/MR tasks.
 
 Network work happens outside SQLite transactions. The lifecycle owner persists
 receipts only after rechecking the captured run/status/contract under its lock.
@@ -12,14 +12,37 @@ from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
+# GitLab: ``gitlab:HOST/GROUP/.../PROJECT`` (CI green on the MR head) or
+# ``gitlab-merged:HOST/...`` (additionally the MR must be merged), or an exact MR
+# URL; a trailing ``#merged`` on the URL carries the merged requirement.
+_GL_PATH = r"([A-Za-z0-9.-]+)/([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)"
+_GL_PROJECT = re.compile(r"(gitlab|gitlab-merged):" + _GL_PATH)
+_GL_MR = re.compile(r"https://" + _GL_PATH + r"/-/merge_requests/([1-9][0-9]*)(#merged)?")
+_GL_WAIT = {"created", "waiting_for_resource", "preparing", "pending", "running", "scheduled", "manual"}
 
 
 def validate_contract(value: str | None) -> str:
     if value is None or value == "local-only":
         return "local-only"
-    if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value)):
-        raise ValueError("completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR URL")
+    if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value)
+                                          or _GL_PROJECT.fullmatch(value) or _GL_MR.fullmatch(value)):
+        raise ValueError("completion_contract must be local-only, OWNER/REPO, an exact GitHub PR URL, "
+                         "gitlab:HOST/PROJECT, gitlab-merged:HOST/PROJECT, or an exact GitLab MR URL")
     return value
+
+
+def bind_contract(contract: str, published: str | None) -> str | None:
+    """The contract to persist once ``published`` matches a repo/project-level
+    contract; ``None`` when it does not bind (already exact, or a sibling)."""
+    if not isinstance(published, str):
+        return None
+    gh = _PR.fullmatch(published)
+    if gh and contract == gh[1]:
+        return published
+    project, mr = _GL_PROJECT.fullmatch(contract), _GL_MR.fullmatch(published)
+    if project and mr and not mr[4] and (project[2], project[3]) == (mr[1], mr[2]):
+        return published + ("#merged" if project[1] == "gitlab-merged" else "")
+    return None
 
 
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
@@ -37,6 +60,8 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
 
 
 def collect_acceptance(contract: str, published_pr: str | None) -> dict:
+    if _GL_PROJECT.fullmatch(contract) or _GL_MR.fullmatch(contract):
+        return _collect_gitlab(contract, published_pr)
     receipt = {"ok": False, "classification": "missing", "head_sha": None,
                "pr_url": published_pr, "checks": [],
                "recovery": "Fix required failures, rerun infrastructure checks or wait, then retry completion. "
@@ -107,6 +132,63 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
         # Never persist gh stderr (credentials/host details); the failed phase is actionable.
         receipt.update(classification="infra", detail="GitHub acceptance evidence unavailable or incomplete; check gh authentication/API access and retry.")
         return receipt
+
+
+def _collect_gitlab(contract: str, published_pr: str | None) -> dict:
+    """GitLab MR: the head pipeline of the CURRENT head SHA must be ``success``;
+    a ``#merged`` contract also needs ``state == merged``. Read-only (``glab api``)."""
+    receipt = {"ok": False, "classification": "missing", "head_sha": None, "pr_url": None, "checks": [],
+               "recovery": "Fix the failing pipeline or wait for it (and for the merge on a merged "
+                           "contract), then retry completion. Use kanban_block if human input is needed."}
+    match = _GL_MR.fullmatch(contract)
+    if not match or (published_pr and published_pr != contract.removesuffix("#merged")):
+        receipt["detail"] = "Supply metadata.published_pr with the MR URL of the declared GitLab project."
+        return receipt
+    host, path, number, merged = match[1], match[2], int(match[3]), bool(match[4])
+    receipt["pr_url"] = contract.removesuffix("#merged")
+    endpoint = f"projects/{quote(path, safe='')}/merge_requests/{number}"
+    try:
+        mr = _glab(host, endpoint)
+        sha, target = mr["sha"], mr["target_branch"]
+        receipt["head_sha"] = sha
+        if not re.fullmatch(r"[0-9a-f]{40}", sha or "") or mr["state"] not in {"opened", "merged"}:
+            raise ValueError("MR is closed or current head is unavailable")
+        pipeline = mr.get("head_pipeline") or {}
+        status = pipeline.get("status")
+        if not pipeline:
+            classification = "missing"
+        elif pipeline.get("sha") != sha:
+            classification = "stale"
+        else:
+            classification = {"success": "success", "failed": "failure", "canceled": "failure",
+                              "skipped": "failure"}.get(status, "pending" if status in _GL_WAIT else "infra")
+        if pipeline:
+            receipt["checks"].append({"name": "pipeline", "id": pipeline.get("id"), "url": pipeline.get("web_url"),
+                                      "head_sha": pipeline.get("sha"), "classification": classification,
+                                      "conclusion": status})
+        if classification == "success" and merged and mr["state"] != "merged":
+            classification = "pending"
+            receipt["detail"] = "Pipeline is green; the contract also requires the MR to be merged."
+        current = _glab(host, endpoint)
+        if current["sha"] != sha or current["target_branch"] != target or current["state"] == "closed":
+            receipt.update(classification="stale", detail="MR head/target changed while collecting evidence; retry.")
+            return receipt
+        receipt["classification"] = classification
+        receipt["ok"] = classification == "success"
+        return receipt
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        receipt.update(classification="infra",
+                       detail="GitLab acceptance evidence unavailable; check glab authentication/API access and retry.")
+        return receipt
+
+
+def _glab(host: str, endpoint: str) -> dict:
+    result = subprocess.run(["glab", "api", endpoint, "--hostname", host], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=30, check=True)
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict):
+        raise ValueError("unexpected GitLab API response")
+    return value
 
 
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:

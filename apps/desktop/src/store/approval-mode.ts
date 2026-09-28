@@ -13,6 +13,18 @@ function profileKey(profile: string): string {
   return profile.trim() || 'default'
 }
 
+// The gateway's `config.get` / `config.set` are `@_profile_scoped`: a request with no `profile`
+// param resolves to the profile the backend was *launched* with. So an unscoped read/write targets
+// the launch profile no matter which profile the menu is showing — the UI ends up displaying one
+// profile's mode for all of them and a write silently edits the launch profile (#125969). Name the
+// profile the call is for; a blank name IS the launch profile, so omit the param (keeping the
+// backend's os.environ / session precedence) — the same rule `api/client.ts`'s `profileScoped()` uses.
+function scopeToProfile(profile: string, params: Record<string, unknown>): Record<string, unknown> {
+  const name = profile.trim()
+
+  return name ? { ...params, profile: name } : params
+}
+
 function nextRevision(profile: string): number {
   const revision = (revisions.get(profile) ?? 0) + 1
   revisions.set(profile, revision)
@@ -53,7 +65,10 @@ export async function syncApprovalModeForProfile(
 ): Promise<ApprovalMode> {
   const key = profileKey(profile)
   const revision = nextRevision(key)
-  const result = (await requestGateway('config.get', { key: 'approvals.mode' })) as { value?: string }
+  const result = (await requestGateway(
+    'config.get',
+    scopeToProfile(profile, { key: 'approvals.mode' })
+  )) as { value?: string }
   const mode = normalizeApprovalMode(result?.value)
 
   if (revisions.get(key) === revision) {
@@ -74,10 +89,10 @@ export async function setApprovalModeForProfile(
   cacheApprovalMode(key, mode)
 
   try {
-    const result = (await requestGateway('config.set', {
-      key: 'approvals.mode',
-      value: mode
-    })) as { value?: string }
+    const result = (await requestGateway(
+      'config.set',
+      scopeToProfile(profile, { key: 'approvals.mode', value: mode })
+    )) as { value?: string }
 
     const authoritative = normalizeApprovalMode(result?.value)
 

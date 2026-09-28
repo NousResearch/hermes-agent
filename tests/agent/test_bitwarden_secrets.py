@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agent.secret_sources import bitwarden as bw  # noqa: E402
+from agent.secret_sources.base import ErrorKind  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -399,6 +400,115 @@ def test_stale_fallback_skipped_on_auth_failure(monkeypatch, tmp_path):
             access_token="0.t", project_id="proj-1", binary=fake_binary,
             cache_ttl_seconds=300, home_path=home,
         )
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting (429) — gateways sharing one machine account (#126831)
+# ---------------------------------------------------------------------------
+
+_429_STDERR = (
+    'Received error message from server: [429 Too Many Requests] '
+    '{"object":"error","message":"Slow down! Too many requests. '
+    'Try again in 1s.","validationErrors":null}'
+)
+
+
+def test_rate_limit_error_classified_transient():
+    """A 429 burst answer must classify as RATE_LIMITED, not INTERNAL (#126831)."""
+    assert bw._classify_bws_error(f"bws exited 1: {_429_STDERR}") is ErrorKind.RATE_LIMITED
+
+
+def test_rate_limit_retries_with_server_hint(monkeypatch, tmp_path):
+    """A 429 sleeps per the server's "Try again in 1s" hint and retries; the
+    second attempt returns the secrets, so the profile still boots."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+
+    calls = {"n": 0}
+
+    def fake_run(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return mock.Mock(returncode=1, stdout="", stderr=_429_STDERR)
+        return mock.Mock(returncode=0,
+                         stdout=_fake_bws_payload([{"key": "K1", "value": "v1"}]),
+                         stderr="")
+
+    sleeps: list = []
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(bw.time, "sleep", lambda s: sleeps.append(s))
+
+    secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        use_cache=False, home_path=home,
+    )
+    assert secrets == {"K1": "v1"}
+    assert warnings == []
+    assert calls["n"] == 2
+    assert sleeps == [1.5]
+
+
+def test_rate_limit_retries_bounded_then_stale_fallback(monkeypatch, tmp_path):
+    """Retries are bounded (1 attempt + 2 retries, never a loop); an exhausted
+    429 falls back to the stale disk cache instead of booting without secrets."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+    _seed_stale_disk_cache(home, secrets={"K1": "v-old"}, age_seconds=3600)
+
+    calls = {"n": 0}
+
+    def fake_run(*a, **kw):
+        calls["n"] += 1
+        return mock.Mock(returncode=1, stdout="", stderr=_429_STDERR)
+
+    sleeps: list = []
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(bw.time, "sleep", lambda s: sleeps.append(s))
+
+    secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=300, home_path=home,
+    )
+    assert secrets == {"K1": "v-old"}
+    assert calls["n"] == 1 + bw._BWS_RATE_LIMIT_RETRIES
+    assert sleeps == [1.5] * bw._BWS_RATE_LIMIT_RETRIES
+    assert len(warnings) == 1
+    assert "stale disk cache" in warnings[0]
+    assert "429" in warnings[0]
+
+
+def test_auth_failure_not_retried(monkeypatch, tmp_path):
+    """Only RATE_LIMITED is retried — an AUTH_FAILED bws error must raise on
+    the very first attempt (retrying a bad token just burns the rate budget)."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    bw._reset_cache_for_tests(home)
+
+    calls = {"n": 0}
+
+    def fake_run(*a, **kw):
+        calls["n"] += 1
+        return mock.Mock(returncode=1, stdout="", stderr="Error: unauthorized (401)")
+
+    sleeps: list = []
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(bw.time, "sleep", lambda s: sleeps.append(s))
+
+    with pytest.raises(RuntimeError, match="unauthorized"):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            use_cache=False, home_path=home,
+        )
+    assert calls["n"] == 1
+    assert sleeps == []
 
 
 

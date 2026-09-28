@@ -2477,7 +2477,15 @@ def init_agent(
     try:
         from hermes_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
-    except Exception:
+    except Exception as exc:
+        # Config exceptions may contain secrets; omit their message and traceback
+        # even when a caller installs a non-redacting log handler.
+        logger.warning(
+            "Agent configuration could not be loaded (%s); using defaults for "
+            "memory, skills, compression and related settings. Check the active "
+            "Hermes Python environment and dependencies, then run 'hermes config check'.",
+            type(exc).__name__,
+        )
         _agent_cfg = {}
 
     _apply_display_config(agent, _agent_cfg, platform)

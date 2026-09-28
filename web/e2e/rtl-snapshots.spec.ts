@@ -18,6 +18,8 @@
  *  - the Vazirmatn font stack falling back to system faces.
  *  - broken Persian copy (missing keys falling back to English mid-surface).
  *
+ * One baseline per covered page (16 as of 2026-09-28, including /mcp with its
+ * per-page server/catalog fixtures via MCP_API_OVERRIDES below).
  * Baselines: `npx playwright test --update-snapshots` (see config). On CI PRs,
  * diffs are surfaced as artifacts, not failures — same policy as the desktop
  * visual suite.
@@ -165,6 +167,102 @@ export const MODELS_API_OVERRIDES: Record<string, { status: number; body: string
   }),
 };
 
+export const MCP_API_OVERRIDES: Record<string, { status: number; body: string }> = {
+  // McpServerListResponse — three server shapes so one page pins all the
+  // chrome: http+oauth (Latin URL island, auth badge, env-var chip),
+  // stdio+header (command-line island), and a disabled server (opacity-60 +
+  // the «غیرفعال» badge). Names stay Latin: they are user data.
+  "/api/mcp/servers": stubJson({
+    servers: [
+      {
+        name: "github-mcp",
+        transport: "http",
+        url: "https://mcp.example.invalid/github",
+        command: null,
+        args: [],
+        env: { GITHUB_TOKEN: "gho_stub_token" },
+        auth: "oauth",
+        enabled: true,
+        tools: ["search_repos", "read_file"],
+      },
+      {
+        name: "filesystem-bridge",
+        transport: "stdio",
+        url: null,
+        command: "npx",
+        args: ["-y", "@example/fs-bridge", "--root", "/data"],
+        env: {},
+        auth: "header",
+        enabled: true,
+        tools: null,
+      },
+      {
+        name: "weather-legacy",
+        transport: "http",
+        url: "https://weather.example.invalid/mcp",
+        command: null,
+        args: [],
+        env: {},
+        auth: null,
+        enabled: false,
+        tools: null,
+      },
+    ],
+  }),
+  // Catalog response — one installed-but-disabled stdio entry (carries the
+  // matching diagnostic + the «نصب‌شده»/«غیرفعال» badge pair) and one
+  // not-installed http entry with the Persian description, install CTA,
+  // endpoint line and git-bootstrap line. required_env/default_enabled are
+  // read by the (closed) install modal but must be shape-complete.
+  "/api/mcp/catalog": stubJson({
+    entries: [
+      {
+        name: "git-tools",
+        description: "Local git worktree tools for the agent.",
+        source: "builtin",
+        transport: "stdio",
+        auth_type: "none",
+        required_env: [],
+        command: "uvx",
+        args: ["git-tools-mcp"],
+        url: null,
+        install_url: null,
+        install_ref: null,
+        bootstrap: [],
+        default_enabled: null,
+        post_install: "",
+        needs_install: false,
+        installed: true,
+        enabled: false,
+      },
+      {
+        name: "notion-mcp",
+        description: "خواندن و نوشتن صفحات Notion از طریق پروتکل MCP.",
+        source: "https://example.invalid/catalog/notion",
+        transport: "http",
+        auth_type: "api_key",
+        required_env: [
+          { name: "NOTION_TOKEN", prompt: "Notion integration token", required: true },
+        ],
+        command: null,
+        args: [],
+        url: "https://mcp.notion.example.invalid/mcp",
+        install_url: "https://example.invalid/notion-mcp.git",
+        install_ref: "v2.1.0",
+        bootstrap: ["npm", "ci"],
+        default_enabled: ["search", "fetch"],
+        post_install: "Set NOTION_TOKEN before first use.",
+        needs_install: true,
+        installed: false,
+        enabled: false,
+      },
+    ],
+    diagnostics: [
+      { name: "git-tools", kind: "disabled", message: "Server installed but disabled." },
+    ],
+  }),
+};
+
 /**
  * Deterministic stub responses for every `/api/*` endpoint the covered pages
  * call on boot. `200 {}` is a safe default: the dashboard's fetchJSON accepts
@@ -214,6 +312,12 @@ const PAGES: Array<{
   // Dates inside rows are TZ-sensitive — the config pins timezoneId UTC.
   { path: "/files", name: "files" }, // entry rows: Latin file names, byte sizes, Jalali dates.
   { path: "/cron", name: "cron", freezeClockAt: "2026-09-27T08:00:00Z" }, // job rows: humanized schedule sentences, repeat counters, last/next timestamps — the sharpest mixed-direction text on the dashboard. Clock frozen an hour before the fixture's 09:00Z next_run_at so the overdue badge can never flip.
+  // MCP (localized in f263bcc8ea9): server cards pin transport/auth badges,
+  // URL + command-line Latin islands inside Persian chrome, env-var chips and
+  // the disabled state; catalog cards pin the install CTA, Persian entry
+  // description, bootstrap lines and the installed/disabled badge pair. The
+  // `{}` defaults would crash the page (res.servers/res.entries are mapped).
+  { path: "/mcp", name: "mcp", apiOverrides: MCP_API_OVERRIDES },
 ];
 
 const API_STUBS: Record<string, { status: number; body: string }> = {

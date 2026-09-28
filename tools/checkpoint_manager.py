@@ -56,6 +56,8 @@ import re
 import shutil
 import subprocess
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
@@ -294,6 +296,42 @@ def _project_meta_path(store: Path, dir_hash: str) -> Path:
 # Git env
 # ---------------------------------------------------------------------------
 
+# Set by ``_reuse_git_env``: a slot holding the selected base env once resolved.
+_reused_git_env: ContextVar[Optional[Dict[str, dict]]] = ContextVar("_reused_git_env", default=None)
+
+
+@contextmanager
+def _reuse_git_env():
+    """Resolve the selected git environment at most once for every store call in this block.
+
+    Selection can start a PM helper process on a managed install, so a loop that runs git per
+    project or per ref (status, prune, list-all) paid that once per call: ~11 minutes of
+    ``hermes update`` on a 666-project store. Nested blocks share the outer resolution.
+    """
+    if _reused_git_env.get() is not None:
+        yield
+        return
+    token = _reused_git_env.set({})
+    try:
+        yield
+    finally:
+        _reused_git_env.reset(token)
+
+
+def _selected_base_env() -> dict:
+    # git child with hand-isolated config env; exact preservation; a HOME
+    # rewrite would change which ~/.gitconfig the isolation vars are hiding.
+    from tools.environments.local import build_subprocess_env
+
+    slot = _reused_git_env.get()
+    if slot is not None and "env" in slot:
+        return dict(slot["env"])
+    env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
+    if slot is not None:
+        slot["env"] = dict(env)
+    return env
+
+
 def _git_env(
     store: Path,
     working_dir: str,
@@ -316,11 +354,7 @@ def _git_env(
     ``store/indexes/<hash>`` so projects don't race on a shared index.
     """
     normalized_working_dir = _normalize_path(working_dir)
-    # git child with hand-isolated config env; exact preservation — a HOME
-    # rewrite would change which ~/.gitconfig the isolation vars are hiding.
-    from tools.environments.local import build_subprocess_env
-
-    env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
+    env = _selected_base_env()
     env["GIT_DIR"] = str(store)
     env["GIT_WORK_TREE"] = str(normalized_working_dir)
     env.pop("GIT_NAMESPACE", None)
@@ -980,13 +1014,14 @@ class CheckpointManager:
         if not (store / "HEAD").exists():
             return []
         results: List[Dict] = []
-        for meta in _list_projects(store):
-            workdir = meta.get("workdir") or ""
-            if not workdir:
-                continue
-            for entry in self.list_checkpoints(workdir):
-                entry["workdir"] = workdir
-                results.append(entry)
+        with _reuse_git_env():
+            for meta in _list_projects(store):
+                workdir = meta.get("workdir") or ""
+                if not workdir:
+                    continue
+                for entry in self.list_checkpoints(workdir):
+                    entry["workdir"] = workdir
+                    results.append(entry)
         results.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         return results
 
@@ -1492,8 +1527,10 @@ class CheckpointManager:
 
         pruner = Pruner(_run_git, store, working_dir, _GIT_TIMEOUT, _dir_size_bytes, _REFS_PREFIX)
         try:
-            pruner.trim(ref, self.max_snapshots)
-            if pruner.drop_one_round(self.max_total_size_mb * 1024 * 1024):
+            with _reuse_git_env():
+                pruner.trim(ref, self.max_snapshots)
+                dropped = pruner.drop_one_round(self.max_total_size_mb * 1024 * 1024)
+            if dropped:
                 logger.info("Checkpoint store exceeded %d MB — dropped the oldest snapshot per project; "
                             "space is reclaimed by the next prune", self.max_total_size_mb)
         except (PruneError, OSError) as exc:

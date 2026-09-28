@@ -94,19 +94,20 @@ def migrate_profile_checkpoint_projects(old_profile_dir: Path, new_profile_dir: 
         logger.warning("Cannot migrate checkpoint projects after profile rename: git not found")
         result["errors"] = 1
         return result
-    for meta in cm._list_projects(store):
-        result["scanned"] += 1
-        old_workdir = cm._normalize_path(str(meta.get("workdir") or ""))
-        if not meta.get("workdir") or not old_workdir.is_relative_to(old_root):
-            continue
-        new_workdir = new_root / old_workdir.relative_to(old_root)
-        if not new_workdir.is_dir():
-            continue
-        try:
-            _rekey_project(store, meta, old_workdir, new_workdir)
-            result["migrated"] += 1
-        except OSError as exc:
-            result["errors"] += 1
-            logger.warning("Cannot migrate checkpoint project %s -> %s after profile rename: %s",
-                           old_workdir, new_workdir, exc)
+    with cm._reuse_git_env():
+        for meta in cm._list_projects(store):
+            result["scanned"] += 1
+            old_workdir = cm._normalize_path(str(meta.get("workdir") or ""))
+            if not meta.get("workdir") or not old_workdir.is_relative_to(old_root):
+                continue
+            new_workdir = new_root / old_workdir.relative_to(old_root)
+            if not new_workdir.is_dir():
+                continue
+            try:
+                _rekey_project(store, meta, old_workdir, new_workdir)
+                result["migrated"] += 1
+            except OSError as exc:
+                result["errors"] += 1
+                logger.warning("Cannot migrate checkpoint project %s -> %s after profile rename: %s",
+                               old_workdir, new_workdir, exc)
     return result

@@ -415,6 +415,7 @@ method("rollback.diff", params=RollbackDiffParams, result=RollbackDiffResult,
 class CronAction(WireEnum):
     list = "list"
     add = "add"
+    get = "get"
     remove = "remove"
     pause = "pause"
     resume = "resume"
@@ -422,6 +423,7 @@ class CronAction(WireEnum):
 
 class CronManageParams(Params):
     action: CronAction = CronAction.list
+    job_id: str | None = None
     name: str | None = None
     include_disabled: bool | str | None = None
     schedule: str | None = None
@@ -476,6 +478,16 @@ class CronRemovedJob(Result):
     schedule: str | None = None
 
 
+class CronJobDetail(_Open):
+    """Full stored job for an editor, as returned by the HTTP single-job API."""
+
+    id: str
+    prompt: str = ""
+    name: str = ""
+    schedule: dict[str, JsonValue] = Field(default_factory=dict)
+    repeat: dict[str, JsonValue] | None = None
+
+
 class CronManageResult(_Open):
     """Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count``
     (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` →
@@ -496,7 +508,7 @@ class CronManageResult(_Open):
     repeat: int | str | None = None
     deliver: str | None = None
     next_run_at: str | None = None
-    job: CronJobRow | None = None
+    job: CronJobRow | CronJobDetail | None = None
     message: str | None = None
     guidance: JsonValue | None = None
     removed_job: CronRemovedJob | None = None

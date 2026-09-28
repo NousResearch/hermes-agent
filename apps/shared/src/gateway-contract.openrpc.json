@@ -10973,12 +10973,56 @@
         "enum": [
           "list",
           "add",
+          "get",
           "remove",
           "pause",
           "resume"
         ],
         "title": "CronAction",
         "type": "string"
+      },
+      "CronJobDetail": {
+        "additionalProperties": true,
+        "description": "Full stored job for an editor, as returned by the HTTP single-job API.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "prompt": {
+            "default": "",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "schedule": {
+            "additionalProperties": true,
+            "title": "Schedule",
+            "type": "object"
+          },
+          "repeat": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Repeat"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "CronJobDetail",
+        "type": "object"
       },
       "CronJobRow": {
         "additionalProperties": true,
@@ -11360,6 +11404,18 @@
             "$ref": "#/components/schemas/CronAction",
             "default": "list"
           },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Job Id"
+          },
           "name": {
             "anyOf": [
               {
@@ -11668,10 +11724,14 @@
                 "$ref": "#/components/schemas/CronJobRow"
               },
               {
+                "$ref": "#/components/schemas/CronJobDetail"
+              },
+              {
                 "type": "null"
               }
             ],
-            "default": null
+            "default": null,
+            "title": "Job"
           },
           "message": {
             "anyOf": [

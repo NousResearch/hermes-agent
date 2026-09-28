@@ -1248,6 +1248,10 @@ def _(rid, params: dict) -> dict:
     """cronjob() keys off HERMES_HOME, so ``profile`` reaches a per-profile cron store."""
     cronjob = _tools_mod("tools.cronjob_tools").cronjob
     action, jid = params.get("action", "list"), params.get("name", "")
+    from tui_gateway.cron_editor import get_cron_job
+
+    if action == "get":
+        return _ok(rid, get_cron_job(params))
     if action == "list":
         # Paused jobs are excluded by default (reads as deletion in a toggle UI) — forward the flag.
         include_disabled = is_truthy_value(params.get("include_disabled", False))

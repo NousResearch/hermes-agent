@@ -571,17 +571,29 @@ _STRICT_URL_USERINFO_RE = re.compile(r"(//)([^/\s?#@]+)@")
 # truncates the group to digits), and a version-shaped tail (``24.04-noble``, ``v1.2.3-alpine``)
 # is rejected outright. The value is the WHOLE assignment (``user`` cannot contain ``:``/``@``/``/``),
 # and the ``:(?!//)`` lookahead keeps ``scheme://`` values (``MY_URL=https://example.com``) out.
+# ``user`` must also be at least 2 characters: a single-letter ``user:`` is a Windows drive
+# (``SRC=C:\Users\...``), and masking the whole path as ``SRC=C:***`` at a force boundary is
+# unrecoverable data loss — no real Basic pair has a one-letter user, and a secret-keyword NAME
+# still masks via the ENV pass (#125680 review).
 # ``@`` is not a password character here either: a ``user:pass@host``-shaped value belongs to the
 # userinfo pass below, which knows the f-string ``{...}`` template exemption; excluding it lets that
 # pass see the pure brace expression (``BASIC="user:{pw}@host"`` keeps its template verbatim).
 _BASIC_PAIR_ASSIGN_RE = re.compile(
     r"(?<![A-Za-z0-9_.\-])([A-Za-z][A-Za-z0-9_.\-]{0,63})=([\"']?)"
-    r"([A-Za-z0-9._~\-]+)(?::(?!//)([^\s'\"/:@]+))\2"
+    r"([A-Za-z0-9._~\-]{2,})(?::(?!//)([^\s'\"/:@]+))\2"
 )
 
 # ``24.04-noble`` / ``v1.2.3-alpine`` image tags: digit-led dotted versions, optionally ``v``-prefixed
 # — long and letter-bearing enough to pass the floor, yet never a credential.
 _VERSION_TAG_RE = re.compile(r"^[vV]?\d+(\.\d+)+")
+
+# ``CHECKSUM=sha256:1234…`` digest labels: the hex body is long and letter-bearing, but a hash
+# algorithm name as the ``user`` half marks the pair as an algorithm:digest, not a credential
+# (#125680 review). No real Basic pair has one of these as its username.
+_HASH_ALGO_NAMES = frozenset({
+    "md5", "sha1", "sha224", "sha256", "sha384", "sha512", "sha3-224", "sha3-256",
+    "sha3-384", "sha3-512", "blake2b", "blake2s", "ripemd160", "crc32", "crc32c",
+})
 
 def _is_basic_pair_password(password: str) -> bool:
     """8+ chars with a letter and not a version-shaped tail — a secret, not a tag or timestamp."""
@@ -990,6 +1002,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         def _basic_pair(m):
             password = m.group(4)
             if password is None or not _is_basic_pair_password(password):
+                return m.group(0)
+            # ``CHECKSUM=sha256:<hex>``: an algorithm:digest label, not a user:credential pair.
+            if m.group(3).lower() in _HASH_ALGO_NAMES:
                 return m.group(0)
             # A pure ``{...}`` password is an f-string template reference, not a literal
             # credential — same #33801 rule _redact_userinfo_passwords applies below.

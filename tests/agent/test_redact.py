@@ -894,14 +894,28 @@ class TestBasicPairAssignmentRedaction:
             ("letter-bearing image tag", "IMAGE=ubuntu:24.04-noble"),
             ("v-prefixed image tag", "IMAGE=myapp:v1.2.3-alpine"),
             ("registry host:port/path", "TARGET=registry.example.com:5000/repo"),
+            ("windows drive path", "SRC=C:\\Users\\admin\\Documents\\report.pdf"),
+            ("windows drive path go cache", "GOMODCACHE=D:\\go\\pkg\\mod"),
+            ("sha256 digest label", "CHECKSUM=sha256:1234567890abcdef1234567890abcdef"),
+            ("docker image digest", "IMAGE=ubuntu@sha256:1234567890abcdef1234567890abcdef"),
         ],
     )
     def test_non_secret_colon_values_pass_through(self, name, text):
         """The issue's negative controls: colon-bearing values that are not
         credentials stay untouched even at force=True. The persistence boundary
         redacts a STORED value — mangling a timestamp tail, an image tag or a
-        registry path here is data loss, not display (#125664 review)."""
+        registry path here is data loss, not display (#125664 review). A
+        one-letter ``user:`` is a Windows drive and ``sha256:<hex>`` a digest
+        label, not a Basic pair (#125680 review): masking either collapses the
+        whole stored value to ``X:***`` irreversibly."""
         assert redact_sensitive_text(text, force=True) == text, name
+
+    def test_drive_letter_fix_does_not_lose_real_pairs(self):
+        """The 2-char floor only excludes one-letter usernames; a real stored
+        Basic pair still masks at the force boundary, and a secret-keyword NAME
+        masks on every path via the ENV pass — the shape rule stays a floor."""
+        assert redact_sensitive_text("SRC=ab:Xk9fAKEfakeFAKE_fake-12345", force=True) == "SRC=ab:***"
+        assert redact_sensitive_text("SECRET=j:Xk9fAKEfakeFAKE_fake-12345") == "SECRET=***"
 
     @pytest.mark.parametrize("code_file", [False, True])
     def test_fstring_template_password_kept(self, code_file):

@@ -9,6 +9,7 @@ import logging
 import shlex
 import tarfile
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -91,6 +92,17 @@ async def _stream_stdin(proc, payload: str, chunk_size: int) -> None:
     await proc.stdin.drain.aio()
 
 
+# Kills one command's process group inside the sandbox. It waits up to 2s for the pid file (cancel
+# can race the start of the command), sends SIGTERM, and sends SIGKILL if the group is still
+# alive 2s later.
+_CANCEL_SCRIPT = (
+    "i=0; while [ ! -s {pid_file} ] && [ $i -lt 20 ]; do sleep 0.1; i=$((i+1)); done; "
+    "g=$(cat {pid_file} 2>/dev/null); rm -f {pid_file}; [ -n \"$g\" ] || exit 0; "
+    "kill -TERM -- -$g 2>/dev/null; "
+    "i=0; while kill -0 -- -$g 2>/dev/null && [ $i -lt 20 ]; do sleep 0.1; i=$((i+1)); done; "
+    "kill -KILL -- -$g 2>/dev/null; exit 0")
+
+
 def _as_text(value) -> str:
     return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
 
@@ -130,7 +142,8 @@ class _AsyncWorker:
 
 class ModalEnvironment(BaseEnvironment):
     """Modal cloud execution via native Modal sandboxes: spawn-per-call via _ThreadedProcessHandle
-    wrapping async SDK calls, cancel_fn wired to sandbox.terminate for interrupt support."""
+    wrapping async SDK calls. cancel_fn kills only the running command, so an interrupt or timeout
+    keeps the sandbox and its files."""
 
     _stdin_mode = "payload"
     _snapshot_timeout = 60  # Modal cold starts can be slow
@@ -144,6 +157,8 @@ class ModalEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent, self._task_id = persistent_filesystem, task_id
         self._sandbox = self._app = None
+        self._sandbox_kwargs = dict(modal_sandbox_kwargs or {})
+        self._sandbox_lock = threading.Lock()
         self._worker = _AsyncWorker()
         self._sync_manager: FileSyncManager | None = None  # initialized after sandbox creation
         restored_snapshot_id, restored_from_legacy_key = (
@@ -152,7 +167,7 @@ class ModalEnvironment(BaseEnvironment):
             logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
         ensure_lazy_dep("modal")
         import modal as _modal
-        cred_mounts = []
+        self._cred_mounts = cred_mounts = []
         try:
             from tools.credential_files import get_credential_file_mounts, iter_skills_files, iter_cache_files
             # from_iterable keeps each source lazy so a failure mid-way leaves the earlier mounts in place
@@ -163,28 +178,16 @@ class ModalEnvironment(BaseEnvironment):
         except Exception as e:
             logger.debug("Modal: could not load credential file mounts: %s", e)
         self._worker.start()
-
-        def _create(image_spec: Any) -> None:
-            async def _create_sandbox():
-                app = await _modal.App.lookup.aio("hermes-agent", create_if_missing=True)
-                create_kwargs = dict(modal_sandbox_kwargs or {})
-                if cred_mounts:
-                    create_kwargs["mounts"] = list(create_kwargs.pop("mounts", [])) + cred_mounts
-                sandbox = await _modal.Sandbox.create.aio(
-                    "sleep", "infinity", image=image_spec, app=app,
-                    timeout=int(create_kwargs.pop("timeout", 3600)), **create_kwargs)
-                return app, sandbox
-            self._app, self._sandbox = self._worker.run_coroutine(_create_sandbox(), timeout=300)
         try:
             try:
-                _create(_resolve_modal_image(restored_snapshot_id or image))
+                self._create_sandbox(_resolve_modal_image(restored_snapshot_id or image))
             except Exception as exc:
                 if not restored_snapshot_id:
                     raise
                 logger.warning("Modal: failed to restore snapshot %s, retrying with base image: %s",
                                restored_snapshot_id[:20], exc)
                 _delete_direct_snapshot(self._task_id, restored_snapshot_id)
-                _create(_resolve_modal_image(image))
+                self._create_sandbox(_resolve_modal_image(image))
             else:
                 if restored_snapshot_id and restored_from_legacy_key:
                     _store_direct_snapshot(self._task_id, restored_snapshot_id)
@@ -192,6 +195,25 @@ class ModalEnvironment(BaseEnvironment):
             self._worker.stop()
             raise
         logger.info("Modal: sandbox created (task=%s)", self._task_id)
+        self._prepare_sandbox()
+
+    def _create_sandbox(self, image_spec: Any) -> None:
+        import modal as _modal
+
+        async def _create():
+            app = await _modal.App.lookup.aio("hermes-agent", create_if_missing=True)
+            create_kwargs = dict(self._sandbox_kwargs)
+            if self._cred_mounts:
+                create_kwargs["mounts"] = list(create_kwargs.pop("mounts", [])) + self._cred_mounts
+            sandbox = await _modal.Sandbox.create.aio(
+                "sleep", "infinity", image=image_spec, app=app,
+                timeout=int(create_kwargs.pop("timeout", 3600)), **create_kwargs)
+            return app, sandbox
+        self._app, self._sandbox = self._worker.run_coroutine(_create(), timeout=300)
+        self._image_spec = image_spec
+
+    def _prepare_sandbox(self) -> None:
+        """Push host files and capture the shell snapshot into a fresh sandbox."""
         self._sync_manager = FileSyncManager(
             get_files_fn=lambda: iter_sync_files("/root/.hermes"),
             upload_fn=self._modal_upload, delete_fn=self._modal_delete,
@@ -242,18 +264,39 @@ class ModalEnvironment(BaseEnvironment):
     def _modal_delete(self, remote_paths: list[str]) -> None:
         self._exec(quoted_rm_command(remote_paths), timeout=15)
 
+    def _ensure_sandbox_ready(self) -> None:
+        """Replace a sandbox that has stopped (Modal lifetime timeout, crash). Without this every
+        later command fails against the dead sandbox."""
+        with self._sandbox_lock:
+            if self._worker.run_coroutine(self._sandbox.poll.aio(), timeout=30) is None:
+                return
+            logger.warning("Modal: sandbox for task %s has stopped, creating a new one", self._task_id)
+            self._create_sandbox(self._image_spec)
+            self._mark_recreated()
+            self._prepare_sandbox()
+
     def _before_execute(self) -> None:
+        self._ensure_sandbox_ready()
         self._sync_manager.sync()  # rate-limited internally
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120, stdin_data: str | None = None):
         sandbox, worker = self._sandbox, self._worker
+        # The command runs in its own process group (set -m) and the group id goes to a pid file,
+        # so cancel can kill just this command tree. set +m right after keeps job notices out of
+        # the output.
+        pid_file = shlex.quote(f"{self.get_temp_dir()}/hermes_exec_{uuid.uuid4().hex}.pid")
+        runner = (f"set -m; {shlex.join(bash_argv(cmd_string, login))} & set +m; "
+                  f"echo $! > {pid_file}; wait $!; rc=$?; rm -f {pid_file}; exit $rc")
 
         def cancel():
-            worker.run_coroutine(sandbox.terminate.aio(), timeout=15)
+            async def _kill():
+                proc = await sandbox.exec.aio("bash", "-c", _CANCEL_SCRIPT.format(pid_file=pid_file))
+                await proc.wait.aio()
+            worker.run_coroutine(_kill(), timeout=15)
 
         def exec_fn() -> tuple[str, int]:
             async def _do():
-                process = await sandbox.exec.aio(*bash_argv(cmd_string, login), timeout=timeout)
+                process = await sandbox.exec.aio("bash", "-c", runner, timeout=timeout)
                 if stdin_data is not None:
                     await _stream_stdin(process, stdin_data, self._STDIN_CHUNK_SIZE)
                 stdout = _as_text(await process.stdout.read.aio())

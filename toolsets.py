@@ -177,6 +177,8 @@ TOOLSETS = {
     "matrix_reaction": _ts("React to messages in the current Matrix room", ["matrix_reaction"]),
     "matrix_followup": _ts("Watch a Matrix reply for a requester reaction", ["matrix_followup"]),
     "matrix_admin": _ts("Change Matrix room state with server permission checks", ["matrix_room_admin", "matrix_pin"]),
+
+    "matrix_unread": _ts("Read Matrix notifications and explicitly acknowledge events", ["matrix_unread", "matrix_mark_read"]),
     "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
     "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
@@ -232,7 +234,7 @@ TOOLSETS = {
     "hermes-homeassistant": _bundle("Home Assistant bot toolset - smart home event monitoring and control"),
     "hermes-email": _bundle("Email bot toolset - interact with Hermes via email (IMAP/SMTP)"),
     "hermes-mattermost": _bundle("Mattermost bot toolset - self-hosted team messaging (full access)"),
-    "hermes-matrix": _bundle("Matrix bot toolset - decentralized encrypted messaging (full access)", ["matrix_read", "matrix_reaction", "matrix_followup", "matrix_image_packs"]),
+    "hermes-matrix": _bundle("Matrix bot toolset - decentralized encrypted messaging (full access)", ["matrix_read", "matrix_reaction", "matrix_followup", "matrix_image_packs", "matrix_unread", "matrix_mark_read"]),
     "hermes-dingtalk": _bundle("DingTalk bot toolset - enterprise messaging platform (full access)"),
     "hermes-feishu": _bundle("Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)", _FEISHU_TOOLS),
     "hermes-weixin": _bundle("Weixin bot toolset - personal WeChat messaging via iLink (full access)"),

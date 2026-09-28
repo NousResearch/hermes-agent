@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from gateway.platforms.base import BasePlatformAdapter
+from plugins.platforms.matrix.unread import MatrixUnreadState, SYNC_FILTER
 from plugins.platforms.matrix.sync_transport import (
     DurableSyncStore,
     SyncCheckpoints,
@@ -19,6 +20,7 @@ from plugins.platforms.matrix.sync_transport import (
 
 class MatrixSyncMixin(BasePlatformAdapter):
     _client: Any
+    _unread: MatrixUnreadState
     _closing: bool
     _sync_position: str | None
     _sync_checkpoints: SyncCheckpoints | None
@@ -47,7 +49,7 @@ class MatrixSyncMixin(BasePlatformAdapter):
             self._resuming_sync = bool(since)
             try:
                 sync_data = await client.sync(
-                    since=since, timeout=10000, full_state=True
+                    since=since, timeout=10000, full_state=True, filter_id=SYNC_FILTER
                 )
             except Exception as exc:
                 if not since or not is_invalid_sync_cursor(exc):
@@ -57,7 +59,9 @@ class MatrixSyncMixin(BasePlatformAdapter):
                 )
                 # A full sync returns recent history that was handled before the restart.
                 self._resuming_sync = False
-                sync_data = await client.sync(timeout=10000, full_state=True)
+                sync_data = await client.sync(
+                    timeout=10000, full_state=True, filter_id=SYNC_FILTER
+                )
             if isinstance(sync_data, dict):
                 self._joined_rooms.clear()
                 await self._absorb_sync(client, sync_data, initial=True)
@@ -86,7 +90,8 @@ class MatrixSyncMixin(BasePlatformAdapter):
                 # 45s outer cap guards TCP-level hangs the 30s long-poll timeout cannot catch.
                 # mautrix raises on every non-2xx, so a non-dict here is never an error object.
                 sync_data = await asyncio.wait_for(
-                    client.sync(since=next_batch, timeout=30000), timeout=45.0
+                    client.sync(since=next_batch, timeout=30000, filter_id=SYNC_FILTER),
+                    timeout=45.0,
                 )
                 if isinstance(sync_data, dict):
                     next_batch = (
@@ -131,6 +136,11 @@ class MatrixSyncMixin(BasePlatformAdapter):
         nb = sync_data.get("next_batch")  # incremental syncs resume from here
         if initial:
             await self._refresh_dm_cache()
+        if client is self._client:
+            self._unread.observe(client, sync_data, initial=initial)
+            self._joined_rooms.difference_update(
+                sync_data.get("rooms", {}).get("leave", {})
+            )
         await self._dispatch_sync(sync_data)
         self._schedule_pending_invite_joins(sync_data)
         if nb:

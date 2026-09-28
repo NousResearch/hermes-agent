@@ -252,6 +252,54 @@ bot's own permission, and the tool reports its error if the bot cannot send
 that state event. The other administration actions are described in
 [Matrix Tools and Controls](#matrix-tools-and-controls).
 
+### Unread notifications and explicit acknowledgements
+
+During a live Matrix turn, `matrix_unread` reports notification and highlight
+counts for the bot account. The homeserver calculates these counts from the
+bot's push rules. The counts do not describe every unread message or the
+requesting person's account. Reads default to the current thread, or `main`
+for the main timeline. An explicit thread root selects that thread.
+
+The result includes the bot's Matrix user ID, the observation generation, and
+the age of the last sync. Counts that the server has not supplied remain
+unavailable. An explicit zero differs from an unavailable count. Incremental
+syncs preserve omitted values. After an acknowledgement, a scope reports
+`await_sync` until the server supplies updated counts. Observations become
+stale when no successful sync has arrived for 90 seconds. Departed rooms and
+replaced clients discard their observations. The separate `marked_unread`
+value comes from the bot's `m.marked_unread` room account data.
+
+`matrix_mark_read` requires an event ID, a receipt scope, and visibility:
+
+| `thread_id` | Scope |
+|-------------|-------|
+| `main` | Acknowledge the main timeline up to the selected event. |
+| A thread root event ID | Acknowledge that thread up to the selected event. |
+| `room` | Send an unthreaded receipt, which acknowledges all timelines up to the selected event. |
+
+`visibility: public` sends `m.read`, which other room members can see.
+`visibility: private` sends `m.read.private`, which clears the bot's
+notifications without broadcasting a receipt. Only `room` scope also resets
+the room's marked-unread flag. None of these actions advances the
+`m.fully_read` room marker.
+
+Explicit acknowledgements work when automatic receipts are `disabled`.
+They require a joined, allowed room and an authorised requester who is a
+joined member. Hermes verifies the event's room, sender and thread through
+the owning Matrix client. Missing decryption keys or an uncertain relation
+cause an error instead of a broader receipt. A room receipt and the
+marked-unread update are separate operations. Check `receipt_sent`,
+`marked_unread_reset`, and `errors` before retrying. A `null` write result
+means that the transport failed before Hermes could confirm whether the
+server accepted that operation.
+
+The `matrix_unread` toolset is enabled for Matrix sessions and can be
+disabled through `hermes tools`. Both tools use the current session's
+receiving adapter and apply the Matrix room and user policy on each call.
+They follow the [Matrix notification and receipt contracts][matrix-read-contracts].
+
+[matrix-read-contracts]: https://spec.matrix.org/v1.16/client-server-api/#receipts
+
 This guide walks you through the full setup process — from creating your bot account to sending your first message.
 
 ## Step 1: Create a Bot Account

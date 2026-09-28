@@ -128,6 +128,8 @@ from gateway.session import SessionSource
 from plugins.platforms.matrix.room_context import MatrixRoomState, format_room_notes
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
+from plugins.platforms.matrix.adapter_feedback import MatrixFeedbackPolicy, ReadReceiptMode
+
 logger = logging.getLogger(__name__)
 
 _MATRIX_VOICE_WAVEFORM_BINS = 30
@@ -916,28 +918,9 @@ class MatrixAdapter(MatrixMediaMixin, MatrixFeedbackMixin, MatrixIntakeMixin, Ma
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
 
-        # Lifecycle reactions: configurable via config.yaml ``matrix.reactions``
-        # (env ``MATRIX_REACTIONS`` as legacy fallback; YAML wins when set).
-        # When enabled (default), the adapter annotates every processed message
-        # with an eyes reaction on start and a checkmark/cross on completion. On
-        # Beeper those reactions propagate to each bridged network, so every
-        # incoming message visibly gets a checkmark — set ``reactions: false``
-        # to stop that.
-        self._reactions_enabled: bool = self._parse_reactions_enabled(config)
-
-        # Read receipts: configurable via config.yaml ``matrix.read_receipts``
-        # (env ``MATRIX_READ_RECEIPTS`` as legacy fallback; YAML wins when set).
-        # Three modes control when an ``m.read`` receipt / fully-read marker is
-        # sent for an incoming message:
-        #   - "immediate" (default): mark read the instant the event arrives
-        #     (historical behavior).
-        #   - "after_processing": mark read only once the agent finishes the
-        #     turn, so the receipt reflects an actual reply rather than mere
-        #     ingestion.
-        #   - "disabled": never send read receipts. On Beeper this stops every
-        #     bridged network (Messenger/Instagram/WhatsApp/...) from showing
-        #     messages as read the instant the gateway processes them.
-        self._read_receipts_mode: str = self._parse_read_receipts_mode(config)
+        feedback = MatrixFeedbackPolicy.from_config(config)
+        self._reactions_enabled: bool = feedback.reactions
+        self._read_receipts_mode: ReadReceiptMode = feedback.read_receipts
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Let the final message land before redacting reactions ("missing event" in some
         # clients). 5s is empirically safe; if it must be tunable, use config.yaml not env.
@@ -2376,7 +2359,7 @@ class MatrixAdapter(MatrixMediaMixin, MatrixFeedbackMixin, MatrixIntakeMixin, Ma
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
             self._thread_fallbacks.remember(room_id, thread_id, event_id)
-        if self._read_receipts_mode == "immediate":
+        if self._read_receipts_mode == ReadReceiptMode.IMMEDIATE:
             self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, requires_mention, source
 
@@ -3684,7 +3667,6 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "MATRIX_REQUIRE_MENTION", "lower"), ("process_notices", "MATRIX_PROCESS_NOTICES", "lower"),
     ("session_scope", "MATRIX_SESSION_SCOPE", "lower"), ("auto_thread", "MATRIX_AUTO_THREAD", "lower"),
     ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "lower"),
-    ("read_receipts", "MATRIX_READ_RECEIPTS", "lower"), ("reactions", "MATRIX_REACTIONS", "lower"),
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
     ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
     ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),

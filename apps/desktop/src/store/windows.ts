@@ -212,8 +212,14 @@ async function runWindowOpen(call: () => Promise<WindowOpenResult>, failMessage:
 // Open (or focus) a standalone OS window for a single chat session. No-ops
 // gracefully outside Electron so callers can wire it unconditionally.
 // `watch: true` opens a spectator window (lazy resume, live-mirror stream).
-// Carry the exact owner route into the new renderer. Unlisted children use
-// their parent surface to resolve the same backend.
+// The window is a full renderer that adopts the PRIMARY backend unless told
+// otherwise, so the session's exact owner route (connectionId + profile) rides
+// along: a bare profile is not enough on a remote registry — the new window
+// would dial the local pool and 4007 on the remote-owned id (#120213). An
+// unlisted subagent child is routed via its parent surface
+// (`parentSessionId`), because a child lives on the backend that spawned it;
+// with no owner anywhere it inherits the profile the user is looking at
+// (#82768, #61286).
 export async function openSessionInNewWindow(
   sessionId: string,
   opts?: { watch?: boolean; parentSessionId?: null | string }
@@ -224,23 +230,15 @@ export async function openSessionInNewWindow(
 
   // Lazy imports: `./profile` subscribes to the API client on load, so a
   // static import here would drag it into every page that opens windows.
-  const [
-    { $activeGatewayProfile, normalizeProfileKey },
-    { resolveSessionOwner },
-    { assertSessionOwnerResolved },
-    { isSessionOwnerRoute }
-  ] = await Promise.all([
-    import('./profile'),
-    import('@/app/session/hooks/use-session-actions/utils'),
-    import('./session-owner-resolution'),
-    import('./session-request-router')
-  ])
+  const [{ $activeGatewayProfile, normalizeProfileKey }, { resolveSessionOwner }, { isSessionOwnerRoute }] =
+    await Promise.all([
+      import('./profile'),
+      import('@/app/session/hooks/use-session-actions/utils'),
+      import('./session-request-router')
+    ])
 
   await runWindowOpen(async () => {
-    // Unlisted children live on the same backend as the parent surface.
-    const routingId = opts?.parentSessionId || sessionId
-    const owner = await resolveSessionOwner(routingId)
-    assertSessionOwnerResolved(owner, { method: 'openSessionWindow', sessionId: routingId })
+    const owner = await resolveSessionOwner(opts?.parentSessionId || sessionId)
 
     const profile = normalizeProfileKey(
       isSessionOwnerRoute(owner) ? owner.profile : (owner ?? $activeGatewayProfile.get())

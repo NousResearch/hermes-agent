@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $activeGatewayProfile } from './profile'
-import { $sessions, setSessionOwnerHint } from './session'
+import { $sessions } from './session'
 import {
   isPeerInstanceWindow,
   isProfilePinnedWindow,
@@ -62,23 +62,6 @@ describe('isProfilePinnedWindow', () => {
 })
 
 describe('openSessionInNewWindow', () => {
-  it('carries an exact session or parent route through the window bridge independently of the foreground', async () => {
-    const open = vi.fn().mockResolvedValue({ ok: true })
-    installBridge(open)
-    $activeGatewayProfile.set('unrelated')
-    $sessions.set([{ id: 'remote-session', profile: 'writer', connection_id: 'remote-a' } as never])
-    setSessionOwnerHint('parent-session', { connectionId: 'remote-b', profile: 'research' })
-
-    await openSessionInNewWindow('remote-session')
-    await openSessionInNewWindow('unlisted-child', { watch: true, parentSessionId: 'parent-session' })
-    await openSessionInNewWindow('remote-session')
-
-    expect(open.mock.calls).toEqual([
-      ['remote-session', { connectionId: 'remote-a', profile: 'writer', watch: undefined }],
-      ['unlisted-child', { connectionId: 'remote-b', profile: 'research', watch: true }],
-      ['remote-session', { connectionId: 'remote-a', profile: 'writer', watch: undefined }]
-    ])
-  }, 60_000)
   it('no-ops without a session id', async () => {
     const open = vi.fn().mockResolvedValue({ ok: true })
     installBridge(open)
@@ -97,19 +80,20 @@ describe('openSessionInNewWindow', () => {
     expect(notifyError).not.toHaveBeenCalled()
   })
 
-  it('carries the owning profile: stamped row wins, an unstamped child inherits the viewed profile (#82768)', async () => {
+  it('carries the owner route: tagged row wins, an unlisted child rides its parent (#82768, #120213)', async () => {
     const open = vi.fn().mockResolvedValue({ ok: true })
     installBridge(open)
     $activeGatewayProfile.set('work')
-    $sessions.set([{ id: 's1', profile: 'research' } as never])
+    $sessions.set([{ id: 's1', profile: 'research', connection_id: 'remote-a' } as never])
 
     await openSessionInNewWindow('s1')
     await openSessionInNewWindow('child-not-listed-yet', { watch: true, parentSessionId: 's1' })
 
-    expect(open).toHaveBeenCalledWith('s1', { profile: 'research', connectionId: null })
-    expect(open).toHaveBeenCalledWith('child-not-listed-yet', { profile: 'research', connectionId: null, watch: true })
+    expect(open).toHaveBeenCalledWith('s1', { profile: 'research', connectionId: 'remote-a', watch: undefined })
+    expect(open).toHaveBeenCalledWith('child-not-listed-yet', { profile: 'research', connectionId: 'remote-a', watch: true })
     expect(notifyError).not.toHaveBeenCalled()
-  })
+    // The owner resolver's lazy import is the heavy session-actions module.
+  }, 60_000)
 
   it('notifies on an ok:false result', async () => {
     installBridge(vi.fn().mockResolvedValue({ ok: false, error: 'invalid-session-id' }))

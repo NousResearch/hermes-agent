@@ -13688,8 +13688,7 @@ function spawnSecondaryWindow({
 
 // Open (or focus) a standalone window for a single chat session.
 function createSessionWindow(sessionId, { connectionId = null, profile = null, watch = false } = {}) {
-  const key = JSON.stringify([connectionId, profile, sessionId])
-  return sessionWindows.openOrFocus(key, () => spawnSecondaryWindow({ connectionId, sessionId, profile, watch }))
+  return sessionWindows.openOrFocus(sessionId, () => spawnSecondaryWindow({ connectionId, sessionId, profile, watch }))
 }
 
 // Popped-out in-app Browser: same webview + address bar as a docked Browser

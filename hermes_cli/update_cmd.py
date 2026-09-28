@@ -75,7 +75,7 @@ from hermes_cli.update_cmd_stash import (  # noqa: F401
     _git_untracked_paths, _park_stashed_changes, _print_stash_cleanup_guidance,
     _reject_unsafe_stash_restore, _resolve_stash_selector, _restore_stashed_changes,
     _restored_python_paths, _stash_apply_failed_only_on_existing_untracked,
-    _stash_local_changes_if_needed, _surface_pending_autostash,
+    _stash_local_changes_if_needed, _unrestored_autostash_notice,
     _warn_orphaned_update_autostashes)
 from hermes_cli.update_cmd_config import (  # noqa: F401
     _LAST_SIBLING_SNAPSHOTS, _check_and_apply_config_migration, _migrate_sibling_profile_configs,
@@ -720,12 +720,14 @@ def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop,
 
 
 def _complete_source_update(request: dict | None) -> None:
-    # Success boundary: completion must never be reported while this run's local
-    # patches sit unrestored and unnamed in the stash (#122557). No-op once the
-    # stash was restored, parked or discarded.
-    _surface_pending_autostash()
+    # Never "Update complete!" while this run's local patches sit unrestored in the stash (#122557).
+    unrestored = _unrestored_autostash_notice()
     if request is None:
+        if unrestored:
+            print(unrestored)
         stop_for_relaunch(incomplete=True)
+    if unrestored:
+        request["completion_message"] = unrestored
     from copy import deepcopy
     current = _completion_receipt._current.get()
     if current is not None:
@@ -1307,13 +1309,9 @@ def _current_branch_name(git_cmd, *, check: bool = False) -> str:
 def _handle_update_called_process_error(
     e, args, gateway_mode: bool, had_desktop_app_before_update: bool,
     *, target_sha: str | None = None, target_repository: str | None = None, completion_request=None) -> None:
-    """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``.
-
-    A stash created this run that no settle step touched is named first (#122557):
-    neither verdict below may leave the patches invisible in ``git stash list``, and
-    the ZIP fallback in particular goes on to report success.
-    """
-    _surface_pending_autostash()
+    """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
+    if unrestored := _unrestored_autostash_notice():
+        print(unrestored)  # a stash taken this run that no settle step reported (#122557)
     stage = _format_update_failure_stage(e)
     if _should_zip_fallback_on_update_error(e):
         print(f"⚠ {stage}: {e}")

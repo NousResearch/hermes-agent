@@ -353,6 +353,7 @@ class OSSBackend(Mem0Backend):
             telemetry = getattr(self._memory, "telemetry", None)
             if telemetry and hasattr(telemetry, "posthog"):
                 telemetry.posthog.shutdown()
-        if self._reranker and hasattr(self._reranker, "close"):
+        reranker = getattr(self, "_reranker", None)
+        if reranker and hasattr(reranker, "close"):
             with suppress(Exception):
-                self._reranker.close()
+                reranker.close()

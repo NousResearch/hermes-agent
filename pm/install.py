@@ -114,6 +114,23 @@ def installed_package(name: str, *, allow_outdated: bool = False) -> InstalledPa
     return InstalledPackage(entry, fact["version"], package.binary(entry, target))
 
 
+def uv_launcher(name: str) -> Path | None:
+    """PM's installed ``uv``/``uvx`` for a user-declared MCP stdio ``command:``, so a bare
+    ``uvx`` server runs the packaged uv, never the user's. Read-only; Hermes's own Python
+    work still goes through PM operations, not this executable."""
+    if name not in ("uv", "uvx"):
+        raise ValueError(f"{name!r} is not a uv launcher")
+    package = get_package("uv")
+    target = current_target()
+    location = _installed_location(package, _lockfile(), target)
+    if location is None:
+        return None
+    facts, store = location
+    binary = package.binary(store.entry(facts.get("uv")["entry"]), target)
+    launcher = binary.with_name(name + binary.suffix) if binary is not None else None
+    return launcher if launcher is not None and launcher.is_file() else None
+
+
 def _identity(lockfile: Lockfile, name: str, target: str):
     """The identity the lock currently pins for `name` on `target`:
     (target, tuple(artifact sha256s)) — or None when the lock pins no
@@ -822,14 +839,24 @@ def _store_path_dirs() -> list[str]:
     """Composed PATH dirs of all installed (non-internal, on_path) store
     packages, deps-first, deduped. Includes optional packages that are
     *installed* (facts say so) — an installed git/gh must be on PATH even
-    though it's not in the root closure. Never installs."""
+    though it's not in the root closure. A package whose dependency chain is
+    not fully installed contributes nothing: store npm over a missing store
+    node would run the user's node, a partial toolchain. Never installs."""
 
     lockfile = _lockfile()
     target = current_target()
+    locations: dict[str, object] = {}
+
+    def located(package):
+        if package.name not in locations:
+            locations[package.name] = _installed_location(package, lockfile, target)
+        return locations[package.name]
+
     dirs: list[str] = []
     for name in lockfile.names():
         try:
             package = get_package(name)
+            chain = walk([name])
         except KeyError:
             continue
         if package.internal:
@@ -838,8 +865,9 @@ def _store_path_dirs() -> list[str]:
             continue
         if package.missing_reason(target) is not None:
             continue
-        location = _installed_location(package, lockfile, target)
-        if location is None:
+        location = located(package)
+        if location is None or any(located(dep) is None for dep in chain
+                                   if dep.missing_reason(target) is None):
             continue
         facts, store = location
         env = facts.env_for(name, store.root)
@@ -853,16 +881,19 @@ def _store_path_dirs() -> list[str]:
 
 
 def activate(*, allow_incomplete: bool = False) -> list[str]:
-    """Make the installed store usable: prepend its tool dirs to
-    os.environ['PATH'] so reactive `shutil.which('git'|'bash'|'ffmpeg'|...)`
-    resolves the bundled binaries. The gate is `check()` — if the store is
-    broken, refuse to inject (fail fast rather than serving a partial PATH).
-    Return the check's problems, or an empty list on success, so startup
+    """Make the installed store usable: put its tool dirs at the FRONT of
+    os.environ['PATH'] so reactive `shutil.which('git'|'node'|'ffmpeg'|...)`
+    resolves the bundled binaries, never a user copy that sorts earlier.
+    Return `check()`'s problems, or an empty list on success, so startup
     callers can report the verdict without checking the store twice.
 
+    Drift still activates every package whose whole chain is installed
+    (`_store_path_dirs`): refusing all of them handed every tool to the
+    user's PATH copies. A damaged package, and anything depending on it,
+    stays off PATH so no toolchain is served half from the store.
+
     ``allow_incomplete`` is the install-time exception: tools are published
-    before the venv sync, so a missing venv must not hide the tools the sync
-    is about to build against. A missing tool still refuses.
+    before the venv sync, so the venv verdict is not computed at all.
 
     This is the ONE sanctioned global PATH write: PATH is the discovery
     contract every `which` reads, not a tool-specific env leak. Store-first
@@ -873,15 +904,21 @@ def activate(*, allow_incomplete: bool = False) -> list[str]:
     # The venv verdict is discarded here, and computing it imports application
     # config readers (ruamel) that the bare update interpreter does not carry.
     problems = check(include_venv=not allow_incomplete)
-    if problems:
-        return problems
+    path = os.environ.get("PATH", "")
+    first = store_first_path(path)
+    if first != path:
+        os.environ["PATH"] = first
+    return problems
+
+
+def store_first_path(path: str) -> str:
+    """``path`` with the installed store's tool dirs moved to the front, for
+    Hermes's own children whose PATH gets other dirs prepended after activate."""
+    import os
+
     dirs = _store_path_dirs()
     if not dirs:
-        return []
-    existing = os.environ.get("PATH", "")
-    prefix = os.pathsep.join(dirs)
-    existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}
-    missing = [d for d in dirs if d.lower() not in existing_lower]
-    if missing:
-        os.environ["PATH"] = os.pathsep.join([*missing, existing]) if existing else os.pathsep.join(missing)
-    return []
+        return path
+    store = {d.lower() for d in dirs}
+    rest = [p for p in path.split(os.pathsep) if p and p.lower() not in store]
+    return os.pathsep.join([*dirs, *rest])

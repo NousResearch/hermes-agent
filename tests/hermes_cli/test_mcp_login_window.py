@@ -34,7 +34,14 @@ def test_login_probe_window_follows_oauth_timeout(monkeypatch, tmp_path):
     assert seen["connect_timeout"] == 3615.0
 
 
-def test_probe_timeout_names_server_and_knobs(monkeypatch):
+@pytest.mark.parametrize("config, names_oauth_timeout", [
+    ({"url": "https://mcp.example.test/mcp", "auth": "oauth"}, True),
+    ({"url": "https://mcp.example.test/mcp", "oauth": {"timeout": 3600}}, True),
+    # A server with no sign-in has no oauth.timeout to wait on, and naming it makes a plain
+    # connectivity failure read as an authentication one on every surface (#119232).
+    ({"url": "https://mcp.example.test/mcp"}, False),
+])
+def test_probe_timeout_names_server_and_the_knobs_that_apply(monkeypatch, config, names_oauth_timeout):
     """A probe that outlives its bound raises a TimeoutError whose message names the server and the
     governing settings — never the empty ``str(asyncio.TimeoutError())``."""
     import hermes_cli.mcp_config as mc
@@ -44,7 +51,8 @@ def test_probe_timeout_names_server_and_knobs(monkeypatch):
 
     monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _hang)
     with pytest.raises(TimeoutError) as info:
-        mc._probe_single_server("hangsrv", {"url": "https://mcp.example.test/mcp"}, connect_timeout=0.2)
+        mc._probe_single_server("hangsrv", dict(config), connect_timeout=0.2)
     message = str(info.value)
     assert "hangsrv" in message and "timed out" in message
-    assert "connect_timeout" in message and "oauth.timeout" in message
+    assert "connect_timeout" in message
+    assert ("oauth.timeout" in message) is names_oauth_timeout

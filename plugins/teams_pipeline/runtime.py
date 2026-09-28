@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from gateway.config import Platform
-from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
+from plugins.teams_pipeline.pipeline import LinearWriter, NotionWriter, TeamsMeetingPipeline
 from plugins.teams_pipeline.store import TeamsPipelineStore, resolve_teams_pipeline_store_path
 from plugins.teams_pipeline.subscriptions import build_graph_client
 
@@ -61,6 +61,8 @@ def build_pipeline_runtime(gateway: Any) -> TeamsMeetingPipeline:
     return TeamsMeetingPipeline(
         graph_client=build_graph_client(), store=TeamsPipelineStore(resolve_teams_pipeline_store_path()),
         config=pipeline_config, teams_sender=teams_sender,
+        notion_writer=NotionWriter() if (pipeline_config.get("notion") or {}).get("enabled") else None,
+        linear_writer=LinearWriter() if (pipeline_config.get("linear") or {}).get("enabled") else None,
     )
 
 

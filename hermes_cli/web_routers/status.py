@@ -308,11 +308,8 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         # Served by the multiplexer: its record is this profile's runtime, with the profile's own
         # adapters under ``<profile>:<platform>`` re-keyed to the standalone shape. Unscoped, the
         # profile is the process's own home (a pooled ``hermes --profile X serve``).
-        # The fold keys on the profile NAME, never the directory basename: scoped to "default" the
-        # resolved dir IS the root (".hermes" or any custom HERMES_HOME name), so ``profile_dir.name``
-        # never matched — the scoped readout kept ``gateway_platforms: {}`` while bare /api/status
-        # was already fixed, and the basename read as a named id, fabricating ``/p/<basename>/``
-        # mirror URLs (#123088, same defect as the messaging call site).
+        # Fold on the profile NAME, never ``profile_dir.name``: ``?profile=default`` resolves the
+        # root itself, whose basename (``.hermes``) matched nothing and read as a named id (#123088).
         served_name = profile_name_for_home(profile_dir or get_process_hermes_home())
         runtime = {**liveness.runtime,
                    "platforms": profile_platforms_from_multiplexer(liveness.runtime, served_name or "")}

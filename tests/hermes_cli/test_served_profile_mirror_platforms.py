@@ -74,8 +74,13 @@ def test_default_profile_keeps_its_flat_adapters_when_rekeyed(served_root):
     """The default's own adapters are the record's FLAT keys (only secondaries get the
     ``<profile>:`` prefix), so re-keying the multiplexer record for ``default`` must keep them:
     ``/api/status`` used to report ``gateway_platforms: {}`` for the default profile under
-    ``gateway.multiplex_profiles`` while its adapters were connected and delivering (#123088)."""
+    ``gateway.multiplex_profiles`` while its adapters were connected and delivering (#123088).
+    A STANDALONE record (``served_profiles: []``, flat keys only) reaches the same re-key through
+    the multiplexer rung and must come back unchanged too (#123869)."""
     from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
+    standalone = {"gateway_state": "running", "served_profiles": [],
+                  "platforms": {"feishu": {"state": "connected"}}}
+    assert profile_platforms_from_multiplexer(standalone, "default") == {"feishu": {"state": "connected"}}
     alpha = served_root / "profiles" / "alpha"
     live = resolve_gateway_liveness(profile_dir=alpha, health_probe=None, use_cache=False)
     plats = profile_platforms_from_multiplexer(live.runtime, "default")

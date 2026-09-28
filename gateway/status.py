@@ -1498,10 +1498,10 @@ def profile_platforms_from_multiplexer(runtime: Optional[dict[str, Any]], profil
     own = {key[len(prefix):]: value for key, value in plats.items()
            if isinstance(key, str) and key.startswith(prefix) and isinstance(value, dict)}
     if profile == "default":
-        # The record's flat keys ARE the default's own adapters — only secondaries get the
-        # ``<profile>:`` prefix — so the standalone shape promised above is the flat map itself.
-        # Without this arm, readers that re-key through this helper (``/api/status``) reported no
-        # platforms at all for the one profile the multiplexer records un-prefixed (#123088).
+        # The flat keys ARE the default's own adapters (a multiplex host's primary map is always
+        # ``default``, whoever launched it; a standalone gateway writes only flat keys). Dropping
+        # them projected ``{}`` for the one profile the record never prefixes → "Restart needed"
+        # forever on /api/status and the Messaging card (#123088, #123869).
         own.update({key: value for key, value in plats.items()
                     if isinstance(key, str) and ":" not in key and isinstance(value, dict)})
     return {**shared_listener_mirror_platforms(runtime, profile), **own}

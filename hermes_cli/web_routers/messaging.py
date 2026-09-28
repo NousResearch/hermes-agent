@@ -302,16 +302,10 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     ):
         served = multiplexer_liveness_for_profile(own_home)
         if served is not None:
-            # The fold keys on the profile NAME rung 4 just proved served; ``own_home.name`` is only
-            # the directory basename (".hermes" or any custom HERMES_HOME name for the default root,
-            # the profile id only for secondaries under profiles/<name>) — the default's flat keys
-            # then never matched and the card read "Restart needed" forever (#123088).
-            runtime = {
-                **served[1],
-                "platforms": profile_platforms_from_multiplexer(
-                    served[1], profile_name_for_home(own_home) or "default"
-                ),
-            }
+            # Fold on the profile NAME, not ``own_home.name``: the default root's basename is
+            # ``.hermes`` (or any custom HERMES_HOME), so its flat keys never matched (#123088).
+            served_name = profile_name_for_home(own_home) or "default"
+            runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], served_name)}
     return [_messaging_platform_payload(entry, env_on_disk, runtime, scoped=scoped_dir is not None, profile_home=scoped_dir)
             for entry in entries]
 

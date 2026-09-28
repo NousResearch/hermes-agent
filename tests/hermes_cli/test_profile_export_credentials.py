@@ -55,6 +55,35 @@ class TestCredentialExclusion:
         assert not any("auth.json" in n for n in names), "auth.json must NOT be in export"
         assert not any(".env" in n for n in names), ".env must NOT be in export"
 
+    def test_export_ships_no_credential_store_a_loader_reads(self, tmp_path, monkeypatch):
+        """Every credential store Hermes loads from a profile home stays out of a named-profile
+        export and stays user-owned on a distribution install. .op.env (env_loader) and npmrc
+        (source_build) have no suffix the text scrub pass edits, so exclusion is their only guard."""
+        from hermes_cli.profile_distribution import USER_OWNED_EXCLUDE
+        from hermes_cli.profiles import PROFILE_CREDENTIAL_PATHS
+
+        profiles_root = tmp_path / "profiles"
+        profile_dir = profiles_root / "testprofile"
+        (profile_dir / "platforms").mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text("model: gpt-4\n")
+        (profile_dir / "platforms" / "keep.json").write_text("{}")
+        stores = {".op.env", "npmrc", *PROFILE_CREDENTIAL_PATHS}
+        for rel in stores:
+            is_dir = "." not in rel.rsplit("/", 1)[-1] and rel != "npmrc"  # token dirs vs single files
+            target = profile_dir / rel / "store" if is_dir else profile_dir / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("fake-credential")
+        _patch_named_profile(monkeypatch, profiles_root, profile_dir)
+
+        with tarfile.open(export_profile("testprofile", str(tmp_path / "export.tar.gz")), "r:gz") as tf:
+            names = set(tf.getnames())
+
+        assert {"testprofile/config.yaml", "testprofile/platforms/keep.json"} <= names
+        leaked = sorted(r for r in stores if any(n == f"testprofile/{r}" or n.startswith(f"testprofile/{r}/") for n in names))
+        assert not leaked, leaked
+        root_stores = {r for r in stores if "/" not in r}
+        assert root_stores <= USER_OWNED_EXCLUDE, sorted(root_stores - USER_OWNED_EXCLUDE)
+
 
 class TestExportSecretScrub:
 

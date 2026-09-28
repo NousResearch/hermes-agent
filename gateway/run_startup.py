@@ -14,6 +14,7 @@ import logging
 import os
 import signal
 import time
+import uuid
 from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from pathlib import Path
@@ -1808,6 +1809,8 @@ class GatewayStartupMixin:
             internal=True,
             metadata={"handoff": True, "handoff_session_id": cli_session_id},
         )
+        synthetic_event._handoff_delivery = True
+        synthetic_event._handoff_turn_id = str(uuid.uuid4())
         logger.info(
             "Handoff: dispatching synthetic turn for CLI session %s → %s "
             "(home=%s, thread=%s, session_key=%s)",
@@ -1820,7 +1823,10 @@ class GatewayStartupMixin:
             return
         # Reply into the new thread (else the home channel) via the resolved transport, so a relay-fronted
         # logical platform is stamped on the outbound frame.
-        send_metadata = {"handoff": True, "handoff_session_id": cli_session_id}
+        send_metadata = {
+            "handoff": True, "handoff_session_id": cli_session_id,
+            "handoff_turn_id": synthetic_event._handoff_turn_id,
+        }
         if dest.effective_thread_id:
             send_metadata["thread_id"] = dest.effective_thread_id
         try:

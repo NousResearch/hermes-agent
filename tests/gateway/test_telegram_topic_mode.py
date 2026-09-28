@@ -665,7 +665,9 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
 
     async def fake_handle_message(event):
         captured["source"] = event.source
-        return "handoff ok"
+        captured["handoff_delivery"] = event._handoff_delivery
+        captured["handoff_turn_id"] = event._handoff_turn_id
+        return "```text\nhandoff ok\n```"
 
     runner._handle_message = AsyncMock(side_effect=fake_handle_message)
 
@@ -683,6 +685,8 @@ async def test_handoff_to_telegram_dm_topic_uses_dm_lane_not_generic_thread(tmp_
     assert captured["source"].chat_type == "dm"
     assert captured["source"].user_id == "208214988"
     assert captured["source"].thread_id == "17585"
+    assert captured["handoff_delivery"] is True
+    assert captured["handoff_turn_id"]
 
 
 @pytest.mark.asyncio

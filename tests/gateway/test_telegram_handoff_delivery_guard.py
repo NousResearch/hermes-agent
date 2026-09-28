@@ -8,6 +8,8 @@ from gateway.config import Platform
 from gateway.delivery import DeliveryTransport
 from gateway.delivery_guard import HandoffDeliveryBlocked, guard_pre_delivery
 from gateway.platforms.base import BasePlatformAdapter
+from gateway.run_turn_runner import TurnRunner
+from gateway.turn_context import TurnContext
 
 
 def _handoff(body: str) -> str:
@@ -91,3 +93,23 @@ def test_final_delivery_retry_path_blocks_before_adapter_send_or_fallback():
         ))
 
     adapter.send.assert_not_awaited()
+
+
+def test_handoff_turn_never_creates_a_stream_consumer():
+    adapter = SimpleNamespace(SUPPORTS_MESSAGE_EDITING=True)
+    ctx = TurnContext(
+        handoff_delivery=True,
+        source=SimpleNamespace(platform=Platform.TELEGRAM, chat_id="fabricated"),
+        user_config={},
+        resolve_display_setting=lambda *_args: True,
+        _run_still_current=lambda: True,
+        interim_assistant_messages_enabled=True,
+    )
+    runner = SimpleNamespace(
+        config=SimpleNamespace(streaming=SimpleNamespace(enabled_for=lambda _: True)),
+        _delivery_adapter_for=lambda _source: adapter,
+    )
+
+    consumer, delta, interim, want_interim = TurnRunner(runner, ctx)._setup_stream_consumer("telegram")
+
+    assert (consumer, delta, interim, want_interim) == (None, None, None, False)

@@ -16,6 +16,8 @@ def guard_pre_delivery(*, platform: Any, content: str, target: Mapping[str, Any]
     """Block invalid server-marked Telegram handoffs before adapter send/chunking."""
     if str(getattr(platform, "value", platform)).lower() != "telegram" or not (metadata or {}).get("handoff"):
         return
+    if not session_id or not turn_id:
+        raise HandoffDeliveryBlocked("HANDOFF_DELIVERY_BLOCKED: missing server handoff marker")
     if len(content) > HANDOFF_MAX_CHARS:
         raise HandoffDeliveryBlocked(f"HANDOFF_DELIVERY_BLOCKED: {len(content)} > {HANDOFF_MAX_CHARS}")
     if not (content.startswith("```text\n") and content.endswith("\n```") and content.count("```") == 2):

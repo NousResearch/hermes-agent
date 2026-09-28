@@ -483,6 +483,7 @@ export interface HermesConfig {
     interim_assistant_messages?: boolean
     timestamps?: boolean
     tool_progress?: boolean | string
+    busy_input_mode?: string
   }
   desktop?: {
     font_family?: string

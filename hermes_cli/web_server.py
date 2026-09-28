@@ -423,6 +423,11 @@ def _sweep_dead_ssh_runtime_markers(purelib: str) -> None:
                     continue
                 identity = _parse_ssh_runtime_marker(payload)
                 if identity is None:
+                    # Only an empty file can be residue from a crash between
+                    # exclusive creation and payload write. Non-empty malformed
+                    # payloads have no trustworthy owner identity, so keep them.
+                    if payload:
+                        continue
                     named_pid = name_match.group("pid")
                     if named_pid is None:
                         continue

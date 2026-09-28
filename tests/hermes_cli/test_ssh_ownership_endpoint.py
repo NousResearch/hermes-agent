@@ -370,6 +370,22 @@ def test_ssh_runtime_marker_sweep_skips_pid_too_large_to_parse(tmp_path):
     assert marker.is_file()
 
 
+def test_ssh_runtime_marker_sweep_keeps_nonempty_unparseable_named_marker(tmp_path):
+    purelib = tmp_path / "site-packages"
+    purelib.mkdir()
+    exited = subprocess.Popen([sys.executable, "-c", "pass"])
+    exited.wait(timeout=10)
+    assert exited.returncode == 0
+    marker = purelib / (
+        f".hermes-ssh-runtime-fedcba9876543210-{exited.pid}-0123456789abcdef"
+    )
+    marker.write_text("pid=" + "1" * 5000 + "\n", encoding="utf-8")
+
+    web_server._sweep_dead_ssh_runtime_markers(str(purelib))
+
+    assert marker.is_file()
+
+
 def test_ssh_runtime_marker_sweep_uses_os_stat_for_both_snapshots(
     tmp_path, monkeypatch
 ):

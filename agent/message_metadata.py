@@ -120,18 +120,14 @@ def record_absorbed_message(
     """
     survivor_uid = message_uid_or_none(survivor)
     dropped_uid = message_uid_or_none(dropped)
+    own = uid_list(survivor.get(ABSORBED_MESSAGE_UIDS))
+    theirs = uid_list(dropped.get(ABSORBED_MESSAGE_UIDS))
     if dropped_leads and dropped_uid:
         survivor[MESSAGE_UID] = dropped_uid
-        ordered = uid_list(dropped.get(ABSORBED_MESSAGE_UIDS)) + ([survivor_uid] if survivor_uid else []) + uid_list(
-            survivor.get(ABSORBED_MESSAGE_UIDS))
+        ordered = theirs + ([survivor_uid] if survivor_uid else []) + own
     else:
-        ordered = uid_list(survivor.get(ABSORBED_MESSAGE_UIDS)) + ([dropped_uid] if dropped_uid else []) + uid_list(
-            dropped.get(ABSORBED_MESSAGE_UIDS))
-    absorbed: List[str] = []
-    for uid in ordered:
-        if uid != survivor.get(MESSAGE_UID) and uid not in absorbed:
-            absorbed.append(uid)
-    if absorbed:
+        ordered = own + ([dropped_uid] if dropped_uid else []) + theirs
+    if absorbed := [uid for uid in dict.fromkeys(ordered) if uid != survivor.get(MESSAGE_UID)]:
         survivor[ABSORBED_MESSAGE_UIDS] = absorbed
 
 

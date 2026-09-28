@@ -4,7 +4,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getLatestSessionMessages, getSession, getSessionMessages } from '@/hermes'
+import { getLatestSessionMessages, getSession } from '@/hermes'
 import { en } from '@/i18n/en'
 import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -55,7 +55,6 @@ vi.mock('@/hermes', () => ({
   getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: 'session' })),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   getSession: vi.fn(),
-  getSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' })),
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS: 1_800_000,
   setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
@@ -1307,7 +1306,7 @@ describe('usePromptActions /undo', () => {
   it('re-syncs the transcript to the server active history and prefills the composer', async () => {
     // What the server has left after the undo: the surviving turn only. The
     // undone user/assistant pair is soft-deleted (active=0) before it answers.
-    vi.mocked(getSessionMessages).mockResolvedValue({
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
       messages: [
         { role: 'user', content: 'first turn that survives' },
         { role: 'assistant', content: 'reply that survives' }
@@ -1357,7 +1356,7 @@ describe('usePromptActions /undo', () => {
     // Stored id, not the runtime one — and carrying the owning profile, or the
     // gateway falls back to the launch-profile DB and repaints the transcript
     // from the wrong profile's session (#67603).
-    expect(getSessionMessages).toHaveBeenCalledWith(UNDO_STORED_SESSION_ID, 'ai-engineer')
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(UNDO_STORED_SESSION_ID, 'ai-engineer')
 
     const finalMessages = (seeds[seeds.length - 1]?.messages ?? []) as Array<{
       parts?: Array<{ text?: string }>
@@ -1380,7 +1379,7 @@ describe('usePromptActions /undo', () => {
   })
 
   it('still surfaces the notice and prefill when the history refresh fails', async () => {
-    vi.mocked(getSessionMessages).mockRejectedValue(new Error('sessions endpoint unreachable'))
+    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('sessions endpoint unreachable'))
 
     const seeds: Record<string, unknown>[] = []
 

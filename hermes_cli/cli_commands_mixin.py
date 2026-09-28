@@ -1875,8 +1875,15 @@ class CLICommandsMixin:
         if args and args[0].lower() in review_words:
             from hermes_cli.write_approval_commands import handle_pending_subcommand
             from tools import write_approval as wa
+            # Thread the live agent's memory manager so approved skill writes
+            # are mirrored to external memory providers (the staged write
+            # bypassed the agent-loop bridge; approval replay is where the
+            # write actually commits).
+            _agent = getattr(self, "agent", None)
             out = handle_pending_subcommand(
-                wa.SKILLS, args, set_mode_fn=lambda enabled: self._save_write_approval("skills", enabled),
+                wa.SKILLS, args,
+                memory_manager=getattr(_agent, "_memory_manager", None),
+                set_mode_fn=lambda enabled: self._save_write_approval("skills", enabled),
             )
             if out is not None:
                 return print(out)

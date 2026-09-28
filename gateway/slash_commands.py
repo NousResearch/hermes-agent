@@ -917,8 +917,14 @@ class GatewaySlashCommandsMixin(
             return ("Skill write approval is off (skills.write_approval). "
                     "Enable it with /skills approval on, then review staged "
                     "writes here with /skills pending.")
+        # The cached session agent owns the live memory manager — the approval replay is where the
+        # staged skill write actually commits, so mirror through it (nothing cached = skip).
+        _cached_agent = self._cached_agent_for(self._session_key_for_source(event.source))
+        _memory_manager = getattr(_cached_agent, "_memory_manager", None)
+
         out = handle_pending_subcommand(
-            wa.SKILLS, args, set_mode_fn=self._write_approval_setter("skills", event))
+            wa.SKILLS, args, memory_manager=_memory_manager,
+            set_mode_fn=self._write_approval_setter("skills", event))
         if out is None:
             return ("Unknown /skills subcommand on this platform. Use: pending, "
                     "approve <id>, reject <id>, diff <id>, approval <on|off>. "

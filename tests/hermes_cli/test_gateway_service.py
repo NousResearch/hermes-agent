@@ -205,6 +205,10 @@ class TestServiceIdentityForForeignHome:
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: home)
+        # The user unit dir follows the ACCOUNT home (#98699), which is read from the environment.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         return home
 
     def test_foreign_home_gets_its_own_unit(self, machine_home, tmp_path, monkeypatch):

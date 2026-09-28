@@ -15,6 +15,18 @@ def _failure(answer):
     return "host control socket did not answer"
 
 
+def host_scope_for_all_verb(owner):
+    """Home a ``--all`` verb acts as: the live host owner's, else the default root.
+
+    ``--all`` names the ONE host gateway, whichever profile invoked the CLI — but the active home
+    decides the service name, the Windows task/launcher and the detached child's ``--profile``, so
+    with the host DOWN ``-p X gateway start|restart --all`` re-launched X's own gateway, which the
+    named-profile guard then refused (exit 78): the host stayed down after a Desktop update.
+    """
+    from hermes_cli.gateway_migrate import _home_env
+    return _home_env(owner.home if owner is not None else get_default_hermes_root())
+
+
 def profile_lifecycle(command: str, args) -> bool:
     """True when a named-profile command was handled (including an unconfirmed request)."""
     from hermes_cli import gateway as gw

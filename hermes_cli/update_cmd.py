@@ -724,7 +724,9 @@ def _complete_source_update(request: dict | None) -> None:
     current = _completion_receipt._current.get()
     if current is not None:
         request["receipt"] = deepcopy(current.data)
-    _write_fleet_restart_pending_marker(expected_sha=request.get("expected_sha") or "")
+    # A head capture that came back empty must not arm an SHA-less record: it names no code the
+    # fleet can be proven current on, so the warning could never clear (#125952).
+    _write_fleet_restart_pending_marker(expected_sha=request.get("expected_sha") or _current_checkout_sha() or "")
     result = run_completion(request)
     _accept_completion_pm_receipt(result.get("pm_receipt"), request["receipt"]["update_id"])
     token = request["windows_resume"]

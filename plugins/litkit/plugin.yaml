@@ -1,0 +1,52 @@
+name: litkit
+version: 0.1.0
+description: >
+  LitKit toolset for the LitCo matter host: matter search, census, document text and PDFs,
+  bulk text export, memos, LitSpace files, gated deliverables, quote checks, review and ingest
+  status, proposals, tags, work sets, LitLex research, notifications and matter memory. Calls
+  the firm's LitKit instance with the matter-pinned agent token and the acting lawyer's user
+  assertion. Code lives in the top-level ``litco.litkit`` package; this plugin only registers it.
+author: LitCo
+kind: backend
+provides_tools:
+  - litkit_matter
+  - litkit_search
+  - litkit_docs
+  - litkit_document
+  - litkit_text
+  - litkit_pdf
+  - litkit_export_text
+  - litkit_memos
+  - litkit_files
+  - litkit_deliver
+  - litkit_quote_check
+  - litkit_review
+  - litkit_ingest
+  - litkit_proposals
+  - litkit_tags
+  - litkit_work_sets
+  - litkit_litlex
+  - litkit_notify
+  - litkit_remember
+  - litkit_recall
+  - litkit_actions
+  - litkit_attachment
+  - litco_deliver_local
+requires_env:
+  - name: LITCO_INSTANCE_URL
+    description: "Base URL of the firm's LitKit instance"
+    prompt: "LitKit instance URL"
+    password: false
+  - name: LITCO_AGENT_TOKEN
+    description: "Matter-pinned LitKit bearer token (lkm_...)"
+    prompt: "LitKit agent token"
+    password: true
+optional_env:
+  - name: LITCO_HOST_SECRET
+    description: "Host secret; the HMAC key for the acting-user assertion sent on each call during a turn"
+    prompt: "LitCo host secret"
+    password: true
+  - name: LITCO_MATTER_ID
+    description: "The matter this host serves (otherwise resolved from the token's one visible matter)"
+    prompt: "LitKit matter id"
+    password: false

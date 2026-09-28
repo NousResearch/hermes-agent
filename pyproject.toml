@@ -821,6 +821,8 @@ include = [
   "pm.*",
   "tools",
   "tools.*",
+  "litco",
+  "litco.*",
 ]
 
 [tool.setuptools.package-data]
@@ -846,6 +848,8 @@ pm = ["lock.json", "artifact-mirror.json", "pyproject.toml", "uv.lock"]
 # Bot Desktop starts Xvnc + Xfce through a shell launcher and seeds the wallpaper; both are read
 # via Path(__file__).parent in tools/bot_desktop/runtime.py and vanish from sealed wheels otherwise.
 tools = ["bot_desktop/launcher.sh", "bot_desktop/wallpaper.png"]
+# LitCo matter-host legal skills (loaded through skills.external_dirs).
+litco = ["skills/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

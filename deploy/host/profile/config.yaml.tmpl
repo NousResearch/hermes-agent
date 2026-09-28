@@ -1,0 +1,64 @@
+# litco-agent matter profile, rendered at every service start by
+# /usr/local/bin/litco-agent-init from deploy/host/profile/config.yaml.tmpl.
+# Hand edits to $HERMES_HOME/config.yaml are overwritten on restart; change the
+# template (and roll the fork forward) instead.
+#
+# Only non-secret values are substituted here. Provider keys, the host secret
+# and the LitKit agent token reach Hermes as environment variables from the
+# systemd unit's EnvironmentFile=/etc/litco-agent/env, never through this file.
+#
+# Matter: {{LITCO_MATTER_ID}}   Instance: {{LITCO_INSTANCE_URL}}
+_config_version: {{HERMES_CONFIG_VERSION}}
+
+model:
+  default: "{{LITCO_MODEL}}"
+  provider: "{{LITCO_MODEL_PROVIDER}}"
+{{MODEL_EXTRA_LINES}}
+# Toolsets for turns that arrive through LitKit (Slack gateway, web channel,
+# Telegram relay). The native Slack/Telegram adapters, when configured through
+# the same env file, get the same set.
+platform_toolsets:
+  litco_turn: &matter_tools
+    - terminal
+    - browser
+    - file
+    - code_execution
+    - delegation
+    - cronjob
+    - memory
+    - skills
+    - vision
+    - web
+  slack: *matter_tools
+  telegram: *matter_tools
+
+# The LitKit toolset is a bundled plugin whose tools would otherwise sit behind
+# Hermes's tool-search step; a matter agent should see them directly.
+tools:
+  tool_search:
+    enabled: "off"
+
+# The firm's legal skills, shipped in the checkout at the pinned ref.
+skills:
+  external_dirs:
+    - "{{LITCO_SKILLS_DIR}}"
+
+terminal:
+  backend: local
+  # Each LitKit thread gets its own working directory under the matter home
+  # (shared/ for channel threads, users/<userId>/ for a lawyer's private
+  # threads); the turn server sets it per turn. This is the fallback for work
+  # that has no thread, such as cron jobs.
+  cwd: "{{LITCO_MATTER_HOME}}/shared"
+
+gateway:
+  platforms:
+    litco_turn:
+      enabled: true
+      host: "{{LITCO_TURN_HOST}}"
+      port: {{LITCO_TURN_PORT}}
+      matter_id: "{{LITCO_MATTER_ID}}"
+
+security:
+  redact_secrets: true
+{{APPROVALS_BLOCK}}

@@ -238,6 +238,7 @@ export async function toggleAgentPlugin(
 
 export interface AgentPluginInstallResult {
   ok: boolean
+  dependencyReview?: { token: string; dependencies: string[] }
   /** The client stopped waiting; the backend may still finish the install. */
   timedOut?: boolean
   pluginName?: string
@@ -281,6 +282,7 @@ export async function installAgentPlugin(
     catalogName?: string
     /** Pin a custom source to one full commit SHA (team-wide reproducible install). */
     ref?: string
+    dependencyConsent?: string
     /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
     profile?: string | null
   }
@@ -289,6 +291,9 @@ export async function installAgentPlugin(
     const result = await request<{
       ok?: boolean
       plugin_name?: string
+      consent_required?: boolean
+      dependency_consent?: string
+      python_dependencies?: string[]
       warnings?: string[]
       missing_env?: string[]
       activation?: {
@@ -308,7 +313,8 @@ export async function installAgentPlugin(
           force: Boolean(opts.force),
           enable: opts.enable ?? true,
           ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
-          ...(opts.ref ? { ref: opts.ref } : {})
+          ...(opts.ref ? { ref: opts.ref } : {}),
+          ...(opts.dependencyConsent ? { dependency_consent: opts.dependencyConsent } : {})
         },
         opts.profile
       ),
@@ -316,7 +322,17 @@ export async function installAgentPlugin(
     )
 
     if (!result?.ok) {
-      return { ok: false, error: result?.error || 'Install failed', live: NO_LIVE, nextChat: false }
+      return {
+        ok: false,
+        error: result?.error || 'Install failed',
+        live: NO_LIVE,
+        nextChat: false,
+        ...(result?.consent_required && result.dependency_consent
+          ? {
+              dependencyReview: { token: result.dependency_consent, dependencies: result.python_dependencies ?? [] }
+            }
+          : {})
+      }
     }
 
     return {

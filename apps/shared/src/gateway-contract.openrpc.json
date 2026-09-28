@@ -21786,6 +21786,18 @@
             "default": null,
             "title": "Accept Capabilities"
           },
+          "dependency_consent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Dependency Consent"
+          },
           "values": {
             "anyOf": [
               {
@@ -22059,6 +22071,18 @@
             ],
             "default": null,
             "title": "Consent Required"
+          },
+          "dependency_consent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Dependency Consent"
           },
           "delta": {
             "anyOf": [

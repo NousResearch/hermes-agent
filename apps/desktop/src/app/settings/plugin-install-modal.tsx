@@ -24,6 +24,7 @@ import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
 import { type AgentPluginLiveNow, COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { confirm } from '@/store/confirm'
 import { notify } from '@/store/notifications'
 import {
   $pluginInstallRequest,
@@ -74,6 +75,7 @@ export function PluginInstallModal() {
   const [forceReinstall, setForceReinstall] = useState(false)
   const [pinRef, setPinRef] = useState('')
   const [installing, setInstalling] = useState(false)
+  const [consentPending, setConsentPending] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
   const [installUncertain, setInstallUncertain] = useState(false)
   const probeToken = useRef(0)
@@ -88,6 +90,7 @@ export function PluginInstallModal() {
     setForceReinstall(false)
     setPinRef('')
     setInstalling(false)
+    setConsentPending(false)
     setInstallError(null)
     setInstallUncertain(false)
   }, [])
@@ -227,14 +230,52 @@ export function PluginInstallModal() {
 
     try {
       if (installAgent && probe.agent) {
-        const result = await installAgentPlugin(requestGateway, {
+        const installOptions = {
           identifier: request.repo,
           force: forceReinstall,
           enable: enableAgent,
           catalogName: request.catalogName,
           ref: pinRefTrimmed || undefined,
           profile: targetProfile
-        })
+        }
+
+        let result = await installAgentPlugin(requestGateway, installOptions)
+
+        if (result.dependencyReview) {
+          // The backend's consent payload is a token plus the scanned
+          // requirements — never show its composed error blob; this modal
+          // owns the copy (with the empty-list caveat only when it applies).
+          const dependencies = result.dependencyReview.dependencies
+          setConsentPending(true)
+
+          const accepted = await confirm({
+            codeList: dependencies.length > 0 ? { label: m.dependencyListLabel, items: dependencies } : undefined,
+            confirmLabel: m.install,
+            description:
+              dependencies.length > 0 ? m.dependencyConsentIntro : m.dependencyConsentEmpty,
+            overModal: true,
+            title: m.dependencyConsentTitle
+          })
+
+          setConsentPending(false)
+
+          if (!accepted) {
+            return
+          }
+
+          result = await installAgentPlugin(requestGateway, {
+            ...installOptions,
+            dependencyConsent: result.dependencyReview.token
+          })
+
+          // A moving ref or changed selection must be reviewed again. Never
+          // install the desktop half or report success for an unaccepted retry.
+          if (result.dependencyReview) {
+            setInstallError(result.error || m.agentFailed)
+
+            return
+          }
+        }
 
         if (result.ok) {
           successes.push(
@@ -346,6 +387,7 @@ export function PluginInstallModal() {
       setInstallError(errors.join('\n'))
     } finally {
       setInstalling(false)
+      setConsentPending(false)
     }
   }
 
@@ -603,7 +645,9 @@ export function PluginInstallModal() {
               disabled={busy || installUncertain || phase !== 'ready' || !probe?.ok || pinRefInvalid}
               onClick={() => void handleInstall()}
             >
-              {installing ? m.installing : m.install}
+              {/* While the dependency consent is open this footer waits on an
+                  answer, not on the install — keep the normal label. */}
+              {installing && !consentPending ? m.installing : m.install}
             </Button>
           )}
         </DialogFooter>

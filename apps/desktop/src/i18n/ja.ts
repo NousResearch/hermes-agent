@@ -468,6 +468,10 @@ export const ja = defineLocale({
       installModal: {
         installUncertain:
           'Hermes はインストール結果の待機を終了しましたが、プラグインのインストールはまだ進行中の可能性があります。この画面を閉じ、再インストールする前にプラグイン一覧を再スキャンしてください。',
+        dependencyConsentTitle: 'Python パッケージをインストールしますか？',
+        dependencyConsentIntro: 'このプラグインは、以下の Python パッケージを共有される Hermes 環境にインストールします。',
+        dependencyConsentEmpty: 'このプラグインには Python の要件宣言がありませんが、ビルドバックエンドがインストールする可能性があります。',
+        dependencyListLabel: 'Python 要件',
         installFromGit: 'Git からインストール',
         reviewRepository: 'リポジトリを確認',
         repoPlaceholder: 'https://github.com/owner/repo',

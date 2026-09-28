@@ -424,6 +424,10 @@ export const zhHant = defineLocale({
       installModal: {
         installUncertain:
           'Hermes 已停止等待安裝結果，但外掛可能仍在安裝中。請關閉此視窗，重新掃描外掛清單後再嘗試安裝。',
+        dependencyConsentTitle: '安裝 Python 套件？',
+        dependencyConsentIntro: '此外掛會將下列 Python 套件安裝到共享的 Hermes 環境中。',
+        dependencyConsentEmpty: '此外掛未宣告任何 Python 相依套件，但其建置後端仍可能安裝套件。',
+        dependencyListLabel: 'Python 相依套件',
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
         repoPlaceholder: 'https://github.com/owner/repo',

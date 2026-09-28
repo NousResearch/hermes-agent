@@ -918,6 +918,12 @@ export const frOverrides = {
           'Le SHA doit contenir exactement 40 caractères (les branches et tags ne sont pas acceptés).',
         install: 'Installer',
         installing: 'Installation…',
+        dependencyConsentTitle: 'Installer les paquets Python ?',
+        dependencyConsentIntro:
+          "Ce plugin installe les paquets Python ci-dessous dans l'environnement Hermes partagé.",
+        dependencyConsentEmpty:
+          "Ce plugin ne déclare aucune exigence Python, mais son backend de build peut encore en installer.",
+        dependencyListLabel: 'Exigences Python',
         probing: 'Inspection du dépôt…',
         probeUnavailable: "L'inspection du plugin n'est pas disponible dans cet environnement.",
         desktopUnavailable: "L'installation du plugin Desktop n'est pas disponible dans cet environnement.",

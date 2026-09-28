@@ -972,6 +972,12 @@ export const en: Translations = {
         pinToCommitInvalid: 'Must be a full 40-character commit SHA (branches and tags are not accepted).',
         install: 'Install',
         installing: 'Installing…',
+        dependencyConsentTitle: 'Install Python packages?',
+        dependencyConsentIntro:
+          'This plugin installs the Python packages below into the shared Hermes environment.',
+        dependencyConsentEmpty:
+          'This plugin lists no Python requirements, but its build backend may still install some.',
+        dependencyListLabel: 'Python requirements',
         probing: 'Inspecting repository…',
         probeUnavailable: 'Plugin inspection is unavailable in this environment.',
         desktopUnavailable: 'Desktop plugin install is unavailable in this environment.',

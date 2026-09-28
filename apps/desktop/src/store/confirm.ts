@@ -10,6 +10,13 @@ export interface ConfirmRequest {
   onConfirm?: () => Promise<void>
   cancelLabel?: string
   destructive?: boolean
+  /** Ask while another modal is open: the shared dialog climbs to the
+   * z-over-modal ladder rung so its scrim dims the parent dialog and the
+   * question reads as the top layer. */
+  overModal?: boolean
+  /** A labelled list of code strings (requirement specs, URLs) rendered in
+   * the app's mono box style under the description. */
+  codeList?: { label: string; items: string[] }
 }
 
 export interface PendingConfirm extends ConfirmRequest {

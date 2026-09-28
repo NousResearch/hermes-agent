@@ -26,6 +26,7 @@ export function ConfirmHost() {
     <ConfirmDialog
       busyLabel={shown.busyLabel}
       cancelLabel={shown.cancelLabel}
+      codeList={shown.codeList}
       confirmLabel={shown.confirmLabel}
       description={shown.description}
       destructive={shown.destructive}
@@ -35,6 +36,7 @@ export function ConfirmHost() {
       onClose={() => settleConfirm(shown.phase === 'done', shown)}
       onConfirm={() => runConfirm(shown)}
       open={request !== null}
+      overModal={shown.overModal}
       title={shown.title}
     >
       {shown.details && (

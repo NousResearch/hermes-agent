@@ -820,6 +820,10 @@ export interface Translations {
         pinToCommitInvalid: string
         install: string
         installing: string
+        dependencyConsentTitle: string
+        dependencyConsentIntro: string
+        dependencyConsentEmpty: string
+        dependencyListLabel: string
         probing: string
         probeUnavailable: string
         desktopUnavailable: string

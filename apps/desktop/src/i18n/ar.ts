@@ -608,6 +608,10 @@ export const ar = defineLocale({
       installModal: {
         installUncertain:
           'توقف Hermes عن انتظار نتيجة التثبيت، لكن قد يستمر تثبيت المكوّن الإضافي. أغلق هذه النافذة وأعد فحص قائمة المكوّنات الإضافية قبل محاولة التثبيت مرة أخرى.',
+        dependencyConsentTitle: 'تثبيت حزم Python؟',
+        dependencyConsentIntro: 'سيثبّت هذا المكوّن الإضافي حزم Python التالية في بيئة Hermes المشتركة.',
+        dependencyConsentEmpty: 'لا يعلن هذا المكوّن الإضافي أي متطلبات Python، لكن نظام البناء الخلفي قد يثبّت بعضها مع ذلك.',
+        dependencyListLabel: 'متطلبات Python',
         toolsConnected: n => `تم توصيل ${n} من الأدوات`,
         skillsReady: names => (names.length === 1 ? `المهارة ${names[0]} جاهزة` : `${names.length} من المهارات جاهزة`),
         nextChat: 'أدوات أخرى متاحة في دردشتك التالية',

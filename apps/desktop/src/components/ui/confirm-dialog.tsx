@@ -32,6 +32,13 @@ interface ConfirmDialogProps {
   /** A third, non-destructive way out, shown between Cancel and Confirm (e.g.
    *  "Remove from sidebar" beside "Delete worktree"). Closes on click. */
   secondaryAction?: ConfirmSecondaryAction
+  /** Opened over another modal: this dialog and its scrim step to the
+   * z-over-modal ladder rung so the parent is dimmed and this reads as the
+   * top layer. */
+  overModal?: boolean
+  /** A labelled list of code strings (requirement specs, URLs) rendered in
+   * the app's mono box style, like the plugin modal's git clone URL. */
+  codeList?: { label: string; items: string[] }
 }
 
 interface ConfirmSecondaryAction {
@@ -56,7 +63,9 @@ export function ConfirmDialog({
   cancelLabel,
   destructive = false,
   dismissOnConfirm = false,
-  secondaryAction
+  secondaryAction,
+  overModal = false,
+  codeList
 }: ConfirmDialogProps) {
   const { t } = useI18n()
   const confirmRef = useRef<HTMLButtonElement>(null)
@@ -130,7 +139,7 @@ export function ConfirmDialog({
   return (
     <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
       <DialogContent
-        className="max-w-md"
+        className={overModal ? 'max-w-md z-(--z-over-modal-content)' : 'max-w-md'}
         onKeyDown={event => {
           // Enter/Space confirm regardless of which button holds focus
           // (preventDefault stops a focused Cancel from swallowing it).
@@ -147,6 +156,7 @@ export function ConfirmDialog({
           event.preventDefault()
           confirmRef.current?.focus()
         }}
+        overlayClassName={overModal ? 'z-(--z-over-modal)' : undefined}
       >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
@@ -154,6 +164,22 @@ export function ConfirmDialog({
               breaks instead of collapsing into one run-on line (#112458). */}
           {description ? <DialogDescription className="whitespace-pre-line">{description}</DialogDescription> : null}
         </DialogHeader>
+
+        {codeList && codeList.items.length > 0 && (
+          <div className="space-y-1.5">
+            <div className="text-(--ui-text-tertiary)">{codeList.label}</div>
+            <ul className="m-0 grid list-none gap-1.5 p-0">
+              {codeList.items.map(item => (
+                <li
+                  className="rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-primary) px-2.5 py-1.5 font-mono break-all text-foreground"
+                  key={item}
+                >
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {children}
         {error && (

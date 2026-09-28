@@ -917,6 +917,12 @@ export const esOverrides = {
         pinToCommitInvalid: 'Debe ser un SHA de commit completo de 40 caracteres (no se aceptan ramas ni etiquetas).',
         install: 'Instalar',
         installing: 'Instalando…',
+        dependencyConsentTitle: '¿Instalar paquetes de Python?',
+        dependencyConsentIntro:
+          'Este plugin instala los paquetes de Python indicados a continuación en el entorno compartido de Hermes.',
+        dependencyConsentEmpty:
+          'Este plugin no declara requisitos de Python, pero su backend de compilación puede instalar algunos de todos modos.',
+        dependencyListLabel: 'Requisitos de Python',
         probing: 'Inspeccionando el repositorio…',
         probeUnavailable: 'La inspección de plugins no está disponible en este entorno.',
         desktopUnavailable: 'La instalación de plugins de escritorio no está disponible en este entorno.',

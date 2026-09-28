@@ -4089,6 +4089,7 @@ export interface PluginsManageParams {
   force?: boolean | null
   ref?: string | null
   accept_capabilities?: boolean | null
+  dependency_consent?: string | null
   values?: Record<string, unknown> | null
 }
 export type PluginsAction = 'list' | 'toggle' | 'install' | 'update' | 'remove' | 'settings' | 'onboarding'
@@ -4114,6 +4115,7 @@ export interface PluginsManageResult {
   enabled?: boolean | null
   sha?: string | null
   consent_required?: boolean | null
+  dependency_consent?: string | null
   delta?: Record<string, string[]> | null
   delta_lines?: string[] | null
   error?: string | null

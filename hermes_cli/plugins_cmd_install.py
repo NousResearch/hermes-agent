@@ -288,6 +288,7 @@ def _install_plugin_core(
     catalog: Optional[dict] = None,
     allow_removed: bool = False,
     before_swap=None,
+    dependency_review=None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
@@ -391,8 +392,14 @@ def _install_plugin_core(
         new_metadata = {**old_metadata, plugin_name: record}
         from hermes_cli.plugins_transaction import publish_plugin
 
+        if dependency_review is not None:
+            try:
+                dependency_review(tmp_target, target, record)
+            except ValueError as exc:
+                raise _pc().PluginOperationError(f"Invalid Python dependency declaration: {exc}") from exc
         try:
-            publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True)
+            publish_plugin(tmp_target, target, old_metadata, new_metadata,
+                           require_consent=dependency_review is None)
         except Exception as exc:
             raise _pc().PluginOperationError(f"Plugin '{plugin_name}' was not published: {exc}") from exc
 
@@ -539,11 +546,22 @@ def cmd_install(
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
     ref: Optional[str] = None,
+    dependency_consent: Optional[str] = None,
+    review_python_dependencies: bool = False,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
     contract as ``--ref``); every path enforces the kill list (no GUI bypass)."""
     from hermes_cli import plugins_cmd_catalog as catalog
+    from hermes_cli.plugin_dependency_review import DependencyConsentRequired, review_install_dependencies
+
+    def review(staged, target, record):
+        review_install_dependencies(staged, target, record, enable=enable, force=force,
+                                    accepted=dependency_consent)
+
+    # Only clients implementing the review/retry protocol opt in. Other
+    # established callers (e.g. memory-provider migration) retain their contract.
+    reviewer = review if review_python_dependencies or dependency_consent is not None else None
     warnings: list[str] = []
     entry = None
     if catalog_name:
@@ -566,10 +584,13 @@ def dashboard_install_plugin(
     try:
         if entry is not None:
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
-                entry, force=force, allow_removed=False)
+                entry, force=force, allow_removed=False, dependency_review=reviewer)
         else:
             target, installed_manifest, installed_name = _pc()._install_plugin_core(
-                identifier, force=force, ref=(ref or "").strip() or None)
+                identifier, force=force, ref=(ref or "").strip() or None, dependency_review=reviewer)
+    except DependencyConsentRequired as exc:
+        return {"ok": False, "consent_required": True, "python_dependencies": list(exc.dependencies),
+                "dependency_consent": exc.token, "error": str(exc)}
     except _pc().PluginScanBlocked as exc:
         fields = ("pattern_id", "severity", "category", "file", "line", "description")
         return {

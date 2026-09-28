@@ -597,6 +597,12 @@ export const ru = defineLocale({
         pinToCommitInvalid: 'Нужен полный SHA коммита из 40 символов (ветки и теги не принимаются).',
         install: 'Установить',
         installing: 'Установка…',
+        dependencyConsentTitle: 'Установить пакеты Python?',
+        dependencyConsentIntro:
+          'Этот плагин установит перечисленные ниже пакеты Python в общее окружение Hermes.',
+        dependencyConsentEmpty:
+          'У плагина нет объявленных зависимостей Python, но его сборочный бэкенд всё же может их установить.',
+        dependencyListLabel: 'Зависимости Python',
         probing: 'Осмотр репозитория…',
         probeUnavailable: 'Осмотр плагинов недоступен в этом окружении.',
         desktopUnavailable: 'Установка плагинов приложения недоступна в этом окружении.',

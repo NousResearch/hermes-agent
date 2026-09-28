@@ -917,6 +917,12 @@ export const deOverrides = {
           'Muss ein vollständiger 40-stelliger Commit-SHA sein (Branches und Tags werden nicht akzeptiert).',
         install: 'Installieren',
         installing: 'Wird installiert…',
+        dependencyConsentTitle: 'Python-Pakete installieren?',
+        dependencyConsentIntro:
+          'Dieses Plugin installiert die folgenden Python-Pakete in die gemeinsame Hermes-Umgebung.',
+        dependencyConsentEmpty:
+          'Dieses Plugin deklariert keine Python-Anforderungen, doch sein Build-Backend kann trotzdem welche installieren.',
+        dependencyListLabel: 'Python-Anforderungen',
         probing: 'Repository wird untersucht…',
         probeUnavailable: 'Die Plugin-Untersuchung ist in dieser Umgebung nicht verfügbar.',
         desktopUnavailable: 'Die Desktop-Plugin-Installation ist in dieser Umgebung nicht verfügbar.',

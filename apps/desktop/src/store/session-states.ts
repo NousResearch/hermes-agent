@@ -2613,8 +2613,7 @@ export function dropTilesForProfile(
     // owner routes without an id can be matched to local, but not guessed onto
     // an id-less remote — that would delete a same-named local Bot tab.
     return (
-      (ownerProfile === name || ownerTarget === name) &&
-      (ownerConnection || LOCAL_CONNECTION_ID) === ambientConnection
+      (ownerProfile === name || ownerTarget === name) && (ownerConnection || LOCAL_CONNECTION_ID) === ambientConnection
     )
   }
 

@@ -4587,7 +4587,8 @@ export const en: Translations = {
     removeCustomModel: 'Remove custom model',
     resetToDefaults: 'Reset to defaults',
     resetConfirm: 'Reset model visibility to defaults?',
-    resetDescription: 'Your shown and hidden model choices are cleared and every provider’s default list comes back. Custom models you added are kept and shown.',
+    resetDescription:
+      'Your shown and hidden model choices are cleared and every provider’s default list comes back. Custom models you added are kept and shown.',
     resetAction: 'Reset'
   },
 

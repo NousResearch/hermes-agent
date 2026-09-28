@@ -4996,7 +4996,8 @@ export const frOverrides = {
     removeCustomModel: 'Retirer le modèle personnalisé',
     resetToDefaults: 'Rétablir les valeurs par défaut',
     resetConfirm: 'Rétablir la visibilité des modèles par défaut ?',
-    resetDescription: 'Vos choix de modèles affichés et masqués sont effacés et chaque fournisseur retrouve sa liste par défaut. Les modèles personnalisés ajoutés sont conservés et affichés.',
+    resetDescription:
+      'Vos choix de modèles affichés et masqués sont effacés et chaque fournisseur retrouve sa liste par défaut. Les modèles personnalisés ajoutés sont conservés et affichés.',
     resetAction: 'Rétablir'
   },
   shell: {

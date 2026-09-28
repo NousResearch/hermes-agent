@@ -221,6 +221,41 @@ def test_catalog_never_hides_unaffordable_models(client, monkeypatch):
         assert row["fit_detail"] or row["fit_summary"]
 
 
+def test_declared_block_keeps_the_row_visible_but_offers_nothing(client, monkeypatch):
+    """An entry the managed engine cannot load prices like any other row (visible with the
+    reason beats hidden) but is never offered: not as the recommendation — even on a card whose
+    physics would pick it — and not as a download, which answers with the declared copy on both
+    the family id and the exact variant id."""
+    from dataclasses import replace
+
+    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+    from hermes_cli.web_routers import local_models
+
+    blocked = next(e for e in CATALOG if e.blocked_reason)
+    card = HardwareBudget(usable_vram_bytes=12 << 30, total_device_bytes=12 << 30,
+                          ram_available_bytes=64 << 30)
+    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget", lambda **kw: card)
+    # Same physics with the block lifted, this card's only resident build IS that entry — so the
+    # "no recommendation" below is the gate speaking, not the fit.
+    physics_pick = local_models.catalog.recommended_entry(card, (replace(blocked, blocked_reason=""),))
+    assert physics_pick is not None and physics_pick[0].id == blocked.id
+    offered = local_models.catalog.recommended_entry(card)
+    assert offered is None or offered[0].id != blocked.id
+
+    rows = {m["id"]: m for m in client.get("/api/local-models/catalog").json()["models"]}
+    row = rows[blocked.id]
+    assert row["blocked_reason"] == blocked.blocked_reason
+    assert row["needs_engine"] is True
+    assert row["recommended"] is False
+    assert blocked.id not in {e.id for e in local_models._eligible_entries()}
+
+    for model_id in (blocked.id, blocked.variants[0].model_id):
+        r = client.post("/api/local-models/download", json={"model_id": model_id})
+        assert r.status_code == 409, model_id
+        assert r.json()["detail"] == blocked.blocked_reason
+
+
 # ── downloads ────────────────────────────────────────────────
 
 

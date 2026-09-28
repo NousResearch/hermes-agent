@@ -22,18 +22,27 @@ def budget(vram_gib: float, ram_gib: float = 64) -> HardwareBudget:
                           ram_available_bytes=int(ram_gib * GIB))
 
 
-def test_every_entry_ships_exactly_one_q4_build():
-    """No quant ladder: one Q4-class build per entry (K_M where the repo
-    ships it, XL elsewhere) — the quant class current engines optimize
-    for. Nothing below Q4 ever ships. Validation status is explicit per
-    variant in catalog.json; unvalidated builds are permitted (day-0
-    entries) and surface as unbadged rows in the pane."""
+# Formats that clear the Q4 floor by MEASUREMENT rather than by convention: ternary builds whose
+# published retention sits level with their FP16 base (Ternary Bonsai 2: 98.2% of the aggregate
+# across 14 benchmarks, per its whitepaper). The floor exists to stop capability loss, so a format
+# that carries its own retention evidence is the one legitimate exception — named here so a new
+# entry can never quietly slip below Q4 on its own.
+MEASURED_LOW_BIT_FORMATS = ("PTQ1_0", "PQ2_0")
+
+
+def test_every_entry_ships_exactly_one_build():
+    """No quant ladder: one build per entry (Q4-class where the repo ships it — K_M, XL
+    elsewhere; a measured low-bit format otherwise, see MEASURED_LOW_BIT_FORMATS). The point of
+    the single rung is that nothing ships UNMEASURED below Q4. Validation status is explicit per
+    variant in catalog.json; unvalidated builds are permitted (day-0 entries) and surface as
+    unbadged rows in the pane."""
     for entry in CATALOG:
         assert len(entry.variants) == 1, (
             f"{entry.id}: {len(entry.variants)} variants — expected exactly one")
         build = entry.variants[0]
-        assert build.quant.startswith(("UD-Q4", "Q4")), (
-            f"{entry.id}: ships {build.quant}, not a Q4-class build")
+        assert (build.quant.startswith(("UD-Q4", "Q4"))
+                or build.quant in MEASURED_LOW_BIT_FORMATS), (
+            f"{entry.id}: ships {build.quant}, not a Q4-class or measured low-bit build")
         for asset in entry.download_files(build):
             assert asset.size_bytes > 0, f"{entry.id}: no size on {asset.path}"
 

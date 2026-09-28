@@ -269,7 +269,9 @@ class CLIModalMixin:
             _ask()
         return result[0]
 
-    def _poll_modal_queue(self, response_queue, deadline_attr, *, refresh=1.0, paint=None):
+    def _poll_modal_queue(
+        self, response_queue, deadline_attr, *, refresh=1.0, paint=None, attention_lease=None
+    ):
         """Block until a value lands on ``response_queue`` or ``self.<deadline_attr>`` passes
         (``None`` deadline = unlimited). Returns the value or ``_TIMED_OUT``.
 
@@ -279,17 +281,20 @@ class CLIModalMixin:
         """
         paint = paint or self._paint_now
         last = _time.monotonic()
-        while True:
-            try:
-                return response_queue.get(timeout=1)
-            except queue.Empty:
-                deadline = getattr(self, deadline_attr)
-                if deadline is not None and deadline - _time.monotonic() <= 0:
-                    return _TIMED_OUT
-                now = _time.monotonic()
-                if now - last >= refresh:
-                    last = now
-                    paint()
+        try:
+            while True:
+                try:
+                    return response_queue.get(timeout=1)
+                except queue.Empty:
+                    deadline = getattr(self, deadline_attr)
+                    if deadline is not None and deadline - _time.monotonic() <= 0:
+                        return _TIMED_OUT
+                    now = _time.monotonic()
+                    if now - last >= refresh:
+                        last = now
+                        paint()
+        finally:
+            self._release_prompt_attention(attention_lease)
 
     def _prompt_text_input_modal(
         self, *, title: str, detail: str, choices: list[tuple[str, str, str]], timeout: float = 120
@@ -308,8 +313,12 @@ class CLIModalMixin:
         """
         if not choices:
             return None
+        attention_lease = self._ring_bell(prompt=True, context="confirmation")
         if not getattr(self, "_app", None):
-            return self._prompt_text_input("Choice [1/2/3]: ")
+            try:
+                return self._prompt_text_input("Choice [1/2/3]: ")
+            finally:
+                self._release_prompt_attention(attention_lease)
 
         try:
             app_loop = self._app.loop
@@ -327,7 +336,10 @@ class CLIModalMixin:
             return self._prompt_text_input("Choice [1/2/3]: ")
 
         if not in_main_thread and app_loop is None:
-            return _stdin_fallback()
+            try:
+                return _stdin_fallback()
+            finally:
+                self._release_prompt_attention(attention_lease)
 
         response_queue = queue.Queue()
 
@@ -338,12 +350,15 @@ class CLIModalMixin:
                 "detail": detail,
                 "choices": choices,
                 "selected": 0,
-                "response_queue": response_queue}
+                "response_queue": response_queue,
+                "prompt_attention_lease": attention_lease}
             self._slash_confirm_deadline = _time.monotonic() + timeout
             self._invalidate()
 
         def _teardown_modal() -> None:
+            lease = (self._slash_confirm_state or {}).get("prompt_attention_lease")
             self._slash_confirm_state = None
+            self._release_prompt_attention(lease)
             self._slash_confirm_deadline = 0
             self._restore_modal_input_snapshot()
             self._invalidate()
@@ -367,10 +382,18 @@ class CLIModalMixin:
             return ready.wait(timeout=5)
 
         if not _run_on_app_loop(_setup_modal):
-            return _stdin_fallback()
+            try:
+                return _stdin_fallback()
+            finally:
+                self._release_prompt_attention(attention_lease)
         try:
             result = self._poll_modal_queue(
-                response_queue, "_slash_confirm_deadline", refresh=5.0, paint=self._invalidate)
+                response_queue,
+                "_slash_confirm_deadline",
+                refresh=5.0,
+                paint=self._invalidate,
+                attention_lease=attention_lease,
+            )
             if result is not _TIMED_OUT:
                 _run_on_app_loop(_teardown_modal)
                 return result
@@ -384,6 +407,7 @@ class CLIModalMixin:
         if not state:
             return
         state["response_queue"].put(value)
+        self._release_prompt_attention(state.get("prompt_attention_lease"))
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
         self._invalidate()
@@ -547,13 +571,122 @@ class CLIModalMixin:
             always_msg="🔒 Future /clear, /new, /reset, and /undo will run without confirmation.",
             once_verb="proceeding")
 
-    def _ring_bell(self, prompt: bool = False, context: str = "", detail: str = "") -> None:
+    def _prompt_attention_voice(self) -> None:
+        """Invoke the record-key action without injecting bytes into another tmux client."""
+        from types import SimpleNamespace
+
+        if getattr(self, "_voice_recording", False) or getattr(self, "_voice_processing", False):
+            return
+        clarify = getattr(self, "_clarify_state", None)
+        clarify_voice_safe = bool(clarify and clarify.get("voice_safe"))
+        connection = getattr(self, "_connection_state", None)
+        connection_voice_safe = False
+        if connection and connection.get("phase") in {"form", "failed"}:
+            fields = connection.get("fields") or []
+            index = connection.get("field_index", 0)
+            connection_voice_safe = (
+                0 <= index < len(fields) and fields[index].get("type") == "plain"
+            )
+        if not clarify_voice_safe and not connection_voice_safe:
+            return
+        app = getattr(self, "_app", None)
+        if app is None:
+            return
+
+        def _start() -> None:
+            handler = getattr(self, "_tui_handle_voice_record", None)
+            if handler is not None:
+                handler(SimpleNamespace(app=app))
+
+        loop = getattr(app, "loop", None)
+        if loop is not None and threading.current_thread() is not threading.main_thread():
+            try:
+                loop.call_soon_threadsafe(_start)
+            except Exception:
+                pass
+            return
+        _start()
+
+    def _acquire_prompt_attention(self):
+        config = getattr(self, "prompt_attention_config", {})
+        if not isinstance(config, dict) or not config.get("enabled", False):
+            return None
+        from hermes_cli.prompt_attention import PromptAttentionArbiter, capture_prompt_attention_request
+
+        request = capture_prompt_attention_request(getattr(self, "session_id", "") or "")
+        return PromptAttentionArbiter().acquire(request)
+
+    def _activate_prompt_attention(self, lease, *, voice_allowed: bool = False) -> None:
+        if lease is None:
+            return
+        from cli import logger
+        from hermes_cli.prompt_attention import PromptAttentionController
+
+        try:
+            PromptAttentionController().activate(
+                lease.request,
+                getattr(self, "prompt_attention_config", {}),
+                voice_enabled_at=getattr(self, "_voice_enabled_at_monotonic", None),
+                voice_callback=self._prompt_attention_voice,
+                voice_allowed=voice_allowed,
+            )
+        except Exception as exc:
+            logger.warning("Prompt attention alert failed; prompt remains serialized: %s", exc)
+
+    @staticmethod
+    def _release_prompt_attention(lease) -> None:
+        if lease is None:
+            return
+        from cli import logger
+
+        for attempt in range(3):
+            try:
+                lease.release()
+                return
+            except Exception as exc:
+                if attempt < 2:
+                    _time.sleep(0.02)
+                    continue
+
+                def _reconcile(last_error=exc) -> None:
+                    error = last_error
+                    for _ in range(20):
+                        _time.sleep(0.5)
+                        try:
+                            lease.release()
+                            return
+                        except Exception as retry_error:
+                            error = retry_error
+                    logger.warning("Prompt attention release failed after reconciliation: %s", error)
+
+                threading.Thread(
+                    target=_reconcile,
+                    daemon=True,
+                    name="prompt-attention-release",
+                ).start()
+                return
+
+    def _ring_bell(
+        self,
+        prompt: bool = False,
+        context: str = "",
+        detail: str = "",
+        *,
+        voice_allowed: bool = False,
+        attention_lease=None,
+        acquire_attention: bool = True,
+    ):
         """Terminal bell (\\a) gated by ``display.bell_on_prompt`` (``prompt=True``, blocking modals)
         or ``display.bell_on_complete`` (end of turn); works over SSH. The same flag also emits the
         OSC 9 / Warp OSC 777 desktop notification; ``context`` is the short notification body."""
+        lease = attention_lease
+        if prompt and acquire_attention:
+            lease = self._acquire_prompt_attention()
+        if prompt:
+            self._activate_prompt_attention(lease, voice_allowed=voice_allowed)
         flag = "bell_on_prompt" if prompt else "bell_on_complete"
         if not getattr(self, flag, False) or getattr(self, "_terminal_io_broken", False):
-            return
+            return lease
         from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
         from hermes_cli.terminal_notify import notification_sequence, write_tty
         body = context or ("input needed" if prompt else "turn complete")
@@ -561,11 +694,11 @@ class CLIModalMixin:
             seq = "\a" + notification_sequence(
                 body, prompt=prompt, session_id=getattr(self, "session_id", "") or "", detail=detail)
         except Exception:
-            return
+            return lease
         app = getattr(self, "_app", None)
         if app is None or not getattr(app, "_is_running", False):
             write_tty(seq)
-            return
+            return lease
 
         # Agent thread. The loop thread may be mid-write of a 12 KB kitty pet frame that the tty
         # drains ~1 KB at a time; a second writer on the same tty (/dev/tty, sys.stdout) splices
@@ -578,6 +711,7 @@ class CLIModalMixin:
                 pass  # dead tty: same fail-quiet as _pet_flush_kitty_frame
 
         _run_on_app_loop(app, _emit)
+        return lease
 
     def _clarify_teardown(self) -> None:
         self._clarify_state = None
@@ -606,20 +740,32 @@ class CLIModalMixin:
         response_queue = queue.Queue()
         is_open_ended = not choices
         effective_multi = multi_select and not is_open_ended
+        attention_lease = self._acquire_prompt_attention()
         self._clarify_state = {
             "question": question,
             "choices": choices if not is_open_ended else [],
+            # Clarify text is model-authored and untrusted for automatic STT.
+            "voice_safe": False,
             "selected": 0,
             "multi_select": effective_multi,
             "selected_indices": set() if effective_multi else None,
-            "response_queue": response_queue}
-        self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
+            "response_queue": response_queue,
+            "prompt_attention_lease": attention_lease}
+        self._clarify_deadline = None
         self._clarify_freetext = is_open_ended  # open-ended → straight to freetext
         self._clarify_multi_base = None
-        self._ring_bell(prompt=True, context="clarify")
+        self._ring_bell(
+            prompt=True,
+            context="clarify",
+            voice_allowed=False,
+            attention_lease=attention_lease,
+            acquire_attention=False,
+        )
+        self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
         self._paint_now()
 
-        result = self._poll_modal_queue(response_queue, "_clarify_deadline")
+        result = self._poll_modal_queue(
+            response_queue, "_clarify_deadline", attention_lease=attention_lease)
         if result is not _TIMED_OUT:
             self._clarify_deadline = None
             self._persist_prompt_summary("?", "Clarify", question, str(result))
@@ -651,7 +797,9 @@ class CLIModalMixin:
             ConnectionOperation.on_change = None
 
     def _connection_close(self) -> None:
+        lease = (self._connection_state or {}).get("prompt_attention_lease")
         self._connection_state = None
+        self._release_prompt_attention(lease)
         self._connection_restore_hook()
         self._restore_modal_input_snapshot()
         self._paint_now()
@@ -673,6 +821,39 @@ class CLIModalMixin:
             return "form"
         return "waiting"
 
+    @staticmethod
+    def _connection_phase_needs_attention(phase: str) -> bool:
+        return phase in {"form", "failed", "url", "authorized"}
+
+    def _connection_transition(self, phase: str) -> None:
+        """Move phases without holding the global attention lease during backend-only waits."""
+        state = self._connection_state
+        if not state:
+            return
+        lease = state.get("prompt_attention_lease")
+        needs_attention = self._connection_phase_needs_attention(phase)
+        acquired = False
+        if needs_attention and lease is None:
+            lease = self._acquire_prompt_attention()
+            state["prompt_attention_lease"] = lease
+            state["phase"] = phase
+            acquired = True
+        elif not needs_attention and lease is not None:
+            # Make the old form non-actionable before handing ownership to another process.
+            state["phase"] = phase
+            state["prompt_attention_lease"] = None
+            self._release_prompt_attention(lease)
+        else:
+            state["phase"] = phase
+        if acquired:
+            self._ring_bell(
+                prompt=True,
+                context="connection setup",
+                voice_allowed=phase in {"form", "failed"},
+                attention_lease=lease,
+                acquire_attention=False,
+            )
+
     def _connection_show_target(self, payload, index: int) -> None:
         targets = payload.get("targets") or []
         if not targets:
@@ -689,6 +870,7 @@ class CLIModalMixin:
                 field["type"] = "secret" if field.get("secret") else "plain"
             if field.get("type") != "secret" and field.get("name") not in target_draft:
                 target_draft[field.get("name")] = str(field.get("default") or "")
+        opening_phase = self._connection_opening_phase(target)
         self._connection_state = {
             **previous,
             "payload": payload,
@@ -697,9 +879,10 @@ class CLIModalMixin:
             "fields": fields,
             "field_index": 0,
             "selected": 0,
-            "phase": self._connection_opening_phase(target),
+            "phase": "waiting",
             "drafts": drafts,
         }
+        self._connection_transition(opening_phase)
         self._connection_sync_input_buffer()
         self._paint_now()
 
@@ -756,8 +939,6 @@ class CLIModalMixin:
             return None
         state["owns_hook"] = installed
         state["tool_thread_id"] = threading.current_thread().ident
-        if state["phase"] != "waiting":
-            self._ring_bell(prompt=True, context="connection setup")
         return None
 
     def _connection_answer(self, *, approve: bool) -> None:
@@ -778,7 +959,7 @@ class CLIModalMixin:
         # The backend applies the answer on this thread, and its change hook sets the next phase
         # (the URL step, the form again for a missing field) before apply_answer returns. Set the
         # waiting phase first so it cannot overwrite that.
-        state["phase"] = "waiting"
+        self._connection_transition("waiting")
         apply_answer(operation, json.dumps({"targets": [answer]}))
         self._paint_now()
 
@@ -794,10 +975,10 @@ class CLIModalMixin:
         if target.get("kind") == "connector" and target.get("state") in {"failed", "expired"}:
             from tools.connectors.run import reissue
 
-            state["phase"] = "waiting"
+            self._connection_transition("waiting")
             if reissue(operation, [str(target.get("name") or "")]) is not None:
                 target["detail"] = "This connection cannot be started again. Cancel and ask the agent again."
-                state["phase"] = "failed"
+                self._connection_transition("failed")
             self._paint_now()
             return
         if target.get("state") in {"pending", "failed", "expired"}:
@@ -806,7 +987,7 @@ class CLIModalMixin:
             return
         from tools.connectors.mcp import retry
 
-        state["phase"] = "waiting"
+        self._connection_transition("waiting")
         retry(operation, [str(target.get("name") or "")])
         self._paint_now()
 
@@ -855,19 +1036,19 @@ class CLIModalMixin:
         state["target"] = target
         target_state = target.get("state")
         if target_state == "initiated" and target.get("connect_url"):
-            state["phase"] = "url"
+            self._connection_transition("url")
         elif target_state == "failed":
-            state["phase"] = "failed"
+            self._connection_transition("failed")
         elif target_state == "pending" and self._connection_fields(target):
             # The backend refused the answer because a required field is still empty: reopen the
             # form on the first one it named, over the draft the panel kept.
             missing = {field.get("name") for field in self._connection_fields(target)}
             names = [field.get("name") for field in state.get("fields") or []]
             state["field_index"] = next((i for i, name in enumerate(names) if name in missing), 0)
-            state["phase"] = "form"
+            self._connection_transition("form")
             self._connection_sync_input_buffer()
         elif target_state == "connected" and target.get("discovery_error"):
-            state["phase"] = "authorized"
+            self._connection_transition("authorized")
         elif target_state in {"connected", "skipped"}:
             unresolved = [
                 item for item in snapshot.get("targets") or ()
@@ -876,9 +1057,9 @@ class CLIModalMixin:
             if unresolved:
                 self._connection_show_target(snapshot, (snapshot.get("targets") or []).index(unresolved[0]))
                 return
-            state["phase"] = "connected"
+            self._connection_transition("connected")
         else:
-            state["phase"] = "waiting"
+            self._connection_transition("waiting")
         self._paint_now()
 
     def _connection_set_field(self, value: str) -> None:
@@ -959,6 +1140,8 @@ class CLIModalMixin:
         state["active"] = index
         state["question"] = entry["question"]
         state["choices"] = choices
+        # Batch clarify text is model-authored and untrusted for automatic STT.
+        state["voice_safe"] = False
         state["selected"] = 0
         state["multi_select"] = bool(entry["multi_select"])
         state["selected_indices"] = set() if entry["multi_select"] else None
@@ -1040,6 +1223,7 @@ class CLIModalMixin:
 
         timeout = resolve_clarify_timeout(CLI_CONFIG)
         response_queue = queue.Queue()
+        attention_lease = self._acquire_prompt_attention()
         state = {
             "questions": list(questions),
             "answers": {},
@@ -1051,14 +1235,23 @@ class CLIModalMixin:
             "choices": [],
             "selected": 0,
             "multi_select": False,
-            "selected_indices": None}
+            "selected_indices": None,
+            "prompt_attention_lease": attention_lease}
         self._clarify_state = state
         self._clarify_batch_set_active(state, 0)
+        self._clarify_deadline = None
+        self._ring_bell(
+            prompt=True,
+            context="clarify",
+            voice_allowed=False,
+            attention_lease=attention_lease,
+            acquire_attention=False,
+        )
         self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
-        self._ring_bell(prompt=True, context="clarify")
         self._paint_now()
 
-        result = self._poll_modal_queue(response_queue, "_clarify_deadline")
+        result = self._poll_modal_queue(
+            response_queue, "_clarify_deadline", attention_lease=attention_lease)
         if result is not _TIMED_OUT:
             self._clarify_deadline = None
             return {"answers": result} if isinstance(result, dict) else result
@@ -1073,13 +1266,24 @@ class CLIModalMixin:
         from cli import _DIM, _RST, _cprint
 
         response_queue = queue.Queue()
+        attention_lease = self._acquire_prompt_attention()
         self._capture_modal_input_snapshot()
-        self._sudo_state = {"response_queue": response_queue}
+        self._sudo_state = {
+            "response_queue": response_queue,
+            "prompt_attention_lease": attention_lease,
+        }
+        self._sudo_deadline = None
+        self._ring_bell(
+            prompt=True,
+            context="sudo password",
+            attention_lease=attention_lease,
+            acquire_attention=False,
+        )
         self._sudo_deadline = _time.monotonic() + 45
-        self._ring_bell(prompt=True, context="sudo password")
         self._paint_now()
 
-        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        result = self._poll_modal_queue(
+            response_queue, "_sudo_deadline", refresh=0, attention_lease=attention_lease)
         self._sudo_state = None
         self._sudo_deadline = 0
         self._restore_modal_input_snapshot()
@@ -1108,6 +1312,7 @@ class CLIModalMixin:
         with self._approval_lock:
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
             response_queue = queue.Queue()
+            attention_lease = self._acquire_prompt_attention()
             self._approval_state = {
                 "command": command,
                 "description": description,
@@ -1117,12 +1322,21 @@ class CLIModalMixin:
                     allow_session=allow_session,
                     smart_denied=smart_denied),
                 "selected": 0,
-                "response_queue": response_queue}
+                "response_queue": response_queue,
+                "prompt_attention_lease": attention_lease}
+            self._approval_deadline = None
+            self._ring_bell(
+                prompt=True,
+                context="approval",
+                detail=command,
+                attention_lease=attention_lease,
+                acquire_attention=False,
+            )
             self._approval_deadline = _time.monotonic() + timeout
-            self._ring_bell(prompt=True, context="approval", detail=command)
             self._paint_now()
 
-            result = self._poll_modal_queue(response_queue, "_approval_deadline")
+            result = self._poll_modal_queue(
+                response_queue, "_approval_deadline", attention_lease=attention_lease)
             self._approval_state = None
             self._approval_deadline = 0
             self._paint_now()
@@ -1169,6 +1383,7 @@ class CLIModalMixin:
             self._invalidate()
             return
         state["response_queue"].put(chosen)
+        self._release_prompt_attention(state.get("prompt_attention_lease"))
         self._approval_state = None
         self._invalidate()
 
@@ -1178,13 +1393,25 @@ class CLIModalMixin:
         from cli import _DIM, _RST, _cprint
 
         response_queue = queue.Queue()
+        attention_lease = self._acquire_prompt_attention()
         self._capture_modal_input_snapshot()
-        self._sudo_state = {"response_queue": response_queue, "vault_backend": display_name}
+        self._sudo_state = {
+            "response_queue": response_queue,
+            "vault_backend": display_name,
+            "prompt_attention_lease": attention_lease,
+        }
+        self._sudo_deadline = None
+        self._ring_bell(
+            prompt=True,
+            context=f"unlock {display_name}",
+            attention_lease=attention_lease,
+            acquire_attention=False,
+        )
         self._sudo_deadline = _time.monotonic() + 120
-        self._ring_bell(prompt=True, context=f"unlock {display_name}")
         self._paint_now()
 
-        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        result = self._poll_modal_queue(
+            response_queue, "_sudo_deadline", refresh=0, attention_lease=attention_lease)
         self._sudo_state = None
         self._sudo_deadline = 0
         self._restore_modal_input_snapshot()
@@ -1201,24 +1428,38 @@ class CLIModalMixin:
         from cli import _DIM, _RST, _cprint
 
         answer: dict = {}
-        for step in ("identifier", "password"):
-            response_queue = queue.Queue()
-            self._capture_modal_input_snapshot()
-            self._sudo_state = {"response_queue": response_queue, "vault_save": {"site": site, "origin": origin,
-                                                                                  "step": step}}
-            self._sudo_deadline = _time.monotonic() + 180
-            if step == "identifier":
-                self._ring_bell(prompt=True, context=f"save login for {site}")
-            self._paint_now()
-            result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
-            self._sudo_state = None
-            self._sudo_deadline = 0
-            self._restore_modal_input_snapshot()
-            self._paint_now()
-            if result is _TIMED_OUT or not result:
-                _cprint(f"\n{_DIM}  ⏭ Not saving a login for {site}{_RST}")
-                return None
-            answer[step] = result
+        attention_lease = self._acquire_prompt_attention()
+        try:
+            for step in ("identifier", "password"):
+                response_queue = queue.Queue()
+                self._capture_modal_input_snapshot()
+                self._sudo_state = {
+                    "response_queue": response_queue,
+                    "vault_save": {"site": site, "origin": origin, "step": step},
+                    "prompt_attention_lease": attention_lease,
+                }
+                self._sudo_deadline = None
+                if step == "identifier":
+                    self._ring_bell(
+                        prompt=True,
+                        context=f"save login for {site}",
+                        attention_lease=attention_lease,
+                        acquire_attention=False,
+                    )
+                self._sudo_deadline = _time.monotonic() + 180
+                self._paint_now()
+                result = self._poll_modal_queue(
+                    response_queue, "_sudo_deadline", refresh=0)
+                self._sudo_state = None
+                self._sudo_deadline = 0
+                self._restore_modal_input_snapshot()
+                self._paint_now()
+                if result is _TIMED_OUT or not result:
+                    _cprint(f"\n{_DIM}  ⏭ Not saving a login for {site}{_RST}")
+                    return None
+                answer[step] = result
+        finally:
+            self._release_prompt_attention(attention_lease)
         _cprint(f"\n{_DIM}  ✓ Login for {site} saved to your vault{_RST}")
         return answer
 
@@ -1228,12 +1469,24 @@ class CLIModalMixin:
         from cli import _DIM, _RST, _cprint
 
         response_queue = queue.Queue()
+        attention_lease = self._acquire_prompt_attention()
         self._capture_modal_input_snapshot()
-        self._sudo_state = {"response_queue": response_queue, "vault_code": {"site": site, "hint": hint}}
+        self._sudo_state = {
+            "response_queue": response_queue,
+            "vault_code": {"site": site, "hint": hint},
+            "prompt_attention_lease": attention_lease,
+        }
+        self._sudo_deadline = None
+        self._ring_bell(
+            prompt=True,
+            context=f"verification code for {site}",
+            attention_lease=attention_lease,
+            acquire_attention=False,
+        )
         self._sudo_deadline = _time.monotonic() + 180
-        self._ring_bell(prompt=True, context=f"verification code for {site}")
         self._paint_now()
-        result = self._poll_modal_queue(response_queue, "_sudo_deadline", refresh=0)
+        result = self._poll_modal_queue(
+            response_queue, "_sudo_deadline", refresh=0, attention_lease=attention_lease)
         self._sudo_state = None
         self._sudo_deadline = 0
         self._restore_modal_input_snapshot()
@@ -1288,30 +1541,42 @@ class CLIModalMixin:
                 pass
 
         if self._approval_state:
+            self._release_prompt_attention(self._approval_state.get("prompt_attention_lease"))
             _put(self._approval_state, "deny")
             self._approval_state = None
         if self._connection_state:
             self._connection_interrupt()
         if self._clarify_state:
+            self._release_prompt_attention(self._clarify_state.get("prompt_attention_lease"))
             _put(self._clarify_state, "The user cancelled. Use your best judgement to proceed.")
             self._clarify_state = None
             self._clarify_freetext = False
             self._clarify_multi_base = None
         if self._sudo_state:
+            self._release_prompt_attention(self._sudo_state.get("prompt_attention_lease"))
             _put(self._sudo_state, "")
             self._sudo_state = None
             self._sudo_deadline = 0
             self._restore_modal_input_snapshot()
         if self._secret_state:
+            self._release_prompt_attention(self._secret_state.get("prompt_attention_lease"))
             try:
                 self._cancel_secret_capture()
             except Exception:
                 self._secret_state = None
+        slash_state = getattr(self, "_slash_confirm_state", None)
+        if slash_state:
+            self._release_prompt_attention(slash_state.get("prompt_attention_lease"))
+            _put(slash_state, "cancel")
+            self._slash_confirm_state = None
+            self._slash_confirm_deadline = 0
 
     def _submit_secret_response(self, value: str) -> None:
         if not self._secret_state:
             return
-        self._secret_state["response_queue"].put(value)
+        state = self._secret_state
+        state["response_queue"].put(value)
+        self._release_prompt_attention(state.get("prompt_attention_lease"))
         self._secret_state = None
         self._secret_deadline = 0
         self._paint_now()  # direct paint so the secret panel clears at once (no throttle)

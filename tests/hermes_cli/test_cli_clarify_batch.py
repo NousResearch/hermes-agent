@@ -185,8 +185,10 @@ class TestClarifyBatchPanel:
         thread, result = _start_batch(cli, questions)
         state = cli._clarify_state
 
-        # Open-ended active question drops straight into freetext.
+        # Open-ended model-authored prompts are text fields, but remain
+        # untrusted for automatic dictation unless an internal caller explicitly marks them safe.
         assert cli._clarify_freetext is True
+        assert state["voice_safe"] is False
         # The Enter freetext submit path locks the typed text.
         cli._clarify_freetext = False
         cli._clarify_batch_lock(state, "custom words")

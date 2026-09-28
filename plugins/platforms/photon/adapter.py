@@ -511,10 +511,11 @@ def _normalize_content(content: Dict[str, Any]) -> _Normalized:
 
 def _sent_text_key(chat_id: Optional[str]) -> Optional[str]:
     """DM GUID (``any;-;+1555...``) and bare E.164 address one space; index under the phone."""
-    if not chat_id:
-        return None
-    match = re.match(r"^any;-;(\+\d{6,})$", chat_id)
-    return match.group(1) if match else chat_id
+    return PhotonAdapter._normalize_chat_key(chat_id) if chat_id else None
+
+
+def _attachment_label(kind: str, name: str) -> str:
+    return f"[{kind}: {name}]"
 
 
 async def _record_sent_text_async(chat_id: Optional[str], message_id: Optional[str], text: Optional[str]) -> None:
@@ -1247,11 +1248,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        formatted = self.format_message(content)
-        result = await self._sidecar_send(chat_id, formatted)
-        if result.success:
-            await _record_sent_text_async(chat_id, result.message_id, formatted)
-        return result
+        return await self._sidecar_send(chat_id, self.format_message(content))
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -1454,10 +1451,12 @@ class PhotonAdapter(BasePlatformAdapter):
         return await self._sidecar_send(
             chat_id, self.format_message(content)[: self.MAX_MESSAGE_LENGTH], richlink=False, markdown=False)
 
-    async def _post_send(self, path: str, body: Dict[str, Any], *, structured: bool = False) -> SendResult:
+    async def _post_send(self, path: str, body: Dict[str, Any], *, structured: bool = False,
+                         sent_text: Optional[str] = None) -> SendResult:
         """POST a send-like body and wrap the outcome as a SendResult. ``structured`` carries
         a ``PhotonSidecarError``'s class/retryability so ``_send_with_retry`` can recognise
-        permanent failures."""
+        permanent failures. ``sent_text`` is what a later threaded reply to this bubble quotes;
+        every outbound path passes through here, so recording here covers them all."""
         try:
             data = await self._sidecar_call(path, body)
         except PhotonSidecarError as e:
@@ -1468,13 +1467,17 @@ class PhotonAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
         self._record_sent_message(data.get("messageId"))
+        if sent_text:
+            await _record_sent_text_async(body.get("spaceId"), data.get("messageId"), sent_text)
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def _sidecar_send(self, space_id: str, text: str, *, richlink: bool = True,
                             markdown: bool = True) -> SendResult:
+        sent_text = text
         rich_url = _richlink_candidate(text) if richlink else None
         if rich_url:
-            rich_result = await self._post_send("/send-richlink", {"spaceId": space_id, "url": rich_url})
+            rich_result = await self._post_send("/send-richlink", {"spaceId": space_id, "url": rich_url},
+                                                sent_text=sent_text)
             if rich_result.success:
                 return rich_result
             logger.warning("[photon] rich-link send failed, falling back to plain text: %s", rich_result.error)
@@ -1489,7 +1492,7 @@ class PhotonAdapter(BasePlatformAdapter):
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
         if send_markdown:  # key omitted when disabled: pre-`format` sidecars still accept
             body["format"] = "markdown"
-        return await self._post_send("/send", body, structured=True)
+        return await self._post_send("/send", body, structured=True, sent_text=sent_text)
 
     async def _sidecar_send_poll(self, space_id: str, title: str, options: list) -> SendResult:
         """POST a native poll to ``/send-poll`` (degrades to a numbered list elsewhere)."""
@@ -1499,7 +1502,7 @@ class PhotonAdapter(BasePlatformAdapter):
         if len(opts) < 2:
             return SendResult(success=False, error="poll needs at least two options")
         body = {"spaceId": space_id, "title": title.strip()[: self.MAX_MESSAGE_LENGTH], "options": opts}
-        return await self._post_send("/send-poll", body)
+        return await self._post_send("/send-poll", body, sent_text=body["title"])
 
     async def _sidecar_send_attachment(self, space_id: str, path: str, *, name: Optional[str] = None,
                                        mime_type: Optional[str] = None, caption: Optional[str] = None,
@@ -1511,11 +1514,8 @@ class PhotonAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"unsafe or missing attachment path: {path}")
         body = _attachment_body(
             space_id, safe_path, kind=kind, name=name, mime_type=mime_type or _guess_mime(safe_path), caption=caption)
-        result = await self._post_send("/send-attachment", body, structured=True)
-        if result.success:
-            label = caption or f"[{kind}: {name or os.path.basename(safe_path)}]"
-            await _record_sent_text_async(space_id, result.message_id, label)
-        return result
+        label = caption or _attachment_label(kind, name or os.path.basename(safe_path))
+        return await self._post_send("/send-attachment", body, structured=True, sent_text=label)
 
     async def _sidecar_call(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if self._http_client is None:
@@ -1676,6 +1676,8 @@ async def _standalone_send(
                 if not data:
                     return _standalone_error(resp)
                 last_message_id = data.get("messageId") or last_message_id
+                await _record_sent_text_async(chat_id, data.get("messageId"), _attachment_label(
+                    "voice" if is_voice else "attachment", os.path.basename(safe_path)))
         return {"success": True, "message_id": last_message_id}
     except Exception as e:
         return send_error(f"Photon standalone send failed: {e}")

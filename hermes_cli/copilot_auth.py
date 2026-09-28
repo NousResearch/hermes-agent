@@ -220,6 +220,16 @@ _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
 _TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
 _EDITOR_VERSION = "vscode/1.104.1"
 _EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
+# GitHub's REST API versioning header (docs.github.com/rest/overview/api-versions). Copilot's
+# model catalog and chat backends key context-window reporting off it: without it (or on an
+# older dated value) Copilot answers with its legacy context limits even for models it serves
+# at a much larger window under a newer version — e.g. Claude Opus was observed reporting a
+# 200k/328k prompt/context ceiling with no header and 1M/1M with this one, on both
+# api.githubcopilot.com and api.enterprise.githubcopilot.com. Value confirmed via a live capture
+# of GitHub's own Copilot CLI; the header mechanism itself is corroborated by other open-source
+# Copilot clients that send it on every request (e.g. github/gh-cli, opencode, zed-industries/zed,
+# the copilot-api crate) even though none of those observed this exact dated value yet.
+_GITHUB_API_VERSION = "2026-08-01"
 
 # Transient-failure hardening: gateway startup races network readiness, and a single-shot
 # exchange failing there silently degrades to the RAW GitHub token, whose integrator allowlist
@@ -505,6 +515,7 @@ def copilot_request_headers(
     headers: dict[str, str] = {"Editor-Version": _EDITOR_VERSION, "User-Agent": "HermesAgent/1.0",
                                "Copilot-Integration-Id": "vscode-chat",
                                "Openai-Intent": "conversation-edits",
+                               "X-GitHub-Api-Version": _GITHUB_API_VERSION,
                                "x-initiator": "agent" if is_agent_turn else "user"}
     if is_vision:
         headers["Copilot-Vision-Request"] = "true"

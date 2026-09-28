@@ -2214,6 +2214,7 @@ def copilot_default_headers(*, is_agent_turn: bool = True) -> dict[str, str]:
             "Editor-Version": COPILOT_EDITOR_VERSION,
             "User-Agent": "HermesAgent/1.0",
             "Openai-Intent": "conversation-edits",
+            "X-GitHub-Api-Version": "2026-08-01",
             "x-initiator": "agent" if is_agent_turn else "user"}
 
 

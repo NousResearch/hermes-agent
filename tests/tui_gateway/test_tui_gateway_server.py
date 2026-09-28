@@ -22860,3 +22860,26 @@ def test_named_profile_without_backend_stays_local_under_ssh_launch(monkeypatch,
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name == "plain" else None)
 
     assert server._completion_cwd({"profile": "plain", "cwd": launch, "cwd_explicit": False}) == launch
+
+
+def test_session_create_records_bot_composer_profile_marker(monkeypatch):
+    """A Bot Chat's initial composer pick records the profile default it diverged from."""
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("profile/default", "nous"))
+    try:
+        resp = server._methods["session.create"](
+            "bot-r1",
+            {
+                "cols": 80,
+                "model": "zai/glm-5.1",
+                "provider": "zai",
+                "follow_profile_config": True,
+            },
+        )
+        session = server._sessions[resp["result"]["session_id"]]
+        assert session["follow_profile_config"] is True
+        assert session["model_override"] == {"model": "zai/glm-5.1", "provider": "zai"}
+        assert session["composer_override_profile"] == {"model": "profile/default", "provider": "nous"}
+    finally:
+        server._sessions.clear()

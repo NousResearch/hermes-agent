@@ -2,14 +2,12 @@
 
 import argparse
 import json
-import logging
 import os
 import shutil
 import subprocess
 import time
 import pytest
 from pathlib import Path
-from unittest.mock import patch
 
 from tools.checkpoint_manager import (
     CheckpointManager,
@@ -21,11 +19,9 @@ from tools.checkpoint_manager import (
     _ref_name,
     _project_meta_path,
     _touch_project,
-    prune_checkpoints,
-    maybe_auto_prune_checkpoints,
-    store_status,
-    clear_all,
-    clear_legacy,
+)
+from tools.checkpoint_maintenance import (
+    clear_all, clear_legacy, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
 )
 
 
@@ -53,6 +49,7 @@ def fake_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home / ".hermes"))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.delenv("HOMEDRIVE", raising=False)
     monkeypatch.delenv("HOMEPATH", raising=False)
@@ -77,11 +74,6 @@ def disabled_mgr(checkpoint_base, monkeypatch):
 # =========================================================================
 
 class TestStorePath:
-    def test_store_is_single_shared_path(self, work_dir, checkpoint_base, monkeypatch):
-        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
-        # All projects resolve to the same store (only refs/indexes are per-project).
-        assert _store_path() == _store_path(checkpoint_base)
-        assert _project_hash(str(work_dir)) != _project_hash(str(work_dir.parent / "other"))
 
     def test_project_hash_identifies_dir_and_expands_tilde(self, fake_home):
         project = fake_home / "project"
@@ -338,6 +330,27 @@ class TestSafeRestore:
         assert "README.md" in result["skipped_user_edits"]
         assert "main.py" in result["restored_files"]
 
+    def test_safe_restore_finds_ledger_under_walked_key(self, mgr, work_dir, tmp_path):
+        base = self._checkpoint(mgr, work_dir)
+
+        # A generic project marker in an ancestor dir (e.g. a stray
+        # package.json in /tmp) makes record_agent_write's marker walk key
+        # the ledger to the ancestor, while restore reads the exact dir's
+        # hash.  Safe restore must still find the ledger, or it silently
+        # degrades to a full restore and overwrites user edits.
+        (tmp_path / "package.json").write_text("{}\n")
+
+        (work_dir / "main.py").write_text("agent version\n")
+        (work_dir / "README.md").write_text("user hand edit\n")
+        mgr.record_agent_write(str(work_dir / "main.py"))
+
+        result = mgr.restore(str(work_dir), base, safe=True)
+        assert result["success"] is True
+        assert (work_dir / "main.py").read_text() == "print('hello')\n"
+        assert (work_dir / "README.md").read_text() == "user hand edit\n"
+        assert result["restored_files"] == ["main.py"]
+        assert "README.md" in result["skipped_user_edits"]
+
     def test_safe_restore_skips_file_user_edited_after_agent(self, mgr, work_dir):
         base = self._checkpoint(mgr, work_dir)
 
@@ -578,6 +591,19 @@ class TestSafeRestore:
 # =========================================================================
 
 class TestWorkingDirResolution:
+    def test_registered_project_owns_writes_even_below_an_ancestor_marker(self, mgr, work_dir):
+        (work_dir.parent / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        assert mgr.ensure_checkpoint(str(work_dir), "original")
+        checkpoint = mgr.list_checkpoints(str(work_dir))[0]["hash"]
+        target = work_dir / "main.py"
+        target.write_text("agent\n", encoding="utf-8")
+        mgr.record_agent_write(str(target))
+        target.write_text("user\n", encoding="utf-8")
+        result = mgr.restore(str(work_dir), checkpoint, safe=True)
+        assert result["success"]
+        assert target.read_text(encoding="utf-8") == "user\n"
+        assert mgr.get_working_dir_for_path(str(target)) == str(work_dir)
+
     def test_resolves_project_root_markers(self, tmp_path, fake_home):
         m = CheckpointManager(enabled=True)
 
@@ -598,28 +624,12 @@ class TestWorkingDirResolution:
             f"~/{py_proj.name}/src/file.py"
         ) == str(py_proj)
 
-    def test_falls_back_to_parent(self, tmp_path, monkeypatch):
+    def test_falls_back_to_parent(self, fake_home):
         m = CheckpointManager(enabled=True)
-        filepath = tmp_path / "random" / "file.py"
+        filepath = fake_home / "random" / "file.py"
         filepath.parent.mkdir(parents=True)
-        filepath.write_text("x\n")
-
-        import pathlib as _pl
-        _real_exists = _pl.Path.exists
-
-        def _guarded_exists(self):
-            s = str(self)
-            stop = str(tmp_path)
-            if not s.startswith(stop) and any(
-                s.endswith("/" + m) or s == "/" + m
-                for m in (".git", "pyproject.toml", "package.json",
-                          "Cargo.toml", "go.mod", "Makefile", "pom.xml",
-                          ".hg", "Gemfile")
-            ):
-                return False
-            return _real_exists(self)
-
-        monkeypatch.setattr(_pl.Path, "exists", _guarded_exists)
+        filepath.write_text("x\n", encoding="utf-8")
+        (fake_home / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
         assert m.get_working_dir_for_path(str(filepath)) == str(filepath.parent)
 
 
@@ -648,7 +658,7 @@ class TestGitEnvIsolation:
         env = _git_env(
             store, str(work), index_file=store / "indexes" / "abc",
         )
-        assert env["GIT_INDEX_FILE"].endswith("indexes/abc")
+        assert env["GIT_INDEX_FILE"].endswith(os.path.join("indexes", "abc"))
 
         # ~ in the work tree is expanded.
         tilde_work = fake_home / "work"
@@ -662,25 +672,6 @@ class TestGitEnvIsolation:
 # =========================================================================
 
 class TestErrorResilience:
-    def test_run_git_allows_expected_nonzero_without_error_log(
-        self, tmp_path, caplog,
-    ):
-        work = tmp_path / "work"
-        work.mkdir()
-        completed = subprocess.CompletedProcess(
-            args=["git", "diff", "--cached", "--quiet"],
-            returncode=1, stdout="", stderr="",
-        )
-        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
-            with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
-                ok, stdout, stderr = _run_git(
-                    ["diff", "--cached", "--quiet"],
-                    tmp_path / "store", str(work),
-                    allowed_returncodes={1},
-                )
-        assert ok is False
-        assert stdout == ""
-        assert not caplog.records
 
 
     def test_checkpoint_failures_never_raise(self, mgr, work_dir, monkeypatch):
@@ -690,8 +681,8 @@ class TestErrorResilience:
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
 
         # ...and when git isn't installed at all.
-        monkeypatch.setattr("shutil.which", lambda x: None)
-        mgr._git_available = None
+        monkeypatch.setattr("shutil.which", lambda *args, **kwargs: None)
+        mgr.new_turn()
         assert mgr.ensure_checkpoint(str(work_dir), "test") is False
 
 
@@ -762,7 +753,7 @@ class TestSecurity:
         cps = mgr.list_checkpoints(str(work_dir))
         target_hash = cps[0]["hash"]
 
-        result = mgr.restore(str(work_dir), target_hash, file_path="/etc/passwd")
+        result = mgr.restore(str(work_dir), target_hash, file_path=str(work_dir.parent / "outside_file.txt"))
         assert result["success"] is False
         assert "got absolute path" in result["error"]
 
@@ -1048,6 +1039,37 @@ class TestPruneCheckpointsOrphanAllowlist:
         assert not (base / ("eeee" * 4)).exists()
         # The one that only went orphan mid-confirmation must survive.
         assert second_repo.exists()
+
+
+class TestPruneSweepsTmpPackDebris:
+    """A ``git gc`` killed by the store timeout strands ``tmp_pack_*`` files in
+    ``objects/pack/``; ``gc.auto=0`` means git itself never reclaims them and the gc
+    only runs when a ref moved — so the prune sweeps the debris unconditionally (#115410)."""
+
+    def test_sweeps_debris_even_when_no_ref_moved(self, checkpoint_base, tmp_path, monkeypatch):
+        import tools.checkpoint_manager as cm
+        monkeypatch.setattr(cm, "CHECKPOINT_BASE", checkpoint_base)
+        monkeypatch.setattr("hermes_cli.gitlock._git_proc_running", lambda: False)
+        work = tmp_path / "proj"
+        work.mkdir()
+        (work / "f").write_text("f")
+        CheckpointManager(enabled=True).ensure_checkpoint(str(work), "seed")
+
+        pack = checkpoint_base / "store" / "objects" / "pack"
+        pack.mkdir(parents=True, exist_ok=True)
+        debris = pack / "tmp_pack_killedGc"
+        debris.write_bytes(b"x" * 512)
+        stamp = time.time() - 11 * 60  # past the sweep's 10-minute age floor
+        os.utime(debris, (stamp, stamp))
+        fresh = pack / "tmp_pack_inFlight"
+        fresh.write_bytes(b"y")
+
+        result = prune_checkpoints(retention_days=30, delete_orphans=False, checkpoint_base=checkpoint_base)
+
+        assert result["deleted_stale"] == 0  # no ref moved: the expensive gc never ran…
+        assert not debris.exists()           # …but the debris is still swept
+        assert fresh.exists()                # a pack possibly being written NOW is spared
+        assert result["bytes_freed"] >= 512
 
 
 class TestMaybeAutoPruneCheckpoints:

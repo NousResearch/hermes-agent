@@ -9,6 +9,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
+  clearQueuedPromptDrainFailures,
   enqueueQueuedPrompt,
   getQueuedPrompts,
   isSteerableEntry,
@@ -193,7 +194,9 @@ export function useComposerQueue({
     }
 
     clearDraft()
-    scope.attachments.clear()
+    // Queue entry retains blob: previews; revoke when the entry is discarded
+    // or drained into a submit that takes ownership (see composer-queue).
+    scope.attachments.clear({ retainPreviewUrls: true })
     triggerHaptic('selection')
 
     return true
@@ -234,7 +237,8 @@ export function useComposerQueue({
         }
 
         drainFailuresRef.current.delete(entry.id)
-        removeQueuedPrompt(drainQueueSessionKey, entry.id)
+        // Submit now owns the blob: previews (optimistic bubble); do not revoke.
+        removeQueuedPrompt(drainQueueSessionKey, entry.id, { retainPreviewUrls: true })
         resetBrowseState(drainRuntimeSessionId)
         // A successful drain means the queue is flowing again — lift any park
         // so the remaining entries follow. Manual drains (Enter on an empty
@@ -284,6 +288,9 @@ export function useComposerQueue({
       // A manual send clears the auto-drain backoff so a stuck entry the user
       // taps gets a fresh attempt (and re-enables auto-retry on success).
       drainFailuresRef.current.delete(id)
+      // Same for the persisted budget the background drain keeps on the
+      // entry (#98015) — a user gesture is fresh intent, not a replay.
+      clearQueuedPromptDrainFailures(activeQueueSessionKey, id)
 
       return runDrain(entries => entries.find(e => e.id === id))
     },

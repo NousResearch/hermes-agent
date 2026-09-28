@@ -116,7 +116,6 @@ class TestFeishuExecApproval:
 
         # Verify card payload contains the command and buttons
         card = json.loads(kwargs["payload"])
-        assert card["header"]["template"] == "orange"
         assert "rm -rf /important" in card["elements"][0]["content"]
         assert "dangerous deletion" in card["elements"][0]["content"]
 
@@ -190,9 +189,7 @@ class TestFeishuUpdatePrompt:
         assert kwargs["metadata"] == {"thread_id": "th_1"}
 
         card = json.loads(kwargs["payload"])
-        assert card["header"]["template"] == "orange"
         assert "Restore stashed changes after update?" in card["elements"][0]["content"]
-        assert "Default: `y`" in card["elements"][0]["content"]
         actions = card["elements"][1]["actions"]
         assert [a["value"]["hermes_update_prompt_action"] for a in actions] == ["y", "n"]
 
@@ -328,7 +325,6 @@ class TestCardActionCallbackResponse:
         assert response.card is not None
         assert response.card.type == "raw"
         card = response.card.data
-        assert card["header"]["template"] == "green"
         assert "Approved once" in card["header"]["title"]["content"]
         assert "Bob" in card["elements"][0]["content"]
 

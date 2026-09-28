@@ -1,8 +1,9 @@
-import type { ProjectInfo, SessionLiveInfo, SubagentStatus } from '@hermes/shared/gateway-events'
+import type { ProjectInfo, SessionLiveInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
 
 export interface ActiveTool {
   context?: string
   id: string
+  labels?: ToolLabel[]
   name: string
   verboseArgs?: string
   startedAt?: number
@@ -176,7 +177,7 @@ export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 export interface McpServerStatus {
   connected: boolean
   disabled?: boolean
-  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed'
+  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed' | 'lazy'
   name: string
   tools: number
   transport: string

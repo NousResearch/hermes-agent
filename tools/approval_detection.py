@@ -131,6 +131,12 @@ HARDLINE_PATTERNS_COMPILED = [
 # Commands that hand a quoted argument to another shell to EXECUTE: quoted text is code, not
 # prose, so quote-masked hardline rules scan the raw string.
 _SHELL_CARRIER_NAMES = frozenset({"eval", "sh", "bash", "zsh", "ksh", "dash", "source", "."})
+# The shell members of _SHELL_CARRIER_NAMES, as one tuple plus alternation shared by every
+# pipe/decode/process-substitution/heredoc pattern and the structural -c payload scan, so
+# the shell-name list cannot drift between them again (the drift let `curl url | zsh` and
+# `dash -c` through while bash/sh were flagged).
+_SHELL_NAMES = ("bash", "sh", "zsh", "ksh", "dash")
+_SHELL_NAMES_RE = "|".join(_SHELL_NAMES)
 
 
 def _contains_shell_carrier(command: str) -> bool:
@@ -285,8 +291,8 @@ DANGEROUS_PATTERNS = [
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
     # Shell -c is parsed structurally by _execution_flag_findings(); a regex searching a dash-token
     # for "c" also matched --norc/--rcfile/--restricted.
-    (r'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:ba)?sh(?:\s|$|-c)', "pipe remote content to shell"),
-    (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
+    (rf'\b(curl|wget)\b.*\|\s*(?:[/\w]*/)?(?:{_SHELL_NAMES_RE})(?:\s|$|-c)', "pipe remote content to shell"),
+    (rf'\b(?:{_SHELL_NAMES_RE})\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
     # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
@@ -304,12 +310,12 @@ DANGEROUS_PATTERNS = [
      "cloud metadata endpoint access (instance credentials)"),
     # Decode-and-execute: `echo <base64> | base64 -d | bash` carries no dangerous keywords in the
     # raw text yet runs arbitrary commands.
-    (r'\b(base64|base32|base16)\s+(?:-[dD]|--decode)\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b', "pipe decoded content to shell (possible command obfuscation)"),
+    (rf'\b(base64|base32|base16)\s+(?:-[dD]|--decode)\b.*\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe decoded content to shell (possible command obfuscation)"),
     # xxd uses -r for decode, not -d.
-    (r'\bxxd\s+-r\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b', "pipe xxd-decoded content to shell (possible command obfuscation)"),
+    (rf'\bxxd\s+-r\b.*\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe xxd-decoded content to shell (possible command obfuscation)"),
     # `echo 'eq -pe v/' | tr 'eqv' 'rmf' | bash` decodes to `rm -rf /`.
-    (r'\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b', "pipe tr-transformed output to shell (possible command obfuscation)"),
-    (r'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(bash|sh|zsh|ksh|dash)\b',
+    (rf'\becho\b[^|]*\|\s*\btr\b[^|]*\|\s*\b(?:{_SHELL_NAMES_RE})\b', "pipe tr-transformed output to shell (possible command obfuscation)"),
+    (rf'\bopenssl\b.*\b(?:base64|enc)\b[^|]*\s+-[dD]\b[^|]*\|\s*\b(?:{_SHELL_NAMES_RE})\b',
      "pipe openssl-decoded content to shell (possible command obfuscation)"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
@@ -364,7 +370,9 @@ DANGEROUS_PATTERNS = [
     # sequential match: a for-loop building the label from a list defined EARLIER (`for item in 'ai.hermes...'; do
     # launchctl bootout "$label"`) never has "hermes" after the verb, and that slipped past and restarted 4 gateways
     # with zero approval. Erring broad is correct for an approval gate: an extra prompt is cheap.
-    (r'(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
+    # Anchor whole-input lookaheads: re.search otherwise rescans every suffix of
+    # long non-matching commands, holding the GIL and starving Gateway threads.
+    (r'\A(?=[\s\S]*\blaunchctl\s+(?:stop|kickstart|bootout|unload|kill|disable|remove)\b)(?=[\s\S]*\b(?:hermes|ai\.hermes)\b)', "stop/restart hermes launchd service (kills running agents)"),
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),
     (rf'\b(cp|mv|install)\b.*\s["\']?{_PROJECT_SENSITIVE_WRITE_TARGET}["\']?{_COMMAND_TAIL}', "overwrite project env/config file"),
     # cp/mv/install OVERWRITING a credential/SSH/shell-rc/Hermes file (key implant, login-time
@@ -399,7 +407,7 @@ DANGEROUS_PATTERNS = [
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
     # Interpreter heredocs are handled by _execution_flag_findings(); only shell heredocs stay
     # regex-based. `bash <<'EOF'` runs arbitrary commands without triggering the `bash -c` path.
-    (r'\b(bash|sh|zsh|ksh)\s+<<', "shell execution via heredoc"),
+    (rf'\b(?:{_SHELL_NAMES_RE})\s+<<', "shell execution via heredoc"),
     # Git destructive operations. `git reset --hard` accepts any unambiguous long-flag prefix (--h,
     # --ha, --har): --hard is the only reset mode starting with "h", and `--help` is special-cased
     # by git before mode resolution.
@@ -407,7 +415,12 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
-    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
+    # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed
+    # tokens' case in the detection input (every other pattern matches case-insensitively and is
+    # unaffected). The safe merged-only -d / --delete stays ungated by design — git itself refuses
+    # to delete a branch that is not fully merged.
+    (r'\bgit\s+branch\s+(?-i:-D)\b', "git branch force delete"),
     # `-D` = `-d --force`; the long spellings are different tokens, so match delete+force in either order, bounded to
     # one command segment (no `;`/`|`/`&`/newline) so an unrelated later command isn't contaminated.
     (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
@@ -459,6 +472,12 @@ for _canonical_key, _legacy_key in [
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
 
+# Scoping the force-delete flag to (?-i:-D) changed this pattern's regex-derived legacy key;
+# keep the pre-change spelling resolvable so approvals stored under it still match.
+_old_branch_key = r"git\s+branch\s+-D"
+_PATTERN_KEY_ALIASES.setdefault("git branch force delete", set()).add(_old_branch_key)
+_PATTERN_KEY_ALIASES.setdefault(_old_branch_key, set()).add("git branch force delete")
+
 
 def _approval_key_aliases(pattern_key: str) -> set[str]:
     """All approval keys for this pattern: the description plus the historical regex-derived key
@@ -488,6 +507,15 @@ def _normalize_command_for_detection(command: str) -> str:
     # Collapse $IFS / ${IFS...} (incl. `${IFS:0:1}`) to a space: IFS defaults to whitespace, so `rm${IFS}-rf${IFS}/`
     # runs as `rm -rf /`, and every pattern — incl. the hardline floor — anchors on literal \s between tokens.
     return re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+
+
+def _lower_preserving_flags(command: str) -> str:
+    """Lowercase a detection variant for the pattern pass while keeping dash-prefixed tokens
+    byte-for-byte, so case-dependent flags keep their distinction. All dangerous patterns are
+    compiled case-insensitively, so preserved flag case is invisible to them except where a
+    pattern explicitly scopes a case-sensitive group. Non-flag tokens (command words, quoted
+    prose, paths) are lowercased exactly as before; separators and whitespace are untouched."""
+    return ''.join(t if t.startswith('-') else t.lower() for t in re.split(r'(\s+)', command))
 
 
 # Shell metacharacters, quotes, and whitespace that terminate a path token.
@@ -573,10 +601,12 @@ _INTERPRETER_NAME_RES = tuple((family, re.compile(pattern)) for family, pattern 
     ("python", r"py(?:\.exe)?|python[23]?(?:\.\d+)*(?:\.exe)?"), ("node", r"node(?:js)?(?:\.exe)?"),
     ("perl", r"perl[0-9]*(?:\.\d+)*(?:\.exe)?"), ("ruby", r"ruby[0-9.]*(?:\.exe)?"), ("php", r"php(?:\.exe)?"),
     ("powershell", r"powershell(?:\.exe)?|pwsh(?:\.exe)?"),
+    ("bun", r"bun(?:\.exe)?"), ("deno", r"deno(?:\.exe)?"),
 ))
 _INTERPRETER_EXEC_FLAGS = {
     "python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"}, "perl": {"-e", "--eval"}, "ruby": {"-e"},
     "php": {"-r"}, "powershell": {"-command", "-c", "-file", "-f"},
+    "bun": {"-e", "--eval"}, "deno": {"eval", "-e", "--eval"},
 }
 _INTERPRETER_WITH_ARG = {
     "python": {"-W", "-X", "--check-hash-based-pycs"},
@@ -586,6 +616,10 @@ _INTERPRETER_WITH_ARG = {
     "php": {"-c", "-d", "-z"},
     "powershell": {"-configurationname", "-custompipename", "-executionpolicy", "-inputformat", "-outputformat",
                    "-settingsfile", "-version", "-windowstyle", "-workingdirectory"},
+    # Deno's inline-script entry is the bare `eval` subcommand; the only global option that
+    # may precede it and take a separate value is `-L/--log-level <level>` (`--env-file[=v]`
+    # binds with `=`; the `--unstable-*` and `--ext` flags belong after `eval`).
+    "bun": {"--config", "--cwd", "--env-file", "--preload", "--require"}, "deno": {"-L", "--log-level"},
 }
 _READ_TOOL_EXEC_FLAGS = {
     "sort": {"--compress-program"}, "rg": {"--pre", "--hostname-bin"}, "ag": {"--pager"},
@@ -839,6 +873,11 @@ def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
             skip_value = False
             continue
         if token == "--" or (not powershell and not token.startswith("-")):
+            # Deno evaluates inline scripts via a bare `eval` subcommand rather than a dash
+            # flag: the FIRST positional token, after any global options (`deno -q eval ...`);
+            # a later positional `eval` (`deno run eval.ts`) stays data.
+            if family == "deno" and token.lower() == "eval":
+                return "eval"
             break
         option, equals, _ = token.partition("=")
         comparable = option.lower() if powershell else option
@@ -939,7 +978,7 @@ def _execution_flag_findings(command: str):
             elif family and any(token.startswith("<<") for token in args):
                 yield ("script execution via heredoc", None)
             else:
-                if executable_name in {"bash", "sh", "zsh", "ksh"}:
+                if executable_name in _SHELL_NAMES:
                     found, payload = _bash_exec_payload(args)
                     if found:
                         yield ("shell command via -c/-lc flag", payload)
@@ -1411,12 +1450,29 @@ def _command_detection_variants(command: str):
         yield faithful
     # Quoting/escaping can spell an executable in pieces (r\m, r''m). Keep that deobfuscation scoped
     # to command words so arguments don't false-positive.
-    for word_start, word_end, word in _iter_shell_command_word_spans(normalized):
-        deobfuscated = _deobfuscate_shell_word_for_detection(word)
-        if deobfuscated and deobfuscated != word:
-            variant = normalized[:word_start] + deobfuscated + normalized[word_end:]
-            if fresh(variant):
-                yield variant
+    # One variant with EVERY command word deobfuscated, not one full-length variant per word: a heredoc
+    # body of quoted lines has hundreds of quoted command words, and per-word variants made both
+    # detection passes O(words * len) — minutes of GIL-held regex on a 15 KB command (#113535).
+    # Spans arrive out of order (loop/conditional bodies after their keywords) and can nest (a
+    # backtick word and the command inside it), so apply them sorted; spans overlapping an applied
+    # one wait for the next round, one combined variant per nesting level.
+    pending = sorted(
+        ((word_start, word_end, deobfuscated) for word_start, word_end, word in _iter_shell_command_word_spans(normalized)
+         if (deobfuscated := _deobfuscate_shell_word_for_detection(word)) and deobfuscated != word),
+        key=lambda span: span[:2],
+    )
+    while pending:
+        applied, carry, cursor = [], [], 0
+        for span in pending:
+            if span[0] < cursor:
+                carry.append(span)
+            else:
+                applied.append(span)
+                cursor = span[1]
+        variant = _splice(normalized, applied)
+        if fresh(variant):
+            yield variant
+        pending = carry
 
 
 def _is_verification_artifact_cleanup(command: str) -> bool:
@@ -1464,12 +1520,14 @@ def detect_dangerous_command(command: str) -> tuple:
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
     for command_variant in _command_detection_variants(command):
-        command_lower = command_variant.lower()
+        command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
-                    masked_lower = _mask_quoted_prose(command_variant).lower()
+                    masked_lower = _lower_preserving_flags(
+                        _mask_quoted_prose(command_variant)
+                    )
                 if pattern_re.search(masked_lower):
                     return (True, description, description)
             elif pattern_re.search(command_lower):

@@ -84,11 +84,17 @@ def _resolve_profile(rid, params):
 def _read_profile_yaml(profile_dir) -> dict:
     """profile.yaml as a mapping; ``{}`` when missing, unreadable, unparseable, or not a mapping."""
     def load():
-        import yaml
+        import hermes_yaml as yaml
         meta_path = profile_dir / "profile.yaml"
         return (yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}) if meta_path.is_file() else {}
     loaded = _try(load, {})
     return loaded if isinstance(loaded, dict) else {}
+
+
+def _yaml_scalar_to_json(value):
+    """``json.dumps`` default for YAML-only scalars (datetime/date → ISO 8601, else ``str``)."""
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else str(value)
 
 
 def _clean_revisions(raw: dict) -> dict:
@@ -211,28 +217,48 @@ def _profile_session_fields(row, profile_path):
     """Attach last_session / worker_session / canonical_session to a roster row. The DB is a
     read-only attach (a writable ``SessionDB()`` waits up to 20s for the write lock + runs DDL
     and stalled the 5s roster poll); no/unreadable DB -> every field None (the readers swallow)."""
-    db_path = Path(profile_path) / "state.db"
-    db = None
-    if _try(db_path.exists, False):
-        db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
-    try:
-        row["last_session"], row["worker_session"] = _latest_profile_session_rows(db)
-        # Resolved server-side on every listing so no client carries a session pointer.
-        row["canonical_session"] = _canonical_session_row(db, profile_path)
-    finally:
-        if db is not None:
-            _best_effort(db.close)
+    def _read() -> dict:
+        db_path = Path(profile_path) / "state.db"
+        db = None
+        if _try(db_path.exists, False):
+            db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
+        try:
+            last, worker = _latest_profile_session_rows(db)
+            # Resolved server-side on every listing so no client carries a session pointer.
+            return {"last_session": last, "worker_session": worker,
+                    "canonical_session": _canonical_session_row(db, profile_path)}
+        finally:
+            if db is not None:
+                _best_effort(db.close)
+
+    # These three are a pure function of the profile's session store, and the roster re-asks every
+    # 5s per connection — so they are reused while that store has not moved (#117257).
+    from tui_gateway.profile_roster_cache import cached_session_fields
+
+    row.update(cached_session_fields(profile_path, _read))
 
 
 def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     """Attach ``ui_meta`` / ``ui_meta_revisions`` / ``has_avatar`` from profile.yaml + assets.
     ``ui_meta_revisions`` is always present: it feature-detects gateway-owned CAS for a new profile."""
-    raw_meta = _read_profile_yaml(profile_dir)
-    ui_meta, revisions = raw_meta.get("ui_meta"), raw_meta.get("_ui_meta_revisions")
-    # Key order is wire-visible: ui_meta_revisions precedes ui_meta.
-    row["ui_meta_revisions"] = _try(lambda: _clean_revisions(revisions), {}) if isinstance(revisions, dict) else {}
-    if isinstance(ui_meta, dict) and ui_meta:
-        row["ui_meta"] = ui_meta
+    def _read() -> dict:
+        raw_meta = _read_profile_yaml(profile_dir)
+        ui_meta, revisions = raw_meta.get("ui_meta"), raw_meta.get("_ui_meta_revisions")
+        # Key order is wire-visible: ui_meta_revisions precedes ui_meta.
+        fields = {"ui_meta_revisions":
+                  _try(lambda: _clean_revisions(revisions), {}) if isinstance(revisions, dict) else {}}
+        if isinstance(ui_meta, dict) and ui_meta:
+            # YAML promotes unquoted timestamps to datetime/date; the handler's contract is JSON, so
+            # coerce YAML-only scalars to their ISO string at the boundary (#92506).
+            fields["ui_meta"] = json.loads(json.dumps(ui_meta, default=_yaml_scalar_to_json))
+        return fields
+
+    # Second parse of this profile.yaml in the same request (``read_profile_meta`` already read it
+    # for the row's description/display name) — reused while the file has not moved (#117383). The
+    # ui_meta CAS writer below keeps reading it raw and uncached: it writes the document back.
+    from tui_gateway.profile_roster_cache import cached_ui_meta_fields
+
+    row.update(cached_ui_meta_fields(profile_dir, _read))
     # Cheap existence flag so rosters skip a get_asset probe per paint.
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
 
@@ -244,10 +270,12 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.profiles import list_profiles
     include_sessions = is_truthy_value(params.get("include_sessions", True))
     out = []
-    for p in list_profiles():
+    # Roster polls this every 5s: ``skill_count`` is the last known value, refreshed off-request.
+    for p in list_profiles(lazy_skill_count=True):
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
-               "display_name": p.display_name or "", "skill_count": p.skill_count or 0}
+               "display_name": p.display_name or "", "skill_count": p.skill_count or 0,
+               "previous_names": list(p.previous_names or []), "role": p.role}
         if include_sessions:
             _profile_session_fields(row, p.path)
         _profile_ui_meta_fields(row, Path(str(p.path)))
@@ -255,6 +283,173 @@ def _(rid, params: dict) -> dict:
     # bot_mode_protocol: this backend injects the Bot Mode teammate-messaging protocol into every
     # session, so clients must not append it to SOUL.md.
     return _ok(rid, {"profiles": out, "bot_mode_protocol": True})
+
+
+@method("profiles.create")
+def _(rid, params: dict) -> dict:
+    """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
+    ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``clone_channels`` (opt-in: keep the
+    source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
+    ``model`` + ``provider``, ``share_auth``, ``no_alias``, ``mirror_credentials`` (default true: a bare
+    ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless)."""
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4061, "name required")
+    try:
+        from hermes_cli import profiles as profiles_mod
+        clone_from = str(params.get("clone_from") or "").strip() or None
+        clone_all = is_truthy_value(params.get("clone_all", False))
+        path = profiles_mod.create_profile(
+            name=name, clone_from=clone_from, clone_all=clone_all,
+            clone_config=bool(clone_from) and not clone_all,
+            no_skills=is_truthy_value(params.get("no_skills", False)),
+            description=str(params.get("description") or "").strip() or None,
+            clone_channels=is_truthy_value(params.get("clone_channels", False)))
+    except (ValueError, FileExistsError, FileNotFoundError) as e:
+        return _err(rid, 4062, str(e))
+    except Exception as e:
+        return _err(rid, 5062, str(e))
+    # CLI/REST create flow: bundled skills for fresh profiles, then the alias wrapper.
+    if not clone_from:
+        _best_effort(lambda: profiles_mod.seed_profile_skills(path, quiet=True))
+    if not is_truthy_value(params.get("no_alias", False)):
+        _best_effort(lambda: profiles_mod.check_alias_collision(name) or profiles_mod.create_wrapper_script(name))
+    soul = params.get("soul")
+    soul_written = isinstance(soul, str) and bool(soul.strip()) and _best_effort(
+        lambda: (path / "SOUL.md").write_text(soul, encoding="utf-8"))
+    mirrored = _mirror_launch_credentials(path, params)
+    model, provider = _model_provider_params(params)
+    model_set = False
+    if model and provider:
+        model_set = _best_effort(lambda: _pin_profile_model(path, provider, model))
+    elif is_truthy_value(params.get("mirror_credentials", True)):
+        mirrored["model_inherited"] = _try(lambda: _inherit_launch_model(path), False)
+    return _ok(rid, {"ok": True, "name": name, "path": str(path), "soul_written": soul_written,
+                     "model_set": model_set, "mirrored": mirrored})
+
+
+@_profile_handler("profiles.describe", 5063)
+def _(rid, params: dict) -> dict:
+    """Editor snapshot; installed skills are enabled unless in ``skills.disabled``; ``mcp_servers``
+    is ``[{name, enabled, transport}]`` (best-effort)."""
+    name, profile_dir, err = _resolve_profile(rid, params)
+    if err is not None:
+        return err
+    with _hermes_home_scope(profile_dir):
+        from agent.skill_utils import iter_skill_index_files
+        from hermes_cli.config import load_config
+        from hermes_cli.skills_config import get_disabled_skills
+        cfg = load_config() or {}
+        disabled = {s.lower() for s in get_disabled_skills(cfg)}
+        skills_root = profile_dir / "skills"
+        installed = [
+            {"name": md.parent.name, "enabled": md.parent.name.lower() not in disabled}
+            for md in (iter_skill_index_files(skills_root, "SKILL.md") if skills_root.is_dir() else ())]
+        toolsets_out, pinned_set = _describe_toolsets(cfg)
+        soul_path = profile_dir / "SOUL.md"
+        soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")
+        mcp_cfg = cfg.get("mcp_servers")
+        mcp_out = _try(lambda: [
+            {"name": str(srv_name), "enabled": _mcp_entry_enabled(entry),
+             "transport": str(entry.get("transport") or "http") if entry.get("url") else "stdio"}
+            for srv_name in sorted(mcp_cfg.keys()) for entry in (mcp_cfg[srv_name],)
+            if isinstance(entry, dict)
+        ], []) if isinstance(mcp_cfg, dict) else []
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        meta = _try(lambda: _lazy("hermes_cli.profiles", "read_profile_meta")(profile_dir), {})
+        return _ok(rid, {
+            "name": name, "description": str(meta.get("description") or ""), "soul": soul,
+            "model": {"provider": str(model_cfg.get("provider") or ""),
+                      "default": str(model_cfg.get("default") or "")},
+            "skills": installed, "toolsets": toolsets_out,
+            "toolsets_pinned": pinned_set is not None, "mcp_servers": mcp_out})
+
+
+@_profile_handler("profiles.configure", 5064)
+def _(rid, params: dict) -> dict:
+    """Editor Save: ``name`` plus any of ``ui_meta`` (+ ``ui_meta_expected_revisions``), ``soul``,
+    ``description``, ``model`` + ``provider`` (+ ``confirm_expensive_model``), ``disabled_skills``,
+    ``enabled_toolsets``, ``enabled_mcp_servers``; sections are independent, ``applied`` reports each."""
+    _name, profile_dir, err = _resolve_profile(rid, params)
+    if err is not None:
+        return err
+    applied = {}
+    if isinstance(params.get("ui_meta"), dict):
+        _configure_ui_meta(profile_dir, params, applied)
+    if isinstance(params.get("soul"), str):
+        applied["soul"] = _best_effort(lambda: (profile_dir / "SOUL.md").write_text(params["soul"], encoding="utf-8"))
+    if isinstance(params.get("description"), str):
+        write_meta = _lazy("hermes_cli.profiles", "write_profile_meta")
+        applied["description"] = _best_effort(lambda: write_meta(
+            profile_dir, description=params["description"].strip(), description_auto=False))
+    confirm_message = _configure_model(profile_dir, params, applied)
+    if any(isinstance(params.get(k), list) for k in ("disabled_skills", "enabled_toolsets", "enabled_mcp_servers")):
+        _configure_cfg_sections(profile_dir, params, applied)
+    # confirm_* is the shape config.set returns, so clients reuse one confirm handler.
+    return _ok(rid, {"ok": all(applied.values()) if applied else True, "applied": applied,
+                     **({"confirm_required": True, "confirm_message": confirm_message}
+                        if confirm_message is not None else {})})
+
+
+@_profile_handler("profiles.set_asset", 5065)
+def _(rid, params: dict) -> dict:
+    """Store ``assets/<asset>.<ext>`` atomically. Params: ``name``, ``asset`` (``"avatar"`` only),
+    ``data`` (data URL or base64; PNG/JPEG/WebP ≤2MB, format sniffed) or ``clear: true``."""
+    asset = str(params.get("asset") or "avatar").strip().lower()
+    if not str(params.get("name") or "").strip():
+        return _err(rid, 4063, "name required")
+    if asset != "avatar":
+        return _err(rid, 4066, f"unknown asset '{asset}' (supported: avatar)")
+    import base64
+    import re
+    _name, profile_dir, err = _resolve_profile(rid, params)
+    if err is not None:
+        return err
+    assets_dir = profile_dir / "assets"
+    if is_truthy_value(params.get("clear", False)):
+        return _ok(rid, {"ok": True, "asset": asset, "size": 0, "removed": _unlink_asset_files(assets_dir, asset)})
+    data = str(params.get("data") or "")
+    if not data:
+        return _err(rid, 4067, "data required (data URL or base64)")
+    match = re.match(r"^data:(image/(?:png|jpeg|webp));base64,(.*)$", data, re.DOTALL)
+    try:
+        blob = base64.b64decode(match.group(2) if match else data, validate=True)
+    except Exception:
+        return _err(rid, 4068, "data is not valid base64")
+    if len(blob) > 2_000_000:
+        return _err(rid, 4069, f"asset too large ({len(blob)} bytes; max 2MB)")
+    ext = next((e for e, magic in _ASSET_MAGIC.items() if all(blob[a:b] == m for a, b, m in magic)), None)
+    if ext is None:
+        return _err(rid, 4070, "unsupported image format (PNG/JPEG/WebP only)")
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    _unlink_asset_files(assets_dir, asset)  # one canonical file per asset
+    tmp = assets_dir / f"{asset}.{ext}.tmp"
+    tmp.write_bytes(blob)
+    tmp.replace(assets_dir / f"{asset}.{ext}")
+    return _ok(rid, {"ok": True, "asset": asset, "size": len(blob)})
+
+
+@_profile_handler("profiles.get_asset", 5066)
+def _(rid, params: dict) -> dict:
+    """Profile asset as a data URL; absent is ``found: false``, not an error."""
+    asset = str(params.get("asset") or "avatar").strip().lower()
+    import base64
+    _name, profile_dir, err = _resolve_profile(rid, params)
+    if err is not None:
+        return err
+    for ext, mime in _ASSET_EXTS.items():
+        target = profile_dir / "assets" / f"{asset}.{ext}"
+        if target.is_file():
+            blob = target.read_bytes()
+            return _ok(rid, {"found": True, "mime": mime, "size": len(blob),
+                             "data": f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"})
+    return _ok(rid, {"found": False})
+
+
+@_profile_handler("profiles.remember_onboarding", 5067)
+def _(rid, params: dict) -> dict:
+    from tui_gateway.onboarding_personalization import remember_onboarding
+    return _ok(rid, remember_onboarding(params.get("answers")))
 
 
 def _mirror_secret(path, launch_home, name: str, wanted) -> bool:
@@ -306,9 +501,20 @@ def _inherit_launch_model(path) -> bool:
         dst_model = (read_user_config_raw() or {}).get("model") or {}
     if dst_model.get("provider") and dst_model.get("default"):
         return False
-    model_cfg = (load_config_readonly() or {}).get("model") or {}
+    launch_cfg = load_config_readonly() or {}
+    model_cfg = launch_cfg.get("model") or {}
     if not (model_cfg.get("provider") and model_cfg.get("default")):
         return False
+    # A custom `providers:` gateway travels with the model it backs (same seed as the CLI path). It is
+    # written BEFORE the pin: the pin validates the pick inside the new profile, and an empty profile
+    # rejects a provider it has not been told about ("Unknown provider").
+    custom = _lazy("hermes_cli.profiles", "launch_model_seed")(launch_cfg).get("providers")
+    if custom:
+        from hermes_cli.config import load_config, save_config
+        with _hermes_home_scope(path):
+            cfg = load_config()
+            cfg["providers"] = {**(cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}), **custom}
+            save_config(cfg)
     _pin_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]))
     return True
 
@@ -341,56 +547,14 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
     return mirrored
 
 
-@method("profiles.create")
-def _(rid, params: dict) -> dict:
-    """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
-    ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``clone_channels`` (opt-in: keep the
-    source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
-    ``model`` + ``provider``, ``share_auth``, ``no_alias``, ``mirror_credentials`` (default true: a bare
-    ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless)."""
-    name = str(params.get("name") or "").strip()
-    if not name:
-        return _err(rid, 4061, "name required")
-    try:
-        from hermes_cli import profiles as profiles_mod
-        clone_from = str(params.get("clone_from") or "").strip() or None
-        clone_all = is_truthy_value(params.get("clone_all", False))
-        path = profiles_mod.create_profile(
-            name=name, clone_from=clone_from, clone_all=clone_all,
-            clone_config=bool(clone_from) and not clone_all,
-            no_skills=is_truthy_value(params.get("no_skills", False)),
-            description=str(params.get("description") or "").strip() or None,
-            clone_channels=is_truthy_value(params.get("clone_channels", False)))
-    except (ValueError, FileExistsError, FileNotFoundError) as e:
-        return _err(rid, 4062, str(e))
-    except Exception as e:
-        return _err(rid, 5062, str(e))
-    # CLI/REST create flow: bundled skills for fresh profiles, then the alias wrapper.
-    if not clone_from:
-        _best_effort(lambda: profiles_mod.seed_profile_skills(path, quiet=True))
-    if not is_truthy_value(params.get("no_alias", False)):
-        _best_effort(lambda: profiles_mod.check_alias_collision(name) or profiles_mod.create_wrapper_script(name))
-    soul = params.get("soul")
-    soul_written = isinstance(soul, str) and bool(soul.strip()) and _best_effort(
-        lambda: (path / "SOUL.md").write_text(soul, encoding="utf-8"))
-    mirrored = _mirror_launch_credentials(path, params)
-    model, provider = _model_provider_params(params)
-    model_set = False
-    if model and provider:
-        model_set = _best_effort(lambda: _pin_profile_model(path, provider, model))
-    elif is_truthy_value(params.get("mirror_credentials", True)):
-        mirrored["model_inherited"] = _try(lambda: _inherit_launch_model(path), False)
-    return _ok(rid, {"ok": True, "name": name, "path": str(path), "soul_written": soul_written,
-                     "model_set": model_set, "mirrored": mirrored})
-
-
 def _describe_toolsets(cfg):
     """``(toolsets, pinned_set)`` as the `hermes tools` checklist presents them (the raw registry
     leaks platform composites and reports everything enabled without a pin)."""
     from hermes_cli.tools_config import (
-        _get_effective_configurable_toolsets, _get_platform_tools, _toolset_allowed_for_platform)
+        _coerce_platform_toolsets_value, _get_effective_configurable_toolsets, _get_platform_tools,
+        _toolset_allowed_for_platform)
     from toolsets import resolve_toolset
-    pinned = (cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}).get("enabled_toolsets")
+    pinned = _coerce_platform_toolsets_value((cfg.get("platform_toolsets") or {}).get("cli"), "cli")
     pinned_set = _clean_names(pinned) if isinstance(pinned, list) else None
     platform_enabled = _try(lambda: set(_get_platform_tools(cfg, "cli", include_default_mcp_servers=False)), set())
     default_off = _try(lambda: _lazy("hermes_cli.tools_config", "_DEFAULT_OFF_TOOLSETS"), set())
@@ -405,42 +569,6 @@ def _describe_toolsets(cfg):
                              "tool_count": _try(lambda: len(set(resolve_toolset(ts_name))), 0),
                              "enabled": enabled})
     return toolsets_out, pinned_set
-
-
-@_profile_handler("profiles.describe", 5063)
-def _(rid, params: dict) -> dict:
-    """Editor snapshot; installed skills are enabled unless in ``skills.disabled``; ``mcp_servers``
-    is ``[{name, enabled, transport}]`` (best-effort)."""
-    name, profile_dir, err = _resolve_profile(rid, params)
-    if err is not None:
-        return err
-    with _hermes_home_scope(profile_dir):
-        from hermes_cli.config import load_config
-        from hermes_cli.skills_config import get_disabled_skills
-        cfg = load_config() or {}
-        disabled = {s.lower() for s in get_disabled_skills(cfg)}
-        skills_root = profile_dir / "skills"
-        installed = [
-            {"name": md.parent.name, "enabled": md.parent.name.lower() not in disabled}
-            for md in (sorted(skills_root.rglob("SKILL.md")) if skills_root.is_dir() else ())]
-        toolsets_out, pinned_set = _describe_toolsets(cfg)
-        soul_path = profile_dir / "SOUL.md"
-        soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")
-        mcp_cfg = cfg.get("mcp_servers")
-        mcp_out = _try(lambda: [
-            {"name": str(srv_name), "enabled": not is_truthy_value(entry.get("disabled", False)),
-             "transport": str(entry.get("transport") or "http") if entry.get("url") else "stdio"}
-            for srv_name in sorted(mcp_cfg.keys()) for entry in (mcp_cfg[srv_name],)
-            if isinstance(entry, dict)
-        ], []) if isinstance(mcp_cfg, dict) else []
-        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-        meta = _try(lambda: _lazy("hermes_cli.profiles", "read_profile_meta")(profile_dir), {})
-        return _ok(rid, {
-            "name": name, "description": str(meta.get("description") or ""), "soul": soul,
-            "model": {"provider": str(model_cfg.get("provider") or ""),
-                      "default": str(model_cfg.get("default") or "")},
-            "skills": installed, "toolsets": toolsets_out,
-            "toolsets_pinned": pinned_set is not None, "mcp_servers": mcp_out})
 
 
 def _configure_ui_meta(profile_dir, params, applied) -> None:
@@ -516,27 +644,38 @@ def _clean_names(values) -> set:
 
 
 def _save_toolset_pin(cfg, enabled, save_config) -> None:
-    wanted = sorted(_clean_names(enabled))
-    tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+    """Pin ``platform_toolsets.cli``: the key ``_load_enabled_toolsets`` reads and ``hermes tools`` writes.
+    An empty selection clears the pin so the platform default applies again."""
+    from hermes_cli.tools_config import _save_platform_tools
+
+    wanted = _clean_names(enabled)
     if wanted:
-        tools_cfg["enabled_toolsets"] = wanted
-    else:
-        tools_cfg.pop("enabled_toolsets", None)
-    cfg["tools"] = tools_cfg
+        _save_platform_tools(cfg, "cli", wanted)
+    elif isinstance(cfg.get("platform_toolsets"), dict):
+        cfg["platform_toolsets"].pop("cli", None)
     save_config(cfg)
 
 
+def _mcp_entry_enabled(entry: dict) -> bool:
+    """The runtime's ``enabled`` reader; a legacy ``disabled: true`` (what older editors wrote,
+    migrated by config v46) still reads as off."""
+    from hermes_cli.tools_config import _parse_enabled_flag
+    from tools.mcp_tool_common import mcp_server_enabled
+    return mcp_server_enabled(entry) and not _parse_enabled_flag(entry.get("disabled", False), default=False)
+
+
 def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
+    """Write the ``enabled`` flag every runtime resolver reads (``enabled_mcp_server_names``,
+    coding_context, oneshot); the legacy ``disabled`` key is dropped so old configs migrate."""
     wanted = _clean_names(enabled)
     mcp_cfg = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
     for srv in wanted:
         if not isinstance(mcp_cfg.get(srv), dict) and isinstance(launch_mcp.get(srv), dict):
             mcp_cfg[srv] = dict(launch_mcp[srv])
-        if isinstance(mcp_cfg.get(srv), dict):
-            mcp_cfg[srv].pop("disabled", None)
     for srv, entry in mcp_cfg.items():
-        if srv not in wanted and isinstance(entry, dict):
-            entry["disabled"] = True
+        if isinstance(entry, dict):
+            entry["enabled"] = srv in wanted
+            entry.pop("disabled", None)
     if mcp_cfg:
         cfg["mcp_servers"] = mcp_cfg
     save_config(cfg)
@@ -570,97 +709,10 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
                 load_config() or {}, params["enabled_mcp_servers"], launch_mcp, save_config))
 
 
-@_profile_handler("profiles.configure", 5064)
-def _(rid, params: dict) -> dict:
-    """Editor Save: ``name`` plus any of ``ui_meta`` (+ ``ui_meta_expected_revisions``), ``soul``,
-    ``description``, ``model`` + ``provider`` (+ ``confirm_expensive_model``), ``disabled_skills``,
-    ``enabled_toolsets``, ``enabled_mcp_servers``; sections are independent, ``applied`` reports each."""
-    _name, profile_dir, err = _resolve_profile(rid, params)
-    if err is not None:
-        return err
-    applied = {}
-    if isinstance(params.get("ui_meta"), dict):
-        _configure_ui_meta(profile_dir, params, applied)
-    if isinstance(params.get("soul"), str):
-        applied["soul"] = _best_effort(lambda: (profile_dir / "SOUL.md").write_text(params["soul"], encoding="utf-8"))
-    if isinstance(params.get("description"), str):
-        write_meta = _lazy("hermes_cli.profiles", "write_profile_meta")
-        applied["description"] = _best_effort(lambda: write_meta(
-            profile_dir, description=params["description"].strip(), description_auto=False))
-    confirm_message = _configure_model(profile_dir, params, applied)
-    if any(isinstance(params.get(k), list) for k in ("disabled_skills", "enabled_toolsets", "enabled_mcp_servers")):
-        _configure_cfg_sections(profile_dir, params, applied)
-    # confirm_* is the shape config.set returns, so clients reuse one confirm handler.
-    return _ok(rid, {"ok": all(applied.values()) if applied else True, "applied": applied,
-                     **({"confirm_required": True, "confirm_message": confirm_message}
-                        if confirm_message is not None else {})})
-
-
 def _unlink_asset_files(assets_dir, asset) -> int:
     """Delete every ``<asset>.<ext>`` in ``assets_dir``; returns how many existed."""
     present = [t for t in (assets_dir / f"{asset}.{ext}" for ext in _ASSET_EXTS) if t.is_file()]
     return len([t.unlink() for t in present])
-
-
-@_profile_handler("profiles.set_asset", 5065)
-def _(rid, params: dict) -> dict:
-    """Store ``assets/<asset>.<ext>`` atomically. Params: ``name``, ``asset`` (``"avatar"`` only),
-    ``data`` (data URL or base64; PNG/JPEG/WebP ≤2MB, format sniffed) or ``clear: true``."""
-    asset = str(params.get("asset") or "avatar").strip().lower()
-    if not str(params.get("name") or "").strip():
-        return _err(rid, 4063, "name required")
-    if asset != "avatar":
-        return _err(rid, 4066, f"unknown asset '{asset}' (supported: avatar)")
-    import base64
-    import re
-    _name, profile_dir, err = _resolve_profile(rid, params)
-    if err is not None:
-        return err
-    assets_dir = profile_dir / "assets"
-    if is_truthy_value(params.get("clear", False)):
-        return _ok(rid, {"ok": True, "asset": asset, "size": 0, "removed": _unlink_asset_files(assets_dir, asset)})
-    data = str(params.get("data") or "")
-    if not data:
-        return _err(rid, 4067, "data required (data URL or base64)")
-    match = re.match(r"^data:(image/(?:png|jpeg|webp));base64,(.*)$", data, re.DOTALL)
-    try:
-        blob = base64.b64decode(match.group(2) if match else data, validate=True)
-    except Exception:
-        return _err(rid, 4068, "data is not valid base64")
-    if len(blob) > 2_000_000:
-        return _err(rid, 4069, f"asset too large ({len(blob)} bytes; max 2MB)")
-    ext = next((e for e, magic in _ASSET_MAGIC.items() if all(blob[a:b] == m for a, b, m in magic)), None)
-    if ext is None:
-        return _err(rid, 4070, "unsupported image format (PNG/JPEG/WebP only)")
-    assets_dir.mkdir(parents=True, exist_ok=True)
-    _unlink_asset_files(assets_dir, asset)  # one canonical file per asset
-    tmp = assets_dir / f"{asset}.{ext}.tmp"
-    tmp.write_bytes(blob)
-    tmp.replace(assets_dir / f"{asset}.{ext}")
-    return _ok(rid, {"ok": True, "asset": asset, "size": len(blob)})
-
-
-@_profile_handler("profiles.get_asset", 5066)
-def _(rid, params: dict) -> dict:
-    """Profile asset as a data URL; absent is ``found: false``, not an error."""
-    asset = str(params.get("asset") or "avatar").strip().lower()
-    import base64
-    _name, profile_dir, err = _resolve_profile(rid, params)
-    if err is not None:
-        return err
-    for ext, mime in _ASSET_EXTS.items():
-        target = profile_dir / "assets" / f"{asset}.{ext}"
-        if target.is_file():
-            blob = target.read_bytes()
-            return _ok(rid, {"found": True, "mime": mime, "size": len(blob),
-                             "data": f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"})
-    return _ok(rid, {"found": False})
-
-
-@_profile_handler("profiles.remember_onboarding", 5067)
-def _(rid, params: dict) -> dict:
-    from tui_gateway.onboarding_personalization import remember_onboarding
-    return _ok(rid, remember_onboarding(params.get("answers")))
 
 
 def register(server) -> None:

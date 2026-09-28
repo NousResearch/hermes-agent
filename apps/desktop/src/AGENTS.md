@@ -23,6 +23,16 @@ unknown subcommand and bricks every mid-upgrade user. Keep it narrow and tested.
 Lifecycle: `serve` dies with the app by design; the messaging gateway survives it (spawned detached
 via `/api/gateway/*`). Never re-parent the gateway under the backend — `gateway/AGENTS.md`.
 
+The backend the app spawns is a **pooled `hermes serve --port 0` per (connection, profile)**: its
+launch home is that profile, `HERMES_DESKTOP=1` is set, and its in-process cron ticker stands down
+for homes a running gateway already serves. One process may still host sessions from several homes
+(`tui_gateway/AGENTS.md` § Profile scope); the first non-launch home flips `set_multiplex_active`.
+Remote connections (SSH, URL+token, Cloud) reach a backend with no desktop env var that may serve
+several profiles from one process. Every lifecycle/status/settings REST call against a pooled
+backend carries `?profile=` (or the `profile` param) and every new-session tile records an owner
+route; a backend-side scope fix is probed twice — with the profile as the launch home of a pooled
+backend (env-bound) and as a secondary served by one process (override-bound).
+
 ## Slash commands: curated client-side, dispatched to the backend
 
 - The backend already provides everything: `commands.catalog` and `complete.slash` include built-ins,
@@ -92,7 +102,8 @@ reads/writes a stored pointer), `canonical-chat-creation.test.ts`, `canonical-ch
 
 `$freeTierStatus` mirrors `free_tier.status` (pull; refreshed with the status snapshot and after a
 sign-in). `deriveBillingView` branches on `billing.free_tier` BEFORE `logged_in` (status
-`free_tier`: notice + one Sign in, Plan/Model/Connectors summary, no payment or usage rows). The
-sign-in dialog is a single claimed owner (first mount wins, like the real-profile consent prompt);
-its states map 1:1 to the poll route's `status` + `reason`. Copy is the ruled free-tier copy: never
+`free_tier`: notice + one Sign in, Plan/Model/Connectors summary, no payment or usage rows); the
+`logged_out` notice's Sign in opens the same dialog, never a portal link (a link writes no
+credential). The sign-in dialog is a single claimed owner (first mount wins, like the
+real-profile consent prompt); its states map 1:1 to the poll route's `status` + `reason`. Copy is the ruled free-tier copy: never
 "guest", "anonymous", "claim" or "Nous Portal" in user-facing text.

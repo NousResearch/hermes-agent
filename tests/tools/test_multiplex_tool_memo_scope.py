@@ -69,21 +69,40 @@ def test_config_caches_are_keyed_by_profile(two_profiles):
     assert _under(prof_a, read_all) == (222, 222, 33, 3300, 33)
 
 
-def test_schema_path_hints_follow_active_profile(two_profiles):
-    import tools.cronjob_tools  # noqa: F401  (registers cronjob_manage)
-    import tools.skill_manager_tool  # noqa: F401
-    import tools.tts_tool  # noqa: F401
+def test_skill_manage_schema_stable_but_creation_follows_active_profile(two_profiles):
+    import tools.skill_manager_tool  # noqa: F401  (registers skill_manage)
     from tools.registry import registry
 
     prof_a, prof_b = two_profiles
-    names = {"cronjob_manage", "text_to_speech", "skill_manage"}
+    for home, create_dir in ((prof_a, "brain-a"), (prof_b, "brain-b")):
+        with (home / "config.yaml").open("a", encoding="utf-8") as config:
+            config.write(f"skills:\n  create_dir: {create_dir}\n")
 
-    def definitions():
-        return json.dumps(registry.get_definitions(names, quiet=True))
+    def definition():
+        return json.dumps(registry.get_definitions({"skill_manage"}, quiet=True))
 
-    for_a, for_b = _under(prof_a, definitions), _under(prof_b, definitions)
-    assert "profA" in for_a and "profB" not in for_a
-    assert "profB" in for_b and "profA" not in for_b
-    for fn in json.loads(for_b):
-        name, text = fn["function"]["name"], json.dumps(fn["function"])
-        assert name in names and "profB" in text, name
+    for_a = _under(prof_a, definition)
+    for_b = _under(prof_b, definition)
+    assert for_a == for_b == _under(prof_a, definition)
+    assert "brain-a" not in for_a and "brain-b" not in for_a
+    assert "skills.create_dir" in for_a
+
+    for home, create_dir, other, name in ((prof_a, "brain-a", prof_b, "first-a"),
+                                         (prof_b, "brain-b", prof_a, "only-b"),
+                                         (prof_a, "brain-a", prof_b, "second-a")):
+        content = (f"---\nname: {name}\n"
+                   "description: Use when checking routing. Create in the active profile.\n"
+                   "---\n\n# Scoped skill\n")
+
+        def create():
+            raw = registry.dispatch("skill_manage", {
+                "operations": [{"action": "create", "name": name, "content": content}]})
+            assert isinstance(raw, str)
+            return json.loads(raw)
+
+        assert not (other / "brain-a" / name / "SKILL.md").exists()
+        assert not (other / "brain-b" / name / "SKILL.md").exists()
+        result = _under(home, create)
+        assert result["success"], result
+        assert (home / create_dir / name / "SKILL.md").read_text(encoding="utf-8") == content
+        assert not (home / "skills" / name).exists()

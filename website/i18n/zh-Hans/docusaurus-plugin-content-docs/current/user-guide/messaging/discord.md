@@ -694,7 +694,7 @@ discord:
 
 点击编号按钮作答，或点击**其他**输入自由格式的响应（你在该频道中发送的下一条消息将成为答案）。开放式的 `clarify` 调用（没有预设选项）会跳过按钮，直接捕获你的下一条消息。
 
-按钮在做出选择后会自动禁用，防止重复点击导致重复解析提示。通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `600` 秒）。如果你在超时内没有响应，agent 会以一条哨兵消息解除阻塞并自行调整，而不是一直挂起。
+按钮在做出选择后会自动禁用，防止重复点击导致重复解析提示。通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `3600` 秒；`0` 或更小 = 不限时）。如果你在超时内没有响应，agent 会以一条哨兵消息解除阻塞并自行调整，而不是一直挂起。
 
 ## 主频道
 
@@ -724,8 +724,8 @@ Hermes Agent 支持 Discord 语音消息：
 - **Discord 语音频道**：Hermes 还可以加入语音频道，聆听用户说话，并在频道中回话。
 
 完整的设置和操作指南，请参阅：
-- [语音模式](/user-guide/features/voice-mode)
-- [与 Hermes 使用语音模式](/guides/use-voice-mode-with-hermes)
+- [语音模式](../features/voice-mode.md)
+- [与 Hermes 使用语音模式](../../guides/use-voice-mode-with-hermes.md)
 
 ## 论坛频道
 

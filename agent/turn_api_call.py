@@ -15,7 +15,9 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason
+from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
 from agent.message_metadata import append_message
+from agent.repetition_guard import REPETITION_LOOP_INTERRUPTED, is_runaway_repetition
 from agent.turn_failure_copy import site_copy, stamp_failure
 
 logger = logging.getLogger("agent.conversation_loop")
@@ -44,12 +46,15 @@ class ApiCallVerdict:
 
 def _should_stream(agent: Any) -> bool:
     """Streaming is preferred even without consumers (stale-stream / read-timeout health
-    checks); disabled on provider signal, ACP schemes, MoA without a display consumer, or
-    Mock clients in tests (SimpleNamespace, not stream iterators)."""
+    checks); disabled on provider signal, ACP providers (``acp://`` scheme or an
+    external-process provider profile), MoA without a display consumer, or Mock clients in
+    tests (SimpleNamespace, not stream iterators)."""
     if getattr(agent, "_disable_streaming", False):
         return False
     _base = str(agent.base_url or "").lower()
-    if agent.provider in {"copilot-acp"} or _base.startswith(("acp://", "acp+tcp://")):
+    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+
+    if _base.startswith(("acp://", "acp+tcp://")) or _is_external_process_provider(agent.provider):
         return False
     if not agent._has_stream_consumers():
         if agent.provider == "moa":
@@ -182,10 +187,23 @@ def handle_api_interrupt(
     api_elapsed = time.time() - api_start_time
     agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
     interrupted = True
+    # A Stop during the empty-response nudge request leaves the synthetic assistant+nudge
+    # pair after an executed tool result; strip it so the row appended below follows the tool
+    # row (the finalizer then closes the tail with this exit's own reason).
+    agent._drop_trailing_empty_response_scaffolding(messages)
     _partial = agent._strip_think_blocks(
         getattr(agent, "_current_streamed_assistant_text", "") or ""
     ).strip()
-    if _partial:
+    if _partial and is_runaway_repetition(_partial):
+        # The interrupted row is replayed next turn; looped bytes there re-seed the loop
+        # (#112764). Same hidden shape as the redirect placeholder: nothing visible in the
+        # transcript, a neutral api_content so the pre-call sanitizer does not re-heal it.
+        append_message(messages, {
+            "role": "assistant", "content": "", "display_kind": "hidden",
+            "api_content": _INTERRUPTED_PLACEHOLDER,
+        })
+        final_response = REPETITION_LOOP_INTERRUPTED
+    elif _partial:
         append_message(messages, {"role": "assistant", "content": _partial})
         final_response = _partial
     else:
@@ -232,16 +250,18 @@ def nous_rate_limit_guard(
             from agent.nous_rate_guard import (
                 nous_rate_limit_remaining, format_remaining as _fmt_nous_remaining
             )
-            _nous_remaining = nous_rate_limit_remaining()
+            from hermes_cli import anon_auth
+            _anonymous = anon_auth.is_anonymous_agent(agent)
+            _nous_remaining = nous_rate_limit_remaining(anonymous=_anonymous)
             if _nous_remaining is not None and _nous_remaining > 0:
-                from hermes_cli import anon_auth
                 reset = _fmt_nous_remaining(_nous_remaining)
-                if anon_auth.route_is_welcome_host(getattr(agent, "base_url", "")):
-                    _nous_msg = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(reset=reset)
+                if _anonymous:
+                    _nous_msg = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(
+                        reset=anon_auth.friendly_wait(_nous_remaining))
                 else:
                     _nous_msg = f"Your Nous account has hit its rate limit; it resets in {reset}."
                 agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
-                agent._buffer_status(f"⏳ {_nous_msg}")
+                agent._buffer_diagnostic_status(f"⏳ {_nous_msg}")
                 if agent._try_activate_fallback():
                     active_system_prompt = _arm_fallback_restart(
                         agent, api_messages, active_system_prompt, _retry)
@@ -251,13 +271,19 @@ def nous_rate_limit_guard(
                 # No fallback — surface the buffered rate-limit context that led here.
                 agent._flush_status_buffer()
                 agent._persist_session(messages, conversation_history)
+                # The free tier's sentence already says what to do (wait, or sign in); the
+                # fallback-provider advice is for an install that runs its own providers.
                 return _verdict("return", stamp_failure({
-                    "final_response": f"⏳ {_nous_msg}\n\n{site_copy('nous_rate_limit')}",
+                    "final_response": (f"⏳ {_nous_msg}" if _anonymous
+                                       else f"⏳ {_nous_msg}\n\n{site_copy('nous_rate_limit')}"),
                     "messages": messages,
                     "api_calls": api_call_count,
                     "completed": False,
                     "failed": True,
                     "error": _nous_msg,
+                    # The free tier's card body and its sign-in door (agent/error_surface.py).
+                    **({"free_tier": {"kind": "rate_limited", "message": anon_auth.FREE_TIER_RATE_LIMIT_CARD.format(
+                        reset=anon_auth.friendly_wait(_nous_remaining))}} if _anonymous else {}),
                 }, FailoverReason.rate_limit.value, True))
         except Exception:
             pass  # Never let rate guard break the agent loop

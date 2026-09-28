@@ -14,7 +14,6 @@ Docs: https://openrouter.ai/docs/guides/overview/multimodal/video-generation
 from __future__ import annotations
 
 import logging
-import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -162,14 +161,17 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
         self._catalog_cache: Optional[Tuple[List[Dict[str, Any]], float]] = None
 
     # ---- credentials / transport -------------------------------------------------------------
-    def _api_key(self) -> str:
-        return os.environ.get("OPENROUTER_API_KEY", "").strip()
+    def _credentials(self) -> Tuple[str, str]:
+        """``(api_key, base_url)`` from the runtime resolver chat uses, so a pooled or OAuth credential counts
+        and a multiplexed profile never spends the launch profile's ``os.environ`` key; raises on failure."""
+        from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    def _base_url(self) -> str:
-        return (os.environ.get("OPENROUTER_BASE_URL", "").strip() or DEFAULT_BASE_URL).rstrip("/")
+        runtime = resolve_runtime_provider(requested="openrouter")
+        return (str(runtime.get("api_key") or "").strip(),
+                (str(runtime.get("base_url") or "").strip() or DEFAULT_BASE_URL).rstrip("/"))
 
-    def _headers(self) -> Dict[str, str]:
-        return {"Authorization": f"Bearer {self._api_key()}", "Content-Type": "application/json",
+    def _headers(self, api_key: str) -> Dict[str, str]:
+        return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json",
                 "HTTP-Referer": "https://github.com/NousResearch/hermes-agent", "X-Title": "Hermes Agent"}
 
     def _session(self) -> Any:
@@ -177,7 +179,11 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
         return requests.Session()
 
     def is_available(self) -> bool:
-        return bool(self._api_key())
+        try:
+            return bool(self._credentials()[0])
+        except Exception as exc:  # noqa: BLE001 — a resolution failure is "unavailable", never a picker crash
+            logger.debug("OpenRouter video credential resolution failed: %s", exc)
+            return False
 
     # ---- catalog -------------------------------------------------------------------------------
     def _catalog(self) -> List[Dict[str, Any]]:
@@ -187,7 +193,7 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
         entries: List[Dict[str, Any]] = []
         try:
             import requests
-            response = requests.get(f"{self._base_url()}/videos/models", timeout=_CATALOG_TIMEOUT_S)
+            response = requests.get(f"{self._credentials()[1]}/videos/models", timeout=_CATALOG_TIMEOUT_S)
             response.raise_for_status()
             data = response.json().get("data")
             entries = [e for e in (data if isinstance(data, list) else []) if isinstance(e, dict) and e.get("id")]
@@ -247,15 +253,15 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
                 "env_vars": [{"key": "OPENROUTER_API_KEY", "prompt": "OpenRouter API key", "url": "https://openrouter.ai/settings/keys"}]}
 
     # ---- generation ----------------------------------------------------------------------------
-    def _poll(self, session: Any, job_id: str) -> Dict[str, Any]:
+    def _poll(self, session: Any, job_id: str, base_url: str, headers: Dict[str, str]) -> Dict[str, Any]:
         deadline = time.monotonic() + self._poll_deadline_s
-        url = f"{self._base_url()}/videos/{job_id}"
+        url = f"{base_url}/videos/{job_id}"
         last_status = "unknown"
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(f"video job {job_id} did not finish within {int(self._poll_deadline_s)}s (last status={last_status})")
-            response = session.get(url, headers=self._headers(), timeout=max(0.001, min(self._request_timeout_s, remaining)))
+            response = session.get(url, headers=headers, timeout=max(0.001, min(self._request_timeout_s, remaining)))
             response.raise_for_status()
             payload = response.json()
             last_status = str(payload.get("status") or "").lower() or "unknown"
@@ -263,11 +269,13 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
                 return payload
             time.sleep(min(self._poll_interval_s, max(0.0, deadline - time.monotonic())))
 
-    def _save_completed_video(self, job_id: str) -> str:
+    def _save_completed_video(self, job_id: str, base_url: str, headers: Dict[str, str]) -> str:
         # The content endpoint is derived from our configured origin, never from ``unsigned_urls``: the
-        # bearer key must only ever be sent to the host the operator selected.
-        return str(save_url_video(f"{self._base_url()}/videos/{job_id}/content", prefix="openrouter",
-                                  headers=self._headers(), require_video_content_type=True))
+        # bearer key must only ever be sent to the host the operator selected. That origin is operator
+        # chosen (a LAN relay is legitimate), so the first hop is trusted for the private-address check.
+        return str(save_url_video(f"{base_url}/videos/{job_id}/content", prefix="openrouter",
+                                  headers=headers, require_video_content_type=True,
+                                  trusted_origin=True))
 
     def generate(
         self, prompt: str, *, model: Optional[str] = None, image_url: Optional[str] = None,
@@ -285,8 +293,15 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
 
         if not prompt:
             return fail("prompt is required", "invalid_request")
-        if not self._api_key():
-            return fail("OPENROUTER_API_KEY is not set", "missing_credentials")
+        try:
+            api_key, base_url = self._credentials()
+        except Exception as exc:  # noqa: BLE001
+            return fail(f"Could not resolve OpenRouter credentials: {exc}", "missing_credentials")
+        if not api_key:
+            return fail("No OpenRouter credential: set OPENROUTER_API_KEY or run `hermes auth add openrouter`",
+                        "missing_credentials")
+        # Resolved once: a rotating pool must not submit under one key and poll or download under another.
+        headers = self._headers(api_key)
         image_url = (image_url or "").strip() or None
         refs = [r.strip() for r in (reference_image_urls or []) if isinstance(r, str) and r.strip()]
         for ref in ([image_url] if image_url else []) + refs:
@@ -299,7 +314,7 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
                                  duration=duration, aspect_ratio=aspect_ratio, resolution=resolution, audio=audio, seed=seed)
         session = self._session()
         try:
-            submitted = session.post(f"{self._base_url()}/videos", headers=self._headers(), json=payload,
+            submitted = session.post(f"{base_url}/videos", headers=headers, json=payload,
                                      timeout=self._request_timeout_s)
             if submitted.status_code >= 400:
                 detail = ""
@@ -312,11 +327,11 @@ class OpenRouterVideoGenProvider(VideoGenProvider):
             job_id = str(submitted.json().get("id") or "").strip()
             if not job_id:
                 return fail("OpenRouter submit response did not contain a job id", "api_error")
-            job = self._poll(session, job_id)
+            job = self._poll(session, job_id, base_url, headers)
             status = str(job.get("status") or "").lower()
             if status != "completed":
                 return fail(str(job.get("error") or f"video job ended with status={status!r}"), "job_failed")
-            video_path = self._save_completed_video(job_id)
+            video_path = self._save_completed_video(job_id, base_url, headers)
         except Exception as exc:  # noqa: BLE001 — normalize transport/timeout failures for tool callers
             logger.debug("OpenRouter video generation failed", exc_info=True)
             return fail(f"OpenRouter video generation failed: {exc}", "api_error")

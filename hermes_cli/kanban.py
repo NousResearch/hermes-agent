@@ -378,11 +378,18 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
-    origin_session_id = _verified_origin_session_id()
+    creator_task_id = (os.environ.get("HERMES_KANBAN_TASK")
+                       if is_dispatcher_owned_worker_context() else None)
     with kbc.connect_closing() as conn:
+        creator_task = kb.get_task(conn, creator_task_id) if creator_task_id else None
+        # The worker's own short-lived chat is not the mission's durable origin.
+        # Preserve the creator card's source before considering ambient context.
+        origin_session_id = ((creator_task.session_id if creator_task else None)
+                             or _verified_origin_session_id())
         task_id = kb.create_task(
             conn, title=args.title, body=body, assignee=args.assignee,
-            created_by=(_profile_author() if origin_session_id else (args.created_by or "user")),
+            created_by=(_profile_author() if creator_task_id or origin_session_id
+                        else (args.created_by or "user")),
             session_id=origin_session_id,
             workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
             project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
@@ -395,8 +402,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
             initial_status=getattr(args, "initial_status", "running"),
-            creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
-                             if is_dispatcher_owned_worker_context() else None),
+            creator_task_id=creator_task_id,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

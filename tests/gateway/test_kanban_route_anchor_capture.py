@@ -44,3 +44,22 @@ def test_slash_subscription_keeps_the_routed_source_owner(tmp_path, monkeypatch)
     assert sub["notifier_profile"] == source.profile
     assert all(sub["delivery_metadata"][key] == getattr(source, key)
                for key in ("scope_id", "parent_chat_id"))
+
+
+def test_kanban_slash_masks_stale_process_session_id(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from gateway.platforms.event import MessageEvent
+    from hermes_cli import kanban
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = SimpleNamespace(get_connected_platforms=lambda: [],
+                                    get_home_channel=lambda _platform: None)
+    runner.adapters = {}
+    runner._session_key_for_source = lambda _source: "slash-session-key"
+    source = SessionSource(platform=Platform.LOCAL, chat_id="chat", profile="nyra")
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-other-chat")
+    seen = []
+    monkeypatch.setattr(kanban, "run_slash", lambda _text: seen.append(get_session_env("HERMES_SESSION_ID")) or "ok")
+    assert asyncio.run(runner._handle_kanban_command(MessageEvent(text="/kanban list", source=source))) == "ok"
+    assert seen == [""]

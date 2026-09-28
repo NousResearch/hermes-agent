@@ -26,6 +26,7 @@ def kanban_home(tmp_path, monkeypatch):
 
 def test_cli_create_stamps_only_verified_profile_session(kanban_home, monkeypatch, capsys):
     from hermes_state import SessionDB
+    from gateway.session_context import clear_session_vars, set_session_vars
 
     state = SessionDB(db_path=kanban_home / "state.db")
     try:
@@ -34,13 +35,19 @@ def test_cli_create_stamps_only_verified_profile_session(kanban_home, monkeypatc
         state.close()
     parser = argparse.ArgumentParser()
     kc.build_parser(parser.add_subparsers())
-    monkeypatch.setenv("HERMES_SESSION_ID", "origin-chat")
-    assert kc.kanban_command(parser.parse_args([
-        "kanban", "create", "with-origin", "--created-by", "forged", "--json"])) == 0
-    first = json.loads(capsys.readouterr().out)
-    monkeypatch.setenv("HERMES_SESSION_ID", "foreign-or-missing")
-    assert kc.kanban_command(parser.parse_args(["kanban", "create", "without-origin", "--json"])) == 0
-    second = json.loads(capsys.readouterr().out)
+    tokens = set_session_vars(session_id="origin-chat")
+    try:
+        assert kc.kanban_command(parser.parse_args([
+            "kanban", "create", "with-origin", "--created-by", "forged", "--json"])) == 0
+        first = json.loads(capsys.readouterr().out)
+    finally:
+        clear_session_vars(tokens)
+    tokens = set_session_vars(session_id="foreign-or-missing")
+    try:
+        assert kc.kanban_command(parser.parse_args(["kanban", "create", "without-origin", "--json"])) == 0
+        second = json.loads(capsys.readouterr().out)
+    finally:
+        clear_session_vars(tokens)
     with kbc.connect_closing() as conn:
         assert kb.get_task(conn, first["id"]).session_id == "origin-chat"
         assert kb.get_task(conn, first["id"]).created_by == "default"
@@ -50,11 +57,15 @@ def test_cli_create_stamps_only_verified_profile_session(kanban_home, monkeypatc
 
 def test_cli_create_with_session_env_and_missing_state_db_still_succeeds(
         kanban_home, monkeypatch, capsys):
+    from gateway.session_context import clear_session_vars, set_session_vars
     parser = argparse.ArgumentParser()
     kc.build_parser(parser.add_subparsers())
-    monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")
-    assert kc.kanban_command(parser.parse_args(["kanban", "create", "operator-card", "--json"])) == 0
-    task_id = json.loads(capsys.readouterr().out)["id"]
+    tokens = set_session_vars(session_id="stale-session")
+    try:
+        assert kc.kanban_command(parser.parse_args(["kanban", "create", "operator-card", "--json"])) == 0
+        task_id = json.loads(capsys.readouterr().out)["id"]
+    finally:
+        clear_session_vars(tokens)
     with kbc.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
         assert task.session_id is None

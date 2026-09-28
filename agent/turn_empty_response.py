@@ -283,8 +283,10 @@ def recover_empty_response(
     _preflight_compression_blocked = preflight_compression_blocked
 
     def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> EmptyResponseVerdict:
+        # On "continue" the empty/think-only text that triggered the retry, nudge or prefill is not an
+        # answer: carried into later rounds it makes budget exhaustion look answered (#92552).
         return EmptyResponseVerdict(
-            action=action, result=result, final_response=final_response,
+            action=action, result=result, final_response=None if action == "continue" else final_response,
             turn_exit_reason=_turn_exit_reason, active_system_prompt=active_system_prompt,
             preflight_compression_blocked=_preflight_compression_blocked,
             api_call_count=api_call_count,

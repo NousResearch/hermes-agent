@@ -182,7 +182,7 @@ async def test_textless_quoted_media_placeholders_use_the_routed_cache_a_b_a(two
                     await runner._hm_busy_interrupt(incoming, incoming.source, agent, key)
                     return
                 if path == "busy-interrupt":
-                    await runner._interrupt_running_agent_for_busy_event(incoming, adapter, agent)
+                    await runner._interrupt_running_agent_for_busy_event(incoming, adapter, agent, key)
                     return
                 adapter._pending_messages[key] = incoming
                 if path == "pending-monitor":

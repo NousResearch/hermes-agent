@@ -120,10 +120,15 @@ class GatewayPendingDrainMixin:
 
         unadmitted_steer: Optional[str] = None
         if pending_steer:
-            steer_event = (
-                dataclasses.replace(pending_input, text=pending_steer, message_type=MessageType.TEXT)
-                if pending_input is not None else None
-            )
+            steer_event = None
+            if pending_input is not None:
+                from copy import copy
+                steer_event = copy(pending_input)
+                steer_event.text = pending_steer
+                if not pending_input.media_urls:
+                    steer_event.message_type = MessageType.TEXT
+                if hasattr(steer_event, "_gateway_pending_stt_text"):
+                    steer_event._gateway_pending_stt_text = pending_steer
             if pending or pending_event:
                 if adapter and session_key:
                     if steer_event is None:

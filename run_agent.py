@@ -23,6 +23,17 @@ if "hermes_cli.main" not in sys.modules:
     if _early_recovery.restore_interrupted_pull():
         _early_recovery.relaunch_after_restore()
 
+# Inject the platform trust store before any import below can capture
+# ``ssl.SSLContext`` (botocore does `from ssl import SSLContext` at import
+# time). On Python 3.14 a class captured before the injection recurses
+# forever once botocore assigns ``context.options`` (#126808), so this runs
+# at module level — every embedding of ``run_agent.AIAgent`` inherits the
+# guarantee the CLI entrypoints already give, not just the console script.
+# Never raises; never installs twice.
+from agent.ssl_verify import install_truststore
+
+install_truststore()
+
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -1535,14 +1546,8 @@ def main(
     if list_tools:
         return _print_tool_listing()
 
-    # One TLS authority: trust the OS store before any outbound call (bare
-    # requests/urllib included) resolves a CA bundle — see agent/ssl_verify.py.
-    # The `hermes` CLI does this in hermes_cli.main; this console script
-    # bypasses it. Never raises.
-    from agent.ssl_verify import install_truststore
-
-    install_truststore()
-
+    # TLS trust is installed at module import (see the top of this file), so
+    # embeddings and this console script get the same pre-import guarantee.
     enabled_toolsets_list = _parse_toolset_arg(enabled_toolsets, "🎯 Enabled toolsets")
     disabled_toolsets_list = _parse_toolset_arg(disabled_toolsets, "🚫 Disabled toolsets")
     if save_trajectories:

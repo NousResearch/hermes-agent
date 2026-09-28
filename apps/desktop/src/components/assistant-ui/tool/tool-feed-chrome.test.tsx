@@ -8,8 +8,9 @@ import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '@/
 import { Thread } from '@/components/assistant-ui/thread'
 import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
-import { $showReasoning } from '@/store/reasoning-disclosure'
+import { setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import { $activeSessionId } from '@/store/session'
+import { setShowToolActivityFromConfig } from '@/store/tool-activity'
 
 stubThreadEnvironment()
 stubThreadViewportSize()
@@ -102,19 +103,21 @@ function completionHarness(payload: Record<string, unknown>) {
 beforeEach(() => {
   clearAllPrompts()
   $activeSessionId.set(SID)
-  $showReasoning.set(true)
+  setShowReasoningFromConfig(true)
+  setShowToolActivityFromConfig(undefined)
 })
 
 afterEach(() => {
   cleanup()
   clearAllPrompts()
   $activeSessionId.set(null)
-  $showReasoning.set(true)
+  setShowReasoningFromConfig(true)
+  setShowToolActivityFromConfig(undefined)
 })
 
-describe('answer-only display policy', () => {
+describe('tool feed visibility policy', () => {
   it('hides reasoning and non-essential tool chrome without requiring reasoning_effort none', async () => {
-    $showReasoning.set(false)
+    setShowReasoningFromConfig(false)
     setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'dangerous command', sessionId: SID })
 
     const { container } = render(<Harness />)
@@ -126,6 +129,20 @@ describe('answer-only display policy', () => {
     expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(1)
   })
 
+  it('keeps the execution flow while reasoning stays hidden when display.tool_progress is stated', async () => {
+    setShowReasoningFromConfig(false)
+    setShowToolActivityFromConfig('all')
+
+    const { container } = render(<Harness />)
+
+    expect(await screen.findByText('final answer only')).toBeTruthy()
+    expect(container.querySelector('[data-slot="aui_thinking-disclosure"]')).toBeNull()
+    expect(await screen.findByText(/Explored 2 files/)).toBeTruthy()
+    // The run scaffold is the visible flow here; the suppressed case above pins
+    // its absence via the same marker.
+    expect(container.querySelector('[data-tool-summary]')).not.toBeNull()
+  })
+
   it('still shows tool chrome when reasoning blocks are on', async () => {
     const { container } = render(<Harness />)
 
@@ -133,10 +150,20 @@ describe('answer-only display policy', () => {
     expect(container.querySelector('[data-slot="aui_thinking-disclosure"]')).not.toBeNull()
   })
 
+  it('silences the feed on an explicit off while reasoning blocks stay on', async () => {
+    setShowToolActivityFromConfig('off')
+
+    const { container } = render(<Harness />)
+
+    expect(await screen.findByText('final answer only')).toBeTruthy()
+    expect(container.querySelector('[data-slot="aui_thinking-disclosure"]')).not.toBeNull()
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(1)
+  })
+
   it('keeps a failed call whose error sits inside result, from a real tool.complete payload', async () => {
     // The gateway's tool.complete never sets a top-level error: a read_file
     // failure rides inside result. The answer-only gate must still show it.
-    $showReasoning.set(false)
+    setShowReasoningFromConfig(false)
 
     const { container } = render(
       completionHarness({
@@ -153,7 +180,7 @@ describe('answer-only display policy', () => {
   })
 
   it('keeps a failed terminal call with a non-zero exit_code, from a real tool.complete payload', async () => {
-    $showReasoning.set(false)
+    setShowReasoningFromConfig(false)
 
     const { container } = render(
       completionHarness({
@@ -169,7 +196,7 @@ describe('answer-only display policy', () => {
   })
 
   it('keeps a call that reports success: false, from a real tool.complete payload', async () => {
-    $showReasoning.set(false)
+    setShowReasoningFromConfig(false)
 
     const { container } = render(
       completionHarness({
@@ -186,7 +213,7 @@ describe('answer-only display policy', () => {
   })
 
   it('still hides a successful call driven through the same tool.complete mapping', async () => {
-    $showReasoning.set(false)
+    setShowReasoningFromConfig(false)
 
     const { container } = render(
       completionHarness({

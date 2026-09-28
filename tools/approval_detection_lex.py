@@ -166,8 +166,9 @@ def _substitution_body(text: str, i: int, j: int) -> str:
     return text[i + (1 if text[i] == "`" else 2):j - 1]
 
 
-def _quoted_heredoc_body_spans(text: str) -> list[tuple[int, int]]:
-    """``(start, end)`` of each heredoc body whose delimiter word is quoted or escaped
+def _quoted_heredoc_body_spans(text: str, *, quoted_only: bool = True) -> list[tuple[int, int]]:
+    """``(start, end)`` of each heredoc body whose delimiter word is quoted or escaped; with
+    *quoted_only* False, of every heredoc body.
     (``<<'EOF'``, ``<<"EOF"``, ``<<\\EOF``, ``<<E'O'F``). The shell performs no expansion there, so a
     ``$(...)`` in such a body is data. Bodies are read line by line, not through the quote scanner:
     an apostrophe in heredoc text is not a quote."""
@@ -197,7 +198,7 @@ def _quoted_heredoc_body_spans(text: str) -> list[tuple[int, int]]:
                     break
             else:
                 end = n
-            if any(ch in word for ch in "'\"\\"):
+            if not quoted_only or any(ch in word for ch in "'\"\\"):
                 spans.append((start, end))
     return spans
 
@@ -232,3 +233,52 @@ def _iter_command_substitution_bodies(command: str):
             blanked, _ = _blank_nested_substitutions(body)
             yield blanked
             pending.append(body)
+
+
+def _is_redirection_operator_char(text: str, i: int, previous) -> bool:
+    """Whether the unquoted ``&`` / ``|`` at *i* belongs to a redirection operator (``>&``, ``<&``,
+    ``&>``, ``&>>``, ``>|``) rather than separating commands. *previous* is the prior ``_scan_shell``
+    step; only an unquoted plain ``<`` / ``>`` char there can own the ``&`` / ``|``. Treating the
+    ``&`` in ``bash 2>&1 -c 'reboot'`` as a separator cut the command before ``-c``."""
+    before = text[previous[1]] if previous and previous[0] == "char" and previous[3] is None else ""
+    if text[i] == "|":
+        return before == ">"
+    if text[i] != "&":
+        return False
+    return before in ("<", ">") or (text.startswith(">", i + 1) and before not in ("&", "|"))
+
+
+_REDIRECTION_OPERATOR_RE = re.compile(r"&>>?|<<<|<<-?|<>|>>|>&|<&|>\||[<>]")
+_REDIRECTION_FD_PREFIX_RE = re.compile(r"(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})$")
+
+
+def _blank_shell_redirections(text: str, start: int) -> str:
+    """Replace every unquoted redirection (optional fd / ``{var}`` prefix, operator, target word) in
+    ``text[start:]`` with spaces, keeping offsets. Redirections may appear anywhere in a simple
+    command, and ``bash 2>/dev/null -c 'reboot'`` otherwise leaves ``2 > /dev/null`` in argv where
+    option parsing stops at the first non-option before ``-c``. Substitutions are skipped as units
+    and process substitutions ``<(...)`` / ``>(...)`` are words, not redirections."""
+    edits, skip_to, previous = [], start, None
+    for step in _scan_shell(text, start, subst="uq"):
+        kind, i, _, quote = step
+        if i < skip_to:
+            continue
+        match = None
+        if kind == "char" and quote is None and not text.startswith(("<(", ">("), i):
+            match = _REDIRECTION_OPERATOR_RE.match(text, i)
+            if match and match.group().startswith("&") and previous and previous[0] == "char" \
+                    and previous[3] is None and text[previous[1]] in "&|":
+                match = None  # `&&>x` / `|&>x`: the `&` is a separator, the `>` is matched next
+        if match is None:
+            previous = step
+            continue
+        op_start = i
+        if not match.group().startswith("&"):
+            # Bounded lookback for an fd (`2>`) or `{var}>` prefix that forms its own word.
+            prefix = _REDIRECTION_FD_PREFIX_RE.search(text, max(start, i - 64), i)
+            if prefix and (prefix.start() == start or text[prefix.start() - 1].isspace()):
+                op_start = prefix.start()
+        _, target_end, _ = _read_shell_word(text, match.end())
+        edits.append((op_start, target_end, " " * (target_end - op_start)))
+        skip_to, previous = target_end, None
+    return _splice(text, edits) if edits else text

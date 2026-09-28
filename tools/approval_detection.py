@@ -17,7 +17,9 @@ import unicodedata
 from tools.approval_ansi_c import _is_shell_comment_start, expand_ansi_c_quotes
 from tools.approval_detection_lex import (
     _blank_nested_substitutions,
+    _blank_shell_redirections,
     _deobfuscate_shell_word_for_detection,
+    _is_redirection_operator_char,
     _iter_command_substitution_bodies,
     _quoted_heredoc_body_spans,
     _read_shell_word,
@@ -25,6 +27,7 @@ from tools.approval_detection_lex import (
     _skip_shell_whitespace,
     _splice,
 )
+from tools.approval_detection_assignments import eval_payloads, resolve_shell_assignment_variants
 from tools.approval_detection_awk import AWK_EXEC_DESCRIPTION, AWK_NAMES, awk_program_runs_shell
 
 logger = logging.getLogger("tools.approval")
@@ -1139,55 +1142,6 @@ def _shell_segment_tokens(segment: str, start: int) -> list[str] | None:
         return None
 
 
-def _is_redirection_operator_char(text: str, i: int, previous) -> bool:
-    """Whether the unquoted ``&`` / ``|`` at *i* belongs to a redirection operator (``>&``, ``<&``,
-    ``&>``, ``&>>``, ``>|``) rather than separating commands. *previous* is the prior ``_scan_shell``
-    step; only an unquoted plain ``<`` / ``>`` char there can own the ``&`` / ``|``. Treating the
-    ``&`` in ``bash 2>&1 -c 'reboot'`` as a separator cut the command before ``-c``."""
-    before = text[previous[1]] if previous and previous[0] == "char" and previous[3] is None else ""
-    if text[i] == "|":
-        return before == ">"
-    if text[i] != "&":
-        return False
-    return before in ("<", ">") or (text.startswith(">", i + 1) and before not in ("&", "|"))
-
-
-_REDIRECTION_OPERATOR_RE = re.compile(r"&>>?|<<<|<<-?|<>|>>|>&|<&|>\||[<>]")
-_REDIRECTION_FD_PREFIX_RE = re.compile(r"(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})$")
-
-
-def _blank_shell_redirections(text: str, start: int) -> str:
-    """Replace every unquoted redirection (optional fd / ``{var}`` prefix, operator, target word) in
-    ``text[start:]`` with spaces, keeping offsets. Redirections may appear anywhere in a simple
-    command, and ``bash 2>/dev/null -c 'reboot'`` otherwise leaves ``2 > /dev/null`` in argv where
-    option parsing stops at the first non-option before ``-c``. Substitutions are skipped as units
-    and process substitutions ``<(...)`` / ``>(...)`` are words, not redirections."""
-    edits, skip_to, previous = [], start, None
-    for step in _scan_shell(text, start, subst="uq"):
-        kind, i, _, quote = step
-        if i < skip_to:
-            continue
-        match = None
-        if kind == "char" and quote is None and not text.startswith(("<(", ">("), i):
-            match = _REDIRECTION_OPERATOR_RE.match(text, i)
-            if match and match.group().startswith("&") and previous and previous[0] == "char" \
-                    and previous[3] is None and text[previous[1]] in "&|":
-                match = None  # `&&>x` / `|&>x`: the `&` is a separator, the `>` is matched next
-        if match is None:
-            previous = step
-            continue
-        op_start = i
-        if not match.group().startswith("&"):
-            # Bounded lookback for an fd (`2>`) or `{var}>` prefix that forms its own word.
-            prefix = _REDIRECTION_FD_PREFIX_RE.search(text, max(start, i - 64), i)
-            if prefix and (prefix.start() == start or text[prefix.start() - 1].isspace()):
-                op_start = prefix.start()
-        _, target_end, _ = _read_shell_word(text, match.end())
-        edits.append((op_start, target_end, " " * (target_end - op_start)))
-        skip_to, previous = target_end, None
-    return _splice(text, edits) if edits else text
-
-
 def _top_level_shell_segments(command: str, subst: str) -> tuple[list[str], bool]:
     """Split *command* at unquoted separators -> (segments, closed) where *closed* says the final
     quote state is balanced."""
@@ -1687,7 +1641,55 @@ def _deny_command_variants(command: str):
                 pending.append(payload)
 
 
-def _command_detection_variants(command: str):
+def _command_detection_variants(command: str, *, resolve_assignments: bool = True, _eval_depth: int = 0):
+    """Every detection view of *command*. With *resolve_assignments*, variables assigned in the
+    same command are then substituted into each view (per use; one form per possible value) and
+    each result expanded once more, so
+    ``X="rm -rf /home"; $X`` is seen as ``rm -rf /home`` (see approval_detection_assignments)."""
+    seen: set[str] = set()
+    for variant in _command_detection_variants_unresolved(command):
+        if variant is None:
+            continue
+        seen.add(variant)
+        yield variant
+    if not resolve_assignments:
+        return
+    # `eval` re-parses its (expanded) arguments as a script: that script is a command of its own,
+    # like a `bash -c` payload. Payloads are expanded with the same-command values, so
+    # `X="rm -rf /home"; eval "$X"` is seen as `rm -rf /home`.
+    evaluated, _ = eval_payloads(command) if _eval_depth < _MAX_EVAL_DEPTH else ([], True)
+    for payload in evaluated:
+        for variant in _command_detection_variants(payload, _eval_depth=_eval_depth + 1):
+            if variant not in seen:
+                seen.add(variant)
+                yield variant
+    # Variants that differ from an earlier source only by whitespace (the command-start-marked
+    # forms insert newlines) resolve to the same command, so each is resolved and expanded once.
+    # Quoting is NOT folded: `"rm" -rf /` and `rm -rf /` expand to different variant sets.
+    done: set[str] = set()
+    for source in [command, *seen]:
+        key = _RESOLVE_DEDUP_RE.sub("", source)
+        if key in done:
+            continue
+        done.add(key)
+        for resolved in resolve_shell_assignment_variants(source):
+            resolved_key = _RESOLVE_DEDUP_RE.sub("", resolved)
+            if resolved_key in done:
+                continue
+            done.add(resolved_key)
+            for variant in _command_detection_variants_unresolved(resolved):
+                if variant is not None and variant not in seen:
+                    seen.add(variant)
+                    yield variant
+
+
+_RESOLVE_DEDUP_RE = re.compile(r"\s")
+# Nested `eval` payloads expanded for detection. Deeper nesting is refused in unattended approve
+# mode by approval_detection_assignments.uninspectable_reasons (same depth bound).
+_MAX_EVAL_DEPTH = 3
+
+
+def _command_detection_variants_unresolved(command: str):
     # Mask quoted newlines BEFORE normalization: normalization strips escapes (\" -> ") and ""
     # pairs, corrupting quote tracking (`echo "a\""` becomes an unterminated quote) so masking
     # afterwards could swallow a REAL unquoted newline separator. The raw command carries faithful quote state

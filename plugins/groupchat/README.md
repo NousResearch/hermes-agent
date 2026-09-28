@@ -101,9 +101,12 @@ successful dispatch. The directory is mode `0700`; state files are mode
 `0600` and written atomically because they contain private conversation text.
 
 Direct mentions, replies to the current agent, commands, and internal events
-bypass delayed relevance scoring. Conversations clearly addressed to another
-participating local agent stay passive until an open message invites a useful
-contribution.
+bypass delayed relevance scoring. In selective modes, conversations clearly
+addressed to another participating local agent stay passive until an open
+message invites a useful contribution. `ALWAYS` bypasses peer-name and
+relevance scoring for real text messages, including messages that name people
+as invitees. System/lifecycle filtering and the separate voice-processing
+gate still apply.
 
 When Groupchat derives an agent's role for a newly discovered group room, the
 agent posts one short introduction describing that role and explicitly invites

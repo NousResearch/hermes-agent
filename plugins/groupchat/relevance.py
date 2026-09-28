@@ -1097,9 +1097,11 @@ class IntelligentReactionGate:
                 event_id=msg_event.message_id,
             )
 
-        # Plain-language agent names are transport-neutral addressing. The
-        # target behaves like it was mentioned; every other local Groupchat
-        # participant keeps the complete reply chain as passive score-1 context.
+        # Plain-language agent names are transport-neutral addressing in
+        # selective room modes. ALWAYS must dispatch real user messages even
+        # when a peer is named as a subject, invitee, or direct addressee.
+        # Only lifecycle/system and voice handling remain separate.
+        selective_mode = rc.answer_priority != "ALWAYS"
         own_name_match = bool(self._name_pattern_for_room(room).search(text))
         peer_name_match = bool(self._peer_name_pattern.search(text))
         inherited_peer_target = bool(
@@ -1109,7 +1111,7 @@ class IntelligentReactionGate:
         )
         if not is_mentioned and own_name_match:
             is_mentioned = True
-        elif not is_mentioned and inherited_peer_target:
+        elif selective_mode and not is_mentioned and inherited_peer_target:
             if msg_event.message_id:
                 self._peer_targeted_event_ids.setdefault(room, set()).add(
                     msg_event.message_id
@@ -1128,7 +1130,7 @@ class IntelligentReactionGate:
                 dispatch_attempted=False,
             )
             return
-        elif not is_mentioned and peer_name_match:
+        elif selective_mode and not is_mentioned and peer_name_match:
             if msg_event.message_id:
                 self._peer_targeted_event_ids.setdefault(room, set()).add(
                     msg_event.message_id
@@ -1309,7 +1311,7 @@ class IntelligentReactionGate:
             _commit_to_transcript()
             return
 
-        if rc.answer_priority == "ALWAYS" and not re.search(r"@\S+", text):
+        if rc.answer_priority == "ALWAYS":
             self._audit(
                 msg_event,
                 phase="decision",
@@ -1320,7 +1322,7 @@ class IntelligentReactionGate:
             await self._flush(
                 room,
                 with_event=msg_event,
-                rationale="Room mode ALWAYS: message not explicitly addressed elsewhere.",
+                rationale="Room mode ALWAYS: dispatch every real text message.",
             )
             _commit_to_transcript()
             return
@@ -2136,7 +2138,7 @@ class IntelligentReactionGate:
     def _build_prompt(self, room: str, text: str, transcript: str = "") -> str:
         rc = self._get_room_context(room)
         priority_note = {
-            "ALWAYS": "Respond unless clearly addressed to someone else or entirely outside your remit.",
+            "ALWAYS": "Dispatch every real text message without relevance scoring.",
             "WHEN_MENTIONED_ONLY": "Respond only to direct mentions.",
             "WHEN_MENTIONED": "Respond to direct mentions and continuations of your threads. Other messages are batched for information only; no reply is expected.",
         }.get(rc.answer_priority, "Use the AI relevance score (0-5), considering RELEVANCE_FACTOR.")

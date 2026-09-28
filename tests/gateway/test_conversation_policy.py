@@ -397,6 +397,60 @@ async def test_plain_peer_name_is_dropped_before_scoring_or_buffering(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_always_room_dispatches_messages_naming_peers_without_scoring(tmp_path):
+    (tmp_path / "RELEVANCE_CONTEXT.xml").write_text(
+        '<relevance_context><rooms><room id="same-room">'
+        '<answer_priority>ALWAYS</answer_priority>'
+        '</room></rooms></relevance_context>'
+    )
+    adapter = Adapter(Platform.MATRIX, {
+        "relevance": {"enabled": True},
+        "pingpong_guard": {"enabled": False},
+    })
+    gate = adapter.conversation_policy().relevance
+    gate._peer_names = ["lena", "martin", "felix"]
+    gate._peer_name_pattern = gate._names_pattern(gate._peer_names)
+    gate._throttled_evaluate = AsyncMock(
+        side_effect=AssertionError("ALWAYS room reached relevance scorer")
+    )
+
+    texts = [
+        "bitte eine neue Gruppe mit Lena/martin/felix und mir eröffnen",
+        "Lena, bitte schau dir das an",
+        "@lena_ai:example.test bitte schau dir das an",
+        "arbeitest du dran?",
+    ]
+    gate._peer_targeted_event_ids["same-room"] = {"old-peer-message"}
+    for index, text in enumerate(texts):
+        message = event(Platform.MATRIX, text=text)
+        message.message_id = f"always-{index}"
+        message.metadata["conversation_mentioned"] = False
+        if index == 3:
+            message.reply_to_message_id = "old-peer-message"
+        await adapter.handle_message(message)
+
+    assert len(adapter.delivered) == len(texts)
+    assert all(
+        delivered.text.startswith(original)
+        for delivered, original in zip(adapter.delivered, texts)
+    )
+    assert gate._pending == {}
+    assert gate._passive_context.get("same-room") is None
+    records = [json.loads(line) for line in (
+        tmp_path / "logs/matrix-relevance-decisions.jsonl"
+    ).read_text().splitlines()]
+    decisions = [record for record in records if record["phase"] == "decision"]
+    assert [record["reason_code"] for record in decisions] == [
+        "room_mode_always",
+        "room_mode_always",
+        "direct_mention_or_name",
+        "room_mode_always",
+    ]
+    gate._throttled_evaluate.assert_not_awaited()
+    await adapter.disconnect()
+
+
+@pytest.mark.anyio
 async def test_peer_thread_stays_passive_until_next_open_message(tmp_path):
     adapter = Adapter(Platform.MATRIX, {
         "relevance": {"enabled": True},

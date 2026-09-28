@@ -83,9 +83,9 @@ def tracking_refspec(remote: str, branch: str) -> str:
 
 def _fetch(git_cmd: list[str], root: Path, depth_args: list[str], remote: str, branch: str):
     print(f"→ Fetching from {remote}...")
-    return _git(
-        git_cmd, root, ["fetch", *depth_args, remote, tracking_refspec(remote, branch)],
-        **_uc()._no_prompt_git_kwargs())
+    from hermes_cli.update_cmd_git import _git_fetch
+
+    return _git_fetch(git_cmd, remote, tracking_refspec(remote, branch), *depth_args, cwd=root)
 
 
 def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str]):

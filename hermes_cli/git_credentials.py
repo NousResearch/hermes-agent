@@ -178,15 +178,36 @@ _CREDENTIAL_REQUIRED_RE = re.compile(
 )
 
 
-def is_credential_required_error(result: subprocess.CompletedProcess) -> bool:
-    """True when a failed git run says the remote demands a credential (vs. a typo'd URL,
-    a missing commit, a network error, ...)."""
+# GitHub throttles anonymous git per IP with HTTP 429 ("This request was rate-limited"); git never
+# asks a credential helper for a 429, only for a 401, so a stored login is never offered.
+_RATE_LIMITED_RE = re.compile(r"(?:http|error:)\s*429\b|rate[- ]limit", re.IGNORECASE)
+
+
+def _output(result: subprocess.CompletedProcess) -> str:
     parts = []
     for stream in (result.stderr, result.stdout):
         if isinstance(stream, bytes):
             stream = stream.decode("utf-8", errors="replace")
         parts.append(stream or "")
-    return _CREDENTIAL_REQUIRED_RE.search("\n".join(parts)) is not None
+    return "\n".join(parts)
+
+
+def is_credential_required_error(result: subprocess.CompletedProcess) -> bool:
+    """True when a failed git run says the remote demands a credential (vs. a typo'd URL,
+    a missing commit, a network error, ...)."""
+    return _CREDENTIAL_REQUIRED_RE.search(_output(result)) is not None
+
+
+def is_rate_limited(text: str) -> bool:
+    """True when git output says the remote rate-limited the request (HTTP 429)."""
+    return _RATE_LIMITED_RE.search(text or "") is not None
+
+
+def _without_askpass(env: Mapping[str, str]) -> dict[str, str]:
+    # An inherited askpass (VS Code terminal, ksshaskpass) would swallow the remote's 401 into a
+    # dialog nobody answers: the run hits its timeout instead of failing with "could not read
+    # Username", and the refusal is never classified. Same drop _credential_fill does.
+    return {k: v for k, v in env.items() if k not in ("GIT_ASKPASS", "SSH_ASKPASS")}
 
 
 def run_git_with_credential_fallback(
@@ -198,17 +219,33 @@ def run_git_with_credential_fallback(
     is a :func:`noninteractive_git_env`; *run_kwargs* must capture output so the refusal can be
     classified. Empty *url* means no fallback (local verbs)."""
     run_kwargs.setdefault("stdin", subprocess.DEVNULL)
-    env = dict(env)
-    # An inherited askpass (VS Code terminal, ksshaskpass) would swallow the remote's 401 into a
-    # dialog nobody answers: the run hits its timeout instead of failing with "could not read
-    # Username", and the refusal below is never classified. Same drop _credential_fill does.
-    env.pop("GIT_ASKPASS", None)
-    env.pop("SSH_ASKPASS", None)
+    env = _without_askpass(env)
     result = subprocess.run(argv, env=env, **run_kwargs)
-    if result.returncode == 0 or not url or not is_credential_required_error(result):
+    return retry_git_with_credentials(argv, url, result, env=env, **run_kwargs)
+
+
+def retry_git_with_credentials(
+    argv: list[str], url: str, result: subprocess.CompletedProcess, *, env: Mapping[str, str],
+    retry_on_rate_limit: bool = False, **run_kwargs,
+) -> subprocess.CompletedProcess:
+    """The credential half of :func:`run_git_with_credential_fallback`, for callers that ran the
+    anonymous attempt themselves and got *result*. ``retry_on_rate_limit`` also retries a GitHub
+    HTTP 429 with the user's credential, which carries a per-account limit instead of the IP's."""
+    run_kwargs.setdefault("stdin", subprocess.DEVNULL)
+    env = _without_askpass(env)
+    rate_limit_retry = (retry_on_rate_limit and _https_origin(url) is not None
+                        and urllib.parse.urlsplit(url).hostname in _GITHUB_HOSTS)
+
+    def needs_credential(r: subprocess.CompletedProcess) -> bool:
+        return is_credential_required_error(r) or (rate_limit_retry and is_rate_limited(_output(r)))
+
+    if result.returncode == 0 or not url or not needs_credential(result):
         return result
     auth_env = with_git_auth(env, url)
     if auth_env == env:
+        if rate_limit_retry and isinstance(result.stderr, str):
+            result.stderr += ("\nhint: GitHub rate-limits anonymous git by IP; run `gh auth login` or set"
+                              " GITHUB_TOKEN in your .env so this retries with your account's limit.")
         return result
     result = subprocess.run(argv, env=auth_env, **run_kwargs)
     sent = _auth_headers(auth_env)
@@ -216,12 +253,13 @@ def run_git_with_credential_fallback(
     # The first credential (typically GITHUB_TOKEN from .env) was refused too: it is stale or
     # revoked, not missing. Try the remaining ones the user owns instead of failing on it.
     for source, auth in iter_git_basic_auth(url):
-        if result.returncode == 0 or not is_credential_required_error(result):
+        if result.returncode == 0 or not needs_credential(result):
             break
         candidate_env = with_git_auth(env, url, auth)
         headers = _auth_headers(candidate_env)
         if headers <= sent:
-            rejected.append(source)
+            if is_credential_required_error(result):
+                rejected.append(source)
             continue
         sent |= headers
         logger.warning("%s rejected the credential from %s; retrying with %s",

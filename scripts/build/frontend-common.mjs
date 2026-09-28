@@ -7,12 +7,13 @@ import { parseArgs } from 'node:util'
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 
-// A rename that displaces a directory fails with EPERM/EBUSY/EACCES while another process
+// A rename that displaces a directory fails with EPERM/EACCES/EBUSY while another process
 // still holds a handle inside it: an antivirus/indexer scan, or the previous build's watcher.
 // The hold is transient, so wait it out — the Windows analogue of the Python side's bounded
-// rename retry. Delays stay short so a permanent failure still surfaces quickly.
+// rename retry. Codes that no amount of waiting fixes (ENOENT for a missing source, ENOTEMPTY
+// for an occupied destination) propagate immediately, so a real failure stays as fast as before.
 const RENAME_ATTEMPTS = 8
-const renameHolds = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY'])
+const renameHolds = new Set(['EPERM', 'EACCES', 'EBUSY'])
 
 export async function renameWithRetry(from, to) {
   for (let attempt = 1; ; attempt++) {

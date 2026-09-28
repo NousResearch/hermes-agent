@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, expect, test } from 'vitest'
 import { buildTui } from '../scripts/build/tui.mjs'
 import { buildWeb } from '../scripts/build/web.mjs'
-import { productOutput, publishDirectory, withProduct } from '../scripts/build/frontend-common.mjs'
+import { productOutput, publishDirectory, renameWithRetry, withProduct } from '../scripts/build/frontend-common.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
@@ -169,6 +169,21 @@ test('publication stops retrying a hold that is not transient and keeps the prev
   // The compiler's product is unpublished and the last good product is still in place.
   expect(readFileSync(path.join(out, 'entry.js'), 'utf8')).toBe('previous output')
   closeSync(held)
+}, 30_000)
+
+test('rename retry rethrows a failure no hold can explain instead of sleeping through it', async () => {
+  // A missing source can never be renamed; waiting the whole budget first only delays the
+  // error the caller gets either way. Only the two hold codes are worth retrying.
+  const base = fixture()
+  await expect(renameWithRetry(path.join(base, 'missing'), path.join(base, 'elsewhere')))
+    .rejects.toMatchObject({ code: 'ENOENT' })
+  // The same for a rename onto an occupied directory (what a stale build left behind).
+  const staged = path.join(base, 'staged')
+  const occupied = path.join(base, 'occupied')
+  put(staged, 'entry.js', 'new output')
+  put(occupied, 'inner/kept.txt', 'stale build output')
+  await expect(renameWithRetry(staged, occupied))
+    .rejects.toMatchObject({ code: expect.stringMatching(/^(EPERM|EEXIST|ENOTEMPTY|EACCES)$/) })
 }, 30_000)
 
 test('web compiles with prepared icons and workspace-local tools without writing source or tsbuildinfo', async () => {

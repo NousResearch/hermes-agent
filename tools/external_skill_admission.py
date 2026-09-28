@@ -165,7 +165,7 @@ def _raw_reason_codes(evidence_root: Path, record: dict[str, Any]) -> tuple[str,
     raw_resolved = raw_path.resolve()
     if not raw_resolved.is_relative_to(evidence_root):
         raise ValueError("incomplete scanner raw report outside evidence root")
-    raw = json.loads(raw_resolved.read_text(encoding="utf-8"))
+    raw = json.loads(raw_resolved.read_text(encoding="utf-8-sig"))
     if not isinstance(raw, dict):
         raise ValueError("incomplete scanner raw report is not an object")
 
@@ -331,7 +331,7 @@ def run_external_admission(candidate: Path, source_id: str = "",
         decision_path = evidence_resolved / "decision.json"
         if not decision_path.is_file() or _is_redirect(decision_path):
             raise ValueError("external decision evidence missing or redirected")
-        evidence = json.loads(decision_path.read_text(encoding="utf-8"))
+        evidence = json.loads(decision_path.read_text(encoding="utf-8-sig"))
         if not isinstance(evidence, dict):
             raise ValueError("external decision evidence is not an object")
         if str(evidence.get("decision", "")) != decision:

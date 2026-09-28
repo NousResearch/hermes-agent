@@ -5,6 +5,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+import pytest
+
 import tools.external_skill_admission as gate
 
 
@@ -298,3 +300,37 @@ def test_block_and_error_results_have_no_approval_binding(monkeypatch, tmp_path)
     errored = gate.run_external_admission(skill, source_id="repo/demo")
     assert errored.decision == "ERROR"
     assert errored.approval_binding is None
+
+
+@pytest.mark.parametrize("bom_decision,bom_raw", [
+    (True, False), (False, True), (True, True),
+])
+def test_quarantine_accepts_utf8_bom_evidence(monkeypatch, tmp_path, bom_decision, bom_raw):
+    skill = _skill(tmp_path)
+    archive, archive_sha = _release(tmp_path)
+    evidence_root = tmp_path / "evidence"
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: _config("enforce", archive, archive_sha, evidence_root),
+    )
+    normal_fake_run = _verified_quarantine_run_factory(skill, evidence_root)
+
+    def fake_run_with_bom(*args, **kwargs):
+        result = normal_fake_run(*args, **kwargs)
+        evidence_dir = evidence_root / "run-binding"
+        targets = (
+            (evidence_dir / "decision.json", bom_decision),
+            (evidence_dir / "nvidia_raw.json", bom_raw),
+        )
+        for path, has_bom in targets:
+            if has_bom:
+                path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+        return result
+
+    monkeypatch.setattr(subprocess, "run", fake_run_with_bom)
+    result = gate.run_external_admission(skill, source_id="repo/demo")
+    assert result.decision == "QUARANTINE"
+    assert result.error == ""
+    assert result.allow_continue is False
+    assert result.approval_binding is not None
+    assert ("nvidia_skillspector", ("reference_unresolved",)) in result.approval_binding.scanner_reason_codes

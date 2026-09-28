@@ -259,7 +259,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
 # into the callbacks the standard runtime fires (tool_progress_callback, _fire_stream_delta, ...).
 
 # Item types that project to a Hermes tool_call (keep in sync with agent/transports/codex_event_projector.py
-# so UI names match recorded names). webSearch is codex's built-in tool: no projector entry, still gets a bubble.
+# so UI names match recorded names). webSearch is codex's built-in tool; the projector records it under the same id.
 _CODEX_TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"})
 # Text-delta notifications → the agent stream hook each one feeds. Single source for both the display
 # handlers and the liveness set below, so a new delta method can't stream without refreshing activity (#118410).
@@ -1289,21 +1289,3 @@ __all__ = [
     "run_codex_app_server_turn", "run_codex_stream",
     "_consume_codex_event_stream", "make_codex_app_server_event_bridge",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None):
-    """Backward-compatible alias for the unified event-driven path.
-
-    Historically this was the fallback when the SDK's high-level
-    ``responses.stream(...)`` helper raised on shape drift.  The primary
-    path now does exactly what the fallback did, so this just forwards.
-    Kept as a public symbol because tests and a small number of call sites
-    still reference it by name.
-    """
-    return run_codex_stream(agent, api_kwargs, client=client)
-# ---- END PLUGIN-COMPAT ----

@@ -75,8 +75,8 @@ def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path, monkeypatch)
         result.stdout = real_tsc_error
         return result
 
-    with patch.object(fops, "_exec", side_effect=fake_exec), \
-         patch.object(fops, "_has_command", return_value=True):
+    # Local .ts lint runs PM's npx directly, not through the terminal shell's _exec.
+    with patch.object(fops, "_run_managed_node_linter", side_effect=lambda ext, path: fake_exec(path)):
         lint = fops._check_lint(str(ts_file))
 
     assert lint.skipped is False

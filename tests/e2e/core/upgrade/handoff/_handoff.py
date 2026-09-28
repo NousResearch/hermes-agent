@@ -429,10 +429,6 @@ RELAUNCH_GATES = {
     "head": (r"no relaunch: the update did not recognise gateway PID \d+ and stopped it as an unsupervised",
              "gated on #124029: a pm-runtime-launched gateway is invisible to the updater's process scan"),
 }
-# A gateway started through the bootstrap launcher is misclassified and its gateway.pid is deleted
-# under it by the next status probe.
-PID_FILE_GATE = (r"gateway\.pid was deleted under the live gateway",
-                 "gated on #123109: status probes delete a bootstrap-launched gateway's gateway.pid")
 
 _UNSUPERVISED_STOP = re.compile(r"Stopped \d+ manual gateway process\(es\) that had no supervisor")
 

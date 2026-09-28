@@ -353,7 +353,9 @@ def github_release_tags(repo: str, *, strip_prefix: str = "") -> list[str]:
 
 
 def npm_dist_tags(name: str) -> dict:
-    return _get_json(f"https://registry.npmjs.org/-/package/{name}/dist-tags")
+    from pm.index_config import npm_registry
+
+    return _get_json(f"{npm_registry(os.environ)}-/package/{name}/dist-tags")
 
 
 def node_latest_versions() -> list[str]:

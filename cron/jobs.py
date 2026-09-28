@@ -1404,12 +1404,15 @@ def load_jobs() -> List[Dict[str, Any]]:
             job["repeat"] = {}
             rep = job["repeat"]
             repair = repair or "non-object repeat field normalized"
-        if rep is not None and "times" in rep and (
+        if rep is not None and "times" in rep and rep["times"] is not None and (
                 type(rep["times"]) is not int or rep["times"] < 0):
             # A hand-edited "times" that is not a non-negative int ("3" crashes `times > 0`
             # with TypeError, Infinity raises in int(), -5 disables the limit) would kill
             # mark_job_run and every counter reader; None = infinite is the canonical
             # unreadable-value fallback already used for repeat everywhere else.
+            # None itself is the CREATE form (`repeat: {"times": None, "completed": 0}` for
+            # every recurring job), so it must pass through untouched — flagging it would
+            # set `repair` on every load and rewrite jobs.json on every tick.
             try:
                 rep["times"] = int(rep["times"])
                 if rep["times"] < 0:

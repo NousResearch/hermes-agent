@@ -302,6 +302,44 @@ class TestMultiplexProfileScope:
         finally:
             reset_hermes_home_override(token)
 
+    def test_check_requirements_scoped_reads_toplevel_platforms_buzz(
+        self, multiplex_scope, default_profile_env, tmp_path
+    ):
+        """Loader parity (#125985): the top-level platforms.buzz shape — the one
+        every Hermes-written config uses — must pass the gate too, not only the
+        gateway.platforms.buzz block."""
+        import hermes_yaml as yaml
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        creds = tmp_path / "creds.json"
+        creds.write_text(json.dumps({"nsec": "nsec1profile"}), encoding="utf-8")
+        (tmp_path / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "platforms": {
+                        "buzz": {
+                            "enabled": True,
+                            "extra": {
+                                "relay_url": "https://profile.relay",
+                                "credentials_file": str(creds),
+                            },
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        multiplex_scope()
+        token = set_hermes_home_override(str(tmp_path))
+        try:
+            assert check_requirements() is True
+        finally:
+            reset_hermes_home_override(token)
+
     def test_env_enablement_scoped_returns_none(self, multiplex_scope, default_profile_env):
         """Scoped env enablement must not fabricate Buzz for a profile from
         the default profile's env values."""

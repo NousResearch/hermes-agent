@@ -1822,12 +1822,19 @@ def _profile_buzz_extra() -> dict:
     if not _profile_scoped():
         return {}
     try:
+        from gateway.config_loader import platform_section
         from hermes_constants import get_hermes_home
         from hermes_cli.config import read_user_config_raw
         cfg = read_user_config_raw(Path(get_hermes_home()) / "config.yaml")
     except Exception:
         return {}
-    buzz = ((cfg.get("gateway") or {}).get("platforms") or {}).get("buzz") if isinstance(cfg, dict) else None
+    if not isinstance(cfg, dict):
+        return {}
+    # Loader parity: the runtime resolves a platform section from the top-level
+    # block and both nested homes (gateway/config_loader.platform_section); the
+    # nested-only read missed the top-level platforms.buzz shape every Hermes
+    # config uses and failed fully configured secondary profiles closed (#125985).
+    buzz, _ = platform_section(cfg, "buzz", (cfg.get("gateway") or {}).get("platforms"))
     extra = buzz.get("extra", buzz) if isinstance(buzz, dict) else None
     return extra if isinstance(extra, dict) else {}
 

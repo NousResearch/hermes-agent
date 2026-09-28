@@ -378,12 +378,7 @@ export function DesktopOnboardingOverlay({
   // reported a provider setup error), never by a passive readiness round. Now
   // that the skip is durable, without this a genuinely broken provider could
   // leave the user with a prompt that silently refuses to send and no picker.
-  if (
-    onboarding.firstRunSkipped &&
-    !onboarding.requested &&
-    !onboarding.manual &&
-    !onboarding.freeTierReady
-  ) {
+  if (onboarding.firstRunSkipped && !onboarding.requested && !onboarding.manual && !onboarding.freeTierReady) {
     return null
   }
 

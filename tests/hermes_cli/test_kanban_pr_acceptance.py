@@ -13,18 +13,23 @@ from hermes_cli.kanban_db_connect import connect
 
 @pytest.fixture
 def github(tmp_path, monkeypatch):
-    state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": []}
+    state = {"conclusion": "success", "head": "a" * 40, "reads": 0, "requests": [], "required": True}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             state["requests"].append(self.path)
             sha = state["head"]
             if self.path == "/graphql":
+                required = [{"context": "required", "app": {"databaseId": 1}}] if state.get("required") else []
                 value = {"data": {"repository": {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
-                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": required}}}}}}
             elif "/rules/branches/" in self.path:
+                if state.get("rules_403"):
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(b'{"message":"Upgrade to GitHub Pro or make this repository public"}')
+                    return
                 value = [[]]
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
@@ -92,6 +97,28 @@ def test_pr_completion_requires_current_required_evidence(github):
                 assert task.status in {"running", "ready", "blocked", "review"}
                 assert "retry" in receipts[-1]["recovery"]
                 assert receipts[-1]["checks"][0]["id"] == 42
+
+        github.update(required=False, rules_403=True, conclusion="success", head="a" * 40)
+        tid = kb.create_task(conn, title="free-private-green", completion_contract="acme/repo")
+        assert kb.complete_task(conn, tid, result="done", metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)
+        ).fetchone()[0])
+        assert receipt["acceptance_basis"] == "head-sha-check-runs"
+        assert receipt["rulesets_unavailable"] is True
+        assert receipt["classification"] == "success"
+
+        github.update(required=False, rules_403=True, conclusion="failure", head="a" * 40)
+        tid = kb.create_task(conn, title="free-private-red", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done", metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        receipt = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance' ORDER BY id DESC LIMIT 1", (tid,)
+        ).fetchone()[0])
+        assert receipt["acceptance_basis"] == "head-sha-check-runs"
+        assert receipt["classification"] == "failure"
+        assert receipt["checks"][0]["classification"] == "failure"
+
+        github.update(required=True, rules_403=False, conclusion="success", head="a" * 40)
         for fault in ("missing", "stale", "head_change"):
             github.update(conclusion="success", head="a" * 40)
             github[fault] = True

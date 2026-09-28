@@ -205,7 +205,10 @@ export function useVoiceConversation({
     }
   }
 
-  const releaseSpeechSession = () => {
+  /** Abandon the current reply's session. `stopPlayback` also cuts whatever
+   *  it (or a read-aloud clip) still has scheduled, so stale audio never plays
+   *  into the next turn; a session that already settled passes false. */
+  const dropSpeechSession = (stopPlayback = true) => {
     cancelFallbackPollRef.current?.()
     stopBargeMonitorRef.current?.()
     stopBargeMonitorRef.current = null
@@ -215,15 +218,8 @@ export function useVoiceConversation({
     speechSessionRef.current = null
     responseIdRef.current = null
     spokenSourceLengthRef.current = 0
-  }
 
-  /** Abandon the current reply: release the session AND cut whatever it (or a
-   *  read-aloud clip) still has scheduled, so stale audio never plays into the
-   *  next turn. */
-  const dropSpeechSession = () => {
-    releaseSpeechSession()
-
-    if ($voicePlayback.get().status !== 'idle') {
+    if (stopPlayback && $voicePlayback.get().status !== 'idle') {
       stopVoicePlayback()
     }
   }
@@ -456,7 +452,7 @@ export function useVoiceConversation({
         return
       }
 
-      releaseSpeechSession()
+      dropSpeechSession(false)
 
       // An external stopVoicePlayback() (Stop/Esc) silences the current reply;
       // it does not end hands-free conversation mode. end() owns that path and

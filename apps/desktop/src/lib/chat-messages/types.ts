@@ -51,6 +51,11 @@ export type ChatMessage = {
   interim?: boolean
   /** Locally recovered output not yet represented by a durable completed reply. */
   recovered?: boolean
+  /** Synthesized on this client (an error card, a local notice) with no
+   *  backend row behind it: nothing an older-page fetch can rebuild. Rows
+   *  that came off a transcript page but carry no stored id are NOT marked:
+   *  they occupy a backend-row slot and re-fetch fine. */
+  localOnly?: boolean
   /** Whether hydration reached a final assistant source row, rather than a tool round. */
   durableComplete?: boolean
   /** Exact gateway receipt; whole-turn coverage is never inferred from prose. */

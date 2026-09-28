@@ -23,8 +23,13 @@
  * - Never inside the window: the cut starts at the window's first message.
  * - Never splits an assistant branch group (same reason the window cut does
  *   not: a group without its fork point is re-parented).
- * - Never drops a row without a durable `rowId` — an unpersisted row cannot be
- *   fetched back, so releasing it would lose content for good.
+ * - Never drops a row an older-page fetch cannot rebuild: nothing `pending`,
+ *   nothing `recovered` (journal content differs from the backend row it may
+ *   carry), nothing `localOnly` (a locally synthesized error card has no
+ *   backend row at all). A `pending` row bails the pass; a `recovered` or
+ *   `localOnly` row clamps the cut so the durable prefix still releases. A
+ *   hydrated row with no stored id releases fine on purpose: it occupies a
+ *   backend-row slot, so the next page rebuilds it.
  * - Reports `released: false` and does no work (no weight walk, no row count)
  *   when there is nothing to release, so a re-cut of an untouched transcript
  *   stays cheap.
@@ -114,12 +119,30 @@ export function boundRetainedTranscript(
     return NOTHING_RELEASED
   }
 
-  // Nothing in flight may be released: a `pending` row has no backend row yet,
-  // so it cannot be fetched back and dropping it would lose content outright.
+  // Nothing that no older-page fetch can rebuild may be released. `pending`
+  // has no backend row yet and may still resolve, so it bails the whole pass.
+  // `recovered` and `localOnly` never resolve: a journal-recovered row can
+  // carry the base `rowId` while showing content that backend row does not
+  // hold, and a locally synthesized row (an error card) has no backend row at
+  // all. Bailing on them would wedge every later pass on the same row, so the
+  // cut clamps below the first one and the durable prefix still releases.
+  // Everything else, including hydrated rows and page-local folds with no
+  // stored id, releases: those rows occupy backend-row slots the next page
+  // returns, and releasing them keeps the tail rewind exact.
   for (let i = 0; i < boundary; i += 1) {
     if (messages[i].pending) {
       return NOTHING_RELEASED
     }
+
+    if (messages[i].recovered === true || messages[i].localOnly === true) {
+      boundary = alignToBranchGroup(messages, i)
+
+      break
+    }
+  }
+
+  if (boundary <= 0) {
+    return NOTHING_RELEASED
   }
 
   const retained = messages.slice(boundary)

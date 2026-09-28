@@ -236,7 +236,9 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan', 'systemNotice'] as const
+//   localOnly — marks a client-synthesized row (no backend row); transcript
+//               retention reads it to keep such rows, nothing paints it
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'serverRowSpan', 'systemNotice', 'localOnly'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.

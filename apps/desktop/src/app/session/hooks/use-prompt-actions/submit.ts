@@ -1020,6 +1020,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
               {
                 id: `assistant-error-${Date.now()}`,
                 role: 'assistant',
+                localOnly: true,
                 parts: [],
                 error: message || copy.promptFailed,
                 ...(notOwned && { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }),

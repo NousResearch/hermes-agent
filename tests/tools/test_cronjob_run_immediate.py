@@ -17,7 +17,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.cronjob_tools import cronjob, _execute_job_now
+from tools.cronjob_tools import cronjob, _execute_job_now, _manual_run_adapters
 from tools.environments.base import set_activity_callback
 
 _JOB = {"id": "job-run-1", "name": "manual run", "prompt": "hi",
@@ -132,6 +132,28 @@ class TestCronjobRunExecutesImmediately:
             loop=gateway_loop,
             extra_prompt=None,
         )
+
+    def test_execute_job_now_delivers_via_owning_profile_adapters(self):
+        """A secondary profile's manual run must use that profile's bot, not the launch profile's."""
+        launch = {"discord": object()}
+        owned = {"discord": object()}
+        asked = []
+
+        def _adapters_for_profile(profile):
+            asked.append(profile)
+            return owned if profile == "secondary" else launch
+
+        runner = SimpleNamespace(adapters=launch, _gateway_loop=None,
+                                 _adapters_for_profile=_adapters_for_profile)
+
+        with patch("hermes_cli.profiles.current_profile_name", return_value="secondary"):
+            got = _manual_run_adapters(runner)
+
+        assert asked == ["secondary"]
+        assert got is owned
+        assert _manual_run_adapters(None) is None
+        # A runner without the resolver keeps the legacy behaviour.
+        assert _manual_run_adapters(SimpleNamespace(adapters=launch)) is launch
 
     def test_execute_job_now_remains_standalone_without_gateway(self):
         """CLI-only runs retain the standalone delivery path."""

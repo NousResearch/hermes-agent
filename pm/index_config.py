@@ -18,6 +18,7 @@ import configparser
 import os
 from pathlib import Path
 import sys
+from urllib.parse import urlsplit
 
 # Explicit uv index / transport settings that survive into uv. UV_INDEX_<NAME>_
 # {USERNAME,PASSWORD} credentials match by prefix in is_forwarded().
@@ -28,6 +29,9 @@ FORWARDED_UV_SETTINGS = frozenset({
 })
 
 _UV_INDEX_KNOBS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX")
+
+# Only these replace the default index; UV_INDEX adds one alongside it.
+_DEFAULT_INDEX_KNOBS = ("UV_INDEX_URL", "UV_DEFAULT_INDEX")
 
 # pip knob → uv knob, applied only when uv has no value of its own.
 _PIP_TO_UV = (
@@ -42,6 +46,39 @@ TIMEOUT_HINT = ("uv timed out. If your network needs a package mirror, set index
 
 def is_forwarded(key: str) -> bool:
     return key in FORWARDED_UV_SETTINGS or key.startswith("UV_INDEX_")
+
+
+def _is_default_pypi(url: str) -> bool:
+    """Whether *url* is PyPI's own simple index under any equivalent spelling.
+
+    A trailing slash, an explicit :443, or embedded credentials still resolve
+    against the same registry the committed lock records, so ``--locked``
+    keeps passing there and no caller should treat them as a mirror. A
+    non-https scheme is a different endpoint: uv compares it against the
+    recorded ``https`` registry and refuses either way.
+    """
+    parts = urlsplit(url)
+    if parts.scheme != "https" or (parts.hostname or "").lower() != "pypi.org":
+        return False
+    if parts.port is not None and parts.port != 443:
+        return False
+    return parts.path.rstrip("/") == "/simple"
+
+
+def default_index_override(settings: Mapping[str, str]) -> str | None:
+    """The non-PyPI default index *settings* carry, if any.
+
+    A mirrored default index (bridged from pip or set directly) re-points every
+    resolution away from PyPI, so a lockfile generated against PyPI — as the
+    committed one is — no longer matches what uv would resolve and ``--locked``
+    rejects it (#122112). Extra indexes (UV_INDEX) don't move the default, so
+    they can't desync the lock and don't count.
+    """
+    for key in _DEFAULT_INDEX_KNOBS:
+        value = (settings.get(key) or "").strip()
+        if value and not _is_default_pypi(value):
+            return value.rstrip("/")
+    return None
 
 
 def pip_config_candidates(env: Mapping[str, str]) -> list[Path]:

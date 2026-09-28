@@ -35,6 +35,30 @@ The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
 
+### Required transition admission (opt-in)
+
+A profile can require a plugin's acknowledgement before `request_review` and before
+completion of a reviewer-lane card (including a claimed reviewer run or `--force`):
+
+```yaml
+plugins:
+  enabled: [my-policy]
+kanban:
+  required_transition_admission_plugin: my-policy
+```
+
+The plugin registers `ctx.register_kanban_transition_admission(callback)`. The
+callback receives keyword arguments `action` (`request_review` or
+`complete_review`), `task_id`, `status`, `run_id`, and `force`; it must return
+exactly `{"allow": true}` to admit the transition. No task body, handoff, or
+SQLite connection is passed. This is a required authority, **not** a best-effort
+lifecycle observer. A missing/disabled/unload-failed provider, exception, malformed
+reply, registration change, or two-second timeout denies without a task/run/event
+write. The callback should be fast and must not re-enter plugin discovery or
+write to the board. Configure the key only when the plugin is installed and
+enabled in every profile that will perform these transitions on a shared board;
+removing the key restores the default, optional-observer behavior.
+
 This is the shape that covers the workloads `delegate_task` can't:
 
 - **Research triage** — parallel researchers + analyst + writer, human-in-the-loop.

@@ -932,6 +932,15 @@ class PluginContext:
         """Register a lifecycle hook callback (unknown names warn but are still stored)."""
         return self._track_callback("hook", hook_name, callback, self._manager._hooks, VALID_HOOKS)
 
+    def register_kanban_transition_admission(self, callback: Callable) -> PluginRegistration:
+        """Provide an explicit required Kanban transition authority for this plugin id."""
+        if not callable(callback) or self._load_abandoned:
+            raise self._refuse("an invalid Kanban transition admission")
+        return self._track_mapping_entry(
+            "kanban_transition_admission", self.plugin_id,
+            self._manager._kanban_transition_admissions, (callback, object()),
+        )
+
     def register_middleware(self, kind: str, callback: Callable) -> PluginRegistration:
         """Register behavior-changing middleware (request kinds rewrite the payload, execution kinds
         wrap the callback). Unknown kinds warn but are stored."""
@@ -1203,6 +1212,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # (matcher, callback, plugin_name), platform handler factories (lowercase platform -> list).
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
+        self._kanban_transition_admissions: Dict[str, tuple[Callable, object]] = {}
+        self._kanban_admission_lock = threading.Lock()
+        self._kanban_admission_pending: Set[str] = set()
         # Fallback hooks registered by a memory provider before general discovery.
         self._memory_hook_registrations: Dict[Tuple[str, str], List[PluginRegistration]] = {}
         self._middleware: Dict[str, List[Callable]] = {}

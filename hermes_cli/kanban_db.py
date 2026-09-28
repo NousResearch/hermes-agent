@@ -2755,6 +2755,22 @@ def complete_task(
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+    from hermes_cli.kanban_transition_admission import Admission, admit
+    review_row = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    admission = Admission(None)
+    if review_row and (
+        review_row["status"] == "review" or
+        (review_row["status"] == "running" and
+         _retry_status_for_run(conn, task_id, review_row["current_run_id"]) == "review")
+    ):
+        admission = admit(
+            "complete_review", task_id, status=review_row["status"],
+            run_id=review_row["current_run_id"], force=force,
+        )
+        if admission is None:
+            return False
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
@@ -2770,13 +2786,22 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
-        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
-            return False
         trow = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT status, current_run_id, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         prior_status = trow["status"] if trow else None
+        if trow and (
+            prior_status == "review" or
+            (prior_status == "running" and
+             _retry_status_for_run(conn, task_id, trow["current_run_id"]) == "review")
+        ) and admit(
+            "complete_review", task_id, status=prior_status,
+            run_id=trow["current_run_id"], force=force, previous=admission,
+        ) is None:
+            return False
+        if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
+            return False
         # Refuse to close a LIVE worker's run without proof of ownership
         # (expected_run_id) or an explicit human override (force=True); see
         # _claim_is_live for what "live" means.
@@ -3383,6 +3408,20 @@ def request_review(
     # must be durable BEFORE anything can clean the scratch workspace up: for a
     # review-bound card the reviewer's completion is the cleanup trigger.
     metadata = _merge_completion_prose_artifacts(conn, task_id, metadata, summary=summary, result=None)
+    from hermes_cli.kanban_transition_admission import Admission, admit
+    # Slow plugin loading/callback execution happens before acquiring SQLite's
+    # writer lock; the binding and active config are rechecked under the CAS txn.
+    row_before = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    admission = Admission(None)
+    if row_before and row_before["status"] in ("running", "ready"):
+        admission = admit(
+            "request_review", task_id, status=row_before["status"],
+            run_id=row_before["current_run_id"], force=force,
+        )
+        if admission is None:
+            return _ret(False, "required transition admission denied")
     now = int(time.time())
     # Staged copies live outside the txn: a rollback after staging must not
     # leave orphans that make the retry stage ``name_1.ext`` beside them.
@@ -3430,6 +3469,11 @@ def request_review(
                     (trow["current_run_id"],),
                 ).fetchone()
                 implementer = arow["profile"] if arow else None
+            if trow["status"] in ("running", "ready"):
+                if admit("request_review", task_id, status=trow["status"],
+                         run_id=trow["current_run_id"], force=force,
+                         previous=admission) is None:
+                    return _ret(False, "required transition admission denied")
             if implementer is None and trow["assignee"] != reviewer:
                 implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""

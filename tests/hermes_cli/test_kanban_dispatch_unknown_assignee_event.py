@@ -40,14 +40,18 @@ def test_unknown_assignee_skip_writes_per_task_event(tmp_path, monkeypatch):
     assert isinstance(matches[0], dict) and matches[0].get("assignee") == "no-such-profile"
 
 
-def test_unknown_assignee_dry_run_writes_no_event(tmp_path, monkeypatch):
-    """Dry-run dispatch must not write rows — bucket only, no event."""
+def test_unknown_assignee_skip_event_is_written_once(tmp_path, monkeypatch):
+    """The condition never expires on its own: repeated ticks must not append a
+    row each (one per minute forever; one per foreign home on a shared board),
+    and a dry-run tick writes nothing."""
     _isolated_home(tmp_path, monkeypatch)
     from hermes_cli import profiles
     monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="demo", assignee="no-such-profile")
-        res = kbd.dispatch_once(conn, dry_run=True)
+        kbd.dispatch_once(conn, dry_run=True)
+        assert "skipped_nonspawnable" not in [e.kind for e in kb.list_events(conn, tid)]
+        for _ in range(3):
+            kbd.dispatch_once(conn, dry_run=False)
         kinds = [e.kind for e in kb.list_events(conn, tid)]
-    assert res.skipped_nonspawnable == [tid]
-    assert "skipped_nonspawnable" not in kinds
+    assert kinds.count("skipped_nonspawnable") == 1

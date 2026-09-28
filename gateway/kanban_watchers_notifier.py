@@ -434,23 +434,28 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
 
 
 def _fmt_gave_up(ev, n) -> tuple:
-    # The dispatcher auto-blocked the task after ``failures`` consecutive non-success attempts
-    # (spawn failure, crash, or timeout alike): it is now Blocked and waiting for a human.
-    failures = _payload(ev, "failures")
-    count = f"it failed {int(failures)} times in a row" if failures else "it kept failing"
+    # The dispatcher auto-blocked the task after consecutive non-success attempts
+    # (a failed start, a crash, or a timeout). Name the recorded trigger. A
+    # timeout is not a string of failed starts.
+    from hermes_cli.kanban_event_text import gave_up_count, gave_up_reason
+    payload = getattr(ev, "payload", None) or {}
+    count = gave_up_count(payload)
+    reason = gave_up_reason(payload)
     last = _clip(ev, "error", " (last: {})", 160)
     return (
-        f"⛔ {n.head} is now blocked: {count}{last}. Fix the cause, then `hermes kanban unblock "
+        f"⛔ {n.head} is now blocked{count}: {reason}{last}. Fix the cause, then `hermes kanban unblock "
         f"{n.task_id}` (or `hermes kanban reassign {n.task_id}`). Logs: `hermes kanban log {n.task_id}`.",
         None, None,
     )
 
 
 def _fmt_timed_out(ev, n) -> tuple:
+    from hermes_cli.kanban_event_text import timeout_promises_retry
     limit = int(_payload(ev, "limit_seconds") or 0)
     minutes = max(1, round(limit / 60)) if limit else 0
     span = f"its {minutes}-minute limit" if minutes else "its time limit"
-    return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
+    retry = " It will be retried." if timeout_promises_retry(getattr(ev, "payload", None) or {}) else " It will not be retried."
+    return f"⏱ {n.head} ran past {span} and was stopped.{retry}", None, None
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but

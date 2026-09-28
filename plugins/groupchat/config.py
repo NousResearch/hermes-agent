@@ -77,12 +77,6 @@ class PingpongSettings(BaseModel):
     silence_patterns: list[str] | None = None
 
 
-class CoordinationSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    enabled: bool = False
-    fallback_delay_seconds: float = Field(10, gt=0, le=300)
-
-
 class GroupchatSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool = False
@@ -90,7 +84,6 @@ class GroupchatSettings(BaseModel):
     filter_model: FilterModel = Field(default_factory=FilterModel)
     relevance: RelevanceSettings = Field(default_factory=RelevanceSettings)
     pingpong_guard: PingpongSettings = Field(default_factory=PingpongSettings)
-    coordination: CoordinationSettings = Field(default_factory=CoordinationSettings)
 
 
 def available_platforms():

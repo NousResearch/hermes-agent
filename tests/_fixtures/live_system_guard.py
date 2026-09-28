@@ -93,6 +93,14 @@ def _live_system_guard(request, monkeypatch):
         _psutil = None
         _initial_children = set()
 
+    # Process groups created by Popen spawns this test made (filled by
+    # _GuardedPopen below). A tree kill signals the parent before the
+    # children, so an orphaned child's ancestry walk ends at init, not at
+    # this test — the group the spawn created is the link that survives
+    # the orphaning. A foreign process (the live gateway) never joins a
+    # group this test created.
+    _spawned_pgroups: set = set()
+
     def _is_own_subtree(pid: int) -> bool:
         # PID 0 means "our own process group"; -1 means "every process we
         # can signal". Both are dangerous when paired with SIGTERM/SIGKILL,
@@ -104,6 +112,17 @@ def _live_system_guard(request, monkeypatch):
             return False
         if pid == test_pid or pid in _initial_children:
             return True
+        # Orphaned member of a group one of our spawns created (os.kill with
+        # a member pid, or killpg with the group id itself — a dead group
+        # leader's pid IS the group id). getpgid answers for a live orphan;
+        # the raw set covers killpg after the leader is gone.
+        if pid in _spawned_pgroups:
+            return True
+        try:
+            if _os.getpgid(pid) in _spawned_pgroups:
+                return True
+        except (OSError, ProcessLookupError):
+            pass
         if _psutil is None:
             return False
         try:
@@ -377,6 +396,10 @@ def _live_system_guard(request, monkeypatch):
             def __init__(self, cmd, *args, **kwargs):
                 _check_subprocess_cmd("Popen", cmd, kwargs)
                 super().__init__(cmd, *args, **kwargs)
+                try:
+                    _spawned_pgroups.add(_os.getpgid(self.pid))
+                except (OSError, ProcessLookupError):
+                    pass
 
         _GuardedPopen.__name__ = "Popen"
         _GuardedPopen.__qualname__ = "Popen"

@@ -31232,6 +31232,17 @@
             ],
             "default": null,
             "title": "Profile"
+          },
+          "intent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UndoIntent"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -35784,6 +35795,14 @@
         },
         "title": "UiMetaConflict",
         "type": "object"
+      },
+      "UndoIntent": {
+        "enum": [
+          "retry",
+          "undo"
+        ],
+        "title": "UndoIntent",
+        "type": "string"
       },
       "Usage": {
         "additionalProperties": true,

@@ -3185,7 +3185,9 @@ export interface SessionBranchWholeResult {
 export interface SessionUndoParams {
   session_id: string
   profile?: string | null
+  intent?: UndoIntent | null
 }
+export type UndoIntent = 'retry' | 'undo'
 export interface SessionUndoResult {
   removed: number
 }

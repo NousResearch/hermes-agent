@@ -18,6 +18,7 @@ from hermes_cli.version_info import get_version_info
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
 from . import shared_metrics_fields as fields_
+from . import shared_metrics_model as model_
 from .shared_metrics_contract import MODEL_CALL_SCOPE, SUBSCRIBER_NAME, TASK_SCOPE
 from .shared_metrics_subscriber import SharedMetricsSubscriber
 
@@ -133,6 +134,7 @@ class _TaskRun:
     completed_tool_call_ids: set[tuple[str, str, str]] = field(default_factory=set)
     unidentified_tool_calls: int = 0
     retry_count: int = 0
+    model_route: dict[str, str] | None = None
 
 
 @dataclass
@@ -152,6 +154,7 @@ class _MetricsSession:
     last_outcome: str = "unknown"
     first_turn_ns: int = 0
     last_turn_ns: int = 0
+    model_state: model_.ModelSessionState = field(default_factory=model_.ModelSessionState)
 
 
 class _Runtime:
@@ -321,6 +324,7 @@ class _Runtime:
                     task.retry_count += 1
                 return
             if task is not None:
+                task.model_route = fields
                 task.model_call_ids.add(request_id)
                 if _retry_ordinal(event) > 0:
                     # A real Hermes retry can advance api_request_id while carrying the
@@ -351,6 +355,7 @@ class _Runtime:
                 return
             model_call.fields = contract.model_call_fields(event)
             if finish:
+                session.model_state.observe_call(model_call.fields, event.get("usage"), event.get("context_length"))
                 model_call.ttft_bucket = fields_.ttft_bucket(event)
                 self._finish_model_call(session, model_call_key, "success")
                 tokens = fields_.model_token_fields(
@@ -363,6 +368,7 @@ class _Runtime:
                     )
             else:
                 model_call.error_class = contract.model_error_class(event)
+                session.model_state.observe_error(model_call.fields, model_call.error_class)
 
     def start_tool_call(self, event: dict[str, Any]) -> None:
         """Open one privacy-safe Relay tool lifecycle under its task."""
@@ -790,6 +796,8 @@ class _Runtime:
             retry_count=task.retry_count,
         )
         self._count_session_turn(session, task, fields["outcome"])
+        if not session.closing:
+            self._observe_model_turn(session, task, fields)
         try:
             popped = self._guarded(
                 "Hermes shared-metrics task close failed",
@@ -817,11 +825,43 @@ class _Runtime:
         session.last_outcome = outcome
         session.last_turn_ns = monotonic_ns()
 
+    def _observe_model_turn(self, session: _MetricsSession, task: _TaskRun, fields: dict[str, str]) -> None:
+        """A turn the user saw end (session-close aborts excluded): trailing-failure state and interrupts."""
+        route = task.model_route or session.model_state.last_route
+        session.model_state.observe_turn(fields["outcome"], route, session.last_turn_ns)
+        if fields["end_reason"] == "user_cancelled" and route is not None and model_.attended(task.start_fields):
+            self._guarded(
+                "Hermes shared-metrics friction mark failed", self._mark,
+                session, None, contract.MODEL_FRICTION_MARK, model_.friction_fields("interrupt", route),
+            )
+
+    def _emit_model_session_marks(self, session: _MetricsSession) -> None:
+        state = session.model_state
+        marks = [(contract.CONTEXT_PEAK_MARK, state.context_peak_fields())]
+        abandoned = state.quick_abandon_route(monotonic_ns())
+        if abandoned is not None and model_.attended(session.start_fields):
+            marks.append((contract.MODEL_FRICTION_MARK, model_.friction_fields("quick_abandon", abandoned)))
+        for mark, data in marks:
+            if data is not None:
+                self._guarded("Hermes shared-metrics model session mark failed", self._mark, session, None, mark, data)
+
+    def record_friction(self, signal: str, session_id: str, fallback_route: dict[str, str]) -> None:
+        """A user friction action, attributed to the session's last primary model when known."""
+        session = self._session({"session_id": session_id}) if session_id else None
+        route = None
+        if session is not None:
+            with session.lock:
+                route = session.model_state.last_route
+        data = model_.friction_fields(signal, route or fallback_route)
+        if data is not None:
+            self.record_process_mark(contract.MODEL_FRICTION_MARK, data)
+
     def _emit_session_summary(self, session: _MetricsSession) -> None:
         """One hermes.session.count row per closed top-level session (delegated children excluded)."""
         start = session.start_fields
         if not session.turns or start is None or start.get("entrypoint") == "delegated":
             return
+        self._emit_model_session_marks(session)
         summary = fields_.session_fields(
             start, turns=session.turns, failed_turns=session.failed_turns,
             last_outcome=session.last_outcome,
@@ -1092,6 +1132,15 @@ def record_process_mark(mark: str, data: dict[str, Any]) -> None:
     runtime = _get_runtime(retry_failed=True)
     if runtime is not None:
         runtime._safe(runtime.record_process_mark, mark, data)
+
+
+def record_session_friction(signal: str, session_id: str, fallback_route: dict[str, str]) -> None:
+    """Record one friction signal in the active profile's runtime (callers already checked enabled())."""
+    if not relay_runtime.relay_instrumentation_enabled():
+        return
+    runtime = _get_runtime(retry_failed=True)
+    if runtime is not None:
+        runtime._safe(runtime.record_friction, signal, session_id, fallback_route)
 
 
 def _run_task_hook(method: str, *, retry_failed: bool = False, **event: Any) -> None:

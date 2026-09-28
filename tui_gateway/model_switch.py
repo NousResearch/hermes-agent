@@ -350,7 +350,8 @@ def _apply_model_switch(
         from hermes_cli.observability.shared_metrics_events import record_model_switch
 
         record_model_switch(
-            from_provider=current_provider, to_provider=result.target_provider, surface=_session_source(session))
+            from_provider=current_provider, to_provider=result.target_provider, surface=_session_source(session),
+            from_model=current_model)
     return {
         "value": result.new_model, "warning": result.warning_message or "",
         "confirm_required": False,

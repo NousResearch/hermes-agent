@@ -90,6 +90,7 @@ def _fire_post_api_request_hook(
                     response, assistant_message, finish_reason=finish_reason
                 ),
                 usage=agent._usage_summary_for_api_request_hook(response),
+                context_length=getattr(getattr(agent, "context_compressor", None), "context_length", None),
                 assistant_message=assistant_message,
                 assistant_content_chars=len(assistant_message.content or ""),
                 assistant_tool_call_count=len(getattr(assistant_message, "tool_calls", None) or []),

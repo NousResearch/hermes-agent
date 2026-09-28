@@ -179,8 +179,18 @@ class CLILoopsMixin:
             return True  # confirmation cancelled — command handled, keep REPL alive
         self.new_session(title=title)
 
+    def _record_model_friction(self, signal: str) -> None:
+        # The TUI slash worker's shadow CLI has no metrics surface: tui_gateway counts what it executes.
+        if self._slash_metrics_surface:
+            from hermes_cli.observability.shared_metrics_model import record_model_friction
+            record_model_friction(
+                signal, session_id=getattr(self, "session_id", None), agent=getattr(self, "agent", None),
+                provider=getattr(self, "provider", None), model=getattr(self, "model", None))
+
     def _cmd_retry(self, cmd_original: str):
         retry_msg = self.retry_last()
+        if retry_msg:
+            self._record_model_friction("retry")
         if retry_msg and hasattr(self, '_pending_input'):
             self._pending_input.put(retry_msg)  # process_loop sends it to the agent
 
@@ -204,6 +214,7 @@ class CLILoopsMixin:
             else f"This removes the last {_undo_n} user turns from history.")
         if self._confirm_destructive_slash("undo", _undo_desc, cmd_original=cmd_original) is None:
             return True  # confirmation cancelled — command handled, keep REPL alive
+        self._record_model_friction("undo")
         self.undo_last(_undo_n)
 
     def _cmd_skills(self, cmd_original: str):

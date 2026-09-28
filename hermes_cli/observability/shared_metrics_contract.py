@@ -65,6 +65,14 @@ CURATOR_RUN_METRIC = "hermes.curator.run.count"
 DELEGATION_RUN_METRIC = "hermes.delegation.run.count"
 EXECUTION_BACKEND_METRIC = "hermes.execution_backend.count"
 # ---- end v4 loop ----
+# ---- v4 model ----
+MODEL_TOOL_QUALITY_MARK = "hermes.model_tool_quality"
+MODEL_FRICTION_MARK = "hermes.model_friction"
+CONTEXT_PEAK_MARK = "hermes.context_peak"
+MODEL_TOOL_QUALITY_METRIC = "hermes.model_tool_quality.count"
+MODEL_FRICTION_METRIC = "hermes.model_friction.count"
+CONTEXT_PEAK_METRIC = "hermes.context_peak.count"
+# ---- end v4 model ----
 MODEL_IDENTIFIER_MAX_LENGTH = 256
 PROVIDER_IDENTIFIER_MAX_LENGTH = 64
 _METRIC_IDENTIFIER_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789._:/@+-")
@@ -192,6 +200,16 @@ EXTENSION_NAMES = _CatalogValues(
     "bundled_skill_names", "mcp_catalog_names", "plugin_catalog_names", extra=frozenset({"custom"})
 )
 DISPLAY_LANGUAGES = _CatalogValues("display_languages", extra=frozenset({"other"}))
+# ---- v4 model ----
+TOOL_CALL_ISSUES = frozenset({
+    "empty_arguments", "invalid_json", "none", "repaired", "schema_mismatch", "unknown_tool",
+})
+FRICTION_SIGNALS = frozenset({"interrupt", "quick_abandon", "retry", "switch_away", "undo"})
+CONTEXT_WINDOW_BUCKETS = frozenset({
+    "lt_32k", "32k_to_128k", "128k_to_256k", "256k_to_1m", "gte_1m", "unknown",
+})
+LIMIT_HIT_VALUES = frozenset({"no", "yes"})
+# ---- end v4 model ----
 
 # ---- v4 loop ----
 MEMORY_OPS = frozenset({"add", "other", "read", "remove", "replace", "search"})
@@ -403,6 +421,14 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     CRON_RUN_METRIC: {
         "delivery_kind": CRON_DELIVERY_KINDS, "duration_bucket": DURATION_BUCKETS, "outcome": CRON_RUN_OUTCOMES,
     },
+    # ---- v4 model ----
+    MODEL_TOOL_QUALITY_METRIC: {"call_role": MODEL_CALL_ROLES, "issue": TOOL_CALL_ISSUES},
+    MODEL_FRICTION_METRIC: {"signal": FRICTION_SIGNALS},
+    CONTEXT_PEAK_METRIC: {
+        "limit_hit": LIMIT_HIT_VALUES, "peak_fill_bucket": CONTEXT_FILL_BUCKETS,
+        "window_bucket": CONTEXT_WINDOW_BUCKETS,
+    },
+    # ---- end v4 model ----
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -415,6 +441,11 @@ _IDENTIFIER_FIELDS: dict[str, dict[str, int]] = {
     MODEL_SWITCH_METRIC: dict.fromkeys(("from_provider", "to_provider"), PROVIDER_IDENTIFIER_MAX_LENGTH),
     FALLBACK_METRIC: dict.fromkeys(("from_provider", "to_provider"), PROVIDER_IDENTIFIER_MAX_LENGTH),
     INSTALL_SNAPSHOT_METRIC: {"main_provider": PROVIDER_IDENTIFIER_MAX_LENGTH},
+    # ---- v4 model ----
+    MODEL_TOOL_QUALITY_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    MODEL_FRICTION_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    CONTEXT_PEAK_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    # ---- end v4 model ----
 }
 # metric -> closed dimension field set
 _METRIC_FIELDS: dict[str, frozenset[str]] = {
@@ -453,6 +484,10 @@ _DECISION_MARK_METRICS = {
     # ---- v4 gateway ----
     PLATFORM_HEALTH_MARK: PLATFORM_HEALTH_METRIC, PLATFORM_DELIVERY_MARK: PLATFORM_DELIVERY_METRIC,
     REPLY_LATENCY_MARK: REPLY_LATENCY_METRIC, CRON_RUN_MARK: CRON_RUN_METRIC,
+    # ---- v4 model ----
+    MODEL_TOOL_QUALITY_MARK: MODEL_TOOL_QUALITY_METRIC, MODEL_FRICTION_MARK: MODEL_FRICTION_METRIC,
+    CONTEXT_PEAK_MARK: CONTEXT_PEAK_METRIC,
+    # ---- end v4 model ----
 }
 
 

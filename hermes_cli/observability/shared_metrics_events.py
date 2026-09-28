@@ -77,11 +77,18 @@ def record_gateway_slash_command(event: Any) -> None:
     record_slash_command(command=command, surface="gateway")
 
 
-def record_model_switch(*, from_provider: str | None, to_provider: str | None, surface: str) -> None:
+def record_model_switch(
+    *, from_provider: str | None, to_provider: str | None, surface: str, from_model: str | None = None,
+) -> None:
+    """``from_model`` also counts the switch as friction against the model the user left."""
     _emit(
         contract.MODEL_SWITCH_MARK, fields_.model_switch_fields,
         from_provider=from_provider, to_provider=to_provider, surface=surface,
     )
+    if from_model:
+        from .shared_metrics_model import record_model_friction
+
+        record_model_friction("switch_away", provider=from_provider, model=from_model)
 
 
 def record_fallback(*, from_provider: str | None, to_provider: str | None, reason: Any) -> None:

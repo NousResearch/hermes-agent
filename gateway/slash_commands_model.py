@@ -380,7 +380,9 @@ class GatewayModelCommandsMixin:
             return error
         from hermes_cli.observability.shared_metrics_events import record_model_switch
 
-        record_model_switch(from_provider=ctx.current_provider, to_provider=result.target_provider, surface="gateway")
+        record_model_switch(
+            from_provider=ctx.current_provider, to_provider=result.target_provider, surface="gateway",
+            from_model=ctx.current_model)
         global_error = await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
         reply = await self._model_switch_confirmation(
             result, ctx, one_turn=one_turn, picker=picker, global_error=global_error,

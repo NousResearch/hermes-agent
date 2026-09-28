@@ -3378,7 +3378,8 @@ class _StreamingCall(StreamingWaitMonitor):
                 has_truncated_tool_args = True
             mock_tool_calls.append(SimpleNamespace(
                 id=tc["id"], type=tc["type"], extra_content=tc.get("extra_content"),
-                function=SimpleNamespace(name=tc["function"]["name"], arguments=arguments)))
+                function=SimpleNamespace(name=tc["function"]["name"], arguments=arguments,
+                                         args_repaired=arguments != tc["function"]["arguments"])))
         return mock_tool_calls or None, has_truncated_tool_args
 
     def _finish_chat_stream(self, stream, role, content_parts, reasoning_parts, tool_calls_acc, finish_reason,

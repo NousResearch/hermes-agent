@@ -174,6 +174,15 @@
           },
           {
             "$ref": "#/$defs/cron_run_counter"
+          },
+          {
+            "$ref": "#/$defs/model_tool_quality_counter"
+          },
+          {
+            "$ref": "#/$defs/model_friction_counter"
+          },
+          {
+            "$ref": "#/$defs/context_peak_counter"
           }
         ]
       }
@@ -1945,6 +1954,189 @@
               ]
             }
           }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "model_tool_quality_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.model_tool_quality.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "call_role",
+            "issue",
+            "model",
+            "provider"
+          ],
+          "properties": {
+            "call_role": {
+              "enum": [
+                "auxiliary",
+                "primary"
+              ]
+            },
+            "issue": {
+              "enum": [
+                "empty_arguments",
+                "invalid_json",
+                "none",
+                "repaired",
+                "schema_mismatch",
+                "unknown_tool"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            }
+          },
+          "description": "One per tool call a model emitted; issue=none when clean, so issue rates have a denominator."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "model_friction_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.model_friction.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "provider",
+            "signal"
+          ],
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "signal": {
+              "enum": [
+                "interrupt",
+                "quick_abandon",
+                "retry",
+                "switch_away",
+                "undo"
+              ]
+            }
+          },
+          "description": "A user friction action attributed to the model that produced the turn."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "context_peak_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.context_peak.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "limit_hit",
+            "model",
+            "peak_fill_bucket",
+            "provider",
+            "window_bucket"
+          ],
+          "properties": {
+            "limit_hit": {
+              "enum": [
+                "no",
+                "yes"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "peak_fill_bucket": {
+              "enum": [
+                "50_to_75",
+                "75_to_90",
+                "90_to_100",
+                "gte_100",
+                "lt_50",
+                "unknown"
+              ]
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "window_bucket": {
+              "enum": [
+                "lt_32k",
+                "32k_to_128k",
+                "128k_to_256k",
+                "256k_to_1m",
+                "gte_1m",
+                "unknown"
+              ]
+            }
+          },
+          "description": "One per closed session: the fullest primary-model context it reached."
         },
         "value": {
           "type": "integer",

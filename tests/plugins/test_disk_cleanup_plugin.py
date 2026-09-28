@@ -420,6 +420,80 @@ class TestStaleCronEntryMigration:
         assert not run_md.exists()
 
 
+class TestManualTrackNeverTrackGate:
+    """``/disk-cleanup track`` must refuse never-track paths whatever the category, and
+    ``quick()``/``dry_run()`` must drop stored entries for them.
+
+    ``guess_category()`` guards the AUTO path, but the manual ``track`` subcommand accepted
+    any in-home path, and quick()'s re-validation only re-checks the ``cron-output`` and
+    ``test`` categories — so a manual ``track sessions/state.db temp`` aged past 7 days and
+    was deleted by the no-prompt on-session-end sweep (state, secrets, plugin sources and
+    user project trees alike)."""
+
+    def test_track_refuses_state_secrets_and_user_trees(self, _isolate_env):
+        dg = _load_lib()
+        cases = [
+            "sessions/state.db",
+            ".env",
+            "config.yaml",
+            "auth.json",
+            "memories/notes.md",
+            "logs/agent.log",
+            "plugins/disk-cleanup/disk_cleanup.py",
+            "workspace/report.pdf",
+            "projects/app/test_main.py",
+            ".worktrees/wt/test_a.py",
+        ]
+        for rel in cases:
+            p = _isolate_env / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x")
+            assert dg.track(str(p), "temp") is False, rel
+        assert dg.load_tracked() == []
+
+    def test_quick_drops_stale_temp_entry_for_never_track_path(self, _isolate_env):
+        dg = _load_lib()
+        db = _isolate_env / "sessions" / "state.db"
+        db.parent.mkdir(parents=True)
+        db.write_text("x")
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        dg.save_tracked([{"path": str(db), "category": "temp", "timestamp": old_ts, "size": 10}])
+
+        summary = dg.quick()
+
+        assert db.exists(), "never-track paths must survive aged stale entries"
+        assert summary["deleted"] == 0
+        assert dg.load_tracked() == [], "stale entry is dropped, not retried every session"
+
+    def test_dry_run_omits_never_track_entries(self, _isolate_env):
+        dg = _load_lib()
+        env = _isolate_env / ".env"
+        env.write_text("x")
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        dg.save_tracked([{"path": str(env), "category": "temp", "timestamp": old_ts, "size": 10}])
+        auto, prompt = dg.dry_run()
+        assert auto == [] and prompt == []
+
+    def test_slash_track_refuses_never_track_path(self, _isolate_env):
+        pi = _load_plugin_init()
+        env = _isolate_env / ".env"
+        env.write_text("x")
+        out = pi._handle_slash(f"track {env} temp")
+        assert "Not tracked" in out
+        assert pi.dg.load_tracked() == []
+
+    def test_track_still_accepts_legitimate_paths(self, _isolate_env):
+        dg = _load_lib()
+        scratch = _isolate_env / "cache" / "scratch.txt"
+        scratch.parent.mkdir(parents=True)
+        scratch.write_text("x")
+        assert dg.track(str(scratch), "temp") is True
+        cron_out = _isolate_env / "cron" / "output" / "job_1" / "run.md"
+        cron_out.parent.mkdir(parents=True)
+        cron_out.write_text("x")
+        assert dg.track(str(cron_out), "cron-output") is True
+
+
 class TestTrackForgetQuick:
     def test_track_then_quick_deletes_test(self, _isolate_env):
         dg = _load_lib()

@@ -3347,6 +3347,7 @@ export const ru = defineLocale({
     updateNow: 'Обновить сейчас',
     maybeLater: 'Возможно позже',
     moreChanges: count => `+ ещё ${count} ${RU_NOUN(count, 'изменение', 'изменения', 'изменений')} включено.`,
+    copyFullLog: 'Скопировать полный список изменений',
     manualTitle: 'Обновление из терминала',
     manualUnavailableTitle: 'Обновление здесь недоступно',
     manualBody:

@@ -2729,6 +2729,7 @@ export const ar = defineLocale({
     updateNow: 'التحديث الآن',
     maybeLater: 'ربما لاحقا',
     moreChanges: count => `+ ${count} تغيير${count === 1 ? '' : 'ات'} إضافي مُضمَّن.`,
+    copyFullLog: 'نسخ سجل التغييرات الكامل',
     manualTitle: 'التحديث من الطرفية',
     manualUnavailableTitle: 'لا يمكن التحديث من هنا',
     manualBody: 'لقد ثبّتت Hermes من سطر الأوامر، لذا تُجرى التحديثات من هناك أيضا. الصق هذا في طرفيتك:',

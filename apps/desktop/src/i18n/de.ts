@@ -4635,6 +4635,7 @@ export const deOverrides = {
     updateNow: 'Jetzt aktualisieren',
     maybeLater: 'Später',
     moreChanges: count => `+ ${count} weitere Änderung${count === 1 ? '' : 'en'} enthalten.`,
+    copyFullLog: 'Vollständiges Änderungsprotokoll kopieren',
     manualTitle: 'Über Ihr Terminal aktualisieren',
     manualUnavailableTitle: 'Aktualisierung hier nicht möglich',
     manualBody:

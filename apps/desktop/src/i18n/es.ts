@@ -4628,6 +4628,7 @@ export const esOverrides = {
     updateNow: 'Actualizar ahora',
     maybeLater: 'Quizá más tarde',
     moreChanges: count => `+ ${count} ${count === 1 ? 'cambio incluido' : 'cambios incluidos'}.`,
+    copyFullLog: 'Copiar el registro de cambios completo',
     manualTitle: 'Actualizar desde la terminal',
     manualUnavailableTitle: 'No se puede actualizar desde aquí',
     manualBody:

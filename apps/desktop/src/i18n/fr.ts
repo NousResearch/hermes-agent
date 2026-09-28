@@ -4648,6 +4648,7 @@ export const frOverrides = {
     maybeLater: 'Peut-être plus tard',
     moreChanges: count =>
       `+ ${count} ${count === 1 ? 'changement supplémentaire inclus' : 'changements supplémentaires inclus'}.`,
+    copyFullLog: 'Copier le journal complet des modifications',
     manualTitle: 'Mise à jour depuis votre terminal',
     manualUnavailableTitle: 'Mise à jour impossible ici',
     manualBody:

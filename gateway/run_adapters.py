@@ -715,7 +715,11 @@ class GatewayAdapterLifecycleMixin:
         )
         backoff = _reconnect_backoff(attempt)
         info["attempts"] = attempt
-        info["next_retry"] = time.monotonic() + backoff
+        now = time.monotonic()
+        info["next_retry"] = now + backoff
+        # Queue age can include host suspension. Give recovery a chance before
+        # escalating, and publish the failed attempt count (not the prior one).
+        self._flag_reconnect_needs_attention(platform, info, now)
         return backoff
 
     async def _reconnect_failed_platform(self, platform, now: float) -> None:
@@ -725,7 +729,6 @@ class GatewayAdapterLifecycleMixin:
         # None: removed concurrently since the caller's snapshot. Paused needs /platform resume.
         if info is None or info.get("paused"):
             return
-        self._flag_reconnect_needs_attention(platform, info, now)
         if now < info["next_retry"]:
             return  # not time yet
         platform_config = info["config"]

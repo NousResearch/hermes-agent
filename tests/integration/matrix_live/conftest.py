@@ -421,8 +421,8 @@ def gateway(
                 + ("    thread_require_mention: true\n" if mode == "pause-context" or resolution_pause else "")
                 + (f"    free_response_rooms:\n      - {room_id!r}\n" if resolution_pause else "")
                 + "updates:\n  check: false\n"
-                + ("auxiliary:\n  title_generation:\n    model_upgrade_enabled: false\n"
-                   if mode == "inspection" else "")
+                + ("auxiliary:\n  background_review:\n    enabled: false\n  title_generation:\n    model_upgrade_enabled: false\n"
+                   if mode in {"inspection", "pause-image-context"} else "")
                 + ("display:\n  busy_input_mode: queue\n  busy_ack_enabled: false\n"
                    if mode == "pause-queued-context" else "")
                 + ("plugins:\n  enabled:\n    - matrix-live-context\n"
@@ -470,8 +470,9 @@ def gateway(
                 "    async def autocomplete(self, query, *, limit=10):\n"
                 "        return []\n"
                 "    async def expand(self, target):\n"
-                "        signal('context-started', 'started')\n"
-                "        while not (get_hermes_home() / 'context-release').exists():\n"
+                "        phase = 'queued-' if target == 'queued' else ''\n"
+                "        signal(f'{phase}context-started', 'started')\n"
+                "        while not (get_hermes_home() / f'{phase}context-release').exists():\n"
                 "            await asyncio.sleep(0.01)\n"
                 "        return 'Live enrichment completed'\n"
                 "def register(ctx):\n"
@@ -485,6 +486,9 @@ def gateway(
                     "original_store = MatrixEventContextCache.store\n"
                     "def observed_store(self, room_id, event_id, entry):\n"
                     "    result = original_store(self, room_id, event_id, entry)\n"
+                    "    if entry.redacted:\n"
+                    "        with (get_hermes_home() / 'redacted-events-observed').open('a', encoding='utf-8') as stream:\n"
+                    "            stream.write(event_id + '\\n')\n"
                     "    expected = get_hermes_home() / 'expected-media-change'\n"
                     "    # A typed edit stores this placeholder and then fetches the target again;\n"
                     "    # observed_message signals that edit once the fetch has finished.\n"

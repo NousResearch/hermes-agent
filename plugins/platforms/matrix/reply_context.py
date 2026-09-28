@@ -44,7 +44,7 @@ class MatrixEventContext:
 
     @staticmethod
     def image_content(content: dict) -> str | None:
-        if content.get("msgtype") != "m.image":
+        if content.get("msgtype") not in {"m.image", "m.sticker"}:
             return None
         return json.dumps(content, sort_keys=True, separators=(",", ":"))
 
@@ -178,10 +178,12 @@ def extract_mx_reply_quote(content: Mapping[str, Any]) -> str | None:
     return text or None
 
 
-def _label_body(msgtype: str, body: str) -> str:
+def _label_body(msgtype: str, body: str, sender: str = "") -> str:
+    if msgtype == "m.emote":
+        return f"[emote by {sender}] {body}" if sender else f"[emote] {body}"
     labels = {
         "m.image": "image", "m.audio": "audio", "m.video": "video",
-        "m.file": "file", "m.notice": "notice", "m.location": "location",
+        "m.file": "file", "m.notice": "notice", "m.location": "location", "m.sticker": "sticker",
     }
     label = labels.get(msgtype)
     if label is None:
@@ -380,9 +382,12 @@ class MatrixEventContextCache:
             return
         if prior.sender != sender:
             return
+        text = _own_text(body.strip(), replacement)
+        if replacement.get("msgtype") in {"m.emote", "m.sticker"}:
+            text = _label_body(str(replacement["msgtype"]), text, sender)
         self.store(room_id, target, MatrixEventContext(
-            sender, _own_text(body.strip(), replacement),
-            is_image=replacement.get("msgtype") == "m.image",
+            sender, text,
+            is_image=replacement.get("msgtype") in {"m.image", "m.sticker"},
             media_content=MatrixEventContext.image_content(replacement),
             replacement_id=replacement_id,
         ))
@@ -456,9 +461,9 @@ class MatrixEventContextCache:
             body = body[2:].strip()
         body = _own_text(body, content)
         msgtype = str(content.get("msgtype") or "")
-        text = _label_body(msgtype, body)
+        text = _label_body(msgtype, body, sender)
         media = None
-        if msgtype == "m.image" and image_loader is not None:
+        if msgtype in {"m.image", "m.sticker"} and image_loader is not None:
             try:
                 media = await asyncio.wait_for(
                     image_loader(content, event_id), self.timeout_seconds
@@ -469,7 +474,7 @@ class MatrixEventContextCache:
             sender=sender, text=text,
             media_path=media[0] if media else None,
             media_type=media[1] if media else None,
-            is_image=msgtype == "m.image",
+            is_image=msgtype in {"m.image", "m.sticker"},
             media_content=MatrixEventContext.image_content(content),
             state_error=state.error["error"] if state.error else None,
             replacement_id=state.replacement_id,

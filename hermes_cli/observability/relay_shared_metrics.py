@@ -967,9 +967,10 @@ class _Runtime:
             return self._cold_expected.pop(key, False) is None
 
     def record_known_cache_break(self, cause: str, route: dict[str, str], session_id: str) -> None:
-        """Hermes invalidated the prefix itself: count it, and don't recount the cold read it causes."""
-        self._announce_cold(self._cold_key(session_id))
-        self._emit_rows(None, [eff.cache_break_row(cause, route)])
+        """Hermes invalidated the prefix itself: count it, and don't recount the cold read it causes.
+        Several causes before one cold read are one break (the first cause names it)."""
+        if self._announce_cold(self._cold_key(session_id)):
+            self._emit_rows(None, [eff.cache_break_row(cause, route)])
 
     def record_session_tools(self, session_id: str, agent: Any, tools_for_api: list) -> None:
         session = self._session({"session_id": session_id}) if session_id else None
@@ -1262,6 +1263,8 @@ def enabled() -> bool:
         config = config.get(key) if isinstance(config, dict) else None
     if isinstance(config, dict) and config.get("enabled") is True:
         return True
+    if profile_key not in _RUNTIMES:  # the opted-out hot path: nothing to tear down, no lock
+        return False
     with _RUNTIME_LOCK:
         runtime = _RUNTIMES.pop(profile_key, None)
         if isinstance(runtime, _Runtime):

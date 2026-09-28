@@ -163,6 +163,16 @@ def test_tool_overhead_and_unused_toolsets_report_once_per_conversation(direct_r
     assert "acme" not in json.dumps(_stored_values(tmp_path, "hermes.tool_enabled_unused.count"))
 
 
+def test_several_known_causes_before_one_cold_read_are_one_break(direct_runtime, tmp_path):
+    agent = _agent()
+    _turn("s1", "t1", {"completed": True}, calls=[_usage(9_000, cache_read=8_000)])
+    eff.record_cache_break(agent, "compression")
+    eff.record_cache_break(agent, "compression")
+    eff.record_cache_break(agent, "model_switch")
+    _turn("s1", "t2", {"completed": True}, calls=[_usage(9_000, cache_read=0)])
+    assert _rows(tmp_path, "hermes.cache_break.count") == [(_dims(**ROUTE, cause="compression"), 1)]
+
+
 def test_cache_breaks_count_known_causes_once_and_unannounced_cold_reads_as_misses(direct_runtime, tmp_path,
                                                                                   monkeypatch):
     agent = _agent()

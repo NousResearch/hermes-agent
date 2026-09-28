@@ -140,7 +140,7 @@ git worktree remove ../repo-feature
 Notes:
 
 - `git worktree remove` will refuse to remove a worktree with uncommitted changes unless you force it.
-- Removing a worktree does **not** automatically delete the branch; you can delete or keep the branch using normal `git branch` commands.
+- Removing a worktree with plain git does **not** automatically delete the branch; you can delete or keep the branch using normal `git branch` commands. `hermes worktree remove <name>` (and Desktop's **Archive & remove worktree** session action) removes the tree *and* its branch when the branch's commits are already upstream, and keeps both when they are not — see [Worktree cleanup](./cli.md#worktree-cleanup).
 - Hermes checkpoint data under `~/.hermes/checkpoints/` is not automatically pruned when you remove a worktree, but it is usually very small.
 
 ## Best Practices

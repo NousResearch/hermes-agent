@@ -2786,8 +2786,8 @@ export const zhHant = defineLocale({
       removeWorktree: '移除工作樹',
       removeWorktreeFailed: '無法移除工作樹（有未提交的變更？）',
       removeWorktreeConfirm:
-        '從 git 中移除（刪除工作樹目錄，但保留分支），或僅從側邊欄隱藏該軌道並將工作樹保留在磁碟上。',
-      removeWorktreeDirty: '此工作樹有未提交的變更。強制移除（捨棄這些變更），或僅隱藏軌道並保留在磁碟上。',
+        '從 git 中移除（刪除工作樹目錄；工作已在上游時同時刪除分支，未追蹤檔案會先封存），或僅從側邊欄隱藏該軌道並將工作樹保留在磁碟上。',
+      removeWorktreeDirty: reason => `此工作樹已保留：${reason}。強制移除（捨棄這些工作），或僅隱藏軌道並保留在磁碟上。`,
       forceRemove: '強制移除',
       enter: label => `開啟 ${label}`
     },
@@ -2832,6 +2832,10 @@ export const zhHant = defineLocale({
       deleteDesc: title => `這將永久刪除「${title}」，且無法復原。`,
       deleting: '正在刪除…',
       deleted: '會話已刪除',
+      archiveRemoveWorktree: '封存並移除工作樹',
+      worktreeRemovedBranchDeleted: branch => `已移除工作樹並刪除分支「${branch}」`,
+      worktreeRemoved: label => `已移除工作樹「${label}」`,
+      worktreeKept: (label, reason) => `工作階段已封存；工作樹「${label}」已保留：${reason}`,
       untitledChat: id => `工作階段 ${id}`,
       ageNow: '剛才',
       ageDay: '天',

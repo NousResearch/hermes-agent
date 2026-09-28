@@ -3083,7 +3083,7 @@ export interface Translations {
       removeWorktree: string
       removeWorktreeFailed: string
       removeWorktreeConfirm: string
-      removeWorktreeDirty: string
+      removeWorktreeDirty: (reason: string) => string
       forceRemove: string
       enter: (label: string) => string
       reorder: (label: string) => string
@@ -3135,6 +3135,10 @@ export interface Translations {
       deleteDesc: (title: string) => string
       deleting: string
       deleted: string
+      archiveRemoveWorktree: string
+      worktreeRemovedBranchDeleted: (branch: string) => string
+      worktreeRemoved: (label: string) => string
+      worktreeKept: (label: string, reason: string) => string
       untitledChat: (id: string) => string
       messageCount: (count: number) => string
       todoProgress: string

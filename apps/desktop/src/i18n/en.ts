@@ -3661,9 +3661,9 @@ export const en: Translations = {
       removeWorktree: 'Remove worktree',
       removeWorktreeFailed: 'Could not remove worktree (uncommitted changes?)',
       removeWorktreeConfirm:
-        'Remove it from git (deletes the worktree directory; the branch stays), or just hide the lane from the sidebar and leave the worktree on disk.',
-      removeWorktreeDirty:
-        'This worktree has uncommitted changes. Force-remove it (discards those changes), or just hide the lane and keep it on disk.',
+        'Remove it from git (deletes the worktree directory and its branch once the work is upstream; untracked files are archived first), or just hide the lane from the sidebar and leave the worktree on disk.',
+      removeWorktreeDirty: reason =>
+        `This worktree was kept: ${reason}. Force-remove it (discards that work), or just hide the lane and keep it on disk.`,
       forceRemove: 'Force remove',
       enter: label => `Open ${label}`,
       reorder: label => `Reorder ${label}`,
@@ -3715,6 +3715,10 @@ export const en: Translations = {
       deleteDesc: title => `This will permanently delete “${title}”. This cannot be undone.`,
       deleting: 'Deleting…',
       deleted: 'Session deleted',
+      archiveRemoveWorktree: 'Archive & remove worktree',
+      worktreeRemovedBranchDeleted: branch => `Worktree removed and branch “${branch}” deleted`,
+      worktreeRemoved: label => `Worktree “${label}” removed`,
+      worktreeKept: (label, reason) => `Session archived; worktree “${label}” kept: ${reason}`,
       untitledChat: id => `Chat ${id}`,
       messageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
       todoProgress: 'Tasks completed',

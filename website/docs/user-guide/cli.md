@@ -74,7 +74,14 @@ hermes worktree prune --dry-run   # show the plan without changing anything
 hermes worktree prune --older-than 7   # only reap trees idle for 7+ days
 hermes worktree prune --trees-only     # leave local branches alone
 hermes worktree prune --branches-only  # leave worktrees alone
+hermes worktree remove <name>          # one tree, same policy; exit 1 + reason when kept
+hermes worktree remove <name> --json   # {removed, branch, branch_deleted, verdict, reason}
 ```
+
+`remove` takes a directory name under `.worktrees/` or a path to any linked
+worktree of the repo. It applies the same verdicts as `prune` to that one tree
+and never forces: a tree with uncommitted tracked changes or unique commits
+stays, and the command says why. The main checkout is refused outright.
 
 Worktrees registered **outside** `.worktrees/` (created by hand or by another
 tool) are reported read-only in `list` output and are never removed. The one
@@ -84,7 +91,16 @@ only ever narrows what gets reaped — a tree carrying real work is kept at any
 age regardless of the flag.
 
 Inside a session, `/worktree prune [--dry-run]` does the same (and never
-touches the tree the session is running in).
+touches the tree the session is running in); `/worktree remove <name>` is the
+single-tree form.
+
+Hermes Desktop reaps by the same rules. A session that ran in its own linked
+worktree offers **Archive & remove worktree** in its row menu: the chat is
+archived and the tree is reclaimed under this policy (a merged branch goes
+with it, a pushed open-PR branch stays, real work keeps the tree and the toast
+names the reason). **Remove worktree** on a worktree lane in the Projects
+sidebar goes through the same door first; only a tree the policy keeps offers
+the force prompt, and the prompt states what would be lost.
 
 Safety guarantees (all modes, any age):
 

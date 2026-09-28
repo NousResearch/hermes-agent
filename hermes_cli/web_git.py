@@ -687,6 +687,21 @@ def worktree_remove(cwd: str, worktree_path: str, force: bool) -> dict:
     return {"removed": worktree_path}
 
 
+def worktree_reclaim(cwd: str, worktree_path: str) -> dict:
+    """Policy-gated single-tree removal (``worktree_gc.reclaim_worktree``): the same verdicts
+    ``hermes worktree prune`` applies, for one tree, never forced. camelCase for the renderer."""
+    from hermes_cli import worktree_gc
+    result = worktree_gc.reclaim_worktree(_main_root(cwd), worktree_path)
+    return {
+        "removed": result["removed"],
+        "branch": result["branch"],
+        "branchDeleted": result["branch_deleted"],
+        "verdict": result["verdict"],
+        "reason": result["reason"],
+        "actions": result["actions"],
+    }
+
+
 def _ref_names(cwd: str, *patterns: str, fmt: str = "%(refname:short)") -> list[str]:
     """Non-empty ``for-each-ref`` lines, newest commit first."""
     out = _git_out(cwd, ["for-each-ref", f"--format={fmt}", "--sort=-committerdate", *patterns])

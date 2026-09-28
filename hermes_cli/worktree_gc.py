@@ -248,26 +248,93 @@ def audit_worktrees(repo_root: str, *, with_sizes: bool = True,
     for entry in sorted(worktrees_dir.iterdir()):
         if not entry.is_dir():
             continue
-        try:
-            age_days = (now - entry.stat().st_mtime) / 86400.0
-        except Exception:
-            continue
-        try:
-            branch = _git(["branch", "--show-current"], cwd=str(entry), timeout=5).stdout.strip()
-        except Exception:
-            branch = ""
-        verdict, reason, untracked = _classify_tree(_ops, repo_root, entry, merge_cache, remote_heads)
-        if older_than_days is not None and verdict in _REAP_VERDICTS and age_days < older_than_days:
-            verdict, reason, untracked = "keep", (
-                f"reapable but only {age_days:.1f}d old (--older-than {older_than_days:g})"), []
-        records.append(TreeRecord(
-            name=entry.name, path=str(entry), branch=branch,
-            age_days=age_days, size_mb=_tree_size_mb(entry) if with_sizes else None,
-            verdict=verdict, reason=reason, untracked=untracked))
+        record = _audit_entry(_ops, repo_root, entry, merge_cache, remote_heads,
+                              now=now, with_sizes=with_sizes, older_than_days=older_than_days)
+        if record is not None:
+            records.append(record)
 
     if len(merge_cache) != cache_size_before:
         _ops._save_worktree_merge_cache(merge_cache)
     return records
+
+
+def _audit_entry(_ops, repo_root: str, entry: Path, merge_cache, remote_heads, *, now: float,
+                 with_sizes: bool, older_than_days: Optional[float]) -> Optional[TreeRecord]:
+    try:
+        age_days = (now - entry.stat().st_mtime) / 86400.0
+    except Exception:
+        return None
+    try:
+        branch = _git(["branch", "--show-current"], cwd=str(entry), timeout=5).stdout.strip()
+    except Exception:
+        branch = ""
+    verdict, reason, untracked = _classify_tree(_ops, repo_root, entry, merge_cache, remote_heads)
+    if older_than_days is not None and verdict in _REAP_VERDICTS and age_days < older_than_days:
+        verdict, reason, untracked = "keep", (
+            f"reapable but only {age_days:.1f}d old (--older-than {older_than_days:g})"), []
+    return TreeRecord(
+        name=entry.name, path=str(entry), branch=branch,
+        age_days=age_days, size_mb=_tree_size_mb(entry) if with_sizes else None,
+        verdict=verdict, reason=reason, untracked=untracked)
+
+
+def _linked_worktree_paths(repo_root: str) -> List[str]:
+    """Real paths of the repo's LINKED worktrees (the main checkout, first in the porcelain
+    listing, is excluded — it is never a reclaim target)."""
+    result = _git(["worktree", "list", "--porcelain"], cwd=repo_root, timeout=10)
+    if result.returncode != 0:
+        return []
+    paths = [line[len("worktree "):].strip()
+             for line in result.stdout.splitlines() if line.startswith("worktree ")]
+    return [os.path.realpath(p) for p in paths[1:]]
+
+
+def audit_worktree(repo_root: str, path: str) -> Optional[TreeRecord]:
+    """Classify ONE linked worktree of ``repo_root`` under the same policy as the sweep.
+
+    None when ``path`` is not a linked worktree registered on this repo (the main checkout, a
+    stranger directory, a typo) — the caller must not touch it. Unlike the sweep this accepts a
+    tree anywhere on disk, not only under ``.worktrees/``: the policy is about the tree's
+    content, the directory convention is only the sweep's discovery rule.
+    """
+    from hermes_cli import worktree_ops as _ops
+    entry = Path(path)
+    if not entry.is_dir() or os.path.realpath(path) not in _linked_worktree_paths(repo_root):
+        return None
+    if _ops._repo_is_shallow(repo_root):
+        _ops._deepen_shallow_repo(repo_root)
+    merge_cache = _ops._load_worktree_merge_cache()
+    cache_size_before = len(merge_cache)
+    remote_heads = _ops._fetch_remote_branch_heads(repo_root)
+    record = _audit_entry(_ops, repo_root, entry, merge_cache, remote_heads,
+                          now=time.time(), with_sizes=False, older_than_days=None)
+    if len(merge_cache) != cache_size_before:
+        _ops._save_worktree_merge_cache(merge_cache)
+    return record
+
+
+def reclaim_worktree(repo_root: str, path: str) -> dict:
+    """Remove ONE linked worktree when the policy allows, with a structured verdict for a UI.
+
+    Never forces past the policy: a tree with tracked changes or unique commits stays, and the
+    reply says why. ``branch_deleted`` is True only when the branch went with the tree (a
+    pushed open-PR lane keeps its branch). This is the single-tree door the Desktop session
+    action and ``hermes worktree remove`` use, so every surface reaps by the same rules.
+    """
+    record = audit_worktree(repo_root, path)
+    if record is None:
+        return {"removed": False, "branch": "", "branch_deleted": False,
+                "verdict": "unknown", "reason": "not a linked worktree of this repository", "actions": []}
+    actions = reclaim_worktrees(repo_root, records=[record])
+    removed = any(a.startswith("removed ") for a in actions)
+    return {
+        "removed": removed,
+        "branch": record.branch,
+        "branch_deleted": any(a.endswith(f"(branch {record.branch} deleted)") for a in actions),
+        "verdict": record.verdict,
+        "reason": record.reason,
+        "actions": actions,
+    }
 
 
 _REAP_VERDICTS = {"reap", "reap-archive", "reap-keep-branch"}
@@ -308,7 +375,9 @@ def reclaim_worktrees(
                 actions.append(f"removed {record.name} (branch {record.branch} kept — pushed open-PR lane)")
                 continue
             if record.branch and record.branch not in _PROTECTED_BRANCHES:
-                _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10)
+                deleted = _git(["branch", "-D", record.branch], cwd=repo_root, timeout=10).returncode == 0
+                actions.append(f"removed {record.name} (branch {record.branch} {'deleted' if deleted else 'kept'})")
+                continue
             actions.append(f"removed {record.name}")
         except Exception as exc:
             actions.append(f"failed to remove {record.name}: {exc}")

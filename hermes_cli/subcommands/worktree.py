@@ -41,6 +41,15 @@ def build_worktree_parser(subparsers) -> None:
         "--branches-only", action="store_true",
         help="Only delete merged local branches; leave worktrees alone")
 
+    worktree_remove = worktree_subparsers.add_parser(
+        "remove", aliases=["rm"],
+        help="Remove ONE worktree under the prune policy (never forced; merged branch deleted)")
+    worktree_remove.add_argument(
+        "tree", help="Worktree path, or its directory name under .worktrees/")
+    worktree_remove.add_argument("--repo", help="Repo root (default: current repo)")
+    worktree_remove.add_argument(
+        "--json", action="store_true", help="Machine-readable verdict (removed, branch, reason)")
+
     def _dispatch_worktree(_args):
         from hermes_cli.worktree_cmd import cmd_worktree
 
@@ -48,6 +57,8 @@ def build_worktree_parser(subparsers) -> None:
         action = getattr(_args, "worktree_action", None)
         if action in ("ls", "audit"):
             _args.worktree_action = "list"
+        elif action == "rm":
+            _args.worktree_action = "remove"
         return cmd_worktree(_args)
 
     worktree_parser.set_defaults(func=_dispatch_worktree)

@@ -38,7 +38,9 @@ import {
   applyRenamedSessionTitle,
   moveSessionToProject,
   projectIdForCwd,
-  projectRootCwd
+  projectRootCwd,
+  reclaimWorktreePath,
+  worktreeLaneForCwd
 } from '@/store/projects'
 import {
   $activeSessionId,
@@ -196,6 +198,49 @@ function MoveToProjectItems({ kit, sessionId, profile }: { kit: MenuKit; session
       ))}
     </>
   )
+}
+
+// "Archive & remove worktree": one verb for a session that ran in its own
+// linked worktree — put the chat away AND reclaim the tree it worked in, the
+// way `hermes worktree prune` would (never forced: uncommitted changes or
+// unique commits keep the tree, and the toast says which; a merged branch
+// goes with its tree, a pushed open-PR branch stays). Its own component so
+// only an OPEN menu subscribes to the session and project stores (same
+// reasoning as MoveToProjectItems). Renders nothing for a main checkout, the
+// kanban bucket, or a plain folder — none is a tree a session may reclaim.
+function ArchiveRemoveWorktreeItem({ kit, sessionId, onArchive }: { kit: MenuKit; sessionId: string; onArchive?: () => void }) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+  // Subscribing to the tree keeps the lane lookup live while the menu is open.
+  useStore($projectTree)
+  const cwd = useStore($sessions).find(s => sessionMatchesStoredId(s, sessionId))?.cwd ?? ''
+  const lane = worktreeLaneForCwd(cwd)
+
+  if (!lane || !onArchive) {
+    return null
+  }
+
+  return renderActionItem(kit, {
+    icon: 'git-branch',
+    label: r.archiveRemoveWorktree,
+    onSelect: () => {
+      triggerHaptic('warning')
+      onArchive()
+      reclaimWorktreePath(lane.repoPath, lane.worktreePath)
+        .then(result => {
+          if (result.removed) {
+            notify({
+              durationMs: 4_000,
+              kind: 'success',
+              message: result.branchDeleted ? r.worktreeRemovedBranchDeleted(result.branch) : r.worktreeRemoved(lane.label)
+            })
+          } else {
+            notify({ durationMs: 6_000, kind: 'info', message: r.worktreeKept(lane.label, result.reason) })
+          }
+        })
+        .catch(err => notifyError(err, t.sidebar.projects.removeWorktreeFailed))
+    }
+  })
 }
 
 function useSessionActions({
@@ -533,6 +578,7 @@ function useSessionActions({
       )}
       <kit.Separator />
       {dangerItems.map(item => renderActionItem(kit, item))}
+      <ArchiveRemoveWorktreeItem kit={kit} onArchive={archived ? undefined : onArchive} sessionId={sessionId} />
       {onHideTabBar && (
         <>
           <kit.Separator />

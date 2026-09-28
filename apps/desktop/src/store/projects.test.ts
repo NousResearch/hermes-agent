@@ -2,7 +2,11 @@ import { waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
+import {
+  NO_PROJECT_ID,
+  type SidebarProjectTree,
+  type SidebarSessionGroup
+} from '@/app/chat/sidebar/projects/workspace-groups'
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
@@ -29,7 +33,8 @@ import {
   resolveNewSessionCwd,
   scanAndRecordRepos,
   startWorkInRepo,
-  updateProject
+  updateProject,
+  worktreeLaneForCwd
 } from './projects'
 import {
   $removedSessionIds,
@@ -367,6 +372,56 @@ describe('projectNameForCwd', () => {
 
     expect(projectNameForCwd('/somewhere/else')).toBeNull()
     expect(projectNameForCwd('')).toBeNull()
+  })
+})
+
+describe('worktreeLaneForCwd (archive & remove worktree)', () => {
+  const lane = (over: Partial<SidebarSessionGroup> & Pick<SidebarSessionGroup, 'id' | 'label' | 'path'>) => ({
+    sessions: [],
+    ...over
+  })
+
+  beforeEach(() => {
+    $projectTree.set([
+      {
+        id: 'p_app',
+        label: 'App',
+        path: '/repos/app',
+        repos: [
+          {
+            groups: [
+              lane({ id: 'main', isMain: true, label: 'main', path: '/repos/app' }),
+              lane({ id: 'fix', label: 'fix-login', path: '/repos/app/.worktrees/fix-login' }),
+              lane({ id: 'kb', isKanban: true, label: 'Kanban', path: '/repos/app/.worktrees' }),
+              lane({ id: 'folder', isGit: false, label: 'notes', path: '/repos/app/notes' })
+            ],
+            id: 'r_app',
+            label: 'app',
+            path: '/repos/app',
+            sessionCount: 0
+          }
+        ],
+        sessionCount: 0
+      }
+    ])
+  })
+
+  it('resolves a session cwd inside a linked worktree to that lane and its repo', () => {
+    expect(worktreeLaneForCwd('/repos/app/.worktrees/fix-login/src')).toEqual({
+      label: 'fix-login',
+      repoPath: '/repos/app',
+      worktreePath: '/repos/app/.worktrees/fix-login'
+    })
+  })
+
+  it('offers nothing for the main checkout, the kanban bucket, a plain folder, or a stranger cwd', () => {
+    // The main checkout is never a reclaim target: a session there must not
+    // grow an "archive & remove worktree" verb that would delete the repo.
+    expect(worktreeLaneForCwd('/repos/app/src')).toBeNull()
+    expect(worktreeLaneForCwd('/repos/app/.worktrees')).toBeNull()
+    expect(worktreeLaneForCwd('/repos/app/notes')).toBeNull()
+    expect(worktreeLaneForCwd('/elsewhere')).toBeNull()
+    expect(worktreeLaneForCwd('')).toBeNull()
   })
 })
 

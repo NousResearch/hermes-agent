@@ -45,6 +45,7 @@ vi.mock('@/i18n', () => ({
         },
         row: {
           archive: 'Archive',
+          archiveRemoveWorktree: 'Archive & remove worktree',
           branchFrom: 'Branch from here',
           copyId: 'Copy ID',
           copyIdFailed: 'Failed to copy ID',
@@ -64,7 +65,10 @@ vi.mock('@/i18n', () => ({
           sessionActions: 'Session actions',
           unarchive: 'Unarchive',
           unpin: 'Unpin',
-          untitledPlaceholder: 'Untitled'
+          untitledPlaceholder: 'Untitled',
+          worktreeKept: (label: string, reason: string) => `Worktree ${label} kept: ${reason}`,
+          worktreeRemoved: (label: string) => `Worktree ${label} removed`,
+          worktreeRemovedBranchDeleted: (branch: string) => `Worktree removed and branch ${branch} deleted`
         }
       },
       zones: { closeAll: 'Close all', closeOthers: 'Close others', closeToRight: 'Close to the right' }
@@ -76,11 +80,20 @@ vi.mock('@/lib/profile-color', () => ({ PROFILE_SWATCHES: [] }))
 vi.mock('@/lib/session-export', () => ({ exportSession: vi.fn() }))
 vi.mock('@/store/gateway', () => ({ activeGateway: vi.fn(() => null) }))
 vi.mock('@/store/notifications', () => ({ notify: vi.fn(), notifyError: vi.fn() }))
+
+const reclaimWorktreePath = vi.fn(() =>
+  Promise.resolve({ actions: [], branch: 'fix-login', branchDeleted: true, reason: '', removed: true, verdict: 'reap' })
+)
+
+const worktreeLaneForCwd = vi.fn((): null | { label: string; repoPath: string; worktreePath: string } => null)
+
 vi.mock('@/store/projects', () => ({
   $projectTree: atom<unknown[]>([]),
   moveSessionToProject: vi.fn(),
   projectIdForCwd: vi.fn(() => null),
-  projectRootCwd: vi.fn(() => '')
+  projectRootCwd: vi.fn(() => ''),
+  reclaimWorktreePath: (...args: unknown[]) => reclaimWorktreePath(...(args as [])),
+  worktreeLaneForCwd: (cwd: string) => worktreeLaneForCwd(cwd)
 }))
 vi.mock('@/store/session', () => ({
   $activeSessionId: atom<null | string>(null),
@@ -311,6 +324,50 @@ describe('SessionActionsMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  // "Archive & remove worktree" exists only for a session that ran in its own
+  // linked worktree, and one click does both halves: the archive callback
+  // fires AND the backend's policy-gated reclaim runs against that lane. A
+  // session in the main checkout (no lane) must never grow the verb — it
+  // would be offering to delete the repo.
+  it('offers Archive & remove worktree only for a worktree session, and archives plus reclaims on select', async () => {
+    const onArchive = vi.fn()
+
+    const open = (trigger: HTMLElement) => {
+      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.click(trigger)
+    }
+
+    worktreeLaneForCwd.mockReturnValue(null)
+
+    const first = render(
+      <SessionActionsMenu onArchive={onArchive} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    open(screen.getByRole('button', { name: 'Session actions' }))
+    await screen.findByRole('menu')
+    expect(screen.queryByRole('menuitem', { name: /remove worktree/i })).toBeNull()
+    first.unmount()
+
+    worktreeLaneForCwd.mockReturnValue({ label: 'fix-login', repoPath: '/repos/app', worktreePath: '/repos/app/.worktrees/fix-login' })
+    render(
+      <SessionActionsMenu onArchive={onArchive} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+    open(screen.getByRole('button', { name: 'Session actions' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /archive & remove worktree/i }))
+
+    await waitFor(() => expect(onArchive).toHaveBeenCalledTimes(1))
+    expect(reclaimWorktreePath).toHaveBeenCalledWith('/repos/app', '/repos/app/.worktrees/fix-login')
   })
 
   // A canonical Bot Chat tab must not offer Rename: the write can never reach

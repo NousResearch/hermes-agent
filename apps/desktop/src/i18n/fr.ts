@@ -4050,9 +4050,9 @@ export const frOverrides = {
       removeWorktree: 'Supprimer le worktree',
       removeWorktreeFailed: 'Impossible de supprimer le worktree (modifications non validées ?)',
       removeWorktreeConfirm:
-        'Supprimez-le de git (supprime le répertoire du worktree ; la branche reste), ou masquez simplement la voie de la barre latérale et laissez le worktree sur le disque.',
-      removeWorktreeDirty:
-        'Ce worktree a des modifications non validées. Forcez sa suppression (ces modifications seront perdues), ou masquez simplement la voie et conservez-le sur le disque.',
+        'Supprimez-le de git (supprime le répertoire du worktree et, une fois le travail sur le dépôt distant, sa branche ; les fichiers non suivis sont archivés d’abord), ou masquez simplement la voie de la barre latérale et laissez le worktree sur le disque.',
+      removeWorktreeDirty: reason =>
+        `Ce worktree a été conservé : ${reason}. Forcez sa suppression (ce travail sera perdu), ou masquez simplement la voie et conservez-le sur le disque.`,
       forceRemove: 'Supprimer par force',
       enter: label => `Ouvrir ${label}`,
       reorder: label => `Réorganiser ${label}`,
@@ -4104,6 +4104,10 @@ export const frOverrides = {
       deleteDesc: title => `« ${title} » sera définitivement supprimée. Cette action est irréversible.`,
       deleting: 'Suppression…',
       deleted: 'Session supprimée',
+      archiveRemoveWorktree: 'Archiver et supprimer le worktree',
+      worktreeRemovedBranchDeleted: branch => `Worktree supprimé et branche « ${branch} » effacée`,
+      worktreeRemoved: label => `Worktree « ${label} » supprimé`,
+      worktreeKept: (label, reason) => `Session archivée ; worktree « ${label} » conservé : ${reason}`,
       untitledChat: id => `Conversation ${id}`,
       messageCount: count => `${count} message${count === 1 ? '' : 's'}`,
       todoProgress: 'Tâches terminées',

@@ -203,6 +203,7 @@ _BG_PROVIDER_KWARGS = {
 _WORKTREE_SUBCOMMANDS = {
     **dict.fromkeys(("prune", "gc", "clean"), "_worktree_prune"),
     **dict.fromkeys(("list", "ls"), "_worktree_list"),
+    **dict.fromkeys(("remove", "rm"), "_worktree_remove"),
     **dict.fromkeys(("new", "add", "create"), "_worktree_new")}
 
 # Message fields copied verbatim onto a /branch row (plus role / tool_name / api_content).
@@ -1445,9 +1446,10 @@ class CLICommandsMixin:
 
     # ---- /worktree ------------------------------------------------------------------------
     def _handle_worktree_command(self, cmd_original: str) -> None:
-        """Handle /worktree [new [name]|list|prune [--dry-run]] — isolated git worktrees.
-        ``new`` moves this session into the tree (as ``hermes -w``: kept on exit only with
-        unpushed commits); ``prune`` never deletes tracked changes, unique commits, or in-use trees."""
+        """Handle /worktree [new [name]|list|remove <name>|prune [--dry-run]] — isolated git
+        worktrees. ``new`` moves this session into the tree (as ``hermes -w``: kept on exit only
+        with unpushed commits); ``remove`` and ``prune`` never delete tracked changes, unique
+        commits, or in-use trees."""
         import cli as _cli
         parts = cmd_original.split(None, 2)
         sub = parts[1].lower() if len(parts) > 1 else ""
@@ -1460,15 +1462,16 @@ class CLICommandsMixin:
             else:
                 print("  No active worktree for this session.")
             if repo_root:
-                _pr("  /worktree new [name] — create one and move this session into it",
-                    "  /worktree prune      — reclaim stale trees and merged branches")
+                _pr("  /worktree new [name]  — create one and move this session into it",
+                    "  /worktree remove <n>  — remove one tree under the prune policy",
+                    "  /worktree prune       — reclaim stale trees and merged branches")
             else:
                 print("  (not inside a git repository)")
             return
         handler = _WORKTREE_SUBCOMMANDS.get(sub)
         if handler is None:
             return _pr(f"  Unknown /worktree subcommand: {sub}",
-                       "  Usage: /worktree [new [name] | list]")
+                       "  Usage: /worktree [new [name] | list | remove <name> | prune]")
         if not repo_root:
             print("  ❌ /worktree new requires being inside a git repository."
                   if handler == "_worktree_new" else "  Not inside a git repository.")
@@ -1498,6 +1501,21 @@ class CLICommandsMixin:
         if kept:
             _pr(f"  Preserved {len(kept)} tree(s) with real work:",
                 *(f"    {record.name}: {record.reason}" for record in kept))
+
+    def _worktree_remove(self, repo_root: str, rest: str) -> None:
+        import cli as _cli
+        from hermes_cli import worktree_gc
+        name = rest.strip()
+        if not name:
+            return print("  Usage: /worktree remove <name|path>")
+        path = name if os.path.isabs(name) or os.sep in name else os.path.join(repo_root, ".worktrees", name)
+        active = _cli._active_worktree
+        if active and os.path.realpath(str(active.get("path") or "")) == os.path.realpath(path):
+            return print("  ❌ That is this session's own worktree — exit the session to reclaim it.")
+        result = worktree_gc.reclaim_worktree(repo_root, path)
+        _pr(*(f"  {line}" for line in result["actions"]))
+        if not result["removed"]:
+            print(f"  Kept {path}: {result['reason']}")
 
     def _worktree_list(self, repo_root: str, rest: str) -> None:
         try:

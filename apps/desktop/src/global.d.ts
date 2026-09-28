@@ -1492,6 +1492,20 @@ export interface HermesGitWorktree {
   locked: boolean
 }
 
+// The backend's verdict on ONE linked worktree (`POST /api/git/worktree/reclaim`,
+// `hermes_cli/worktree_gc.py::reclaim_worktree`): removed under the prune policy,
+// or kept with the reason (uncommitted tracked changes, unique commits, in use).
+// `branchDeleted` is false when the branch stayed — a pushed open-PR lane keeps
+// its branch even when its tree goes.
+export interface HermesWorktreeReclaim {
+  removed: boolean
+  branch: string
+  branchDeleted: boolean
+  verdict: 'keep' | 'reap-archive' | 'reap-keep-branch' | 'reap' | 'unknown'
+  reason: string
+  actions: string[]
+}
+
 // A branch that the "convert a branch into a worktree" picker offers: the local
 // heads, plus the remote-tracking refs that have no local branch yet.
 // `checkedOut` means that a selection opens that checkout. `isDefault` means

@@ -207,6 +207,10 @@ class GitWorktreeRemoveBody(BaseModel):
     worktreePath: str
     force: bool = False
 
+class GitWorktreeReclaimBody(BaseModel):
+    path: str
+    worktreePath: str
+
 class GitBranchSwitchBody(BaseModel):
     path: str
     branch: str

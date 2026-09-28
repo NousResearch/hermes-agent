@@ -69,7 +69,7 @@ vi.mock('@/i18n', () => ({
           removeFromSidebar: 'Remove from sidebar',
           removeWorktree: 'Remove worktree',
           removeWorktreeConfirm: 'Remove this worktree?',
-          removeWorktreeDirty: 'This worktree has changes.',
+          removeWorktreeDirty: (reason: string) => `This worktree was kept: ${reason}.`,
           removeWorktreeFailed: 'Could not remove worktree',
           reorder: (label: string) => `Reorder ${label}`,
           reveal: 'Reveal in file manager',

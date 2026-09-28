@@ -24,6 +24,7 @@ from hermes_cli.web_models import (
     GitPathBody,
     GitPrListBody,
     GitWorktreeAddBody,
+    GitWorktreeReclaimBody,
     GitWorktreeRemoveBody,
 )
 
@@ -202,6 +203,11 @@ async def git_worktree_remove_route(body: GitWorktreeRemoveBody):
     return await _git_op(
         _web_git.worktree_remove, _git_path(body.path), _git_path(body.worktreePath), body.force
     )
+
+
+@router.post("/api/git/worktree/reclaim")
+async def git_worktree_reclaim_route(body: GitWorktreeReclaimBody):
+    return await _git_op(_web_git.worktree_reclaim, _git_path(body.path), _git_path(body.worktreePath))
 
 
 @router.post("/api/git/branch/switch")

@@ -5,7 +5,8 @@ import type {
   HermesRepoPullRequests,
   HermesRepoStatus,
   HermesReviewList,
-  HermesReviewShipInfo
+  HermesReviewShipInfo,
+  HermesWorktreeReclaim
 } from '@/global'
 import { hermesApi } from '@/hermes'
 
@@ -103,6 +104,15 @@ const remoteGit: GitBridge = {
   // Repo discovery is a local-disk crawl; on a remote gateway the backend
   // already merges session-derived repos, so this is a no-op.
   scanRepos: async () => []
+}
+
+// Policy-gated removal of ONE worktree — REST in BOTH modes. The verdicts (dirty
+// tree → keep, unique commits → keep, pushed PR lane → keep the branch, merged →
+// delete the branch, untracked scratch → archive first) live in the backend's
+// `worktree_gc`, the module `hermes worktree prune` runs; routing the local case
+// through Electron's git bridge would mean a second copy of that policy in TS.
+export function reclaimWorktree(repoPath: string, worktreePath: string): Promise<HermesWorktreeReclaim> {
+  return gitPost('worktree/reclaim', { path: repoPath, worktreePath })
 }
 
 export function desktopGit(): GitBridge | undefined {

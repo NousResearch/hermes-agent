@@ -4041,9 +4041,9 @@ export const deOverrides = {
       removeWorktree: 'Worktree entfernen',
       removeWorktreeFailed: 'Worktree konnte nicht entfernt werden (nicht committete Änderungen?)',
       removeWorktreeConfirm:
-        'Aus Git entfernen (löscht das Worktree-Verzeichnis; der Branch bleibt), oder einfach die Lane aus der Sidebar ausblenden und den Worktree auf der Festplatte belassen.',
-      removeWorktreeDirty:
-        'Dieser Worktree hat nicht committete Änderungen. Kraftvoll entfernen (verwirft diese Änderungen), oder einfach die Lane ausblenden und ihn auf der Festplatte behalten.',
+        'Aus Git entfernen (löscht das Worktree-Verzeichnis und, sobald die Arbeit upstream ist, den Branch; nicht verfolgte Dateien werden vorher archiviert), oder einfach die Lane aus der Sidebar ausblenden und den Worktree auf der Festplatte belassen.',
+      removeWorktreeDirty: reason =>
+        `Dieser Worktree wurde behalten: ${reason}. Kraftvoll entfernen (verwirft diese Arbeit), oder einfach die Lane ausblenden und ihn auf der Festplatte behalten.`,
       forceRemove: 'Kraftvoll entfernen',
       enter: label => `${label} öffnen`,
       reorder: label => `${label} neu anordnen`,
@@ -4095,6 +4095,10 @@ export const deOverrides = {
       deleteDesc: title => `Das löscht “${title}” dauerhaft. Das kann nicht rückgängig gemacht werden.`,
       deleting: 'Wird gelöscht…',
       deleted: 'Session gelöscht',
+      archiveRemoveWorktree: 'Archivieren & Worktree entfernen',
+      worktreeRemovedBranchDeleted: branch => `Worktree entfernt und Branch „${branch}“ gelöscht`,
+      worktreeRemoved: label => `Worktree „${label}“ entfernt`,
+      worktreeKept: (label, reason) => `Sitzung archiviert; Worktree „${label}“ behalten: ${reason}`,
       untitledChat: id => `Chat ${id}`,
       messageCount: count => `${count} ${count === 1 ? 'Nachricht' : 'Nachrichten'}`,
       todoProgress: 'Aufgaben abgeschlossen',

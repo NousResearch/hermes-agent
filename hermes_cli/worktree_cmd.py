@@ -1,6 +1,6 @@
-"""``hermes worktree`` — audit (``list [--json] [--older-than DAYS]``) and reclaim
-(``prune [--dry-run] [--json] [--older-than DAYS] [--trees-only | --branches-only]``)
-accumulated git worktrees/branches. ``--json`` output is the only thing written to stdout in
+"""``hermes worktree`` — audit (``list [--json] [--older-than DAYS]``), reclaim
+(``prune [--dry-run] [--json] [--older-than DAYS] [--trees-only | --branches-only]``) and
+single-tree removal (``remove <tree> [--json]``) of accumulated git worktrees/branches. ``--json`` output is the only thing written to stdout in
 that mode so scripts can consume it."""
 
 from __future__ import annotations
@@ -90,7 +90,25 @@ def _prune(worktree_gc, repo_root: str, args) -> int:
     return 0
 
 
-_ACTIONS = {"list": _list, "prune": _prune}
+def _remove(worktree_gc, repo_root: str, args) -> int:
+    """One tree, same policy as ``prune``: a bare name resolves under ``.worktrees/``. Exit 1
+    when the tree stays (with its reason) so scripts can tell "kept" from "gone"."""
+    import os
+    tree = str(getattr(args, "tree", "") or "")
+    path = tree if os.path.isabs(tree) or os.sep in tree else os.path.join(repo_root, ".worktrees", tree)
+    result = worktree_gc.reclaim_worktree(repo_root, path)
+    if getattr(args, "json", False):
+        print(json.dumps({"repo": repo_root, "path": path, **result}, indent=2))
+        return 0 if result["removed"] else 1
+    for line in result["actions"]:
+        print(f"  {line}")
+    if result["removed"]:
+        return 0
+    print(f"Kept {path}: {result['reason']}")
+    return 1
+
+
+_ACTIONS = {"list": _list, "prune": _prune, "remove": _remove}
 
 
 def cmd_worktree(args) -> int:

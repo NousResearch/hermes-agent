@@ -199,6 +199,33 @@ class TestAuditVerdicts:
         assert "kanban" in record.reason
 
 
+class TestReclaimOne:
+    """``reclaim_worktree`` — the single-tree door (Desktop session action, ``hermes worktree
+    remove``): same verdicts as the sweep, structured for a UI, never forced."""
+
+    def test_clean_tree_removed_with_branch_and_dirty_tree_kept_with_reason(self, repo):
+        clean, clean_branch = _add_worktree(repo, "hermes-clean")
+        dirty, dirty_branch = _add_worktree(repo, "hermes-dirty")
+        (dirty / "README.md").write_text("edited\n")
+
+        gone = worktree_gc.reclaim_worktree(str(repo), str(clean))
+        assert gone["removed"] is True and gone["branch_deleted"] is True
+        assert gone["branch"] == clean_branch and not clean.exists()
+
+        kept = worktree_gc.reclaim_worktree(str(repo), str(dirty))
+        assert kept["removed"] is False and kept["verdict"] == "keep"
+        assert "uncommitted" in kept["reason"] and dirty.exists()
+        assert _git(["rev-parse", "--verify", dirty_branch], repo)
+
+    def test_main_checkout_and_foreign_dirs_are_refused(self, repo, tmp_path):
+        stranger = tmp_path / "stranger"
+        stranger.mkdir()
+        for path in (repo, stranger, repo / ".worktrees" / "does-not-exist"):
+            result = worktree_gc.reclaim_worktree(str(repo), str(path))
+            assert result["removed"] is False and result["verdict"] == "unknown"
+        assert (repo / "README.md").exists() and stranger.exists()
+
+
 class TestReclaim:
     def test_reap_removes_tree_and_branch(self, repo):
         tree, branch = _add_worktree(repo, "hermes-clean")

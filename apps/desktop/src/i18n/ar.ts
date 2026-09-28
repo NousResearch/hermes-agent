@@ -2189,9 +2189,9 @@ export const ar = defineLocale({
       removeWorktree: 'إزالة شجرة العمل',
       removeWorktreeFailed: 'تعذّر إزالة شجرة العمل (تغييرات غير مُودعة؟)',
       removeWorktreeConfirm:
-        'أزِلها من git (يحذف مجلد شجرة العمل؛ يبقى الفرع)، أو فقط أخفِ المسار من الشريط الجانبي واترك شجرة العمل على القرص.',
-      removeWorktreeDirty:
-        'تحتوي شجرة العمل هذه على تغييرات غير مُودعة. أزِلها بالقوة (يتجاهل تلك التغييرات)، أو فقط أخفِ المسار واحتفظ بها على القرص.',
+        'أزِلها من git (يحذف مجلد شجرة العمل وفرعها عندما يكون العمل في المستودع البعيد؛ تُؤرشف الملفات غير المتعقبة أولاً)، أو فقط أخفِ المسار من الشريط الجانبي واترك شجرة العمل على القرص.',
+      removeWorktreeDirty: reason =>
+        `أُبقيت شجرة العمل هذه: ${reason}. أزِلها بالقوة (يتجاهل ذلك العمل)، أو فقط أخفِ المسار واحتفظ بها على القرص.`,
       forceRemove: 'إزالة بالقوة',
       enter: label => `فتح ${label}`,
       reorder: label => `إعادة ترتيب ${label}`,
@@ -2231,6 +2231,10 @@ export const ar = defineLocale({
       openInNewTab: 'فتح في تبويب جديد',
       openInSplit: 'فتح في تقسيم',
       ownedByProfile: profile => `مملوكة للملف الشخصي ${profile}`,
+      archiveRemoveWorktree: 'أرشفة وإزالة شجرة العمل',
+      worktreeRemovedBranchDeleted: branch => `أُزيلت شجرة العمل وحُذف الفرع «${branch}»`,
+      worktreeRemoved: label => `أُزيلت شجرة العمل «${label}»`,
+      worktreeKept: (label, reason) => `أُرشفت الجلسة؛ أُبقيت شجرة العمل «${label}»: ${reason}`,
       untitledChat: id => `محادثة ${id}`,
       handoffOrigin: platform => `قادمة من ${platform}`,
       continuationOrigin: 'متابعة تلقائية — تم ضغط هذه المحادثة ومتابعتها',

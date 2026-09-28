@@ -2573,9 +2573,9 @@ export const ja = defineLocale({
       removeWorktree: 'ワークツリーを削除',
       removeWorktreeFailed: 'ワークツリーを削除できませんでした（コミットされていない変更？）',
       removeWorktreeConfirm:
-        'git から削除（ワークツリーのディレクトリを削除しますが、ブランチは残ります）するか、サイドバーからレーンを隠してワークツリーをディスク上に残します。',
-      removeWorktreeDirty:
-        'このワークツリーにはコミットされていない変更があります。強制削除（変更を破棄）するか、レーンを隠してディスク上に残します。',
+        'git から削除（ワークツリーのディレクトリを削除し、作業がアップストリームにあればブランチも削除。未追跡ファイルは先にアーカイブ）するか、サイドバーからレーンを隠してワークツリーをディスク上に残します。',
+      removeWorktreeDirty: reason =>
+        `このワークツリーは保持されました: ${reason}。強制削除（作業を破棄）するか、レーンを隠してディスク上に残します。`,
       forceRemove: '強制削除',
       enter: label => `${label} を開く`
     },
@@ -2620,6 +2620,10 @@ export const ja = defineLocale({
       deleteDesc: title => `「${title}」を完全に削除します。この操作は元に戻せません。`,
       deleting: '削除中…',
       deleted: 'セッションを削除しました',
+      archiveRemoveWorktree: 'アーカイブしてワークツリーを削除',
+      worktreeRemovedBranchDeleted: branch => `ワークツリーを削除し、ブランチ「${branch}」を削除しました`,
+      worktreeRemoved: label => `ワークツリー「${label}」を削除しました`,
+      worktreeKept: (label, reason) => `セッションをアーカイブしました。ワークツリー「${label}」は保持: ${reason}`,
       untitledChat: id => `セッション ${id}`,
       ageNow: 'たった今',
       ageDay: '日',

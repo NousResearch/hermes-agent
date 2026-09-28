@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
 from agent.secret_scope import get_secret
+from hermes_constants import get_hermes_home
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
     get_scoped_secret as _get_scoped_secret, send_error
@@ -90,7 +91,8 @@ from plugins.platforms.matrix.room_context import (
     MatrixRoomState, PendingRoomNotes, RoomStateNote, room_state_change_note,
 )
 from plugins.platforms.matrix.thread_context import fetch_thread_entries
-from plugins.platforms.matrix.read_context import read_matrix_context
+from plugins.platforms.matrix.read_context import MatrixSessionAccess, read_matrix_context
+from plugins.platforms.matrix.thread_create import MatrixThreadCreateMixin
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
@@ -843,7 +845,7 @@ class _CryptoStateStore:
         return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
 
 
-class MatrixAdapter(BasePlatformAdapter):
+class MatrixAdapter(MatrixThreadCreateMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -907,6 +909,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
         self._processed_events_set: set = set()
         self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
+        self._thread_home = get_hermes_home()
         self._parked_voices = ParkedVoices()  # unmentioned voice awaiting a bare @mention
         self._require_mention: bool = self._parse_require_mention(config)
         self._thread_require_mention: bool = self._parse_thread_require_mention(config)
@@ -1468,11 +1471,19 @@ class MatrixAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=str(retry_exc))
         return SendResult(success=True, message_id=last_event_id)
 
-    async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
+    async def _send_room_message(
+        self, chat_id: str, msg_content: Dict[str, Any], *, access: MatrixSessionAccess | None = None,
+    ) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
-        event_id = await asyncio.wait_for(
-            self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
+        if access is not None:
+            access.check()
+        client = access.client if access is not None else self._client
+        delivery = access.send_message(msg_content) if access is not None else client.send_message_event(
+            RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content)
+        event_id = await asyncio.wait_for(delivery, timeout=45)
         event_id = str(event_id)
+        if access is not None:
+            access.check(event_id)
         self._event_context_cache.store(
             chat_id, event_id, MatrixEventContext(self._user_id or "", msg_content["body"])
         )

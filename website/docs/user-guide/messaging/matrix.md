@@ -411,7 +411,23 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-Hermes does not expose Matrix-specific agent tools (such as room creation, invites, or redaction) — the agent interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
+The **Matrix Threads** toolset in `hermes tools` lets the agent explicitly create
+a thread in its current joined, allowed room. Supply visible root text for a
+new main-timeline message, or an existing main-timeline event ID, plus the first
+thread message. Matrix has no separate thread name: a supplied label is part of
+the visible root text. Thread replies, edits and withdrawn events cannot become
+roots. The action does not join or create rooms.
+
+Success includes the room, root and initial reply event IDs. If the root was
+delivered but the first reply failed, the result reports partial delivery and
+the root ID for recovery. A root alone does not create a visible thread.
+Encryption and homeserver permission failures are reported without a plaintext
+retry. The current turn stays in its original session; a later user reply in
+the new thread starts a separate thread conversation.
+
+Hermes does not expose agent tools for room creation, invites or redaction.
+The adapter uses reactions and redactions internally to power approval prompts
+and pickers.
 
 If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms and in private bot chats with exactly two joined users, including the bot.
 

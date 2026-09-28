@@ -3993,6 +3993,7 @@
     "shell.statusbar.closeCommandCenter",
     "shell.statusbar.commit",
     "shell.statusbar.commitsBehind",
+    "shell.statusbar.compressions",
     "shell.statusbar.connectionCloud",
     "shell.statusbar.connectionCloudTooltip",
     "shell.statusbar.connectionRemote",

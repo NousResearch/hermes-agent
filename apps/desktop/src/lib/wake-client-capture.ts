@@ -10,6 +10,16 @@
 const TARGET_RATE = 16_000
 const DEFAULT_FRAME = 1280 // 80 ms @ 16 kHz — matches tools/wake_word.py
 
+const DEFAULT_MICROPHONE_CONSTRAINTS = {
+  audio: {
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
+  },
+  video: false
+} satisfies MediaStreamConstraints
+
 export type WakeFeedRequester = (method: string, params?: Record<string, unknown>) => Promise<unknown>
 
 export interface ClientWakeCaptureOptions {
@@ -95,18 +105,10 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
     throw new Error('getUserMedia unavailable for client wake capture')
   }
 
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      channelCount: 1,
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true
-    },
-    video: false
-  })
+  let stream = await navigator.mediaDevices.getUserMedia(DEFAULT_MICROPHONE_CONSTRAINTS)
 
   const context = new AudioContextCtor()
-  const source = context.createMediaStreamSource(stream)
+  let source = context.createMediaStreamSource(stream)
   // ScriptProcessor is deprecated but widely available and simple for PCM export.
   // Buffer size 4096 keeps callback rate reasonable on desktop.
   const processor = context.createScriptProcessor(4096, 1, 1)
@@ -203,6 +205,74 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
   processor.connect(mute)
   mute.connect(context.destination)
 
+  let handoffRunning = false
+  let handoffQueued = false
+
+  function handleInputChange() {
+    void replaceDefaultInput()
+  }
+
+  function attachTrackEndListeners(target: MediaStream) {
+    target.getTracks().forEach(track => track.addEventListener('ended', handleInputChange))
+  }
+
+  function detachTrackEndListeners(target: MediaStream) {
+    target.getTracks().forEach(track => track.removeEventListener('ended', handleInputChange))
+  }
+
+  async function replaceDefaultInput() {
+    if (handoffRunning) {
+      handoffQueued = true
+
+      return
+    }
+
+    handoffRunning = true
+
+    try {
+      do {
+        handoffQueued = false
+        let replacementStream: MediaStream | null = null
+        let replacementSource: MediaStreamAudioSourceNode | null = null
+
+        try {
+          replacementStream = await navigator.mediaDevices.getUserMedia(DEFAULT_MICROPHONE_CONSTRAINTS)
+
+          if (stopped) {
+            replacementStream.getTracks().forEach(track => track.stop())
+
+            return
+          }
+
+          replacementSource = context.createMediaStreamSource(replacementStream)
+          replacementSource.connect(processor)
+          detachTrackEndListeners(stream)
+          source.disconnect()
+          stream.getTracks().forEach(track => track.stop())
+          source = replacementSource
+          stream = replacementStream
+          attachTrackEndListeners(stream)
+          replacementSource = null
+          replacementStream = null
+        } catch (error) {
+          replacementSource?.disconnect()
+          replacementStream?.getTracks().forEach(track => track.stop())
+
+          if (!stopped) {
+            options.onError?.(error instanceof Error ? error : new Error(String(error)))
+          }
+        }
+      } while (handoffQueued && !stopped)
+    } finally {
+      handoffRunning = false
+    }
+  }
+
+  const handleDeviceChange = handleInputChange
+
+  navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange)
+  attachTrackEndListeners(stream)
+
   if (context.state === 'suspended') {
     await context.resume().catch(() => undefined)
   }
@@ -218,6 +288,8 @@ export async function startClientWakeCapture(options: ClientWakeCaptureOptions):
 
       stopped = true
       queue.length = 0
+      navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange)
+      detachTrackEndListeners(stream)
 
       try {
         processor.disconnect()

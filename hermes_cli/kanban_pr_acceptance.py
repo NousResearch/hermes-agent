@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from pathlib import Path
 from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -45,6 +46,8 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
+        if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
+            raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
         raise
     value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
@@ -73,35 +76,42 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
         return None
     from tools.environments.local import _is_routed_home, hermes_subprocess_env, served_profile_child_env
     base = hermes_subprocess_env(inherit_credentials=True)
-    if _is_routed_home(profile_home):
+    routed = _is_routed_home(profile_home)
+    if routed:
         # gh's config dir decides which login `gh api` uses, yet it is a path, not a
         # credential, so no scrub list sees it; the target's own value is overlaid from its .env.
         base.pop("GH_CONFIG_DIR", None)
-    return served_profile_child_env(base=base, target_home=profile_home, inherit_credentials=True)
+    env = served_profile_child_env(base=base, target_home=profile_home, inherit_credentials=True)
+    if routed and not (env.keys() & {"GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR"}):
+        # HOME/XDG_CONFIG_HOME are still the launch process's: without a login of its own the
+        # child would fall through to ~/.config/gh/hosts.yml — the ambient login. Pin gh's config
+        # to a profile-owned dir so it fails "not logged in" (exit 4 -> auth) instead.
+        env["GH_CONFIG_DIR"] = str(Path(profile_home) / "gh")
+    return env
 
 
-def _assignee_profile_home(conn, task_id: str) -> str | None:
+def _assignee_profile_home(assignee: str | None) -> str | None:
     """Home whose ``gh`` login must read the contract repo — the assignee's, resolved
-    exactly as the dispatcher resolves the worker's home — or None (unassigned,
-    control-plane lane, profile gone) so the ambient login is used rather than a guess."""
-    row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    assignee = row["assignee"] if row else None
+    exactly as the dispatcher resolves the worker's home — or None (unassigned) so the
+    ambient login is used. An assigned card whose profile cannot be resolved is an
+    identity failure (``auth``), never a silent fall-through to the ambient login."""
     if not assignee:
         return None
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
     try:
         return resolve_profile_env(normalize_profile_name(assignee))
     except (FileNotFoundError, ValueError):
-        return None
+        raise _GateAuthError(f"assignee profile {assignee!r} cannot be resolved") from None
 
 
 def collect_acceptance(contract: str, published_pr: str | None,
-                       profile_home: str | None = None) -> dict:
+                       assignee: str | None = None) -> dict:
     receipt = {"ok": False, "classification": "missing", "head_sha": None,
                "pr_url": published_pr, "checks": [],
                "recovery": "Fix required failures, rerun infrastructure checks or wait, then retry completion. "
                            "Use kanban_block if human input is needed; receipts remain on the task event log."}
     try:
+        profile_home = _assignee_profile_home(assignee)
         declared = _PR.fullmatch(contract)
         url = contract if declared else published_pr
         match = _PR.fullmatch(url or "")
@@ -171,8 +181,9 @@ def collect_acceptance(contract: str, published_pr: str | None,
         receipt["ok"] = receipt["classification"] == "success"
         return receipt
     except _GateAuthError as exc:
+        login = f"assignee profile {assignee!r}'s gh login" if assignee else "the ambient gh login"
         receipt.update(classification="auth",
-                       detail=f"GitHub refused the acceptance read ({exc}) as the assignee profile's gh login; "
+                       detail=f"GitHub refused the acceptance read ({exc}) as {login}; "
                               "fix that profile's GitHub credentials/access to the repository, then retry completion.")
         return receipt
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):

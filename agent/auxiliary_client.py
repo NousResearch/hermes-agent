@@ -2509,12 +2509,13 @@ def _read_main_model_for_aux() -> str:
 
 
 def _read_main_api_key_if_same_host(aux_base_url: str) -> str:
-    """Main api_key only when *aux_base_url* shares the main base_url's host.
+    """Main api_key only when *aux_base_url* has the main base_url's exact origin.
 
     Unconditional inheritance would leak the credential to any misconfigured host; mismatch keeps ``no-key-required`` → 401.
+    Origin, not hostname: another scheme (``http://``) or port on the same host is a different endpoint.
     """
-    aux_host = base_url_hostname(aux_base_url)
-    if not aux_host or aux_host != base_url_hostname(_read_main_base_url()):
+    aux_origin = base_url_origin(aux_base_url)
+    if not aux_origin[1] or aux_origin != base_url_origin(_read_main_base_url()):
         return ""
     return _read_main_api_key()
 

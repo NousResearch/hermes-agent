@@ -29,6 +29,60 @@ def _profile_name(source: Any) -> str:
     return name.strip() if isinstance(name, str) and name.strip() else "default"
 
 
+def _retention_policy(config: Any) -> Optional[int]:
+    """Read ``kanban.session_mirror.retention_days`` without the enable/allowlist gates.
+
+    Retention outlives the feature. A user who switches mirroring off — or drops a
+    profile/platform from the allowlists — to stop collecting has already collected
+    rows naming their chats and sessions; tying the sweep to the same switch that
+    stops collection strands every one of them forever. The value is read on its own
+    so ``enabled: false`` stops collection without freezing expiry.
+    """
+    if not isinstance(config, dict):
+        return None
+    section = config.get("kanban")
+    settings = section.get("session_mirror") if isinstance(section, dict) else None
+    if not isinstance(settings, dict):
+        return None
+    retention_days = settings.get("retention_days", 30)
+    if isinstance(retention_days, bool) or not isinstance(retention_days, int) or not 0 <= retention_days <= 3650:
+        logger.warning("Invalid kanban.session_mirror.retention_days; session mirroring is disabled")
+        return None
+    return retention_days
+
+
+# One indexed sweep per profile, mirrored on the notifier GC's cadence
+# (gateway/kanban_watchers.py) so the cost is a background write, never per turn.
+_SWEEP_INTERVAL_SECONDS = 3600.0
+_sweep_next_at: dict[str, float] = {}
+
+
+def _maybe_sweep_mirrors(config: Any, profile: str) -> None:
+    """Run the retention sweep for one profile, at most hourly, whatever the policy says.
+
+    Called on every external turn before the enable gate. ``retention_days: 0``
+    means expiry is off, and an invalid value is rejected by ``_retention_policy``,
+    so both return before the board is touched.
+    """
+    retention_days = _retention_policy(config)
+    if not retention_days:
+        return
+    now = time.monotonic()
+    if now < _sweep_next_at.get(profile, 0.0):
+        return
+    _sweep_next_at[profile] = now + _SWEEP_INTERVAL_SECONDS
+
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli.kanban_db_session_mirror import prune_expired_mirrors
+
+    try:
+        with kbc.connect_closing(board=kb.get_current_board()) as conn:
+            prune_expired_mirrors(conn, retention_days=retention_days, profile=profile)
+    except Exception:
+        logger.warning("Could not prune expired Kanban session mirrors", exc_info=True)
+
+
 def _mirror_policy(config: Any, profile: str, platform: str) -> Optional[int]:
     if not isinstance(config, dict):
         return None
@@ -48,11 +102,7 @@ def _mirror_policy(config: Any, profile: str, platform: str) -> Optional[int]:
         return None
     if platform.casefold() not in {value.strip().casefold() for value in platforms}:
         return None
-    retention_days = settings.get("retention_days", 30)
-    if isinstance(retention_days, bool) or not isinstance(retention_days, int) or not 0 <= retention_days <= 3650:
-        logger.warning("Invalid kanban.session_mirror.retention_days; session mirroring is disabled")
-        return None
-    return retention_days
+    return _retention_policy(config)
 
 
 def begin_session_mirror(
@@ -71,6 +121,11 @@ def begin_session_mirror(
     profile = _profile_name(source)
     if not platform or not profile:
         return None
+    # Before the gate on purpose: switching mirroring off (or narrowing the
+    # allowlists) must stop COLLECTION, not freeze expiry of what was already
+    # collected. `_maybe_sweep_mirrors` is the only call site that reaches the
+    # sweep when no turn is mirrored.
+    _maybe_sweep_mirrors(config, profile)
     retention_days = _mirror_policy(config, profile, platform)
     if retention_days is None:
         return None

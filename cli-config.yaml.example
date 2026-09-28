@@ -394,7 +394,10 @@ kanban:
     profiles: []
     platforms: []
     mode: read_only
-    retention_days: 30  # 0 disables expiry; archived/terminal mirrors expire after this many days.
+    # 0 disables expiry. Applies while this feature is DISABLED too: switching mirroring off
+    # (or narrowing the allowlists) stops collecting, it does not strand what was already
+    # collected. A mirror untouched for longer than this expires.
+    retention_days: 30
 
 # =============================================================================
 # Terminal Tool Configuration

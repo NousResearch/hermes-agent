@@ -557,10 +557,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }, [restartPreviewServer])
 
   const {
+    abandonCurrentSessionForNewChat,
     archiveSession,
     branchCurrentSession,
     branchStoredSession,
     createBackendSessionForSend,
+    endSession,
     openNewSessionTile,
     removeSession,
     resumeSession,
@@ -600,8 +602,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
 
     lastFreshRef.current = freshSessionRequest
-    startFreshSessionDraft()
-  }, [freshSessionRequest, startFreshSessionDraft])
+    // The fresh-session request atoms come from deliberate "leave this chat"
+    // gestures (main-tab close, drag-out, resume-exhausted retry), so the idle
+    // runtime they abandon is closed too (#48997).
+    void abandonCurrentSessionForNewChat()
+  }, [abandonCurrentSessionForNewChat, freshSessionRequest])
 
   // Swapping the live gateway to another source or profile must re-pull that
   // source's model/config/profile state. Two sources commonly both expose a
@@ -650,10 +655,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         onExplicitWorkspace: restoreWorktree,
         path,
         requestGateway,
-        startFreshSessionDraft
+        startFreshSessionDraft: abandonCurrentSessionForNewChat
       })
     },
-    [activeSessionIdRef, openNewSessionTile, requestGateway, startFreshSessionDraft]
+    [abandonCurrentSessionForNewChat, activeSessionIdRef, openNewSessionTile, requestGateway]
   )
 
   // Composer "branch off into a new worktree": open a fresh session anchored
@@ -770,7 +775,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     resumeStoredSession: resumeSession,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
-    startFreshSessionDraft,
+    // /new is a session boundary: the idle runtime it abandons is closed
+    // (#48997). Plain view resets (boot, re-home) keep startFreshSessionDraft.
+    startFreshSessionDraft: abandonCurrentSessionForNewChat,
     sttEnabled,
     updateSessionState
   })
@@ -803,7 +810,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // The global-hotkey Quick Entry window's bridge: its captured text rides the
   // SAME submit machinery the normal composer uses (current chat / picked
   // session / new session), and it hears gateway truth from this window.
-  useQuickEntryBridge({ startFreshSessionDraft, submitText })
+  useQuickEntryBridge({ startFreshSessionDraft: abandonCurrentSessionForNewChat, submitText })
 
   // Leaving HUD mode hands this window the session back (see hud/handoff).
   useHudHandoff({ navigate, resumeSession })
@@ -900,7 +907,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             })
           }
         } else if (payload?.start_new_session !== false) {
-          startFreshSessionDraft()
+          void abandonCurrentSessionForNewChat()
         }
 
         requestVoiceConversationStart()
@@ -910,7 +917,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       handleDesktopGatewayEvent(event)
     },
-    [handleDesktopGatewayEvent, startFreshSessionDraft]
+    [abandonCurrentSessionForNewChat, handleDesktopGatewayEvent]
   )
 
   useGatewayBoot({
@@ -1071,7 +1078,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     archiveSelectedSession,
     openNewSessionTab,
     requestGateway,
-    startFreshSession: startFreshSessionDraft,
+    startFreshSession: abandonCurrentSessionForNewChat,
     toggleCommandCenter,
     toggleSelectedPin
   })
@@ -1156,6 +1163,15 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onDeleteSession: sessionId => void removeSession(sessionId),
     onDismissError: dismissError,
     onEdit: editMessage,
+    // End Session (#75489): the chat header's explicit close — finalize the
+    // runtime without deleting history.
+    onEndSelectedSession: () => {
+      const id = $selectedStoredSessionId.get()
+
+      if (id) {
+        void endSession(id)
+      }
+    },
     onLoadMoreMessaging: loadMoreMessagingForPlatform,
     onLoadMoreSessions: loadMoreSessions,
     onRetrySessions: () => refreshSessions().catch(() => undefined),

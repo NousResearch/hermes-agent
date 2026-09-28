@@ -155,6 +155,7 @@ type HarnessHandle = Pick<
   | 'archiveSession'
   | 'branchStoredSession'
   | 'createBackendSessionForSend'
+  | 'endSession'
   | 'openNewSessionTile'
   | 'removeSession'
   | 'selectSidebarItem'
@@ -189,6 +190,7 @@ function Harness({
   runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefOverride,
   selectedStoredSessionId = null,
   selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride,
+  sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRefOverride,
   updateSessionState: updateSessionStateOverride
 }: {
   activeSessionId?: null | string
@@ -199,6 +201,7 @@ function Harness({
   runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   selectedStoredSessionId?: null | string
   selectedStoredSessionIdRef?: MutableRefObject<null | string>
+  sessionStateByRuntimeIdRef?: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState?: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -221,7 +224,7 @@ function Harness({
     runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefOverride ?? ref(new Map<string, string>()),
     selectedStoredSessionId,
     selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride ?? ref(selectedStoredSessionId),
-    sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
+    sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRefOverride ?? ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
     updateSessionState: updateSessionStateOverride ?? (() => ({}) as ClientSessionState)
   })
@@ -401,7 +404,8 @@ describe('connection-qualified session deletion', () => {
       profile: 'worker'
     })
     expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'worker', 'session.close', {
-      session_id: 'runtime-shared'
+      session_id: 'runtime-shared',
+      reason: 'desktop_delete'
     })
     expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
   })
@@ -438,7 +442,8 @@ describe('connection-qualified session deletion', () => {
 
     expect(navigate).toHaveBeenCalledWith(NEW_CHAT_ROUTE, { replace: true })
     expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'worker', 'session.close', {
-      session_id: 'runtime-shared'
+      session_id: 'runtime-shared',
+      reason: 'desktop_delete'
     })
     expect(selectedStoredSessionIdRef.current).toBeNull()
     expect(activeSessionIdRef.current).toBeNull()
@@ -484,7 +489,7 @@ describe('connection-qualified session deletion', () => {
     })
 
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: 'runtime-bg' })
-    expect(requestGateway).toHaveBeenCalledWith('session.close', { session_id: 'runtime-bg' })
+    expect(requestGateway).toHaveBeenCalledWith('session.close', { reason: 'desktop_delete', session_id: 'runtime-bg' })
     // The selected session's runtime must not be touched by another row's delete.
     expect(requestGateway).not.toHaveBeenCalledWith('session.interrupt', { session_id: 'runtime-foreground' })
     expect(requestGateway).not.toHaveBeenCalledWith('session.close', { session_id: 'runtime-foreground' })
@@ -5905,5 +5910,153 @@ describe('routed fresh chat keeps its exact owner across turns', () => {
     expect(vi.mocked(requestGatewayForAgent).mock.calls.filter(call => call[2] === 'session.close')).toEqual([])
     expect(ambientRequest).not.toHaveBeenCalledWith('session.close', expect.anything())
     expect(getSessionOwnerHint(STORED)).toEqual(route)
+  })
+})
+
+describe('idle-runtime close at Desktop session boundaries (#48997 / #75489)', () => {
+  beforeEach(() => {
+    setSessions([])
+    setMessagingSessions([])
+    setCronSessions([])
+    // Single-profile: the ambient gateway provably owns every session, so the
+    // boundary close rides the ambient request the Harness hands in.
+    $profiles.set(profiles('default'))
+    $activeGatewayProfile.set('default')
+    $pinnedSessionIds.set([])
+    $removedSessionIds.set(new Set())
+    $sessionMutationsInFlight.set(new Set())
+    $sessionSeenCounts.set({})
+    $unreadFinishedMarkers.set({})
+    mockDeleteSession.mockReset()
+    mockGetSession.mockReset()
+    mockSetSessionArchived.mockReset()
+    vi.mocked(requestGatewayForAgent).mockReset()
+    vi.mocked(requestGatewayForProfile).mockReset()
+  })
+
+  afterEach(() => {
+    cleanup()
+    setSessions([])
+    setMessagingSessions([])
+    setCronSessions([])
+    $profiles.set([])
+    $activeGatewayProfile.set('default')
+    $pinnedSessionIds.set([])
+    $removedSessionIds.set(new Set())
+    $sessionMutationsInFlight.set(new Set())
+    $sessionSeenCounts.set({})
+    $unreadFinishedMarkers.set({})
+    setActiveSessionId(null)
+    setSelectedStoredSessionId(null)
+  })
+
+  const selectedChatRefs = (busy: boolean) => {
+    const sessionState = createClientSessionState('stored-1')
+    sessionState.busy = busy
+
+    return {
+      activeSessionIdRef: { current: 'rt-1' } as MutableRefObject<null | string>,
+      selectedStoredSessionIdRef: { current: 'stored-1' } as MutableRefObject<null | string>,
+      sessionStateByRuntimeIdRef: { current: new Map([['rt-1', sessionState]]) }
+    }
+  }
+
+  it('closes the selected idle runtime with the archive reason before archiving', async () => {
+    mockSetSessionArchived.mockResolvedValue({ ok: true })
+    setSessions([storedSession({ id: 'stored-1', profile: 'default' })])
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness onReady={value => (handle = value)} requestGateway={requestGateway} {...selectedChatRefs(false)} />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.archiveSession('stored-1')
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('session.close', {
+      session_id: 'rt-1',
+      reason: 'desktop_archive'
+    })
+    expect(mockSetSessionArchived).toHaveBeenCalledWith('stored-1', true, 'default')
+    expect($sessions.get()).toEqual([])
+  })
+
+  it('refuses to archive a session whose turn is still running', async () => {
+    setSessions([storedSession({ id: 'stored-1', profile: 'default' })])
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness onReady={value => (handle = value)} requestGateway={requestGateway} {...selectedChatRefs(true)} />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.archiveSession('stored-1')
+    })
+
+    // The running turn keeps streaming in the background; nothing is archived.
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+    expect(mockSetSessionArchived).not.toHaveBeenCalled()
+    expect($sessions.get().map(session => session.id)).toEqual(['stored-1'])
+  })
+
+  it('ends the selected session without deleting it', async () => {
+    setSessions([storedSession({ id: 'stored-1', profile: 'default' })])
+    setActiveSessionId('rt-1')
+    setSelectedStoredSessionId('stored-1')
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness onReady={value => (handle = value)} requestGateway={requestGateway} {...selectedChatRefs(false)} />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.endSession('stored-1')
+    })
+
+    expect(vi.mocked(requestGatewayForProfile)).toHaveBeenCalledWith(
+      'default',
+      'session.close',
+      { session_id: 'rt-1', reason: 'desktop_explicit_end' },
+      undefined,
+      undefined
+    )
+    // The view resets to a fresh draft…
+    expect($selectedStoredSessionId.get()).toBeNull()
+    expect($activeSessionId.get()).toBeNull()
+    // …but the row and its history stay listed and resumable.
+    expect($sessions.get().map(session => session.id)).toEqual(['stored-1'])
+    expect(mockDeleteSession).not.toHaveBeenCalled()
+  })
+
+  it('refuses to end a session whose turn is still running', async () => {
+    setSessions([storedSession({ id: 'stored-1', profile: 'default' })])
+    setActiveSessionId('rt-1')
+    setSelectedStoredSessionId('stored-1')
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(
+      <Harness onReady={value => (handle = value)} requestGateway={requestGateway} {...selectedChatRefs(true)} />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.endSession('stored-1')
+    })
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+    expect($selectedStoredSessionId.get()).toBe('stored-1')
+    expect($activeSessionId.get()).toBe('rt-1')
   })
 })

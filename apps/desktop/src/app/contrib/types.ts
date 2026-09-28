@@ -38,6 +38,7 @@ export type ChatActions = Pick<
   | 'onDeleteSelectedSession'
   | 'onDismissError'
   | 'onEdit'
+  | 'onEndSelectedSession'
   | 'onPasteClipboardImage'
   | 'onPickFiles'
   | 'onPickFolders'

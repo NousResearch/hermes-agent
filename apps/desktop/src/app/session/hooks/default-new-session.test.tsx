@@ -303,6 +303,12 @@ describe('generic new session default routing', () => {
       connection_id: expected.connectionId,
       profile: expected.profile
     })
-    expect(requestGateway).not.toHaveBeenCalled()
+    // #75489: the New Chat boundary closes the idle runtime it abandoned over
+    // the ambient socket; session.create itself still goes to the saved owner.
+    expect(requestGateway).toHaveBeenCalledWith('session.close', {
+      reason: 'desktop_new_chat',
+      session_id: 'existing-runtime'
+    })
+    expect(requestGateway).not.toHaveBeenCalledWith('session.create', expect.anything())
   })
 })

@@ -28,7 +28,7 @@ import {
   toChatMessages
 } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
-import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { isMissingRpcMethod, isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { latestSessionTodoSnapshot } from '@/lib/todos'
 import { setSessionYolo } from '@/lib/yolo-session'
@@ -64,7 +64,7 @@ import {
 import { $projectScope } from '@/store/project-scope'
 import { projectProfile, resolveNewSessionCwd } from '@/store/projects'
 import { clearAllPrompts, receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
-import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
+import { clearStoredTranscriptReadOnly, isReadOnlyRuntimeId, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
   $connection,
@@ -133,6 +133,7 @@ import {
   patchSessionTile,
   publishSessionState,
   releaseSessionOwnerHold,
+  requestForOwnedSession,
   type SessionTileWorkspaceScope,
   type TileDock
 } from '@/store/session-states'
@@ -384,6 +385,15 @@ interface FreshSessionDraftOptions {
   workspaceTarget?: NewChatWorkspaceTarget
 }
 
+/** Deliberate Desktop boundaries that close an idle runtime (#48997). The wire
+ *  value must match the backend's `session.close` reason allowlist
+ *  (`tui_gateway/methods_session.py::_SESSION_CLOSE_REASONS`). */
+type DesktopCloseReason =
+  | 'desktop_explicit_end'
+  | 'desktop_new_chat'
+  | 'desktop_archive'
+  | 'desktop_tab_close'
+
 /** Drop the pre-hydration request-id row without copying the other messages.
  *  A copied clarify row looks like a concurrent edit and hydration keeps both. */
 function withoutEarlyClarifyProjection(messages: ChatMessage[], requestId: string): ChatMessage[] {
@@ -632,6 +642,134 @@ export function useSessionActions({
     [activeSessionIdRef, busyRef, navigate, onFreshDraftRouteIntent, resetViewSync, selectedStoredSessionIdRef]
   )
 
+  // ── idle-runtime close at Desktop session boundaries (#48997 / #75489) ─────
+  // The gateway claims an active-session slot on a chat's first turn and holds
+  // it until the runtime is torn down, so a chat the user moved away from — but
+  // never closed — pins a max_concurrent_sessions slot until the backend exits.
+  // Desktop's passive boundaries (New Chat, archive, tab close) must close the
+  // idle runtime they abandon; a BUSY one is left alone (its turn keeps
+  // streaming in the background, exactly as before).
+  const closeIdleRuntime = useCallback(
+    async (runtimeId: null | string, reason: DesktopCloseReason): Promise<boolean> => {
+      // A fresh draft (or an evicted view) has no runtime to close.
+      if (!runtimeId) {
+        return true
+      }
+
+      const state = sessionStateByRuntimeIdRef.current.get(runtimeId)
+
+      // The runtime's own state slice is authoritative for "a turn is live";
+      // busyRef (the foreground mirror) is the fallback for runtimes whose
+      // state entry was evicted.
+      if (state?.busy || state?.needsInput || state?.awaitingResponse) {
+        return false
+      }
+
+      if (isReadOnlyRuntimeId(runtimeId)) {
+        // A read-only stored-transcript view has no runtime to close.
+        return true
+      }
+
+      try {
+        await requestForOwnedSession(runtimeId, requestGateway, 'session.close', {
+          session_id: runtimeId,
+          reason
+        })
+      } catch (error) {
+        // An older backend rejects the `reason` param as out-of-sync (4000);
+        // retry without it so the slot is still released.
+        if (isOutOfSyncRpcParams(error as Error) || isMissingRpcMethod(error)) {
+          try {
+            await requestForOwnedSession(runtimeId, requestGateway, 'session.close', {
+              session_id: runtimeId
+            })
+          } catch {
+            // Already gone (4001) or the owner is unreachable: the backend's
+            // own reapers own it from here.
+          }
+        }
+        // Any other failure (busy refusal included) leaves the runtime live —
+        // the boundary still proceeds; the slot is reclaimed by the reapers.
+      }
+
+      clearQueuedPrompts(runtimeId)
+
+      return true
+    },
+    [requestGateway, sessionStateByRuntimeIdRef]
+  )
+
+  /** New Chat boundary: reset the view, then close the idle runtime it
+   *  abandoned. A busy session keeps streaming in the background (its tile /
+   *  sidebar dot stay live) — the boundary never kills a running turn. */
+  const abandonCurrentSessionForNewChat = useCallback(
+    async (options: boolean | FreshSessionDraftOptions = false) => {
+      const currentRuntimeId = activeSessionIdRef.current
+
+      startFreshSessionDraft(options)
+      // The state map is untouched by the draft reset, so closeIdleRuntime
+      // still reads the runtime's own busy verdict after it.
+      await closeIdleRuntime(currentRuntimeId, 'desktop_new_chat')
+    },
+    [activeSessionIdRef, closeIdleRuntime, startFreshSessionDraft]
+  )
+
+  /** End Session (#75489): finalize the runtime (`session.close`) WITHOUT
+   *  touching stored history — the visible close the reporter asked for. The
+   *  row stays in the sidebar and stays resumable; a busy session refuses
+   *  (Stop interrupts the turn, End finalizes the whole chat). */
+  const endSession = useCallback(
+    async (storedSessionId: string) => {
+      clearNotifications()
+
+      const wasSelected = selectedStoredSessionIdRef.current === storedSessionId
+
+      const closingRuntimeId =
+        (wasSelected ? activeSessionIdRef.current : null) ??
+        runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
+        null
+
+      // Nothing live to finalize (stored-only row, read-only transcript view).
+      if (!closingRuntimeId || isReadOnlyRuntimeId(closingRuntimeId)) {
+        return
+      }
+
+      const closed = await closeIdleRuntime(closingRuntimeId, 'desktop_explicit_end')
+
+      if (!closed) {
+        notify({ kind: 'warning', title: copy.sessionBusy, message: copy.endStopCurrent })
+
+        return
+      }
+
+      // The view can't write into a closed runtime: reset the foreground to a
+      // fresh draft (the row stays listed) and drop any tile still showing it.
+      if (wasSelected) {
+        startFreshSessionDraft(true)
+      }
+
+      const tiledRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+      closeSessionTile(storedSessionId)
+
+      if (tiledRuntimeId) {
+        runtimeIdByStoredSessionIdRef.current.delete(storedSessionId)
+        sessionStateByRuntimeIdRef.current.delete(tiledRuntimeId)
+        dropSessionState(tiledRuntimeId)
+      }
+
+      notify({ durationMs: 2_000, kind: 'success', message: copy.sessionEnded })
+    },
+    [
+      activeSessionIdRef,
+      closeIdleRuntime,
+      copy,
+      runtimeIdByStoredSessionIdRef,
+      selectedStoredSessionIdRef,
+      sessionStateByRuntimeIdRef,
+      startFreshSessionDraft
+    ]
+  )
+
   const createBackendSessionForSend = useCallback(
     async (
       preview: string | null = null,
@@ -841,7 +979,7 @@ export function useSessionActions({
       if (item.action === 'new-session') {
         prepareDefaultNewSession()
         setWorkspaceScope('sessions')
-        startFreshSessionDraft()
+        void abandonCurrentSessionForNewChat()
 
         return
       }
@@ -850,7 +988,7 @@ export function useSessionActions({
         navigateToWorkspacePage(navigate, item.route)
       }
     },
-    [navigate, startFreshSessionDraft]
+    [abandonCurrentSessionForNewChat, navigate]
   )
 
   /** Create a fresh session and open it as a tile — leaves the primary chat alone.
@@ -2969,9 +3107,16 @@ export function useSessionActions({
           clearAllPrompts(closingRuntimeId)
           clearClarifyRequest(undefined, closingRuntimeId)
 
-          await requestForSessionProfile(removedOwner, requestGateway, 'session.close', {
-            session_id: closingRuntimeId
-          }).catch(() => undefined)
+          // Reason first; an older gateway rejects the unknown param (4000), so
+          // fall back to a bare close and still release the slot (#48997).
+          const closeDeletedRuntime = (closeParams: Record<string, unknown>) =>
+            requestForSessionProfile(removedOwner, requestGateway, 'session.close', closeParams).catch(
+              () => undefined
+            )
+
+          await closeDeletedRuntime({ session_id: closingRuntimeId, reason: 'desktop_delete' }).then(
+            async result => result ?? closeDeletedRuntime({ session_id: closingRuntimeId })
+          )
         }
 
         await deleteSession(storedSessionId, removedOwner)
@@ -3076,6 +3221,24 @@ export function useSessionActions({
       const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
       const archivedIds = [storedSessionId, archived?.id, archived?._lineage_root_id]
 
+      // Close the runtime this archive abandons — an idle runtime pinned a
+      // max_concurrent_sessions slot forever (#75489). A RUNNING session is
+      // not archived at all: its turn would keep streaming into a hidden row.
+      const closingRuntimeId =
+        (wasSelected ? activeSessionIdRef.current : null) ??
+        runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
+        null
+
+      if (closingRuntimeId) {
+        const closed = await closeIdleRuntime(closingRuntimeId, 'desktop_archive')
+
+        if (!closed) {
+          notify({ kind: 'warning', title: copy.sessionBusy, message: copy.archiveStopCurrent })
+
+          return
+        }
+      }
+
       // Soft-hide: drop from every sidebar slice immediately, keep the data.
       dropListedSession(storedSessionId)
       tombstoneSessions(archivedIds)
@@ -3115,6 +3278,8 @@ export function useSessionActions({
       }
     },
     [
+      activeSessionIdRef,
+      closeIdleRuntime,
       copy,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionIdRef,
@@ -3162,11 +3327,13 @@ export function useSessionActions({
   )
 
   return {
+    abandonCurrentSessionForNewChat,
     archiveSession,
     branchCurrentSession,
     branchStoredSession,
     closeSettings,
     createBackendSessionForSend,
+    endSession,
     openNewSessionTile,
     openSettings,
     removeSession,

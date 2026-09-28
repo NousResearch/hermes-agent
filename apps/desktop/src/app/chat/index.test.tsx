@@ -118,6 +118,7 @@ describe('ChatView render isolation', () => {
       onCancel: vi.fn(),
       onDeleteSelectedSession: vi.fn(),
       onEdit: vi.fn(),
+      onEndSelectedSession: vi.fn(),
       onPasteClipboardImage: vi.fn(),
       onPickFiles: vi.fn(),
       onPickFolders: vi.fn(),

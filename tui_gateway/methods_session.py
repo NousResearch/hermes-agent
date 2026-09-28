@@ -2103,11 +2103,33 @@ def _(rid, params: dict, session: dict) -> dict:
     return _ok(rid, {"file": str(path)})
 
 
+# Deliberate client-initiated close reasons beyond the legacy ``tui_close``: Desktop sends
+# these at explicit session boundaries (End Session / New Chat / archive / delete / tab close)
+# so the stored row's end_reason and the logs say WHY the runtime went away (#48997). New
+# reasons must not collide with the automatic-reclaim vocabulary (``_AUTOMATIC_SESSION_END_REASONS``
+# in session_lifecycle.py / ``_AUTOMATIC_END_REASONS`` in hermes_state_common.py): an automatic
+# reason makes the backend PRESERVE the durable row instead of ending it.
+_SESSION_CLOSE_REASONS = frozenset({
+    "tui_close",
+    "desktop_explicit_end",
+    "desktop_new_chat",
+    "desktop_archive",
+    "desktop_delete",
+    "desktop_tab_close",
+})
+
+
+def _normalize_session_close_reason(raw: object) -> str:
+    reason = str(raw or "").strip().lower()
+    return reason if reason in _SESSION_CLOSE_REASONS else "tui_close"
+
+
 @method("session.close")
 def _(rid, params: dict) -> dict:
+    end_reason = _normalize_session_close_reason(params.get("reason"))
     with _session_resume_lock:  # lock only the ownership claim; finalization must not block resumes
         session = _pop_session_by_id(params.get("session_id", ""))
-    return _ok(rid, {"closed": _teardown_popped_session(session, end_reason="tui_close")})
+    return _ok(rid, {"closed": _teardown_popped_session(session, end_reason=end_reason)})
 
 
 # ── session.branch ───────────────────────────────────────────────────

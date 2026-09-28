@@ -3110,6 +3110,7 @@ export interface Translations {
       rename: string
       archive: string
       unarchive: string
+      endSession: string
       newWindow: string
       openInTerminal: string
       hideTabBar: string
@@ -4572,6 +4573,9 @@ export interface Translations {
     deleteFailed: string
     archived: string
     archiveFailed: string
+    archiveStopCurrent: string
+    endStopCurrent: string
+    sessionEnded: string
     restored: string
     unarchiveFailed: string
     cwdChangeFailed: string

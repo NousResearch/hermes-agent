@@ -2043,6 +2043,11 @@ export interface SessionTileDelegate {
   archiveSession(storedSessionId: string): Promise<void>
   /** Branch a stored session into a new chat (the sidebar's branch). */
   branchSession(storedSessionId: string): Promise<void>
+  /** Close a tile's idle runtime (`session.close`) — releases the
+   *  max_concurrent_sessions slot a closed tab would otherwise pin until
+   *  backend exit (#75489). Busy/input-blocked runtimes are skipped by the
+   *  caller; an older backend falls back to a bare close. */
+  closeSessionRuntime?(runtimeId: string): Promise<void>
   /** Delete a stored session (the sidebar's delete, incl. tile cleanup). */
   deleteSession(storedSessionId: string): Promise<void>
   /** Run a slash command against a tile's session (app-level effects — e.g.
@@ -2507,6 +2512,16 @@ export function closeSessionTile(storedSessionId: string) {
 
   if (runtimeId && state && evictable(runtimeId, state)) {
     dropSessionState(runtimeId)
+  }
+
+  // Closing the tab also closes the runtime it abandoned when that runtime is
+  // idle — otherwise a used-but-closed chat pins its max_concurrent_sessions
+  // slot until the backend exits (#75489). A BUSY or input-blocked runtime is
+  // left alone (the confirm copy promises it keeps streaming and reopens from
+  // the sidebar); the stored row stays resumable either way. Fire-and-forget:
+  // the close must never block the tab's own dismissal. (#48997)
+  if (runtimeId && !(state?.busy || state?.needsInput || state?.awaitingResponse)) {
+    void sessionTileDelegate()?.closeSessionRuntime?.(runtimeId)
   }
 }
 

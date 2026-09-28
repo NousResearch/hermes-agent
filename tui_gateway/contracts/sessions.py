@@ -374,7 +374,9 @@ method("session.cwd.set", params=SessionCwdSetParams, result=SessionCwdSetResult
 
 
 class SessionCloseParams(SessionParams):
-    pass
+    # Why the client is closing (recorded as the row's end_reason). Unknown values
+    # fall back server-side to ``tui_close``; omitted stays ``tui_close`` for older clients.
+    reason: str | None = None
 
 
 class SessionCloseResult(Result):

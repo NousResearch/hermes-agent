@@ -97,6 +97,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   requestModelOptionsForOwner?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
+  onEndSelectedSession: () => void
   onCancel: () => Promise<void> | void
   onAddContextRef: (refText: string, label?: string, detail?: string) => void
   onAddUrl: (url: string) => void
@@ -126,6 +127,7 @@ interface ChatHeaderProps {
   activeSessionId: null | string
   isRoutedSessionView: boolean
   onDeleteSelectedSession: () => void
+  onEndSelectedSession: () => void
   onToggleSelectedPin: () => void
   selectedSessionId: null | string
 }
@@ -134,6 +136,7 @@ function ChatHeader({
   activeSessionId,
   isRoutedSessionView,
   onDeleteSelectedSession,
+  onEndSelectedSession,
   onToggleSelectedPin,
   selectedSessionId
 }: ChatHeaderProps) {
@@ -180,6 +183,7 @@ function ChatHeader({
         <SessionActionsMenu
           align="start"
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
+          onEndSession={selectedSessionId ? onEndSelectedSession : undefined}
           onPin={selectedSessionId ? onToggleSelectedPin : undefined}
           pinned={selectedIsPinned}
           sessionId={selectedSessionId || activeSessionId || ''}
@@ -483,6 +487,7 @@ const ChatViewContent = memo(function ChatViewContent({
   requestModelOptionsForOwner,
   onToggleSelectedPin,
   onDeleteSelectedSession,
+  onEndSelectedSession,
   onCancel,
   onAddContextRef,
   onAddUrl,
@@ -812,6 +817,7 @@ const ChatViewContent = memo(function ChatViewContent({
           activeSessionId={activeSessionId}
           isRoutedSessionView={isRoutedSessionView}
           onDeleteSelectedSession={onDeleteSelectedSession}
+          onEndSelectedSession={onEndSelectedSession}
           onToggleSelectedPin={onToggleSelectedPin}
           selectedSessionId={selectedSessionId}
         />

@@ -40,6 +40,7 @@ export function latestChatActions(actions: ChatActions): ChatActions {
     onDeleteSelectedSession: (...args) => actions.onDeleteSelectedSession(...args),
     onDismissError: latestOptional(() => actions.onDismissError),
     onEdit: (...args) => actions.onEdit(...args),
+    onEndSelectedSession: (...args) => actions.onEndSelectedSession(...args),
     onPasteClipboardImage: (...args) => actions.onPasteClipboardImage(...args),
     onPickFiles: (...args) => actions.onPickFiles(...args),
     onPickFolders: (...args) => actions.onPickFolders(...args),

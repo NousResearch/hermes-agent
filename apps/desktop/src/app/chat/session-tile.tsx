@@ -410,6 +410,7 @@ function TileChat({
           onDeleteSelectedSession={noop}
           onDismissError={actions.dismissError}
           onEdit={actions.editMessage}
+          onEndSelectedSession={noop}
           onPasteClipboardImage={onPasteClipboardImage}
           onPickFiles={onPickFiles}
           onPickFolders={onPickFolders}

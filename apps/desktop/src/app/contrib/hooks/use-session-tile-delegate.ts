@@ -13,7 +13,9 @@ import {
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
+import { isMissingRpcMethod, isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
 import { profileScopeForSessionOwner, refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
+import { clearQueuedPrompts } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
@@ -203,6 +205,43 @@ export function useSessionTileDelegate({
       },
       branchSession: async storedSessionId => {
         await branchStoredSession(storedSessionId)
+      },
+      // Tab-close boundary (#48997 / #75489): release the idle runtime's
+      // active-session slot. The caller (closeSessionTile) has already checked
+      // busy/input; the routing ladder mirrors interruptSession so the close
+      // lands on the backend that owns the session, not the ambient socket.
+      closeSessionRuntime: async runtimeId => {
+        if (isReadOnlyRuntimeId(runtimeId)) {
+          return
+        }
+
+        const storedSessionId = storedSessionIdForRuntime(runtimeId)
+
+        const routedRequest = storedSessionId
+          ? <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) =>
+              requestForStoredSession<T>(storedSessionId, method, params ?? {}, timeoutMs)
+          : requestGateway
+
+        try {
+          await routedRequest('session.close', {
+            session_id: runtimeId,
+            reason: 'desktop_tab_close'
+          })
+        } catch (error) {
+          // Older gateway: the `reason` param is rejected as out-of-sync (4000)
+          // — retry bare so the slot is still released.
+          if (isOutOfSyncRpcParams(error as Error) || isMissingRpcMethod(error)) {
+            try {
+              await routedRequest('session.close', { session_id: runtimeId })
+            } catch {
+              // Already gone or unreachable: the backend's reapers own it.
+            }
+          }
+          // Any other failure still drops the queue — the runtime is gone or
+          // owned by the reapers from here.
+        }
+
+        clearQueuedPrompts(runtimeId)
       },
       deleteSession: async storedSessionId => {
         await removeSession(storedSessionId)

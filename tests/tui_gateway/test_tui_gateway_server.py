@@ -4854,6 +4854,37 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_session_close_threads_client_reason_into_the_rows_end_reason(monkeypatch):
+    """Desktop's explicit boundaries (#48997 / #75489) stamp WHY the runtime
+    ended: the `reason` param rides session.close into the teardown's
+    end_reason (and so the stored row). Unknown values and omissions keep the
+    legacy ``tui_close`` for older clients."""
+    seen: list[str] = []
+
+    def _capture(_session, *, end_reason="tui_close"):
+        seen.append(end_reason)
+        return True
+
+    monkeypatch.setattr(server, "_teardown_popped_session", _capture)
+
+    try:
+        for params, expected in (
+            ({"session_id": "sid", "reason": "desktop_archive"}, "desktop_archive"),
+            ({"session_id": "sid", "reason": " DESKTOP_TAB_CLOSE "}, "desktop_tab_close"),
+            ({"session_id": "sid", "reason": "not-a-reason"}, "tui_close"),
+            ({"session_id": "sid", "reason": None}, "tui_close"),
+            ({"session_id": "sid"}, "tui_close"),
+        ):
+            server._sessions["sid"] = _session()
+            resp = server.handle_request(
+                {"id": "1", "method": "session.close", "params": params}
+            )
+            assert resp["result"] == {"closed": True}
+            assert seen[-1] == expected
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_session_close_releases_resume_lock_before_slow_teardown(monkeypatch):
     """One slow session finalizer must not stall unrelated session.resume RPCs."""
     teardown_started = threading.Event()

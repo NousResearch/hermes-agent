@@ -119,6 +119,10 @@ interface SessionActions {
   onBranch?: () => void
   onArchive?: () => void
   onDelete?: () => void
+  /** End Session (#75489): finalize this chat's runtime WITHOUT deleting
+   *  history. Only the chat header passes it — rows/tabs keep their
+   *  archive/delete/close set, so the item is omitted there entirely. */
+  onEndSession?: () => void
   /** Close this surface (a tile tab) — omitted where nothing closes (sidebar
    *  rows, the main tab). */
   onClose?: () => void
@@ -210,6 +214,7 @@ function useSessionActions({
   onBranch,
   onArchive,
   onDelete,
+  onEndSession,
   onClose,
   onHideTabBar,
   renameable = true,
@@ -453,7 +458,21 @@ function useSessionActions({
       : []
 
   // DANGER — put it away / destroy it (delete stays last, destructive-red).
+  // End Session is the mildest of the three: finalize the runtime, keep the
+  // row and its history (#75489).
   const dangerItems: ActionItemSpec[] = [
+    ...(onEndSession
+      ? [
+          spec({
+            icon: 'debug-disconnect',
+            label: r.endSession,
+            onSelect: () => {
+              triggerHaptic('selection')
+              onEndSession()
+            }
+          })
+        ]
+      : []),
     spec({
       disabled: !onArchive,
       // Already archived (the Archived view): the same verb restores the row

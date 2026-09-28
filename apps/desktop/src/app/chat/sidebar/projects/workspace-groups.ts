@@ -281,7 +281,13 @@ export function mergeRepoWorktreeGroups(
       path: repo.path,
       isMain: true,
       isHome: true,
-      sessions: dedupeById(mainGroups.flatMap(group => group.sessions))
+      // Re-sort after folding: the live overlay places a fresh row in its own
+      // `::branch::main` lane and evicts it from the home lane, so a plain
+      // concat appends the NEWEST rows after the old ones — and the lane's
+      // 5-row page then hides exactly the sessions the user just used.
+      sessions: dedupeById(mainGroups.flatMap(group => group.sessions)).sort(
+        (a, b) => sessionRecency(b) - sessionRecency(a)
+      )
     })
   } else {
     reconciled.push(...mainGroups)

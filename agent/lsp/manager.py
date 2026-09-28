@@ -573,12 +573,17 @@ class LSPService:
             return await self._attach_root(srv, client, root)
         if not owner:
             try:
-                client = await spawning
+                # Each caller owns its timeout, not the shared spawn outcome.
+                client = await asyncio.shield(spawning)
             except Exception:  # noqa: BLE001
                 return None
             return await self._attach_root(srv, client, root) if client is not None else None
         try:
-            client = await self._spawn_client(srv, root, trusted)
+            try:
+                client = await self._spawn_client(srv, root, trusted)
+            except Exception as exc:  # noqa: BLE001 — setup can fail before client.start
+                eventlog.log_spawn_failed(srv.server_id, root, exc)
+                client = None
             if client is None:
                 self._mark_broken((srv.server_id, root))
             else:
@@ -589,6 +594,10 @@ class LSPService:
             spawning.set_result(client)
             return client
         finally:
+            # Cancellation still propagates to the owner, but peers must not
+            # remain parked on a future no task can ever complete.
+            if not spawning.done():
+                spawning.set_result(None)
             with self._state_lock:
                 self._spawning.pop(key, None)
 

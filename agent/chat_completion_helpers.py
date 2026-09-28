@@ -1585,6 +1585,31 @@ def _dump_if_model(value):
     return _model_dump_safe(value) if hasattr(value, "model_dump") else value
 
 
+def _emit_native_codex_reasoning_summaries(agent, assistant_message, reasoning_text: str) -> bool:
+    callback = getattr(agent, "reasoning_event_callback", None)
+    items = getattr(assistant_message, "codex_reasoning_items", None)
+    if callback is None or not isinstance(items, list):
+        return False
+
+    from agent.reasoning_identity import native_reasoning_items
+
+    native = native_reasoning_items(items, reasoning_text)
+    if not native:
+        return False
+    # Use the ordinary delivery owner for writer fencing and plugin observers.
+    delivery = getattr(agent, "_fire_reasoning_event", None) or callback
+    # Preserve the exact flat view validated by native_reasoning_items: one
+    # newline within an item, two between items. Identified consumers need it too.
+    for item_index, item in enumerate(native):
+        for index, part in enumerate(item["summary"]):
+            source_id = f"{item['id']}:summary:{index}"
+            separator = "\n" if index else ("\n\n" if item_index else "")
+            delivery("start", source_id, "")
+            delivery("delta", source_id, separator + part["text"])
+            delivery("end", source_id, "")
+    return True
+
+
 def _assistant_reasoning_text(agent, assistant_message) -> Optional[str]:
     """Structured reasoning, else inline ``<think>`` blocks embedded in content."""
     reasoning_text = agent._extract_reasoning(assistant_message)
@@ -1599,9 +1624,18 @@ def _assistant_reasoning_text(agent, assistant_message) -> Optional[str]:
     # stream (structured deltas or <think> tag extraction); fire only for
     # non-streaming modes (gateway, batch, quiet). Anything not shown during
     # streaming is caught by the CLI post-response fallback.
-    if reasoning_text and agent.reasoning_callback and not agent.stream_delta_callback and not agent._stream_callback:
+    reasoning_callback = getattr(agent, "reasoning_callback", None)
+    reasoning_event_callback = getattr(agent, "reasoning_event_callback", None)
+    if (
+        reasoning_text
+        and (reasoning_callback or reasoning_event_callback)
+        and not agent.stream_delta_callback
+        and not agent._stream_callback
+    ):
         with contextlib.suppress(Exception):
-            agent.reasoning_callback(reasoning_text)
+            if not _emit_native_codex_reasoning_summaries(agent, assistant_message, reasoning_text):
+                if reasoning_callback:
+                    reasoning_callback(reasoning_text)
     return _sanitize_surrogates(reasoning_text) if reasoning_text else reasoning_text
 
 

@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from agent.redact import redact_sensitive_text
+from agent.reasoning_identity import project_reasoning_identity
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from utils import is_truthy_value
 
@@ -152,7 +153,7 @@ def _project_one(message: dict, *, enabled: bool) -> dict:
 def project_history_commentary(messages: list[dict], *, home: Any = None) -> list[dict]:
     """Project a batch inside the owning profile's config and redaction scope."""
     if not any(
-        isinstance(message, dict) and message.get("codex_message_items")
+        isinstance(message, dict) and (message.get("codex_message_items") or message.get("codex_reasoning_items"))
         for message in messages
     ):
         return messages
@@ -169,7 +170,7 @@ def project_history_commentary(messages: list[dict], *, home: Any = None) -> lis
         except Exception:
             enabled = False  # unreadable policy must not publish raw provider items
         return [
-            _project_one(message, enabled=enabled)
+            project_reasoning_identity(_project_one(message, enabled=enabled))
             if isinstance(message, dict)
             else message
             for message in messages

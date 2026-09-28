@@ -257,6 +257,25 @@ method("shared_metrics.slash_command", params=SharedMetricsSlashCommandParams,
        doc="Count one user-typed slash command (fire-and-forget; a no-op unless shared metrics are on).")
 
 
+class SharedMetricsStartupLatencyParams(ProfileParams):
+    """``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready
+    (TUI gateway ready / Desktop backend attached), measured once per launch by the client. The
+    client names its surface because a Desktop may attach to a URL/cloud backend where
+    ``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection."""
+
+    elapsed_ms: float
+    surface: Literal["desktop_attach", "tui"] | None = None
+
+
+class SharedMetricsStartupLatencyResult(Result):
+    ok: bool
+
+
+method("shared_metrics.startup_latency", params=SharedMetricsStartupLatencyParams,
+       result=SharedMetricsStartupLatencyResult,
+       doc="Record one client launch-to-ready latency (fire-and-forget; a no-op unless shared metrics are on).")
+
+
 # ── model.options ─────────────────────────────────────────────────────────────────────────────
 
 

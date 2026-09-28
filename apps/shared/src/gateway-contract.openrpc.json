@@ -3625,6 +3625,24 @@
       }
     },
     {
+      "name": "shared_metrics.startup_latency",
+      "summary": "Record one client launch-to-ready latency (fire-and-forget; a no-op unless shared metrics are on).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SharedMetricsStartupLatencyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SharedMetricsStartupLatencyResult"
+        }
+      }
+    },
+    {
       "name": "shared_metrics.status",
       "summary": "Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered).",
       "params": [
@@ -32032,6 +32050,63 @@
           "ok"
         ],
         "title": "SharedMetricsSlashCommandResult",
+        "type": "object"
+      },
+      "SharedMetricsStartupLatencyParams": {
+        "additionalProperties": false,
+        "description": "``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready\n(TUI gateway ready / Desktop backend attached), measured once per launch by the client. The\nclient names its surface because a Desktop may attach to a URL/cloud backend where\n``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection.",
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "number"
+          },
+          "surface": {
+            "anyOf": [
+              {
+                "enum": [
+                  "desktop_attach",
+                  "tui"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Surface"
+          }
+        },
+        "required": [
+          "elapsed_ms"
+        ],
+        "title": "SharedMetricsStartupLatencyParams",
+        "type": "object"
+      },
+      "SharedMetricsStartupLatencyResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "SharedMetricsStartupLatencyResult",
         "type": "object"
       },
       "ShellExecParams": {

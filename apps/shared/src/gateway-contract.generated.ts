@@ -665,6 +665,15 @@ export interface SharedMetricsSlashCommandParams {
 export interface SharedMetricsSlashCommandResult {
   ok: boolean
 }
+/** ``elapsed_ms`` = the client's own launch (TUI process start / Desktop app start) to ready (TUI gateway ready / Desktop backend attached), measured once per launch by the client. The client names its surface because a Desktop may attach to a URL/cloud backend where ``HERMES_DESKTOP`` is unset; without it the backend falls back to its own client detection. */
+export interface SharedMetricsStartupLatencyParams {
+  profile?: string | null
+  elapsed_ms: number
+  surface?: 'desktop_attach' | 'tui' | null
+}
+export interface SharedMetricsStartupLatencyResult {
+  ok: boolean
+}
 export interface ModelOptionsParams {
   profile?: string | null
   session_id?: string | null
@@ -5163,6 +5172,8 @@ export interface RpcMethods {
   'shared_metrics.set': { params: SharedMetricsSetParams; result: SharedMetricsConsentResult }
   /** Count one user-typed slash command (fire-and-forget; a no-op unless shared metrics are on). */
   'shared_metrics.slash_command': { params: SharedMetricsSlashCommandParams; result: SharedMetricsSlashCommandResult }
+  /** Record one client launch-to-ready latency (fire-and-forget; a no-op unless shared metrics are on). */
+  'shared_metrics.startup_latency': { params: SharedMetricsStartupLatencyParams; result: SharedMetricsStartupLatencyResult }
   /** Pure read of the focused profile's shared-metrics opt-ins (collection, upload, answered). */
   'shared_metrics.status': { params: ProfileParams; result: SharedMetricsConsentResult }
   /** Run a safe (non-dangerous) shell command captured for ``!cmd`` / inline substitution. */
@@ -5449,6 +5460,7 @@ export const RPC_METHODS = [
   'setup.status',
   'shared_metrics.set',
   'shared_metrics.slash_command',
+  'shared_metrics.startup_latency',
   'shared_metrics.status',
   'shell.exec',
   'skills.manage',

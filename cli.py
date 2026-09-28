@@ -1416,6 +1416,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         app = self._tui_build_application(layout, kb, style)
         _disable_prompt_toolkit_cpr_warning(app)
         app.after_render += self._pet_flush_kitty_frame
+        from hermes_cli.observability.shared_metrics_startup import cli_prompt_ready_handler
+        app.after_render += cli_prompt_ready_handler()
         self._app = app
 
         # Ghost status-bar lines on resize: pt's renderer scrolls the terminal after each

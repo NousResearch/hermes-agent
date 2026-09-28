@@ -183,6 +183,9 @@
           },
           {
             "$ref": "#/$defs/context_peak_counter"
+          },
+          {
+            "$ref": "#/$defs/startup_latency_counter"
           }
         ]
       }
@@ -999,9 +1002,64 @@
                 "singularity",
                 "ssh"
               ]
+            },
+            "behind_bucket": {
+              "enum": [
+                "0",
+                "1",
+                "2",
+                "3_to_5",
+                "6_to_10",
+                "gte_11",
+                "unknown"
+              ]
+            },
+            "gpu_class": {
+              "enum": [
+                "amd",
+                "apple_silicon",
+                "intel",
+                "none",
+                "nvidia",
+                "unknown"
+              ]
+            },
+            "local_model_provider_used": {
+              "enum": [
+                "no",
+                "yes"
+              ]
+            },
+            "ram_bucket": {
+              "enum": [
+                "lt_8g",
+                "8g_to_16g",
+                "16g_to_32g",
+                "32g_to_64g",
+                "64g_to_128g",
+                "gte_128g",
+                "unknown"
+              ]
+            },
+            "release_channel": {
+              "enum": [
+                "dev",
+                "main",
+                "stable",
+                "unknown"
+              ]
+            },
+            "version_age_bucket": {
+              "enum": [
+                "lt_7d",
+                "7d_to_30d",
+                "30d_to_90d",
+                "gte_90d",
+                "unknown"
+              ]
             }
           },
-          "description": "The five decision-data fields are absent on snapshots counted before they existed."
+          "description": "The five decision-data fields are absent on snapshots counted before they existed. The six version-lag/channel/hardware fields are absent on snapshots counted before they existed."
         },
         "value": {
           "const": 1
@@ -2137,6 +2195,57 @@
             }
           },
           "description": "One per closed session: the fullest primary-model context it reached."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "startup_latency_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.startup.latency"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "latency_bucket",
+            "surface"
+          ],
+          "properties": {
+            "latency_bucket": {
+              "enum": [
+                "lt_500ms",
+                "500ms_to_1s",
+                "1s_to_2s",
+                "2s_to_5s",
+                "5s_to_10s",
+                "gte_10s"
+              ]
+            },
+            "surface": {
+              "enum": [
+                "cli",
+                "desktop_attach",
+                "gateway_boot",
+                "serve_boot",
+                "tui"
+              ]
+            }
+          }
         },
         "value": {
           "type": "integer",

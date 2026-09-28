@@ -2760,7 +2760,8 @@ def test_install_snapshot_is_daily_and_carries_only_bucketed_counts(
         "main_provider": "none", "mcp_server_count_bucket": "1", "memory_provider": "plugin",
         "messaging_platform_count_bucket": "0", "plugin_count_bucket": "3_to_5",
         "profile_count_bucket": snapshot["profile_count_bucket"], "skill_count_bucket": "0",
-        "terminal_backend": "local",
+        "terminal_backend": "local", "local_model_provider_used": "no",
+        **{k: snapshot[k] for k in ("behind_bucket", "gpu_class", "ram_bucket", "release_channel", "version_age_bucket")},
     }
 
 

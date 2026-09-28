@@ -97,5 +97,19 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"ok": True})
 
 
+@method("shared_metrics.startup_latency")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """The Ink TUI (gateway ready) and Desktop (backend attached) each report their own launch ->
+    ready time once per launch. A Desktop on a URL/cloud backend has no ``HERMES_DESKTOP`` here, so
+    the client's declared surface wins over env detection. Always ``{ok: true}``."""
+    from hermes_cli.observability.shared_metrics_startup import record_rpc_startup_latency
+
+    record_rpc_startup_latency(
+        client_surface=params.get("surface") or _resolve_session_platform(), elapsed_ms=params.get("elapsed_ms"),
+    )
+    return _ok(rid, {"ok": True})
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

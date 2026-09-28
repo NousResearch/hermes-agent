@@ -260,6 +260,30 @@ names are never read into the event. The same compare-and-set latch as `hermes.c
 row per install per day, and the producer checks the latch before walking the
 skills tree.
 
+<!-- ---- v4 install ---- -->
+The snapshot also carries six version-lag, channel and hardware fields, all read
+offline (no network call, no subprocess):
+
+- `release_channel` (`stable`, `main`, `dev`, `unknown`): a packaged build's baked
+  channel (canary builds of main read `main`), a source install's channel record,
+  else the checkout's branch (`main` for main/master, `dev` for any other branch).
+  The git remote URL and branch names are never read into the event.
+- `version_age_bucket` (`lt_7d` … `gte_90d`, `unknown`): age of the *installed*
+  version, from its own commit date in the install stamp or checkout.
+- `behind_bucket` (`0`, `1`, `2`, `3_to_5`, `6_to_10`, `gte_11`, `unknown`): commits
+  or releases behind, only from the update check's cached result for this exact
+  revision and under 7 days old; otherwise `unknown`.
+- `ram_bucket` (`lt_8g` … `gte_128g`, `unknown`): installed memory rounded to its
+  nominal size (the OS total scaled by 1.1 for firmware reservations).
+- `gpu_class` (`nvidia`, `amd`, `intel`, `apple_silicon`, `none`, `unknown`): the
+  highest-priority GPU vendor from `/proc/driver/nvidia` or DRM PCI vendor ids on
+  Linux, the display-adapter registry class on Windows, native arm64 on macOS.
+  Never a model name, driver version or VRAM size.
+- `local_model_provider_used` (`yes`/`no`): whether the main model or any
+  auxiliary task runs on a local or self-hosted server (a local provider id such
+  as Ollama/LM Studio/llama.cpp, or a loopback/private-network base URL). The
+  URL itself stays local.
+
 ### Decision-data metrics
 
 These answer product questions the activity counters cannot: what makes people
@@ -288,6 +312,7 @@ itself ships.
 | `hermes.platform.delivery` | platform, outcome (`sent`/`failed`), failure class (`rate_limited`/`too_long`/`auth`/`network`/`forbidden`/`other`) | How often replies fail to reach the user per platform (one count per logical reply, retries included). |
 | `hermes.gateway.reply_latency` | platform, first-response bucket (`lt_2s` … `gte_60s`) | Time from an accepted inbound message to the first visible reply text (stream first chunk or final message). |
 | `hermes.cron.run` | outcome (`success`/`failed`/`missed`/`skipped`), delivery kind (`local`/`platform`/`webhook`/`none`/`other`), duration bucket | Do scheduled jobs run, fail, get skipped by a gate or overlap, or get missed while Hermes was down. Job names, prompts, schedules and targets are never included. |
+| `hermes.startup.latency` | surface (`cli`, `tui`, `desktop_attach`, `gateway_boot`, `serve_boot`), latency bucket (`lt_500ms` … `gte_10s`) | How long each surface takes from launch to usable, so startup regressions show per surface and release. One row per process start: CLI = process start to first rendered prompt (or a `-q` query dispatched; Kanban workers excluded), TUI = Ink process start to gateway ready, Desktop = app start to backend attached, gateway = process start to adapters connected, `hermes serve` = process start to listening. |
 
 Sessions are summarized when they close (finalize, reset or process exit);
 delegated child sessions are not counted separately. Milestones latch in the

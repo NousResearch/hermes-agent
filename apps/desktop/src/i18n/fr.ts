@@ -5376,6 +5376,7 @@ export const frOverrides = {
     hideTabStrip: 'Masquer les onglets',
     showStripTab: title => `Afficher ${title}`,
     hideStripTab: title => `Masquer ${title}`,
+    zoneMenuLabel: title => `Options de zone pour ${title}`,
     lastTabKeptTitle: 'Le dernier onglet reste affiché',
     lastTabKeptBody:
       "Cette zone doit conserver au moins un onglet visible. Affichez d'abord un autre onglet ou repliez toute la barre latérale.",

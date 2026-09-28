@@ -5361,6 +5361,7 @@ export const deOverrides = {
     hideTabStrip: 'Tabs ausblenden',
     showStripTab: title => `${title} anzeigen`,
     hideStripTab: title => `${title} ausblenden`,
+    zoneMenuLabel: title => `Zonenoptionen für ${title}`,
     lastTabKeptTitle: 'Letzter Tab bleibt',
     lastTabKeptBody:
       'Diese Zone braucht mindestens einen sichtbaren Tab. Zeigen Sie zuerst einen anderen Tab an oder klappen Sie die ganze Seitenleiste ein.',

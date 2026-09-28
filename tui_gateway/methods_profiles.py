@@ -56,19 +56,15 @@ def _best_effort(fn) -> bool:
     return _try(lambda: (fn(), True)[1], False)
 
 
-@contextlib.contextmanager
 def _hermes_home_scope(path):
-    """Bind ``path``'s full runtime scope (home + secrets + terminal) for the block. Home alone is
-    half-bound: under multi-profile hosting every credential read raised ``UnscopedSecretError``,
-    which a best-effort ``_try`` turned into a plausible wrong answer (the toolset snapshot's
-    ``XAI_API_KEY`` probe → "every toolset off", #120726). No external-source hydration: these
-    bodies read and write config, they never call a provider."""
+    """Bind ``path``'s full runtime scope (home + secrets + terminal) for the block — the same
+    composition ``@_profile_scoped`` binds. Home alone is half-bound: under multi-profile hosting
+    every credential read raised ``UnscopedSecretError``, which a best-effort ``_try`` turned into
+    a plausible wrong answer (the toolset snapshot's ``XAI_API_KEY`` probe → "every toolset off",
+    #120726). The launch home maps to None so it keeps its frozen launch env (systemd / ``op run``
+    keys). No external-source hydration: these bodies read and write config, never call a provider."""
     launch = Path(path).resolve() == Path(_hermes_home).resolve()
-    scopes = _profile_runtime_scope_tokens(None if launch else path, hydrate_secrets=False)
-    try:
-        yield
-    finally:
-        _release_profile_runtime_scope_tokens(scopes)
+    return _session_profile_runtime_scope({"profile_home": None if launch else str(path)}, hydrate_secrets=False)
 
 
 def _resolve_profile(rid, params):

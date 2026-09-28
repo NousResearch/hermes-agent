@@ -57,6 +57,7 @@ function observeSlowFrames(): () => void {
   }
 
   const types = PerformanceObserver.supportedEntryTypes ?? []
+
   const type = types.includes('long-animation-frame')
     ? 'long-animation-frame'
     : types.includes('longtask')

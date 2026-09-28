@@ -1220,3 +1220,16 @@ def test_prune_never_evicts_live_records():
 
     assert {"live-stalling", "live-finalizing", "live-running"} <= survivors
     assert "done-0" not in survivors and len(survivors - {"live-stalling", "live-finalizing", "live-running"}) == ad._MAX_RETAINED_COMPLETED
+
+
+def test_model_tools_import_does_not_create_state_db(tmp_path):
+    """Importing model_tools performs no state.db I/O and does not recreate missing profiles (#123265)."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    typo_home = tmp_path / "profiles" / "typo"
+    env = {**os.environ, "HERMES_HOME": str(typo_home), "PYTHONPATH": repo}
+    check_code = "import model_tools\n"
+    subprocess.run(
+        [sys.executable, "-c", check_code],
+        cwd=repo, env=env, text=True, capture_output=True, timeout=15,
+    )
+    assert not (typo_home / "state.db").exists(), "state.db should not be created on model_tools import"

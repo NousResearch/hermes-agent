@@ -168,6 +168,8 @@ class MatrixEventContextCache:
         self, room_id: str, event_id: str, entry: MatrixEventContext, before: MatrixEventContext | None,
     ) -> MatrixEventContext | None:
         current = self.history_entry(room_id, event_id)
+        if current is not None and current.state_error and entry.state_error and not entry.redacted:
+            return current
         if current is before or entry.redacted:
             return self.store(room_id, event_id, entry)
         if current is not None and not current.sender and entry.sender:

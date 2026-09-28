@@ -1622,6 +1622,10 @@ class TurnRunner:
             _last_transcript_timestamp, _prepare_resume_pending_message, build_resume_recovery_note,
         )
         ctx = self._ctx
+        if ctx.input_snapshot is not None:
+            ctx.message = ctx.input_snapshot.render(self._runner, timestamps=True)
+            ctx.persist_user_message = ctx.input_snapshot.persist_user_message
+            ctx.persist_user_timestamp = ctx.input_snapshot.persist_user_timestamp
         persist_override: Optional[Any] = ctx.persist_user_message
         self._prepend_pending_note("_pending_model_notes")
         # Auto-continue: history ending with a tool result means the previous turn was cut off
@@ -1670,6 +1674,8 @@ class TurnRunner:
         same runner never re-attach stale images. Falls back to plain text when nothing is readable."""
         ctx = self._ctx
         native_imgs = self._runner._consume_pending_native_image_paths(ctx.session_key)
+        if ctx.input_snapshot is not None:
+            native_imgs = ctx.input_snapshot.retained_image_paths(native_imgs)
         if not native_imgs:
             return ctx.message
         try:

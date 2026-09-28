@@ -259,6 +259,7 @@ def gateway(
     gateway_image: str,
     synapse: tuple[DockerContainer, str, Network],
     live_room: LiveRoom,
+    request: pytest.FixtureRequest,
 ) -> Iterator[LiveGateway]:
     _, _, network = synapse
     room_id = live_room.room_id
@@ -268,7 +269,11 @@ def gateway(
         write_hermes_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
-            extra_config="platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n",
+            extra_config=(
+                "platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n"
+                + ("plugins:\n  enabled:\n    - matrix-live-context\n"
+                   if getattr(request, "param", None) == "pause-context" else "")
+            ),
         )
         with (home / ".env").open("a", encoding="utf-8") as stream:
             stream.write(
@@ -277,6 +282,30 @@ def gateway(
                 f"MATRIX_ALLOWED_USERS={live_room.observer.user_id}\n"
                 f"MATRIX_HOME_ROOM={room_id}\n"
                 "MATRIX_E2EE_MODE=optional\nMATRIX_REACTIONS=false\nMATRIX_AUTO_THREAD=false\n"
+            )
+        if getattr(request, "param", None) == "pause-context":
+            plugin = home / "plugins" / "matrix-live-context"
+            plugin.mkdir(parents=True)
+            (plugin / "plugin.yaml").write_text(
+                "name: matrix-live-context\nversion: 1.0.0\ndescription: Matrix live context pause\n",
+                encoding="utf-8",
+            )
+            (plugin / "__init__.py").write_text(
+                "import asyncio\n"
+                "from agent.context_references import ContextReferenceProvider\n"
+                "from hermes_constants import get_hermes_home\n"
+                "class ContextPause(ContextReferenceProvider):\n"
+                "    prefix = 'matrix-live'\n"
+                "    async def autocomplete(self, query, *, limit=10):\n"
+                "        return []\n"
+                "    async def expand(self, target):\n"
+                "        (get_hermes_home() / 'context-started').write_text('started', encoding='utf-8')\n"
+                "        while not (get_hermes_home() / 'context-release').exists():\n"
+                "            await asyncio.sleep(0.01)\n"
+                "        return 'Live enrichment completed'\n"
+                "def register(ctx):\n"
+                "    ctx.register_context_reference(ContextPause())\n",
+                encoding="utf-8",
             )
         home.chmod(0o777)
 

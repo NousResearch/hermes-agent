@@ -7,9 +7,12 @@ gateway.platforms.*.
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from gateway.session import SessionSource
+
+if TYPE_CHECKING:
+    from gateway.inbound_context import PreparedInboundMessage
 
 
 class MessageType(Enum):
@@ -98,6 +101,8 @@ class MessageEvent:
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    _prepared_inbound: Optional["PreparedInboundMessage"] = field(default=None, init=False, repr=False, compare=False)
+    _quoted_media_urls: List[str] = field(default_factory=list, init=False, repr=False, compare=False)
 
     def absorb_reply_expected(self, other: "MessageEvent") -> None:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""
@@ -119,6 +124,7 @@ class MessageEvent:
         self.reply_to_author_name = other.reply_to_author_name
         self.reply_to_is_own_message = other.reply_to_is_own_message
         self.reply_to_author_authorized = other.reply_to_author_authorized
+        self._quoted_media_urls = list(other._quoted_media_urls)
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

@@ -83,15 +83,14 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.room_context import (
-    format_history_context,
-    MatrixRoomState, PendingRoomNotes, RoomStateNote, fetch_room_entries,
+    MatrixRoomState, PendingRoomNotes, RoomStateNote,
     room_state_change_note,
 )
 from plugins.platforms.matrix.relations import MatrixRelation
+from plugins.platforms.matrix.context_mixin import MatrixContextMixin
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote,
 )
-from plugins.platforms.matrix.thread_context import fetch_thread_entries
 from plugins.platforms.matrix.read_context import read_matrix_context
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
@@ -845,7 +844,7 @@ class _CryptoStateStore:
         return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
 
 
-class MatrixAdapter(BasePlatformAdapter):
+class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -2281,7 +2280,7 @@ class MatrixAdapter(BasePlatformAdapter):
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         elif _is_bare_media_filename(media_msgtype, body):
             body = ""  # transport filename, not user text
-        return MessageEvent(
+        event = MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply.event_id, reply_to_text=reply.text, reply_to_author_id=reply.author_id,
             reply_to_author_name=reply.author_name,
@@ -2289,6 +2288,8 @@ class MatrixAdapter(BasePlatformAdapter):
             reply_to_author_authorized=reply.author_authorized,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
+        event._quoted_media_urls = [reply.media_path] if reply.media_path else []
+        return event
 
     def take_turn_channel_context(
         self, event: MessageEvent, session_key: str | None = None,
@@ -3065,46 +3066,6 @@ class MatrixAdapter(BasePlatformAdapter):
             self, kind, room_id, event_id, limit,
             requester=requester,
         )
-
-    async def fetch_thread_context(
-        self, chat_id: str, thread_id: str, *, before_event_id: str | None = None,
-    ) -> str | None:
-        entries = await fetch_thread_entries(
-            self._client, self._event_context_cache, chat_id, thread_id,
-            limit=self._thread_backfill_limit, before_event_id=before_event_id,
-        )
-        return await self._format_history_context(chat_id, entries, "Earlier messages in this thread")
-
-    async def fetch_room_context(self, chat_id: str, event_id: str) -> str | None:
-        entries = await fetch_room_entries(
-            self._client, self._event_context_cache, chat_id, event_id,
-            limit=self._room_backfill_limit,
-        )
-        return await self._format_history_context(chat_id, entries, "Recent room messages")
-
-    async def fetch_mention_context(self, event: MessageEvent) -> str | None:
-        source = event.source
-        content = event.raw_message
-        if event.internal or source.chat_type == "dm" or not isinstance(content, dict):
-            return None
-        if not event.metadata.get("matrix_mention_claimed") and not self._content_mentions_bot(
-            str(content.get("body") or ""), content,
-        ):
-            return None
-        if not event.message_id:
-            return None
-
-        relation = MatrixRelation.from_content(content.get("m.relates_to"))
-        if relation.thread_root:
-            return await self.fetch_thread_context(
-                source.chat_id, relation.thread_root, before_event_id=event.message_id,
-            )
-        return await self.fetch_room_context(source.chat_id, event.message_id)
-
-    async def _format_history_context(
-        self, chat_id: str, entries: list[MatrixEventContext], heading: str,
-    ) -> str | None:
-        return await format_history_context(self, chat_id, entries, heading)
 
     async def _fetch_m_direct(self, *, log_failure: bool = False, require_dict: bool = False):
         """Return the m.direct account-data mapping, or None when absent/unreadable."""

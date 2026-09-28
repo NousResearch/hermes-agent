@@ -25,6 +25,7 @@ from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
+from gateway.inbound_context import PreparedInboundMessage
 from gateway.response_filters import (
     display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
@@ -2222,7 +2223,12 @@ class GatewayTurnMixin:
                     **reply_expected_metadata(event.reply_expected), **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
+                input_snapshot=getattr(event, "_prepared_inbound", None),
             )
+            if getattr(event, "_prepared_inbound", None) is not None:
+                prepared.message_text = event._prepared_inbound.message_text
+                prepared.persist_user_message = event._prepared_inbound.persist_user_message
+                prepared.persist_user_timestamp = event._prepared_inbound.persist_user_timestamp
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
@@ -2773,6 +2779,7 @@ class GatewayTurnMixin:
         source: "SessionSource", session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
         scheduled_heartbeat: bool = False,
+        input_snapshot: Optional[PreparedInboundMessage] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
@@ -2872,6 +2879,9 @@ class GatewayTurnMixin:
             # (DNS fail, firewall, remote down) fails fast instead of hanging on the OS default.
             _timeout = ClientTimeout(total=0, sock_read=1800, sock_connect=30)
             async with _AioClientSession(timeout=_timeout) as session:
+                if input_snapshot is not None:
+                    await input_snapshot.snapshot.refresh()
+                    api_messages[-1]["content"] = input_snapshot.render(self, timestamps=True)
                 async with session.post(f"{proxy_url}/v1/chat/completions", json=body, headers=headers) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()
@@ -3926,6 +3936,7 @@ class GatewayTurnMixin:
                 persist_user_message=next_persist_message,
                 persist_user_display_kind=next_display_kind,
                 reply_expected=next_reply_expected,
+                input_snapshot=getattr(pending_event, "_prepared_inbound", None),
                 persist_user_display_metadata={
                     **({"matrix_room_state": pending_event._matrix_room_state}
                        if hasattr(pending_event, "_matrix_room_state") else {}),
@@ -4257,15 +4268,22 @@ class GatewayTurnMixin:
         persist_user_display_metadata: Optional[dict] = None,
         reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
+        input_snapshot: Optional[PreparedInboundMessage] = None,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
+        if input_snapshot is not None:
+            await input_snapshot.snapshot.refresh()
+            message = input_snapshot.render(self, timestamps=True)
+            persist_user_message = input_snapshot.persist_user_message
+            persist_user_timestamp = input_snapshot.persist_user_timestamp
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
                 event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
+                input_snapshot=input_snapshot,
             )
 
         from run_agent import AIAgent
@@ -4295,6 +4313,7 @@ class GatewayTurnMixin:
             reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata,
             scheduled_heartbeat=scheduled_heartbeat,
+            input_snapshot=input_snapshot,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,

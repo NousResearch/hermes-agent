@@ -11,7 +11,7 @@ from urllib.parse import quote
 from plugins.platforms.matrix.effective_event import effective_event, event_content
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reaction_context import fetch_reactions_for_events
-from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache, _label_body, _own_text
+from plugins.platforms.matrix.reply_context import MatrixEventContext, _label_body, _own_text
 
 try:
     from mautrix.api import Method
@@ -93,18 +93,18 @@ async def _visible_event(
 @dataclass
 class MatrixReadEvent:
     raw: dict[str, Any]
-    visible: dict[str, Any]
+    visible: dict[str, Any] | None
     error: dict[str, str] | None
     replacement_id: str | None
     cache_entry: MatrixEventContext | None
 
-    async def refresh(self, adapter: Any, room_id: str, chat_type: str) -> bool:
+    async def refresh(self, adapter: Any, room_id: str, chat_type: str) -> None:
         cache = adapter._event_context_cache
-        event_id = self.visible["event_id"]
+        event_id = self.raw["event_id"]
         current = cache.history_entry(room_id, event_id)
         if (current is self.cache_entry and not cache.is_redacted(room_id, self.replacement_id)
                 and not (self.error and self.error["error"] == "event content changed")):
-            return True
+            return
         self.cache_entry = current
         raw = self.raw
         if current is None or not current.redacted:
@@ -120,27 +120,35 @@ class MatrixReadEvent:
                     "replacement was redacted" if cache.is_redacted(room_id, self.replacement_id) else
                     current.state_error if current and current.state_error else "event content changed"
                 )
-                return True
+                return
         visible, error, replacement_id = await _visible_event(adapter, raw, room_id, chat_type, before=current)
-        if visible is None:
-            self.error = error
-            return False
         self.raw, self.visible, self.error, self.replacement_id = raw, visible, error, replacement_id
-        if error is not None:
+        if error is not None and self.visible is not None:
             self.visible.update(body="[event content unavailable]", msgtype=None)
             self.visible.pop("edited", None)
         self.cache_entry = cache.history_entry(room_id, event_id)
-        return True
 
     def invalidate(self, error: str) -> None:
-        self.visible.update(body="[event content unavailable]", msgtype=None)
-        self.visible.pop("edited", None)
-        self.error = {"event_id": self.visible["event_id"], "error": error}
+        if self.visible is not None:
+            self.visible.update(body="[event content unavailable]", msgtype=None)
+            self.visible.pop("edited", None)
+        self.error = {"event_id": self.raw["event_id"], "error": error}
 
-    def recheck(self, cache: MatrixEventContextCache, room_id: str) -> None:
-        event_id = self.visible["event_id"]
+    def recheck(self, adapter: Any, room_id: str, chat_type: str) -> None:
+        cache = adapter._event_context_cache
+        event_id = self.raw["event_id"]
         current = cache.history_entry(room_id, event_id)
         if current is not None and current.redacted:
+            if self.visible is None:
+                sender = str(self.raw.get("sender") or "")
+                self.visible = {
+                    "event_id": event_id, "sender": sender,
+                    "thread_id": MatrixRelation.from_content(event_content(self.raw).get("m.relates_to")).thread_root,
+                    "timestamp": self.raw.get("origin_server_ts"),
+                    "sender_authorized": sender == adapter._user_id or adapter._is_sender_authorized(
+                        sender, chat_type=chat_type, chat_id=room_id,
+                    ) is True,
+                }
             self.visible.update(body="[redacted]", msgtype=None, redacted=True)
             self.error = None
         elif cache.is_redacted(room_id, self.replacement_id):
@@ -149,9 +157,10 @@ class MatrixReadEvent:
             self.invalidate(current.state_error if current and current.state_error else "event content changed")
         else:
             return
-        self.visible.pop("edited", None)
-        self.visible.pop("reactions", None)
-        self.visible.pop("reactions_truncated", None)
+        if self.visible is not None:
+            self.visible.pop("edited", None)
+            self.visible.pop("reactions", None)
+            self.visible.pop("reactions_truncated", None)
 
 
 async def read_matrix_context(
@@ -215,12 +224,13 @@ async def read_matrix_context(
             adapter, raw, room_id, chat_type, before=cached.get(raw.get("event_id")),
         )
         if visible is None:
-            if error is not None:
-                errors.append(error)
+            if error is None:
+                continue
+        relation = MatrixRelation.from_content(event_content(raw).get("m.relates_to"))
+        if visible is not None and kind == "thread" and raw.get("event_id") != event_id and relation.thread_root != event_id:
             continue
-        if kind == "thread" and visible["event_id"] != event_id and visible["thread_id"] != event_id:
-            continue
-        events.append(visible)
+        if visible is not None:
+            events.append(visible)
         resolved.append(MatrixReadEvent(
             raw, visible, error, replacement_id,
             adapter._event_context_cache.history_entry(room_id, raw.get("event_id")),
@@ -233,16 +243,18 @@ async def read_matrix_context(
     )
     by_id = {event["event_id"]: snapshot for event, snapshot in zip(targets, snapshots)}
     events = []
-    refreshed: list[MatrixReadEvent] = []
     for snapshot in resolved:
-        if not await snapshot.refresh(adapter, room_id, chat_type):
-            if snapshot.error is not None:
-                errors.append(snapshot.error)
-            continue
-        events.append(snapshot.visible)
-        refreshed.append(snapshot)
+        await snapshot.refresh(adapter, room_id, chat_type)
+    for snapshot in resolved:
+        snapshot.recheck(adapter, room_id, chat_type)
+        if snapshot.visible is not None:
+            events.append(snapshot.visible)
+        if snapshot.error is not None:
+            errors.append(snapshot.error)
 
     for event in events:
+        if event.get("redacted") or event["msgtype"] is None:
+            continue
         snapshot = by_id.get(event["event_id"])
         if snapshot is None:
             continue
@@ -265,10 +277,5 @@ async def read_matrix_context(
             errors.append({"event_id": reaction_id, "error": "missing decryption keys"})
         if snapshot.error:
             errors.append({"event_id": event["event_id"], "error": snapshot.error})
-
-    for snapshot in refreshed:
-        snapshot.recheck(adapter._event_context_cache, room_id)
-        if snapshot.error is not None:
-            errors.append(snapshot.error)
 
     return {"events": events, "errors": errors}

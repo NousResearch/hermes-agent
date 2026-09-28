@@ -1302,3 +1302,88 @@ async def test_validated_bounded_read_updates_reply_and_existing_formatting_snap
         "[History]\n[Alice] after",
     )
     assert adapter._client.api.request.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["room", "thread"])
+async def test_failed_catch_up_recovery_keeps_invalidated_replacement(scope: str):
+    cache = MatrixEventContextCache()
+    target = "$root" if scope == "thread" else "$target"
+    cache.store(ROOM, target, MatrixEventContext(SENDER, "withdrawn edit", replacement_id="$latest"))
+    cache.redact(ROOM, "$latest")
+    invalidated = cache.history_entry(ROOM, target)
+    raw = _edited(_original(target, "original draft"), "surviving older edit")
+    raw["type"] = "m.room.encrypted"
+    replacement = raw["unsigned"]["m.relations"]["m.replace"]
+    replacement.update(event_id="$earlier", type="m.room.encrypted")
+    replacement["content"].update(session_id="earlier", ciphertext="fake")
+    keys_available = False
+
+    async def request(_method, path, **_kwargs):
+        if "/context/" in path:
+            return {"start": "boundary"}
+        if "/event/" in path:
+            return raw
+        return {"chunk": [raw] if "/messages" in path else []}
+
+    async def decrypt(_client, event):
+        if event["event_id"] == "$earlier" and not keys_available:
+            return None, {"event_id": "$earlier", "error": "missing decryption keys"}
+        return SimpleNamespace(content=event["content"]), None
+
+    client = SimpleNamespace(
+        api=SimpleNamespace(request=AsyncMock(side_effect=request)),
+        crypto=SimpleNamespace(crypto_store=_edit_store({"m.new_content": {
+            "msgtype": "m.text", "body": "surviving older edit",
+        }})),
+    )
+    with patch("plugins.platforms.matrix.effective_event._decrypt", side_effect=decrypt):
+        failed = (await fetch_room_entries(client, cache, ROOM, "$current", limit=1) if scope == "room"
+                  else await fetch_thread_entries(client, cache, ROOM, target, limit=1, before_event_id="$current"))
+        assert (failed, cache.history_entry(ROOM, target)) == ([invalidated], invalidated)
+        keys_available = True
+        recovered = await cache.resolve(client, ROOM, target)
+    assert recovered == MatrixEventContext(SENDER, "surviving older edit", event_id=target, replacement_id="$earlier")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["room", "thread"])
+async def test_failed_read_remains_subject_to_redaction_after_later_reaction_await(kind: str):
+    started, release = asyncio.Event(), asyncio.Event()
+    failed = {**_original("$failed", "unreadable", root="$root" if kind == "thread" else None),
+              "type": "m.room.encrypted"}
+    later = _original("$later", "readable", root="$root" if kind == "thread" else None)
+
+    async def request(_method, path, **_kwargs):
+        if "/event/" in path:
+            return _original("$root", "root")
+        if "/m.annotation" in path:
+            started.set()
+            await release.wait()
+            return {"chunk": []}
+        return {"chunk": [failed, later]}
+
+    client = SimpleNamespace(
+        api=SimpleNamespace(request=AsyncMock(side_effect=request)),
+        sync_store=SimpleNamespace(get_next_batch=AsyncMock(return_value="boundary")),
+    )
+    adapter = _adapter(client)
+    with patch("plugins.platforms.matrix.effective_event._decrypt", new=AsyncMock(
+        return_value=(None, {"event_id": "$failed", "error": "missing decryption keys"}),
+    )):
+        pending = asyncio.create_task(read_matrix_context(adapter, kind, ROOM, "$root", 3, requester=SENDER))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+            adapter._event_context_cache.redact(ROOM, "$failed")
+        finally:
+            release.set()
+            result = await pending
+    root = [{"event_id": "$root", "sender": SENDER, "body": "root", "msgtype": "m.text",
+             "thread_id": None, "timestamp": None, "sender_authorized": True}] if kind == "thread" else []
+    assert result == {"events": root + [
+        {"event_id": "$failed", "sender": SENDER, "body": "[redacted]", "msgtype": None,
+         "thread_id": "$root" if kind == "thread" else None, "timestamp": None,
+         "sender_authorized": True, "redacted": True},
+        {"event_id": "$later", "sender": SENDER, "body": "readable", "msgtype": "m.text",
+         "thread_id": "$root" if kind == "thread" else None, "timestamp": None, "sender_authorized": True},
+    ], "errors": []}

@@ -7,6 +7,7 @@ import json
 import time
 import uuid
 from collections.abc import Callable
+from pathlib import Path
 from urllib.parse import quote
 
 import aiohttp
@@ -42,6 +43,7 @@ def group_gateway(group_member: MatrixAccount, gateway: LiveGateway) -> LiveGate
 
 async def _send(
     client, room_id: str, body: str, *, root: str | None = None, mention: str | None = None,
+    reply: str | None = None,
 ) -> str:
     content: dict = {"msgtype": "m.text", "body": body}
     if root is not None:
@@ -49,6 +51,8 @@ async def _send(
             "rel_type": "m.thread", "event_id": root,
             "m.in_reply_to": {"event_id": root}, "is_falling_back": True,
         }
+    if reply is not None:
+        content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply}}
     if mention is not None:
         content["m.mentions"] = {"user_ids": [mention]}
     sent = await client.room_send(room_id, "m.room.message", content)
@@ -164,7 +168,9 @@ def test_thread_mention_recovers_only_its_earlier_messages(
         record_property("body_seconds", round(time.monotonic() - started, 3))
 
 
+@pytest.mark.parametrize("gateway", ["pause-context"], indirect=True)
 def test_room_catch_up_shows_edits_and_redactions_to_model(
+    tmp_path: Path,
     group_gateway: LiveGateway,
     live_room: LiveRoom,
     record_property: Callable[[str, object], None],
@@ -198,15 +204,35 @@ def test_room_catch_up_shows_edits_and_redactions_to_model(
             redaction = await client.room_redact(live_room.room_id, redacted_target)
             assert isinstance(redaction, RoomRedactResponse), redaction
 
-            await _send(client, live_room.room_id, f"{live_room.bot.user_id} catch up",
-                        mention=live_room.bot.user_id)
+            late_target = await _send(client, live_room.room_id, "Withdrawn during enrichment")
+            await _send(
+                client, live_room.room_id,
+                f"> <{live_room.observer.user_id}> Final room decision\n\n"
+                f"{live_room.bot.user_id} catch up @matrix-live:pause",
+                mention=live_room.bot.user_id, reply=edited_target,
+            )
+            while not (tmp_path / "hermes" / "context-started").exists():
+                await asyncio.sleep(0.01)
+            late_edit = await client.room_send(live_room.room_id, "m.room.message", {
+                "msgtype": "m.text", "body": "* Revised decision during enrichment",
+                "m.new_content": {"msgtype": "m.text", "body": "Revised decision during enrichment"},
+                "m.relates_to": {"rel_type": "m.replace", "event_id": edited_target},
+            })
+            assert isinstance(late_edit, RoomSendResponse), late_edit
+            late_redaction = await client.room_redact(live_room.room_id, late_target)
+            assert isinstance(late_redaction, RoomRedactResponse), late_redaction
+            (tmp_path / "hermes" / "context-release").write_text("release", encoding="utf-8")
             await _wait_for_final(client, live_room, seen, "ok")
 
             requests = group_gateway.model.main_requests()
             assert len(requests) == 2
             prompt = json.dumps(requests[1]["messages"])
             assert "[Recent room messages]" in prompt
-            assert "Final room decision" in prompt
+            assert "Revised decision during enrichment" in prompt
+            assert "Final room decision" not in prompt
+            assert "Withdrawn during enrichment" not in prompt
+            assert "Live enrichment completed" in prompt
+            assert requests[0]["messages"][0] == requests[1]["messages"][0]
             assert "[redacted]" in prompt
             assert "Draft room decision" not in prompt
             assert "Withdrawn room decision" not in prompt

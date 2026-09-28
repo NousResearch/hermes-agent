@@ -153,17 +153,6 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_doctor.add_argument(
         "--ci", action="store_true", help="Exit non-zero when validation reports an error")
 
-    plugins_compat = plugins_subparsers.add_parser(
-        "compat",
-        help="Show installed plugins that import paths removed by the Sep 2026 decomposition",
-        description="Statically scans every enabled external plugin for imports of pre-decomposition "
-            "module paths (see COMPAT_MANIFEST.md) and prints file:line, old path -> new path. "
-            "Exits 1 when any plugin is affected. Plugins still affected on the removal date are "
-            "not loaded (override: plugins.allow_deprecated_imports: true).")
-    plugins_compat.add_argument("--json", action="store_true", help="Machine-readable output")
-    plugins_compat.add_argument(
-        "path", nargs="?", help="Scan one plugin directory instead of the installed set (for plugin authors)")
-
     plugins_pack = plugins_subparsers.add_parser(
         "pack", help="Declarative, shareable plugin sets (hermes-pack.yaml)",
         description="Install, export, or inspect plugin packs — a single YAML file "

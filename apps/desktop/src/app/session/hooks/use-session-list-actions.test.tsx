@@ -148,6 +148,38 @@ afterEach(() => {
   setSessionsLoadError(false)
 })
 
+describe('workspace-only sidebar refresh', () => {
+  it.each(['cwd', 'git_repo_root', 'git_branch'] as const)(
+    'publishes %s changes to all slices without another message or a session click',
+    async field => {
+      const previous = row('moved', { cwd: '/old', git_repo_root: '/old', git_branch: 'old' })
+      const incoming = { ...previous, [field]: '/new' }
+      setSessions([previous])
+      setCronSessions([{ ...previous, source: 'cron' }])
+      setMessagingSessions([{ ...previous, source: 'telegram' }])
+      listSidebarSessions.mockResolvedValue(
+        sidebar({ sessions: [incoming] }, [{ ...incoming, source: 'cron' }], [{ ...incoming, source: 'telegram' }])
+      )
+      const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+      await act(async () => {
+        await result.current.refreshSessions()
+      })
+
+      for (const store of [$sessions, $cronSessions, $messagingSessions]) {
+        expect(store.get()[0]?.[field]).toBe('/new')
+      }
+      const snapshots = [$sessions.get(), $cronSessions.get(), $messagingSessions.get()]
+      await act(async () => {
+        await result.current.refreshSessions()
+      })
+      ;[$sessions, $cronSessions, $messagingSessions].forEach((store, i) => {
+        expect(store.get()).toBe(snapshots[i])
+      })
+    }
+  )
+})
+
 // #67600: a cold-start read that fails must not render as "No sessions yet".
 describe('refreshSessions cold-start load error', () => {
   const failedScan = (storage?: Record<string, 'corrupt'>): SidebarSessionsResponse => ({

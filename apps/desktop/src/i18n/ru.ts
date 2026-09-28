@@ -1523,6 +1523,7 @@ export const ru = defineLocale({
       defaultsFailed: 'Не удалось сохранить модель по умолчанию',
       auxiliaryTitle: 'Вспомогательные модели',
       resetAllToMain: 'Сбросить всё на основную',
+      staleAuxDismiss: 'Больше не показывать',
       auxiliaryDesc:
         'Вспомогательные задачи по умолчанию выполняются основной моделью. Назначьте отдельную модель любой задаче, чтобы переопределить.',
       setToMain: 'На основную',
@@ -3010,6 +3011,8 @@ export const ru = defineLocale({
     restoredDraftNotice: 'Восстановлено ваше неотправленное сообщение',
     restoredDraftUndo: 'Отменить',
     queueEdit: 'Изменить',
+    queueExpand: 'Раскрыть',
+    queueCollapse: 'Свернуть',
     queueSendNext: 'Дальше',
     queueSteer: 'Направить — изменить текущий ход сейчас',
     queueSend: 'Отправить',

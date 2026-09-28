@@ -1586,14 +1586,3 @@ def _cmd_update_impl(args, gateway_mode: bool):
         finally:
             if _windows_gateway_resume and _windows_gateway_resume.get("resume_needed"):
                 _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-from datetime import datetime  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-import json  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

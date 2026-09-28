@@ -1535,6 +1535,7 @@ export interface Translations {
       restartFailed: string
       auxiliaryTitle: string
       resetAllToMain: string
+      staleAuxDismiss: string
       auxiliaryDesc: string
       setToMain: string
       change: string
@@ -3232,6 +3233,8 @@ export interface Translations {
     restoredDraftNotice: string
     restoredDraftUndo: string
     queueEdit: string
+    queueExpand: string
+    queueCollapse: string
     queueSendNext: string
     queueSend: string
     queueSteer: string

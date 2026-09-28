@@ -4,6 +4,7 @@ checks its launch path depends on. Config/policy helpers are looked up lazily th
 from __future__ import annotations
 
 import contextlib
+import glob
 import logging
 import os
 import shutil
@@ -90,6 +91,48 @@ def _wait_or_kill(process: Any) -> None:
             process.kill()
             process.wait(timeout=2.0)
 
+def _owner_marker_path(socket_path: str) -> str:
+    return socket_path + ".owner"
+
+def _owner_pid_alive(pid: int) -> bool:
+    """pidfile-style liveness probe: only ProcessLookupError counts as dead (PermissionError means the
+    pid exists but belongs to another user), so every ambiguity resolves to "alive" and the reap below
+    errs toward leaving a daemon running rather than stopping one another Hermes still owns."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+def _reap_orphaned_cua_daemons(driver_cmd: str, env: Dict[str, str]) -> None:
+    """Stop private daemons whose owning Hermes process is gone (#126364). On macOS the daemon is launched
+    through LaunchServices, so it is a child of launchd, not of Hermes: when Hermes dies to a signal the
+    atexit teardown never runs and an approval-bypassed daemon keeps serving on its socket indefinitely.
+    Each daemon start records its owner pid in a sidecar next to the socket; on the next start we stop the
+    daemons whose owner is dead. A socket without a readable marker is never touched — pre-fix leftovers
+    and daemons another live instance is still starting up must stay put. Pid reuse can only make a dead
+    owner look alive (missed reap), never the reverse."""
+    if sys.platform == "win32":
+        return
+    for socket_path in glob.glob(os.path.join(tempfile.gettempdir(), "hc-*.sock")):
+        marker = _owner_marker_path(socket_path)
+        try:
+            with open(marker, "r", encoding="utf-8") as fh:
+                pid = int(fh.read().strip())
+        except (OSError, ValueError):
+            continue
+        if _owner_pid_alive(pid):
+            continue
+        logger.info("stopping orphaned embedded cua-driver daemon %s (owner pid %s is gone)", socket_path, pid)
+        _cb()._run_quiet([driver_cmd, "stop", "--socket", socket_path], timeout=3.0, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, env=env, swallow=_QUIET_ERRORS)
+        for stale in (socket_path, marker):
+            if os.path.exists(stale):
+                with contextlib.suppress(OSError):
+                    os.remove(stale)
+
 
 class _EmbeddedCuaDaemon:
     """Private daemon for a non-standard permission mode. cua-driver's permission mode is immutable after daemon
@@ -167,6 +210,8 @@ class _EmbeddedCuaDaemon:
             raise RuntimeError(_driver.cua_driver_install_hint())
         self._command, self._mcp_args = _driver._resolve_mcp_invocation(driver_cmd)
         env = self._sanitized_env()
+        with contextlib.suppress(Exception):
+            _reap_orphaned_cua_daemons(self._command, env)
         command = _embedded_daemon_spawn_command(self._command, self._serve_args(), platform=sys.platform)
         self._process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                          stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
@@ -181,6 +226,7 @@ class _EmbeddedCuaDaemon:
                 self._startup_failure("embedded cua-driver exited during startup", "no diagnostic output")
             if self._socket_ready(env):
                 self._running = True
+                self._write_owner_marker()
                 return
             time.sleep(0.1)
         self.stop()
@@ -188,6 +234,17 @@ class _EmbeddedCuaDaemon:
 
     def _startup_failure(self, what: str, fallback: str) -> None:
         raise RuntimeError(f"{what}: {'; '.join(self._stderr_tail) or fallback}")
+
+    def _write_owner_marker(self) -> None:
+        """Record the owning pid beside the socket once the daemon actually listens, so a later start can
+        reap this daemon if this process died without running the teardown (#126364). Suppressed on any
+        OSError: a daemon the marker could not be written for simply stays reap-eligible never, which is
+        the pre-fix behavior, never a startup failure."""
+        if sys.platform == "win32":
+            return
+        with contextlib.suppress(OSError):
+            with open(_owner_marker_path(self.socket_path), "w", encoding="utf-8") as fh:
+                fh.write(str(os.getpid()))
 
     def _socket_ready(self, env: Dict[str, str]) -> bool:
         """``cua-driver status --socket`` exits 0 once the private daemon accepts connections."""
@@ -207,6 +264,8 @@ class _EmbeddedCuaDaemon:
                              stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
         if process is not None:
             _wait_or_kill(process)
-        if sys.platform != "win32" and os.path.exists(self.socket_path):
-            with contextlib.suppress(OSError):
-                os.remove(self.socket_path)
+        if sys.platform != "win32":
+            for stale in (self.socket_path, _owner_marker_path(self.socket_path)):
+                if os.path.exists(stale):
+                    with contextlib.suppress(OSError):
+                        os.remove(stale)

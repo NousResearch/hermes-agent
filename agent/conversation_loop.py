@@ -1319,11 +1319,11 @@ def _apply_context_engine_selection(
         # The engine may hand back the ``conversation_messages`` clones (or its own dicts) that still
         # carry persistence-only fields; the request copy was stripped BEFORE this hook, so strip the
         # selection too or those fields reach the provider. Dicts without them pass through as-is.
-        if not any(key in m for m in selected for key in PERSISTENCE_ONLY_MESSAGE_FIELDS):
+        if all(PERSISTENCE_ONLY_MESSAGE_FIELDS.isdisjoint(m) for m in selected):
             return selected
         return [
-            {k: v for k, v in m.items() if k not in PERSISTENCE_ONLY_MESSAGE_FIELDS}
-            if any(key in m for key in PERSISTENCE_ONLY_MESSAGE_FIELDS) else m
+            m if PERSISTENCE_ONLY_MESSAGE_FIELDS.isdisjoint(m)
+            else {k: v for k, v in m.items() if k not in PERSISTENCE_ONLY_MESSAGE_FIELDS}
             for m in selected
         ]
     logger.warning(

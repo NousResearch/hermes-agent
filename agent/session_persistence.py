@@ -258,6 +258,7 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
     pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
     batch_rows: List[Dict[str, Any]] = []
     batch_msgs: List[Dict] = []
+    tool_uid_owners: dict = {}  # tool_call_uid_from_history memo; the scanned dicts outlive this loop
     for msg_idx in range(_db_flush_scan_start(agent, messages), len(messages)):
         msg = messages[msg_idx]
         # Append-only flush: a mid-turn persist of scaffolding would commit a synthetic turn the end-of-turn
@@ -279,7 +280,7 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
         if msg.get("role") == "tool" and not msg.get(TOOL_CALL_UID):
             # A result whose call was flushed in an earlier batch: pair it with the uid that assistant row
             # minted (same-batch pairing happens inside the insert).
-            if (tool_uid := tool_call_uid_from_history(messages, msg_idx)) is not None:
+            if (tool_uid := tool_call_uid_from_history(messages, msg_idx, tool_uid_owners)) is not None:
                 msg[TOOL_CALL_UID] = tool_uid
         batch_rows.append(_db_flush_row(agent, msg, ov_idx == msg_idx or msg is pending_cli_message))
         batch_msgs.append(msg)

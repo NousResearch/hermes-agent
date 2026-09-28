@@ -156,9 +156,11 @@ def resolve_tool_call_uid(index: MutableMapping[str, str], tool_call_id: Any) ->
     return None
 
 
-def tool_call_uid_from_history(messages: Any, tool_index: int) -> Optional[str]:
+def tool_call_uid_from_history(messages: Any, tool_index: int, owners: Optional[dict] = None) -> Optional[str]:
     """Resolve a tool-result dict's uid from the nearest preceding assistant dict in ``messages`` that
-    named its ``tool_call_id`` (the cross-flush case: the assistant row landed in an earlier batch)."""
+    named its ``tool_call_id`` (the cross-flush case: the assistant row landed in an earlier batch).
+    ``owners`` memoizes each assistant's (named variants, uid index) across one flush's results, so K
+    parallel results of one assistant cost O(K) variant work instead of O(K^2)."""
     if not isinstance(messages, list) or not (0 <= tool_index < len(messages)):
         return None
     tool_msg = messages[tool_index]
@@ -174,11 +176,19 @@ def tool_call_uid_from_history(messages: Any, tool_index: int) -> Optional[str]:
             continue
         if prior.get("role") == "user":
             return None  # a tool result never pairs across a user turn
-        if prior.get("role") != "assistant" or result_variants.isdisjoint(_named_tool_call_variants(prior)):
+        if prior.get("role") != "assistant":
+            continue
+        entry = owners.get(id(prior)) if owners is not None else None
+        if entry is None:
+            index: dict = {}
+            index_tool_call_uids(index, prior)
+            entry = (frozenset(_named_tool_call_variants(prior)), index)
+            if owners is not None:
+                owners[id(prior)] = entry
+        named, index = entry
+        if result_variants.isdisjoint(named):
             continue
         # The nearest assistant naming this id owns the result: its uid, or none if it has no map (legacy).
-        index: dict = {}
-        index_tool_call_uids(index, prior)
         return resolve_tool_call_uid(index, tool_call_id)
     return None
 

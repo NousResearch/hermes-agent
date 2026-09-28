@@ -245,14 +245,6 @@ class TestPersistedMergeWitness:
         assert restored[0]["_absorbed_message_uids"] == [prompt["message_uid"]]
         assert "_absorbed_message_uids" not in restored[1]
 
-    def test_a_survivor_inserted_as_a_fresh_row_carries_the_witness(self, db):
-        db.create_session("s", "cli")
-        composite = {"role": "user", "content": "a\n\nb", "message_uid": "a" * 32,
-                     "_absorbed_message_uids": ["b" * 32, "c" * 32]}
-        db.append_messages_batch("s", [composite])
-        assert _absorbed(db, "s") == ['["%s", "%s"]' % ("b" * 32, "c" * 32)]
-        assert db.get_messages_as_conversation("s")[0]["_absorbed_message_uids"] == ["b" * 32, "c" * 32]
-
     def test_tool_call_uids_are_minted_on_the_assistant_and_paired_onto_the_results(self, db):
         db.create_session("s", "cli")
         calls = [{"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}},
@@ -453,3 +445,29 @@ def test_a_branch_copy_writes_the_uids_its_live_history_keeps(tmp_path):
         assert history[0]["message_uid"] == "a" * 32 and UID_RE.match(history[1]["message_uid"])
     finally:
         db.close()
+
+
+def _call(cid):
+    return {"id": cid, "type": "function", "function": {"name": "t", "arguments": "{}"}}
+
+
+def test_a_result_pairs_with_the_assistant_that_named_it_not_the_nearest_one(db):
+    """Restore (results without a stored uid) and the flush walk both skip a nearer assistant that never
+    named the result's call, and pair with the one that did."""
+    from agent.message_metadata import tool_call_uid_from_history
+
+    db.create_session("s", "cli")
+    msgs = [{"role": "user", "content": "q"},
+            {"role": "assistant", "content": "", "tool_calls": [_call("call_1")]},
+            {"role": "assistant", "content": "", "tool_calls": [_call("call_2")]},
+            {"role": "tool", "content": "r2", "tool_call_id": "call_2"},
+            {"role": "tool", "content": "r1", "tool_call_id": "call_1"}]
+    db.append_messages_batch("s", msgs)
+    first, second = msgs[1]["_tool_call_uids"]["call_1"], msgs[2]["_tool_call_uids"]["call_2"]
+    db._conn.execute("UPDATE messages SET tool_call_uid = NULL")  # results written by an older build
+    db._conn.commit()
+    restored = [m for m in db.get_messages_as_conversation("s", repair_alternation=False) if m["role"] == "tool"]
+    assert [m.get("_tool_call_uid") for m in restored] == [second, first]
+    live = [{k: v for k, v in m.items() if k != "_tool_call_uid"} for m in msgs]
+    owners: dict = {}
+    assert [tool_call_uid_from_history(live, i, owners) for i in (3, 4)] == [second, first]

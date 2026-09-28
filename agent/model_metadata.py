@@ -2424,7 +2424,11 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
         return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
     try:
         pins: list = []
-        key = _msg_fingerprint(msg, pins)
+        # Persistence-only fields (identity, timestamps, display metadata) never reach the estimate: keep them
+        # out of the key so stamping them neither costs a walk nor misses the memo.
+        key = _msg_fingerprint(
+            {k: v for k, v in msg.items() if k not in PERSISTENCE_ONLY_MESSAGE_FIELDS} if type(msg) is dict else msg,
+            pins)
         hash(key)
     except Exception:
         text, images = _compute()

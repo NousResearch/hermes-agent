@@ -121,6 +121,18 @@ def _uid_map(value: Any) -> Dict[str, str]:
     return {k: v for k, v in value.items() if isinstance(k, str) and k and isinstance(v, str) and v}
 
 
+def _restore_identity_columns(row: Any, msg: Dict[str, Any]) -> None:
+    """The stored identity columns onto a restored dict under their live keys (NULL/empty add nothing)."""
+    if row[MESSAGE_UID]:
+        msg[MESSAGE_UID] = row[MESSAGE_UID]
+    if absorbed := _uid_list(row["absorbed_message_uids"]):
+        msg[ABSORBED_MESSAGE_UIDS] = absorbed
+    if tool_uids := _uid_map(row["tool_call_uids"]):
+        msg[TOOL_CALL_UIDS] = tool_uids
+    if row["tool_call_uid"]:
+        msg[TOOL_CALL_UID] = row["tool_call_uid"]
+
+
 def _tool_call_uids_json(msg: Dict[str, Any]) -> Optional[str]:
     uids = _uid_map(msg.get(TOOL_CALL_UIDS) if TOOL_CALL_UIDS in msg else msg.get("tool_call_uids"))
     return json.dumps(uids, sort_keys=True) if uids else None
@@ -389,14 +401,7 @@ class SessionMessagesMixin:
             msg["observed"] = True
         if row["_compressed_summary"]:
             msg["_compressed_summary"] = True
-        if row[MESSAGE_UID]:
-            msg[MESSAGE_UID] = row[MESSAGE_UID]
-        if row["absorbed_message_uids"] and (absorbed := _uid_list(row["absorbed_message_uids"])):
-            msg[ABSORBED_MESSAGE_UIDS] = absorbed
-        if row["tool_call_uids"] and (tool_uids := _uid_map(row["tool_call_uids"])):
-            msg[TOOL_CALL_UIDS] = tool_uids
-        if row["tool_call_uid"]:
-            msg[TOOL_CALL_UID] = row["tool_call_uid"]
+        _restore_identity_columns(row, msg)
         if row["api_content"] is not None:
             msg["api_content"] = row["api_content"]
         if row["display_kind"] is not None:
@@ -1606,7 +1611,10 @@ class SessionMessagesMixin:
         from hermes_state import _strip_background_review_harness, _strip_stale_tool_call_markers
         messages = []
         exact_user_clones: Dict[Tuple[Any, str], Dict[str, Any]] = {}
-        tool_uid_index: Dict[str, str] = {}  # pairing-id variant -> uid, from the assistant rows read so far
+        tool_uid_index: Dict[str, str] = {}  # pairing-id variant -> uid, from the assistant rows indexed so far
+        # Assistant rows since the last user row not yet indexed: only a result without a stored uid (an older
+        # build's) needs the index, so rows this build wrote never pay for it. Indexed in order: same shadowing.
+        unindexed_tool_owners: List[Dict[str, Any]] = []
         for row in rows:
             content = self._loaded_view_content(row["role"], self._decode_content(row["content"]))
             # Underscore-prefixed like ``_row_id``: transports strip it before the wire; compression's
@@ -1619,13 +1627,9 @@ class SessionMessagesMixin:
             # the ENTIRE transcript on flush.
             if include_row_ids and row["id"] is not None:
                 msg["_row_id"] = row["id"]
-            # The durable per-message id is part of the message, like ``timestamp``: restored on EVERY
-            # projection (ACP, gateway, CLI, TUI, compression adoption), never opt-in like ``_row_id``.
-            if row[MESSAGE_UID]:
-                msg[MESSAGE_UID] = row[MESSAGE_UID]
-            # The persisted merge witness: which rows a consecutive-user merge folded into this one.
-            if row["absorbed_message_uids"] and (absorbed := _uid_list(row["absorbed_message_uids"])):
-                msg[ABSORBED_MESSAGE_UIDS] = absorbed
+            # The durable identity is part of the message, like ``timestamp``: restored on EVERY projection
+            # (ACP, gateway, CLI, TUI, compression adoption), never opt-in like ``_row_id``.
+            _restore_identity_columns(row, msg)
             msg.update((col, row[col]) for col in ("api_content", "display_kind") if row[col])
             if row["display_metadata"] and (decoded := self._decode_display_metadata(row["display_metadata"])) is not None:
                 msg["display_metadata"] = decoded
@@ -1647,19 +1651,20 @@ class SessionMessagesMixin:
                 msg.update(
                     (col, _json_or(row[col], None, f"Failed to deserialize {col}, falling back to None"))
                     for col in ("reasoning_details", "codex_reasoning_items", "codex_message_items") if row[col])
-                if row["tool_call_uids"] and (tool_uids := _uid_map(row["tool_call_uids"])):
-                    msg[TOOL_CALL_UIDS] = tool_uids
                 if msg.get("tool_calls"):
-                    # Provider ids repeat: this row's calls shadow an earlier occurrence's entries, and a
-                    # row without a map (an older writer's) leaves its results unpaired rather than mispaired.
-                    index_tool_call_uids(tool_uid_index, msg)
+                    unindexed_tool_owners.append(msg)
             elif row["role"] == "user":
                 tool_uid_index.clear()  # a result never pairs across a user turn
-            elif row["role"] == "tool":
-                # The stored uid, else the one its assistant row named (a result appended by an older build
-                # or a lone append): rows are read in id order, so the call always precedes its result.
-                tool_uid = row["tool_call_uid"] or resolve_tool_call_uid(tool_uid_index, row["tool_call_id"])
-                if tool_uid:
+                unindexed_tool_owners.clear()
+            elif row["role"] == "tool" and not row["tool_call_uid"] and row["tool_call_id"]:
+                # No stored uid (a result appended by an older build or a lone append): the one its assistant
+                # row named. Rows are read in id order, so the call always precedes its result. Provider ids
+                # repeat: a later row's calls shadow an earlier occurrence's, and a row without a map (an older
+                # writer's) leaves its results unpaired rather than mispaired.
+                for owner in unindexed_tool_owners:
+                    index_tool_call_uids(tool_uid_index, owner)
+                unindexed_tool_owners.clear()
+                if tool_uid := resolve_tool_call_uid(tool_uid_index, row["tool_call_id"]):
                     msg[TOOL_CALL_UID] = tool_uid
             if include_ancestors:
                 skip, exact_clone_key = self._dedupe_replayed_user(messages, msg, exact_user_clones)

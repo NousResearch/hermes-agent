@@ -2677,6 +2677,16 @@ def _env_write_blocked(key: str, action: str) -> bool:
     return False
 
 
+def preflight_env_write(key: str, action: str) -> None:
+    """Abort a command before any multi-store cleanup when policy refuses its ``.env`` write.
+
+    The concrete writer keeps its own check for direct callers; command routes use this first so a
+    refusal cannot be mistaken for success and followed by config.yaml convergence writes.
+    """
+    if _env_write_blocked(key, action):
+        sys.exit(1)
+
+
 def _managed_source(filename: str):
     """``<managed dir>/<filename>`` for refusal messages, or a generic label without a managed dir."""
     managed_dir = managed_scope.get_managed_dir()

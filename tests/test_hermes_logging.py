@@ -844,8 +844,12 @@ class TestRolloverPreservesLogOwnership:
         chowned = []
         monkeypatch.setattr(os, "geteuid", lambda: 0)
         monkeypatch.setattr(os, "chown", lambda path, uid, gid: chowned.append((path, uid, gid)))
+        # The owner handed back is whatever the PREVIOUS file carried, which on macOS/BSD
+        # inherits the directory's group (tmp dirs are gid 0 there), not the process gid.
+        log_path.write_text("seed\n", encoding="utf-8")
+        before = os.stat(log_path)
         self._rolled_handler(log_path)
-        assert chowned == [(str(log_path), os.getuid(), os.getgid())]
+        assert chowned == [(str(log_path), before.st_uid, before.st_gid)]
         assert stat.S_IMODE(os.stat(log_path).st_mode) == 0o640
 
     @pytest.mark.platforms("linux", "macos")

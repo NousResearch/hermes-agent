@@ -315,21 +315,38 @@ function sparseCheckoutPattern(subdir: string): string {
 // A subdirectory install is a blobless clone with a sparse checkout of that folder: a plugin inside
 // a monorepo (Hindsight: 170 MB at depth 1, 2 MB for its plugin folder) otherwise downloads every
 // file in the repository and times out on slow connections.
-async function cloneToTemp(gitBin: string, gitUrl: string, subdir: string | null): Promise<string> {
+async function cloneToTemp(gitBin: string, gitUrl: string, subdir: string | null, ref?: string): Promise<string> {
   const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'hermes-plugin-'))
 
   try {
-    if (!subdir) {
-      await runGitOrThrow(gitBin, ['clone', '--depth', '1', gitUrl, tmpRoot])
-
-      return tmpRoot
+    await runGitOrThrow(gitBin, [
+      'clone',
+      '--depth',
+      '1',
+      ...(subdir ? ['--filter=blob:none'] : []),
+      ...(subdir || ref ? ['--no-checkout'] : []),
+      gitUrl,
+      tmpRoot
+    ])
+    if (subdir) {
+      await runGitOrThrow(gitBin, ['config', 'core.sparseCheckout', 'true'], tmpRoot)
+      await fsp.mkdir(path.join(tmpRoot, '.git', 'info'), { recursive: true })
+      await fsp.writeFile(path.join(tmpRoot, '.git', 'info', 'sparse-checkout'), sparseCheckoutPattern(subdir), 'utf8')
     }
-
-    await runGitOrThrow(gitBin, ['clone', '--depth', '1', '--filter=blob:none', '--no-checkout', gitUrl, tmpRoot])
-    await runGitOrThrow(gitBin, ['config', 'core.sparseCheckout', 'true'], tmpRoot)
-    await fsp.mkdir(path.join(tmpRoot, '.git', 'info'), { recursive: true })
-    await fsp.writeFile(path.join(tmpRoot, '.git', 'info', 'sparse-checkout'), sparseCheckoutPattern(subdir), 'utf8')
-    await runGitOrThrow(gitBin, ['checkout', 'HEAD'], tmpRoot)
+    if (ref) {
+      await runGitOrThrow(gitBin, ['fetch', '--depth', '1', 'origin', ref], tmpRoot)
+      await runGitOrThrow(gitBin, ['checkout', '--detach', ref], tmpRoot)
+      const head = await execGit(gitBin, ['rev-parse', 'HEAD'], {
+        cwd: tmpRoot,
+        env: noninteractiveGitEnv(),
+        timeoutMs: GIT_TIMEOUT_MS
+      })
+      if (head.code !== 0 || head.stdout.trim().toLowerCase() !== ref) {
+        throw new Error(`Git checkout did not resolve to requested commit ${ref}.`)
+      }
+    } else if (subdir) {
+      await runGitOrThrow(gitBin, ['checkout', 'HEAD'], tmpRoot)
+    }
 
     return tmpRoot
   } catch (err) {
@@ -413,11 +430,27 @@ export async function installDesktopPluginFromGit(
   gitBin: string,
   identifier: string,
   desktopPluginsRoot: string,
-  force = false
+  force = false,
+  options: { ref?: string; catalogName?: string } = {}
 ): Promise<DesktopPluginInstallResult> {
   try {
+    const { ref, catalogName } = options
+    // Match the backend's exact-revision contract; reject before invoking Git.
+    if (ref !== undefined && (typeof ref !== 'string' || !/^[a-fA-F0-9]{40}$/.test(ref) || ref.length !== 40)) {
+      throw new Error('--ref must be a full 40-character commit SHA.')
+    }
+    if (
+      catalogName !== undefined &&
+      (typeof catalogName !== 'string' ||
+        !/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$/.test(catalogName) ||
+        /[.\s]$/.test(catalogName) ||
+        /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(catalogName))
+    ) {
+      throw new Error('Catalog name must be a safe path segment.')
+    }
+    const sha = ref?.toLowerCase()
     const { gitUrl, subdir } = resolvePluginGitUrl(identifier)
-    const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir)
+    const cloneRoot = await cloneToTemp(gitBin, gitUrl, subdir, sha)
 
     try {
       const pluginRoot = await resolvePluginRoot(cloneRoot, subdir)
@@ -433,9 +466,10 @@ export async function installDesktopPluginFromGit(
       // A repo carrying BOTH halves is one package: land its desktop half under
       // the AGENT package name, so the copy this app makes and the one
       // `reconcileUnifiedDesktopHalves` would make are the same folder (#100412)
-      // and the Plugins page pairs them into one row. A desktop-only repo keeps
-      // the git-derived folder name and stays a standalone plugin.
-      const packageName = detected.agent ? (detected.agentName ?? desktopPluginFolderName(gitUrl, subdir)) : null
+      // and the Plugins page pairs them into one row. Catalog identity takes
+      // precedence; a non-catalog desktop-only repo stays standalone.
+      const packageName =
+        catalogName ?? (detected.agent ? (detected.agentName ?? desktopPluginFolderName(gitUrl, subdir)) : null)
       const pluginName = packageName ?? desktopPluginFolderName(gitUrl, subdir)
       const targetDir = path.join(desktopPluginsRoot, pluginName)
       const targetPlugin = path.join(targetDir, 'plugin.js')
@@ -464,7 +498,9 @@ export async function installDesktopPluginFromGit(
 
         await writeDesktopHalfMarker(staged, {
           package: packageName,
-          repo: gitUrl,
+          repo: subdir ? `${gitUrl}#${subdir}` : gitUrl,
+          sha,
+          catalogName,
           // The published folder, not the temp clone. The clone is deleted
           // below; a source that disappears is ghost-pruned on the next
           // reconcile when no local `plugins/<name>/desktop` exists to

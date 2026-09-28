@@ -184,6 +184,80 @@ describe('installDesktopPluginFromGit', () => {
     return repo
   }
 
+  it.each(['', 'integrations/widget'])(
+    'pins catalog bytes and provenance without destructive ref failures (%s)',
+    async subdir => {
+      const repo = pluginRepo(subdir ? null : 'manifest-name')
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: 'pipe' }).trim()
+      const pluginRoot = path.join(repo, subdir)
+      if (subdir) {
+        fs.mkdirSync(pluginRoot, { recursive: true })
+        fs.renameSync(path.join(repo, 'desktop'), path.join(pluginRoot, 'desktop'))
+      }
+      const entry = path.join(pluginRoot, 'desktop', 'plugin.js')
+      const olderBytes = 'export const version = "reviewed"'
+      const newerBytes = 'export const version = "unreviewed"'
+      fs.writeFileSync(entry, olderBytes)
+      git('add', '.')
+      git('-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture', 'commit', '--amend', '-qm', 'reviewed')
+      const sha = git('rev-parse', 'HEAD')
+      fs.writeFileSync(entry, newerBytes)
+      git('add', '.')
+      git('-c', 'user.email=fixture@example.com', '-c', 'user.name=Fixture', 'commit', '-qm', 'unreviewed')
+      git('config', 'uploadpack.allowFilter', 'true')
+      const identifier = pathToFileURL(repo).href + (subdir ? `#${subdir}` : '')
+      const appRoot = mkdtemp('hermes-plugin-catalog-')
+      roots.push(appRoot)
+      const catalogName = 'catalog-widget'
+      const target = path.join(appRoot, catalogName)
+
+      const result = await installDesktopPluginFromGit('git', identifier, appRoot, false, {
+        ref: subdir ? sha.toUpperCase() : sha,
+        catalogName
+      })
+
+      expect(result.ok, result.error).toBe(true)
+      expect(fs.readFileSync(path.join(result.path!, 'plugin.js'), 'utf8')).toBe(olderBytes)
+      expect(result).toMatchObject({ pluginName: catalogName, path: target })
+      const markerPath = path.join(target, PACKAGE_MARKER)
+      const markerBytes = fs.readFileSync(markerPath, 'utf8')
+      expect(JSON.parse(markerBytes)).toMatchObject({
+        package: catalogName,
+        catalogName,
+        sha,
+        repo: identifier,
+        source: target
+      })
+
+      for (const ref of ['0'.repeat(40), 'HEAD', sha.slice(0, 12), `${sha}\n`, '', '--upload-pack=other']) {
+        // A missing executable proves malformed refs are rejected before any Git invocation.
+        const gitBin = ref === '0'.repeat(40) ? 'git' : path.join(repo, 'missing-git')
+        const failed = await installDesktopPluginFromGit(gitBin, identifier, appRoot, true, { ref, catalogName })
+        expect(failed.ok, ref).toBe(false)
+        expect(failed.error).toMatch(ref === '0'.repeat(40) ? /git.*failed/i : /40.*SHA/i)
+        expect(fs.readFileSync(path.join(target, 'plugin.js'), 'utf8')).toBe(olderBytes)
+        expect(fs.readFileSync(markerPath, 'utf8')).toBe(markerBytes)
+      }
+      for (const unsafeName of ['../escape', '..\\escape', '.', '..', 'C:escape', '', 'trailing.', 'NUL']) {
+        const failed = await installDesktopPluginFromGit(path.join(repo, 'missing-git'), identifier, appRoot, true, {
+          ref: sha,
+          catalogName: unsafeName
+        })
+        expect(failed.ok, unsafeName).toBe(false)
+        expect(failed.error).toMatch(/catalog.*name/i)
+        expect(fs.readFileSync(path.join(target, 'plugin.js'), 'utf8')).toBe(olderBytes)
+      }
+
+      // The four-argument path still follows HEAD and its original naming rules.
+      const unpinned = await installDesktopPluginFromGit('git', identifier, appRoot)
+      expect(unpinned.ok, unpinned.error).toBe(true)
+      expect(fs.readFileSync(path.join(unpinned.path!, 'plugin.js'), 'utf8')).toBe(newerBytes)
+      expect(unpinned.pluginName).toBe(subdir ? 'widget' : 'manifest-name')
+    },
+    30_000
+  )
+
   it('stamps the package marker on a unified package half and names the folder after the agent package', async () => {
     // Without the marker the Plugins page has no evidence that this copy is the
     // agent row's desktop half: the row sits on "copying…" while the copy shows

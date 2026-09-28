@@ -304,7 +304,12 @@ export function PluginInstallModal() {
           if (!installFn) {
             errors.push(m.desktopUnavailable)
           } else {
-            const result = await installFn({ identifier: request.repo, force: forceReinstall })
+            const result = await installFn({
+              identifier: request.repo,
+              force: forceReinstall,
+              ref: pinRef.trim().toLowerCase() || request.sha,
+              catalogName: request.catalogName
+            })
 
             if (result.ok) {
               successes.push(m.desktopSuccess(result.pluginName ?? request.repo))

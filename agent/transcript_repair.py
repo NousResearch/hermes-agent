@@ -10,22 +10,10 @@ from typing import Any, Callable, Dict, List, Mapping
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (
-    ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS)
+    CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
+    copy_identity_fields)
 from hermes_state_common import _id_chunks, _placeholders
-from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
-
-
-def _json_map(text: Any) -> Dict[str, str]:
-    """A stored ``{tool call id: uid}`` JSON object as a dict of non-empty strings (``{}`` on bad input)."""
-    import json
-
-    try:
-        value = json.loads(text) if isinstance(text, str) else None
-    except (TypeError, ValueError):
-        value = None
-    if not isinstance(value, dict):
-        return {}
-    return {k: v for k, v in value.items() if isinstance(k, str) and k and isinstance(v, str) and v}
+from hermes_state_messages import _MESSAGE_WRITE_COLUMNS, _uid_map
 
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
@@ -172,7 +160,7 @@ def resolve_and_repair_transcript_batch(
         # carried (a restored dict without one, or a dict stamped before a rolled-back insert).
         if final_row[MESSAGE_UID]:
             msg[MESSAGE_UID] = final_row[MESSAGE_UID]
-        if stored_tool_uids := _json_map(final_row["tool_call_uids"]):
+        if stored_tool_uids := _uid_map(final_row["tool_call_uids"]):
             # Stored pairings win; pairings only the live list knows (an un-persisted merge's union) stay.
             live_tool_uids = msg.get(TOOL_CALL_UIDS)
             msg[TOOL_CALL_UIDS] = {**(live_tool_uids if isinstance(live_tool_uids, dict) else {}), **stored_tool_uids}
@@ -299,14 +287,7 @@ def sync_flushed_message_markers(batch_msgs: List[Dict[str, Any]], batch_rows: L
         written[_DB_PERSISTED_MARKER] = True
         if isinstance(row.get("_row_id"), int):
             written["_row_id"] = row["_row_id"]
-        if isinstance(row.get(MESSAGE_UID), str) and row[MESSAGE_UID]:
-            written[MESSAGE_UID] = row[MESSAGE_UID]
-        if isinstance(row.get(ABSORBED_MESSAGE_UIDS), list) and row[ABSORBED_MESSAGE_UIDS]:
-            written[ABSORBED_MESSAGE_UIDS] = list(row[ABSORBED_MESSAGE_UIDS])
-        if isinstance(row.get(TOOL_CALL_UIDS), dict) and row[TOOL_CALL_UIDS]:
-            written[TOOL_CALL_UIDS] = dict(row[TOOL_CALL_UIDS])
-        if isinstance(row.get(TOOL_CALL_UID), str) and row[TOOL_CALL_UID]:
-            written[TOOL_CALL_UID] = row[TOOL_CALL_UID]
+        copy_identity_fields(row, written)
         if isinstance(row.get("timestamp"), (int, float)):
             written["timestamp"] = row["timestamp"]
         if isinstance(row.get(DB_ROW_SNAPSHOT), str):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from time import time as wall_time
+from uuid import uuid4
 from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
 
 
@@ -41,13 +42,40 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
 ) | REPAIR_BOOKKEEPING_FIELDS
 
 
-def _uid_or_none(msg: Mapping[str, Any]) -> Optional[str]:
+def message_uid_or_none(msg: Mapping[str, Any]) -> Optional[str]:
+    """The dict's ``message_uid`` when it is a non-empty string, else ``None`` (never coerced: an int or a
+    blank would be a bug upstream of the write, not an identity)."""
     uid = msg.get(MESSAGE_UID)
     return uid if isinstance(uid, str) and uid else None
 
 
+def stamp_message_uid(msg: MutableMapping[str, Any]) -> str:
+    """The dict's ``message_uid``, minting one (``uuid4().hex``) when it carries none.
+
+    Minted ONCE per logical message, at its first insert, and stamped on the caller's dict so every later
+    insert of that dict (compaction generation, rotation handoff, replace) writes the same uid. Never
+    derived from content, timestamp or tool-call ids: two distinct messages may share all three.
+    """
+    uid = message_uid_or_none(msg)
+    if uid is None:
+        uid = msg[MESSAGE_UID] = uuid4().hex
+    return uid
+
+
 def _absorbed_uids(msg: Mapping[str, Any]) -> List[str]:
     return [u for u in (msg.get(ABSORBED_MESSAGE_UIDS) or ()) if isinstance(u, str) and u]
+
+
+_IDENTITY_FIELD_TYPES = ((MESSAGE_UID, str), (ABSORBED_MESSAGE_UIDS, list), (TOOL_CALL_UIDS, dict), (TOOL_CALL_UID, str))
+
+
+def copy_identity_fields(src: Mapping[str, Any], dst: MutableMapping[str, Any]) -> None:
+    """Copy the non-empty identity fields (uid, merge witness, tool-call uids) from *src* onto *dst*: the
+    live dict to its flush row, and the committed row back onto the live dict."""
+    for key, kind in _IDENTITY_FIELD_TYPES:
+        value = src.get(key)
+        if isinstance(value, kind) and value:
+            dst[key] = kind(value) if kind is not str else value
 
 
 def record_absorbed_message(
@@ -62,8 +90,8 @@ def record_absorbed_message(
     A dict without a uid (unflushed, scaffolding, engine-authored) contributes nothing; an empty result
     leaves the survivor untouched.
     """
-    survivor_uid = _uid_or_none(survivor)
-    dropped_uid = _uid_or_none(dropped)
+    survivor_uid = message_uid_or_none(survivor)
+    dropped_uid = message_uid_or_none(dropped)
     if dropped_leads and dropped_uid:
         survivor[MESSAGE_UID] = dropped_uid
         ordered = _absorbed_uids(dropped) + ([survivor_uid] if survivor_uid else []) + _absorbed_uids(survivor)

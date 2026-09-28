@@ -17,7 +17,7 @@ from agent.context_compressor import (
 from agent.memory_manager import sanitize_context
 from agent.message_metadata import (
     ABSORBED_MESSAGE_UIDS, CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS,
-    index_tool_call_uids, resolve_tool_call_uid)
+    index_tool_call_uids, message_uid_or_none, resolve_tool_call_uid, stamp_message_uid)
 from agent.message_sanitization import _sanitize_surrogates, coalesce_tool_call_id
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
@@ -92,13 +92,6 @@ def _coerce_timestamp(value: Any, default: float) -> float:
     # in that stored form so -0.0 and 0.0 retain the historical SQL/Python
     # identity equality.
     return 0.0 if result == 0.0 else result
-
-
-def _message_uid_or_none(msg: Dict[str, Any]) -> Optional[str]:
-    """The dict's ``message_uid`` when it is a non-empty string, else ``None`` (never coerced: an int or a
-    blank would be a bug upstream of the write, not an identity)."""
-    uid = msg.get(MESSAGE_UID)
-    return uid if isinstance(uid, str) and uid else None
 
 
 def _uid_list(value: Any) -> List[str]:
@@ -334,7 +327,7 @@ class SessionMessagesMixin:
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
-            _message_uid_or_none(msg), _uid_list_json(msg, ABSORBED_MESSAGE_UIDS, "absorbed_message_uids"),
+            message_uid_or_none(msg), _uid_list_json(msg, ABSORBED_MESSAGE_UIDS, "absorbed_message_uids"),
             _tool_call_uids_json(msg), _tool_call_uid_or_none(msg))
 
     @staticmethod
@@ -360,20 +353,6 @@ class SessionMessagesMixin:
             uid = resolve_tool_call_uid(batch_index, msg.get("tool_call_id"))
             if uid:
                 msg[TOOL_CALL_UID] = uid
-
-    @staticmethod
-    def _stamp_message_uid(msg: Dict[str, Any]) -> str:
-        """The dict's ``message_uid``, minting one (``uuid4().hex``) when it carries none.
-
-        Minted ONCE per logical message, at its first insert, and stamped on the caller's dict so every
-        later insert of that dict (compaction generation, rotation handoff, replace) writes the same uid.
-        Never derived from content, timestamp or tool-call ids: two distinct messages may share all three.
-        """
-        uid = _message_uid_or_none(msg)
-        if uid is None:
-            uid = uuid.uuid4().hex
-            msg[MESSAGE_UID] = uid
-        return uid
 
     def _serialized_message_row(
         self, session_id: str, msg: Dict[str, Any], message_timestamp: float
@@ -467,7 +446,7 @@ class SessionMessagesMixin:
         msg["display_metadata"] = self._encode_display_metadata(display_metadata)
         tool_calls = _parse_tool_calls(tool_calls)
         message_timestamp = _coerce_timestamp(timestamp, time.time())
-        self._stamp_message_uid(msg)  # a fresh occurrence: mint its durable id
+        stamp_message_uid(msg)  # a fresh occurrence: mint its durable id
         self._stamp_tool_call_uids(msg, tool_calls, {})
         params = self._message_row_params(
             session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=True)
@@ -493,7 +472,7 @@ class SessionMessagesMixin:
         msg = {"content": content,
                "display_kind": "hidden" if metadata.get("presentation_suppressed") else "async_delegation_complete",
                "display_metadata": metadata}
-        self._stamp_message_uid(msg)  # a fresh occurrence: mint its durable id
+        stamp_message_uid(msg)  # a fresh occurrence: mint its durable id
         params = self._message_row_params(session_id, "user", msg, None, time.time(), keep_reasoning=True)
 
         def _do(conn):
@@ -793,7 +772,7 @@ class SessionMessagesMixin:
             # The durable per-message id: kept when the dict carries one (a copy of an already-stored
             # message), minted and stamped on the dict otherwise. Stamped BEFORE the bind so the row and
             # the live dict never disagree. Tool calls get their per-occurrence ids the same way.
-            self._stamp_message_uid(msg)
+            stamp_message_uid(msg)
             self._stamp_tool_call_uids(msg, tool_calls, batch_tool_index)
             cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
                 session_id, role, msg, tool_calls, message_timestamp, keep_reasoning=role == "assistant"))
@@ -1889,7 +1868,7 @@ class SessionMessagesMixin:
             if replacement is not None:
                 self._insert_message_rows(conn, session_id, [replacement])
                 replacement_message_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
-                replacement_message_uid = _message_uid_or_none(replacement)  # stamped by the insert
+                replacement_message_uid = message_uid_or_none(replacement)  # stamped by the insert
             conn.execute(
                 "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?", (session_id,))
             message_count, tool_call_count = self._active_transcript_counts(conn, session_id)

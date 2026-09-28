@@ -1756,12 +1756,8 @@ class GatewayInboundMixin:
 
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         media_event = event
-        if context_snapshot is not None and event._quoted_media_urls:
-            media_event = dataclasses.replace(event)
-            indices = [index for index, path in enumerate(event.media_urls) if path not in event._quoted_media_urls]
-            media_event.media_urls = [event.media_urls[index] for index in indices]
-            media_event.media_types = [event.media_types[index] for index in indices if index < len(event.media_types)]
-            media_event.media_text_inlined = [event.media_text_inlined[index] for index in indices if index < len(event.media_text_inlined)]
+        if context_snapshot is not None and event._quoted_media_dependencies:
+            media_event = event.authored_media()
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(media_event, _pending_stt_prepared)
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
@@ -1818,20 +1814,22 @@ class GatewayInboundMixin:
             if context and context_snapshot is None:
                 message_text = f"{context}\n\n[New message]\n{message_text}"
         if context_snapshot is not None:
-            from gateway.inbound_context import PreparedInboundMessage
+            from gateway.inbound_context import PreparedInboundMessage, QuotedImageEnrichment
 
             await context_snapshot.refresh()
             prepared = PreparedInboundMessage(context_snapshot, event, message_text, context)
             quoted_images = context_snapshot.reply_image_paths()
             if quoted_images:
-                prepared.quoted_image_paths = tuple(quoted_images)
-                native_user_images = self._consume_pending_native_image_paths(session_key)
-                prepared.quoted_image_text = await self._enrich_inbound_images(source, session_key, "", quoted_images)
+                native_images = self._consume_pending_native_image_paths(session_key)
+                enrichments = []
+                for path in quoted_images:
+                    text = await self._enrich_inbound_images(source, session_key, "", [path])
+                    enrichments.append(QuotedImageEnrichment(path, text))
+                    native_images.extend(self._consume_pending_native_image_paths(session_key))
+                prepared.quoted_images = tuple(enrichments)
                 state = self._peek_session_state(session_key)
                 if state is not None:
-                    state.persistent.native_image_paths = list(dict.fromkeys([
-                        *native_user_images, *(state.persistent.native_image_paths or []),
-                    ]))
+                    state.persistent.native_image_paths = list(dict.fromkeys(native_images))
                 await context_snapshot.refresh()
             event._prepared_inbound = prepared
             message_text = prepared.render(self)

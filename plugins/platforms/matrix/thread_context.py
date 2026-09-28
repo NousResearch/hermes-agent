@@ -64,6 +64,7 @@ async def history_entry(client: Any, raw: dict, cache: MatrixEventContextCache, 
     sender = str(raw.get("sender") or "")
     return MatrixEventContext(
         sender, text, is_image=content.get("msgtype") == "m.image",
+        media_content=MatrixEventContext.image_content(content),
         state_error=state.error["error"] if state.error else None,
         replacement_id=state.replacement_id,
     ), state.original_content

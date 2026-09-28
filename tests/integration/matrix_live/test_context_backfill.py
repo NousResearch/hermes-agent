@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import time
 import uuid
@@ -12,7 +14,7 @@ from urllib.parse import quote
 
 import aiohttp
 import pytest
-from nio import JoinResponse, RoomInviteResponse, RoomMessageText, RoomRedactResponse, RoomSendResponse
+from nio import JoinResponse, RoomInviteResponse, RoomMessageText, RoomRedactResponse, RoomSendResponse, UploadResponse
 
 from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom, MatrixAccount, _register
 
@@ -280,3 +282,89 @@ def test_redacted_child_is_removed_from_thread_relations(live_room: LiveRoom) ->
             await client.close()
 
     asyncio.run(asyncio.wait_for(exchange(), timeout=15))
+
+
+@pytest.mark.parametrize("gateway", ["pause-image-context"], indirect=True)
+@pytest.mark.parametrize("change", ["unchanged", "replacement", "redaction"])
+def test_quoted_image_catch_up_keeps_only_current_model_attachment(
+    tmp_path: Path, group_gateway: LiveGateway, live_room: LiveRoom,
+    record_property: Callable[[str, object], None], change: str,
+) -> None:
+    async def exchange() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        home = tmp_path / "hermes"
+        seen: set[str] = set()
+        pixels = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+        )
+        try:
+            await client.sync(timeout=0)
+            await _send(client, live_room.room_id, f"{live_room.bot.user_id} establish",
+                        mention=live_room.bot.user_id)
+            await _wait_for_final(client, live_room, seen, "Matrix live reply")
+            uploaded, _ = await client.upload(
+                io.BytesIO(pixels), content_type="image/png", filename="quoted.png",
+                filesize=len(pixels),
+            )
+            assert isinstance(uploaded, UploadResponse), uploaded
+            image = {"msgtype": "m.image", "body": "quoted.png", "url": uploaded.content_uri,
+                     "info": {"mimetype": "image/png", "size": len(pixels), "w": 1, "h": 1}}
+            target = await client.room_send(live_room.room_id, "m.room.message", image)
+            assert isinstance(target, RoomSendResponse), target
+            await _send(client, live_room.room_id,
+                        f"{live_room.bot.user_id} inspect quoted media @matrix-live:pause",
+                        mention=live_room.bot.user_id, reply=target.event_id)
+            while not (home / "context-started").exists():
+                await asyncio.sleep(0.01)
+            if change != "unchanged":
+                (home / "expected-media-change").write_text(target.event_id, encoding="utf-8")
+                if change == "replacement":
+                    replacement = await client.room_send(live_room.room_id, "m.room.message", {
+                        "msgtype": "m.text", "body": "* Replaced image with text",
+                        "m.new_content": {"msgtype": "m.text", "body": "Replaced image with text"},
+                        "m.relates_to": {"rel_type": "m.replace", "event_id": target.event_id},
+                    })
+                    assert isinstance(replacement, RoomSendResponse), replacement
+                else:
+                    redacted = await client.room_redact(live_room.room_id, target.event_id)
+                    assert isinstance(redacted, RoomRedactResponse), redacted
+                while not (home / "media-change-observed").exists():
+                    await asyncio.sleep(0.01)
+                assert (home / "media-change-observed").read_text(encoding="utf-8") == target.event_id
+            (home / "context-release").write_text("release", encoding="utf-8")
+            await _wait_for_final(client, live_room, seen, "ok")
+            requests = group_gateway.model.main_requests()
+            assert len(requests) == 2
+            assert requests[0]["messages"][0] == requests[1]["messages"][0]
+            current = requests[1]["messages"][-1]["content"]
+            parts = current if isinstance(current, list) else [{"type": "text", "text": current}]
+            attachments = [part for part in parts if part.get("type") == "image_url"]
+            assert len(attachments) == (1 if change == "unchanged" else 0), {
+                "model_input": current,
+                "media_logs": [
+                    line
+                    for path in (home / "logs").glob("gateway.log*")
+                    for line in path.read_text(errors="replace").splitlines()
+                    if "image" in line.lower() or "media" in line.lower()
+                ][-30:],
+            }
+            text = "\n".join(part["text"] for part in parts if part.get("type") == "text")
+            assert "[Recent room messages]" in text
+            assert "inspect quoted media" in text
+            assert "Live enrichment completed" in text
+            if change == "unchanged":
+                assert attachments[0]["image_url"]["url"].startswith("data:image/")
+                assert "[image]" in text
+            elif change == "replacement":
+                assert "Replaced image with text" in text
+            else:
+                assert "[redacted]" in text
+                assert "Replying to" not in text
+        finally:
+            await client.close()
+
+    started = time.monotonic()
+    try:
+        asyncio.run(asyncio.wait_for(exchange(), timeout=20))
+    finally:
+        record_property("body_seconds", round(time.monotonic() - started, 3))

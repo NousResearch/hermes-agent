@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, QuotedMediaDependency
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import MatrixEventContext
 from plugins.platforms.matrix.room_context import (
@@ -16,6 +16,36 @@ from plugins.platforms.matrix.thread_context import fetch_thread_entries
 
 
 @dataclass
+class MatrixQuotedAttachment:
+    dependency: QuotedMediaDependency
+    parent: MatrixEventContext | None
+
+    async def refresh(self, adapter: Any) -> None:
+        cache = adapter._event_context_cache
+        parent = self.parent or cache.history_entry(
+            self.dependency.room_id, self.dependency.event_id
+        )
+        if parent is not None:
+            self.parent = await cache.refresh(
+                adapter._client, self.dependency.room_id, parent
+            )
+
+    def image_path(self, adapter: Any) -> str | None:
+        if self.parent is None:
+            return None
+        parent = adapter._event_context_cache.recheck(
+            self.dependency.room_id, self.parent
+        )
+        if (
+            parent.redacted
+            or parent.state_error
+            or parent.attachment_identity != self.dependency.content_id
+        ):
+            return None
+        return parent.media_path
+
+
+@dataclass
 class MatrixTurnContext:
     adapter: Any
     room_id: str
@@ -23,6 +53,7 @@ class MatrixTurnContext:
     parent: MatrixEventContext | None
     history: MatrixHistoryContext | None = None
     mention: bool = False
+    attachments: tuple[MatrixQuotedAttachment, ...] = ()
 
     @classmethod
     async def prepare(
@@ -40,7 +71,21 @@ class MatrixTurnContext:
             if event.reply_to_message_id
             else None
         )
-        snapshot = cls(adapter, room_id, replace(event), parent)
+        snapshot = cls(
+            adapter,
+            room_id,
+            replace(event),
+            parent,
+            attachments=tuple(
+                MatrixQuotedAttachment(
+                    dependency,
+                    adapter._event_context_cache.history_entry(
+                        dependency.room_id, dependency.event_id
+                    ),
+                )
+                for dependency in event._quoted_media_dependencies
+            ),
+        )
         content = event.raw_message
         mention = (
             not event.internal
@@ -93,6 +138,8 @@ class MatrixTurnContext:
     async def refresh(self) -> None:
         if self.history is not None:
             await self.history.refresh()
+        for attachment in self.attachments:
+            await attachment.refresh(self.adapter)
         event_id = self.reply.reply_to_message_id
         if not event_id:
             return
@@ -158,12 +205,10 @@ class MatrixTurnContext:
         )
 
     def reply_image_paths(self) -> list[str]:
-        parent = self._current_parent()
-        if (
-            parent is None
-            or parent.redacted
-            or parent.state_error
-            or not parent.media_path
-        ):
-            return []
-        return [parent.media_path]
+        return list(
+            dict.fromkeys(
+                path
+                for attachment in self.attachments
+                if (path := attachment.image_path(self.adapter)) is not None
+            )
+        )

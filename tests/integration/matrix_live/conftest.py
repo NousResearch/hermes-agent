@@ -263,6 +263,8 @@ def gateway(
 ) -> Iterator[LiveGateway]:
     _, _, network = synapse
     room_id = live_room.room_id
+    context_pause = getattr(request, "param", None) in {"pause-context", "pause-image-context"}
+    native_images = getattr(request, "param", None) == "pause-image-context"
     home = tmp_path / "hermes"
     home.mkdir(mode=0o777)
     with FakeLLMServer([Text("Matrix live reply")], bind_host="0.0.0.0") as model:
@@ -270,11 +272,20 @@ def gateway(
             home,
             f"http://host.docker.internal:{model.port}/v1",
             extra_config=(
-                "platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n"
+                ("  image_input_mode: native\n" if native_images else "")
+                + "platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n"
                 + ("plugins:\n  enabled:\n    - matrix-live-context\n"
-                   if getattr(request, "param", None) == "pause-context" else "")
+                   if context_pause else "")
             ),
         )
+        if native_images:
+            config_path = home / "config.yaml"
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "model:\n", "model:\n  supports_vision: true\n", 1,
+                ),
+                encoding="utf-8",
+            )
         with (home / ".env").open("a", encoding="utf-8") as stream:
             stream.write(
                 "MATRIX_HOMESERVER=http://synapse:8008\n"
@@ -283,7 +294,7 @@ def gateway(
                 f"MATRIX_HOME_ROOM={room_id}\n"
                 "MATRIX_E2EE_MODE=optional\nMATRIX_REACTIONS=false\nMATRIX_AUTO_THREAD=false\n"
             )
-        if getattr(request, "param", None) == "pause-context":
+        if context_pause:
             plugin = home / "plugins" / "matrix-live-context"
             plugin.mkdir(parents=True)
             (plugin / "plugin.yaml").write_text(
@@ -307,6 +318,19 @@ def gateway(
                 "    ctx.register_context_reference(ContextPause())\n",
                 encoding="utf-8",
             )
+        if native_images:
+            with (plugin / "__init__.py").open("a", encoding="utf-8") as stream:
+                stream.write(
+                    "from plugins.platforms.matrix.reply_context import MatrixEventContextCache\n"
+                    "original_store = MatrixEventContextCache.store\n"
+                    "def observed_store(self, room_id, event_id, entry):\n"
+                    "    result = original_store(self, room_id, event_id, entry)\n"
+                    "    expected = get_hermes_home() / 'expected-media-change'\n"
+                    "    if expected.exists() and expected.read_text(encoding='utf-8') == event_id:\n"
+                    "        (get_hermes_home() / 'media-change-observed').write_text(event_id, encoding='utf-8')\n"
+                    "    return result\n"
+                    "MatrixEventContextCache.store = observed_store\n"
+                )
         home.chmod(0o777)
 
         with DockerContainer(

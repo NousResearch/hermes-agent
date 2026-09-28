@@ -98,7 +98,7 @@ from gateway.platforms.base import (
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, QuotedMediaDependency, ProcessingOutcome
 from gateway.platforms.helpers import ThreadParticipationTracker
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
@@ -2230,6 +2230,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             author_id=reply_to_author_id, author_name=reply_to_author_name,
             is_own_message=reply_to_is_own_message, author_authorized=reply_to_author_authorized,
             media_path=reply_media_path, media_type=reply_media_type,
+            media_content_id=parent.attachment_identity if parent is not None and reply_media_path else None,
         )
 
     async def _cache_quoted_image(self, content: dict, event_id: str) -> tuple[str, str] | None:
@@ -2270,7 +2271,7 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             formatted_body=source_content.get("formatted_body"),
         )
         body = reply.body
-        if reply.media_path:
+        if reply.media_path and reply.media_content_id:
             extra["media_urls"] = [*(extra.get("media_urls") or []), reply.media_path]
             extra["media_types"] = [*(extra.get("media_types") or []), reply.media_type or "image/png"]
         media_msgtype = extra.pop("media_msgtype", None)
@@ -2288,7 +2289,13 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             reply_to_author_authorized=reply.author_authorized,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
-        event._quoted_media_urls = [reply.media_path] if reply.media_path else []
+        if reply.media_path and reply.event_id and reply.media_content_id:
+            event._quoted_media_dependencies = (
+                QuotedMediaDependency(
+                    room_id, reply.event_id, len(event.media_urls) - 1,
+                    reply.media_content_id,
+                ),
+            )
         return event
 
     def take_turn_channel_context(

@@ -1387,3 +1387,52 @@ async def test_failed_read_remains_subject_to_redaction_after_later_reaction_awa
         {"event_id": "$later", "sender": SENDER, "body": "readable", "msgtype": "m.text",
          "thread_id": "$root" if kind == "thread" else None, "timestamp": None, "sender_authorized": True},
     ], "errors": []}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["room", "thread"])
+@pytest.mark.parametrize("change", ["unchanged", "url", "encrypted-key", "body", "redaction", "text"])
+async def test_catch_up_retains_only_identical_quoted_attachment(scope: str, change: str, tmp_path):
+    import copy
+
+    image = tmp_path / "quoted.png"
+    image.write_bytes(b"quoted image")
+    original = _original("$image", "image.png")
+    original["content"].update(
+        msgtype="m.image", file={"url": "mxc://example.org/image", "key": {"k": "old"}},
+        info={"mimetype": "image/png"},
+    )
+    raw = copy.deepcopy(original)
+    if change == "url":
+        raw["content"]["file"]["url"] = "mxc://example.org/replaced"
+    elif change == "encrypted-key":
+        raw["content"]["file"]["key"]["k"] = "new"
+    elif change == "body":
+        raw["content"]["body"] = "new caption"
+    elif change == "redaction":
+        raw["content"] = {}
+        raw["unsigned"] = {"redacted_because": {"event_id": "$redaction"}}
+    elif change == "text":
+        raw["content"] = {"msgtype": "m.text", "body": "new text"}
+    catch_up = False
+
+    async def request(_method, path, **_kwargs):
+        if "/event/" in path:
+            return raw if catch_up else original
+        if "/context/" in path:
+            return {"start": "boundary"}
+        return {"chunk": [raw] if "/messages" in path else []}
+
+    client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)))
+    cache = MatrixEventContextCache()
+    loaded = await cache.resolve(client, ROOM, "$image", AsyncMock(return_value=(str(image), "image/png")))
+    assert loaded.media_path == str(image)
+    catch_up = True
+    if scope == "room":
+        await fetch_room_entries(client, cache, ROOM, "$current", limit=1)
+    else:
+        await fetch_thread_entries(client, cache, ROOM, "$image", limit=1, before_event_id="$current")
+    current = cache.history_entry(ROOM, "$image")
+    assert (current.media_path, current.media_type) == (
+        (str(image), "image/png") if change == "unchanged" else (None, None)
+    )

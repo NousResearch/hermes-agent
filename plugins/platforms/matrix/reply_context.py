@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, replace
@@ -40,6 +41,17 @@ class MatrixEventContext:
     state_error: str | None = None
     event_id: str | None = None
     replacement_id: str | None = None
+    media_content: str | None = None
+
+    @staticmethod
+    def image_content(content: dict) -> str | None:
+        if content.get("msgtype") != "m.image":
+            return None
+        return json.dumps(content, sort_keys=True, separators=(",", ":"))
+
+    @property
+    def attachment_identity(self) -> str:
+        return json.dumps([self.sender, self.text, self.replacement_id, self.media_content])
 
 
 @dataclass(frozen=True)
@@ -53,6 +65,7 @@ class MatrixReplyContext:
     author_authorized: bool | None
     media_path: str | None = None
     media_type: str | None = None
+    media_content_id: str | None = None
 
 
 def _own_text(body: str) -> str:
@@ -171,6 +184,14 @@ class MatrixEventContextCache:
         if current is not None and current.state_error and entry.state_error and not entry.redacted:
             return current
         if current is before or entry.redacted:
+            if (
+                current is not None and current.media_path and not entry.media_path
+                and not entry.redacted and not entry.state_error and not current.state_error
+                and entry.is_image and current.media_content is not None
+                and current.attachment_identity == entry.attachment_identity
+                and Path(current.media_path).is_file()
+            ):
+                entry = replace(entry, media_path=current.media_path, media_type=current.media_type)
             return self.store(room_id, event_id, entry)
         if current is not None and not current.sender and entry.sender:
             return self.store(room_id, event_id, replace(current, sender=entry.sender))
@@ -227,9 +248,8 @@ class MatrixEventContextCache:
             return
         self.store(room_id, target, MatrixEventContext(
             sender, _own_text(body.strip()),
-            media_path=prior.media_path if prior else None,
-            media_type=prior.media_type if prior else None,
-            is_image=prior.is_image if prior else False,
+            is_image=replacement.get("msgtype") == "m.image",
+            media_content=MatrixEventContext.image_content(replacement),
             replacement_id=replacement_id,
         ))
 
@@ -315,6 +335,7 @@ class MatrixEventContextCache:
             media_path=media[0] if media else None,
             media_type=media[1] if media else None,
             is_image=msgtype == "m.image",
+            media_content=MatrixEventContext.image_content(content),
             state_error=state.error["error"] if state.error else None,
             replacement_id=state.replacement_id,
         )

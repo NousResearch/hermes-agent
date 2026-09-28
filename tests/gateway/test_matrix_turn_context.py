@@ -1,6 +1,8 @@
 """Matrix context stays refreshable through gateway prompt enrichment."""
 
 import asyncio
+from dataclasses import replace
+from pathlib import Path
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -156,7 +158,7 @@ async def test_gateway_preparation_rechecks_context_after_enrichment(
             if getattr(event, "_prepared_inbound", None) is not None:
                 kwargs["input_snapshot"] = event._prepared_inbound
             with _patch_aiohttp(session):
-                await runner._run_agent_inner(
+                proxy_result = await runner._run_agent_inner(
                     message,
                     "cached system prefix",
                     history,
@@ -171,6 +173,7 @@ async def test_gateway_preparation_rechecks_context_after_enrichment(
                 {"role": "system", "content": "cached system prefix"},
                 *previous,
             ]
+            assert proxy_result["messages"][0] == posted["messages"][-1]
             return posted["messages"][-1]["content"]
         if boundary != "model-prepare":
             return message
@@ -258,14 +261,17 @@ async def test_gateway_preparation_rechecks_context_after_enrichment(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["text", "native"])
-@pytest.mark.parametrize("change", ["unchanged", "redaction", "failed-recovery"])
+@pytest.mark.parametrize("change", ["unchanged", "redaction", "failed-recovery", "replacement"])
+@pytest.mark.parametrize("transform", ["direct", "rewrite", "pending", "parked", "photo", "text-batch", "queue-command", "shared-path"])
 async def test_quoted_images_are_rechecked_without_losing_authored_image_enrichment(
-    tmp_path, mode: str, change: str, monkeypatch
+    tmp_path, mode: str, change: str, transform: str, monkeypatch
 ):
     started, release = asyncio.Event(), asyncio.Event()
     authored_image, quoted_image = tmp_path / "authored.png", tmp_path / "quoted.png"
     authored_image.write_bytes(b"authored image")
     quoted_image.write_bytes(b"quoted image")
+    if transform == "shared-path":
+        authored_image = quoted_image
     adapter = _make_adapter()
     adapter._get_display_name = AsyncMock(return_value="Alice")
     adapter._is_sender_authorized = lambda *_args, **_kwargs: True
@@ -294,18 +300,58 @@ async def test_quoted_images_are_rechecked_without_losing_authored_image_enrichm
         {"body": "question"},
         {"m.in_reply_to": {"event_id": "$target"}},
         ctx=("question", True, "dm", None, "Alice", source),
-        media_urls=[str(authored_image)],
-        media_types=["image/png"],
+        media_urls=[] if transform in {"pending", "parked", "photo", "text-batch"} else [str(authored_image)],
+        media_types=[] if transform in {"pending", "parked", "photo", "text-batch"} else ["image/png"],
     )
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig()
     runner.adapters = {Platform.MATRIX: adapter}
+    if transform == "rewrite":
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.ainvoke_hook",
+            AsyncMock(return_value=[{"action": "rewrite", "text": "rewritten question"}]),
+        )
+        event = await runner._hm_pre_gateway_dispatch_hook(event, source)
+    elif transform in {"pending", "parked", "photo", "text-batch"}:
+        from gateway.platforms.base import merge_pending_message_event
+        from gateway.platforms.event import MessageEvent, MessageType
+
+        incoming = event
+        event = MessageEvent(
+            "authored caption", source=source,
+            message_type=MessageType.PHOTO if transform == "photo" else MessageType.TEXT,
+            media_urls=[str(authored_image)], media_types=["image/png"],
+        )
+        if transform == "photo":
+            incoming.message_type = MessageType.PHOTO
+        if transform == "parked":
+            incoming = replace(incoming, text=incoming.text)
+        if transform == "text-batch":
+            monkeypatch.setattr(adapter, "_drop_unresolved", lambda _event: False)
+            monkeypatch.setattr(adapter, "_text_batch_key", lambda _event: "session")
+            parked = asyncio.Event()
+            monkeypatch.setattr(adapter, "_flush_text_batch", lambda _key: parked.wait())
+            adapter._pending_text_batches["session"] = event
+            adapter._enqueue_text_event(incoming)
+            task = adapter._pending_text_batch_tasks["session"]
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        else:
+            pending = {"session": event}
+            merge_pending_message_event(pending, "session", incoming, merge_text=True)
+    elif transform == "queue-command":
+        event = replace(event, text="/queue question")
+        queued = []
+        monkeypatch.setattr(runner, "_enqueue_fifo", lambda _key, item, _adapter: queued.append(item))
+        monkeypatch.setattr(runner, "_queue_depth", lambda *_args, **_kwargs: 1)
+        await runner._busy_queue_command(event, "session", source)
+        [event] = queued
     state = runner._session_state("session")
 
     async def enrich(
         _source: SessionSource, _key: str, text: str, paths: list[str]
     ) -> str:
-        if str(quoted_image) in paths:
+        if str(quoted_image) in paths and (transform != "shared-path" or not text):
             started.set()
             await release.wait()
         if mode == "native":
@@ -313,7 +359,7 @@ async def test_quoted_images_are_rechecked_without_losing_authored_image_enrichm
             return text
         descriptions = [
             "authored image description"
-            if path == str(authored_image)
+            if path == str(authored_image) and (transform != "shared-path" or text)
             else "quoted image description"
             for path in paths
         ]
@@ -334,16 +380,144 @@ async def test_quoted_images_are_rechecked_without_losing_authored_image_enrichm
             cache.redact(ROOM, "$target")
         elif change == "failed-recovery":
             cache.redact(ROOM, "$latest")
+        elif change == "replacement":
+            cache.apply_edit(
+                ROOM, SENDER,
+                {"m.relates_to": {"rel_type": "m.replace", "event_id": "$target"},
+                 "m.new_content": {"msgtype": "m.text", "body": "new text parent"}},
+                replacement_id="$next",
+            )
     finally:
         release.set()
         result = await pending
     assert result is not None
     if mode == "native":
-        assert state.persistent.native_image_paths == [
+        assert state.persistent.native_image_paths == list(dict.fromkeys([
             str(authored_image),
             *([str(quoted_image)] if change == "unchanged" else []),
-        ]
+        ]))
     else:
         assert "authored image description" in result
         assert ("quoted image description" in result) == (change == "unchanged")
     assert ("quoted attachment" in result) == (change == "unchanged")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["text", "native"])
+async def test_merged_quotes_refresh_each_parent_without_dropping_other_media(tmp_path, monkeypatch, mode):
+    from gateway.platforms.base import merge_pending_message_event
+
+    adapter = _make_adapter()
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    adapter._client = None
+    source = SessionSource(Platform.MATRIX, ROOM, chat_type="dm", user_id=SENDER)
+    paths = [tmp_path / "first.png", tmp_path / "second.png"]
+    events = []
+    for index, path in enumerate(paths):
+        path.write_bytes(b"image")
+        target = f"$image{index}"
+        adapter._event_context_cache.store(ROOM, target, MatrixEventContext(
+            SENDER, target, str(path), "image/png", is_image=True,
+        ))
+        events.append(await adapter._build_inbound_event(
+            ROOM, SENDER, f"$reply{index}", "question", {"body": "question"},
+            {"m.in_reply_to": {"event_id": target}},
+            ctx=("question", True, "dm", None, "Alice", source),
+        ))
+    pending = {"session": events[0]}
+    merge_pending_message_event(pending, "session", events[1])
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {Platform.MATRIX: adapter}
+    state = runner._session_state("session")
+
+    async def enrich(_source, _key, text, images):
+        if mode == "native":
+            state.persistent.native_image_paths = list(images)
+        return "\n".join([f"description {Path(path).stem}" for path in images])
+
+    monkeypatch.setattr(runner, "_enrich_inbound_images", enrich)
+    await runner._prepare_inbound_message_text(
+        event=events[0], source=source, history=[], session_key="session",
+    )
+    adapter._event_context_cache.redact(ROOM, "$image0")
+    prepared = events[0]._prepared_inbound
+    await prepared.snapshot.refresh()
+    assert prepared.render(runner) == "description second\n\nquestion"
+    assert prepared.retained_image_paths([str(path) for path in paths]) == [str(paths[1])]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["room", "thread"])
+@pytest.mark.parametrize("change", ["unchanged", "replacement", "redaction"])
+async def test_catch_up_preserves_only_current_quoted_pixels_at_model_input(tmp_path, monkeypatch, scope, change):
+    import base64
+
+    adapter = _make_adapter()
+    adapter._room_backfill_limit = adapter._thread_backfill_limit = 1
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    image = tmp_path / "quoted.png"
+    image.write_bytes(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGNcAAAAASUVORK5CYII="
+    ))
+    raw = _original("$image", "quoted.png")
+    raw["content"].update(msgtype="m.image", url="mxc://example.org/image", info={"mimetype": "image/png"})
+
+    async def request(_method, path, **_kwargs):
+        if "/event/" in path:
+            return raw
+        if "/context/" in path:
+            return {"start": "boundary"}
+        return {"chunk": [raw] if "/messages" in path else []}
+
+    adapter._client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)))
+    monkeypatch.setattr(adapter, "_cache_quoted_image", AsyncMock(return_value=(str(image), "image/png")))
+    source = SessionSource(Platform.MATRIX, ROOM, chat_type="group", user_id=SENDER,
+                           thread_id="$image" if scope == "thread" else None)
+    content = {"body": "question", "msgtype": "m.text", "m.mentions": {"user_ids": [adapter._user_id]}}
+    relation = {"m.in_reply_to": {"event_id": "$image"}}
+    if scope == "thread":
+        relation.update(rel_type="m.thread", event_id="$image", is_falling_back=False)
+    content["m.relates_to"] = relation
+    event = await adapter._build_inbound_event(
+        ROOM, SENDER, "$current", "question", content, relation,
+        ctx=("question", False, "group", source.thread_id, "Alice", source),
+    )
+    if change == "replacement":
+        raw = _edited(raw, "replaced with text")
+    elif change == "redaction":
+        raw = {**raw, "content": {}, "unsigned": {"redacted_because": {"event_id": "$redaction"}}}
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {Platform.MATRIX: adapter}
+
+    async def native(_source, key, text, paths):
+        runner._session_state(key).persistent.native_image_paths = list(paths)
+        return text
+
+    monkeypatch.setattr(runner, "_enrich_inbound_images", native)
+    message = await runner._prepare_inbound_message_text(event=event, source=source, history=[], session_key="session")
+    ctx = TurnContext(source=source, message=message, history=[], context_prompt="cached system prefix",
+                      session_key="session", session_id="id", input_snapshot=event._prepared_inbound)
+    turn = TurnRunner(runner, ctx)
+    captured = {}
+
+    def model_input(text, **kwargs):
+        captured.update(text=text, history=kwargs["conversation_history"])
+        return {"final_response": "ok"}
+
+    turn._run_conversation_with_approval(SimpleNamespace(run_conversation=model_input), [], [], None, None)
+    parts = captured["text"]
+    if change == "unchanged":
+        assert isinstance(parts, list)
+        images = [part for part in parts if part["type"] == "image_url"]
+        assert len(images) == 1
+        assert images[0]["image_url"]["url"].startswith("data:image/")
+    else:
+        assert isinstance(parts, str)
+        assert ("replaced with text" in parts) == (change == "replacement")
+        assert ("[redacted]" in parts) == (change == "redaction")
+    assert captured["history"] == []
+    assert ctx.context_prompt == "cached system prefix"

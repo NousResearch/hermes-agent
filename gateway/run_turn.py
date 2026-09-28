@@ -2881,7 +2881,8 @@ class GatewayTurnMixin:
             async with _AioClientSession(timeout=_timeout) as session:
                 if input_snapshot is not None:
                     await input_snapshot.snapshot.refresh()
-                    api_messages[-1]["content"] = input_snapshot.render(self, timestamps=True)
+                    message = input_snapshot.render(self, timestamps=True)
+                    api_messages[-1]["content"] = message
                 async with session.post(f"{proxy_url}/v1/chat/completions", json=body, headers=headers) as resp:
                     if resp.status != 200:
                         error_text = await resp.text()

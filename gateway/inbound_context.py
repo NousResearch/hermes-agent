@@ -18,33 +18,43 @@ class InboundContextSnapshot(Protocol):
     def reply_image_paths(self) -> list[str]: ...
 
 
+@dataclass(frozen=True)
+class QuotedImageEnrichment:
+    path: str
+    text: str
+
+
 @dataclass
 class PreparedInboundMessage:
     snapshot: InboundContextSnapshot
     event: MessageEvent
     text: str
     channel_context: str | None = None
-    quoted_image_text: str = ""
-    quoted_image_paths: tuple[str, ...] = ()
+    quoted_images: tuple[QuotedImageEnrichment, ...] = ()
     message_text: str | None = None
     persist_user_message: str | None = None
     persist_user_timestamp: float | None = None
 
     def retained_image_paths(self, paths: list[str]) -> list[str]:
         current = self.snapshot.reply_image_paths()
+        authored = self.event.authored_media().media_urls
+        quoted = {image.path for image in self.quoted_images}
         return [
             path
             for path in paths
-            if path not in self.quoted_image_paths or path in current
+            if path not in quoted or path in current or path in authored
         ]
 
     def render(self, runner: Any, *, timestamps: bool = False) -> str:
         text = self.text
-        if (
-            self.quoted_image_text
-            and list(self.quoted_image_paths) == self.snapshot.reply_image_paths()
-        ):
-            text = f"{self.quoted_image_text}\n\n{text}"
+        current = self.snapshot.reply_image_paths()
+        descriptions = [
+            image.text
+            for image in self.quoted_images
+            if image.path in current and image.text
+        ]
+        if descriptions:
+            text = "\n\n".join([*descriptions, text])
         text = self.snapshot.prepend_history(text)
         reply = self.snapshot.reply_event(self.event)
         text = runner._prepend_inbound_reply_context(reply, self.event.source, text)

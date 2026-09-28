@@ -83,10 +83,13 @@ async def _visible_event(
         visible.pop("edited", None)
         return visible, {"event_id": event_id, "error": "event content changed"}, state.replacement_id
     if isinstance(event_id, str) and not state.redacted and state.error is None:
-        if before is None or before.state_error or before.text != text or before.replacement_id != state.replacement_id:
-            cache.store(room_id, event_id, MatrixEventContext(
+        if (before is None or before.state_error or before.text != text
+                or before.replacement_id != state.replacement_id
+                or before.media_content != MatrixEventContext.image_content(content)):
+            cache.store_resolved(room_id, event_id, MatrixEventContext(
                 sender, text, is_image=content.get("msgtype") == "m.image", replacement_id=state.replacement_id,
-            ))
+                media_content=MatrixEventContext.image_content(content),
+            ), before)
     return visible, state.error, state.replacement_id
 
 

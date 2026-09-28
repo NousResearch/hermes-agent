@@ -757,6 +757,65 @@ _ACCESS_CHOICES = (
 )
 
 
+async def _callback_standalone_send(
+    pconfig,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Out-of-process WeCom Callback delivery via the proactive send API.
+
+    Implements the standalone_sender_fn contract so ``deliver=wecom_callback``
+    cron jobs and ``send_message(platform="wecom_callback")`` succeed when
+    they run separately from the gateway. Without this the registry fallback
+    in tools/send_message_tool.py has nothing to call and the send fails.
+
+    Deliberately does NOT call ``connect()``. Callback delivery is outbound
+    only — the aiohttp app, the bound port and the poll loop exist purely to
+    *receive* callbacks. ``connect()`` would try to bind the callback port and
+    refuse outright when the gateway already holds it, so an ephemeral
+    connect/disconnect (the pattern the WebSocket-based ``wecom`` sender uses)
+    is wrong here. Only the outbound HTTP client is opened, and it is closed
+    again afterwards.
+    """
+    del thread_id, force_document
+    if media_files:
+        return send_error("WeCom Callback standalone delivery supports text only.")
+    from plugins.platforms.wecom.callback_adapter import (
+        check_wecom_callback_requirements,
+    )
+
+    if not check_wecom_callback_requirements():
+        return {
+            "error": (
+                "WeCom Callback requirements not met. Need aiohttp + httpx and "
+                "WECOM_CALLBACK_CORP_ID/WECOM_CALLBACK_CORP_SECRET."
+            )
+        }
+    try:
+        adapter = _build_callback_adapter(pconfig)
+        # Share the live adapter's fail-closed routing before opening transport.
+        adapter._resolve_app_for_chat(chat_id)
+        adapter._ensure_http_client()
+        try:
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return send_error(f"WeCom Callback send failed: {result.error}")
+            return {
+                "success": True,
+                "platform": "wecom_callback",
+                "chat_id": chat_id,
+                "message_id": result.message_id,
+            }
+        finally:
+            await adapter.aclose_http_client()
+    except Exception as e:
+        return send_error(f"WeCom Callback send failed: {e}")
+
+
 def interactive_setup() -> None:
     from hermes_cli.config import remove_env_value, save_env_value
     from hermes_cli.setup import prompt_choice
@@ -845,8 +904,11 @@ def register(ctx) -> None:
         check_fn=check_wecom_callback_requirements, ensure_deps_fn=ensure_wecom_callback_requirements,
         is_connected=_callback_is_connected, validate_config=_callback_is_connected,
         required_env=["WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"],
+        standalone_sender_fn=_callback_standalone_send, max_message_length=2048,
+        parse_target_ref_fn=lambda target: (target.strip(), None) if target.strip() else None,
         allowed_users_env="WECOM_CALLBACK_ALLOWED_USERS", allow_all_env="WECOM_CALLBACK_ALLOW_ALL_USERS", **common,
     )
+
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
@@ -896,3 +958,4 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----
+

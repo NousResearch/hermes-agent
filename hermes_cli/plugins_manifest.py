@@ -35,7 +35,7 @@ _KNOWN_MANIFEST_FIELDS: Set[str] = {
     "pip_dependencies", "provides_browser_providers", "provides_web_providers",
     "manifest_version", "api_version", "requires_plugins", "python_dependencies", "config_schema",
     "license", "homepage", "tags", "capabilities", "emits", "listens", "hermes", "depends",
-    "requires_hermes", "python_runtime",
+    "requires_hermes", "python_runtime", "platform_aliases",
 }
 
 # Highest manifest schema version this Hermes understands.
@@ -387,6 +387,8 @@ class PluginManifest:
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.
     emits: List[str] = field(default_factory=list)
     listens: List[str] = field(default_factory=list)
+    # Additional platform registrations materialized by the same deferred plugin.
+    platform_aliases: List[str] = field(default_factory=list)
 
 
 # ── requires_hermes version gate ─────────────────────────────────────────────
@@ -504,6 +506,11 @@ def parse_manifest_file(
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
             requires_env=data.get("requires_env", []),
             provides_tools=data.get("provides_tools", []),
+            platform_aliases=_manifest_list(
+                data, key, "platform_aliases", "a list of platform names",
+                lambda item: item.strip() if isinstance(item, str) and item.strip() else None,
+                "Plugin %s: invalid platform_aliases entry %r; skipping",
+            ),
             # ``hooks:`` is the spelling the bundled manifests carried for months; external copies of it
             # must keep declaring the same thing (#108371).
             provides_hooks=data.get("provides_hooks", data.get("hooks", [])), source=source, path=str(plugin_dir),

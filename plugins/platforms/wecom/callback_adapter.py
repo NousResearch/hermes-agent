@@ -114,6 +114,34 @@ class WecomCallbackAdapter(BasePlatformAdapter):
                      "agent_id": str(extra.get("agent_id", "")), "token": extra.get("token", ""), "encoding_aes_key": extra.get("encoding_aes_key", "")}]
         return []
 
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def _ensure_http_client(self) -> None:
+        """Create the outbound HTTP client, without starting the server.
+
+        ``send()`` only needs this client — the aiohttp app, the bound port
+        and the poll loop exist purely to *receive* callbacks. Separating the
+        two lets an out-of-process sender (cron, ``send_message``) reuse the
+        real send path without binding the callback port, which ``connect()``
+        would refuse anyway when the gateway already holds it.
+        """
+        if self._http_client is not None:
+            return
+        # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+
+        self._http_client = httpx.AsyncClient(
+            timeout=20.0, limits=platform_httpx_limits()
+        )
+
+    async def aclose_http_client(self) -> None:
+        """Close the outbound client opened by :meth:`_ensure_http_client`."""
+        if self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         del is_reconnect  # kwarg MUST exist (GatewayRunner passes it) even though unused
         if not self._apps:
@@ -133,10 +161,9 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             except (ConnectionRefusedError, OSError):
                 pass
         try:
-            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
-            from gateway.platforms._http_client_limits import platform_httpx_limits
-            self._http_client = httpx.AsyncClient(timeout=20.0, limits=platform_httpx_limits())
-            # client_max_size → 413 before our handler / any signature work runs.
+            self._ensure_http_client()
+            # client_max_size rejects oversized bodies at the aiohttp layer
+            # (413) before our handler — and before any signature work — runs.
             self._app = web.Application(client_max_size=_MAX_BODY)
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get(self._path, self._handle_verify)
@@ -176,13 +203,11 @@ class WecomCallbackAdapter(BasePlatformAdapter):
         if self._runner:
             await self._runner.cleanup()
         self._runner = self._app = None
-        if self._http_client:
-            await self._http_client.aclose()
-        self._http_client = None
+        await self.aclose_http_client()
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        app = self._resolve_app_for_chat(chat_id)
         try:
+            app = self._resolve_app_for_chat(chat_id)
             payload = {"touser": chat_id.split(":", 1)[-1], "msgtype": "text", "agentid": int(str(app.get("agent_id") or 0)), "text": {"content": content[:2048]}, "safe": 0}
             for _attempt in range(2):
                 token = await self._get_access_token(app)
@@ -199,11 +224,25 @@ class WecomCallbackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     def _resolve_app_for_chat(self, chat_id: str) -> Dict[str, Any]:
+        apps = self._apps
+        if ":" in chat_id:
+            corp_id, user_id = chat_id.split(":", 1)
+            if not corp_id or not user_id:
+                raise ValueError("WeCom Callback recipient is empty.")
+            apps = [app for app in apps if app.get("corp_id") == corp_id]
+        elif not chat_id:
+            raise ValueError("WeCom Callback recipient is empty.")
         app_name = self._user_app_map.get(chat_id)
         if not app_name and ":" not in chat_id:  # legacy bare user_id — unique match only
             matching = [k for k in self._user_app_map if k.endswith(f":{chat_id}")]
-            app_name = self._user_app_map.get(matching[0]) if len(matching) == 1 else app_name
-        return self._get_app_by_name(app_name) or self._apps[0]
+            if len(matching) > 1:
+                raise ValueError("WeCom Callback target must identify exactly one configured app.")
+            app_name = self._user_app_map.get(matching[0]) if matching else None
+        if app_name:
+            apps = [app for app in apps if app.get("name") == app_name]
+        if len(apps) != 1:
+            raise ValueError("WeCom Callback target must identify exactly one configured app.")
+        return apps[0]
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "dm"}

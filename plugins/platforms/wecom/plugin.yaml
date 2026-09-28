@@ -1,6 +1,7 @@
 name: wecom-platform
 label: WeCom (Enterprise WeChat)
 kind: platform
+platform_aliases: [wecom_callback]
 version: 1.0.0
 description: >
   WeCom / Enterprise WeChat gateway adapter for Hermes Agent. Registers two

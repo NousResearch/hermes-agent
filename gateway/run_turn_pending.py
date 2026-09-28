@@ -1,11 +1,13 @@
 """Post-turn pending input selection for GatewayRunner."""
 
 import asyncio
+import dataclasses
 import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Callable, Optional, Tuple
 
 from gateway.session import SessionSource
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.base_pending import reserve_pending_dispatch, release_pending_dispatch, release_pending_dispatch_record, pending_dispatch_withdrawn
 
 if TYPE_CHECKING:
@@ -23,7 +25,8 @@ class GatewayPendingDrainMixin:
 
 
     async def _run_agent_drain_pending(
-        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str]
+        self, result: Any, adapter: Any, source: SessionSource, session_key: Optional[str],
+        processing_event: Optional[MessageEvent] = None,
     ) -> Tuple[Any, Optional[str]]:
         """Dequeue the adapter's pending / interrupt / leftover-steer follow-up as ``(pending_event, pending)``.
 
@@ -100,6 +103,10 @@ class GatewayPendingDrainMixin:
         # Leftover /steer (arrived after the last tool batch): deliver as the next user turn.
         if result and not pending and not pending_event and result.get("pending_steer"):
             pending = result.get("pending_steer")
+            if processing_event is not None:
+                pending_input = processing_event._processing_state.take_pending_input()
+                if pending_input is not None:
+                    pending_event = dataclasses.replace(pending_input, text=pending, message_type=MessageType.TEXT)
             logger.debug("Delivering leftover /steer as next turn: '%s...'", pending[:40])
 
         # Safety net: a pending slash command is never passed to the agent as user input.

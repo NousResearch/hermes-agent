@@ -823,6 +823,20 @@ def _stdin_console_mode_ok() -> bool | None:
     return bool(kernel32.GetConsoleMode(handle, ctypes.byref(ctypes.c_ulong())))
 
 
+def _console_prompt_answerable() -> bool:
+    """True only when a human can see the question and type an answer — the same test the login-install
+    prompt in ``start()`` applies. HERMES_NONINTERACTIVE, captured stdout, a non-TTY stdin, or a
+    console handle GetConsoleMode rejects (a hidden Scheduled Task console: isatty()==True but no
+    operator, #113977) all mean no answer will ever come, so a ``prompt_yes_no`` there blocks forever.
+    An unattended ``hermes update --yes`` reaches ``uninstall()`` via the multiplex migration on exactly
+    such a console (#126624); gate the UAC hand-off on this so the update declines and continues."""
+    from hermes_cli.setup import is_interactive_stdin, is_noninteractive
+
+    if is_noninteractive() or not _stdout_isatty():
+        return False
+    return _stdin_is_interactive(isatty=is_interactive_stdin(), console_mode_ok=_stdin_console_mode_ok())
+
+
 def _install_choice_from_env(name: str) -> bool | None:
     raw = os.environ.get(name)
     if raw is None:
@@ -1330,7 +1344,13 @@ def uninstall() -> None:
 
             print(f"↻ Scheduled Task uninstall needs administrator approval ({detail or 'access denied'})")
             print("  UAC is Windows' admin approval prompt; it is needed to remove the Scheduled Task.")
-            if prompt_yes_no("  Open the UAC prompt now?", False):
+            if not _console_prompt_answerable():
+                # No operator can answer (unattended `hermes update --yes` migration on a hidden
+                # Scheduled Task console, #126624): a `prompt_yes_no` here would block the update
+                # forever. Decline the hand-off and point at the manual elevated removal instead.
+                print("  Non-interactive run — skipped the UAC prompt; the Scheduled Task was not removed.")
+                print(f"  Remove it from an elevated terminal: schtasks /Delete /F /TN {task_name}")
+            elif prompt_yes_no("  Open the UAC prompt now?", False):
                 if _launch_elevated_gateway_command("uninstall"):
                     print("✓ Launched elevated Hermes gateway uninstall prompt.")
                     print("  Approve the Windows UAC prompt, then run: hermes gateway status")

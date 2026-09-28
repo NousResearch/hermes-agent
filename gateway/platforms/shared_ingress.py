@@ -55,13 +55,31 @@ def bound_site_endpoints(site: Any, host: Any, port: Any) -> tuple[str, ...]:
             endpoints.append(endpoint)
     if endpoints:
         return tuple(endpoints)
-    fallback_port = int(port or 0)
+    try:
+        fallback_port = int(port or 0)
+    except (TypeError, ValueError):
+        fallback_port = 0
     if fallback_port <= 0:
         return ()
     fallback_host = str(host or "*")
     if ":" in fallback_host and not fallback_host.startswith("["):
         fallback_host = f"[{fallback_host}]"
     return (f"{fallback_host}:{fallback_port}",)
+
+
+def bound_listener_port(endpoints: tuple[str, ...], configured_port: Any) -> int:
+    """Return a started listener's real port, falling back safely for test doubles."""
+    for endpoint in endpoints:
+        try:
+            port = int(endpoint.rsplit(":", 1)[1])
+        except (IndexError, TypeError, ValueError):
+            continue
+        if port > 0:
+            return port
+    try:
+        return int(configured_port or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def listener_base_url(host: Any, port: Any) -> str:
@@ -80,7 +98,9 @@ def shared_listener_base(runner: Any) -> Optional[str]:
         adapter = adapters.get(platform)
         if adapter is None:
             continue
-        return listener_base_url(getattr(adapter, "_host", None), getattr(adapter, "_port", 0))
+        endpoints = getattr(adapter, "_bound_listener_endpoints", ())
+        port = bound_listener_port(endpoints, getattr(adapter, "_port", 0))
+        return listener_base_url(getattr(adapter, "_host", None), port)
     return None
 
 

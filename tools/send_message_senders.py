@@ -317,10 +317,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
         return _success("telegram", chat_id, warnings, message_id=str(last_msg.message_id))
-    except ImportError:
-        return {"error": "python-telegram-bot not installed. Run: "
-                f"{install_hint('telegram')}"}
     except Exception as e:
+        # Deliberately NOT a bare ``except ImportError`` here: an ImportError raised inside this
+        # body comes from a NESTED optional import (the lazily-imported telegram id helpers,
+        # gateway.platforms.base), never from python-telegram-bot itself — that importability was
+        # checked above. Blaming PTB for it hid the real exception from the log; report what
+        # actually failed instead.
         return _error(f"Telegram send failed: {e}")
 
 

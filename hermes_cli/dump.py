@@ -180,7 +180,9 @@ def _config_overrides(config: dict) -> dict[str, str]:
     if fallbacks:
         # Entries carry api_key; the dump is made to be pasted, so it never prints a secret.
         from agent.redact import redact_sensitive_text
-        overrides["fallback_providers"] = redact_sensitive_text(str(fallbacks), force=True)
+        overrides["fallback_providers"] = redact_sensitive_text(
+            str(fallbacks), force=True, redact_url_credentials=True
+        )
     return overrides
 
 

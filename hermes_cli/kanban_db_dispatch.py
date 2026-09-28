@@ -261,20 +261,31 @@ _EXIT_TRAILER_RE = re.compile(
     r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
 )
 
+# Line ``_default_spawn`` writes to the per-task log before each worker starts. The log is
+# append-mode across re-runs, so readers cut at the last marker: a live or killed worker must
+# never inherit the PREVIOUS run's exit trailer (a stale ``rc=0`` books a crash as a protocol
+# violation) or its final output.
+KANBAN_WORKER_SPAWN_MARKER = "[kanban-worker-spawn] run="
+
+
+def _current_run_log(raw: Optional[str]) -> str:
+    """The part of a worker log written since the latest spawn marker (all of it when absent)."""
+    return (raw or "").rsplit(KANBAN_WORKER_SPAWN_MARKER, 1)[-1]
+
 
 def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
     """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
 
     The durable twin of ``_recent_worker_exits``: written by the worker itself
     (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
-    or not the process running this sweep ever reaped the worker. Last trailer
-    wins — the log is append-mode across re-runs.
+    or not the process running this sweep ever reaped the worker. Only the
+    current run's section counts — the log is append-mode across re-runs.
     """
     try:
         raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
     except Exception:
         return None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
+    matches = _EXIT_TRAILER_RE.findall(_current_run_log(raw))
     return int(matches[-1]) if matches else None
 
 
@@ -996,7 +1007,7 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     "current", so the log would silently not be found.
     """
     try:
-        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+        raw = _current_run_log(_kb.read_worker_log(task_id, tail_bytes=4000, board=board))
     except Exception:
         return ""
     if not raw:
@@ -1139,7 +1150,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee "
+            "SELECT id, worker_pid, worker_started_at, claim_lock, started_at, assignee, "
+            "  (SELECT r.started_at FROM task_runs r WHERE r.id = tasks.current_run_id) AS run_started_at "
             "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
@@ -1149,8 +1161,10 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             if not lock.startswith(host_prefix):
                 continue
             # Launch-window grace so a freshly-spawned worker isn't reclaimed
-            # before its PID is visible on /proc.
-            started_at = _kb._row_get(row, "started_at")
+            # before its PID is visible on /proc. Keyed on the CURRENT run:
+            # ``tasks.started_at`` keeps the first run's start, so every retry
+            # would otherwise be checked with no grace at all.
+            started_at = _kb._row_get(row, "run_started_at") or _kb._row_get(row, "started_at")
             if started_at is not None and time.time() - started_at < _kb._resolve_crash_grace_seconds():
                 continue
             if _worker_alive(row["worker_pid"], _kb._row_get(row, "worker_started_at")):
@@ -2939,6 +2953,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)
+    log_f.write(f"{KANBAN_WORKER_SPAWN_MARKER}{task.current_run_id}\n".encode())
+    log_f.flush()
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,

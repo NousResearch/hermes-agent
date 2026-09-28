@@ -374,3 +374,178 @@ class TestSessionScopedContainerLifecycle:
         )
         assert captured["persist_across_processes"] is True
         assert getattr(env, "_session_scoped", False) is False
+
+
+class TestRoutedScopeIdentityContract:
+    """The qualified key must be the ONLY identity a routed profile can reach an environment by.
+    Follow-up to #123989 (#126157 review, R1/R3): a routed miss fell back to the launch profile's
+    raw slot, and the Docker builder qualified an already-qualified rollout key a second time."""
+
+    def _routed(self, tmp_path, name="research"):
+        from agent import secret_scope
+        from hermes_constants import set_hermes_home_override
+
+        home = tmp_path / "profiles" / name
+        home.mkdir(parents=True)
+        secret_scope.set_multiplex_active(True)
+        return set_hermes_home_override(str(home))
+
+    def _launch(self, token):
+        from agent import secret_scope
+        from hermes_constants import reset_hermes_home_override
+
+        reset_hermes_home_override(token)
+        secret_scope.set_multiplex_active(False)
+
+    def test_a_routed_miss_never_falls_back_to_the_launch_profiles_raw_slot(self, monkeypatch, tmp_path):
+        from types import SimpleNamespace
+
+        _enable_isolation(monkeypatch)
+        raw = "same-authorized-session"
+        launch_env = SimpleNamespace(env_type="local", cwd="/launch")
+        monkeypatch.setitem(terminal_tool._active_environments, raw, launch_env)  # profile A, raw key
+        token = self._routed(tmp_path)
+        try:
+            eff = terminal_tool._resolve_container_task_id(raw)
+            assert eff == f"profile:research:{raw}"
+            with terminal_tool._env_lock:
+                assert terminal_tool._lookup_active_env(eff, raw) is None, "B's cold miss handed out A's sandbox"
+            terminal_tool.register_task_env_overrides(raw, {"cwd": "/tmp/research-workspace"})
+            assert launch_env.cwd == "/launch", "B's cwd registration mutated A's live environment"
+            assert terminal_tool.get_session_cwd(raw) == "/tmp/research-workspace"
+
+            routed_env = SimpleNamespace(env_type="local", cwd="/research")
+            monkeypatch.setitem(terminal_tool._active_environments, eff, routed_env)
+            with terminal_tool._env_lock:
+                assert terminal_tool._lookup_active_env(eff, raw) is routed_env
+            terminal_tool.register_task_env_overrides(raw, {"cwd": "/tmp/research-2"})
+            assert (routed_env.cwd, launch_env.cwd) == ("/tmp/research-2", "/launch")
+        finally:
+            self._launch(token)
+            for key in (raw, f"profile:research:{raw}"):
+                terminal_tool._last_activity.pop(key, None)
+        # Back on the launch profile the raw slot is its own: same-owner sharing is untouched.
+        with terminal_tool._env_lock:
+            assert terminal_tool._lookup_active_env(raw, raw) is launch_env
+        assert terminal_tool.get_session_cwd(raw) is None
+
+    def test_an_override_rollout_under_a_routed_profile_keeps_its_lifecycle(self, monkeypatch, tmp_path):
+        _enable_isolation(monkeypatch)
+        built = []
+
+        class _FakeDockerEnv:
+            def __init__(self, **kwargs):
+                built.append(kwargs)
+
+        monkeypatch.setattr(terminal_tool_backends, "_DockerEnvironment", _FakeDockerEnv)
+        monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", lambda cc: None)
+        monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+        config = {"env_type": "docker", "docker_persist_across_processes": True}
+
+        def _plan(eff, image):
+            return terminal_tool._ExecPlan(
+                config=config, env_type="docker", effective_task_id=eff, image=image,
+                cwd="/workspace", host_cwd=None, effective_timeout=60)
+
+        token = self._routed(tmp_path)
+        created = []
+        try:
+            terminal_tool.register_task_env_overrides("rollout", {"docker_image": "probe-image"})
+            rollout_key = terminal_tool._resolve_container_task_id("rollout")
+            assert rollout_key == "profile:research:rollout"
+            created.append(rollout_key)
+            rollout = terminal_tool._acquire_env(_plan(rollout_key, "probe-image"), "rollout")
+            assert built[-1]["task_id"] == rollout_key and built[-1]["image"] == "probe-image"
+            assert built[-1]["persist_across_processes"] is True, "the rollout became a session sandbox"
+            assert getattr(rollout, "_session_scoped", False) is False
+
+            chat_key = terminal_tool._resolve_container_task_id("chat-1")  # ordinary session: control
+            created.append(chat_key)
+            chat = terminal_tool._acquire_env(_plan(chat_key, "img:1"), "chat-1")
+            assert built[-1]["persist_across_processes"] is False
+            assert getattr(chat, "_session_scoped", False) is True
+        finally:
+            self._launch(token)
+            for key in created:
+                terminal_tool._active_environments.pop(key, None)
+                terminal_tool._last_activity.pop(key, None)
+
+    @pytest.mark.parametrize("routed", [False, True], ids=["launch", "routed"])
+    @pytest.mark.parametrize("first", ["child", "parent"])
+    def test_a_rollout_keeps_its_lifecycle_whoever_creates_it_first(self, monkeypatch, tmp_path, routed, first):
+        """A delegated child aliases to its parent's rollout (image override); whichever of the two
+        reaches the sandbox first creates the PARENT's environment, so its lifetime must follow the
+        parent's registration (persistent across processes), not the initiating id's."""
+        from types import SimpleNamespace
+
+        from tools.terminal_tool_lifecycle import ensure_task_env
+
+        _enable_isolation(monkeypatch)
+        monkeypatch.setenv("TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true")
+        for name in ("_active_environments", "_last_activity", "_creation_locks"):
+            monkeypatch.setattr(terminal_tool, name, {})
+        monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+        monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", lambda cc: None)
+        monkeypatch.setattr(terminal_tool_backends, "_DockerEnvironment", lambda **kw: SimpleNamespace(**kw))
+        token = self._routed(tmp_path) if routed else None
+        try:
+            terminal_tool.register_task_env_overrides("rollout", {"docker_image": "rollout-image"})
+            terminal_tool.register_container_alias("rollout-child", "rollout")
+            order = ("rollout-child", "rollout") if first == "child" else ("rollout", "rollout-child")
+            env = ensure_task_env(order[0])
+            assert env is not None and env.image == "rollout-image"
+            assert env.task_id == terminal_tool._resolve_container_task_id("rollout")
+            assert ensure_task_env(order[1]) is env
+            assert env.persist_across_processes is True, "the rollout became a session sandbox"
+            assert getattr(env, "_session_scoped", False) is False
+
+            chat = ensure_task_env("chat-1")  # ordinary session on the same profile: still removable
+            assert chat.persist_across_processes is False and chat._session_scoped is True
+        finally:
+            if token is not None:
+                self._launch(token)
+
+    def test_raw_readers_teardown_and_eviction_stay_within_their_owner(self, monkeypatch, tmp_path):
+        """Every reader, evictor and teardown that takes a RAW id resolves it under its owner: a
+        routed profile's failed startup, degraded eviction or session close must not read, evict or
+        tear down the launch profile's environment that shares the id."""
+        from types import SimpleNamespace
+
+        from tools.terminal_tool_lifecycle import (
+            _evict_environment_for_task, cleanup_vm, ensure_task_env, get_active_env, is_persistent_env)
+
+        _enable_isolation(monkeypatch)
+        raw = "same-session"
+        cleaned = []
+        for name in ("_active_environments", "_last_activity", "_creation_locks"):
+            monkeypatch.setattr(terminal_tool, name, {})
+        monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+        monkeypatch.setattr(terminal_tool, "_maybe_reap_docker_orphans", lambda cc: None)
+
+        def _docker(**kwargs):
+            return SimpleNamespace(cleanup=lambda: cleaned.append(kwargs["task_id"]), **kwargs)
+
+        monkeypatch.setattr(terminal_tool_backends, "_DockerEnvironment", _docker)
+        launch_env = ensure_task_env(raw)  # profile A: cached under the bare id
+        assert launch_env.task_id == raw
+        routed_key = f"profile:research:{raw}"
+        token = self._routed(tmp_path)
+        try:
+            assert get_active_env(raw) is None, "B's cold miss read A's environment"
+            assert is_persistent_env(raw) is False
+            _evict_environment_for_task(raw)  # B's degraded-backend eviction
+            cleanup_vm(raw)  # B's session close
+            assert cleaned == [], "B's failure path tore down A's environment"
+            assert terminal_tool._active_environments == {raw: launch_env} and raw in terminal_tool._last_activity
+
+            routed_env = ensure_task_env(raw)  # B's own: created and re-found by its resolved key
+            assert routed_env is not launch_env and routed_env.task_id == routed_key
+            assert get_active_env(raw) is routed_env
+            _evict_environment_for_task(raw)
+            assert cleaned == [routed_key] and get_active_env(raw) is None
+            ensure_task_env(raw)
+            cleanup_vm(raw)
+            assert cleaned == [routed_key, routed_key] and get_active_env(raw) is None
+        finally:
+            self._launch(token)
+        assert get_active_env(raw) is launch_env and cleaned == [routed_key, routed_key]

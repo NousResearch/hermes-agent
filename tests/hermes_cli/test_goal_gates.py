@@ -289,22 +289,26 @@ def test_gate_runs_in_the_session_workspace_not_the_backend_directory(backend_an
     assert str(session.resolve()) in mgr.state.gates[0].last_output_tail
 
 
-def test_missing_session_workspace_fails_the_gate_instead_of_running_elsewhere(backend_and_session, tmp_path):
-    # A deleted, remote or container workspace: the backend's passing check must not stand in for it.
+def test_missing_session_workspace_pauses_instead_of_running_elsewhere(backend_and_session, tmp_path):
+    # A deleted, remote or container workspace: the backend's passing check must not stand in for it,
+    # and no retry can fix it, so the goal pauses on the first check with the reason and no attempt charged.
     backend, _session, bind = backend_and_session
     missing = tmp_path / "gone"
     mgr = _mgr_with_goal("gate-missing-cwd-sid")
     mgr.add_gate("sh check.sh")
     unbind = bind(missing)
     try:
-        decision, judge = _evaluate_with_done_judge(mgr)
+        with patch("hermes_cli.goals.run_gate") as run:
+            decision, judge = _evaluate_with_done_judge(mgr)
     finally:
         unbind()
+    run.assert_not_called()
     judge.assert_not_called()
-    assert decision["verdict"] == "gate_failed"
+    assert decision["status"] == "paused" and decision["should_continue"] is False
+    assert str(missing) in decision["message"] and "still failing" not in decision["message"]
+    assert str(missing) in (mgr.state.paused_reason or "")
     gate = mgr.state.gates[0]
-    assert gate.last_exit_code == -1
-    assert str(missing) in gate.last_output_tail and str(backend) not in gate.last_output_tail
+    assert (gate.attempts, gate.last_exit_code) == (0, None)
 
 
 def test_gate_without_a_session_workspace_keeps_the_launch_directory(backend_and_session):

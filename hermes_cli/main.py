@@ -3510,6 +3510,13 @@ def _build_cli_parser():
     build_uninstall_parser(subparsers, cmd_uninstall=cmd_uninstall)
     build_acp_parser(subparsers, cmd_acp=cmd_acp)
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
+
+    # =========================================================================
+    # weixin command  (parser built in hermes_cli/weixin_cmd.py)
+    # =========================================================================
+    from hermes_cli.weixin_cmd import build_weixin_parser
+
+    build_weixin_parser(subparsers)
     build_completion_parser(subparsers, cmd_completion=cmd_completion, parser=parser)
     build_dashboard_parser(
         subparsers,

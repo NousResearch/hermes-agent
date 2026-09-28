@@ -221,3 +221,85 @@ def test_register_handles_multiple_accounts(tmp_path: Path):
         fake_cfg, str(tmp_path)
     )
     assert registered == ["weixin:personal", "weixin:work"]
+
+# ── #47129 review fixes ─────────────────────────────────────────────
+
+
+def test_cron_accepts_qualified_weixin_targets():
+    """``weixin:<account>`` is a valid cron delivery platform (#47129)."""
+    from cron.scheduler_delivery import (
+        _is_known_delivery_platform,
+        _resolve_home_env_var,
+    )
+
+    assert _is_known_delivery_platform("weixin:work") is True
+    assert _is_known_delivery_platform("weixin:") is False
+    # Bare weixin still resolves its home env var.
+    assert _resolve_home_env_var("weixin") == "WEIXIN_HOME_CHANNEL"
+    # Qualified names fall back to the base platform's home env var.
+    assert _resolve_home_env_var("weixin:work") == "WEIXIN_HOME_CHANNEL"
+
+
+def test_send_message_synthesizes_pconfig_for_extra_account(tmp_path, monkeypatch):
+    """send_message resolves ``weixin:<account>`` through the discovery layer."""
+    import tools.send_message_tool as smt
+
+    _write_account(tmp_path, "work", token="tok-work")
+    monkeypatch.setattr(
+        "hermes_constants.get_hermes_home", lambda: tmp_path
+    )
+
+    persisted = smt  # module-level access sanity
+    from gateway.platforms.weixin_multi import (
+        _build_extra_platform_config,
+        _load_persisted_account,
+    )
+    from hermes_constants import get_hermes_home
+
+    payload = _load_persisted_account(str(get_hermes_home()), "work")
+    assert payload is not None and payload["token"] == "tok-work"
+
+    cfg = _build_extra_platform_config(
+        "work", payload, PlatformConfig(enabled=True)
+    )
+    assert cfg.enabled and cfg.extra["account_id"] == "work"
+
+
+def test_weixin_adapter_binds_qualified_identity(tmp_path, monkeypatch):
+    """WeixinAdapter rebinds self.platform to ``weixin:<account>`` when it
+    serves an extra account so build_source() emits distinguishable
+    session sources (#47129 review fix 1)."""
+
+    pytest.importorskip("gateway.platforms.weixin")
+    from types import SimpleNamespace
+
+    from gateway.config import Platform
+    from gateway.platform_registry import platform_registry
+    from gateway.platforms.weixin import WeixinAdapter
+
+    # Mirror real gateway startup: discovery registers ``weixin:extra1`` in
+    # platform_registry BEFORE any adapter is constructed, which is what lets
+    # Platform("weixin:extra1") resolve via _missing_().
+    _write_account(tmp_path, "extra1", token="tok-extra")
+    fake_cfg = SimpleNamespace(platforms={Platform.WEIXIN: _make_config()})
+    registered = weixin_multi.register_persisted_weixin_accounts(
+        fake_cfg, str(tmp_path)
+    )
+    assert registered == ["weixin:extra1"]
+
+    cfg = PlatformConfig(
+        enabled=True,
+        token="tok-extra",
+        extra={"account_id": "extra1"},
+    )
+    adapter = WeixinAdapter(cfg)
+
+    assert str(getattr(adapter.platform, "value", "")) == "weixin:extra1"
+    assert adapter.platform != Platform.WEIXIN
+
+    # Registry cleanup so the dynamic member doesn't leak into other tests.
+    try:
+        platform_registry._entries.pop("weixin:extra1", None)
+        Platform._value2member_map_.pop("weixin:extra1", None)
+    except Exception:
+        pass

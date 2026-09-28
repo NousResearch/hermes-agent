@@ -417,14 +417,25 @@ def _plugin_cron_env_var(platform_name: str) -> str:
 
 
 def _is_known_delivery_platform(platform_name: str) -> bool:
-    """Valid cron delivery platform: built-in, or plugin with a ``cron_deliver_env_var``."""
+    """Valid cron delivery platform: built-in, or plugin with a ``cron_deliver_env_var``.
+
+    Multi-account Weixin (#47129): ``weixin:<account>`` targets inherit the base
+    ``weixin`` delivery capability; the account segment selects which persisted
+    credentials the send path uses (see send_message_tool).
+    """
     name = platform_name.lower()
+    if name.startswith("weixin:") and name.split(":", 1)[1].strip():
+        return True
     return name in _KNOWN_DELIVERY_PLATFORMS or bool(_plugin_cron_env_var(name))
 
 
 def _resolve_home_env_var(platform_name: str) -> str:
     """Env var name for a platform's cron home channel (built-in table, then plugin registry)."""
     name = platform_name.lower()
+    # Multi-account Weixin (#47129): ``weixin:<account>`` has no per-account
+    # home env var; fall back to the base platform's resolution.
+    if name.startswith("weixin:"):
+        return _HOME_TARGET_ENV_VARS.get("weixin", "")
     return _HOME_TARGET_ENV_VARS.get(name) or _plugin_cron_env_var(name)
 
 

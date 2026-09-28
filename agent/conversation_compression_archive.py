@@ -11,6 +11,9 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 ABSORBED_ROW_IDS = "_absorbed_row_ids"
+# How many durable rows an alternation repair folded into one user dict. A reload without row ids
+# has no other way to tell that dict from a prompt that was never persisted.
+MERGED_DURABLE_ROWS = "_merged_durable_rows"
 
 
 def _positive_id(value: Any) -> Optional[int]:

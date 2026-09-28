@@ -41,8 +41,9 @@ function resolvePortAnnounceTimeoutMs(env = process.env) {
 }
 
 /**
- * Watch a child process's stdout for the `HERMES_(BACKEND|DASHBOARD)_READY
+ * Watch a child process's stdout (and stderr) for the `HERMES_(BACKEND|DASHBOARD)_READY
  * port=<N>` line that web_server.py prints after uvicorn binds its socket.
+ * (Both streams are watched: `hermes serve` can announce on stderr.)
  *
  * Returns the parsed port. Rejects if:
  *   - the child exits before emitting the line
@@ -82,28 +83,39 @@ function waitForDashboardPort(
 
       done = true
       clearTimeout(timer)
-      child.stdout.off('data', onData)
+      child.stdout.off('data', onStdout)
+      child.stderr.off('data', onStderr)
       child.off('exit', onExit)
       child.off('error', onError)
     }
 
-    function onData(chunk) {
-      buf += chunk.toString()
-      let nl
+    function onStreamData(bufRef: { v: string }) {
+      return (chunk: Buffer | string) => {
+        let buf = bufRef.v
+        buf += chunk.toString()
+        let nl
 
-      while ((nl = buf.indexOf('\n')) !== -1) {
-        const line = buf.slice(0, nl)
-        buf = buf.slice(nl + 1)
-        const m = line.match(_READY_RE)
+        while ((nl = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, nl)
+          buf = buf.slice(nl + 1)
+          const m = line.match(_READY_RE)
 
-        if (m) {
-          cleanup()
-          resolve(parseInt(m[1], 10))
+          if (m) {
+            cleanup()
+            resolve(parseInt(m[1], 10))
 
-          return
+            return
+          }
         }
+
+        bufRef.v = buf
       }
     }
+
+    const stdoutRef = { v: '' }
+    const stderrRef = { v: '' }
+    const onStdout = onStreamData(stdoutRef)
+    const onStderr = onStreamData(stderrRef)
 
     function onExit(code, signal) {
       cleanup()
@@ -120,7 +132,8 @@ function waitForDashboardPort(
       reject(new Error(`Timed out waiting for Hermes backend port announcement (${timeoutMs}ms)`))
     }, timeoutMs)
 
-    child.stdout.on('data', onData)
+    child.stdout.on('data', onStdout)
+    child.stderr.on('data', onStderr)
     child.on('exit', onExit)
     child.on('error', onError)
 

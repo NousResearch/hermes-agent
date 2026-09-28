@@ -2013,6 +2013,14 @@ class BasePlatformAdapter(ABC):
         fall back to ``send`` + ``edit_message`` when False or ``send_draft`` raises."""
         return False
 
+    def prefers_buffered_reply(self, chat_id: str) -> bool:
+        """Whether this chat's final reply must bypass progressive text streaming."""
+        return False
+
+    def reply_chunks(self, content: str, chat_id: str) -> list[str]:
+        """Completed conversational reply chunks; generic/tool/cron sends do not use this."""
+        return [content]
+
     def prefers_fresh_final_streaming(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
         """Whether the stream consumer should finalize with a *fresh* final message (best-effort
         deleting the preview) instead of final-editing it (Telegram: keeps rich rendering)."""
@@ -4279,7 +4287,7 @@ class BasePlatformAdapter(ABC):
 
     async def send_final_ledgered(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any], *,
-        reply_to: Optional[str], is_ephemeral_response: bool = False,
+        reply_to: Optional[str], is_ephemeral_response: bool = False, allow_reply_bursts: bool = True,
     ) -> "tuple[SendResult, BasePlatformAdapter]":
         """The delivery-ledger bracket every final text goes through, on the CURRENT transport
         (a reconnect may have replaced this adapter): record the obligation before the send,
@@ -4293,20 +4301,27 @@ class BasePlatformAdapter(ABC):
                     len(text_content), event.source.chat_id)
         obligation_id = await self._record_delivery_obligation(
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+        marker_released = True
         if obligation_id is not None:
-            await self._release_turn_marker(event)  # the ledger now owns the crash recovery
-        result = await delivery_adapter._send_with_retry(
-            chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
+            marker_released = await self._release_turn_marker(event)  # ledger owns recovery
+        from gateway.platforms.reply_delivery import send_reply_chunks
+        result = await send_reply_chunks(
+            delivery_adapter, event.source.chat_id, text_content,
+            reply_to=reply_to, metadata=metadata, obligation_id=obligation_id,
+            split=marker_released and allow_reply_bursts and not event.internal and not is_ephemeral_response and not str(event.text or "").lstrip().startswith(
+                ("/", self.typed_command_prefix or "!")))
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
         return result, delivery_adapter
 
-    async def _release_turn_marker(self, event: MessageEvent) -> None:
+    async def _release_turn_marker(self, event: MessageEvent) -> bool:
         """Clear the crash-recovery marker the runner handed to this delivery lifecycle
         (``_turn_marker_handoff``): only once the final reply is ledgered or nothing more is owed,
-        so no kill leaves a persisted reply with neither marker nor ledger row. Idempotent."""
+        so no kill leaves a persisted reply with neither marker nor ledger row. Idempotent.
+        A failed clear disables bursts: crash adoption deduplicates against the original full text."""
         if getattr(event, "_turn_marker_handoff", False) and getattr(event, "_gateway_active_turn_token", None):
-            await self.gateway_runner._clear_durable_active_turn(event)
+            return await self.gateway_runner._clear_durable_active_turn(event)
+        return True
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],

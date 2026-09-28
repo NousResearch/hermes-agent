@@ -223,6 +223,9 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Opt
     return cdp, None
 
 
+_REAL_PROFILE_LOCK_TIMEOUT = 45.0  # well under the 420s tool timeout
+
+
 def _real_profile_cdp() -> tuple:
     """Resolve ``(cdp_url, error)`` for consented real-profile browsing.
 
@@ -230,6 +233,11 @@ def _real_profile_cdp() -> tuple:
     non-default dir, so it sidesteps the Chrome >=136 default-profile remote-debugging block and
     never contends with the user's running browser. One shared agent-browser session is reused
     across calls (cached, re-validated). ``(None, message)`` fail-closed; ``(None, None)`` when consent is off.
+
+    The resolve itself runs under ``_real_profile_cdp_lock`` so two calls never race the profile
+    copy; a call that gets stuck inside it (a wedged agent-browser subprocess, #125986) must not
+    silently queue every later ``browser_*`` call behind it for the full tool timeout, so the wait
+    is bounded and a timeout re-reports the last known failure instead of hanging.
     """
     _bt = _origin()
     if not _cloud._use_real_profile():
@@ -249,58 +257,78 @@ def _real_profile_cdp() -> tuple:
         return None, (_RP + "browser.engine is set to 'lightpanda', which cannot load a real Chromium profile. "
                       "Set browser.engine to 'auto' or 'chrome' to use real-profile browsing, or turn the toggle off.")
 
+    if not _bt._real_profile_cdp_lock.acquire(blocking=False):
+        _bt.logger.info("real-profile: waiting on an in-progress real-profile resolve (up to %.0fs)...",
+                        _REAL_PROFILE_LOCK_TIMEOUT)
+        if not _bt._real_profile_cdp_lock.acquire(timeout=_REAL_PROFILE_LOCK_TIMEOUT):
+            stale = _bt._real_profile_cdp_cache.get("last_error")
+            return None, stale or (_RP + "another real-profile browser call is still resolving "
+                                    "(no result after {:.0f}s). Retry shortly.".format(_REAL_PROFILE_LOCK_TIMEOUT))
+    try:
+        cdp, err = _resolve_real_profile_cdp()
+    finally:
+        _bt._real_profile_cdp_lock.release()
+    if err:
+        _bt._real_profile_cdp_cache["last_error"] = err
+    elif cdp:
+        _bt._real_profile_cdp_cache.pop("last_error", None)
+    return cdp, err
+
+
+def _resolve_real_profile_cdp() -> tuple:
+    """Body of ``_real_profile_cdp()`` that runs while ``_real_profile_cdp_lock`` is held."""
+    _bt = _origin()
     from hermes_cli.browser_connect import (chromium_executable, detect_default_chromium,
                                             real_profile_copy_dir, snapshot_real_profile)
 
-    with _bt._real_profile_cdp_lock:
-        cached = _bt._real_profile_cdp_cache.get("cdp")
-        if cached and _cdp_http_ready(cached):
-            # Re-claim the shared daemon's socket dir so the orphan reaper's idle clock sees
-            # this process still using it (a cache hit never runs a daemon command).
-            _session._prepare_session_socket_dir(_bt._REAL_PROFILE_SESSION)
-            return cached, None
-        _bt._real_profile_cdp_cache.pop("cdp", None)
+    cached = _bt._real_profile_cdp_cache.get("cdp")
+    if cached and _cdp_http_ready(cached):
+        # Re-claim the shared daemon's socket dir so the orphan reaper's idle clock sees
+        # this process still using it (a cache hit never runs a daemon command).
+        _session._prepare_session_socket_dir(_bt._REAL_PROFILE_SESSION)
+        return cached, None
+    _bt._real_profile_cdp_cache.pop("cdp", None)
 
-        browser = detect_default_chromium()
-        unsupported = _real_profile_unsupported_reason(browser)
-        if unsupported:
-            return None, unsupported
+    browser = detect_default_chromium()
+    unsupported = _real_profile_unsupported_reason(browser)
+    if unsupported:
+        return None, unsupported
 
-        # Reuse BEFORE writing anything. CRITICAL: the snapshot overlay (truncates/rewrites
-        # Cookies / Login Data) must NOT run while a live copy-browser (maybe from a previous
-        # hermes process) holds the user-data-dir open — that corrupts the databases.
-        copy_dir = real_profile_copy_dir(browser)
-        existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
-        if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
-            _bt._real_profile_cdp_cache["cdp"] = existing
-            return existing, None
-        if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
-            _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
-        # A Chrome from an earlier hermes process can still hold the copy dir after its attach
-        # daemon was reaped (that owner died). Re-attach to it rather than overlay a live profile;
-        # if the daemon cannot attach, fail closed — never snapshot over an open profile. Not ours
-        # to terminate (no Popen handle): it lives until the user closes it, by design.
-        surviving = _surviving_chrome_cdp(copy_dir)
-        if surviving:
-            cdp, err = _attach_agent_browser_to_real_profile(int(surviving.rsplit(":", 1)[1]), copy_dir)
-            if not cdp:
-                return None, err
-            _bt._real_profile_cdp_cache["cdp"] = cdp
-            _bt.logger.info("real-profile: re-attached to surviving Chrome at %s (%s)", cdp, copy_dir)
-            return cdp, None
-
-        copy_dir, err = snapshot_real_profile(browser)
-        if err or not copy_dir:
-            return None, _real_profile_snapshot_error(err)
-        real_binary = chromium_executable(browser)
-        if real_binary is None:
-            return None, f"{_RP}the real browser binary for '{browser}' could not be found. Reinstall it or turn the toggle off."
-        port, err = _launch_real_profile_chrome(real_binary, copy_dir)
-        if port is None:
-            return None, err
-        cdp, err = _attach_agent_browser_to_real_profile(port, copy_dir)
+    # Reuse BEFORE writing anything. CRITICAL: the snapshot overlay (truncates/rewrites
+    # Cookies / Login Data) must NOT run while a live copy-browser (maybe from a previous
+    # hermes process) holds the user-data-dir open — that corrupts the databases.
+    copy_dir = real_profile_copy_dir(browser)
+    existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
+    if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
+        _bt._real_profile_cdp_cache["cdp"] = existing
+        return existing, None
+    if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
+        _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
+    # A Chrome from an earlier hermes process can still hold the copy dir after its attach
+    # daemon was reaped (that owner died). Re-attach to it rather than overlay a live profile;
+    # if the daemon cannot attach, fail closed — never snapshot over an open profile. Not ours
+    # to terminate (no Popen handle): it lives until the user closes it, by design.
+    surviving = _surviving_chrome_cdp(copy_dir)
+    if surviving:
+        cdp, err = _attach_agent_browser_to_real_profile(int(surviving.rsplit(":", 1)[1]), copy_dir)
         if not cdp:
             return None, err
         _bt._real_profile_cdp_cache["cdp"] = cdp
-        _bt.logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
+        _bt.logger.info("real-profile: re-attached to surviving Chrome at %s (%s)", cdp, copy_dir)
         return cdp, None
+
+    copy_dir, err = snapshot_real_profile(browser)
+    if err or not copy_dir:
+        return None, _real_profile_snapshot_error(err)
+    real_binary = chromium_executable(browser)
+    if real_binary is None:
+        return None, f"{_RP}the real browser binary for '{browser}' could not be found. Reinstall it or turn the toggle off."
+    port, err = _launch_real_profile_chrome(real_binary, copy_dir)
+    if port is None:
+        return None, err
+    cdp, err = _attach_agent_browser_to_real_profile(port, copy_dir)
+    if not cdp:
+        return None, err
+    _bt._real_profile_cdp_cache["cdp"] = cdp
+    _bt.logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
+    return cdp, None

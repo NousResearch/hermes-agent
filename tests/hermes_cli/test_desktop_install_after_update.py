@@ -103,11 +103,13 @@ def test_recorded_app_that_went_missing_comes_back_until_gui_uninstall(rebuilt, 
     shutil.rmtree(user_app)
     main_desktop._refresh_installed_desktop_apps(tmp_path)
     assert _asar(user_app) == b"rebuilt" and not app.exists()
-    assert main_desktop._update_owned_macos_bundles([user_app]) == [user_app]
-    shutil.rmtree(user_app)  # the reinstalled copy is owned again, so it comes back every time
+    gui_uninstall.desktop_install_record().unlink()  # the reinstalled copy carries its own stamp,
+    main_desktop._refresh_installed_desktop_apps(tmp_path)  # so it is recorded again from the copy
+    shutil.rmtree(user_app)
     main_desktop._refresh_installed_desktop_apps(tmp_path)
     assert _asar(user_app) == b"rebuilt"
 
     gui_uninstall.uninstall_gui(tmp_path / "profile-home")  # the record is machine-wide
     main_desktop._refresh_installed_desktop_apps(tmp_path)
     assert not user_app.exists()
+    assert not gui_uninstall.desktop_install_record().exists()

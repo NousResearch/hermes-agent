@@ -982,6 +982,8 @@ def _install_rebuilt_desktop_app(desktop_dir: Path, candidates: list[Path]) -> t
 def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
     """Install the rebuilt bundle over stale or missing installed copies, report each outcome, and
     record which copies this update keeps current."""
+    if not _owns_installed_desktop_apps():
+        return
     owned = _installed_desktop_apps()
     missing = {app for app in owned if not app.exists()}
     installed, problems = _install_rebuilt_desktop_app(desktop_dir, owned)
@@ -993,13 +995,15 @@ def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
             print(f"  ✓ Installed the rebuilt Desktop app at {app}")
     for problem in problems:
         print(f"  ⚠ {problem}")
-    if not _owns_installed_desktop_apps():
-        return
     from hermes_cli.gui_uninstall import desktop_install_record  # noqa: PLC0415
-    from utils import atomic_json_write  # noqa: PLC0415
+    from utils import atomic_json_write, read_json_or_empty  # noqa: PLC0415
+    # A copy that failed to reinstall stays recorded, so the next update retries it. Every
+    # `hermes desktop` launch lands here: write only when the set changed.
+    apps = [str(app) for app in owned]
+    if read_json_or_empty(desktop_install_record()).get("apps", []) == apps:
+        return
     try:
-        # A copy that failed to reinstall stays recorded, so the next update retries it.
-        atomic_json_write(desktop_install_record(), {"apps": [str(app) for app in owned]})
+        atomic_json_write(desktop_install_record(), {"apps": apps})
     except OSError as exc:
         print(f"  ⚠ Could not record the installed Desktop app ({exc})")
 
@@ -1049,7 +1053,9 @@ def _installed_desktop_apps() -> list[Path]:
     candidates = packaged_gui_app_paths()
     if owned := _update_owned_macos_bundles(candidates):
         return owned
-    recorded = read_json_or_empty(desktop_install_record()).get("apps", [])
+    recorded = read_json_or_empty(desktop_install_record()).get("apps")
+    if not isinstance(recorded, list):
+        return []
     return [app for app in candidates if str(app) in recorded and not app.exists()]
 
 

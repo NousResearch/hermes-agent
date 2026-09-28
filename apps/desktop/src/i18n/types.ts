@@ -992,6 +992,8 @@ export interface Translations {
       textDirection: { auto: string; rtl: string; ltr: string }
       introSplashTitle: string
       introSplashDesc: string
+      modelPricingTitle: string
+      modelPricingDesc: string
       reactionsTitle: string
       reactionsDesc: string
       tipsTitle: string

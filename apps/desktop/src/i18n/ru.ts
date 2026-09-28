@@ -760,6 +760,8 @@ export const ru = defineLocale({
       textDirection: { auto: 'Авто', rtl: 'Справа налево', ltr: 'Слева направо' },
       introSplashTitle: 'Экран приветствия',
       introSplashDesc: 'Логотип и подсказка, показываемые на пустом чате.',
+      modelPricingTitle: 'Цены моделей',
+      modelPricingDesc: 'Показывать в выборе модели цены за миллион токенов: ввод, вывод и чтение из кэша.',
       reactionsTitle: 'Реакции на сообщения',
       reactionsDesc: 'Эмодзи-тапбеки в стиле iMessage — реагируйте на сообщения, и Hermes сможет реагировать на ваши.',
       composerPopoutTitle: 'Плавающий композер',

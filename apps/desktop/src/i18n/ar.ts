@@ -726,6 +726,8 @@ export const ar = defineLocale({
       textDirection: { auto: 'تلقائي', rtl: 'من اليمين إلى اليسار', ltr: 'من اليسار إلى اليمين' },
       introSplashTitle: 'شاشة المقدمة',
       introSplashDesc: 'الشعار النصي والعبارة التمهيدية في محادثة فارغة.',
+      modelPricingTitle: 'أسعار النماذج',
+      modelPricingDesc: 'عرض أسعار الإدخال والإخراج وقراءة ذاكرة التخزين المؤقت لكل مليون رمز في منتقي النماذج.',
       reactionsTitle: 'تفاعلات الرسائل',
       reactionsDesc: 'تفاعلات إيموجي بأسلوب iMessage — تفاعل مع الرسائل، ويمكن لـ Hermes التفاعل مع رسائلك.',
       tipsTitle: 'نصائح داخل التطبيق',

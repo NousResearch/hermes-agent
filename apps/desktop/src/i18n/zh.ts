@@ -886,6 +886,8 @@ export const zh = defineLocale({
       textDirection: { auto: '自动', rtl: '从右到左', ltr: '从左到右' },
       introSplashTitle: '开场标识',
       introSplashDesc: '空白对话中显示的字标和提示语。',
+      modelPricingTitle: '模型价格',
+      modelPricingDesc: '在模型选择器中显示每百万 token 的输入、输出和缓存读取价格。',
       reactionsTitle: '消息回应',
       reactionsDesc: 'iMessage 风格的表情回应 — 你可以给消息添加回应，Hermes 也能回应你的消息。',
       tipsTitle: '应用内提示',

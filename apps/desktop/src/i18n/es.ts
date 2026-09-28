@@ -1172,6 +1172,8 @@ export const esOverrides = {
       textDirection: { auto: 'Auto', rtl: 'De derecha a izquierda', ltr: 'De izquierda a derecha' },
       introSplashTitle: 'Pantalla de bienvenida',
       introSplashDesc: 'El logotipo y la indicación que se muestran en un chat vacío.',
+      modelPricingTitle: 'Precios de modelos',
+      modelPricingDesc: 'Muestra los precios de entrada, salida y lectura de caché por millón de tokens en el selector de modelos.',
       reactionsTitle: 'Reacciones a mensajes',
       reactionsDesc:
         'Reacciones emoji estilo iMessage — reacciona a los mensajes, y Hermes puede reaccionar a los tuyos.',

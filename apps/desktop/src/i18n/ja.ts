@@ -725,6 +725,8 @@ export const ja = defineLocale({
       textDirection: { auto: '自動', rtl: '右から左', ltr: '左から右' },
       introSplashTitle: 'イントロ表示',
       introSplashDesc: '空のチャットに表示されるワードマークとプロンプト。',
+      modelPricingTitle: 'モデル料金',
+      modelPricingDesc: 'モデル選択で、100万トークンあたりの入力・出力・キャッシュ読み取り料金を表示します。',
       reactionsTitle: 'メッセージリアクション',
       reactionsDesc:
         'iMessage風の絵文字タップバック — メッセージにリアクションでき、Hermesもあなたのメッセージにリアクションします。',

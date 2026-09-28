@@ -11,13 +11,14 @@ vi.mock('@/store/session', async (): Promise<object> => {
 
 import type { QueryClient } from '@tanstack/react-query'
 import { QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { queryClient } from '@/lib/query-client'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { localModelsKey, localModelsOwner } from '@/store/local-runtime-jobs'
+import { setShowModelPricing } from '@/store/model-pricing'
 import {
   $modelVisibilityOpen,
   $visibleModels,
@@ -377,6 +378,36 @@ describe('the per-row options submenu is discoverable', () => {
 })
 
 describe('the catalog renders per-model pricing', () => {
+  beforeEach(() => setShowModelPricing(true))
+  afterEach(() => setShowModelPricing(false))
+
+  it('keeps prices out of the menu until the pricing setting is on', async () => {
+    setShowModelPricing(false)
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['anthropic/claude-sonnet-5', 'nous/hermes-4'],
+          name: 'Nous Portal',
+          slug: 'nous',
+          pricing: {
+            'anthropic/claude-sonnet-5': { input: '$1.60', output: '$8.00', cache: '$0.16', free: false },
+            'nous/hermes-4': { input: 'free', output: 'free', cache: null, free: true }
+          }
+        }
+      ]
+    })
+
+    renderMenu()
+
+    await screen.findByText('Sonnet 5')
+    expect(screen.queryByText('$1.60/$8.00')).toBeNull()
+    expect(screen.queryByText('free')).toBeNull()
+
+    act(() => setShowModelPricing(true))
+    await screen.findByText('$1.60/$8.00')
+    expect(screen.getByText('free')).not.toBeNull()
+  })
+
   it('shows $/Mtok input/output and the sale tag when the provider ships pricing', async () => {
     getGlobalModelOptions.mockResolvedValue({
       providers: [

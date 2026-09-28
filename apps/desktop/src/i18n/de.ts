@@ -1174,6 +1174,8 @@ export const deOverrides = {
       textDirection: { auto: 'Auto', rtl: 'Rechts nach links', ltr: 'Links nach rechts' },
       introSplashTitle: 'Intro-Splash',
       introSplashDesc: 'Das Wortzeichen und der Prompt, die bei einem leeren Chat angezeigt werden.',
+      modelPricingTitle: 'Modellpreise',
+      modelPricingDesc: 'Eingabe-, Ausgabe- und Cache-Lesepreise pro Million Tokens in der Modellauswahl anzeigen.',
       reactionsTitle: 'Nachrichten-Reaktionen',
       reactionsDesc:
         'Emoji-Tapbacks im iMessage-Stil – reagieren Sie auf Nachrichten, und Hermes kann auf Ihre reagieren.',

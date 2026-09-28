@@ -321,6 +321,11 @@ cadence, or run a "cron librarian" job that reconciles the whole table
   job delivers nowhere). A job created by a scheduled agent can never point
   its output at a session that no longer exists. Explicit targets
   (`local`, `all`, `telegram:<chat_id>`) are honored verbatim.
+- **Slack workspace-qualified delivery.** When one gateway connects multiple
+  Slack workspaces, use `slack:<team_id>:<channel_id>[:<thread_ts>]` (for
+  example, `slack:TA0C9NPFB:C0B2YUEV7QE`). The workspace pin is carried through
+  live and standalone delivery and fails closed if that workspace has no
+  configured client/token; Hermes does not fall back to another workspace.
 - **A job may remove itself and still report.** The "watch for X, tell me
   once, then stop" pattern — a recurring job whose run calls
   `cronjob(action="remove", job_id=<its own id>)` and then answers — delivers

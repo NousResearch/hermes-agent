@@ -79,6 +79,11 @@ child with the selected profile's `HERMES_HOME`, so the conversation runs
 with that profile's model, skills, memory, and session history. Switching
 profiles starts a fresh terminal session.
 
+Hub actions (skill install/update/uninstall, MCP install, toolset setup)
+run with the target profile's own secret scope — its `.env` and configured
+secret sources — not the dashboard process's environment; this includes
+actions targeting the `default` profile from the machine dashboard.
+
 What stays per-profile and is *not* absorbed by the switcher: gateway
 processes (manage them via `hermes -p <name> gateway …`), each profile's
 session database, and cron schedulers (the Cron page already aggregates

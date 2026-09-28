@@ -573,8 +573,10 @@ read the requester's private packs or join referenced rooms.
 
 Use `action: "list"`, then pass an item's `selection_id` to `action: "send"`.
 Selections expire after five minutes and are limited to the same conversation,
-requester, room, bot and profile. The tool reads the selected pack again before
-sending and rejects changed or removed images. It sends a native `m.sticker`
+requester, room, bot and profile. `/new` and compression that creates a child
+session invalidate earlier selections; in-place compression preserves them. The
+tool reads the selected pack again after preparing encryption and rejects
+changed or removed images and account references. It sends a native `m.sticker`
 event with the current reply and thread relations. In encrypted rooms, the
 owning Matrix client's crypto encrypts the sticker event. Pack media remains
 public, as specified by MSC2545.

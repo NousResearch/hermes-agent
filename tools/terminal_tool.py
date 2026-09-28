@@ -276,6 +276,24 @@ def clear_session_cwd(session_key: str) -> None:
         _session_cwd.pop(_qualify_task_key(session_key), None)
 
 
+def session_cwd_key(task_id: Optional[str] = None) -> str:
+    """The ONE key a session's cwd record is written, read and cleared under.
+
+    The bound session key when there is one — ``HERMES_SESSION_KEY`` / the approval
+    contextvar, which the gateway, TUI/desktop, WebUI and ACP all bind per turn — else the
+    raw tool-call ``task_id`` (CLI one-shots, cron, RL/benchmark rollouts, delegated
+    children). Empty when neither exists; the record accessors collapse that to
+    ``"default"``.
+
+    Resolving it in one place is the point: a record written under one identifier and
+    looked up (or cleared) under another is how a stale ``cd`` from a previous conversation
+    ended up deciding where a later command ran.
+    """
+    from tools.approval import get_current_session_key
+
+    return get_current_session_key(default="") or task_id or ""
+
+
 def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
     """Cwd to write into a LIVE cached env, or None to leave it untouched.
 
@@ -1111,8 +1129,19 @@ def _plan_execution(
     overrides = resolve_task_overrides(task_id)
     image = _select_image(env_type, overrides, config)
 
+    # The env must be created in the directory the commands will run in: the session's own
+    # record first (the key `_resolve_command_cwd` reads), then a task-scoped record — a
+    # registration (ACP/TUI workspace) or a delegate child seed written under the raw task id
+    # — then the configured cwd. Reading the raw task id alone let the snapshot's cwd and the
+    # command's cwd disagree: on a gateway turn the task id is the rotating session id, while
+    # the session's own `cd` state lives under the stable chat key.
     cwd = coerce_ssh_remote_cwd(
-        overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"], env_type)
+        overrides.get("cwd")
+        or get_session_cwd(session_cwd_key(task_id))
+        or get_session_cwd(task_id)
+        or config["cwd"],
+        env_type,
+    )
     host_cwd = _resolve_task_host_cwd(config, task_id)
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach
@@ -1400,12 +1429,10 @@ def terminal_tool(
         env = _acquire_env(plan, task_id)
         env_type, cwd, effective_task_id = plan.env_type, plan.cwd, plan.effective_task_id
 
-        # Session key for cwd records: the contextvar doesn't cross tool-worker
-        # threads, so fall back to the raw task_id (the top-level agent's
-        # session_key) as a stable anchor.
-        from tools.approval import get_current_session_key
-
-        session_key = get_current_session_key(default="") or (task_id or "")
+        # Session key for cwd records — ONE resolution, shared with the env-creation lookup and
+        # every clear site. The contextvar doesn't cross tool-worker threads, so the raw task_id
+        # (the top-level agent's session_key where no gateway bound one) is the fallback anchor.
+        session_key = session_cwd_key(task_id)
 
         # The supervised-gateway identity probe ends in a kernel process query
         # (psutil create_time) that has wedged for the better part of an hour on

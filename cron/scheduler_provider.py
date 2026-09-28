@@ -418,7 +418,8 @@ class InProcessCronScheduler(CronScheduler):
     ):
         from cron.scheduler import CronTickYielded
         from cron.scheduler import tick as cron_tick
-        from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
+        from cron.jobs import (clear_ticker_error, record_ticker_error,
+                               record_ticker_heartbeat, validate_jobs_store)
         from cron.scheduler_ownership import register_ticked_homes
         from hermes_constants import get_process_hermes_home
 
@@ -445,6 +446,7 @@ class InProcessCronScheduler(CronScheduler):
         # store here must not take the whole ticker thread down (#111010) — the loop's own
         # per-tick handling logs, persists the reason and keeps the thread alive.
         try:
+            validate_jobs_store()
             recovered = self.recover_interrupted()
             if recovered:
                 logger.warning(
@@ -520,7 +522,8 @@ class InProcessCronScheduler(CronScheduler):
         from cron.scheduler_preflight import (
             SharedRouteAdapters, _primary_profile_routes_for_current_home,
         )
-        from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
+        from cron.jobs import (clear_ticker_error, record_ticker_error,
+                               record_ticker_heartbeat, validate_jobs_store)
         from cron.scheduler_ownership import register_ticked_homes
 
         initial_homes = _existing_profile_homes(profile_homes)
@@ -550,6 +553,7 @@ class InProcessCronScheduler(CronScheduler):
             _, home = _profile_entry(entry)
             try:
                 with _profile_cron_scope(home):
+                    validate_jobs_store()
                     recovered = self.recover_interrupted()
                     if recovered:
                         logger.warning(

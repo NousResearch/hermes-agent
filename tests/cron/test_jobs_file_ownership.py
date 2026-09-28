@@ -76,12 +76,12 @@ class TestSaveJobsOwnershipPreservation:
         monkeypatch.setattr(jobs.os, "geteuid", lambda: 0)
         monkeypatch.setattr(jobs.os, "getegid", lambda: 0)
         monkeypatch.setattr(
-            jobs.os, "chown", lambda path, uid, gid: chown_calls.append((str(path), uid, gid))
+            jobs.os, "fchown", lambda fd, uid, gid: chown_calls.append((uid, gid))
         )
 
         jobs.save_jobs([{"id": "seed", "prompt": "updated"}])
 
-        assert chown_calls == [(str(jobs_file), 1000, 1000)], (
+        assert chown_calls and all(call == (1000, 1000) for call in chown_calls), (
             "root rewrite must hand jobs.json back to the previous owner "
             "(uid/gid 1000) instead of leaving it root:600 (#68483)"
         )
@@ -95,11 +95,11 @@ class TestSaveJobsOwnershipPreservation:
         def _fail_chown(*a, **k):
             raise AssertionError("unprivileged save must not call os.chown")
 
-        monkeypatch.setattr(jobs.os, "chown", _fail_chown)
+        monkeypatch.setattr(jobs.os, "fchown", _fail_chown)
         jobs.save_jobs([{"id": "seed", "prompt": "updated"}])  # must not raise
 
-    def test_chown_failure_never_breaks_save(self, cron_store, monkeypatch):
-        """A chown failure is logged, but the save itself must succeed."""
+    def test_chown_failure_preserves_old_store(self, cron_store, monkeypatch):
+        """A failed owner change must stop publication before the old file is replaced."""
         jobs.save_jobs([{"id": "seed", "prompt": "hello"}])
         jobs_file = cron_store / "jobs.json"
 
@@ -126,10 +126,11 @@ class TestSaveJobsOwnershipPreservation:
         monkeypatch.setattr(jobs.os, "stat", fake_stat)
         monkeypatch.setattr(jobs.os, "geteuid", lambda: 0)
         monkeypatch.setattr(jobs.os, "getegid", lambda: 0)
-        monkeypatch.setattr(jobs.os, "chown", _broken_chown)
+        monkeypatch.setattr(jobs.os, "fchown", _broken_chown)
 
-        jobs.save_jobs([{"id": "seed", "prompt": "updated"}])  # must not raise
-        assert jobs.load_jobs()[0]["prompt"] == "updated"
+        with pytest.raises(PermissionError, match="simulated chown failure"):
+            jobs.save_jobs([{"id": "seed", "prompt": "updated"}])
+        assert jobs.load_jobs()[0]["prompt"] == "hello"
 
     def test_save_still_enforces_0600(self, cron_store):
         """The ownership fix must not regress the 0600 hardening."""
@@ -232,4 +233,3 @@ class TestCronStatusSurfacesError:
         cron_cli.cron_status()
         out = capsys.readouterr().out
         assert "Permission denied" in out
-

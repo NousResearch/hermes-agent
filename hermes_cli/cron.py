@@ -909,5 +909,20 @@ def cron_command(args):
     if handler is not None:
         return handler(args)
     print(f"Unknown cron command: {subcmd}\n"
-          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|doctor|tick]")
+          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|doctor|recover|tick]")
     sys.exit(1)
+
+
+def cron_recover_from_good() -> int:
+    """Restore the newest verified snapshot only when the primary is malformed."""
+    from cron.jobs import recover_jobs_from_good_backup
+    try:
+        recover_jobs_from_good_backup()
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(color(f"Cron recovery refused: {exc}", Colors.RED))
+        return 1
+    print(color("Cron store restored from its .good snapshot; inspect the forensic copy.", Colors.GREEN))
+    return 0
+
+
+_CRON_SUBCOMMANDS["recover"] = lambda a: cron_recover_from_good()

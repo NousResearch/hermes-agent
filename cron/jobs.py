@@ -3,6 +3,7 @@
 
 import contextlib
 import copy
+import hashlib
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 import json
@@ -574,29 +575,6 @@ def _secure_file(path: Path):
     """Owner-only (0600) via the shared helper (managed/container skip included)."""
     from hermes_cli.config import _secure_file as _shared_secure_file
     _shared_secure_file(path)
-
-
-def _preserve_file_ownership(path: Path, before: Optional[os.stat_result]) -> None:
-    """Restore a rewritten file's previous owner (POSIX, root writer only): atomic replace makes the
-    file owned by the writer's euid, so a root CLI write (e.g. ``docker exec``) against the
-    unprivileged gateway's store would flip jobs.json to root:root 0600 and lock the ticker out."""
-    if before is None or os.name != "posix":
-        return
-    geteuid = getattr(os, "geteuid", None)
-    getegid = getattr(os, "getegid", None)
-    if geteuid is None or getegid is None:
-        return
-    try:
-        euid = geteuid()
-        if euid != 0 or (before.st_uid, before.st_gid) == (euid, getegid()):
-            return  # unprivileged writer, or already ours before the rewrite
-        os.chown(path, before.st_uid, before.st_gid)
-    except OSError as e:
-        logger.warning(
-            "Could not restore ownership of %s to uid=%s gid=%s after rewrite: %s "
-            "— if the gateway runs as a different user, its cron ticker may now "
-            "be locked out (see issue #68483).",
-            path, before.st_uid, before.st_gid, e)
 
 
 def _is_named_profile_path(path: Path) -> bool:
@@ -1351,8 +1329,15 @@ def load_jobs() -> List[Dict[str, Any]]:
         logger.error("IOError reading jobs.json: %s", e)
         raise RuntimeError(f"Failed to read cron database: {e}") from e
     except Exception as e:
-        logger.error("Failed to auto-repair jobs.json: %s", e)
-        raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
+        if not getattr(_jobs_lock_state, "depth", 0):
+            with _jobs_lock():
+                return load_jobs()
+        forensic = _preserve_corrupt_store(Path(os.path.realpath(jobs_file)))
+        logger.error("Cron database corrupted; forensic copy: %s", forensic)
+        raise RuntimeError(
+            f"Cron database corrupted and unrepairable: {jobs_file}. "
+            f"Forensic copy: {forensic}. Inspect the .good backup before explicit recovery."
+        ) from e
 
     # Accept the canonical dict, or a bare list (auto-repair); any other top-level shape is
     # corruption. Repair details are logged only by the locked pass (an unlocked pass re-runs
@@ -1384,8 +1369,10 @@ def load_jobs() -> List[Dict[str, Any]]:
         jobs = data
         repair = "bare list wrapped as dict"
     else:
+        forensic = _preserve_corrupt_store(Path(os.path.realpath(jobs_file)))
         raise RuntimeError(
-            f"Cron database corrupted: expected {{'jobs': [...]}}, got {type(data).__name__}")
+            f"Cron database corrupted: expected {{'jobs': [...]}}, got {type(data).__name__}. "
+            f"Forensic copy: {forensic}")
     junk = [j for j in jobs if not isinstance(j, dict)]
     if junk:
         # Every reader and the due scan index records as dicts: one junk entry would crash the
@@ -1477,6 +1464,7 @@ def _unmerged_disk_jobs(
         return []
     disk_jobs = _peek_jobs_unlocked()
     if disk_jobs is None:
+        _preserve_corrupt_store(Path(os.path.realpath(_current_cron_store().jobs_file)))
         raise RuntimeError(
             f"Cron database corrupted; refusing to overwrite {_current_cron_store().jobs_file}")
     seen = {str(j["id"]) for j in jobs if isinstance(j, dict) and j.get("id")}
@@ -1515,11 +1503,83 @@ def _unlink_quiet(path: Optional[str]) -> None:
             os.unlink(path)
 
 
-def _stage_jobs_payload(jobs_file: Path, jobs: List[Dict[str, Any]]) -> str:
+def _sync_jobs_directory(path: Path) -> None:
+    """Require a durable cron rename on POSIX; Windows has no directory fsync API."""
+    if os.name == "nt":
+        return
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _write_store_copy(path: Path, payload: bytes, owner: Optional[os.stat_result]) -> None:
+    """Publish a private, fsynced backup or forensic copy beside the real store."""
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".jobs_copy_")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            if owner is not None and os.name == "posix" and os.geteuid() == 0:
+                os.fchown(f.fileno(), owner.st_uid, owner.st_gid)
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+        _sync_jobs_directory(path.parent)
+    except BaseException:
+        _unlink_quiet(tmp_path)
+        raise
+
+
+def _jobs_from_snapshot(raw: bytes) -> List[Dict[str, Any]]:
+    """Accept only a readable jobs collection as a recovery source."""
+    data = json.loads(raw.decode("utf-8-sig"), strict=False)
+    value = data.get("jobs") if isinstance(data, dict) else data
+    if isinstance(value, dict):
+        return [{**job, "id": job.get("id") or key}
+                for key, job in value.items() if isinstance(job, dict)]
+    if not isinstance(value, list):
+        raise ValueError("cron store has no valid jobs list")
+    return [job for job in value if isinstance(job, dict)]
+
+
+def _preserve_corrupt_store(path: Path) -> Path:
+    """Keep the exact malformed bytes once per digest, without printing job contents."""
+    raw = path.read_bytes()
+    forensic = path.with_name(f"{path.name}.corrupt-{hashlib.sha256(raw).hexdigest()[:16]}")
+    if not forensic.exists():
+        _write_store_copy(forensic, raw, path.stat())
+    return forensic
+
+
+def _backup_previous_store(path: Path, *, explicit_recovery: bool) -> None:
+    """Keep the latest known-good predecessor; never promote a malformed store to backup."""
+    if not path.exists():
+        return
+    raw = path.read_bytes()
+    try:
+        _jobs_from_snapshot(raw)
+    except (UnicodeError, ValueError, TypeError) as e:
+        forensic = _preserve_corrupt_store(path)
+        if explicit_recovery:
+            return
+        raise RuntimeError(
+            f"Cron database corrupted; refusing to overwrite {path}. "
+            f"Forensic copy: {forensic}. Inspect the store and its .good backup."
+        ) from e
+    _write_store_copy(path.with_name(path.name + ".good"), raw, path.stat())
+
+
+def _stage_jobs_payload(
+    jobs_file: Path, jobs: List[Dict[str, Any]], owner: Optional[os.stat_result] = None,
+) -> str:
     """Serialize the store payload to a fsynced temp file next to *jobs_file*; return its path."""
     fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix=".tmp", prefix=".jobs_")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
+            # Set owner on the unpublished inode. A failed chown must leave the old store intact.
+            if owner is not None and os.name == "posix" and os.geteuid() == 0:
+                os.fchown(f.fileno(), owner.st_uid, owner.st_gid)
             json.dump(
                 {"jobs": jobs, "updated_at": _hermes_now().isoformat()},
                 f, indent=2, ensure_ascii=False)
@@ -1561,7 +1621,7 @@ def _save_jobs_unlocked(
             # A symlinked store can point to another filesystem. Stage beside the real target,
             # so the only publication step is a same-directory rename.
             real_jobs_file = Path(os.path.realpath(jobs_file))
-            tmp_path = _stage_jobs_payload(real_jobs_file, jobs)
+            tmp_path = _stage_jobs_payload(real_jobs_file, jobs, _stat_before)
             # Verify-after-stage: a sibling landing during serialization forces another merge round.
             if (
                 not replace
@@ -1571,13 +1631,18 @@ def _save_jobs_unlocked(
                 _unlink_quiet(tmp_path)
                 tmp_path = None
                 continue
+            _backup_previous_store(real_jobs_file, explicit_recovery=replace)
             # utils.atomic_replace has copy/in-place fallbacks for other callers. A cron store
             # must fail if rename cannot publish it atomically; leave the old bytes intact.
             os.replace(tmp_path, real_jobs_file)
             tmp_path = None
-            fsync_directory(real_jobs_file.parent)
-            _secure_file(jobs_file)
-            _preserve_file_ownership(jobs_file, _stat_before)
+            _sync_jobs_directory(real_jobs_file.parent)
+            # The newest completed publication is the preferred recovery source. The prior
+            # snapshot remains available if this second copy fails or the process exits here.
+            _write_store_copy(
+                real_jobs_file.with_name(real_jobs_file.name + ".good"),
+                real_jobs_file.read_bytes(), real_jobs_file.stat(),
+            )
             # Invalidate (never refresh) the stamp: a refresh would let a nested save certify disk
             # against an OUTER caller's stale payload. Later saves take the full merge (fail-safe).
             _record_load_stamp(None)
@@ -1585,6 +1650,42 @@ def _save_jobs_unlocked(
     except BaseException:
         _unlink_quiet(tmp_path)
         raise
+
+
+def validate_jobs_store() -> None:
+    """Startup preflight: preserve malformed bytes and stop scheduling from an unknown store."""
+    with _jobs_lock():
+        path = _current_cron_store().jobs_file
+        if not path.exists():
+            return
+        try:
+            _jobs_from_snapshot(path.read_bytes())
+        except (OSError, UnicodeError, ValueError, TypeError) as e:
+            forensic = _preserve_corrupt_store(path)
+            raise RuntimeError(
+                f"Cron database corrupted: {path}. Forensic copy: {forensic}. "
+                "Inspect the store and its .good backup before explicit recovery."
+            ) from e
+
+
+def recover_jobs_from_good_backup() -> None:
+    """Explicit recovery only; preserve malformed primary before restoring its good predecessor."""
+    with _jobs_lock():
+        if not getattr(_jobs_lock_state, "cross_process_held", False):
+            raise RuntimeError("Cannot recover cron jobs: cron jobs lock unavailable")
+        path = Path(os.path.realpath(_current_cron_store().jobs_file))
+        backup = path.with_name(path.name + ".good")
+        if not path.exists() or not backup.exists():
+            raise RuntimeError("Cron recovery requires both the primary store and a .good backup")
+        try:
+            _jobs_from_snapshot(path.read_bytes())
+        except (UnicodeError, ValueError, TypeError):
+            pass
+        else:
+            raise RuntimeError("Cron primary store is readable; refusing to replace it")
+        jobs = _jobs_from_snapshot(backup.read_bytes())
+        _preserve_corrupt_store(path)
+        _save_jobs_unlocked(jobs, replace=True)
 
 
 def save_jobs(

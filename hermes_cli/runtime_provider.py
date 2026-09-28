@@ -1114,6 +1114,35 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
 # ---- END PLUGIN-COMPAT ----
 
 
+def check_primary_billing_bench(*, has_fallback: bool, requested: Optional[str] = None,
+                                target_model: Optional[str] = None,
+                                explicit_api_key: Optional[str] = None,
+                                explicit_base_url: Optional[str] = None) -> None:
+    """Let startup fallback walkers skip a wholly billing-benched Nous pool.
+
+    A valid singleton JWT can outlive its pool's billing bench. Raise the same
+    AuthError the caller already handles, without revoking that JWT or changing
+    the no-fallback and caller-selected credential/endpoint paths.
+    """
+    if not has_fallback or explicit_api_key or explicit_base_url:
+        return
+    if resolve_requested_provider(requested) != "nous":
+        return
+    try:
+        pool = load_pool("nous")
+    except Exception:
+        # Match the normal resolver's pool-read fallback policy.
+        return
+    if pool and pool.has_credentials() and not pool.has_available(model=target_model):
+        entries = pool.entries()
+        if entries and all(entry.last_status == "exhausted" and entry.failure_reason == "billing"
+                           for entry in entries):
+            raise AuthError(
+                "Nous credentials are cooling down after a billing failure.",
+                provider="nous", code="insufficient_credits",
+            )
+
+
 def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested: Optional[str] = None,
                                   target_model: Optional[str] = None, explicit_base_url: Optional[str] = None,
                                   explicit_api_key: Optional[str] = None,
@@ -1129,7 +1158,13 @@ def resolve_runtime_with_fallback(config: Optional[Dict[str, Any]], *, requested
     ``model`` is the model the caller must send.
     """
     from hermes_cli.auth import AuthError, primary_failure_wording
+    from hermes_cli.fallback_config import get_fallback_chain
     try:
+        check_primary_billing_bench(
+            has_fallback=bool(get_fallback_chain(config)), requested=requested,
+            target_model=target_model, explicit_api_key=explicit_api_key,
+            explicit_base_url=explicit_base_url,
+        )
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
     except AuthError as primary_exc:

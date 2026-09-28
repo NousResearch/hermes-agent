@@ -73,7 +73,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
         if st["open_tool"]:
             open_tool = st["open_tool"]
             st["open_tool"] = None
-            if _process_tool_chrome_enabled(csid) or _tool_lifecycle_required_for_ui(str(open_tool.get("name") or "")):
+            if _tool_progress_enabled(csid) or _tool_lifecycle_required_for_ui(str(open_tool.get("name") or "")):
                 _emit("tool.complete", csid, open_tool)
         if event_type == "subagent.tool":
             st["seq"] += 1
@@ -82,7 +82,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
                     "tool_id": f"submirror:{child_key}:{st['seq']}", "args": {}}
             if preview := str(payload.get("tool_preview") or payload.get("text") or ""):
                 tool["preview"] = preview
-            if not _process_tool_chrome_enabled(csid) and not _tool_lifecycle_required_for_ui(tool_name):
+            if not _tool_progress_enabled(csid) and not _tool_lifecycle_required_for_ui(tool_name):
                 return
             st["open_tool"] = tool
             _emit("tool.start", csid, tool)
@@ -153,7 +153,7 @@ def _agent_cbs(sid: str) -> dict:
             sid, tc_id, name, args, result),
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs),
-        "tool_gen_callback": lambda name: _process_tool_chrome_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
+        "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
         "thinking_callback": lambda text: _agent_thinking_update(sid, text),
         # Affection reaction (ily / <3 / good bot) → hearts; core-detected so TUI/desktop share it.
         "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),

@@ -49,6 +49,10 @@ _CHAIN_STEP_SQL = f"""
                     """
 
 
+# Turn-lease rows expired longer than this are swept by the next acquisition of any conversation.
+_TURN_LEASE_SWEEP_GRACE_S = 86400.0
+
+
 def _cooldown_row(exists: bool, cooldown_until, error) -> Dict[str, Any]:
     return {"session_exists": exists,
             "cooldown_until": float(cooldown_until) if cooldown_until is not None else None, "error": error}
@@ -555,6 +559,12 @@ class SessionCompressionMixin:
         now = time.time()
         expires_at = now + max(0.1, float(ttl_seconds))
         def _do(conn):
+            # Sweep rows that expired long ago: a holder that died without releasing leaves its row
+            # behind, and nothing else revisits a conversation nobody resumes. The grace keeps the
+            # recent expiries a still-live owner can renew from a starved refresher; it is also the
+            # longest a suspended holder can go unrefreshed and still keep its lease.
+            conn.execute("DELETE FROM session_turn_leases WHERE expires_at < ?",
+                         (now - _TURN_LEASE_SWEEP_GRACE_S,))
             conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             return _claim_lease_row(
                 conn, "session_turn_leases", "conversation_id", conversation_id, holder, now, expires_at,

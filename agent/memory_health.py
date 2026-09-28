@@ -30,6 +30,16 @@ PROBE_COOLDOWN_S = 30.0
 # indicator is wiped and, active_provider being empty, never probed again).
 BACKGROUND_AGENT_PLATFORMS = frozenset({"cron", "subagent", "curator"})
 
+# Positive identification of the owner (frozen §8: the singleton represents the
+# foreground CLI main agent's user-visible memory state).  Ownership is
+# fail-closed: a surface that is not the CLI foreground never writes, even
+# though it is not "background" either — gateway ``api_server`` spawns an
+# independent agent per session in ONE process, and default-allow let those
+# agents overwrite each other's (and the foreground's) state.  The classic CLI
+# REPL (``platform="cli"``) is currently the only reader of this singleton
+# (cli_status_bar_mixin), so the allowlist loses nothing user-visible.
+FOREGROUND_HEALTH_PLATFORMS = frozenset({"cli"})
+
 
 def is_background_agent(agent, platform: str = "") -> bool:
     """True when ``agent`` is not the foreground user-facing agent.
@@ -43,6 +53,20 @@ def is_background_agent(agent, platform: str = "") -> bool:
         bool(getattr(agent, "_parent_session_id", None))
         or bool(getattr(agent, "side_agent", False))
         or (platform or "") in BACKGROUND_AGENT_PLATFORMS
+    )
+
+
+def is_foreground_health_owner(agent, platform: str = "") -> bool:
+    """True when ``agent`` owns the process-wide ``MemoryHealthState``.
+
+    Positive identification, never a "not background" default: the agent's
+    platform must name the CLI foreground surface AND the agent must carry no
+    child/side-agent markers.  Unknown surfaces (api_server, acp, gateway,
+    batch, diagnostic agents, a bare ``AIAgent()`` with no platform) fail
+    closed — they may read the singleton but must not write it.
+    """
+    return (platform or "") in FOREGROUND_HEALTH_PLATFORMS and not is_background_agent(
+        agent, platform
     )
 
 

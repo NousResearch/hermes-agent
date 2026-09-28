@@ -202,6 +202,7 @@ class CLITuiRuntimeMixin:
                     if prov is not None:
                         probe_fn = getattr(prov, "probe_health", None)
                         if callable(probe_fn):
+                            _health_before = hs.health
                             try:
                                 result = probe_fn()
                                 if result is True:
@@ -213,6 +214,10 @@ class CLITuiRuntimeMixin:
                             except Exception:
                                 hs.record_probe_failure()
                                 hs.mark_unavailable(f"{hs.active_provider} probe failed")
+                            # The status bar only repaints on the next UI event;
+                            # a state change must be visible without a keypress.
+                            if hs.health != _health_before:
+                                self._app.invalidate()
 
         with suppress(Exception):
             self._drain_process_notifications("cli-post-turn")

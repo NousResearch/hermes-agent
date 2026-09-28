@@ -1344,11 +1344,21 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
 
     # External memory provider plugin (one at a time, alongside built-in): memory.provider.
     agent._memory_manager = None
+    # Ownership of the process-wide health singleton is decided BEFORE any
+    # provider work: MemoryManager's failure hooks fire during initialize_all()
+    # as well, and a non-owner's manager must never reach the singleton — not
+    # even for an initialize() failure on a same-name provider (frozen §8).
+    # Unknown surfaces fail closed; see is_foreground_health_owner.
+    _owns_health_state = False
+    with suppress(Exception):
+        from agent.memory_health import is_foreground_health_owner
+        _owns_health_state = is_foreground_health_owner(agent, platform)
     if memory_manager is not None and not skip_memory:
         # A caller that rebuilds the agent per turn (gateway api_server) hands back the session's
         # already-initialized manager: providers keep their prefetch/retain state across turns instead
         # of being re-initialized (#120116). No initialize_all — the providers are already bound.
         agent._memory_manager = memory_manager
+        agent._memory_manager.health_write_allowed = _owns_health_state
     elif not skip_memory:
         try:
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
@@ -1356,6 +1366,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                 from agent.memory_manager import MemoryManager as _MemoryManager
                 from plugins.memory import load_memory_provider as _load_mem
                 agent._memory_manager = _MemoryManager()
+                agent._memory_manager.health_write_allowed = _owns_health_state
                 _mp = _load_mem(_mem_provider_name)
                 if _mp is None:
                     # The provider left core for the catalog (or was never installed): fetch it once.
@@ -1391,7 +1402,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     # Only the foreground agent owns the health state; background agents must
     # not overwrite it (frozen design §8).
     try:
-        from agent.memory_health import get_health_state, is_background_agent
+        from agent.memory_health import get_health_state
         hs = get_health_state()
 
         # Read the configured provider name from config (independent of the
@@ -1409,15 +1420,17 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
             if external:
                 _loaded_external = external[0].name
 
-        _owns_health_state = not is_background_agent(agent, platform)
-        # Ownership gate for the MemoryManager's failure hooks: they write the
-        # same process-wide singleton, so only the foreground agent's manager
-        # may.  The manager itself stays provider-agnostic — no platform
-        # knowledge lives there.
-        if agent._memory_manager is not None:
-            agent._memory_manager.health_write_allowed = _owns_health_state
-
-        if _loaded_external and _owns_health_state:
+        # ``health_write_allowed`` was already set when the manager was bound
+        # (above) — the gate must exist before initialize_all(), whose failures
+        # route through the same hooks.  The manager itself stays
+        # provider-agnostic — no platform knowledge lives there.
+        if skip_memory:
+            # Memory was explicitly skipped this run — that is not a provider
+            # failure.  Show nothing instead of a false "Unavailable".
+            if _owns_health_state:
+                hs.set_active_provider("")
+                hs.configured_provider = ""
+        elif _loaded_external and _owns_health_state:
             # This agent loaded an external provider — update the singleton.
             hs.configured_provider = _cfg_prov
             hs.set_active_provider(_loaded_external)

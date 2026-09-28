@@ -29,6 +29,37 @@ class _FakeProvider(MemoryProvider):
         return []
 
 
+class _InitFailingProvider(_FakeProvider):
+    """Provider whose ``initialize()`` raises — exercises the init-failure hook."""
+
+    def __init__(self, name: str = "hindsight"):
+        super().__init__(name)
+        self.initialize_called = False
+
+    def initialize(self, session_id: str, **kwargs) -> None:
+        self.initialize_called = True
+        raise RuntimeError("backend handshake failed")
+
+
+class _ToolCallProvider(_FakeProvider):
+    """Provider exposing one memory tool whose calls raise (or succeed)."""
+
+    def __init__(self, name: str = "hindsight", *, fail: bool = True):
+        super().__init__(name)
+        self._fail = fail
+        self.calls = 0
+
+    def get_tool_schemas(self):
+        return [{"name": f"{self.name}_tool", "description": "t",
+                 "parameters": {"type": "object", "properties": {}}}]
+
+    def handle_tool_call(self, tool_name: str, args, **kwargs) -> str:
+        self.calls += 1
+        if self._fail:
+            raise RuntimeError("backend down")
+        return "ok"
+
+
 @pytest.fixture(autouse=True)
 def _clean_state():
     """Reset the singleton before each test."""
@@ -288,6 +319,70 @@ class TestMemoryManagerHealthWrites:
             prov.release.set()
         assert hs.health == "healthy"
 
+    def test_handle_tool_call_failure_marks_unavailable(self):
+        """Explicit memory tool calls are memory operations too (review: a
+        provider must not stay 'healthy' while every tool call fails)."""
+        hs = get_health_state()
+        hs.active_provider = "hindsight"
+        hs.mark_healthy()
+        mm = MemoryManager()
+        mm.add_provider(_ToolCallProvider("hindsight"))
+        out = mm.handle_tool_call("hindsight_tool", {})
+        assert "failed" in out
+        assert hs.health == "unavailable"
+        assert hs.probe_cooldown_active() is False  # op failure ≠ probe failure
+
+    def test_handle_tool_call_failure_ignored_for_background_manager(self):
+        """Frozen §8: the tool-call path respects the ownership gate too."""
+        hs = get_health_state()
+        hs.active_provider = "hindsight"
+        hs.mark_healthy()
+        mm = MemoryManager()
+        mm.health_write_allowed = False  # background agent
+        mm.add_provider(_ToolCallProvider("hindsight"))
+        mm.handle_tool_call("hindsight_tool", {})
+        assert hs.health == "healthy"
+
+    def test_handle_tool_call_success_does_not_auto_recover(self):
+        """§4: only probe_health() may restore healthy."""
+        hs = get_health_state()
+        hs.active_provider = "hindsight"
+        hs.mark_unavailable("down")
+        mm = MemoryManager()
+        mm.add_provider(_ToolCallProvider("hindsight", fail=False))
+        assert mm.handle_tool_call("hindsight_tool", {}) == "ok"
+        assert hs.health == "unavailable"
+
+
+# ---------------------------------------------------------------------------
+# foreground ownership — positive identification, fail closed
+# ---------------------------------------------------------------------------
+
+
+class TestForegroundHealthOwnership:
+    """Review: ownership is positive identification — unknown surfaces
+    (api_server, acp, gateway, batch, diagnostic agents) fail closed."""
+
+    def test_only_cli_foreground_owns(self):
+        from agent.memory_health import is_foreground_health_owner
+        agent = MagicMock()
+        agent.side_agent = False
+        agent._parent_session_id = None
+        assert is_foreground_health_owner(agent, "cli") is True
+        assert is_foreground_health_owner(agent, "api_server") is False
+        assert is_foreground_health_owner(agent, "acp") is False
+        assert is_foreground_health_owner(agent, "") is False
+
+    def test_structural_background_markers_veto(self):
+        from agent.memory_health import is_foreground_health_owner
+        agent = MagicMock()
+        agent.side_agent = True
+        agent._parent_session_id = None
+        assert is_foreground_health_owner(agent, "cli") is False
+        agent.side_agent = False
+        agent._parent_session_id = "parent-1"
+        assert is_foreground_health_owner(agent, "cli") is False
+
 
 # ---------------------------------------------------------------------------
 # _init_memory: foreground/background ownership of the singleton
@@ -396,6 +491,159 @@ class TestInitMemoryOwnership:
         assert hs.health == "healthy"
         # P2: the background agent's manager may not write the singleton either.
         assert memory_manager.health_write_allowed is False
+
+    def test_api_server_agent_does_not_overwrite_state(self):
+        """Review: gateway ``api_server`` spawns an independent agent per
+        session in ONE process — ownership must fail closed for non-CLI
+        surfaces, or those agents overwrite the foreground's (and each
+        other's) singleton."""
+        from unittest.mock import patch as _patch
+
+        hs = get_health_state()
+        hs.configured_provider = "hindsight"
+        hs.active_provider = "hindsight"
+        hs.mark_healthy()
+
+        mock_agent = MagicMock()
+        mock_agent._memory_enabled = False
+        mock_agent._user_profile_enabled = False
+        mock_agent.enabled_toolsets = []
+        mock_agent.disabled_toolsets = []
+        mock_agent._session_db = None
+        mock_agent.session_cwd = None
+        mock_agent.session_id = "api-session"
+        mock_agent.side_agent = False
+        mock_agent._parent_session_id = None
+
+        with _patch("tools.memory_tool.get_builtin_memory_config", return_value={}):
+            from agent.agent_init import _init_memory
+
+            _init_memory(
+                mock_agent,
+                {"memory": {}},
+                skip_memory=False,
+                platform="api_server",
+            )
+
+        assert hs.configured_provider == "hindsight"
+        assert hs.active_provider == "hindsight"
+        assert hs.health == "healthy"
+
+    def test_background_init_failure_cannot_mark_before_gate(self):
+        """Regression (review): the ownership gate must exist BEFORE
+        ``initialize_all()`` — init failures route through the same failure
+        hooks, and a background agent re-initializing the same provider name
+        would otherwise flip the foreground's singleton."""
+        from unittest.mock import patch as _patch
+
+        hs = get_health_state()
+        hs.configured_provider = "hindsight"
+        hs.active_provider = "hindsight"
+        hs.mark_healthy()
+
+        mock_agent = MagicMock()
+        mock_agent._memory_enabled = False
+        mock_agent._user_profile_enabled = False
+        mock_agent.enabled_toolsets = []
+        mock_agent.disabled_toolsets = []
+        mock_agent._session_db = None
+        mock_agent.session_cwd = None
+        mock_agent.session_id = "bg-session"
+        mock_agent.side_agent = False
+        mock_agent._parent_session_id = None
+
+        prov = _InitFailingProvider("hindsight")
+        with (
+            _patch("tools.memory_tool.get_builtin_memory_config",
+                   return_value={"provider": "hindsight"}),
+            _patch("plugins.memory.load_memory_provider", return_value=prov),
+        ):
+            from agent.agent_init import _init_memory
+
+            _init_memory(
+                mock_agent,
+                {"memory": {}},
+                skip_memory=False,
+                platform="curator",
+            )
+
+        assert prov.initialize_called is True  # the failure path really ran
+        assert hs.health == "healthy"
+        assert hs.active_provider == "hindsight"
+
+    def test_foreground_init_failure_marks_unavailable(self):
+        """§7 for the OWNER: an ``initialize()`` failure surfaces as
+        ``unavailable`` on the indicator (recovery only via probe_health())."""
+        from unittest.mock import patch as _patch
+
+        hs = get_health_state()
+        hs.configured_provider = "hindsight"
+        hs.active_provider = "hindsight"
+        hs.mark_healthy()
+
+        mock_agent = MagicMock()
+        mock_agent._memory_enabled = False
+        mock_agent._user_profile_enabled = False
+        mock_agent.enabled_toolsets = []
+        mock_agent.disabled_toolsets = []
+        mock_agent._session_db = None
+        mock_agent.session_cwd = None
+        mock_agent.session_id = "fg-session"
+        mock_agent.side_agent = False
+        mock_agent._parent_session_id = None
+
+        prov = _InitFailingProvider("hindsight")
+        with (
+            _patch("tools.memory_tool.get_builtin_memory_config",
+                   return_value={"provider": "hindsight"}),
+            _patch("plugins.memory.load_memory_provider", return_value=prov),
+        ):
+            from agent.agent_init import _init_memory
+
+            _init_memory(
+                mock_agent,
+                {"memory": {}},
+                skip_memory=False,
+                platform="cli",
+            )
+
+        assert prov.initialize_called is True
+        assert hs.health == "unavailable"
+
+    def test_explicitly_skipped_memory_is_not_reported_unavailable(self):
+        """``skip_memory=True`` is an intentional off, not a provider failure
+        (review: avoid reporting explicitly skipped memory as unavailable) —
+        the indicator must show nothing instead of a false "Unavailable"."""
+        from unittest.mock import patch as _patch
+
+        hs = get_health_state()
+        hs.configured_provider = "hindsight"
+
+        mock_agent = MagicMock()
+        mock_agent._memory_enabled = False
+        mock_agent._user_profile_enabled = False
+        mock_agent.enabled_toolsets = []
+        mock_agent.disabled_toolsets = []
+        mock_agent._session_db = None
+        mock_agent.session_cwd = None
+        mock_agent.session_id = "test-session"
+        mock_agent.side_agent = False
+        mock_agent._parent_session_id = None
+
+        with _patch("tools.memory_tool.get_builtin_memory_config",
+                    return_value={"provider": "hindsight"}):
+            from agent.agent_init import _init_memory
+
+            _init_memory(
+                mock_agent,
+                {"memory": {}},
+                skip_memory=True,
+                platform="cli",
+            )
+
+        assert hs.configured_provider == ""
+        assert hs.active_provider == ""
+        assert hs.health == "unknown"
 
     def test_foreground_agent_without_external_provider_clears_stale_state(self):
         """A foreground agent without an external provider must clear stale

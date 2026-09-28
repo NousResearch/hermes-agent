@@ -370,6 +370,27 @@ class MemoryManager:
             "status": "not_started", "abandoned_writes": 0, "abandoned_prefetches": 0, "active_tasks": 0,
         }
 
+    def _record_provider_failure(self, provider: MemoryProvider, reason: str) -> None:
+        """Mark ``provider`` unavailable in the foreground health singleton.
+
+        Frozen §11 semantics: an ordinary operation failure marks
+        ``unavailable`` but never arms the probe cooldown (no
+        ``record_probe_failure`` — that belongs to probe_health() alone).
+        Gated by ``health_write_allowed`` (background agents' managers never
+        write the foreground's state) and only the ACTIVE external provider
+        affects the indicator.  Health bookkeeping must never break the memory
+        operation itself.
+        """
+        if not self.health_write_allowed or provider.name == "builtin":
+            return
+        try:
+            from agent.memory_health import get_health_state
+            hs = get_health_state()
+            if provider.name == hs.active_provider:
+                hs.mark_unavailable(reason)
+        except Exception:
+            pass
+
     def _each_provider(self, label: str, call: Callable[[MemoryProvider], Any], *, level: int = logging.DEBUG,
                        providers: Optional[List[MemoryProvider]] = None, exc_info: bool = False) -> List[Any]:
         """Call ``call(provider)`` per provider, logging+swallowing failures; returns successes in order.
@@ -383,16 +404,8 @@ class MemoryManager:
                 # Mark the external provider unhealthy so the CLI status bar
                 # reflects the failure immediately.  A successful call does NOT
                 # mark healthy (providers may swallow failures internally);
-                # recovery is decided solely by probe_health().  Background
-                # agents' managers never write the foreground's health state.
-                if self.health_write_allowed and provider.name != "builtin":
-                    try:
-                        from agent.memory_health import get_health_state
-                        hs = get_health_state()
-                        if provider.name == hs.active_provider:
-                            hs.mark_unavailable(f"{provider.name} {label}: {e}")
-                    except Exception:
-                        pass
+                # recovery is decided solely by probe_health().
+                self._record_provider_failure(provider, f"{provider.name} {label}: {e}")
         return results
 
     def add_provider(self, provider: MemoryProvider) -> None:
@@ -503,15 +516,7 @@ class MemoryManager:
                 "the stuck call returns", provider.name, self._external_prefetch_timeout,
             )
             # Mark unhealthy on timeout — the provider is unresponsive.
-            # Background agents' managers never write the foreground's state.
-            if self.health_write_allowed:
-                try:
-                    from agent.memory_health import get_health_state
-                    hs = get_health_state()
-                    if provider.name == hs.active_provider:
-                        hs.mark_unavailable(f"{provider.name} prefetch timed out")
-                except Exception:
-                    pass
+            self._record_provider_failure(provider, f"{provider.name} prefetch timed out")
             return ""
 
         with self._external_prefetch_lock:
@@ -678,6 +683,10 @@ class MemoryManager:
             return provider.handle_tool_call(tool_name, args, **kwargs)
         except Exception as e:
             logger.error("Memory provider '%s' handle_tool_call(%s) failed: %s", provider.name, tool_name, e)
+            # Explicit memory tool calls are memory operations too: the same
+            # gated failure reporting as _each_provider(), or the provider can
+            # stay "healthy" while every tool call fails.
+            self._record_provider_failure(provider, f"{provider.name} {tool_name} failed: {e}")
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:

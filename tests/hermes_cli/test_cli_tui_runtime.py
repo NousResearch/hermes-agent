@@ -205,6 +205,48 @@ class TestTuiAfterTurnMemoryHealth:
         assert hs.reason == ""
 
 
+class TestAfterTurnUiRefresh:
+    """Review: the status bar repaints only on UI events — a probe state
+    change must invalidate immediately, without a keypress."""
+
+    def test_state_change_refreshes_status_ui(self):
+        hs = get_health_state()
+        hs.active_provider = "test_provider"
+        hs.mark_healthy()
+
+        provider = SimpleNamespace(
+            name="test_provider",
+            probe_health=Mock(return_value=False),
+        )
+        cli = _make_cli_for_after_turn(provider)
+
+        HermesCLI._tui_after_turn(cli)
+
+        assert hs.health == "unavailable"
+        # >= 2: the pre-existing turn-level refresh (before the probe) plus
+        # the state-change refresh (after it) — the bar must repaint after
+        # the probe updates state, not only before.
+        assert cli._app.invalidate.call_count >= 2
+
+    def test_no_state_change_does_not_refresh(self):
+        hs = get_health_state()
+        hs.active_provider = "test_provider"
+        hs.mark_healthy()
+
+        provider = SimpleNamespace(
+            name="test_provider",
+            probe_health=Mock(return_value=True),
+        )
+        cli = _make_cli_for_after_turn(provider)
+
+        HermesCLI._tui_after_turn(cli)
+
+        assert hs.health == "healthy"
+        # Exactly 1: only the pre-existing turn-level refresh — no extra
+        # repaint when the probe leaves health unchanged.
+        assert cli._app.invalidate.call_count == 1
+
+
 class TestTuiStartupPrewarmMemoryHealth:
     """Startup prewarm writes configured_provider only — sentinel-filtered, no probe."""
 

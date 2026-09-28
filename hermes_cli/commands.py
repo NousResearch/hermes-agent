@@ -484,7 +484,7 @@ def gateway_help_lines(allowed: Optional[Iterable[str]] = None) -> list[str]:
         alias_parts = [f"`/{a}`" for a in cmd.aliases
                        if not (a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name)]
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        lines.append(f"- `/{cmd.name}{args}` -- {cmd.description}{alias_note}")
     return lines
 
 

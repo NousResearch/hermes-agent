@@ -114,7 +114,7 @@ def _exec_help(ctx: CommandContext) -> CommandReply:
         if skill_cmds:
             lines.append(t("gateway.help.skill_header", count=len(skill_cmds)))
             sorted_cmds = sorted(skill_cmds)  # first 10, then point to /commands for the rest
-            lines.extend(f"`{cmd}` — {skill_cmds[cmd]['description']}"
+            lines.extend(f"- `{cmd}` — {skill_cmds[cmd]['description']}"
                          for cmd in sorted_cmds[:10])
             if len(sorted_cmds) > 10:
                 lines.append(t("gateway.help.more_use_commands", count=len(sorted_cmds) - 10))
@@ -143,7 +143,7 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
             entries.extend(["", t("gateway.commands.skill_header")])
             for cmd in sorted(skill_cmds):
                 desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
-                entries.append(f"`{cmd}` — {desc}")
+                entries.append(f"- `{cmd}` — {desc}")
         # Skills kept off the menu because a built-in owns the name (agent.skill_commands guard).
         from agent.skill_commands import skill_command_collision_note
         from tools.skills_tool import _find_all_skills

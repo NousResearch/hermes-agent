@@ -10,6 +10,7 @@ fingerprint from issue #90837's field reports).
 
 import os
 import sqlite3
+import subprocess
 import sys
 
 import pytest
@@ -104,6 +105,44 @@ def test_update_autorestore_refuses_under_own_live_connection(
     assert "Auto-restore refused" in out
     assert wal.exists() and wal.stat().st_ino == wal_ino
     assert _own_deleted_fds(str(dst.name)) == []
+
+
+_FOREIGN_HOLDER = (
+    "import sqlite3, sys, time\n"
+    "conn = sqlite3.connect(sys.argv[1])\n"
+    "conn.execute('SELECT count(*) FROM t').fetchone()\n"
+    "sys.stdout.write('held\\n')\n"
+    "sys.stdout.flush()\n"
+    "time.sleep(300)\n"
+)
+
+
+@pytest.mark.platforms("posix")
+def test_update_autorestore_refuses_under_foreign_live_connection(tmp_path, capsys):
+    """#127010: on macOS the Linux-only /proc scan returned None and the guard
+    copied the snapshot over a database another process still held."""
+    dst = tmp_path / "state.db"
+    src = tmp_path / "snap.db"
+    _make_db(src, "snapshot-good")
+    _make_db(dst, "live-newer")
+
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _FOREIGN_HOLDER, str(dst)],
+        stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
+    )
+    stdout = holder.stdout
+    assert stdout is not None
+    try:
+        assert stdout.readline().strip() == "held"
+
+        assert update_cmd._restore_state_db_from_snapshot(dst, src) is False
+    finally:
+        holder.terminate()  # by PID: the process this test spawned
+        holder.wait(timeout=10)
+        stdout.close()
+
+    assert "Auto-restore refused" in capsys.readouterr().out
+    assert _read_marker(dst) == "live-newer"
 
 
 def test_safe_restore_fallback_still_works_without_holder(tmp_path):

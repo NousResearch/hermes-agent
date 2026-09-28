@@ -34,6 +34,21 @@ def test_cute_tool_message_falls_back_when_renderer_raises(monkeypatch):
     assert isinstance(result, str) and result
 
 
+def test_cute_process_manage_survives_null_session_id():
+    """A tool call may carry an explicit `"session_id": null`; the preview must
+    render its own label instead of falling back to the generic one."""
+    result = get_cute_tool_message("process_manage", {"action": "poll", "session_id": None}, 0.25)
+    assert "proc" in result
+    assert "poll" in result
+    assert "completed" not in result
+
+
+def test_cute_process_manage_truncates_session_id():
+    result = get_cute_tool_message("process_manage", {"action": "poll", "session_id": "abcdefghij0123456789"}, 0.25)
+    assert "abcdefghij01" in result
+    assert "23456789" not in result
+
+
 class TestBuildToolPreview:
     """Tests for build_tool_preview defensive handling and normal operation."""
 

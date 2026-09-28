@@ -435,6 +435,32 @@ class TestRunDebugShareRedaction:
         assert any("backup-model" in text for text in uploads)  # the dump really ran
         assert not [text for text in uploads if fallback_key in text]
 
+    @pytest.mark.parametrize("base_url", [
+        "https://user:{s}@backup.example/v1",
+        "https://backup.example/v1?key={s}",
+        "https://backup.example/v1?X-Amz-Signature={s}",
+        "https://backup.example/v1#access_token={s}&view=public",
+    ])
+    def test_fallback_base_url_credential_never_reaches_upload_bound_content(self, hermes_home_with_secret, base_url):
+        """A fallback ``base_url`` can carry its credential in the URL (userinfo, query, fragment). The
+        dump is config made to be pasted, so ``hermes dump`` itself and every upload of it get strict
+        URL-credential redaction, not the log policy."""
+        from hermes_cli.debug import _capture_dump, collect_debug_report, collect_share_bundle
+
+        secret = "urlCredOpaque0123456789abcdef"
+        (hermes_home_with_secret / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: backup-model\n"
+            f"    base_url: '{base_url.format(s=secret)}'\n", encoding="utf-8")
+
+        texts = [_capture_dump(redact=False),  # `hermes dump` stdout, as printed
+                 *collect_share_bundle(log_lines=20).values(),
+                 collect_debug_report(log_lines=20, dump_text=_capture_dump())]
+
+        assert all("backup-model" in text and "backup.example" in text for text in texts[:2])
+        assert not [text for text in texts if secret in text]
+
     def test_default_share_includes_redaction_banner(
         self, hermes_home_with_secret, capsys
     ):

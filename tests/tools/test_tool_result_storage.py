@@ -211,6 +211,16 @@ class TestBuildPersistedMessage:
         assert "first 100 chars..." in msg
         assert "..." in msg  # has_more indicator
 
+    def test_message_conditions_the_do_not_rerequest_promise(self):
+        """#126351: the pointer must not promise the file forever — spill files are
+        pruned after the session retention window, and the notice says what to do."""
+        msg = _build_persisted_message(
+            preview="preview", has_more=True, original_size=50_000,
+            file_path="/tmp/hermes-results/test123.txt")
+        assert "retention" in msg
+        assert "pruned" in msg
+        assert "re-run the original tool" in msg
+
 # ── maybe_persist_tool_result ─────────────────────────────────────────
 
 class TestMaybePersistToolResult:
@@ -490,14 +500,62 @@ class TestSpillover:
         assert not old.exists()
         assert new.exists()
 
+    def test_cleanup_default_age_is_session_retention_not_24h(self, monkeypatch):
+        """#126351: a 48h-old spill must survive the DEFAULT cleanup — the durable
+        transcript points at it, so files live for the session retention window."""
+        import os
+        import time as _time
+
+        import tools.tool_result_storage as trs
+        spill_dir = get_spillover_dir()
+        spill_dir.mkdir(parents=True, exist_ok=True)
+        old = spill_dir / "old.txt"
+        old.write_text("old", encoding="utf-8")
+        stale = _time.time() - (48 * 3600)
+        os.utime(old, (stale, stale))
+
+        monkeypatch.setattr(trs, "_spillover_retention_hours", lambda: 90 * 24)
+        removed = cleanup_spillover_cache()
+
+        assert removed == 0
+        assert old.exists()
+
+    def test_retention_hours_reads_session_retention_days(self, monkeypatch):
+        import hermes_cli.config
+        import tools.tool_result_storage as trs
+
+        monkeypatch.setattr(
+            hermes_cli.config, "load_config_readonly",
+            lambda: {"sessions": {"retention_days": 7}})
+        assert trs._spillover_retention_hours() == 7 * 24
+
+    def test_retention_hours_defaults_and_falls_back(self, monkeypatch):
+        import hermes_cli.config
+        import tools.tool_result_storage as trs
+
+        monkeypatch.setattr(hermes_cli.config, "load_config_readonly", lambda: {})
+        assert trs._spillover_retention_hours() == 90 * 24
+
+        def _boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(hermes_cli.config, "load_config_readonly", _boom)
+        assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
+
+        monkeypatch.setattr(
+            hermes_cli.config, "load_config_readonly",
+            lambda: {"sessions": {"retention_days": -5}})
+        assert trs._spillover_retention_hours() == trs.SPILLOVER_MAX_AGE_HOURS
+
     def test_cleanup_missing_dir_returns_zero(self):
         assert cleanup_spillover_cache() == 0
 
-    def test_first_spill_prunes_expired_files(self):
+    def test_first_spill_prunes_expired_files(self, monkeypatch):
         """The once-per-process prune fires on the first host-side spill."""
         import os
         import time as _time
 
+        import tools.tool_result_storage as trs
         spill_dir = get_spillover_dir()
         spill_dir.mkdir(parents=True, exist_ok=True)
         old = spill_dir / "ancient.txt"
@@ -505,6 +563,9 @@ class TestSpillover:
         stale = _time.time() - (48 * 3600)
         os.utime(old, (stale, stale))
 
+        # The prune default is the session retention window (>= 24h), so pin a
+        # one-day retention to prove the sweep actually fires on a 48h-old file.
+        monkeypatch.setattr(trs, "_spillover_retention_hours", lambda: 24)
         maybe_persist_tool_result(
             content="v" * 60_000,
             tool_name="tool_call",

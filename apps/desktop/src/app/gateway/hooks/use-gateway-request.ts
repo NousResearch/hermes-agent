@@ -47,12 +47,19 @@ export function useGatewayRequest() {
   )
 
   const ensureGatewayOpen = useCallback(async () => {
+    // The ref is populated by the subscription effect after first render; the
+    // registry is the source of truth when it has not caught up yet.
     const existing = gatewayRef.current ?? activeGateway()
 
     if (!existing) {
       return null
     }
 
+    // gatewayStateRef mirrors $gatewayState through a render + effect, so it
+    // still reads 'open' for a beat after a socket drop rejected the caller's
+    // in-flight request. Trusting it alone skipped the reconnect and re-sent
+    // on the dead socket ("Hermes gateway is not connected", #121680). Ask the
+    // socket itself.
     if (gatewayStateRef.current === 'open' && existing.connectionState === 'open') {
       return existing
     }

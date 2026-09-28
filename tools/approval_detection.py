@@ -421,8 +421,10 @@ _PS_EXE_AT_COMMAND_POSITION = (
 )
 
 # Git global options between `git` and the subcommand (`git -C <dir> reset --hard`). Value-taking
-# options consume their separate value word; any other option is a single dash token.
-_GIT_GLOBAL_OPTS = r'(?:\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env)\s+[^\s;|&]+|-[^\s;|&]+))*'
+# options consume their separate value word; any other option is a single dash token. A word may
+# contain quoted runs (`-C "/a b"`, `--git-dir='/a b/.git'`), which the shell passes as one argument.
+_GIT_WORD = r'''(?:"[^"]*"|'[^']*'|[^\s;|&"'])+'''
+_GIT_GLOBAL_OPTS = rf'(?:\s+(?:(?:-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--super-prefix|--config-env)\s+{_GIT_WORD}|-{_GIT_WORD}))*'
 
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),

@@ -83,6 +83,11 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 
 logger = logging.getLogger(__name__)
 
+# Same window as quarantine_cross_process_lock's default timeout: a loser that
+# missed the lock waits at most this long for the winner's fresh database
+# (normally milliseconds) before naming the contention (#126773).
+_QUARANTINE_CONTENTION_WAIT_S = 5.0
+
 _MAX_SAFE_MESSAGES = 20_000  # resume/export guard default
 
 
@@ -698,7 +703,7 @@ class SessionDB(
                             "quarantining ourselves",
                             self.db_path,
                         )
-                        wait_deadline = time.monotonic() + 5.0  # same window as the lock
+                        wait_deadline = time.monotonic() + _QUARANTINE_CONTENTION_WAIT_S
                         while time.monotonic() < wait_deadline:
                             if self.db_path.exists() and not has_invalid_sqlite_header_preopen(self.db_path):
                                 break

@@ -336,3 +336,187 @@ def test_live_connection_0_byte_not_quarantined_in_process(tmp_path, monkeypatch
         conn.commit()
     finally:
         conn.close()
+
+
+def _fast_lock_windows(monkeypatch):
+    """Patch both lock namespaces to short timeouts + count acquisitions.
+
+    Production code reads quarantine_cross_process_lock from two module
+    globals (hermes_state re-imports it alongside hermes_state_dbfile's own
+    uses), so both bindings must be patched for the counts to be complete.
+    Returns (calls, orig) where calls records per-namespace lock attempts.
+    """
+    import hermes_state as hs
+    import hermes_state_dbfile as dbfile
+
+    calls = {"hs": 0, "dbfile": 0}
+
+    def _wrap(module_ns, key):
+        orig = getattr(module_ns, key)
+
+        def _patched(path, timeout=0.3):
+            calls["hs" if module_ns is hs else "dbfile"] += 1
+            return orig(path, timeout=timeout)
+
+        monkeypatch.setattr(module_ns, key, _patched)
+
+    _wrap(hs, "quarantine_cross_process_lock")
+    _wrap(dbfile, "quarantine_cross_process_lock")
+    # raising=False: on unfixed base code the constant does not exist yet,
+    # so the red-run failure must come from behavior assertions, not setup.
+    monkeypatch.setattr(hs, "_QUARANTINE_CONTENTION_WAIT_S", 0.3, raising=False)
+    return calls
+
+
+def _hold_quarantine_lock(db, hold_started, release, hold_s=0.45):
+    """Background holder: takes the quarantine lock for hold_s seconds."""
+    import os
+    import time as _time
+
+    lock_path = db.with_name(db.name + ".quarantine.lock")
+    handle = lock_path.open("a+b")
+    import fcntl
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    hold_started.set()
+    _time.sleep(hold_s)
+    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    handle.close()
+    release.set()
+
+
+def test_quarantine_lock_contention_single_wait_and_honest_error(tmp_path, monkeypatch):
+    """#126773: a loser that misses the startup quarantine lock must not
+    re-enter the quarantine path (a second full lock wait), and any failure
+    must name lock contention — not "could not be moved aside"."""
+    import sqlite3
+    import threading
+    import time as _time
+
+    import hermes_state as hs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    calls = _fast_lock_windows(monkeypatch)
+
+    db = tmp_path / "state.db"
+    db.write_bytes(bytes(4096))
+
+    hold_started = threading.Event()
+    release = threading.Event()
+    holder = threading.Thread(
+        target=_hold_quarantine_lock, args=(db, hold_started, release), daemon=True)
+    holder.start()
+    assert hold_started.wait(timeout=5), "holder failed to take the lock"
+
+    started = _time.monotonic()
+    try:
+        with pytest.raises(sqlite3.DatabaseError) as excinfo:
+            hs.SessionDB(db_path=db)
+        elapsed = _time.monotonic() - started
+        # Old code: outer 5s lock wait + a SECOND 5s wait inside
+        # quarantine_invalid_state_db (>10s). Fixed: one lock wait + one
+        # bounded poll for the winner's fresh db.
+        assert elapsed < 3.0, (
+            f"startup took {elapsed:.1f}s — the second quarantine lock wait "
+            f"is back (lock calls: {calls})")
+        # Exactly ONE lock acquisition (the startup lock); the quarantine
+        # path is never entered on contention.
+        assert calls["hs"] == 1 and calls["dbfile"] == 0, calls
+        # The error names the real cause:
+        msg = str(excinfo.value)
+        assert "held by another process" in msg, msg
+        assert "could not be moved aside" not in msg, msg
+    finally:
+        release.wait(timeout=5)
+        holder.join(timeout=5)
+
+
+def test_quarantine_lock_contention_winner_delivers_connects_clean(tmp_path, monkeypatch):
+    """#126773 normal case: when the lock owner quarantines the invalid file
+    and lays down a fresh db, the waiting loser connects cleanly instead of
+    failing or quarantining itself."""
+    import sqlite3
+    import threading
+    import time as _time
+
+    import hermes_state as hs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    calls = _fast_lock_windows(monkeypatch)
+
+    db = tmp_path / "state.db"
+    db.write_bytes(bytes(4096))
+
+    def winner():
+        import fcntl
+        lock_path = db.with_name(db.name + ".quarantine.lock")
+        handle = lock_path.open("a+b")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        hold_started.set()
+        _time.sleep(0.35)  # outlast the loser's 0.3s lock wait -> poll path
+        db.rename(db.with_name("state.db.winner-sim.bak"))
+        fresh = sqlite3.connect(db)
+        fresh.execute("CREATE TABLE marker (x INTEGER)")
+        fresh.commit()
+        fresh.close()
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+        release.set()
+
+    hold_started = threading.Event()
+    release = threading.Event()
+    holder = threading.Thread(target=winner, daemon=True)
+    holder.start()
+    assert hold_started.wait(timeout=5), "winner failed to take the lock"
+
+    started = _time.monotonic()
+    sdb = hs.SessionDB(db_path=db)
+    elapsed = _time.monotonic() - started
+    try:
+        assert elapsed < 3.0, f"loser waited {elapsed:.1f}s — double wait is back"
+        assert not list(tmp_path.glob("state.db.zeroed-*.bak")), (
+            "loser quarantined the file itself instead of waiting for the winner")
+        assert db.exists()
+    finally:
+        release.wait(timeout=5)
+        holder.join(timeout=5)
+        sdb.close()
+
+
+def test_quarantine_error_names_contention_vs_move_failure(tmp_path, monkeypatch):
+    """#126773: _handle_quarantine_if_invalid distinguishes a held lock (probe
+    fails -> contention message) from a genuine rename failure (lock free ->
+    the original "could not be moved aside" message)."""
+    import sqlite3
+
+    import hermes_state as hs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _fast_lock_windows(monkeypatch)
+
+    db = tmp_path / "state.db"
+    db.write_bytes(bytes(4096))
+
+    sdb = hs.SessionDB.__new__(hs.SessionDB)
+    sdb.db_path = db
+
+    # (a) lock held elsewhere -> contention message.
+    import threading
+    hold_started = threading.Event()
+    release = threading.Event()
+    holder = threading.Thread(
+        target=_hold_quarantine_lock, args=(db, hold_started, release, 0.6), daemon=True)
+    holder.start()
+    assert hold_started.wait(timeout=5)
+    try:
+        with pytest.raises(sqlite3.DatabaseError) as excinfo:
+            sdb._handle_quarantine_if_invalid(already_locked=False)
+        assert "held by another process" in str(excinfo.value), str(excinfo.value)
+    finally:
+        release.wait(timeout=5)
+        holder.join(timeout=5)
+
+    # (b) lock free but quarantine reports no path -> rename failure message.
+    monkeypatch.setattr(hs, "quarantine_invalid_state_db", lambda *a, **k: None)
+    with pytest.raises(sqlite3.DatabaseError) as excinfo2:
+        sdb._handle_quarantine_if_invalid(already_locked=False)
+    assert "could not be moved aside" in str(excinfo2.value), str(excinfo2.value)

@@ -1,21 +1,23 @@
 name: vault-view
 repo: https://github.com/ergocogn/hermes-desktop-plugin-vault-view
-sha: a732c9382187c8f7d31c3e0057739f6f507378e4
-version: "0.4.6"
+sha: fc6068e72f14e71f6fd2c1a1a39c2cb72b9ff50d
+version: "0.4.7"
 title: Vault View
-description: "Local Markdown vault workspace for Hermes Desktop: visual editing, progressive reading, cached image previews, shared tabs, tag search, links, backlinks and a graph. Compatible with Obsidian vaults. File transport requires Unix/WSL utilities; ffmpeg thumbnails are optional. Automatic note-content sharing is disabled; direct Obsidian opening is temporarily hidden."
+description: "Local Markdown vault workspace for Hermes Desktop: visual editing, progressive reading, cached image previews, shared tabs, tag search, links, backlinks and a graph. Compatible with Obsidian vaults. File transport requires a Linux/macOS gateway; Windows Desktop requires a WSL-hosted Unix backend, not a native Windows gateway; ffmpeg thumbnails are optional. Remote images and agent guidance are opt-in and disabled by default; automatic note-content sharing is disabled; direct Obsidian opening is temporarily hidden."
 maintainer: ergocogn
 tier: community
 category: desktop
 docs_url: https://github.com/ergocogn/hermes-desktop-plugin-vault-view#readme
 readme: true
-image: https://raw.githubusercontent.com/ergocogn/hermes-desktop-plugin-vault-view/a732c9382187c8f7d31c3e0057739f6f507378e4/assets/banner.png
+image: https://raw.githubusercontent.com/ergocogn/hermes-desktop-plugin-vault-view/fc6068e72f14e71f6fd2c1a1a39c2cb72b9ff50d/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/ergocogn/hermes-desktop-plugin-vault-view/a732c9382187c8f7d31c3e0057739f6f507378e4/screenshots/vault-view-light.png
-  - https://raw.githubusercontent.com/ergocogn/hermes-desktop-plugin-vault-view/a732c9382187c8f7d31c3e0057739f6f507378e4/screenshots/vault-view-settings.png
-platforms: []
+  - https://raw.githubusercontent.com/ergocogn/hermes-desktop-plugin-vault-view/fc6068e72f14e71f6fd2c1a1a39c2cb72b9ff50d/screenshots/vault-view-light.png
+  - https://raw.githubusercontent.com/ergocogn/hermes-desktop-plugin-vault-view/fc6068e72f14e71f6fd2c1a1a39c2cb72b9ff50d/screenshots/vault-view-settings.png
+platforms: [linux, macos]
 capabilities:
   provides_tools: []
   provides_hooks: []
   provides_middleware: []
   requires_env: []
+requires_hermes: ">=0.21.5"
+

@@ -162,9 +162,10 @@ describe('tour request routing', () => {
 })
 
 // #75587: a blocking-input request still in flight when the session's runtime is
-// interrupted (Stop) or deleted must not park its card — the backend withdraws
-// the request on the same boundary, so parking one here would resurrect an
-// overlay (and native notification) for a turn that is gone.
+// interrupted (Stop) or deleted must not park its card — parking one would
+// resurrect an overlay (and native notification) for a turn that is gone. It is
+// answered with an error (the backend's "unanswered"), not dropped, so the
+// blocked tool returns instead of waiting out its deadline.
 describe('blocking-input guard for interrupted sessions', () => {
   const depsWith = (interrupted: boolean) =>
     ({ ...deps, sessionInterrupted: () => interrupted }) as ServerRequestContext['deps']
@@ -182,15 +183,22 @@ describe('blocking-input guard for interrupted sessions', () => {
     resetServerRequestsForTests()
   })
 
-  it('drops an approval request for an interrupted session', () => {
-    expect(handleServerRequest(approvalRequest('srq-dead'), depsWith(true), 'session-a')).toBe(true)
+  it('fails an approval request for an interrupted session instead of parking it', () => {
+    const request = approvalRequest('srq-dead')
+
+    expect(handleServerRequest(request, depsWith(true), 'session-a')).toBe(true)
 
     expect(hasOpenServerRequest('srq-dead')).toBe(false)
+    expect(request.fail).toHaveBeenCalledWith(expect.any(Number), 'session interrupted')
+    expect(request.respond).not.toHaveBeenCalled()
   })
 
   it('still parks an approval request for a live session', () => {
-    handleServerRequest(approvalRequest('srq-live'), depsWith(false), 'session-a')
+    const request = approvalRequest('srq-live')
+
+    handleServerRequest(request, depsWith(false), 'session-a')
 
     expect(hasOpenServerRequest('srq-live')).toBe(true)
+    expect(request.fail).not.toHaveBeenCalled()
   })
 })

@@ -1,3 +1,5 @@
+import { JSON_RPC_INTERNAL_ERROR } from '@hermes/shared'
+
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import {
   abortPreviewTyping,
@@ -110,14 +112,22 @@ const markNeedsInput = (ctx: ServerRequestContext) => {
 /**
  * A blocking-input card must not park for a session whose runtime is already
  * interrupted — the user hit Stop, or `removeSession` marked the doomed runtime
- * interrupted before it deletes the row. The backend withdraws the same request
- * on that boundary (`request.cancel`), so a frame still in flight would
- * otherwise re-create an overlay (and native notification) for a turn that is
- * gone (#75587). Sessionless requests (app-level Bot Screen install) are never
- * gated.
+ * interrupted before it deletes the row. A frame still in flight would otherwise
+ * re-create an overlay (and native notification) for a turn that is gone
+ * (#75587). Answer it rather than drop it: the backend blocks on this frame, and
+ * an error reply is the same "unanswered" its own `request.cancel` produces, so
+ * the tool returns now instead of waiting out its deadline. Sessionless requests
+ * (app-level Bot Screen install) are never gated.
  */
-const sessionStopped = (ctx: ServerRequestContext): boolean =>
-  Boolean(ctx.sessionId) && ctx.deps.sessionInterrupted(ctx.sessionId)
+const declineIfSessionStopped = (ctx: ServerRequestContext): boolean => {
+  if (!ctx.sessionId || !ctx.deps.sessionInterrupted(ctx.sessionId)) {
+    return false
+  }
+
+  ctx.request.fail(JSON_RPC_INTERNAL_ERROR, 'session interrupted')
+
+  return true
+}
 
 const notifyInput = (ctx: ServerRequestContext, body: string) => {
   if (!ctx.request.replayed) {
@@ -235,7 +245,7 @@ const approval: Handler = ctx => {
   const command = str(p.command)
   const description = str(p.description) || 'dangerous command'
 
-  if (sessionStopped(ctx)) {
+  if (declineIfSessionStopped(ctx)) {
     return
   }
 
@@ -277,7 +287,7 @@ const approval: Handler = ctx => {
 }
 
 const sudo: Handler = ctx => {
-  if (sessionStopped(ctx)) {
+  if (declineIfSessionStopped(ctx)) {
     return
   }
 
@@ -309,7 +319,7 @@ const secret: Handler = ctx => {
   const envVar = str(p.env_var)
   const promptText = str(p.prompt)
 
-  if (sessionStopped(ctx)) {
+  if (declineIfSessionStopped(ctx)) {
     return
   }
 
@@ -323,7 +333,7 @@ const vaultCode: Handler = ctx => {
   const p = ctx.request.params
   const site = str(p.site)
 
-  if (sessionStopped(ctx)) {
+  if (declineIfSessionStopped(ctx)) {
     return
   }
 
@@ -338,7 +348,7 @@ const vaultSaveLogin: Handler = ctx => {
   const origin = str(p.origin)
   const site = str(p.site) || origin
 
-  if (sessionStopped(ctx)) {
+  if (declineIfSessionStopped(ctx)) {
     return
   }
 
@@ -353,7 +363,7 @@ const vaultUnlockPrompt: Handler = ctx => {
   const backend = str(p.backend)
   const displayName = str(p.display_name) || backend
 
-  if (sessionStopped(ctx)) {
+  if (declineIfSessionStopped(ctx)) {
     return
   }
 

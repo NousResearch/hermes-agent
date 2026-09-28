@@ -2968,8 +2968,6 @@ export function useSessionActions({
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)
           clearSessionControl(closingRuntimeId)
-          clearAllPrompts(closingRuntimeId)
-          clearClarifyRequest(undefined, closingRuntimeId)
         }
 
         // A tiled copy of this session must not outlive it: collapse the pane

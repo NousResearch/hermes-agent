@@ -476,8 +476,54 @@ describe('connection-qualified session deletion', () => {
     // The selected session's runtime must not be touched by another row's delete.
     expect(requestGateway).not.toHaveBeenCalledWith('session.interrupt', { session_id: 'runtime-foreground' })
     expect(requestGateway).not.toHaveBeenCalledWith('session.close', { session_id: 'runtime-foreground' })
-    // Marked interrupted before the RPCs so a queued blocking-input frame is dropped.
+    // Marked interrupted BEFORE the RPCs so a queued blocking-input frame is
+    // declined instead of parked.
     expect(updateSessionState).toHaveBeenCalledWith('runtime-bg', expect.any(Function))
+    expect(updateSessionState.mock.results[0].value).toMatchObject({ interrupted: true, needsInput: false })
+    expect(updateSessionState.mock.invocationCallOrder[0]).toBeLessThan(requestGateway.mock.invocationCallOrder[0])
+  })
+
+  it('rolls the delete back when the interrupt fails for a reason other than a gone runtime', async () => {
+    const requestGateway = vi.fn().mockImplementation(async (method: string) => {
+      if (method === 'session.interrupt') {
+        throw new Error('gateway unreachable')
+      }
+
+      return {}
+    })
+
+    const updateSessionState = vi.fn((_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) =>
+      updater({ interrupted: false, needsInput: true } as ClientSessionState)
+    )
+
+    let actions: HarnessHandle | null = null
+
+    setSessions([storedSession({ id: 'background-session' })])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+    render(
+      <Harness
+        activeSessionId="runtime-foreground"
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={{ current: new Map([['background-session', 'runtime-bg']]) }}
+        selectedStoredSessionId="foreground-session"
+        updateSessionState={updateSessionState}
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await actions?.removeSession('background-session')
+    })
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+    expect(deleteSession).not.toHaveBeenCalled()
+    // The live state the interrupt clobbered is restored, and the row survives.
+    expect(updateSessionState.mock.results.at(-1)?.value).toMatchObject({ interrupted: false, needsInput: true })
+    expect($sessions.get().some(session => session.id === 'background-session')).toBe(true)
   })
 })
 

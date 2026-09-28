@@ -2956,6 +2956,35 @@ export const ar = defineLocale({
       openCron: 'فتح المهام المجدولة',
       turnRunning: 'الدور يعمل',
       contextUsage: 'استخدام السياق',
+      contextUsagePanel: {
+        categories: {
+          conversation: 'المحادثة',
+          mcp: 'MCP',
+          memory: 'الذاكرة',
+          rules: 'القواعد',
+          skills: 'المهارات',
+          subagent_definitions: 'تعريفات الوكلاء الفرعيين',
+          system_prompt: 'توجيه النظام',
+          tool_definitions: 'تعريفات الأدوات'
+        },
+        contextFiles: count => `ملفات السياق (${count})`,
+        contextFileStatuses: {
+          blocked: 'لم يُحمّل — حظرته عملية فحص حقن التوجيهات',
+          empty: 'لم يُحمّل — الملف فارغ',
+          flagged: 'تم التحميل — راجع تحذير حقن التوجيهات',
+          loaded: 'تم التحميل',
+          shadowed: 'لم يُحمّل — تم اختيار ملف سياق ذي أولوية أعلى',
+          suppressed: 'لم يُحمّل — مجلد تثبيت Hermes',
+          truncated: 'تم التحميل — اقتُطع عند حد ملف السياق',
+          unknown: 'الحالة غير متاحة',
+          unreadable: 'لم يُحمّل — تعذرت قراءة الملف'
+        },
+        empty: 'لا توجد بيانات سياق بعد',
+        loading: 'جار تحميل التفاصيل…',
+        percentFull: percent => `ممتلئ بنسبة ${percent}%`,
+        title: 'استخدام السياق',
+        tokenSummary: (used, max) => `${used} / ${max} رموز`
+      },
       focusedSince: 'منذ التركيز',
       focusedSinceTitle: 'الوقت منذ تركيز هذه المحادثة — وليس مدة الدور',
       yoloOn: 'YOLO مفعل',

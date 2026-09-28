@@ -5110,6 +5110,18 @@ export const esOverrides = {
           system_prompt: 'Prompt del sistema',
           tool_definitions: 'Definiciones de herramientas'
         },
+        contextFiles: count => `Archivos de contexto (${count})`,
+        contextFileStatuses: {
+          blocked: 'No cargado — bloqueado por el análisis de inyección de prompts',
+          empty: 'No cargado — archivo vacío',
+          flagged: 'Cargado — revisa la advertencia de inyección de prompts',
+          loaded: 'Cargado',
+          shadowed: 'No cargado — prevaleció un archivo de contexto con mayor prioridad',
+          suppressed: 'No cargado — directorio de instalación de Hermes',
+          truncated: 'Cargado — truncado en el límite de archivos de contexto',
+          unknown: 'Estado no disponible',
+          unreadable: 'No cargado — no se pudo leer el archivo'
+        },
         empty: 'Aún no hay datos de contexto',
         loading: 'Cargando desglose…',
         percentFull: percent => `${percent}% lleno`,

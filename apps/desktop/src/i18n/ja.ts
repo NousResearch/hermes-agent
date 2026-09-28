@@ -3443,6 +3443,18 @@ export const ja = defineLocale({
           system_prompt: 'システムプロンプト',
           tool_definitions: 'ツール定義'
         },
+        contextFiles: count => `コンテキストファイル（${count}）`,
+        contextFileStatuses: {
+          blocked: '未読み込み — プロンプトインジェクション検査でブロック',
+          empty: '未読み込み — 空のファイル',
+          flagged: '読み込み済み — プロンプトインジェクション警告を確認してください',
+          loaded: '読み込み済み',
+          shadowed: '未読み込み — 優先度の高いコンテキストファイルを使用',
+          suppressed: '未読み込み — Hermes のインストールディレクトリ',
+          truncated: '読み込み済み — コンテキストファイルの上限で切り詰め',
+          unknown: '状態を取得できません',
+          unreadable: '未読み込み — ファイルを読み取れませんでした'
+        },
         empty: 'コンテキストデータはまだありません',
         loading: '内訳を読み込み中…',
         percentFull: percent => `${percent}% 使用中`,

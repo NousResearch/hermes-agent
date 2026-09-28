@@ -3978,6 +3978,18 @@ export interface Translations {
           system_prompt: string
           tool_definitions: string
         }
+        contextFiles: (count: number) => string
+        contextFileStatuses: {
+          blocked: string
+          empty: string
+          flagged: string
+          loaded: string
+          shadowed: string
+          suppressed: string
+          truncated: string
+          unknown: string
+          unreadable: string
+        }
         empty: string
         loading: string
         percentFull: (percent: number) => string

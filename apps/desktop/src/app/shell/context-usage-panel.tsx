@@ -1,6 +1,9 @@
 import { compactNumber } from '@hermes/shared'
-import { useMemo } from 'react'
+import { useId, useMemo, useState } from 'react'
 
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
+import { OverflowTip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import type { ContextBreakdown, ContextUsageCategory, UsageStats } from '@/types/hermes'
@@ -19,6 +22,8 @@ interface ContextUsagePanelProps {
 export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePanelProps) {
   const { t } = useI18n()
   const copy = t.shell.statusbar.contextUsagePanel
+  const contextFilesId = useId()
+  const [contextFilesOpen, setContextFilesOpen] = useState(false)
   const contextMax = usage.context_max ?? 0
   const contextUsed = usage.context_used ?? 0
   const contextPercent = Math.max(0, Math.min(100, Math.round(usage.context_percent ?? 0)))
@@ -33,6 +38,14 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
   )
 
   const segmentTotal = categories.reduce((sum, category) => sum + category.tokens, 0) || contextUsed || 1
+
+  const contextFiles = (breakdown?.context_files ?? []).map(source => {
+    const status = Object.prototype.hasOwnProperty.call(copy.contextFileStatuses, source.status)
+      ? (source.status as keyof typeof copy.contextFileStatuses)
+      : 'unknown'
+
+    return { ...source, statusLabel: copy.contextFileStatuses[status] }
+  })
 
   return (
     <div className="flex w-72 flex-col gap-3 p-3 text-[0.75rem]" data-slot="context-usage-panel">
@@ -71,6 +84,43 @@ export function ContextUsagePanel({ breakdown, loading, usage }: ContextUsagePan
       {loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.loading}</p>}
 
       {!loading && !categories.length && <p className="text-[0.6875rem] text-muted-foreground">{copy.empty}</p>}
+
+      {contextFiles.length > 0 && (
+        <section className="border-t border-(--ui-stroke-tertiary) pt-2" data-slot="context-files">
+          <DropdownMenuItem
+            aria-controls={contextFilesId}
+            aria-expanded={contextFilesOpen}
+            onSelect={event => {
+              // This is a disclosure inside the statusbar menu, not a terminal
+              // command. Keep the menu open while its inline details expand.
+              event.preventDefault()
+              setContextFilesOpen(open => !open)
+            }}
+          >
+            <DisclosureCaret open={contextFilesOpen} />
+            {copy.contextFiles(contextFiles.length)}
+          </DropdownMenuItem>
+
+          {contextFilesOpen && (
+            <ul className="mt-2 flex flex-col gap-2" id={contextFilesId}>
+              {contextFiles.map(source => (
+                <li className="min-w-0" data-status={source.status} key={`${source.path}:${source.label}`}>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="truncate font-medium text-foreground">{source.label}</span>
+                    <span className="shrink-0 tabular-nums text-foreground">~{compactNumber(source.est_tokens)}</span>
+                  </div>
+
+                  <OverflowTip boundary="viewport" label={source.path} side="left">
+                    <span className="block truncate text-[0.6875rem] text-muted-foreground">{source.path}</span>
+                  </OverflowTip>
+
+                  <p className="text-[0.6875rem] text-muted-foreground">{source.statusLabel}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
     </div>
   )
 }

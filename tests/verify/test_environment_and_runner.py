@@ -252,7 +252,7 @@ class TestReadiness:
         assert result.readiness.ready
         assert result.readiness.url == f"http://127.0.0.1:{port}/"
 
-    def test_port_already_in_use_is_not_readiness(self, tmp_path):
+    def test_port_already_in_use_is_not_readiness(self, tmp_path, monkeypatch):
         """A server that was already on the port is not the app: its answer must not
         count as ready, and the start command must not run against the taken port."""
 
@@ -268,14 +268,22 @@ class TestReadiness:
         port = server.server_address[1]
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        spawned: list[str] = []
+        real_popen = subprocess.Popen
+
+        def tracking_popen(cmd, *args, **kwargs):
+            spawned.append(cmd)
+            return real_popen(cmd, *args, **kwargs)
+
+        monkeypatch.setattr("subprocess.Popen", tracking_popen)
         try:
-            start = subprocess.list2cmdline([sys.executable, "-c", "open('started', 'w').close()"])
+            start = subprocess.list2cmdline([sys.executable, "-c", "pass"])
             recipe = Recipe(name="x", start=start, port=port)
             result = run_verify(tmp_path, recipe, phases=("start",), ready_timeout=10)
+            assert spawned == [], "the start command must not run"
             assert not result.readiness.ready
             assert not result.ok
             assert "already accepts connections" in (result.readiness.error or "")
-            assert not (tmp_path / "started").exists(), "the start command must not run"
         finally:
             server.shutdown()
             thread.join(timeout=5)

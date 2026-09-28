@@ -604,12 +604,33 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
 
 
 # ---- Detection ----------------------------------------------------------------------------
-def _strip_shell_escapes(command: str) -> str:
+# Commands that hand their arguments to a SECOND parse: eval joins its argv and reads it as a script,
+# a shell carrier reads its -c payload, ssh hands the joined argv to the remote login shell, watch and
+# su run theirs through sh -c. Under any of them an operator escaped at this level comes out of the
+# first parse bare and is an operator on the second: ``eval echo hello \\> /dev/sda`` writes (bash
+# ground truth, and so do ``command eval``, ``bash -c 'eval ...'`` and ``bash -c echo\\ hello\\ \\>\\ x``)
+# while ``echo hello \\> /dev/sda`` prints. The floor cannot see which parse a byte meets last, so
+# with a second parser anywhere on the line an escaped operator is read as live -- the conservative
+# side, and the parent's reading; ``xargs`` and ``exec`` run their argv as is and are not on the list.
+_REPARSING_COMMAND_NAMES = _SHELL_CARRIER_NAMES | {"ssh", "watch", "su"}
+
+
+def _reparses_arguments(command: str) -> bool:
+    """Return whether any command-position word hands its arguments to another parse."""
+    return any(
+        os.path.basename(_deobfuscate_shell_word_for_detection(word)).lower() in _REPARSING_COMMAND_NAMES
+        for _, _, word in _iter_shell_command_word_spans(command)
+    )
+
+
+def _strip_shell_escapes(command: str, *, live_operators: bool = False) -> str:
     """Strip backslash escapes for matching (``r\\m`` runs as ``rm``), left to right as the shell reads
     them. An escaped redirect operator is the one escape that must NOT become its bare character:
     ``echo hello \\> "/dev/disk0"`` prints ``hello > /dev/disk0`` and writes nothing, so its ``\\>``
-    becomes a space. ``echo foo\\\\> "/dev/disk0"`` is the word ``foo\\`` followed by a REAL redirect,
-    so the operator survives with the literal backslash detached from it (``foo\\ >``); left glued,
+    becomes a space -- unless ``live_operators`` says a second parse will read it (see
+    _REPARSING_COMMAND_NAMES), in which case it is the bare operator that parse will run.
+    ``echo foo\\\\> "/dev/disk0"`` is the word ``foo\\`` followed by a REAL redirect either way, so
+    the operator survives with the literal backslash detached from it (``foo\\ >``); left glued,
     _mask_quoted_prose would read ``\\>`` as an escape and let the write past the floor."""
     out: list[str] = []
     i, n = 0, len(command)
@@ -618,7 +639,7 @@ def _strip_shell_escapes(command: str) -> str:
         if char == "\\" and i + 1 < n and command[i + 1] != "\n":
             following = command[i + 1]
             if following in "<>":
-                out.append(" ")
+                out.append(following if live_operators else " ")
             else:
                 out.append(following)
                 if following == "\\" and i + 2 < n and command[i + 2] in "<>":
@@ -686,8 +707,9 @@ def _normalize_command_for_detection(command: str) -> str:
     # first: on Windows it nests under the user home, and folding the user home first would eat the prefix it needs.
     command = _rewrite_resolved_hermes_home(command)
     command = _rewrite_resolved_user_home(command)
-    # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm).
-    command = _strip_shell_escapes(command)
+    # Strip backslash-escapes (r\m -> rm) and empty-string literals (r''m -> rm). An escaped
+    # operator stays live when eval, a shell carrier, ssh, watch or su will parse the line again.
+    command = _strip_shell_escapes(command, live_operators=_reparses_arguments(command))
     command = re.sub(r"''|\"\"", '', command)
     # Collapse $IFS / ${IFS...} (incl. `${IFS:0:1}`) to a space: IFS defaults to whitespace, so `rm${IFS}-rf${IFS}/`
     # runs as `rm -rf /`, and every pattern — incl. the hardline floor — anchors on literal \s between tokens.

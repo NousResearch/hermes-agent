@@ -12,6 +12,8 @@ no recovery path must hit the unconditional floor, and the tool invocations that
 only PRINT (or that target a file rather than a device) must stay runnable.
 """
 
+import subprocess
+
 import pytest
 
 from tools.approval import (
@@ -22,7 +24,7 @@ from tools.approval import (
     disable_session_yolo,
 )
 from tools.approval_context import reset_current_session_key, set_current_session_key
-from tools.approval_detection import _collapse_device_paths, _strip_shell_escapes
+from tools.approval_detection import _collapse_device_paths, _reparses_arguments, _strip_shell_escapes
 
 
 # Commands that MUST be hardline-blocked: every one destroys a whole disk.
@@ -199,6 +201,18 @@ _BLOCK_DEVICE_HARDLINE_BLOCK = [
     # an escaped BACKSLASH in front of `>` is a literal backslash and then a real redirect
     'echo foo\\\\> "/dev/sda"',
     "echo foo\\\\> /dev/sda",
+    # an escaped operator that a SECOND parse turns live: eval joins and re-reads its argv, a shell
+    # carrier re-reads its -c payload, ssh and watch hand theirs to another shell (review F4 on #122771)
+    "eval echo hello \\> /dev/sda",
+    "command eval echo hello \\> /dev/sda",
+    "builtin eval echo hello \\> /dev/sda",
+    "sudo eval echo hello \\> /dev/sda",
+    "eval cat x \\> /dev/sda",
+    "bash -c 'eval echo hello \\> /dev/sda'",
+    "bash -c echo\\ hello\\ \\>\\ /dev/sda",
+    'eval echo foo\\\\> "/dev/sda"',
+    "ssh host echo hello \\> /dev/sda",
+    "watch echo hello \\> /dev/sda",
     # A real device path still matches after every boundary that is not a path character.
     "cat x > /dev/sda",
     'cat x > "/dev/sda"',
@@ -338,6 +352,9 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
     # an escaped `>` is a literal argument: bash prints `hello > /dev/disk0` and writes nothing
     'echo hello \\> "/dev/disk0"',
     "echo hello \\> /dev/disk0",
+    # ...and without a second parse the escape stays an argument: xargs and exec run their argv as is
+    "printf x | xargs echo \\> /dev/sda",
+    "exec echo hello \\> /dev/disk0",
     # The operand lookahead must not read a trailing comment as the operand.
     "shred -u notes.txt # never do this to /dev/sda",
     # `-n`/`--no-act` is wipefs doing everything except the write: a diagnostic.
@@ -456,6 +473,9 @@ def clean_session(monkeypatch):
     "cat x > ..//dev/sda",
     "wipefs -a /dev/disk/../sda",
     'echo foo\\\\> "/dev/sda"',
+    "eval echo hello \\> /dev/sda",
+    "command eval echo hello \\> /dev/sda",
+    "bash -c 'eval echo hello \\> /dev/sda'",
 ])
 def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     """These reached the approval tier at best (or no tier at all) — exactly what
@@ -511,3 +531,44 @@ def test_device_path_spellings_collapse_to_the_node(spelling, resolved):
 ])
 def test_escaped_redirects_are_arguments_not_operators(raw, stripped):
     assert _strip_shell_escapes(raw) == stripped
+
+
+# Under a second parse the same escape comes out live: eval joins its argv and reads it again.
+@pytest.mark.parametrize("raw,stripped", [
+    ("eval echo hello \\> /dev/sda", "eval echo hello > /dev/sda"),
+    ('eval echo foo\\\\> "/dev/sda"', 'eval echo foo\\ > "/dev/sda"'),
+])
+def test_escapes_under_a_second_parse_come_out_live(raw, stripped):
+    assert _reparses_arguments(raw)
+    assert _strip_shell_escapes(raw, live_operators=True) == stripped
+
+
+@pytest.mark.parametrize("command,reparsed", [
+    ("eval echo hello \\> /dev/sda", True),
+    ("command eval echo hello \\> /dev/sda", True),
+    ("bash -c echo\\ hello\\ \\>\\ /dev/sda", True),
+    ("true && ssh host echo hello \\> /dev/sda", True),
+    ("echo hello \\> /dev/disk0", False),
+    ('echo "eval is a word" \\> /dev/disk0', False),
+    ("printf x | xargs echo \\> /dev/sda", False),
+])
+def test_second_parse_is_a_command_word_not_a_substring(command, reparsed):
+    assert _reparses_arguments(command) is reparsed
+
+
+# The premise, measured on a real shell: only a second parse turns `\>` into a redirect.
+@pytest.mark.linux_only
+@pytest.mark.parametrize("script,writes", [
+    ("echo hello \\> out", False),
+    ("eval echo hello \\> out", True),
+    ("command eval echo hello \\> out", True),
+    ("bash -c 'eval echo hello \\> out'", True),
+    ("bash -c echo\\ hello\\ \\>\\ out", True),
+    ("echo foo\\\\> out", True),
+])
+def test_bash_agrees_which_escaped_redirects_write(tmp_path, script, writes):
+    subprocess.run(
+        ["bash", "-c", script], cwd=tmp_path, check=False, timeout=10,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    assert (tmp_path / "out").exists() is writes

@@ -49,7 +49,7 @@ async def _visible_event(
     if not isinstance(body, str):
         body = ""
     body = body.strip()
-    text = _label_body(str(content.get("msgtype") or ""), _own_text(body, content))
+    text = _label_body(str(content.get("msgtype") or ""), _own_text(body, content), str(raw.get("sender") or ""))
     body = "[redacted]" if state.redacted else text[:1200]
     relation = MatrixRelation.from_content(state.original_content.get("m.relates_to"))
     sender = str(raw.get("sender") or "")
@@ -81,7 +81,7 @@ async def _visible_event(
                 or before.replacement_id != state.replacement_id
                 or before.media_content != MatrixEventContext.image_content(content)):
             cache.store_resolved(room_id, event_id, MatrixEventContext(
-                sender, text, is_image=content.get("msgtype") == "m.image", replacement_id=state.replacement_id,
+                sender, text, is_image=content.get("msgtype") in {"m.image", "m.sticker"}, replacement_id=state.replacement_id,
                 media_content=MatrixEventContext.image_content(content),
                 state_error=state.error["error"] if state.error else None,
             ), before)

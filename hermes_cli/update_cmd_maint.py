@@ -268,8 +268,9 @@ def _finish_dashboard_update_cleanup(
     stop_for_relaunch()
 
 
-def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> None:
-    """Refresh managed dashboards or stop stale manual ones after an update.
+def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> set[int]:
+    """Refresh managed dashboards or stop stale manual ones after an update; returns the PIDs it
+    stopped and could not bring back, so the receipt records them ``failed`` (#109290).
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
     already restarted, so a Serve-only install isn't restarted a second time here.
@@ -295,14 +296,16 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
         print(f"⚠ Could not refresh running dashboard/serve process(es): {exc}")
         print("  If one is still running, restart it so it serves the updated code:")
         print("    hermes dashboard --port <port>   (or: systemctl --user restart hermes-dashboard)")
-        return
-    if not stop_result.get("unrecovered"):
-        return
+        return set()
+    unrecovered = {int(pid) for pid in stop_result.get("unrecovered") or ()}
+    if not unrecovered:
+        return unrecovered
 
     print()
     print("⚠ A web dashboard/serve process was stopped during update and could not be auto-restarted.")
     print("  Re-launch it when you want the web UI back:")
     print("    hermes dashboard --port <port>")
+    return unrecovered
 
 
 def _print_update_completion(message: str) -> None:
@@ -889,12 +892,13 @@ def _refresh_cua_driver_after_update() -> None:
 
 
 def _install_default_tools_after_update() -> None:
-    """Give an existing install the optional default PM tools (agent-browser + Chromium).
+    """Give the install its optional default tools: the PM defaults (agent-browser +
+    Chromium, cua-driver). The Browser Use CLI engine (browser-harness) is a venv dependency.
 
-    A source update re-syncs only the venv, so a tool that became a default after
-    this install was created would never arrive and browser tools would stay
-    missing. The installers' PM stage runs the same selection. Declined packages
-    stay declined (pm/defaults.py). A failed download warns and never fails the update.
+    Runs at the end of both the installers (via the source completion) and
+    ``hermes update``: a source update re-syncs only the venv, so a tool that became
+    a default after this install was created would never arrive otherwise. Declined
+    packages stay declined (pm/defaults.py). A failed download warns and never fails.
     """
     import pm
     from pm.defaults import default_packages
@@ -909,7 +913,7 @@ def _install_default_tools_after_update() -> None:
     for name in default_packages(Lockfile(lockfile_path()).names()):
         if pm.installed_package(name) is not None:
             continue
-        print(f"\n→ Installing {name} (browser tools; opt out with `hermes pm install --without {name}`)...")
+        print(f"\n→ Installing {name} (default tool; opt out with `hermes pm install --without {name}`)...")
         try:
             pm.ensure(name, explicit=True)
         except (pm.InstallError, OSError) as exc:

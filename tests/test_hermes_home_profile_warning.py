@@ -160,6 +160,7 @@ class TestScratchTmpEnvGitBash:
 
         env = {
             "PATH": "/usr/bin:/bin",
+            "HERMES_HOME": str(hermes_dir),
             "MSYSTEM": "MINGW64",
             "TMPDIR": "/tmp",
             "TMP": "/tmp",
@@ -234,6 +235,7 @@ class TestScratchTmpEnvGitBash:
 
         env = {
             "PATH": "/usr/bin:/bin",
+            "HERMES_HOME": str(hermes_dir),
             "MSYSTEM": "MINGW64",
             "TMPDIR": "/tmp",
             "TMP": "/tmp",
@@ -258,6 +260,7 @@ class TestScratchTmpEnvGitBash:
 
         env = {
             "PATH": "/usr/bin:/bin",
+            "HERMES_HOME": str(hermes_dir),
             "MSYSTEM": "MINGW64",
             "TMPDIR": "/tmp/",
             "TMP": "/tmp/",
@@ -278,9 +281,48 @@ class TestScratchTmpEnvGitBash:
 
         env = {
             "PATH": "/usr/bin:/bin",
+            "HERMES_HOME": str(hermes_dir),
             "OSTYPE": "msys",
             "TMPDIR": "/tmp",
         }
         assert fresh_constants.apply_scratch_tmp_env(env) is True
         assert env["TMPDIR"] == str(hermes_dir / "cache" / "scratch")
 
+    def test_export_tests_do_not_depend_on_the_host_home_default(self, tmp_path):
+        """Guard: every "must export" test above must pass HERMES_HOME explicitly.
+
+        Without it, ``apply_scratch_tmp_env`` falls through to
+        ``get_process_hermes_home`` → ``_get_platform_default_hermes_home``, which
+        is ``Path.home()`` on POSIX but ``Path(LOCALAPPDATA) / "hermes"`` on Windows.
+        A test asserting ``tmp_path/.hermes/cache/scratch`` therefore only passes
+        on POSIX, and on Windows resolves (and creates) the operator's real
+        Hermes home — which ``tests/home_io_guard.py`` fails as "TEST BUG".
+
+        This reads the module source rather than re-deriving the behaviour on
+        purpose: on a POSIX runner the host-dependent form still passes, so a
+        behavioural assertion cannot detect the regression here. Reading the
+        source CAN, on every runner. It is a structural pin, and it says so.
+        """
+        import inspect
+        import re as _re
+
+        from tests import test_hermes_home_profile_warning as _self_mod
+
+        src = inspect.getsource(_self_mod)
+        # Every env dict that expects the scratch export must name HERMES_HOME.
+        exports = _re.findall(r'env = \{[^}]*?\}', src, _re.DOTALL)
+        exporting = [e for e in exports if "HERMES_SCRATCH_DIR" in e]
+        assert exporting, "no env dicts found — the source scan itself is stale"
+        for e in exporting:
+            assert '"HERMES_HOME": str(hermes_dir)' in e, (
+                "an env that expects the scratch export must set HERMES_HOME "
+                "explicitly, so the expected path is host-independent:\n" + e
+            )
+        # And the ones that must NOT export must stay without it, or the
+        # negative assertions would stop testing the fallthrough.
+        refuses = [e for e in exports if "apply_scratch_tmp_env(env) is False" in e]
+        for e in refuses:
+            assert '"HERMES_HOME"' not in e, (
+                "a negative case must keep relying on the platform default, "
+                "otherwise it no longer exercises the respect-user-value path:\n" + e
+            )

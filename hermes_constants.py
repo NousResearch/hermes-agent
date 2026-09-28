@@ -1224,24 +1224,33 @@ def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:
 def _tmp_env_is_msys_pseudo(value: str, env: Mapping[str, str]) -> bool:
     """True when *value* is the MSYS/Git-Bash pseudo temp default rather than a user choice.
 
-    Git Bash (``MSYSTEM=MINGW64``/``MSYS``/``MINGW32``) and the standalone MSYS2 shell
-    pre-set ``TMPDIR``/``TMP``/``TEMP`` to ``/tmp`` (the virtual path under the MSYS
-    root) before the user ever exports anything, so the value carries no intent.
-    Real Windows temp is ``%TEMP%`` (e.g. ``C:\\Users\\<u>\\AppData\\Local\\Temp``) and
-    macOS / Linux pick their own system paths — neither ever equals ``/tmp``, so the
-    exact-match check only fires on the Git-Bash case we want to override.
+    Git Bash (``MSYSTEM=MINGW64``/``MSYS``/``MINGW32``) pre-sets ``TMPDIR``/``TMP``/``TEMP``
+    to ``/tmp`` (the virtual path under the MSYS root) before the user ever exports
+    anything, so the value carries no intent. Real Windows temp is ``%TEMP%``
+    (e.g. ``C:\\Users\\<u>\\AppData\\Local\\Temp``) and macOS / Linux pick their own
+    system paths — neither ever equals ``/tmp``, so the exact-match check only fires
+    on the Git-Bash case we want to override.
 
     Limited intentionally: only ``/tmp`` exact-match (after stripping trailing slashes)
     under MSYSTEM. Forward-slash absolute paths on Windows can also mean Cygwin-style
     emulation, but broadening past ``/tmp`` risks false positives on a deliberate
     ``TMPDIR=/var/log``-style override, so the conservative form stays until we have
     a real Cygwin signal to gate it on.
+
+    ``MSYSTEM`` is the signal that actually reaches a child process. ``OSTYPE`` is
+    also consulted but is a bash non-exported variable, so it never appears in a
+    real child environment — see the note at the check below.
     """
     if not value:
         return False
     # MSYSTEM is set by every MSYS2 / Git-Bash flavour (MINGW64, MINGW32, MSYS, UCRT64,
-    # CLANG64, ...). OSTYPE is a defensive second signal: standalone MSYS2 shells set it
-    # but not always MSYSTEM in inherited env.
+    # CLANG64, ...). OSTYPE is a SECONDARY signal that is effectively unreachable in
+    # production: OSTYPE is a bash *non-exported* shell variable, so a child process
+    # never sees it — `os.environ` reads it as "" and this disjunct cannot fire.
+    # It is kept as a defensive fallback for any embedding that DOES place OSTYPE in
+    # the real environment (a non-bash shell, a container runtime, an explicit
+    # export), and because removing it would silently narrow the guard. Callers that
+    # construct env dicts directly (tests, tooling) can still exercise it.
     msystem = env.get("MSYSTEM", "").strip()
     ostype = env.get("OSTYPE", "").strip()
     in_msys = bool(msystem) or ostype.startswith("msys")

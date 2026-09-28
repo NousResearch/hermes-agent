@@ -886,6 +886,7 @@ class GatewayStartupMixin:
                 disarm_startup_watchdog()
         logger.info("Session storage: %s", self.config.sessions_dir)
         self._start_log_systemd_timing_alignment()
+        self._start_log_retired_session_reset()
         self._log_agent_budget()
         # Warn prominently when redaction is opted out; the redactor snapshots its state at import time,
         # so this line is the source of truth for the process lifetime.
@@ -935,6 +936,19 @@ class GatewayStartupMixin:
             if _adv_msg:
                 logger.warning("%s", _adv_msg)
                 logger.warning("Run `hermes doctor` on the gateway host for full remediation steps.")
+
+    def _start_log_retired_session_reset(self) -> None:
+        """Warn per served profile whose config still declares an idle/daily ``session_reset``,
+        unless the plugin that honours it is enabled. Never raises."""
+        with _log_suppressed(logging.DEBUG, "retired session_reset check failed", exc_info=True):
+            from gateway.config_loader import read_yaml_layers
+            from hermes_cli.profiles import profiles_to_serve
+            from hermes_cli.session_reset_retirement import format_notice, reset_plugin_enabled, retired_reset_policy
+            hits = [(name, found) for name, home in profiles_to_serve(bool(self.config.multiplex_profiles))
+                    if (found := retired_reset_policy(read_yaml_layers(home)))]
+            if hits and not reset_plugin_enabled():
+                for name, (path, mode) in hits:
+                    logger.warning("Profile %s: %s", name, format_notice(path, mode))
 
     def _start_log_systemd_timing_alignment(self) -> None:
         """Warn when systemd's TimeoutStopSec does not cover the drain window (a unit file from before

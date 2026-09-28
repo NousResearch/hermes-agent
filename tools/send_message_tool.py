@@ -236,10 +236,20 @@ def _handle_send(args):
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files, dropped=media_dropped)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
     used_home_channel = not chat_id
+    home_target = None
     if used_home_channel:
         chat_id, err = _home_chat_id(config, platform, platform_name)
         if err:
             return tool_error(err)
+        if platform_name == "matrix":
+            home_target = chat_id
+            from tools.send_message_targets import _parse_target_ref
+
+            parsed_chat_id, parsed_thread_id, explicit = _parse_target_ref(
+                platform_name, chat_id
+            )
+            if explicit:
+                chat_id, thread_id = parsed_chat_id, parsed_thread_id
     if duplicate_skip := _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id):
         return json.dumps(duplicate_skip)
     # Slack: resolve user targets to DM channel IDs before sending. _parse_target_ref emits internal
@@ -290,6 +300,8 @@ def _handle_send(args):
         if isinstance(result, dict) and media_dropped:
             result["media_dropped"] = media_dropped
         if isinstance(result, dict) and "error" in result:
+            if home_target and home_target != chat_id:
+                result["error"] = f"Target '{home_target}': {result['error']}"
             result["error"] = _sanitize_error_text(result["error"])
         return json.dumps(result)
     except Exception as e:

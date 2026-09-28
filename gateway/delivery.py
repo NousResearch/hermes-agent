@@ -5,7 +5,7 @@ import logging
 import re
 from pathlib import Path
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Any
 
 from hermes_cli.config import get_hermes_home
@@ -56,11 +56,42 @@ class DeliveryTransport:
     def is_relay(self) -> bool:
         return self.transport_platform == Platform.RELAY
 
+    async def resolve_destination(
+        self, source: SessionSource
+    ) -> "ResolvedDeliveryDestination":
+        """Resolve native destination identity through the adapter that answers this source.
+
+        Adapters may implement ``resolve_delivery_target(source)`` to return the canonical
+        reply source. Use the returned transport's adapter for sending and session seeding.
+        """
+        transport = self
+        resolver = getattr(type(self.adapter), "resolve_delivery_target", None)
+        if self.is_relay or not callable(resolver):
+            return ResolvedDeliveryDestination(transport, source)
+        runner = getattr(self.adapter, "gateway_runner", None)
+        owner_for = getattr(runner, "_delivery_adapter_for", None)
+        if callable(owner_for):
+            owner = owner_for(source)
+            if owner is None:
+                raise ValueError(
+                    f"No owning adapter for {source.platform.value}:{source.chat_id}"
+                )
+            transport = replace(self, adapter=owner)
+        resolved = await transport.adapter.resolve_delivery_target(source)
+        return ResolvedDeliveryDestination(transport, resolved)
+
     async def send(self, logical_platform: Platform, chat_id: str, content: str,
                    metadata: Optional[dict[str, Any]]) -> Any:
         """Send through this transport while preserving the logical platform."""
         return await (self.adapter.send_for_platform(logical_platform, chat_id, content, metadata=metadata)
                       if self.is_relay else self.adapter.send(chat_id, content, metadata=metadata))
+
+
+@dataclass(frozen=True)
+class ResolvedDeliveryDestination:
+    """Canonical reply source and the transport that resolved it."""
+    transport: DeliveryTransport
+    source: SessionSource
 
 
 def resolve_delivery_transport(platform: Platform, config: GatewayConfig,

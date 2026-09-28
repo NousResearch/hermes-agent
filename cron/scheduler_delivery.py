@@ -19,9 +19,12 @@ import subprocess
 import sys
 import threading
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, List, Optional, TYPE_CHECKING
 
 from cron import scheduler_delivery_continuation as _continuation
+
+if TYPE_CHECKING:
+    from gateway.session import SessionSource
 
 
 # Log-record parity with the origin module.
@@ -1053,6 +1056,9 @@ class _TargetDelivery:
     inchannel_continuable: bool
     opened_thread_id: Optional[str]
     live_adapter_ready: bool = False
+    original_chat_id: Optional[str] = None
+    resolved_source: Optional[SessionSource] = None
+    resolution_error: Optional[str] = None
     live_error: Optional[str] = None  # the live lane's own rejection string, e.g. "send_path_degraded"
 
     @property
@@ -1062,7 +1068,7 @@ class _TargetDelivery:
     @property
     def where(self) -> str:
         # A topic-routed target without its thread id names the wrong lane in failure reports.
-        base = f"{self.platform_name}:{self.chat_id}"
+        base = f"{self.platform_name}:{self.original_chat_id or self.chat_id}"
         return f"{base}:{self.thread_id}" if self.thread_id else base
 
 
@@ -1193,6 +1199,9 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     # Relay egress discriminators (scope_id / user_id) from the persisted origin: the adapter's caches are cold
     # after a restart. See cron/scheduler_delivery_origin.py.
     _origin.stamp_origin_discriminators(t, route_metadata, media_metadata)
+    if t.original_chat_id and t.original_chat_id != t.chat_id:
+        route_metadata["_original_target"] = t.original_chat_id
+        media_metadata["_original_target"] = t.original_chat_id
     return route_thread_id, route_metadata, media_metadata
 
 
@@ -1302,7 +1311,7 @@ def _live_send_text(
 
 
 def _live_send_media(
-    t: _TargetDelivery, media_metadata: dict, media_files: list, delivery_errors: list) -> None:
+    t: _TargetDelivery, media_metadata: dict, media_files: list, delivery_errors: list) -> bool:
     """Send extracted media as native attachments with the same routing as the text send."""
     routed_media_metadata = dict(media_metadata or {})
     if t.is_relay:
@@ -1320,6 +1329,7 @@ def _live_send_media(
     # Surface per-file failures into run status: text delivered but attachment lost is not ok.
     for _me in _media_errors:
         delivery_errors.append(f"{_me} (target {t.where})")
+    return not _media_errors
 
 
 def _deliver_via_live_adapter(
@@ -1359,7 +1369,9 @@ def _deliver_via_live_adapter(
         # payload is already assumed delivered (#38922). Record the skipped attachments so the drop is
         # visible rather than silently lost.
         if adapter_ok and not timed_out and media_files:
-            _live_send_media(t, media_metadata, media_files, delivery_errors)
+            media_ok = _live_send_media(t, media_metadata, media_files, delivery_errors)
+            if not text_to_send:
+                adapter_ok = media_ok
         elif timed_out and media_files:
             _note_target_error(
                 job,
@@ -1378,7 +1390,8 @@ def _deliver_via_live_adapter(
                 route_thread_id if route_thread_id is not None else "-",
                 delivered_message_id if delivered_message_id is not None else "-")
             delivered = True
-            _continuation._seed_live_delivery_sessions(t, delivered_message_id)
+            if not timed_out:
+                _continuation._seed_live_delivery_sessions(t, delivered_message_id)
     except Exception as e:
         err_msg = f"live adapter delivery to {t.where} failed: {e}"
         if not any(err_msg in err for err in target_errors):
@@ -1529,6 +1542,7 @@ def _prepare_target_delivery(
     from gateway.config import Platform
     platform_name = target["platform"]
     chat_id = target["chat_id"]
+    original_chat_id = chat_id
     thread_id = target.get("thread_id")
 
     origin = _resolve_origin(job) or {}
@@ -1541,24 +1555,6 @@ def _prepare_target_delivery(
         logger.debug(
             "Job '%s': delivering to %s:%s thread_id=%s",
             job["id"], platform_name, chat_id, thread_id)
-
-    # Mirror: origin, origin-less home fallback, user-written home, or explicit-target opt-in.
-    origin_target = _continuation._target_matches_origin(origin, platform_name, chat_id, thread_id)
-    mirror_this_target = mirror_enabled and _continuation._target_mirror_eligible(
-        job, target, global_mirror=mirror_enabled, origin_match=origin_target)
-    # Resolved for ANY origin match (not just mirror-enabled): the in_channel seed needs it too.
-    origin_user_id = origin.get("user_id") if origin_target else None
-
-    # DM shape for BOTH the flatten gate and seed chat_type (Slack DM ids start with "D").
-    origin_chat_type = str(origin.get("chat_type") or "").lower()
-    is_dm_target = origin_chat_type == "dm" or (
-        not origin_chat_type and str(chat_id).startswith("D"))
-
-    # in_channel gate shared by thread-flatten and flat seed — they MUST match or brief and
-    # session land in different places. Origin qualifies unconditionally; others only when the
-    # seed can create a resolvable session (_inchannel_seed_allowed).
-    inchannel_continuable = origin_target or (
-        mirror_this_target and _continuation._inchannel_seed_allowed(is_dm=is_dm_target, user_id=origin_user_id))
 
     # Plugin platform names create dynamic members via Platform._missing_().
     try:
@@ -1580,6 +1576,46 @@ def _prepare_target_delivery(
         runtime_adapter is not None
         and loop is not None
         and getattr(loop, "is_running", lambda: False)()
+    )
+    resolved_source = None
+    resolution_error = None
+    if live_adapter_ready:
+        from cron.scheduler_delivery_destination import resolve_live_destination
+
+        try:
+            destination = resolve_live_destination(
+                transport, platform, chat_id, thread_id, origin, loop
+            )
+            if destination is not None:
+                transport, resolved_source = destination.transport, destination.source
+                runtime_adapter = transport.adapter
+                target_adapters = {platform: runtime_adapter}
+                chat_id, thread_id = resolved_source.chat_id, resolved_source.thread_id
+        except Exception as exc:
+            resolution_error = f"live adapter destination resolution for {platform_name}:{original_chat_id} failed: {exc}"
+            _warn_live_lane_failure(job, resolution_error, transport.is_relay)
+            live_adapter_ready = False
+
+    origin_target = _continuation._target_matches_origin(
+        origin, platform_name, chat_id, thread_id
+    ) or (_continuation._target_matches_origin(origin, platform_name, original_chat_id, thread_id))
+    mirror_this_target = mirror_enabled and _continuation._target_mirror_eligible(
+        job, target, global_mirror=mirror_enabled, origin_match=origin_target
+    )
+    origin_user_id = origin.get("user_id") if origin_target else None
+
+    origin_chat_type = str(origin.get("chat_type") or "").lower()
+    is_dm_target = (
+        resolved_source.chat_type == "dm"
+        if resolved_source is not None
+        else (
+            origin_chat_type == "dm"
+            or (not origin_chat_type and str(chat_id).startswith("D"))
+        )
+    )
+    inchannel_continuable = origin_target or (
+        mirror_this_target
+        and _continuation._inchannel_seed_allowed(is_dm=is_dm_target, user_id=origin_user_id)
     )
 
     # Continuable surface (D1/D2/D6) from platform config ``extra``; default "thread".
@@ -1608,8 +1644,7 @@ def _prepare_target_delivery(
     if (
         mirror_this_target
         and not in_channel_surface
-        and runtime_adapter is not None
-        and loop is not None
+        and live_adapter_ready
         and not thread_id  # never override an explicit origin thread/topic
     ):
         opened_thread_id = _continuation._open_continuable_cron_thread(
@@ -1623,7 +1658,9 @@ def _prepare_target_delivery(
         origin=origin, origin_target=origin_target, origin_user_id=origin_user_id,
         is_dm_target=is_dm_target, mirror_text=mirror_text, mirror_this_target=mirror_this_target,
         in_channel_surface=in_channel_surface, inchannel_continuable=inchannel_continuable,
-        opened_thread_id=opened_thread_id, live_adapter_ready=live_adapter_ready)
+        opened_thread_id=opened_thread_id, live_adapter_ready=live_adapter_ready,
+        original_chat_id=original_chat_id, resolved_source=resolved_source,
+        resolution_error=resolution_error)
 
 
 def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
@@ -1782,7 +1819,7 @@ def _deliver_result(
             mirror_enabled=mirror_enabled, mirror_text=mirror_text, delivery_errors=delivery_errors)
         if t is None:
             continue
-        target_errors: list = []
+        target_errors: list = [t.resolution_error] if t.resolution_error else []
         delivered = t.live_adapter_ready and _deliver_via_live_adapter(
             t, cleaned_delivery_content, media_files,
             target_errors=target_errors, delivery_errors=delivery_errors,

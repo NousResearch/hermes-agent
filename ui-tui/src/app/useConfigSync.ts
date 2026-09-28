@@ -7,6 +7,7 @@ import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from 
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
+import { setAttentionHook, setNotifyOnInteract } from './attentionConfigStore.js'
 import { applyConfiguredTuiTheme } from './createGatewayEventHandler.js'
 import {
   type BusyInputMode,
@@ -274,6 +275,18 @@ export const applyDisplay = (
   setBell(!!d.bell_on_complete)
 
   setBellOnPrompt?.(!!d.bell_on_prompt)
+
+  // Same fail-safe as the approval policy below: a transient config RPC
+  // failure (cfg=null) must not flip attention behavior until the next
+  // successful poll — preserve the last-known flags.
+  if (cfg) {
+    setNotifyOnInteract(!!d.notify_on_interact)
+
+    setAttentionHook({
+      command: typeof d.tui_attention_hook?.command === 'string' ? d.tui_attention_hook.command.trim() : '',
+      enabled: d.tui_attention_hook?.enabled === true
+    })
+  }
 
   applyConfiguredTuiTheme(d.tui_theme)
 

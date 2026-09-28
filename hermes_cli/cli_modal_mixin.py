@@ -549,11 +549,18 @@ class CLIModalMixin:
 
     def _ring_bell(self, prompt: bool = False, context: str = "", detail: str = "") -> None:
         """Terminal bell (\\a) gated by ``display.bell_on_prompt`` (``prompt=True``, blocking modals)
-        or ``display.bell_on_complete`` (end of turn); works over SSH. The same flag also emits the
-        OSC 9 / Warp OSC 777 desktop notification; ``context`` is the short notification body."""
+        or ``display.bell_on_complete`` (end of turn); works over SSH. ``display.notify_on_interact``
+        also rings blocking prompts regardless of ``bell_on_prompt``. The same flag also emits the
+        OSC 9 / Warp OSC 777 desktop notification; ``context`` is the short notification body. On
+        Linux a ``paplay`` system sound is fired alongside BEL — Wayland terminals swallow BEL as a
+        visual flash, so PulseAudio/PipeWire hosts get an audible cue (#25022)."""
         flag = "bell_on_prompt" if prompt else "bell_on_complete"
-        if not getattr(self, flag, False) or getattr(self, "_terminal_io_broken", False):
+        enabled = getattr(self, flag, False) or (prompt and getattr(self, "notify_on_interact", False))
+        if not enabled or getattr(self, "_terminal_io_broken", False):
             return
+        if prompt:
+            from hermes_cli.terminal_notify import play_attention_sound
+            play_attention_sound()
         from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
         from hermes_cli.terminal_notify import notification_sequence, write_tty
         body = context or ("input needed" if prompt else "turn complete")

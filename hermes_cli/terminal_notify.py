@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 
 _C0_AND_DEL = re.compile(r"[\x00-\x1f\x7f]")
@@ -23,6 +24,25 @@ _WARP_PROTOCOL_VERSION = 1
 # Last Warp release per channel that set WARP_CLI_AGENT_PROTOCOL_VERSION but could not render
 # structured payloads (Warp's should-use-structured.sh). Bash compares lexicographically; so do we.
 _WARP_LAST_BROKEN = {"stable": "v0.2026.03.25.08.24.stable_05", "preview": "v0.2026.03.25.08.24.preview_05"}
+
+# System sound played when a bell/notify cue fires (freedesktop theme ships it on every major
+# distro). Wayland terminals (Foot, Kitty, ghostty) swallow BEL as a visual flash at best, so
+# PulseAudio/PipeWire hosts also get an audible cue (#25022). fire-and-forget: ENOENT on hosts
+# without paplay is the "no PulseAudio" signal and is silently absorbed.
+ATTENTION_SOUND = "/usr/share/sounds/freedesktop/stereo/message-new-instant.oga"
+
+
+def play_attention_sound(platform: str | None = None) -> None:
+    """Best-effort paplay of the system message sound. Never raises, never blocks."""
+    if not (platform or sys.platform).startswith("linux"):
+        return
+    try:
+        subprocess.Popen(
+            ["paplay", ATTENTION_SOUND],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+    except Exception:
+        pass
 
 
 def write_tty(seq: str) -> None:

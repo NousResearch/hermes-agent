@@ -2187,6 +2187,10 @@ display:
   # notification; other terminals ignore it) and, inside Warp (TERM_PROGRAM=WarpTerminal with the CLI-agent
   # protocol advertised), a warp://cli-agent OSC 777 event (`stop` on completion, `permission_request` on
   # blocking prompts) so Warp's tab status and notification mailbox track Hermes. No extra keys needed.
+  notify_on_interact: false # Audible cue (BEL + paplay system sound) when a blocking prompt opens — for Wayland terminals where BEL is silent
+  tui_attention_hook:     # TUI: run a user command on completed/waiting/blocked turns (argv + HERMES_ATTENTION_* env payload)
+    enabled: false
+    command: ""           # e.g. "notify-send" for native desktop notifications, or any script
   show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar

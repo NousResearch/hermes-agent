@@ -1937,6 +1937,26 @@ display:
   #   false: Silent (default)
   bell_on_prompt: false
 
+  # Audible cue when a blocking prompt opens and waits on you (clarify,
+  # approval, sudo, secret capture). Rings the terminal bell AND plays a
+  # system sound via paplay (PulseAudio/PipeWire) — Wayland terminals
+  # (Foot, Kitty, ghostty) ignore or only flash BEL, so the sound is what
+  # you actually hear. Broader than bell_on_prompt: this one always cues.
+  #   true:  BEL + paplay whenever the agent is waiting for your input
+  #   false: Silent (default)
+  notify_on_interact: false
+
+  # Run a user command on attention-worthy TUI moments: turn.completed,
+  # turn.blocked (failed turn / error), and blocking prompts opening
+  # (input.needed, approval.needed, sudo.needed). The command is spawned
+  # detached, best-effort — failures never touch the agent. Payload: argv
+  # (event, title, message) plus HERMES_ATTENTION_{EVENT,TITLE,SUBTITLE,
+  # MESSAGE,SESSION_ID} env vars. Example: "notify-send" gives native
+  # desktop notifications; write any script for tmux hooks, chimes, etc.
+  tui_attention_hook:
+    enabled: false
+    # command: "notify-send"
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.

@@ -2962,7 +2962,12 @@ def _show_display_section(config: Dict[str, Any]) -> None:
     print(f"  Reasoning:    {on_off(display.get('show_reasoning', True))}")
     print(
         f"  Bell:         complete={on_off(display.get('bell_on_complete', False))}, "
-        f"prompt={on_off(display.get('bell_on_prompt', False))}")
+        f"prompt={on_off(display.get('bell_on_prompt', False))}, "
+        f"interact={on_off(display.get('notify_on_interact', False))}")
+    hook = display.get('tui_attention_hook') or {}
+    hook = hook if isinstance(hook, dict) else {}
+    suffix = f" ({hook['command']})" if hook.get('enabled') and hook.get('command') else ''
+    print(f"  Attention:    hook={on_off(hook.get('enabled', False))}{suffix}")
     ump = display.get('user_message_preview', {})
     ump = ump if isinstance(ump, dict) else {}
     print(f"  User preview: first {ump.get('first_lines', 2)} line(s), last {ump.get('last_lines', 2)} line(s)")

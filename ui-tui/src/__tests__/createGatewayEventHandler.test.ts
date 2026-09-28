@@ -71,7 +71,7 @@ const serverRequest = (method: string, params: Record<string, unknown>, id = `sr
   const respond = vi.fn()
 
   const handled = createServerRequestHandler({
-    ringPromptBell: vi.fn(),
+    notifyPromptAttention: vi.fn(),
     setStatus: status => patchUiState({ status })
   })({
     fail: vi.fn(),

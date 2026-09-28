@@ -47,6 +47,8 @@ class CLIInitMixin:
         self.resume_display = display.get("resume_display", "full")  # "full" | "minimal"
         self.bell_on_complete = display.get("bell_on_complete", False)
         self.bell_on_prompt = display.get("bell_on_prompt", False)  # bell when a blocking modal opens
+        # Audible cue (BEL + paplay) when a blocking prompt opens, independent of bell_on_prompt.
+        self.notify_on_interact = display.get("notify_on_interact", False)
         self.show_reasoning = display.get("show_reasoning", True)
         self.reasoning_full = display.get("reasoning_full", False)
         _configure_output_history(

@@ -34,6 +34,7 @@ import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
+import { notifyAttention, ringBell } from '../lib/notify.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -50,6 +51,7 @@ import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { applyAgentSnapshot } from './agentRoster.js'
+import { getNotifyOnInteract } from './attentionConfigStore.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createServerRequestHandler } from './createServerRequestHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
@@ -927,7 +929,7 @@ export function useMainApp(gw: GatewayClient) {
           setCatalog
         },
         submission: { submitLiteralRef, submitRef },
-        system: { bellOnComplete, bellOnPrompt, stdout, sys },
+        system: { bellOnComplete, stdout, sys },
         transcript: { appendMessage, panel, setHistoryItems },
         voice: {
           setProcessing: setVoiceProcessing,
@@ -939,7 +941,6 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
-      bellOnPrompt,
       composerActions.setInput,
       gateway,
       panel,
@@ -962,10 +963,12 @@ export function useMainApp(gw: GatewayClient) {
   const onServerRequest = useMemo(
     () =>
       createServerRequestHandler({
-        ringPromptBell: () => {
-          if (bellOnPrompt && stdout?.isTTY) {
-            stdout.write('\x07')
+        notifyPromptAttention: payload => {
+          if (getNotifyOnInteract() || bellOnPrompt) {
+            ringBell(stdout)
           }
+
+          notifyAttention(payload)
         },
         setStatus: status => patchUiState({ status })
       }),

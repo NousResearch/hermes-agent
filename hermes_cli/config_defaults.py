@@ -849,6 +849,17 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
+        # Audible cue (BEL + best-effort paplay on PulseAudio/PipeWire) whenever a blocking
+        # prompt opens — clarify/approval/sudo/secret. Broader than bell_on_prompt (BEL only)
+        # and covers hosts where BEL is silent (Wayland terminals).
+        "notify_on_interact": False,
+        # User command fired (detached, best-effort) on attention-worthy TUI moments:
+        # turn.completed, turn.blocked, and the blocking prompts (input/approval/sudo.needed).
+        # Payload: argv (event, title, message) + HERMES_ATTENTION_* env vars.
+        "tui_attention_hook": {
+            "enabled": False,
+            "command": "",
+        },
         # Stream reasoning live before the response; otherwise thinking models show only a spinner
         # for tens of seconds.
         "show_reasoning": True,

@@ -1222,6 +1222,11 @@ display:
   compact: false          # 紧凑输出模式（减少空白）
   resume_display: full    # full（恢复时显示之前的消息）| minimal（仅单行）
   bell_on_complete: false # 当 agent 完成时播放终端铃声（适合长任务）
+  bell_on_prompt: false   # 当阻塞提示（clarify/审批/sudo/密钥）打开时播放终端铃声 — 通过 SSH 也可用
+  notify_on_interact: false # 当阻塞提示打开时发出声音提示（BEL + paplay 系统音）— 适用于 BEL 无声的 Wayland 终端
+  tui_attention_hook:     # TUI：在完成/等待/阻塞的回合运行用户命令（argv + HERMES_ATTENTION_* 环境变量）
+    enabled: false
+    command: ""           # 例如 "notify-send" 原生桌面通知，或任意脚本
   show_reasoning: false   # 在每次响应上方显示模型推理/思考（用 /reasoning show|hide 切换）
   streaming: false        # 将 token 实时流式传输到终端
   show_cost: false        # 在 CLI 状态栏中显示估计 $ 成本

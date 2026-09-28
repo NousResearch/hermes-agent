@@ -18,6 +18,7 @@ import type {
 } from '../gatewayTypes.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
 import { isTodoDone } from '../lib/liveProgress.js'
+import { type AttentionEvent, notifyAttention, ringBell } from '../lib/notify.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
@@ -439,14 +440,17 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const { rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, recoverSidRef, resumeById, setCatalog } = ctx.session
-  const { bellOnComplete, bellOnPrompt, stdout, sys } = ctx.system
+  const { bellOnComplete, stdout, sys } = ctx.system
 
-  // display.bell_on_prompt — BEL whenever a blocking prompt modal opens
-  // (same mechanism as bell_on_complete; works over SSH, triggers tmux bell-action).
-  const ringPromptBell = () => {
-    if (bellOnPrompt && stdout?.isTTY) {
-      stdout.write('\x07')
+  // One attention path for turn outcomes: the bell (display.bell_on_complete,
+  // BEL + paplay fallback for Wayland hosts where BEL is silent) and the
+  // configurable display.tui_attention_hook, both fire-and-forget.
+  const notifyTurnAttention = (event: AttentionEvent, message: string) => {
+    if (bellOnComplete && stdout?.isTTY) {
+      ringBell(stdout)
     }
+
+    notifyAttention({ event, message, session_id: getUiState().sid })
   }
 
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
@@ -952,6 +956,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             p.text,
             p.kind === 'error' ? 'error' : p.kind === 'warn' || p.kind === 'approval' ? 'warn' : 'info'
           )
+
+          // A kind=error status note mid-turn is the visible "blocked" signal
+          // (the turn may still retry); the attention hook still fires so an
+          // unwatched terminal learns the turn needs eyes.
+          if (p.kind === 'error') {
+            notifyTurnAttention('turn.blocked', p.text)
+          }
         }
 
         restoreStatusAfter(4000)
@@ -1583,8 +1594,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')
 
           if (bellOnComplete && stdout?.isTTY) {
-            stdout.write('\x07')
+            ringBell(stdout)
           }
+
+          notifyTurnAttention(
+            payload.status === 'error' ? 'turn.blocked' : 'turn.completed',
+            failed ? describeTurnFailure(payload) : finalText
+          )
         }
 
         setStatus('ready')
@@ -1637,6 +1653,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const message = String(ev.payload?.message || 'unknown error')
 
           turnController.pushActivity(message, 'error')
+          notifyTurnAttention('turn.blocked', message)
 
           if (NO_PROVIDER_RE.test(message)) {
             panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())

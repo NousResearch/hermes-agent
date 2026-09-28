@@ -82,6 +82,9 @@ export interface ConfigDisplayConfig {
   focus_view?: boolean
   inline_diffs?: boolean
   mouse_tracking?: boolean | null | number | string
+  /** display.notify_on_interact — audible cue (BEL + paplay) when a blocking
+   *  prompt opens, separate from bell_on_prompt (#25022). */
+  notify_on_interact?: boolean
   sections?: Record<string, string>
   show_cost?: boolean
   show_reasoning?: boolean
@@ -91,6 +94,10 @@ export interface ConfigDisplayConfig {
   status_bar?: { fields?: unknown }
   streaming?: boolean
   thinking_mode?: string
+  /** display.tui_attention_hook — user-configured command fired on
+   *  completed / waiting / blocked turns (#46357). Raw YAML: the consumer
+   *  validates the shape. */
+  tui_attention_hook?: { command?: unknown; enabled?: unknown }
   /** Show [HH:MM] timestamps on transcript rows — same key the classic CLI
    *  honors on its user/assistant labels (#41531). */
   timestamps?: boolean

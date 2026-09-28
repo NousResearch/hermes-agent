@@ -7,12 +7,11 @@ refactor — they are the regression harness that proves the built-in firing
 behavior is byte-for-byte preserved when the ticker is moved behind the
 CronScheduler provider interface.
 
-No production code is exercised beyond the two ticker entry points:
-  - gateway/run.py::_start_cron_ticker        (production gateway ticker)
+No production code is exercised beyond the desktop ticker entry point:
   - hermes_cli/web_server.py::_start_desktop_cron_ticker  (desktop fallback)
 
-Both call `cron.scheduler.tick(...)` on a loop and exit when their stop_event
-is set. We patch `cron.scheduler.tick` (both tickers import it locally as
+It calls `cron.scheduler.tick(...)` on a loop and exits when its stop_event
+is set. We patch `cron.scheduler.tick` (the ticker imports it locally as
 `cron_tick`, so the module-attribute patch is observed) and assert the loop
 drives it and stops promptly.
 """
@@ -37,38 +36,6 @@ def _wait_until(predicate, timeout=10.0, interval=0.005):
             return value
         time.sleep(interval)
     return predicate()
-
-
-def test_ticker_calls_tick_at_least_once_then_stops():
-    """The gateway in-process ticker loop calls cron.scheduler.tick repeatedly
-    and exits promptly once the stop_event is set."""
-    from gateway.run import _start_cron_ticker
-
-    calls = []
-    stop = threading.Event()
-
-    def fake_tick(*args, **kwargs):
-        calls.append(kwargs)
-        return 0
-
-    with patch("cron.scheduler.tick", side_effect=fake_tick):
-        # interval=0 keeps the loop tight; stop after the first observed tick.
-        t = threading.Thread(
-            target=_start_cron_ticker,
-            args=(stop,),
-            kwargs={"interval": 0},
-            daemon=True,
-        )
-        t.start()
-        assert _wait_until(lambda: len(calls) >= 1), "ticker never called tick()"
-        stop.set()
-        t.join(timeout=5)
-
-    assert not t.is_alive(), "ticker did not exit after stop_event was set"
-    assert len(calls) >= 1, "ticker never called tick()"
-    # Contract: the ticker invokes tick with sync=False (fire-and-forget from
-    # the background thread, never the synchronous CLI path).
-    assert calls[0].get("sync") is False
 
 
 def test_desktop_ticker_calls_tick_then_stops():

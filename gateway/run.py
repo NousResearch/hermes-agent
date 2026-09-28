@@ -4899,13 +4899,6 @@ def _start_gateway_housekeeping(
     logger.info("Gateway housekeeping stopped")
 
 
-def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
-    """DEPRECATED shim — runs ONLY the built-in in-process cron tick loop; the trigger now lives behind
-    the ``CronScheduler`` provider and housekeeping in ``_start_gateway_housekeeping``."""
-    from cron.scheduler_provider import InProcessCronScheduler
-    InProcessCronScheduler().start(stop_event, adapters=adapters, loop=loop, interval=interval)
-
-
 def _stop_cron_provider(provider) -> None:
     """Stop a cron provider without letting it choose the gateway exit code."""
     try:

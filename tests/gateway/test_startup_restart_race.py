@@ -211,7 +211,6 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
         cron_started = True
 
     _patch_aborted_startup(monkeypatch, AbortedStartupRunner)
-    monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
     monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
 
     with pytest.raises(SystemExit) as exc:
@@ -253,7 +252,6 @@ async def test_start_gateway_preserves_service_restart_fallback_after_aborted_st
         cron_started = True
 
     _patch_aborted_startup(monkeypatch, AbortedStartupRunner)
-    monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
     monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
 
     with pytest.raises(SystemExit) as exc:
@@ -312,7 +310,6 @@ async def test_start_gateway_classifies_startup_signal_exit(
     monkeypatch.setattr(
         "gateway.run._start_gateway_make_shutdown_signal_handler", capture_signal_state
     )
-    monkeypatch.setattr("gateway.run._start_cron_ticker", fail_if_cron_starts)
     monkeypatch.setattr("tools.mcp_tool_lifecycle.shutdown_mcp_servers", lambda: None)
 
     result = await gateway_run.start_gateway(

@@ -187,8 +187,8 @@ def test_context_overflow_error_reply_carries_no_partial_effect_notice():
         err, MessageEvent(text="x", source=source), source, None, "k", prepared,
     ))
 
-    from gateway.run import _CONTEXT_OVERFLOW_REPLY
-    assert reply == _CONTEXT_OVERFLOW_REPLY
+    from gateway.run import _context_overflow_reply
+    assert reply == _context_overflow_reply()
     assert PARTIAL_FAILED_TURN_NOTICE not in reply
 
 

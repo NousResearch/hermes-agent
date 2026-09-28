@@ -35,8 +35,10 @@ import {
   setCurrentCwdTransient,
   setCurrentFastMode,
   setCurrentModel,
+  setCurrentModelTransient,
   setCurrentPersonality,
   setCurrentProvider,
+  setCurrentProviderTransient,
   setCurrentReasoningEffort,
   setCurrentReasoningEffortWire,
   setCurrentServiceTier,
@@ -1953,10 +1955,33 @@ export function cachedSessionRow(storedSessionId: string): SessionInfo | undefin
   )
 }
 
+export type StoredSessionProbe = { status: 'found'; session: SessionInfo } | { status: 'gone' | 'inconclusive' }
+
 export async function resolveStoredSession(
   storedSessionId: string,
   ownerRoute?: SessionProfileRoute
 ): Promise<SessionInfo | undefined> {
+  const result = await probeStoredSession(storedSessionId, ownerRoute)
+
+  return result.status === 'found' ? result.session : undefined
+}
+
+/** `resolveStoredSession` with the ladder's evidence kept: `gone` only when
+ *  every rung answered an explicit session 404 (a 5xx, a network failure or a
+ *  bare 404 from a proxy is `inconclusive`), and — without an owner — only once
+ *  the profile inventory is known, or a single-profile sweep would vouch for
+ *  ids that live on a profile not yet listed (#125678). */
+export async function probeStoredSession(
+  storedSessionId: string,
+  ownerRoute?: SessionProfileRoute
+): Promise<StoredSessionProbe> {
+  let allGone = true
+
+  const recordFailure = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error ?? '')
+    allGone &&= /\b404\b/.test(message) && /session not found/i.test(message)
+  }
+
   // Snapshot BEFORE any await: a resolve that started before an archive/delete
   // must reject its own stale response (see upsertResolvedSession).
   const tombstoneGenerationsAtRequestStart = captureSessionTombstoneGenerations()
@@ -1975,7 +2000,7 @@ export async function resolveStoredSession(
       (!cached.profile || normalizeProfileKey(cached.profile) === normalizeProfileKey(ownerRoute.profile))
 
     if (cached && cachedOwnerMatches) {
-      return cached
+      return { status: 'found', session: cached }
     }
 
     try {
@@ -1984,11 +2009,13 @@ export async function resolveStoredSession(
       session.connection_id = ownerRoute.connectionId
       upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
 
-      return session
-    } catch {
+      return { status: 'found', session }
+    } catch (error) {
       // An explicit owner is fail-closed. Probing the ambient or another
       // profile would turn a stale route into a cross-connection open.
-      return undefined
+      recordFailure(error)
+
+      return { status: allGone ? 'gone' : 'inconclusive' }
     }
   }
 
@@ -1999,7 +2026,7 @@ export async function resolveStoredSession(
   const multiProfile = $profiles.get().length > 1
 
   if (cached && (cached.profile?.trim() || !multiProfile)) {
-    return cached
+    return { status: 'found', session: cached }
   }
 
   // Direct by-id on the active profile — one row lookup, no list scan. Electron
@@ -2018,9 +2045,10 @@ export async function resolveStoredSession(
 
     upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
 
-    return session
-  } catch {
+    return { status: 'found', session }
+  } catch (error) {
     // Not on the active profile — fall through to the cross-profile probe.
+    recordFailure(error)
   }
 
   // Multi-profile only: probe each remaining profile by id (still one cheap
@@ -2044,13 +2072,14 @@ export async function resolveStoredSession(
 
       upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
 
-      return session
-    } catch {
+      return { status: 'found', session }
+    } catch (error) {
       // Not on this profile; try the next.
+      recordFailure(error)
     }
   }
 
-  return undefined
+  return { status: allGone && $profiles.get().length > 0 ? 'gone' : 'inconclusive' }
 }
 
 /**
@@ -2119,6 +2148,7 @@ type SessionRuntimeStatePatch = Partial<
     | 'reasoningEffortPending'
     | 'reasoningEffortWire'
     | 'serviceTier'
+    | 'usage'
     | 'yolo'
   >
 >
@@ -2260,11 +2290,28 @@ export function applyRuntimeInfo(
     sessionState.yolo = info.yolo
   }
 
+  if (info.usage) {
+    // Runtime info is an authoritative snapshot. Keep a complete per-runtime
+    // usage object so a secondary tile can render immediately after create/resume;
+    // an omitted compression count intentionally clears a stale tile value.
+    sessionState.usage = {
+      ...info.usage,
+      calls: info.usage.calls ?? 0,
+      compressions: info.usage.compressions,
+      input: info.usage.input ?? 0,
+      output: info.usage.output ?? 0,
+      total: info.usage.total ?? 0
+    }
+  }
+
   if (foreground) {
     publishRuntimeToComposer(sessionState)
 
     if (info.usage) {
-      setCurrentUsage(current => ({ ...current, ...info.usage }))
+      // session.info/session.resume is an authoritative session snapshot, not a
+      // partial live tick. Clear a missing compression count so switching from
+      // a counted session to an older/cold runtime cannot leak the old value.
+      setCurrentUsage(current => ({ ...current, ...info.usage, compressions: info.usage?.compressions }))
     }
   }
 
@@ -2275,8 +2322,19 @@ export function applyStoredSessionPreviewRuntimeInfo(
   stored: { cwd?: null | string; model?: null | string } | undefined,
   storedSessionId: null | string
 ) {
-  setCurrentModel(stored?.model || '')
-  setCurrentProvider('')
+  // Compression count is live runtime state, not part of a durable session row.
+  // Drop the previous session's value immediately while the selected runtime
+  // resumes; the authoritative usage snapshot will repopulate it when present.
+  setCurrentUsage(current => ({ ...current, compressions: undefined }))
+  // Transient: this is a PREVIEW painted while `session.resume` is still in
+  // flight. If the resume is abandoned (user starts a new chat before it
+  // returns, or the row is switched away), nothing repairs the selection
+  // afterwards — persisting these values left the composer holding a manual
+  // model with an EMPTY provider in localStorage, and every later
+  // `session.create` paired that model with the profile provider and failed
+  // the coherence gate (#125336).
+  setCurrentModelTransient(stored?.model || '')
+  setCurrentProviderTransient('')
   setCurrentReasoningEffort('')
   setCurrentServiceTier('')
   setCurrentFastMode(false)

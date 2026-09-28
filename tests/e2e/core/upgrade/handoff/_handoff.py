@@ -420,14 +420,10 @@ def settle_gateway(inst: Install, old_pid: int, *, timeout: float = 180) -> dict
 
 
 # Which open issue explains a missing relaunch, per column (fix PRs delete their entry). ``n1``: the
-# restart watcher runs on the bare store Python and dies importing gateway.status. ``head``: the
-# updater does not recognise a gateway launched through the pm-runtime shim (``python3 -I -c
-# <bootstrap> gateway run``), so it stops it as an unsupervised stale survivor instead of relaunching.
+# restart watcher runs on the bare store Python and dies importing gateway.status.
 RELAUNCH_GATES = {
     "n1": (r"relaunch armed but never started: no new gateway process booted",
            "gated on #124649: the update restart watcher dies before relaunching a manual gateway"),
-    "head": (r"no relaunch: the update did not recognise gateway PID \d+ and stopped it as an unsupervised",
-             "gated on #124029: a pm-runtime-launched gateway is invisible to the updater's process scan"),
 }
 
 _UNSUPERVISED_STOP = re.compile(r"Stopped \d+ manual gateway process\(es\) that had no supervisor")

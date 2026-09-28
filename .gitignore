@@ -319,3 +319,6 @@ native/fts5_cjk/*.so
 /pm/.lock.json.lock
 
 apps/desktop/.dist-build*
+
+# Local automation composer acceptance evidence (not published)
+.automation-evidence/

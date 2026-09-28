@@ -67,7 +67,10 @@ def _warn_profile_read_error(profile: str, exc: Exception) -> None:
     _log.warning("profile session read failed for %r (reported only in the response "
                  "errors array): %s", profile, exc)
 
+from hermes_cli.web_routers.agent_overview import router as agent_overview_router
+
 sessions_router = APIRouter()
+sessions_router.include_router(agent_overview_router)
 router = APIRouter()
 
 # Late-bound web_server helpers (resolved at call time; cycle-safe, monkeypatch-transparent).
@@ -211,16 +214,20 @@ def _best_effort(log_msg: str, *args, fn, default=None):
         return default
 
 
-def _profile_targets(log_label: str) -> List[Tuple[str, Path]]:
+def _profile_targets(log_label: str,
+                     errors: Optional[List[Dict[str, str]]] = None) -> List[Tuple[str, Path]]:
     """(name, home) for every profile, falling back to ``default`` alone. Uses
     ``profiles_to_serve`` (pure directory read) instead of ``list_profiles``, which parses
     config/meta and probes gateways per profile — every caller here is a polled sidebar
-    fan-out that only needs name/path (#114041)."""
+    fan-out that only needs name/path (#114041).
+    Overview callers pass ``errors`` so discovery failure cannot imply full coverage."""
     from hermes_cli import profiles as profiles_mod
     try:
         targets = list(profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True))
     except Exception:
         _log.exception("%s: profile enumeration failed", log_label)
+        if errors is not None:
+            errors.append({"error": "profile-inventory-unavailable"})
         targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))

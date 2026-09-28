@@ -2,6 +2,8 @@ import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { AgentOverview } from '../electron/agent-overview'
+export type { AgentOverview, OverviewProfile, OverviewSession, OverviewSource } from '../electron/agent-overview'
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
@@ -46,6 +48,7 @@ declare global {
       }) => Promise<GatewayWsUrlResult>
       // Union agent roster across every registered connection.
       getAgentRoster?: () => Promise<DesktopAgentRoster>
+      getAgentOverview?: (options?: { force?: boolean }) => Promise<AgentOverview>
       // Credential-free routes across the union connection registry. The
       // optional profile list is used only by the single-local v1 fallback;
       // endpoint and auth material never crosses the IPC boundary.
@@ -1141,6 +1144,7 @@ export interface DesktopRosterAgent {
 }
 
 export interface DesktopAgentRoster {
+  primaryConnectionId?: string
   agents: DesktopRosterAgent[]
   sources: {
     connectionId: string

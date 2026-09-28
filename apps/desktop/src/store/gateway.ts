@@ -445,6 +445,15 @@ function isPrimaryRegistryRoute(connectionId: null | string, profile: string): b
   )
 }
 
+/** Read only an already-attached exact owner socket; never resolve or dial a route. */
+export function isGatewayOpenForAgent(connectionId: string, profile: string): boolean {
+  const gateway = isPrimaryRegistryRoute(connectionId, profile)
+    ? g.primaryGateway
+    : (g.secondaries.get(registryBackendScopeKey(connectionId, profile))?.gateway ?? null)
+
+  return isOpen(gateway)
+}
+
 /** True when `connectionId` is the window's already-attached source AND main
  *  says `profile` rides the backend that source's primary socket is already
  *  connected to — a one-host-many-profiles remote (`sharedRemote`, #96493) or

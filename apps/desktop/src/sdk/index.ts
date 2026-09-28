@@ -378,6 +378,8 @@ let openSessionGeneration = 0
 let gatewaySwapTargetOwnerGeneration: number | null = null
 
 export interface PluginOpenSessionOptions {
+  /** A short-lived caller may abandon its selection while the owner socket dials. */
+  isCurrent?: () => boolean
   awaitHydration?: boolean
   expectHistory?: boolean
   /** Always request a sequenced session.resume after the open, even when the
@@ -1001,6 +1003,7 @@ export const host = {
 
     const openingStillCurrent = () =>
       generation === openSessionGeneration &&
+      (options.isCurrent?.() ?? true) &&
       (options.workspaceMode !== 'bots' ||
         options.refreshInPlace ||
         ($workspaceMode.get() === 'bots' && $workspaceOwnerKey.get() === (options.workspaceOwnerKey ?? null)))
@@ -1153,10 +1156,10 @@ export const host = {
             break
           }
 
-          if (options.workspaceMode === 'bots') {
+          if (options.workspaceMode) {
             openSession(storedSessionId, navigate, intent, {
               ownerRoute: ownerRoute ?? undefined,
-              workspaceMode: 'bots',
+              workspaceMode: options.workspaceMode,
               workspaceOwnerKey: options.workspaceOwnerKey,
               ...(options.tabTitle ? { workspaceTabTitle: options.tabTitle } : {})
             })

@@ -162,6 +162,18 @@
           },
           {
             "$ref": "#/$defs/execution_backend_counter"
+          },
+          {
+            "$ref": "#/$defs/platform_health_counter"
+          },
+          {
+            "$ref": "#/$defs/platform_delivery_counter"
+          },
+          {
+            "$ref": "#/$defs/reply_latency_counter"
+          },
+          {
+            "$ref": "#/$defs/cron_run_counter"
           }
         ]
       }
@@ -405,7 +417,7 @@
               "$ref": "#/$defs/execution_surface"
             },
             "platform": {
-              "$ref": "#/$defs/vocabulary_identifier"
+              "$ref": "#/$defs/catalog_identifier"
             }
           }
         },
@@ -496,7 +508,7 @@
               "$ref": "#/$defs/count_bucket"
             },
             "platform": {
-              "$ref": "#/$defs/vocabulary_identifier"
+              "$ref": "#/$defs/catalog_identifier"
             },
             "failure_class": {
               "$ref": "#/$defs/vocabulary_identifier"
@@ -1065,7 +1077,7 @@
               ]
             },
             "platform": {
-              "$ref": "#/$defs/vocabulary_identifier"
+              "$ref": "#/$defs/catalog_identifier"
             },
             "turn_count_bucket": {
               "$ref": "#/$defs/size_bucket"
@@ -1735,6 +1747,210 @@
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$",
       "description": "A public name Nous publishes (slash-command registry, bundled/optional skills, optional-mcps/ and plugin-catalog/ entries, shipped locales), or the placeholder custom/plugin/skill/unknown/other."
+    },
+    "platform_health_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.platform.health"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "error_class",
+            "event",
+            "platform"
+          ],
+          "properties": {
+            "error_class": {
+              "enum": [
+                "auth",
+                "config",
+                "network",
+                "none",
+                "other",
+                "rate_limited"
+              ]
+            },
+            "event": {
+              "enum": [
+                "connect_failed",
+                "connect_ok",
+                "disconnect",
+                "reconnect"
+              ]
+            },
+            "platform": {
+              "$ref": "#/$defs/catalog_identifier"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "platform_delivery_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.platform.delivery"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "failure_class",
+            "outcome",
+            "platform"
+          ],
+          "properties": {
+            "failure_class": {
+              "enum": [
+                "auth",
+                "forbidden",
+                "network",
+                "none",
+                "other",
+                "rate_limited",
+                "too_long"
+              ]
+            },
+            "outcome": {
+              "enum": [
+                "failed",
+                "sent"
+              ]
+            },
+            "platform": {
+              "$ref": "#/$defs/catalog_identifier"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "reply_latency_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.gateway.reply_latency"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "first_response_bucket",
+            "platform"
+          ],
+          "properties": {
+            "first_response_bucket": {
+              "enum": [
+                "15s_to_60s",
+                "2s_to_5s",
+                "5s_to_15s",
+                "gte_60s",
+                "lt_2s"
+              ]
+            },
+            "platform": {
+              "$ref": "#/$defs/catalog_identifier"
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "cron_run_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.cron.run"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "delivery_kind",
+            "duration_bucket",
+            "outcome"
+          ],
+          "properties": {
+            "delivery_kind": {
+              "enum": [
+                "local",
+                "none",
+                "other",
+                "platform",
+                "webhook"
+              ]
+            },
+            "duration_bucket": {
+              "$ref": "#/$defs/duration_bucket"
+            },
+            "outcome": {
+              "enum": [
+                "failed",
+                "missed",
+                "skipped",
+                "success"
+              ]
+            }
+          }
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     }
   }
 }

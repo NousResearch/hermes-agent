@@ -124,7 +124,7 @@ TASK_FAILURE_CLASSES = MODEL_ERROR_CLASSES | frozenset({
     "repeated_errors", "restart_limit", "session_busy", "shutdown",
 })
 # Surfaces that are not messaging platforms keep their own execution_surface value.
-GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin"}
+_CORE_GATEWAY_PLATFORMS = (frozenset(PLATFORMS) - {"api_server", "cli", "cron"}) | {"none", "plugin"}
 TOOL_NAMES = BUILTIN_TOOL_NAMES | {"mcp", "plugin", "unknown"}
 TOOL_ERROR_CLASSES = frozenset({
     "blocked", "contract_violation", "exception", "interrupted", "invalid_arguments", "none",
@@ -216,6 +216,24 @@ EXECUTION_BACKENDS_BY_KIND = {
 EXECUTION_BACKENDS = BROWSER_BACKENDS | CODE_BACKENDS | TERMINAL_BACKENDS
 EXECUTION_OUTCOMES = frozenset({"failed", "success"})
 # ---- end v4 loop ----
+# ---- v4 gateway ----
+PLATFORM_HEALTH_MARK = PLATFORM_HEALTH_METRIC = "hermes.platform.health"
+PLATFORM_DELIVERY_MARK = PLATFORM_DELIVERY_METRIC = "hermes.platform.delivery"
+REPLY_LATENCY_MARK = REPLY_LATENCY_METRIC = "hermes.gateway.reply_latency"
+CRON_RUN_MARK = CRON_RUN_METRIC = "hermes.cron.run"
+# Plugin platforms are named only when Nous ships them (plugins/platforms/) or the installer proved a
+# plugin-catalog install (shared_metrics_catalog.platform_metric_name); every other one is ``plugin``.
+_PLATFORM_CATALOGS = ("bundled_platform_names", "catalog_platform_names")
+GATEWAY_PLATFORMS = _CatalogValues(*_PLATFORM_CATALOGS, extra=_CORE_GATEWAY_PLATFORMS)
+# The API server is an adapter the gateway connects and delivers through, but not a messaging surface.
+ADAPTER_PLATFORMS = _CatalogValues(*_PLATFORM_CATALOGS, extra=_CORE_GATEWAY_PLATFORMS | {"api_server"})
+PLATFORM_HEALTH_EVENTS = frozenset({"connect_ok", "connect_failed", "reconnect", "disconnect"})
+PLATFORM_ERROR_CLASSES = frozenset({"none", "auth", "network", "rate_limited", "config", "other"})
+DELIVERY_OUTCOMES = frozenset({"sent", "failed"})
+DELIVERY_FAILURE_CLASSES = frozenset({"none", "rate_limited", "too_long", "auth", "network", "forbidden", "other"})
+REPLY_LATENCY_BUCKETS = frozenset({"lt_2s", "2s_to_5s", "5s_to_15s", "15s_to_60s", "gte_60s"})
+CRON_RUN_OUTCOMES = frozenset({"success", "failed", "missed", "skipped"})
+CRON_DELIVERY_KINDS = frozenset({"local", "platform", "webhook", "none", "other"})
 
 _ARCHITECTURE_ALIASES = {
     "amd64": "x86_64", "x64": "x86_64", "x86_64": "x86_64",
@@ -374,6 +392,17 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "outcome": EXECUTION_OUTCOMES,
     },
     # ---- end v4 loop ----
+    # ---- v4 gateway ----
+    PLATFORM_HEALTH_METRIC: {
+        "error_class": PLATFORM_ERROR_CLASSES, "event": PLATFORM_HEALTH_EVENTS, "platform": ADAPTER_PLATFORMS,
+    },
+    PLATFORM_DELIVERY_METRIC: {
+        "failure_class": DELIVERY_FAILURE_CLASSES, "outcome": DELIVERY_OUTCOMES, "platform": ADAPTER_PLATFORMS,
+    },
+    REPLY_LATENCY_METRIC: {"first_response_bucket": REPLY_LATENCY_BUCKETS, "platform": ADAPTER_PLATFORMS},
+    CRON_RUN_METRIC: {
+        "delivery_kind": CRON_DELIVERY_KINDS, "duration_bucket": DURATION_BUCKETS, "outcome": CRON_RUN_OUTCOMES,
+    },
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -421,6 +450,9 @@ _DECISION_MARK_METRICS = {
     MEMORY_OP_MARK: MEMORY_OP_METRIC, CURATOR_RUN_MARK: CURATOR_RUN_METRIC,
     DELEGATION_RUN_MARK: DELEGATION_RUN_METRIC, EXECUTION_BACKEND_MARK: EXECUTION_BACKEND_METRIC,
     # ---- end v4 loop ----
+    # ---- v4 gateway ----
+    PLATFORM_HEALTH_MARK: PLATFORM_HEALTH_METRIC, PLATFORM_DELIVERY_MARK: PLATFORM_DELIVERY_METRIC,
+    REPLY_LATENCY_MARK: REPLY_LATENCY_METRIC, CRON_RUN_MARK: CRON_RUN_METRIC,
 }
 
 
@@ -718,11 +750,19 @@ def task_start_fields(kwargs: dict[str, Any]) -> dict[str, str]:
 
 
 def gateway_platform(kwargs: dict[str, Any], surface: str | None = None) -> str:
-    """The built-in messaging platform for a gateway task; plugin platforms stay anonymous."""
+    """The messaging platform for a gateway task: core, bundled or proven catalog plugin platforms
+    by name, every other plugin platform anonymous."""
     if (surface or execution_surface(kwargs)) != "gateway":
         return "none"
-    value = _norm(kwargs.get("platform"))
-    return value if value in GATEWAY_PLATFORMS else "plugin"
+    name = adapter_platform(kwargs.get("platform"))
+    return name if name in GATEWAY_PLATFORMS else "plugin"
+
+
+def adapter_platform(value: Any) -> str:
+    """Public name of a gateway adapter's platform (Platform enum or its value)."""
+    from .shared_metrics_catalog import platform_metric_name
+
+    return platform_metric_name(value, _CORE_GATEWAY_PLATFORMS | {"api_server"})
 
 
 _SURFACE_ENTRYPOINTS = {

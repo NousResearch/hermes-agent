@@ -1389,6 +1389,8 @@ class GatewayInboundMixin:
         _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
         _claim_state.turn.event = event
         _claim_state.turn.started_ts = time.time()
+        from hermes_cli.observability.shared_metrics_gateway import start_reply_clock
+        start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
 

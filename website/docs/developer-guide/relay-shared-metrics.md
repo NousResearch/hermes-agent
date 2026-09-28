@@ -195,8 +195,10 @@ mark again, but the subscriber suppresses it until the rolling window expires.
 Each task run is a Relay `Function` scope named `hermes.task_run`, parented to
 the owning Hermes session. The start counter contains only bounded execution
 surface and entrypoint values plus, for gateway tasks, the built-in messaging
-`platform` (`telegram`, `discord`, `slack`, ...; plugin platforms report
-`plugin`, every other surface `none`). The terminal counter contains bounded
+`platform` (`telegram`, `discord`, `slack`, ...; platforms Hermes ships under
+`plugins/platforms/` by name, a `plugin-catalog/` platform by its catalog entry
+name only when the installer's own record proves a catalog install, every other
+plugin platform `plugin`, every other surface `none`). The terminal counter contains bounded
 outcome, end reason, termination status, duration, logical model-call count,
 terminal tool-call count, and provider-retry count buckets, and a
 `failure_class` for failed tasks: the provider `FailoverReason` when the turn
@@ -282,6 +284,10 @@ itself ships.
 | `hermes.curator.run.count` | trigger (`scheduled`/`manual`), outcome (`success`/`failed`/`skipped`), archived/merged/patched/created buckets | Does the skill curator run, and does it actually consolidate anything. Dry runs and passes another process already holds report `skipped`. Never skill names. |
 | `hermes.delegation.run.count` | subagent-count bucket, depth (`1`–`3`, `gte_4`), mode (`foreground`/`background`), outcome (`success`/`partial`/`failed`/`cancelled`) | How wide and deep delegate_task fan-outs go and how often every child finishes. One row per call, however many completion units it splits into. |
 | `hermes.execution_backend.count` | kind (`terminal`/`browser`/`code`), backend, outcome, error class | Which sandboxes carry real work and how reliable each is. Terminal backends are the `terminal.backend` values (else `other`); browser backends are `local`, `lightpanda`, `cdp`, `camofox`, `extension` or a bundled cloud provider (else `other`); execute_code is `local` or `remote`. A command's own nonzero exit is still a backend success; terminal and execute_code calls a guard refuses before they reach the backend are not counted. |
+| `hermes.platform.health` | platform, event (`connect_ok`/`connect_failed`/`reconnect`/`disconnect`), error class (`auth`/`network`/`rate_limited`/`config`/`other`) | Which messaging platforms fail to connect or drop, and why. Classified from exception types, HTTP statuses and Hermes's own fatal codes, never error text. |
+| `hermes.platform.delivery` | platform, outcome (`sent`/`failed`), failure class (`rate_limited`/`too_long`/`auth`/`network`/`forbidden`/`other`) | How often replies fail to reach the user per platform (one count per logical reply, retries included). |
+| `hermes.gateway.reply_latency` | platform, first-response bucket (`lt_2s` … `gte_60s`) | Time from an accepted inbound message to the first visible reply text (stream first chunk or final message). |
+| `hermes.cron.run` | outcome (`success`/`failed`/`missed`/`skipped`), delivery kind (`local`/`platform`/`webhook`/`none`/`other`), duration bucket | Do scheduled jobs run, fail, get skipped by a gate or overlap, or get missed while Hermes was down. Job names, prompts, schedules and targets are never included. |
 
 Sessions are summarized when they close (finalize, reset or process exit);
 delegated child sessions are not counted separately. Milestones latch in the

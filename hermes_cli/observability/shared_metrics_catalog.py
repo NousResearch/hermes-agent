@@ -101,6 +101,68 @@ def user_named_model_providers() -> frozenset[str]:
     ) | {CUSTOM}
 
 
+# ---- v4 gateway ----
+@functools.cache
+def bundled_platform_names() -> frozenset[str]:
+    """Messaging platforms Hermes ships as ``plugins/platforms/<name>`` (the dir is the registered name)."""
+    root = _REPO_ROOT / "plugins" / "platforms"
+    try:
+        return frozenset(p.name.lower() for p in root.iterdir() if (p / "plugin.yaml").is_file())
+    except OSError:
+        return frozenset()
+
+
+@functools.cache
+def catalog_platform_names() -> frozenset[str]:
+    """``plugin-catalog/`` entries whose category is ``platform`` (in-tree only: never a network fetch)."""
+    from hermes_cli.plugin_catalog import CATALOG_TIERS, load_catalog
+
+    return frozenset(e.name for e in load_catalog() if e.category == "platform" and e.tier in CATALOG_TIERS)
+
+
+def platform_metric_name(raw: object, core: frozenset[str]) -> str:
+    """A messaging platform's public name: a core or bundled platform's own name, the catalog entry
+    name of the installed catalog plugin that registered it, else ``plugin``. ``core`` is the
+    contract's static platform vocabulary."""
+    name = _norm(getattr(raw, "value", raw))
+    if name in core or name in _safe(bundled_platform_names):
+        return name
+    if not name:
+        return "plugin"
+    from hermes_constants import get_hermes_home
+
+    return _catalog_platform_owner(str(get_hermes_home()), name) or "plugin"
+
+
+@functools.lru_cache(maxsize=64)
+def _catalog_platform_owner(home: str, platform: str) -> str | None:
+    """The catalog entry that installed the plugin registering ``platform`` in this profile. The
+    plugin is located from where its adapter factory's code lives (not a name it could claim), and
+    the catalog install is proven only by the installer-owned ``.install-metadata.json`` record,
+    never by anything inside the plugin tree, so a URL install cannot claim a catalog name."""
+    try:
+        import inspect
+
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins_provenance import read_sidecar_rows
+
+        entry = platform_registry.get(platform)
+        if entry is None or getattr(entry, "source", "") != "plugin":
+            return None
+        plugins_dir = (Path(home) / "plugins").resolve()
+        code_path = Path(inspect.getfile(entry.adapter_factory)).resolve()
+        if not code_path.is_relative_to(plugins_dir) or code_path.parent == plugins_dir:
+            return None
+        row = read_sidecar_rows(plugins_dir).get(code_path.relative_to(plugins_dir).parts[0])
+        row = row if isinstance(row, dict) else {}
+        block = row.get("catalog")
+        name = _norm(block.get("name") if isinstance(block, dict) else row.get("catalog_name"))
+        return name if name in _safe(catalog_platform_names) else None
+    except Exception:
+        logger.debug("Shared-metrics platform provenance unavailable", exc_info=True)
+        return None
+
+
 def _norm(value: object) -> str:
     return value.strip().lower() if isinstance(value, str) else ""
 

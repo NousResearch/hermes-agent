@@ -590,7 +590,7 @@ Three dashboard-auth providers ship in the box. For a remote Hermes Desktop conn
 
 ### Microsoft Graph (Teams Meetings)
 
-App-only credentials for the Microsoft Graph REST client used by the upcoming Teams meeting summary pipeline. See [Register a Microsoft Graph application](../guides/microsoft-graph-app-registration.md) for the Azure portal walkthrough and the exact API permissions required.
+App-only credentials for the Microsoft Graph REST client. Used by the Teams meeting summary pipeline **and** by the Teams adapter to upload binary files into channel/group SharePoint folders and to read inbound channel files when Bot Framework only sends `text/html`. See [Register a Microsoft Graph application](../guides/microsoft-graph-app-registration.md) for the Azure portal walkthrough and the exact API permissions required. Channel/group file delivery needs **`Files.ReadWrite.All`** (application) plus admin consent; inbound HTML-only channel files also need **`ChannelMessage.Read.Group`** (RSC) or **`ChannelMessage.Read.All`**. The adapter falls back to `TEAMS_*` when `MSGRAPH_*` is unset and the bot app is the same Entra registration.
 
 | Variable | Description |
 |----------|-------------|

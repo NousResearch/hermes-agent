@@ -1,0 +1,37 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.16/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.16",
+  "version": "1.0.0",
+  "id": "<appId>",
+  "developer": {
+    "name": "Hermes",
+    "websiteUrl": "https://hermes-agent.nousresearch.com",
+    "privacyUrl": "https://hermes-agent.nousresearch.com",
+    "termsOfUseUrl": "https://hermes-agent.nousresearch.com"
+  },
+  "name": { "short": "Hermes", "full": "Hermes Agent" },
+  "description": {
+    "short": "Personal AI agent",
+    "full": "Hermes Agent for Microsoft Teams"
+  },
+  "bots": [
+    {
+      "botId": "<botId>",
+      "scopes": ["personal", "team", "groupChat"],
+      "supportsFiles": true,
+      "isNotificationOnly": false
+    }
+  ],
+  "webApplicationInfo": {
+    "id": "<botId>",
+    "resource": "https://Api.botframework.com"
+  },
+  "authorization": {
+    "permissions": {
+      "resourceSpecific": [
+        {"name": "ChannelMessage.Read.Group", "type": "Application"},
+        {"name": "ChatMessage.Read.Chat", "type": "Application"}
+      ]
+    }
+  }
+}

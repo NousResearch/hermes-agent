@@ -181,6 +181,36 @@ When a tool handler is async, `_run_async()` bridges it to the sync dispatch pat
 - **Gateway path (running loop)** — spins up a disposable thread with `asyncio.run()`
 - **Worker threads (parallel tools)** — uses per-thread persistent loops stored in thread-local storage
 
+### Authenticated platform context
+
+`gateway/platform_context.py` carries a gateway-verified caller identity (platform, account id,
+user id, chat id, thread id, plus the optional message id / profile name / session incarnation /
+profile home an adapter can supply reliably) alongside a tool call, for handlers that need to know
+*who* is actually calling — approval scoping, per-user rate limiting, audit logging.
+
+It is **ambient, not a parameter**: a platform adapter binds it once per inbound event on a
+`ContextVar` (`authenticated_platform_context_scope`), and `tools/registry.py`'s dispatch reads it
+off the ContextVar and injects it into the handler's keyword arguments as
+`authenticated_platform_context` — the same signature-inspection contract used for `task_id`,
+`session_id`, and the other dispatcher-injected kwargs (`plugins/AGENTS.md`), so a handler that
+doesn't declare the parameter is unaffected. Tool and plugin handlers receive it simply by adding
+`authenticated_platform_context` to their signature.
+
+Two things make it trustworthy:
+
+- **The model can never set it.** It is never read from `function_args`; nothing the model puts in
+  its tool-call arguments reaches this field.
+- **An explicit caller can't forge or replace it.** `resolve_authenticated_platform_context()` and
+  `set_authenticated_platform_context()` treat the ambient ContextVar as sole authority — an
+  explicit value is accepted only as a match against what's already bound (a compatibility
+  assertion for gateway-owned re-entry, e.g. recursive `tool_call` or connector dispatch) and
+  raises `ValueError` the moment it disagrees. There is no path that lets a caller create or
+  overwrite the ambient identity from inside a turn.
+
+When no adapter has bound a context — a CLI session, a test, a tool call with no gateway turn
+behind it — the ambient value is `None` and that is exactly what handlers see: fail-closed, never a
+guessed or default identity.
+
 ## The DANGEROUS_PATTERNS approval flow
 
 The terminal tool integrates a dangerous-command approval system defined in `tools/approval.py`:

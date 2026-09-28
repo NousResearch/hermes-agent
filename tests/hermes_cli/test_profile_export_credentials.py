@@ -134,3 +134,109 @@ class TestExportSecretScrub:
         assert _LEAKED_KEY not in archived
         assert _LEAKED_KEY in outside.read_text()
         assert link.is_symlink()
+
+    def test_export_preserves_source_code_and_credential_references(self, tmp_path, monkeypatch):
+        """#124523: source/templates survive export byte-for-byte when they contain references."""
+        profiles_root = tmp_path / "profiles"
+        profile_dir = profiles_root / "portable"
+        profile_dir.mkdir(parents=True)
+
+        scripts = profile_dir / "scripts"
+        scripts.mkdir()
+        shell = scripts / "auth.sh"
+        shell_text = (
+            '#!/bin/sh\n'
+            'curl -H "Authorization: token $TOKEN" https://api.example.test\n'
+            'git clone "https://x-access-token:${TOKEN}@github.com/org/${repo}.git"\n'
+        )
+        shell.write_text(shell_text)
+
+        bridge = scripts / "bridge.js"
+        bridge_text = (
+            "const question = {\n"
+            "  messageSecret: randomBytes(32),\n"
+            '  "password": "ephemeral, generated at runtime",\n'
+            "};\n"
+        )
+        bridge.write_text(bridge_text)
+
+        skill_dir = profile_dir / "skills" / "demo"
+        skill_dir.mkdir(parents=True)
+        skill = skill_dir / "SKILL.md"
+        skill_text = (
+            "---\nname: demo\ndescription: Demo.\n---\n"
+            'curl -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/user\n'
+            'curl -H "Authorization: Bearer $NOTION_API_KEY" https://api.notion.com/v1/users\n'
+            'curl -H "X-API-Key: $COMFY_CLOUD_API_KEY" https://cloud.comfy.org/api/prompt\n'
+            'Authorization: token <api_key>:<api_secret>\n'
+            'header="Authorization: Bearer token,X-Custom: value"\n'
+            "export NOTION_API_TOKEN=$NOTION_API_KEY\n"
+        )
+        skill.write_text(skill_text)
+
+        config = profile_dir / "config.yaml"
+        config_text = (
+            "mcp_servers:\n"
+            "  glitchtip:\n"
+            "    headers:\n"
+            "      Authorization: Bearer ${MCP_GLITCHTIP_API_KEY}\n"
+        )
+        config.write_text(config_text)
+
+        _patch_named_profile(monkeypatch, profiles_root, profile_dir)
+        archive = export_profile("portable", str(tmp_path / "portable.tar.gz"))
+
+        expected = {
+            "scripts/auth.sh": shell_text,
+            "scripts/bridge.js": bridge_text,
+            "skills/demo/SKILL.md": skill_text,
+            "config.yaml": config_text,
+        }
+        with tarfile.open(archive, "r:gz") as tf:
+            names = tf.getnames()
+            for suffix, original in expected.items():
+                member = next(name for name in names if name.endswith(suffix))
+                assert tf.extractfile(member).read().decode("utf-8") == original
+
+    def test_source_preservation_still_scrubs_literal_credentials(self, tmp_path, monkeypatch):
+        """Source-preserving mode must not undo #83458 for real credential bytes."""
+        profiles_root = tmp_path / "profiles"
+        profile_dir = profiles_root / "secure"
+        profile_dir.mkdir(parents=True)
+
+        scripts = profile_dir / "scripts"
+        scripts.mkdir()
+        script = scripts / "leak.sh"
+        opaque = "A9f3kZq7Lm2Xw8Rt4Yv6Cc9Pq1Hs5Nd8"
+        script.write_text(
+            f"SERVICE_TOKEN={opaque}\n"
+            f'curl -H "Authorization: Bearer {_LEAKED_KEY}" https://api.example.test\n'
+            f'curl -H "X-API-Key: {_LEAKED_KEY}" https://api.example.test\n'
+            f'curl -H "Authorization: Bearer token,{opaque}" https://api.example.test\n'
+        )
+
+        skill_dir = profile_dir / "skills" / "demo"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: Demo.\n---\n"
+            f"SERVICE_TOKEN={opaque}\n"
+            f"literal key: {_LEAKED_KEY}\n"
+        )
+        (profile_dir / "config.yaml").write_text("model: gpt-4\n")
+
+        _patch_named_profile(monkeypatch, profiles_root, profile_dir)
+        archive = export_profile("secure", str(tmp_path / "secure.tar.gz"))
+
+        with tarfile.open(archive, "r:gz") as tf:
+            archived_text = []
+            for member in tf.getmembers():
+                if not member.isfile():
+                    continue
+                handle = tf.extractfile(member)
+                if handle is not None:
+                    archived_text.append(handle.read().decode("utf-8", errors="ignore"))
+        blob = "\n".join(archived_text)
+        assert _LEAKED_KEY not in blob
+        assert opaque not in blob
+        assert "Authorization: Bearer" in blob
+        assert "X-API-Key:" in blob

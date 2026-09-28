@@ -335,6 +335,50 @@ _PASSWORD_KEY_RE = re.compile(r"passwd|password|pass|pw", re.IGNORECASE)
 # agent-ssh-socket)``): the value token stops at whitespace, so only ``$(gpgconf`` is seen.
 _SHELL_VAR_REF = r"\$(?:\{[A-Za-z_]\w*[^}]*\}|[A-Za-z_]\w*)"
 _PATH_OR_VAR_VALUE_RE = re.compile(rf"^(?:{_SHELL_VAR_REF}|\$\(|~|/)(?:[\w./:-]|{_SHELL_VAR_REF})*$")
+
+# Exported source/templates contain credential references, not credential bytes. Treating
+# these as auth-header values corrupts executable code and skill instructions (#124523).
+_CODE_CREDENTIAL_PLACEHOLDER_RE = re.compile(
+    r"^(?:token|api[_-]?key|your[_-]?(?:token|api[_-]?key|secret|password))$",
+    re.IGNORECASE,
+)
+
+
+def _is_credential_reference(value: str, *, allow_placeholders: bool = False) -> bool:
+    """True for an explicit variable/template reference rather than secret bytes."""
+    candidate = value.strip().rstrip("\"');")
+    if "," in candidate:
+        first, remainder = candidate.split(",", 1)
+        if not re.fullmatch(r"[A-Za-z][\\w-]*:", remainder):
+            return False
+        candidate = first
+    if re.fullmatch(_SHELL_VAR_REF, candidate):
+        return True
+    if re.fullmatch(r"\$env:[A-Za-z_]\w*", candidate, re.IGNORECASE):
+        return True
+    if re.fullmatch(r"%[A-Za-z_]\w*%", candidate):
+        return True
+    if re.fullmatch(r"(?:<[A-Za-z_][\w.\-]*>)(?::(?:<[A-Za-z_][\w.\-]*>))*", candidate):
+        return True
+    return bool(allow_placeholders and _CODE_CREDENTIAL_PLACEHOLDER_RE.fullmatch(candidate))
+
+
+_SOURCE_CALL_VALUE_RE = re.compile(r"^[A-Za-z_$][\w.$]*(?:\([^()\r\n]*\))[,;]?$")
+_SOURCE_PLACEHOLDER_VALUE_RE = re.compile(
+    r"^(?:placeholder|example|generated(?: at runtime)?|",
+    r"ephemeral(?:, generated(?: at runtime)?)?)$",
+    re.IGNORECASE,
+)
+
+
+def _is_source_nonsecret_value(value: str) -> bool:
+    """True for source expressions/descriptive placeholders that contain no secret bytes."""
+    candidate = value.strip()
+    return bool(
+        _SOURCE_CALL_VALUE_RE.fullmatch(candidate)
+        or _SOURCE_PLACEHOLDER_VALUE_RE.fullmatch(candidate)
+    )
+
 # ``$VAR`` / ``$(cmd`` are unambiguous references. A ``/``- or ``~``-led value is a path only
 # while every segment reads like one: a 16+ char segment mixing case and digits with no ``.``
 # (``/wJalrXUtnFEMIK7MDENG/bPxRf…``) is a secret that happens to start with a path character,
@@ -386,7 +430,7 @@ def _looks_like_opaque_credential(value: str) -> bool:
     return sum(bool(re.search(p, value)) for p in (r"[a-z]", r"[A-Z]", r"[0-9]")) >= 2
 
 
-def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> bool:
+def _should_redact_assignment(key: str, value: str, *, check_keyword: bool, source_file: bool = False) -> bool:
     """Shared gate for the ENV / JSON / YAML assignment passes: skip programmatic env
     lookups used as values, optionally require a word-bounded keyword in the key,
     then redact when the key is unambiguously credential-bearing or the value looks opaque."""
@@ -397,6 +441,10 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
     # Same programmatic-env-lookup exception as _redact_env above (issue #2852): api_key: os.getenv('X') is
     # a code snippet, not a leaked secret value.
     if _ENV_LOOKUP_VALUE_RE.match(value):
+        return False
+    if _is_credential_reference(value, allow_placeholders=source_file):
+        return False
+    if source_file and _is_source_nonsecret_value(value):
         return False
     # An earlier pass already masked this value (``***`` or the ``«redacted:…»`` sentinel). Masking it
     # again only erases what the sentinel deliberately kept — the vendor label (``Digest ***`` →
@@ -665,7 +713,7 @@ def _is_python_repr_secret_key(key: str) -> bool:
     return folded.endswith(_PYTHON_REPR_CREDENTIAL_SUFFIXES)
 
 
-def _redact_python_repr_fields(text: str) -> str:
+def _redact_python_repr_fields(text: str, *, source_file: bool = False) -> str:
     """Fully mask credential fields in Python mapping ``repr`` output."""
     def _sub(match: re.Match) -> str:
         key = match.group("key")
@@ -685,6 +733,11 @@ def _redact_python_repr_fields(text: str) -> str:
         # Mapping repr can contain code-shaped fixture values too. Preserve
         # programmatic env lookups just like the ENV/JSON/YAML passes do.
         if _ENV_LOOKUP_VALUE_RE.match(value):
+            return match.group(0)
+        if source_file and (
+            _is_credential_reference(value, allow_placeholders=True)
+            or _is_source_nonsecret_value(value)
+        ):
             return match.group(0)
         # An upstream pass (MCP probe header scrub, _mask_token) already masked this
         # value; re-masking would erase the scheme word it deliberately kept
@@ -791,17 +844,19 @@ def _mask_token_nonreusable(token: str) -> str:
     return f"«redacted:{label}…»" if label else "«redacted-secret»"
 
 
-def _assignment_sub(render, *, check_keyword: bool):
+def _assignment_sub(render, *, check_keyword: bool, source_file: bool = False):
     """re.sub callback: keep the match unless the key/value pair (groups[0], groups[-1]) needs redaction."""
     def _sub(m):
         groups = m.groups()
-        if not _should_redact_assignment(groups[0], groups[-1], check_keyword=check_keyword):
+        if not _should_redact_assignment(
+            groups[0], groups[-1], check_keyword=check_keyword, source_file=source_file
+        ):
             return m.group(0)
         return render(groups)
     return _sub
 
 
-def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
+def _redact_assignments(text: str, *, mask_nonreusable: bool = False, source_file: bool = False) -> str:
     """ENV / config / JSON / YAML assignment passes (skipped for code files). Passes
     that would match ``token=``/``key=`` URL params skip ``://`` text (web-URL query
     params are intentionally passed through, see redact_sensitive_text).
@@ -812,7 +867,11 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     truncated key and could write it back as a dead credential (#35519)."""
     mask = _mask_token_nonreusable if mask_nonreusable else _mask_token
     if "=" in text:
-        _redact_env = _assignment_sub(lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}", check_keyword=True)
+        _redact_env = _assignment_sub(
+            lambda g: f"{g[0]}={g[1]}{mask(g[2])}{g[1]}",
+            check_keyword=True,
+            source_file=source_file,
+        )
         text = _ENV_ASSIGN_RE.sub(_redact_env, text)
         if "://" not in text:  # lowercase names would match URL params
             # Skip URLs — the query string may contain ``token=``/``key=`` params that are intentionally
@@ -835,31 +894,46 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
 
     if ":" in text and '"' in text:
         text = _JSON_FIELD_RE.sub(
-            _assignment_sub(lambda g: f'{g[0]}: "{mask(g[1])}"', check_keyword=False), text)
+            _assignment_sub(
+                lambda g: f'{g[0]}: "{mask(g[1])}"',
+                check_keyword=False,
+                source_file=source_file,
+            ), text)
 
     # Python mapping repr fields ({'API_KEY': '…'}): single-quoted, so the JSON rule
     # above never sees them — the traceback / pytest-introspection leak shape.
     if ":" in text and "'" in text:
-        text = _redact_python_repr_fields(text)
+        text = _redact_python_repr_fields(text, source_file=source_file)
 
     # YAML after JSON: quoted values are handled there (_YAML_ASSIGN_RE skips quotes).
     if ":" in text and "://" not in text:
         text = _YAML_ASSIGN_RE.sub(
-            _assignment_sub(lambda g: f"{g[0]}{g[1]}{mask(g[2])}", check_keyword=True), text)
+            _assignment_sub(
+                lambda g: f"{g[0]}{g[1]}{mask(g[2])}",
+                check_keyword=True,
+                source_file=source_file,
+            ), text)
     return text
 
 
-def _redact_url_credentials(text: str, code_file: bool) -> str:
-    """DB connection-string passwords and bare-token URL userinfo (``://`` text only)."""
+def _redact_url_credentials(text: str, code_file: bool, source_file: bool = False) -> str:
+    """DB passwords and bare-token userinfo; preserve explicit source references."""
     def _redact_db(m):
-        # code_file: a pure ``{...}`` password is an f-string template reference
-        # (f"postgresql://{user}:{pass}@{host}"), not a literal credential.
         pw = m.group(2)
-        if code_file and pw.startswith("{") and pw.endswith("}"):
+        if _is_credential_reference(pw, allow_placeholders=code_file or source_file):
+            return m.group(0)
+        if (code_file or source_file) and pw.startswith("{") and pw.endswith("}"):
             return m.group(0)
         return f"{m.group(1)}***{m.group(3)}"
+
+    def _redact_bare_token(m):
+        token = m.group(2)
+        if _is_credential_reference(token, allow_placeholders=code_file or source_file):
+            return m.group(0)
+        return f"{m.group(1)}{_mask_token(token)}{m.group(3)}"
+
     text = _DB_CONNSTR_RE.sub(_redact_db, text)
-    return _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
+    return _URL_BARE_TOKEN_RE.sub(_redact_bare_token, text)
 
 
 def _redact_phone(m):
@@ -869,7 +943,7 @@ def _redact_phone(m):
 
 
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False,
-                          file_read: bool = False, secret_file: bool = False,
+                          source_file: bool = False, file_read: bool = False, secret_file: bool = False,
                           redact_url_credentials: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
@@ -887,6 +961,10 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     could write back into config.yaml as a dead credential.
     Every regex sits behind a cheap substring gate that its pattern requires,
     so the gates are never false-negative.
+
+    Set source_file=True for portable source/template bytes: assignment passes still run, but
+    explicit variable references, programmatic expressions, and descriptive placeholders are preserved.
+    Real literal credentials remain redacted. This is stricter than code_file=True.
 
     Set code_file=True to also skip the Python-repr mapping pass (``{'API_KEY': '…'}``
     fixtures in source); pytest/exception diagnostic lines get a narrow pass in
@@ -936,13 +1014,25 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _ZHIPU_API_KEY_RE.sub(lambda m: _zhipu_sub(m.group(1)), text)
 
     if not code_file:
-        text = _redact_assignments(text, mask_nonreusable=file_read)
+        text = _redact_assignments(text, mask_nonreusable=file_read, source_file=source_file)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
-        text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
+
+        def _auth_sub(m):
+            credential = m.group(3)
+            if _is_credential_reference(credential, allow_placeholders=code_file or source_file):
+                return m.group(0)
+            return m.group(1) + (m.group(2) or "") + _mask_token(credential)
+        text = _AUTH_HEADER_RE.sub(_auth_sub, text)
 
     if ":" in text:
-        text = _SECRET_HEADER_RE.sub(lambda m: m.group(1) + _mask_token(m.group(2)), text)
+
+        def _secret_header_sub(m):
+            credential = m.group(2)
+            if _is_credential_reference(credential, allow_placeholders=code_file or source_file):
+                return m.group(0)
+            return m.group(1) + _mask_token(credential)
+        text = _SECRET_HEADER_RE.sub(_secret_header_sub, text)
         text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
 
     if "BEGIN" in text and "-----" in text:
@@ -954,7 +1044,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # in the password group, so a single-line template's group(2) is exactly the brace expression. See issue
     # #33801.
     if "://" in text:
-        text = _redact_url_credentials(text, code_file)
+        text = _redact_url_credentials(text, code_file, source_file)
 
     if "eyJ" in text:
         text = _JWT_RE.sub(lambda m: _mask_token(m.group(0)), text)

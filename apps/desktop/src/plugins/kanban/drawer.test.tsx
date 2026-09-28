@@ -34,29 +34,29 @@ let disposeApi: () => void
 let disposeLocales: () => void
 
 const rest = vi.fn(async (path: string, options?: PluginRestOptions): Promise<unknown> => {
-  if (path === '/dashboard/tasks/t_example/attachments' && options?.method === 'POST') {
+  if (path === '/tasks/t_example/attachments' && options?.method === 'POST') {
     detail = { ...legacyDetail, attachments: [{ id: 1, filename: options.upload?.filename }] }
 
     return { ok: true }
   }
 
-  if (path.startsWith('/dashboard/tasks/t_example/comments') && options?.method === 'POST') {
+  if (path.startsWith('/tasks/t_example/comments') && options?.method === 'POST') {
     return { ok: true }
   }
 
-  if (path === '/dashboard/tasks/t_example') {
+  if (path === '/tasks/t_example') {
     return detail
   }
 
-  if (path.startsWith('/dashboard/tasks/t_example/log?')) {
+  if (path.startsWith('/tasks/t_example/log?')) {
     return { exists: false, content: '', size_bytes: 0, truncated: false }
   }
 
-  if (path === '/dashboard/profiles') {
+  if (path === '/profiles') {
     return { profiles: [] }
   }
 
-  if (path === '/dashboard/orchestration') {
+  if (path === '/orchestration') {
     return { default_assignee: '' }
   }
 
@@ -229,7 +229,7 @@ describe('task attachment compatibility', () => {
     fireEvent.change(input, { target: { files: [file] } })
 
     await waitFor(() =>
-      expect(rest).toHaveBeenCalledWith('/dashboard/tasks/t_example/attachments', {
+      expect(rest).toHaveBeenCalledWith('/tasks/t_example/attachments', {
         method: 'POST',
         upload: { filename: file.name, contentType: file.type, bytes }
       })
@@ -266,7 +266,7 @@ describe('task modal dialog', () => {
 
     await waitFor(() =>
       expect(rest).toHaveBeenCalledWith(
-        expect.stringMatching(/^\/dashboard\/tasks\/t_example\/comments/),
+        expect.stringMatching(/^\/tasks\/t_example\/comments/),
         expect.objectContaining({ method: 'POST', body: expect.objectContaining({ body: 'looks good' }) })
       )
     )

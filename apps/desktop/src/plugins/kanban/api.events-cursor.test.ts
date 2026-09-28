@@ -37,7 +37,7 @@ describe('kanban event cursor', () => {
     })
 
     const rest = async <T>(path: string, _opts?: PluginRestOptions): Promise<T> => {
-      if (path === '/dashboard/board?board=ops') {
+      if (path === '/board?board=ops') {
         return board as Promise<T>
       }
 
@@ -51,7 +51,7 @@ describe('kanban event cursor', () => {
     resolveBoard(BOARD(14_386))
 
     await vi.waitFor(() => {
-      expect(socket).toHaveBeenCalledWith('/dashboard/events?board=ops&since=14386', expect.any(Function))
+      expect(socket).toHaveBeenCalledWith('/events?board=ops&since=14386', expect.any(Function))
     })
 
     dispose()
@@ -70,7 +70,7 @@ describe('kanban event cursor', () => {
       socket
     )
 
-    expect(socket).toHaveBeenCalledWith('/dashboard/events?board=ops&since=14386', expect.any(Function))
+    expect(socket).toHaveBeenCalledWith('/events?board=ops&since=14386', expect.any(Function))
     dispose()
   })
 
@@ -82,11 +82,11 @@ describe('kanban event cursor', () => {
     })
 
     const rest = async <T>(path: string, _opts?: PluginRestOptions): Promise<T> => {
-      if (path === '/dashboard/board?board=ops') {
+      if (path === '/board?board=ops') {
         return ops as Promise<T>
       }
 
-      if (path === '/dashboard/board?board=ship') {
+      if (path === '/board?board=ship') {
         return BOARD(7) as T
       }
 
@@ -100,14 +100,14 @@ describe('kanban event cursor', () => {
     $boardSlug.set('ship')
 
     await vi.waitFor(() => {
-      expect(socket).toHaveBeenCalledWith('/dashboard/events?board=ship&since=7', expect.any(Function))
+      expect(socket).toHaveBeenCalledWith('/events?board=ship&since=7', expect.any(Function))
     })
 
     resolveOps(BOARD(14_386))
     await Promise.resolve()
     await Promise.resolve()
 
-    expect(socket.mock.calls.map(([path]) => path)).toEqual(['/dashboard/events?board=ship&since=7'])
+    expect(socket.mock.calls.map(([path]) => path)).toEqual(['/events?board=ship&since=7'])
     dispose()
   })
 
@@ -135,16 +135,16 @@ describe('kanban event cursor', () => {
       socket
     )
 
-    expect(socket).toHaveBeenCalledWith('/dashboard/events?board=ship&since=10', expect.any(Function))
+    expect(socket).toHaveBeenCalledWith('/events?board=ship&since=10', expect.any(Function))
     frames.at(-1)!({ cursor: 25, events: [{ id: 25, kind: 'spawned', task_id: 't_1' }] })
 
     $boardSlug.set('ops')
     $boardSlug.set('ship')
-    expect(socket.mock.calls.at(-1)?.[0]).toBe('/dashboard/events?board=ship&since=25')
+    expect(socket.mock.calls.at(-1)?.[0]).toBe('/events?board=ship&since=25')
 
     setConnection({ connectionId: 'spark', mode: 'remote' } as never)
     await vi.waitFor(() => {
-      expect(socket.mock.calls.at(-1)?.[0]).toBe('/dashboard/events?board=ship&since=4')
+      expect(socket.mock.calls.at(-1)?.[0]).toBe('/events?board=ship&since=4')
     })
 
     dispose()

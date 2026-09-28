@@ -1,8 +1,7 @@
 /**
  * Kanban data layer. Everything goes through `ctx.rest` — the plugin's own
- * operator router (`plugins/kanban/dashboard/plugin_api.py`), mounted at
- * `/api/plugins/kanban/dashboard/*`, reused as-is via the desktop's
- * namespace-scoped REST door. No new backend.
+ * `/api/plugins/kanban/*` FastAPI router (`plugins/kanban/dashboard/plugin_api.py`),
+ * reused as-is via the desktop's namespace-scoped REST door. No new backend.
  *
  * Fetching, caching, polling, dedupe, and invalidation are React Query's job
  * (the app's standard, via the SDK). This module owns the query keys, the REST
@@ -47,10 +46,6 @@ import type {
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
 type Socket = (path: string, onMessage: (data: unknown) => void) => () => void
-
-// The namespace root (`/api/plugins/kanban`) is the sanitized external REST API
-// (`hermes_cli/kanban_api.py`); the operator routes this board uses live below it.
-const DASHBOARD = '/dashboard'
 
 let rest: null | Rest = null
 let os: null | PluginOs = null
@@ -213,11 +208,9 @@ export function bindApi(
   socket: Socket,
   notifyDoors?: { os?: PluginOs; t?: PluginTranslate }
 ): () => void {
-  const scoped: Rest = <T>(path: string, opts?: PluginRestOptions) => r<T>(`${DASHBOARD}${path}`, opts)
-
-  rest = scoped
+  rest = r
   os = notifyDoors?.os ?? null
-  bindCompletionNotify(scoped, notifyDoors?.t, notifyDoors?.os)
+  bindCompletionNotify(r, notifyDoors?.t, notifyDoors?.os)
   const unsubs: Array<() => void> = []
 
   queryClient.setQueryDefaults(KANBAN_KEY_ROOT, { enabled: routedToScope })
@@ -242,7 +235,7 @@ export function bindApi(
     const generation = socketGeneration
     const selectedSlug = $boardSlug.get()
 
-    return socket(`${DASHBOARD}${eventsUrl(slug, since)}`, data => {
+    return socket(eventsUrl(slug, since), data => {
       if (generation === socketGeneration) {
         onEventsFrame(scope, slug, data, selectedSlug)
       }
@@ -275,7 +268,7 @@ export function bindApi(
       // with no since — the server starts at the tail rather than replaying.
       void queryClient
         .fetchQuery({
-          queryFn: () => scoped<KanbanBoard>(boardSnapshotPath(slug)),
+          queryFn: () => r<KanbanBoard>(boardSnapshotPath(slug)),
           queryKey: boardKey(scope, slug, false)
         })
         .then(board => {
@@ -305,7 +298,7 @@ export function bindApi(
     // Resolve the alias BEFORE the handshake: /events is pinned to its board
     // when opened. Resolving on each frame could classify an old socket's
     // events against a different server-current board's cursor.
-    void scoped<BoardsResponse>('/boards')
+    void r<BoardsResponse>('/boards')
       .then(boards => openResolved(typeof boards.current === 'string' ? boards.current : ''))
       .catch(() => openResolved('')) // Keep live cache invalidation; notifications fail closed.
   }

@@ -22,7 +22,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     kanban_db._INITIALIZED_PATHS.clear()
     app = FastAPI()
-    app.include_router(router, prefix="/api/plugins/kanban")
+    app.include_router(router, prefix="/api/plugins/kanban/v1")
     with TestClient(app) as test_client:
         yield test_client
 
@@ -36,13 +36,13 @@ def _create(client: TestClient, **overrides) -> dict:
         "idempotency_key": "operation-001",
     }
     payload.update(overrides)
-    response = client.post("/api/plugins/kanban/tasks", json=payload)
+    response = client.post("/api/plugins/kanban/v1/tasks", json=payload)
     assert response.status_code == 201, response.text
     return response.json()
 
 
 def test_health_capabilities_and_safe_board_dtos(client: TestClient) -> None:
-    health = client.get("/api/plugins/kanban/health")
+    health = client.get("/api/plugins/kanban/v1/health")
     assert health.status_code == 200
     assert health.json() == {
         "status": "ok",
@@ -51,20 +51,20 @@ def test_health_capabilities_and_safe_board_dtos(client: TestClient) -> None:
         "current_board": "default",
     }
 
-    capabilities = client.get("/api/plugins/kanban/capabilities")
+    capabilities = client.get("/api/plugins/kanban/v1/capabilities")
     assert capabilities.status_code == 200
     body = capabilities.json()
     assert body["idempotent_task_creation"] is True
     assert body["profile_execution"] is False
     assert "ready" in body["task_statuses"]
 
-    boards = client.get("/api/plugins/kanban/boards").json()
+    boards = client.get("/api/plugins/kanban/v1/boards").json()
     assert boards["current"] == "default"
     assert boards["boards"][0]["id"] == "default"
     assert "db_path" not in boards["boards"][0]
     assert "default_workdir" not in boards["boards"][0]
 
-    detail = client.get("/api/plugins/kanban/boards/Default")
+    detail = client.get("/api/plugins/kanban/v1/boards/Default")
     assert detail.status_code == 200
     assert detail.json()["board"]["id"] == "default"
 
@@ -76,7 +76,7 @@ def test_create_list_get_patch_are_idempotent_and_sanitized(client: TestClient) 
     assert first["task"]["links"] == {"parents": [], "children": []}
 
     repeated = client.post(
-        "/api/plugins/kanban/tasks",
+        "/api/plugins/kanban/v1/tasks",
         headers={"Idempotency-Key": "operation-001"},
         json={"title": "ignored on replay"},
     )
@@ -84,11 +84,11 @@ def test_create_list_get_patch_are_idempotent_and_sanitized(client: TestClient) 
     assert repeated.json()["created"] is False
     assert repeated.json()["task"]["id"] == task_id
 
-    listed = client.get("/api/plugins/kanban/tasks", params={"tenant": "ops"})
+    listed = client.get("/api/plugins/kanban/v1/tasks", params={"tenant": "ops"})
     assert listed.status_code == 200
     assert listed.json()["count"] == 1
 
-    detail = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    detail = client.get(f"/api/plugins/kanban/v1/tasks/{task_id}")
     assert detail.status_code == 200
     task = detail.json()["task"]
     assert task["title"] == "External operation"
@@ -100,7 +100,7 @@ def test_create_list_get_patch_are_idempotent_and_sanitized(client: TestClient) 
     assert "private execution instructions" not in detail.text
 
     patched = client.patch(
-        f"/api/plugins/kanban/tasks/{task_id}",
+        f"/api/plugins/kanban/v1/tasks/{task_id}",
         json={"title": "Renamed operation", "priority": 9, "assignee": "Worker-One"},
     )
     assert patched.status_code == 200, patched.text
@@ -113,28 +113,28 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
     parent_id = _create(client, title="Parent", idempotency_key="parent-001")["task"]["id"]
     child_id = _create(client, title="Child", idempotency_key="child-001")["task"]["id"]
 
-    linked = client.post(f"/api/plugins/kanban/tasks/{parent_id}/links/{child_id}")
+    linked = client.post(f"/api/plugins/kanban/v1/tasks/{parent_id}/links/{child_id}")
     assert linked.status_code == 200, linked.text
-    child = client.get(f"/api/plugins/kanban/tasks/{child_id}").json()["task"]
+    child = client.get(f"/api/plugins/kanban/v1/tasks/{child_id}").json()["task"]
     assert child["links"]["parents"] == [parent_id]
     assert child["status"] == "todo"
 
     comment = client.post(
-        f"/api/plugins/kanban/tasks/{parent_id}/comment",
+        f"/api/plugins/kanban/v1/tasks/{parent_id}/comment",
         json={"body": "private operator note", "author": "ops-dashboard"},
     )
     assert comment.status_code == 201
     assert "private operator note" not in comment.text
 
     completed = client.post(
-        f"/api/plugins/kanban/tasks/{parent_id}/complete",
+        f"/api/plugins/kanban/v1/tasks/{parent_id}/complete",
         json={"summary": "private completion handoff"},
     )
     assert completed.status_code == 200, completed.text
     assert completed.json()["task"]["status"] == "done"
     assert "private completion handoff" not in completed.text
 
-    events = client.get(f"/api/plugins/kanban/tasks/{parent_id}/events")
+    events = client.get(f"/api/plugins/kanban/v1/tasks/{parent_id}/events")
     assert events.status_code == 200
     assert events.json()["events"]
     assert all("payload" not in event for event in events.json()["events"])
@@ -152,7 +152,7 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
                  "secret error"),
             )
 
-    runs = client.get(f"/api/plugins/kanban/tasks/{parent_id}/runs")
+    runs = client.get(f"/api/plugins/kanban/v1/tasks/{parent_id}/runs")
     assert runs.status_code == 200
     # ``profile`` is part of the external contract (execution attribution —
     # profile names already travel on task.assignee); summary, metadata,
@@ -175,30 +175,32 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
         "working in /srv/private/worktree\nAuthorization: Bearer secret-value-1234567890\n",
         encoding="utf-8",
     )
-    log_response = client.get(f"/api/plugins/kanban/tasks/{parent_id}/log")
+    log_response = client.get(f"/api/plugins/kanban/v1/tasks/{parent_id}/log")
     assert log_response.status_code == 200
     log_body = log_response.json()
     assert "path" not in log_body
     assert "/srv/private" not in log_body["excerpt"]
     assert "secret-value-1234567890" not in log_body["excerpt"]
 
-    unlinked = client.delete(f"/api/plugins/kanban/tasks/{parent_id}/links/{child_id}")
+    unlinked = client.delete(f"/api/plugins/kanban/v1/tasks/{parent_id}/links/{child_id}")
     assert unlinked.status_code == 200
     assert unlinked.json()["removed"] is True
 
     blocked = client.post(
-        f"/api/plugins/kanban/tasks/{child_id}/block",
+        f"/api/plugins/kanban/v1/tasks/{child_id}/block",
         json={"reason": "private blocker", "kind": "needs_input"},
     )
     assert blocked.status_code == 200
     assert blocked.json()["task"]["status"] == "blocked"
     assert "private blocker" not in blocked.text
 
-    assert client.post(f"/api/plugins/kanban/tasks/{child_id}/unblock").status_code == 200
-    assert client.post(f"/api/plugins/kanban/tasks/{child_id}/archive").status_code == 200
+    assert client.post(f"/api/plugins/kanban/v1/tasks/{child_id}/unblock").status_code == 200
+    assert client.post(f"/api/plugins/kanban/v1/tasks/{child_id}/archive").status_code == 200
 
 
-def test_dashboard_legacy_routes_are_namespaced_after_public_router() -> None:
+def test_operator_routes_keep_their_paths_beside_v1() -> None:
+    """Existing dashboard/desktop clients keep working: the sanitized API is added under
+    ``/v1`` and never shadows an operator route."""
     plugin_path = Path(__file__).parents[2] / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     module_name = "test_hermes_dashboard_plugin_kanban"
     spec = importlib.util.spec_from_file_location(module_name, plugin_path)
@@ -211,10 +213,8 @@ def test_dashboard_legacy_routes_are_namespaced_after_public_router() -> None:
     finally:
         sys.modules.pop(module_name, None)
 
-    assert "/health" in paths
-    assert "/tasks" in paths
-    assert "/dashboard/board" in paths
-    assert "/dashboard/tasks/{task_id}" in paths
+    assert {"/v1/health", "/v1/tasks", "/v1/tasks/{task_id}"} <= paths
+    assert {"/board", "/tasks", "/tasks/{task_id}", "/events"} <= paths
 
 
 def test_idempotency_key_is_unique_among_live_tasks(client: TestClient) -> None:
@@ -242,9 +242,9 @@ def test_idempotency_key_is_unique_among_live_tasks(client: TestClient) -> None:
     # Archiving the live task frees the key: the partial index excludes
     # archived rows, so a fresh create with the same key is allowed (200/false
     # is only for a *live* duplicate; here a brand-new task is created).
-    assert client.post(f"/api/plugins/kanban/tasks/{task_id}/archive").status_code == 200
+    assert client.post(f"/api/plugins/kanban/v1/tasks/{task_id}/archive").status_code == 200
     reused = client.post(
-        "/api/plugins/kanban/tasks",
+        "/api/plugins/kanban/v1/tasks",
         json={"title": "after archive", "idempotency_key": "race-key"},
     )
     assert reused.status_code == 201, reused.text
@@ -272,7 +272,7 @@ def test_create_task_returns_existing_on_idempotency_race(
     )
 
     raced = client.post(
-        "/api/plugins/kanban/tasks",
+        "/api/plugins/kanban/v1/tasks",
         json={"title": "raced", "idempotency_key": "winner-key"},
     )
     assert raced.status_code == 200, raced.text
@@ -284,18 +284,18 @@ def test_link_missing_task_is_404_not_400(client: TestClient) -> None:
     real_id = _create(client, idempotency_key="link-real")["task"]["id"]
 
     missing_parent = client.post(
-        f"/api/plugins/kanban/tasks/t_nope/links/{real_id}"
+        f"/api/plugins/kanban/v1/tasks/t_nope/links/{real_id}"
     )
     assert missing_parent.status_code == 404, missing_parent.text
 
     missing_child = client.post(
-        f"/api/plugins/kanban/tasks/{real_id}/links/t_nope"
+        f"/api/plugins/kanban/v1/tasks/{real_id}/links/t_nope"
     )
     assert missing_child.status_code == 404, missing_child.text
 
     # Unlink stays 404 for a missing endpoint (unchanged behaviour).
     missing_unlink = client.delete(
-        f"/api/plugins/kanban/tasks/{real_id}/links/t_nope"
+        f"/api/plugins/kanban/v1/tasks/{real_id}/links/t_nope"
     )
     assert missing_unlink.status_code == 404, missing_unlink.text
 
@@ -304,11 +304,11 @@ def test_complete_without_evidence_is_a_client_error(client: TestClient) -> None
     """The storage layer's empty-completion guard surfaces as a 400, not a 500."""
     task_id = _create(client, idempotency_key="empty-complete")["task"]["id"]
 
-    rejected = client.post(f"/api/plugins/kanban/tasks/{task_id}/complete")
+    rejected = client.post(f"/api/plugins/kanban/v1/tasks/{task_id}/complete")
 
     assert rejected.status_code == 400, rejected.text
     assert "no result or summary evidence" in rejected.json()["detail"]
-    assert client.get(f"/api/plugins/kanban/tasks/{task_id}").json()["task"][
+    assert client.get(f"/api/plugins/kanban/v1/tasks/{task_id}").json()["task"][
         "status"
     ] != "done"
 
@@ -316,15 +316,15 @@ def test_complete_without_evidence_is_a_client_error(client: TestClient) -> None
 def test_patch_rejects_edits_to_completed_task(client: TestClient) -> None:
     task_id = _create(client, idempotency_key="done-edit")["task"]["id"]
     assert client.post(
-        f"/api/plugins/kanban/tasks/{task_id}/complete", json={"summary": "shipped"}
+        f"/api/plugins/kanban/v1/tasks/{task_id}/complete", json={"summary": "shipped"}
     ).status_code == 200
 
     rejected = client.patch(
-        f"/api/plugins/kanban/tasks/{task_id}", json={"title": "too late"}
+        f"/api/plugins/kanban/v1/tasks/{task_id}", json={"title": "too late"}
     )
     assert rejected.status_code == 409, rejected.text
     # The card text is unchanged.
-    assert client.get(f"/api/plugins/kanban/tasks/{task_id}").json()["task"][
+    assert client.get(f"/api/plugins/kanban/v1/tasks/{task_id}").json()["task"][
         "title"
     ] == "External operation"
 
@@ -332,12 +332,12 @@ def test_patch_rejects_edits_to_completed_task(client: TestClient) -> None:
 def test_patch_rejects_edits_to_archived_task(client: TestClient) -> None:
     task_id = _create(client, idempotency_key="archived-edit")["task"]["id"]
     assert client.post(
-        f"/api/plugins/kanban/tasks/{task_id}/complete", json={"summary": "shipped"}
+        f"/api/plugins/kanban/v1/tasks/{task_id}/complete", json={"summary": "shipped"}
     ).status_code == 200
-    assert client.post(f"/api/plugins/kanban/tasks/{task_id}/archive").status_code == 200
+    assert client.post(f"/api/plugins/kanban/v1/tasks/{task_id}/archive").status_code == 200
 
     rejected = client.patch(
-        f"/api/plugins/kanban/tasks/{task_id}", json={"body": "amend history"}
+        f"/api/plugins/kanban/v1/tasks/{task_id}", json={"body": "amend history"}
     )
     assert rejected.status_code == 409, rejected.text
 
@@ -357,13 +357,13 @@ def test_patch_mixing_assignee_and_edit_is_all_or_nothing(
 
     monkeypatch.setattr(kanban_db, "_append_event", racing_append)
     rejected = client.patch(
-        f"/api/plugins/kanban/tasks/{task_id}",
+        f"/api/plugins/kanban/v1/tasks/{task_id}",
         json={"assignee": "worker-two", "title": "renamed mid-flight"},
     )
     assert rejected.status_code == 409, rejected.text
 
     monkeypatch.setattr(kanban_db, "_append_event", real_append)
-    task = client.get(f"/api/plugins/kanban/tasks/{task_id}").json()["task"]
+    task = client.get(f"/api/plugins/kanban/v1/tasks/{task_id}").json()["task"]
     assert task["assignee"] is None
     assert task["title"] == "External operation"
     assert task["status"] != "done"
@@ -390,7 +390,7 @@ def test_events_and_runs_limit_returns_most_recent_in_order(client: TestClient) 
                 )
 
     events = client.get(
-        f"/api/plugins/kanban/tasks/{task_id}/events", params={"limit": 3}
+        f"/api/plugins/kanban/v1/tasks/{task_id}/events", params={"limit": 3}
     )
     assert events.status_code == 200
     kinds = [e["kind"] for e in events.json()["events"]]
@@ -399,7 +399,7 @@ def test_events_and_runs_limit_returns_most_recent_in_order(client: TestClient) 
     assert events.json()["count"] == 3
 
     runs = client.get(
-        f"/api/plugins/kanban/tasks/{task_id}/runs", params={"limit": 2}
+        f"/api/plugins/kanban/v1/tasks/{task_id}/runs", params={"limit": 2}
     )
     assert runs.status_code == 200
     starts = [r["started_at"] for r in runs.json()["runs"]]
@@ -411,7 +411,7 @@ def test_error_detail_is_sanitized(client: TestClient) -> None:
     # An invalid board slug's raw ValueError text (regex description) must not
     # reach the client; a stable generic detail is returned instead.
     bad_board = client.get(
-        "/api/plugins/kanban/tasks", params={"board": "Bad Slug!!"}
+        "/api/plugins/kanban/v1/tasks", params={"board": "Bad Slug!!"}
     )
     assert bad_board.status_code == 400, bad_board.text
     assert bad_board.json()["detail"] == "invalid board id"
@@ -420,7 +420,7 @@ def test_error_detail_is_sanitized(client: TestClient) -> None:
     # A known-safe validation message is still surfaced verbatim (useful to
     # the caller, carries no internal detail).
     unknown_parent = client.post(
-        "/api/plugins/kanban/tasks",
+        "/api/plugins/kanban/v1/tasks",
         json={"title": "orphan", "parents": ["t_missing"]},
     )
     assert unknown_parent.status_code == 400, unknown_parent.text
@@ -446,7 +446,7 @@ def test_runs_expose_executing_profile(client: TestClient) -> None:
                 "VALUES (?, 'worker-a', 'done', 1, 2, 'completed')",
                 (task_id,),
             )
-    runs = client.get(f"/api/plugins/kanban/tasks/{task_id}/runs")
+    runs = client.get(f"/api/plugins/kanban/v1/tasks/{task_id}/runs")
     assert runs.status_code == 200
     assert runs.json()["runs"][0]["profile"] == "worker-a"
 
@@ -469,7 +469,7 @@ def test_profiles_roster_is_sanitized_and_sorted(
     ]
     monkeypatch.setattr(profiles_mod, "list_profiles", lambda: fake)
 
-    resp = client.get("/api/plugins/kanban/profiles")
+    resp = client.get("/api/plugins/kanban/v1/profiles")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["count"] == 2
@@ -481,7 +481,7 @@ def test_profiles_roster_is_sanitized_and_sorted(
     assert "secret-model" not in resp.text
     assert "/private/profile/dir" not in resp.text
 
-    caps = client.get("/api/plugins/kanban/capabilities").json()
+    caps = client.get("/api/plugins/kanban/v1/capabilities").json()
     assert caps["profiles_api"] is True
     assert caps["profile_execution"] is False
 
@@ -495,7 +495,8 @@ def test_profiles_roster_unavailable_is_503(
         raise RuntimeError("disk exploded at /private/some/path")
 
     monkeypatch.setattr(profiles_mod, "list_profiles", boom)
-    resp = client.get("/api/plugins/kanban/profiles")
+    resp = client.get("/api/plugins/kanban/v1/profiles")
     assert resp.status_code == 503
     assert resp.json()["detail"] == "profiles unavailable"
     assert "disk exploded" not in resp.text
+

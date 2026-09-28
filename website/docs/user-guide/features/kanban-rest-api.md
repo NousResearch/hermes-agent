@@ -7,7 +7,7 @@ description: "Safe external task/workflow API over the existing Hermes Kanban st
 # Kanban REST API
 
 Hermes exposes a small, authenticated REST adapter for external control planes
-at `/api/plugins/kanban`. It uses the same `hermes_cli.kanban_db` functions and
+at `/api/plugins/kanban/v1`. It uses the same `hermes_cli.kanban_db` functions and
 database as the CLI, dashboard, tools, gateway dispatcher, and workers. It does
 not create a second queue or schema.
 
@@ -32,7 +32,7 @@ startup (fail-closed) and the credential stays disabled.
 The credential is scoped to this API only: it cannot drive other service
 surfaces (for example gateway drain control), and other service credentials
 cannot drive this one. It also cannot open the interactive dashboard's own
-API under `/api/plugins/kanban/dashboard`.
+routes next to it under `/api/plugins/kanban`.
 
 Note that once the secret is set, this external surface accepts *only* the
 service credential — the dashboard session token no longer authenticates
@@ -47,6 +47,8 @@ export AUTH="Authorization: Bearer $HERMES_KANBAN_API_SECRET"
 ```
 
 ## Endpoints
+
+Paths below are relative to `/api/plugins/kanban/v1`.
 
 | Area | Endpoints |
 |---|---|
@@ -113,7 +115,7 @@ up the children.
 ```bash
 # 1. Create the parent operation.
 PARENT=$(
-  curl -fsS -X POST "$HERMES_URL/api/plugins/kanban/tasks?board=default" \
+  curl -fsS -X POST "$HERMES_URL/api/plugins/kanban/v1/tasks?board=default" \
     -H "$AUTH" -H 'Content-Type: application/json' \
     -H 'Idempotency-Key: ops-2026-07-10-parent' \
     -d '{
@@ -127,7 +129,7 @@ PARENT=$(
 # 2. Create child tasks. Assignees are ordinary Hermes profile names; the API
 # does not execute them directly.
 CHILD_A=$(
-  curl -fsS -X POST "$HERMES_URL/api/plugins/kanban/tasks?board=default" \
+  curl -fsS -X POST "$HERMES_URL/api/plugins/kanban/v1/tasks?board=default" \
     -H "$AUTH" -H 'Content-Type: application/json' \
     -H 'Idempotency-Key: ops-2026-07-10-child-a' \
     -d '{
@@ -139,7 +141,7 @@ CHILD_A=$(
 )
 
 CHILD_B=$(
-  curl -fsS -X POST "$HERMES_URL/api/plugins/kanban/tasks?board=default" \
+  curl -fsS -X POST "$HERMES_URL/api/plugins/kanban/v1/tasks?board=default" \
     -H "$AUTH" -H 'Content-Type: application/json' \
     -H 'Idempotency-Key: ops-2026-07-10-child-b' \
     -d '{
@@ -152,15 +154,15 @@ CHILD_B=$(
 
 # 3. Add prerequisite links. Each child moves to todo while PARENT is open.
 curl -fsS -X POST \
-  "$HERMES_URL/api/plugins/kanban/tasks/$PARENT/links/$CHILD_A?board=default" \
+  "$HERMES_URL/api/plugins/kanban/v1/tasks/$PARENT/links/$CHILD_A?board=default" \
   -H "$AUTH"
 curl -fsS -X POST \
-  "$HERMES_URL/api/plugins/kanban/tasks/$PARENT/links/$CHILD_B?board=default" \
+  "$HERMES_URL/api/plugins/kanban/v1/tasks/$PARENT/links/$CHILD_B?board=default" \
   -H "$AUTH"
 
 # Release the children after the parent approval/planning work is complete.
 curl -fsS -X POST \
-  "$HERMES_URL/api/plugins/kanban/tasks/$PARENT/complete?board=default" \
+  "$HERMES_URL/api/plugins/kanban/v1/tasks/$PARENT/complete?board=default" \
   -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"summary":"Scope approved and child work released."}'
 ```
@@ -170,23 +172,24 @@ curl -fsS -X POST \
 ```bash
 # Poll the workstream without receiving private task bodies or worker output.
 curl -fsS \
-  "$HERMES_URL/api/plugins/kanban/tasks?board=default&tenant=catalog-maintenance" \
+  "$HERMES_URL/api/plugins/kanban/v1/tasks?board=default&tenant=catalog-maintenance" \
   -H "$AUTH" | jq '.tasks[] | {id, title, status, assignee, created_by, links}'
 
 # Read the sanitized append-only event timeline and run state.
 curl -fsS \
-  "$HERMES_URL/api/plugins/kanban/tasks/$CHILD_A/events?board=default" \
+  "$HERMES_URL/api/plugins/kanban/v1/tasks/$CHILD_A/events?board=default" \
   -H "$AUTH" | jq
 curl -fsS \
-  "$HERMES_URL/api/plugins/kanban/tasks/$CHILD_A/runs?board=default" \
+  "$HERMES_URL/api/plugins/kanban/v1/tasks/$CHILD_A/runs?board=default" \
   -H "$AUTH" | jq
 
 # A bounded, redacted diagnostic excerpt. No filesystem path is returned.
 curl -fsS \
-  "$HERMES_URL/api/plugins/kanban/tasks/$CHILD_A/log?board=default&tail_bytes=8192" \
+  "$HERMES_URL/api/plugins/kanban/v1/tasks/$CHILD_A/log?board=default&tail_bytes=8192" \
   -H "$AUTH" | jq
 ```
 
-The interactive Kanban dashboard continues to use its richer internal API under
-`/api/plugins/kanban/dashboard`. That surface is for the first-party operator UI;
-external integrations should use only the sanitized endpoints documented here.
+The interactive Kanban dashboard keeps its richer internal routes directly under
+`/api/plugins/kanban` (outside `/v1`). That surface is for the first-party
+operator UI and may change without notice; external integrations should use only
+the sanitized `/v1` endpoints documented here.

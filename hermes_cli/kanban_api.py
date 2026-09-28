@@ -1,6 +1,6 @@
 """Sanitized REST adapter for the shared Hermes Kanban store.
 
-The dashboard plugin mounts this router at ``/api/plugins/kanban``.  The
+The dashboard plugin mounts this router at ``/api/plugins/kanban/v1``.  The
 adapter intentionally exposes workflow/task concepts rather than SQLite rows:
 private task bodies, results, comments, workspace paths, claims, process data,
 profile internals, and raw event payloads are never serialized.

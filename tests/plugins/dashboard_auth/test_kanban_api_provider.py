@@ -3,15 +3,14 @@
 Loads the bundled kanban_api auth plugin module directly and exercises:
   * constant-time verify_token returning a kanban-scoped TokenPrincipal,
   * the register(ctx) entry point's env/config resolution, skip reasons, and
-    token-route-prefix registration (dashboard subtree excluded),
+    token-route-prefix registration (``/v1`` only),
   * E2E through the real mounted dashboard app in gated mode: an external
-    controller's bearer credential reaches the external kanban surface, the
-    interactive dashboard subtree stays on the cookie gate, and a
-    foreign-scoped service credential (the drain secret) is refused.
+    controller's bearer credential reaches ``/v1``, the operator routes beside
+    it stay on the cookie gate, and a foreign-scoped service credential (the
+    drain secret) is refused.
 
 The shared entropy gate itself is covered by test_drain_provider.py — it
-lives in ``hermes_cli.dashboard_auth.secret_strength`` and both plugins use
-the same function.
+lives in ``plugins.dashboard_auth._shared`` and both plugins use it.
 """
 from __future__ import annotations
 
@@ -120,7 +119,7 @@ class TestRegister:
         plugin.register(ctx)
         ctx.register_dashboard_auth_provider.assert_not_called()
         assert "HERMES_KANBAN_API_SECRET" in plugin.LAST_SKIP_REASON
-        assert not token_auth.is_token_route("/api/plugins/kanban/tasks")
+        assert not token_auth.is_token_route("/api/plugins/kanban/v1/tasks")
 
     def test_skips_and_fails_closed_on_weak_secret(self, plugin, monkeypatch):
         monkeypatch.setenv("HERMES_KANBAN_API_SECRET", "tooweak")
@@ -130,7 +129,7 @@ class TestRegister:
         ctx.register_dashboard_auth_provider.assert_not_called()
         assert "rejected" in plugin.LAST_SKIP_REASON
         # fail-closed: the surface is NOT token-authable, so it stays gated.
-        assert not token_auth.is_token_route("/api/plugins/kanban/tasks")
+        assert not token_auth.is_token_route("/api/plugins/kanban/v1/tasks")
 
     def test_registers_with_strong_env_secret(self, plugin, monkeypatch):
         s = _strong_secret()
@@ -144,10 +143,10 @@ class TestRegister:
         assert provider.verify_token(token=s) is not None
         assert plugin.LAST_SKIP_REASON == ""
         # The external surface (parameterised paths included) is token-authable…
-        assert token_auth.is_token_route("/api/plugins/kanban/tasks")
-        assert token_auth.is_token_route("/api/plugins/kanban/tasks/t_abc/complete")
-        # …while the interactive operator subtree stays on the cookie gate.
-        assert not token_auth.is_token_route("/api/plugins/kanban/dashboard/board")
+        assert token_auth.is_token_route("/api/plugins/kanban/v1/tasks")
+        assert token_auth.is_token_route("/api/plugins/kanban/v1/tasks/t_abc/complete")
+        # …while the operator routes beside it stay on the cookie gate.
+        assert not token_auth.is_token_route("/api/plugins/kanban/board")
 
     def test_config_scope_applied(self, plugin, monkeypatch):
         s = _strong_secret()
@@ -242,17 +241,17 @@ class TestGatedEndToEnd:
         client, secret, _ = gated_kanban_app
         auth = {"Authorization": f"Bearer {secret}"}
 
-        health = client.get("/api/plugins/kanban/health", headers=auth)
+        health = client.get("/api/plugins/kanban/v1/health", headers=auth)
         assert health.status_code == 200, health.text
         assert health.json()["service"] == "hermes-kanban"
 
         # The roster endpoint sits under the same token-guarded prefix.
-        roster = client.get("/api/plugins/kanban/profiles", headers=auth)
+        roster = client.get("/api/plugins/kanban/v1/profiles", headers=auth)
         assert roster.status_code == 200, roster.text
         assert set(roster.json()) == {"profiles", "count"}
 
         created = client.post(
-            "/api/plugins/kanban/tasks",
+            "/api/plugins/kanban/v1/tasks",
             headers={**auth, "Idempotency-Key": "e2e-op-1"},
             json={"title": "external e2e operation"},
         )
@@ -260,7 +259,7 @@ class TestGatedEndToEnd:
         task_id = created.json()["task"]["id"]
 
         replay = client.post(
-            "/api/plugins/kanban/tasks",
+            "/api/plugins/kanban/v1/tasks",
             headers={**auth, "Idempotency-Key": "e2e-op-1"},
             json={"title": "external e2e operation"},
         )
@@ -270,10 +269,10 @@ class TestGatedEndToEnd:
 
     def test_missing_or_wrong_token_is_401(self, gated_kanban_app):
         client, _, _ = gated_kanban_app
-        no_token = client.get("/api/plugins/kanban/tasks")
+        no_token = client.get("/api/plugins/kanban/v1/tasks")
         assert no_token.status_code == 401
         wrong = client.get(
-            "/api/plugins/kanban/tasks",
+            "/api/plugins/kanban/v1/tasks",
             headers={"Authorization": f"Bearer {_strong_secret()}"},
         )
         assert wrong.status_code == 401
@@ -283,23 +282,23 @@ class TestGatedEndToEnd:
         # scope "drain", not "kanban" — the seam must refuse it here.
         client, _, drain_secret = gated_kanban_app
         r = client.get(
-            "/api/plugins/kanban/tasks",
+            "/api/plugins/kanban/v1/tasks",
             headers={"Authorization": f"Bearer {drain_secret}"},
         )
         assert r.status_code == 403
 
-    def test_dashboard_subtree_stays_on_cookie_gate(self, gated_kanban_app):
-        # The interactive operator surface is excluded from the token seam:
+    def test_operator_routes_stay_on_cookie_gate(self, gated_kanban_app):
+        # The interactive operator surface is outside the token seam:
         # the kanban bearer credential must NOT open it, and without a cookie
         # session the gate rejects the request (401/302, never 200).
         client, secret, _ = gated_kanban_app
         with_bearer = client.get(
-            "/api/plugins/kanban/dashboard/board",
+            "/api/plugins/kanban/board",
             headers={"Authorization": f"Bearer {secret}"},
             follow_redirects=False,
         )
         assert with_bearer.status_code in (302, 401), with_bearer.status_code
         without = client.get(
-            "/api/plugins/kanban/dashboard/board", follow_redirects=False
+            "/api/plugins/kanban/board", follow_redirects=False
         )
         assert without.status_code in (302, 401), without.status_code

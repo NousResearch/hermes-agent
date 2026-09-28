@@ -171,7 +171,8 @@ def test_begin_process_marks_then_stamps_clean_and_crash(marks, monkeypatch):
 def test_opted_out_start_purges_markers_left_while_opted_in(marks, monkeypatch):
     from hermes_cli.observability import shared_metrics_setup as setup_metrics
 
-    left = [process_metrics.markers_dir(marks.home) / "cli-1.json", setup_metrics.markers_dir(marks.home) / "tui-1-1.json"]
+    left = [process_metrics.markers_dir(marks.home) / "cli-1.json", setup_metrics.markers_dir(marks.home) / "tui-1-1.json",
+            marks.home / "telemetry" / "shared_metrics" / "desktop_onboarding" / "provider.completed"]  # CLI opt-out
     for marker in left:
         marker.parent.mkdir(parents=True)
         marker.write_text(json.dumps({"pid": 1, "started_at": 0, "surface": "tui", "provider": "xai", "state": "running"}))

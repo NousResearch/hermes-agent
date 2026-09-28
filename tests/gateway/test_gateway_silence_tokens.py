@@ -182,11 +182,12 @@ async def test_silence_opt_in_belongs_to_the_routed_profile(
         )
         await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
         assert runner._deliver_queued_first_response.await_count == (0 if enabled else 1)
-        recovered = runner._crash_left_reply([
-            {"role": "user", "content": "question", "display_metadata": {"reply_expected": True}},
-            {"role": "assistant", "content": "[SILENT]", "timestamp": 2},
-        ], 1, source)
-        assert (recovered == "") is bool(enabled)
+        for text in ("[SILENT]", "\u200b\ufeff"):
+            recovered = runner._crash_left_reply([
+                {"role": "user", "content": "question", "display_metadata": {"reply_expected": True}},
+                {"role": "assistant", "content": text, "timestamp": 2},
+            ], 1, source)
+            assert (recovered == "") is bool(enabled)
 
 
 @pytest.mark.asyncio
@@ -331,12 +332,16 @@ async def test_scheduled_heartbeat_silence_suppresses_delivery(monkeypatch, tmp_
 @pytest.mark.parametrize("internal", [False, True])
 @pytest.mark.parametrize("reply_expected", [None, False, True])
 @pytest.mark.parametrize("allow_silence", [False, True])
-@pytest.mark.parametrize("status", [
-    {}, {"failed": True}, {"partial": True}, {"interrupted": True},
-    {"completed": False}, {"error": "provider detail"},
+@pytest.mark.parametrize("status,recovery_text", [
+    ({}, None),
+    ({"failed": True}, "Something went wrong"),
+    ({"partial": True}, "I had to stop"),
+    ({"interrupted": True}, ""),
+    ({"completed": False}, "no response was generated"),
+    ({"error": "provider detail"}, "no response was generated"),
 ])
 async def test_queued_silence_policy_belongs_to_each_turn(
-    monkeypatch, tmp_path, internal, reply_expected, allow_silence, status,
+    monkeypatch, tmp_path, internal, reply_expected, allow_silence, status, recovery_text,
 ):
     runner = _runner(monkeypatch, tmp_path)
     runner.config.allow_human_silence_markers = allow_silence
@@ -352,7 +357,7 @@ async def test_queued_silence_policy_belongs_to_each_turn(
     terminal_result = {**result, "queued_terminal_display_kind": kind,
                        "queued_terminal_reply_expected": reply_expected,
                        "queued_terminal_allow_human_silence": allow_silence}
-    _, silent, _ = await runner._hmwa_shape_agent_response(
+    shaped, silent, _ = await runner._hmwa_shape_agent_response(
         terminal_result, _source(), [], SimpleNamespace(session_id="s"), None,
         None, 1, "s", "telegram", 0,
         persist_user_display_kind=None if internal else "internal_notification",
@@ -368,7 +373,19 @@ async def test_queued_silence_policy_belongs_to_each_turn(
         event_message_id=None, inbound_message_id="msg-42", run_generation=1,
     )
     await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
-    assert runner._deliver_queued_first_response.await_count == (0 if expected_silence else 1)
+    # Rejected markers must take the same recovery path as an empty result, never leak
+    # their control token. An interrupted turn that did work intentionally stays quiet.
+    rejected_opt_in = allow_silence and not internal and bool(status)
+    if rejected_opt_in:
+        assert not is_intentional_silence_response(shaped)
+        if recovery_text:
+            assert recovery_text in shaped
+        else:
+            assert shaped == ""
+    expected_delivery = not expected_silence and not (rejected_opt_in and recovery_text == "")
+    assert runner._deliver_queued_first_response.await_count == int(expected_delivery)
+    if rejected_opt_in and expected_delivery:
+        assert runner._deliver_queued_first_response.await_args.args[0] == shaped
 
 
 @pytest.mark.asyncio

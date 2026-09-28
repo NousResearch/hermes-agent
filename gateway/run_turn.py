@@ -26,7 +26,7 @@ from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
-    display_kind_for_event, is_intentional_silence_agent_result,
+    display_kind_for_event, is_intentional_silence_agent_result, is_intentional_silence_response,
     is_invisible_only_response, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
 )
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
@@ -1528,10 +1528,15 @@ class GatewayTurnMixin:
         # opened the chain: its origin, addressing and profile determine the final policy.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
         _silence_reply_expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
+        _human_silence_opt_in = _allow_human_silence and not is_machinery_display_kind(_silence_kind)
         _intentional_silence = is_intentional_silence_agent_result(
             agent_result, response,
-            human_silence_opt_in=_allow_human_silence and not is_machinery_display_kind(_silence_kind),
+            human_silence_opt_in=_human_silence_opt_in,
         )
+        if _human_silence_opt_in and not _intentional_silence and is_intentional_silence_response(response):
+            # A rejected control token is not useful partial text; let empty-result recovery
+            # surface the failure or honor a deliberate interruption.
+            response = ""
         if _intentional_silence and not silence_allowed(
             _silence_kind, _silence_reply_expected, allow_human_silence_markers=_allow_human_silence,
         ):
@@ -3741,13 +3746,17 @@ class GatewayTurnMixin:
         )
         _allow_human_silence = self._allows_human_silence_markers(turn_ctx.source)
         # Keep internal-notification policy independent of the human opt-in.
+        _human_silence_opt_in = (
+            _allow_human_silence and not is_machinery_display_kind(turn_ctx.persist_user_display_kind)
+        )
         _intentional_silence = is_intentional_silence_agent_result(
             _delivery_result, first_response,
-            human_silence_opt_in=(
-                _allow_human_silence and not is_machinery_display_kind(turn_ctx.persist_user_display_kind)
-            ),
+            human_silence_opt_in=_human_silence_opt_in,
         )
-        if is_invisible_only_response(first_response) and not _intentional_silence:
+        if not _intentional_silence and (
+            is_invisible_only_response(first_response)
+            or (_human_silence_opt_in and is_intentional_silence_response(first_response))
+        ):
             from gateway.run import _normalize_empty_agent_response, _sanitize_gateway_final_response
 
             first_response = _normalize_empty_agent_response(_delivery_result, "")

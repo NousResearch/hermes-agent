@@ -525,6 +525,9 @@ _WAKE = {"display_kind": "internal_notification"}
     ("NO_REPLY", {}, ["⚠️ The model returned only a silence marker for a message that needed a reply. "
                       "Try again or rephrase."]),
     ("NO_REPLY", {"display_metadata": {"reply_expected": False}}, []),
+    ("\u200b\ufeff", {}, ["\u200b\ufeff"]),
+    ("\u200b\ufeff", {"display_metadata": {"reply_expected": False}}, ["\u200b\ufeff"]),
+    ("\u200b\ufeff", _WAKE, ["\u200b\ufeff"]),
 ])
 async def test_unclean_restart_never_redelivers_a_reply_live_delivery_suppressed(
     tmp_path, reply, prompt, owed, allow_silence,
@@ -538,7 +541,7 @@ async def test_unclean_restart_never_redelivers_a_reply_live_delivery_suppressed
     (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text("display: {suppress_warning_notifications: true}\n", encoding="utf-8")
     runner, store = _db_runner(tmp_path)
     runner.config = GatewayConfig(allow_human_silence_markers=allow_silence)
-    if allow_silence and reply == "NO_REPLY":
+    if allow_silence and (reply == "NO_REPLY" or (reply == "\u200b\ufeff" and not prompt.get("display_kind"))):
         owed = []
     source = _turn(store, "quiet", marked=True, reply=reply, **prompt)
 

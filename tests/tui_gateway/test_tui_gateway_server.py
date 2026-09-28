@@ -3151,6 +3151,92 @@ def test_command_dispatch_and_catalog_resolve_project_skills_from_the_session_cw
     assert skill_utils.find_project_root() is None
 
 
+def test_command_dispatch_reviews_staged_skill_writes(tmp_path, monkeypatch):
+    # #98330/#118812: command.dispatch is the desktop/TUI FALLBACK stage when the slash
+    # worker cannot start. With no /skills route there, a failed worker turned every
+    # review command into the routing refusal, stranding staged writes with no surface
+    # left. The review slice (pending/approve/reject/diff/approval) must answer; the
+    # CLI-hub mutations must keep refusing.
+    from tools import write_approval as wa
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("skills:\n  write_approval: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    rec = wa.stage_write(
+        wa.SKILLS,
+        {"action": "create", "name": "demo-review",
+         "content": "---\nname: demo-review\ndescription: Use when testing staged review.\n---\n\nBody.\n"},
+        summary="create demo-review", origin="background_review")
+    server._sessions["sid-wa"] = _session(profile_home=str(home))
+    try:
+        pending = server._methods["command.dispatch"](
+            "d1", {"name": "skills", "arg": "pending", "session_id": "sid-wa"})
+        assert pending["result"]["type"] == "exec", pending
+        assert rec["id"] in pending["result"]["output"]
+        assert "demo-review" in pending["result"]["output"]
+
+        diff = server._methods["command.dispatch"](
+            "d2", {"name": "skills", "arg": f"diff {rec['id']}", "session_id": "sid-wa"})
+        assert diff["result"]["type"] == "exec", diff
+        assert "demo-review" in diff["result"]["output"]
+
+        reject = server._methods["command.dispatch"](
+            "d3", {"name": "skills", "arg": f"reject {rec['id']}", "session_id": "sid-wa"})
+        assert "Rejected pending skills write" in reject["result"]["output"], reject
+        assert wa.pending_count(wa.SKILLS) == 0
+
+        # The hub mutations are NOT routed — the desktop allowlist mirrors this refusal.
+        refused = server._methods["command.dispatch"](
+            "d4", {"name": "skills", "arg": "install demo", "session_id": "sid-wa"})
+        assert refused["error"]["code"] == 4018, refused
+    finally:
+        server._sessions.pop("sid-wa", None)
+
+
+def test_command_dispatch_skills_gate_off_answers_instead_of_refusing(tmp_path, monkeypatch):
+    # Gateway parity: the gate being off must not strand writes that are already staged,
+    # and with an empty pile it points at the toggle instead of the routing refusal.
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("skills:\n  write_approval: false\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    server._sessions["sid-wa"] = _session(profile_home=str(home))
+    try:
+        res = server._methods["command.dispatch"](
+            "d", {"name": "skills", "arg": "pending", "session_id": "sid-wa"})
+        assert res["result"]["type"] == "exec", res
+        assert "write_approval" in res["result"]["output"], res
+    finally:
+        server._sessions.pop("sid-wa", None)
+
+
+def test_command_dispatch_memory_pending_reviews_staged_writes(tmp_path, monkeypatch):
+    # Same fallback for /memory (#118812): the store must resolve under the session's
+    # profile home, applying the write on approve instead of dropping it.
+    from tools import write_approval as wa
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text("memory:\n  write_approval: true\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    wa.stage_write(wa.MEMORY, {"action": "add", "target": "memory", "content": "dispatched fact"},
+                   summary="add dispatched fact", origin="foreground")
+    server._sessions["sid-wa"] = _session(profile_home=str(home))
+    try:
+        res = server._methods["command.dispatch"](
+            "d1", {"name": "memory", "arg": "pending", "session_id": "sid-wa"})
+        assert res["result"]["type"] == "exec", res
+        assert "dispatched fact" in res["result"]["output"]
+
+        approve = server._methods["command.dispatch"](
+            "d2", {"name": "memory", "arg": "approve all", "session_id": "sid-wa"})
+        assert "Approved 1" in approve["result"]["output"], approve
+        assert wa.pending_count(wa.MEMORY) == 0
+    finally:
+        server._sessions.pop("sid-wa", None)
+
+
 def test_complete_slash_and_skills_reload_are_bound_to_the_session_cwd(tmp_path, monkeypatch):
     # The '/' popup and /reload-skills ran the registry unbound: the popup never offered a project skill
     # ``command.dispatch`` accepts, and a rescan after that dispatch reported the session's project skills

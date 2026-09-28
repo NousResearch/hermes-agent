@@ -14,6 +14,7 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -162,10 +163,39 @@ class GateDecision:
     message: str = ""
 
 
+def _slash_review_surface() -> bool:
+    """Whether the ACTIVE turn has a human who can type ``/<subsystem> pending``: the interactive
+    CLI, TUI/desktop (exec route), and chat-gateway sessions all answer it now. Headless worker
+    contexts — cron (``HERMES_CRON_SESSION``), kanban (``HERMES_KANBAN_TASK``) and the unattended
+    programmatic platforms (api_server, webhook delivery) — have nobody at a prompt, so the staged
+    hint must not name a command nobody can deliver (#98330); it names the pending dir instead."""
+    def _env(name: str) -> str:
+        try:
+            from gateway.session_context import get_session_env
+            return get_session_env(name, "") or ""
+        except Exception:  # standalone/tests: process env is the fallback
+            return os.environ.get(name, "") or ""
+    if _env("HERMES_KANBAN_TASK").strip():
+        return False
+    try:
+        from utils import is_truthy_value
+        if is_truthy_value(_env("HERMES_CRON_SESSION")):
+            return False
+    except Exception:
+        pass
+    platform = (_env("HERMES_SESSION_PLATFORM") or os.environ.get("HERMES_PLATFORM", "")).strip().lower()
+    return platform not in {"webhook", "msgraph_webhook", "api_server"}
+
+
 def _staged(subsystem: str) -> GateDecision:
-    where = "/skills pending" if subsystem == SKILLS else "/memory pending"
+    command = f"/{subsystem} pending"
+    if _slash_review_surface():
+        where = f"review with {command}"
+    else:
+        where = (f"pending records live in {_pending_path(subsystem, '').parent} "
+                 f"(review from an interactive CLI session with {command})")
     return GateDecision(stage=True, message=(f"Staged for approval ({subsystem}.write_approval is on). "
-                                             f"Not yet saved — review with {where}."))
+                                             f"Not yet saved — {where}."))
 
 
 def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: str = "") -> GateDecision:

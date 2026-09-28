@@ -13,6 +13,7 @@ import {
   type DesktopCommandSurface,
   type DesktopPickerId,
   desktopSlashUnavailableMessage,
+  desktopSubcommandUnavailableMessage,
   isDesktopSlashCommand,
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
@@ -266,8 +267,22 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
         const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
 
-        if (!isDesktopSlashCommand(name)) {
+        // Resolve the INVOCATION, not just the name: a command the desktop owns
+        // for its management surface can still delegate individual subcommands
+        // to the backend (`/skills pending` — see desktopSubcommandAllowlist).
+        if (!isDesktopSlashCommand(name, arg)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
+
+          return
+        }
+
+        // Commands narrowed by `desktop_subcommands` (e.g. /skills exposes
+        // only its write-approval review slice here — the CLI hub mutations
+        // must not be reachable from a desktop exec) stop at the client.
+        const subcommandBlocked = desktopSubcommandUnavailableMessage(name, arg)
+
+        if (subcommandBlocked) {
+          renderSlashOutput(subcommandBlocked)
 
           return
         }

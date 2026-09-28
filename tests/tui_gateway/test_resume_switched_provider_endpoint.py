@@ -33,3 +33,19 @@ def test_resume_drops_previous_providers_endpoint(tmp_path, row_origin):
     assert (desktop["provider"], desktop["base_url"], desktop["api_mode"]) == ("openai-codex", None, None)
     assert stored_session_route(row, current_model="openai/gpt-6-luna", current_provider="nous") == (
         "gpt-6-luna-900k", "openai-codex", None, None, True)
+
+
+def test_resume_after_fallback_served_first_call_keeps_the_picked_pair(tmp_path):
+    """The first accounted call records the serving (fallback) route in the billing columns; the chat's
+    picked model+provider must still resume together, not as the fallback model on the picked provider."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="desktop", model="claude-opus-4")
+    db.update_session_meta("s1", json.dumps({"model": "claude-opus-4", "provider": "anthropic"}), "claude-opus-4")
+    db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="deepseek/deepseek-v4-flash",
+                           billing_provider="openrouter", api_call_count=1)
+    row = db.get_session("s1")
+    # The billing record keeps the serving route.
+    assert (row["model"], row["billing_provider"]) == ("deepseek/deepseek-v4-flash", "openrouter")
+
+    restored = _stored_session_runtime_overrides(row)["model_override"]
+    assert (restored["model"], restored["provider"]) == ("claude-opus-4", "anthropic")

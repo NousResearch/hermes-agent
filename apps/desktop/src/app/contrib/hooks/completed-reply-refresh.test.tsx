@@ -379,12 +379,8 @@ it.each([false, true])('keeps a completed tool card when a text-only refresh lan
   render(<Harness tile={tile} />)
   act(() => cache.updateSessionState(RUNTIME, state => ({ ...state, messages: toChatMessages(history) }), STORED))
   await finishTurn({ row_ids: [3, 4, 5, 6], user_row_id: 3, final_assistant_row_id: 6, complete: true })
-  expect(
-    $sessionStates
-      .get()
-      [RUNTIME].messages.flatMap(message => message.parts)
-      .some(part => part.type === 'tool-call')
-  ).toBe(true)
+  const beforeRefresh = $sessionStates.get()[RUNTIME].messages.flatMap(message => message.parts)
+  expect(beforeRefresh.some(part => part.type === 'tool-call')).toBe(true)
 
   vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
     session_id: STORED,
@@ -394,12 +390,10 @@ it.each([false, true])('keeps a completed tool card when a text-only refresh lan
     await refresh()
   })
 
-  expect(
-    $sessionStates
-      .get()
-      [RUNTIME].messages.flatMap(message => message.parts)
-      .filter(part => part.type === 'tool-call')
-  ).toMatchObject([{ toolCallId: 'read-tool', result: 'example content' }])
+  const afterRefresh = $sessionStates.get()[RUNTIME].messages.flatMap(message => message.parts)
+  expect(afterRefresh.filter(part => part.type === 'tool-call')).toMatchObject([
+    { toolCallId: 'read-tool', result: 'example content' }
+  ])
 })
 
 it('retries an interrupted reconnect read once on idle, even before that read returns', async () => {

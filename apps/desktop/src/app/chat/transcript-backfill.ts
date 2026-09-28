@@ -188,6 +188,7 @@ function retainCompletedTurnTools(messages: ChatMessage[], previous: ChatMessage
       if (existingIds.has(part.toolCallId)) {
         return false
       }
+
       existingIds.add(part.toolCallId)
 
       return true

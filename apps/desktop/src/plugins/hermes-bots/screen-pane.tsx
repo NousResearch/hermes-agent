@@ -435,7 +435,9 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       <div className="grid min-h-48 place-items-center p-6 text-center">
         <div className="flex max-w-md flex-col items-center gap-2">
           <div className="text-sm font-medium">{t.screen.imageSwitchTitle}</div>
-          <div className="text-xs text-muted-foreground">{t.screen.imageSwitchBody(sw.current_image, sw.target_image)}</div>
+          <div className="text-xs text-muted-foreground">
+            {t.screen.imageSwitchBody(sw.current_image, sw.target_image)}
+          </div>
           <div className="flex gap-2">
             <Button disabled={busy} onClick={() => void decideImageSwitch(true)} size="sm">
               {busy ? <GlyphSpinner /> : <Codicon name="arrow-swap" />}

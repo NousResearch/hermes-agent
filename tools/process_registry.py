@@ -2458,7 +2458,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Exited ``notify_on_complete`` processes of ``owner_task_id`` whose result nobody read (no wait/log/poll).
         A child's completion notice is suppressed in the parent, so an unread exit is otherwise lost silently."""
         with self._lock:
-            return [s for s in self._finished.values()
+            return [s for store in (self._finished, self._receipt_pending) for s in store.values()
                     if s.owner_task_id == owner_task_id and s.notify_on_complete
                     and s.id not in self._completion_consumed and s.id not in self._poll_observed]
 

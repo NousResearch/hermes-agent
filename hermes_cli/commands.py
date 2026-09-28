@@ -543,3 +543,10 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     return [(name, str(meta.get("description") or t("slash.shared.plugin_default_desc", name=name)),
              str(meta.get("args_hint") or "").strip())
             for name, meta in commands.items() if isinstance(name, str) and isinstance(meta, dict)]
+
+
+def __getattr__(name):  # PEP 562 — COMMANDS / COMMANDS_BY_CATEGORY are built per call so labels follow the active language
+    localized = _LAZY_LOCALIZED_TABLES.get(name)
+    if localized is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return localized()

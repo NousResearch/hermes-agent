@@ -110,6 +110,36 @@ def test_shipped_provider_and_public_model_are_reported_as_is(direct_runtime, tm
             assert dims["model"] == PUBLIC, (name, dims)
 
 
+@pytest.mark.parametrize(("configured", "expected"), [
+    (("custom", "acme-private-llama", "http://localhost:8080/v1"), ("custom", "custom")),
+    (("openrouter", PUBLIC, ""), ("openrouter", PUBLIC)),
+])
+def test_tui_switch_before_first_prompt_blames_the_configured_route(
+    direct_runtime, tmp_path, monkeypatch, configured, expected,
+):
+    """With no agent yet and ``--provider``, switch_away names the model the session was launched on
+    with ITS provider, never the target provider."""
+    provider, model, base_url = configured
+    home = tmp_path / "hermes-home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        f"model:\n  provider: {provider}\n  default: {model}\n" + (f"  base_url: {base_url}\n" if base_url else ""))
+    import tui_gateway.server as server
+
+    monkeypatch.setattr(server, "_hermes_home", home)  # captured at first import
+    result = SimpleNamespace(
+        success=True, new_model="gpt-5", target_provider="openai", base_url="https://api.openai.com/v1",
+        api_key="k", api_mode="chat_completions", warning_message="", error_message="")
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: result)
+    server._apply_model_switch("", {"agent": None}, "gpt-5 --provider openai", confirm_expensive_model=True)
+    _flush()
+
+    assert _stored_values(tmp_path, "hermes.model_friction.count") == [
+        ({"model": expected[1], "provider": expected[0], "signal": "switch_away"}, 1)]
+    assert _stored_values(tmp_path, "hermes.model_switch.count") == [
+        ({"execution_surface": "tui", "from_provider": expected[0], "to_provider": "openai"}, 1)]
+
+
 def _gateway_runner(multiplex_home=None):
     from gateway.slash_commands_model import GatewayModelCommandsMixin
 

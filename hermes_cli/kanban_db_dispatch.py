@@ -88,6 +88,74 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 )
 
 
+def _pr_urls_in(text: Optional[str]) -> set[str]:
+    """Normalized GitHub PR URLs contained in ``text``.
+
+    Trailing sentence punctuation is stripped and the result lowercased, so a
+    worker's "rework pushed on <url>." note matches the bare URL an earlier
+    comment (or a run handoff) carried.
+    """
+    if not text:
+        return set()
+    return {
+        match.rstrip(".,;:!?)]}'\"`").lower()
+        for match in _RESPAWN_GUARD_PR_URL_RE.findall(text)
+    }
+
+
+def _rework_demand_at(conn: sqlite3.Connection, task_id: str) -> Optional[int]:
+    """Timestamp of the newest live rework demand, else ``None``.
+
+    A rework demand is ``changes_requested`` (the reviewer's verdict, which
+    hands the card back to its implementer) or ``review_reopened``. Only the
+    newest review-trail event counts: a later ``review_requested`` means the
+    card left for review again and the demand is spent.
+    """
+    row = conn.execute(
+        "SELECT kind, created_at FROM task_events "
+        "WHERE task_id = ? AND kind IN "
+        "('changes_requested', 'review_reopened', 'review_requested') "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None or row["kind"] == "review_requested":
+        return None
+    return int(row["created_at"] or 0)
+
+
+def _is_demanded_rework_note(
+    conn: sqlite3.Connection, task_id: str, comment_at: int, body: str,
+) -> bool:
+    """True when a PR-bearing comment restates the PR under a demanded rework.
+
+    Shape (B) of #62418: ordering alone cannot tell a worker's own "rework
+    pushed on <url>" note from a fresh duplicate PR — both post-date the
+    ``changes_requested`` verdict that handed the card back. State can: when
+    the newest review-trail event is still a rework demand, and every PR URL
+    the comment names was already on the card, the note reports progress on
+    the PR under rework rather than opening a new one.
+    """
+    demand_at = _rework_demand_at(conn, task_id)
+    if demand_at is None or comment_at < demand_at:
+        return False
+    urls = _pr_urls_in(body)
+    if not urls:
+        return False
+    known: set[str] = set()
+    for row in conn.execute(
+        "SELECT body FROM task_comments WHERE task_id = ? AND created_at < ?",
+        (task_id, comment_at),
+    ).fetchall():
+        known |= _pr_urls_in(_kb._lossy_text(row["body"]))
+    for row in conn.execute(
+        "SELECT summary, metadata FROM task_runs WHERE task_id = ?",
+        (task_id,),
+    ).fetchall():
+        known |= _pr_urls_in(_kb._lossy_text(row["summary"]))
+        known |= _pr_urls_in(_kb._lossy_text(row["metadata"]))
+    return urls <= known
+
+
 @dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass.
@@ -1528,11 +1596,18 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
-    handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    (PR URL in a recent comment; re-spawning risks a duplicate PR). The
+    ``active_pr`` guard is scoped to cards a worker actually executed: with no
+    run at all (or only a refused ``spawn_failed``), the URL is card contract —
+    a merge-gate/review card, an operator's create-time note — and the card
+    spawns. On a card that did execute it still yields when the newest
+    review-trail event is a rework demand and the comment only restates the PR
+    already on the card (the worker reporting progress on the PR under rework,
+    not opening a new one), when a handoff event followed the comment (the named
+    profile must work on that PR), or when an explicit re-queue followed it (a
+    deliberate "run it again"). The review lane skips the last two: they are the
+    *inputs* to a review handoff. Stale / dead claim locks are NOT a guard
+    reason — the reclaim passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1611,20 +1686,39 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    #    Exception: a handoff AFTER the newest PR comment (operator reassign,
-    #    reviewer changes_requested, review reopen) names the profile that must
-    #    now work on THAT PR — a closer or the implementer finishing it, not a
-    #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
-    #    so the worker that opened the PR is still not re-spawned against it.
-    pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    #    A spawn can only duplicate a PR if a worker actually ran on THIS card
+    #    (#62418 shape A): with no executed run the URL is card contract — a
+    #    merge-gate/review card, an operator's create-time note — and the card
+    #    must spawn. ``spawn_failed`` and other pre-execution outcomes are not
+    #    "a worker ran", so a failed first spawn cannot arm the 24h guard.
+    executed_run = conn.execute(
+        "SELECT 1 FROM task_runs WHERE task_id = ? "
+        "AND outcome IS NOT NULL AND outcome != 'spawn_failed' LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if executed_run is None:
+        return None
+
+    #    Exception 1 (state, not ordering — #62418 shape B): while the newest
+    #    review-trail event is a rework demand, a comment that restates the PR
+    #    already on this card is the worker reporting progress on the PR under
+    #    rework, so it must not re-arm the guard.
+    #    Exception 2 (ordering): a handoff AFTER the newest PR comment
+    #    (operator reassign, reviewer changes_requested, review reopen) names
+    #    the profile that must now work on THAT PR — a closer or the
+    #    implementer finishing it, not a duplicate implementation (#111910). A
+    #    crash/reclaim is not a handoff, so the worker that opened the PR is
+    #    still not re-spawned against it.
     for c in conn.execute(
         "SELECT body, created_at FROM task_comments "
         "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
-        (task_id, pr_cutoff),
+        (task_id, now - _RESPAWN_GUARD_PR_WINDOW),
     ).fetchall():
         body = _kb._lossy_text(c["body"])
         if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
             continue
+        if _is_demanded_rework_note(conn, task_id, int(c["created_at"] or 0), body):
+            return None
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).
             "SELECT kind, payload FROM task_events "
@@ -1634,7 +1728,20 @@ def check_respawn_guard(
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
             return None
-        return "active_pr"
+        # An explicit re-queue AFTER the PR comment (operator unblock / promote /
+        # status change / reclaim) is a deliberate "run it again" — honor it
+        # instead of deferring. Mirrors the bypass the recent_success check
+        # applies to completed runs above.
+        requeued_after_pr = conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND created_at >= ? "
+            "AND kind IN ('status', 'promoted', 'promoted_manual', "
+            "'unblocked', 'reclaimed') "
+            "LIMIT 1",
+            (task_id, int(c["created_at"] or 0)),
+        ).fetchone()
+        if not requeued_after_pr:
+            return "active_pr"
 
     return None
 

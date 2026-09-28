@@ -518,7 +518,7 @@
     );
     --vsq: min(0.5vh, 0.5vw);
     --image-preview-max-width: 34rem;
-    --image-preview-height: clamp(16.25rem, calc(var(--vsq) * 100), 26.25rem);
+    --image-preview-height: clamp(11rem, calc(var(--vsq) * 100), 26.25rem);
 
     --sidebar-width: 14.8125rem;
     --chat-min-width: 28rem;

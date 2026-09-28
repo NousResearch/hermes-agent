@@ -2123,7 +2123,9 @@ def _probe_config_health(cfg: dict) -> str:
     if not isinstance(cfg, dict):
         return ""
     warnings: list[str] = []
-    if null_keys := sorted(k for k, v in cfg.items() if v is None):
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    nullable_roots = {k for k, v in DEFAULT_CONFIG.items() if v is None}
+    if null_keys := sorted(k for k, v in cfg.items() if v is None and k not in nullable_roots):
         keys = ", ".join(f"`{k}`" for k in null_keys)
         warnings.append(f"config.yaml has empty section(s): {keys}. Remove the line(s) or set them to `{{}}` — "
                         f"empty sections silently drop nested settings.")

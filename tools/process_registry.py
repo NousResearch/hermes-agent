@@ -543,6 +543,8 @@ class ProcessSession:
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
+    persist_on_release: bool = False           # opt out of agent-lifecycle cleanup (release()/turn-abandon kill
+                                                # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
     # Watcher/notification routing (persisted for crash recovery)
     # systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
     # (#70716)
@@ -612,7 +614,7 @@ _CHECKPOINT_FIELDS = (
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
-    "heartbeat_seconds")
+    "heartbeat_seconds", "persist_on_release")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
     for f in ProcessSession.__dataclass_fields__.values()
@@ -698,14 +700,19 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 self._emit_heartbeat(session, now)
 
     def _emit_heartbeat(self, session: ProcessSession, now: float) -> None:
+        """Queue a heartbeat carrying the output since the last one. A tick with nothing new is
+        skipped outright: every queued event costs the owner a full model turn, and "still running,
+        no output" is already visible on the process surfaces (status stack, /agents dock)."""
+        session._heartbeat_last = now
         with session._lock:
             delta = session.total_output_chars - session._heartbeat_total_at_last
             output = session.output_buffer[-delta:] if delta > 0 else ""
             session._heartbeat_total_at_last = session.total_output_chars
+        if not output:
+            return
         if len(output) > HEARTBEAT_OUTPUT_CHARS:
             cut = len(output) - HEARTBEAT_OUTPUT_CHARS
             output = f"...({cut} earlier characters omitted)\n" + output[-HEARTBEAT_OUTPUT_CHARS:]
-        session._heartbeat_last = now
         session._heartbeat_seq += 1
         notification = {
             **self._watch_event_base(session),
@@ -913,21 +920,85 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return cls._is_host_pid_alive(pid) and (
             expected_start is None or cls._safe_host_start_time(pid) == expected_start)
 
+    def _detached_host_fate(self, pid: Optional[int], expected_start: Optional[int]) -> str:
+        """How a recovered host PID should be supervised.
+
+        ``running`` — alive and still ours (start time matches, no baseline, or
+        the start-time probe could not be read). Re-attach; do not invent an exit.
+        ``reused`` — alive, and the start time positively differs. The number
+        belongs to someone else; close our entry and never signal that PID.
+        ``gone`` — the PID is not alive. Prune it; no exit status was collected.
+        """
+        if self._host_pid_is_ours(pid, expected_start):
+            return "running"
+        if not pid or not self._is_host_pid_alive(pid):
+            return "gone"
+        if expected_start is None:
+            return "running"
+        current = self._safe_host_start_time(pid)
+        if current is None or current == expected_start:
+            return "running"
+        return "reused"
+
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
-        """Update recovered host-PID sessions when the underlying process has exited."""
+        """Re-attach, close, or prune a recovered host-PID session.
+
+        A completion is not queued here: recovery has no waitable handle, so it
+        never collected an exit status.
+        """
         if session is None or session.exited or not session.detached or session.pid_scope != "host":
             return session
-        # A recycled PID (alive but not ours) counts as "our process exited" so a
-        # later kill() can never tree-kill the stranger.
-        if self._host_pid_is_ours(session.pid, session.host_start_time):
+        fate = self._detached_host_fate(session.pid, session.host_start_time)
+        if fate == "running":
             return session
+        if fate == "gone":
+            return self._prune_uncollected_detached(session)
+        self._close_reused_detached(session)
+        return session
+
+    def _close_reused_detached(self, session: ProcessSession) -> None:
+        """Close an entry whose PID was recycled onto another process.
+
+        The stranger is not signalled, and no completion is queued: we never
+        collected an exit status for the process we spawned.
+        """
         with session._lock:
             if session.exited:
-                return session
-            # No waitable handle survives recovery, so the real exit code is unknown.
-            session.exited, session.exit_code = True, None
-        self._move_to_finished(session)
-        return session
+                return
+            session.exited = True
+        with self._lock:
+            if session.id in self._running:
+                session.exited_at = time.time()
+                self._running.pop(session.id, None)
+            self._finished[session.id] = session
+        self._write_checkpoint()
+        session._completion_event.set()
+
+    def _prune_uncollected_detached(self, session: ProcessSession) -> Optional[ProcessSession]:
+        """Drop a recovered entry whose PID is gone, without inventing an exit.
+
+        An owned systemd scope stays reachable so kill can still reap it. A
+        scope-less entry is removed: poll/list must not report a collected exit.
+        """
+        with session._lock:
+            session.exited = True
+        with self._lock:
+            self._running.pop(session.id, None)
+            if session.systemd_unit:
+                self._finished[session.id] = session
+            else:
+                self._finished.pop(session.id, None)
+        self._write_checkpoint()
+        session._completion_event.set()
+        return session if session.systemd_unit else None
+
+    def _uncollected_gone(self, session: Optional[ProcessSession]) -> bool:
+        """True when a detached entry was closed without a collected exit status
+        and the PID is no longer alive. List/poll must not report that as exited."""
+        return bool(
+            session is not None and session.exited and session.exit_code is None
+            and session.detached and session.pid_scope == "host"
+            and not self._is_host_pid_alive(session.pid))
 
     @staticmethod
     def _proc_alive(proc) -> bool:
@@ -1108,7 +1179,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             if pty_alive:
                 survivors.append(session.pid)
         if session.pid_scope == "host" and session.pid:
-            if self._host_pid_is_ours(session.pid, session.host_start_time):
+            if self._detached_host_fate(session.pid, session.host_start_time) == "running":
                 if session.pid not in survivors:
                     survivors.append(session.pid)
                 survivors.extend(
@@ -1212,10 +1283,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "") -> ProcessSession:
+        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
+        persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
-        for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
+        for interactive CLIs, falling back to a plain pipe when unavailable or failing.
+        ``persist_on_release`` keeps the process out of agent-lifecycle kill sweeps (#41225)."""
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds our stdout
         # pipe open forever when B is a long-running server. The rewriter turns it into
         # ``A && { B & }``. Lazy import: terminal_tool imports this module.
@@ -1223,7 +1296,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
         safe_command = _rewrite_bg(command)
-        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
+        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
+                                    persist_on_release=persist_on_release)
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -1310,12 +1384,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "") -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
-        the correct sandbox context."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
+        the correct sandbox context. ``persist_on_release`` keeps the process out of
+        agent-lifecycle kill sweeps (#41225)."""
+        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
+                                    persist_on_release=persist_on_release)
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
@@ -1698,7 +1774,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if session is None:
             return False
         with suppress(Exception):
-            self._refresh_detached_session(session)
+            refreshed = self._refresh_detached_session(session)
+            if refreshed is None:
+                return False
+            session = refreshed
         return not session.exited and not (
             session.watch_patterns and not session._watch_disabled and session._watch_hits > 0)
 
@@ -1767,7 +1846,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                         # where the reader is blocked but the direct child has already exited (issue
                         # #17327).
                         self._reconcile_local_exit(session)
-                        self._refresh_detached_session(session)
+                        if self._refresh_detached_session(session) is None:
+                            break
                     if session._completion_event.is_set():
                         break
                     session._completion_event.wait(min(remaining, interval))
@@ -1989,7 +2069,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def poll(self, session_id: str) -> dict:
         """Check status and get new output for a background process."""
         session = self.get(session_id)
-        if session is None:
+        if session is None or self._uncollected_gone(session):
             return _not_found(session_id)
         self._reconcile_local_exit(session)  # orphaned-pipe reader guard
         with session._lock:
@@ -2215,24 +2295,27 @@ class ProcessRegistry(ProcessCheckpointMixin):
         elif session.env_ref and session.pid:
             session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:
-            # Identity check, not bare liveness: a gone/recycled PID means our
-            # process exited — never tree-kill the stranger. Still stop an owned
-            # scope: a daemonized descendant may survive the wrapper PID.
+            # Same fate as poll/list: a gone or reused PID means our process is
+            # gone — never tree-kill the stranger — but a live PID with an
+            # unreadable start time is still ours and must really be killed.
             # If this recovered session also carries an owned systemd scope, stop that scope before
             # returning: a daemonized descendant may still be alive there even though the wrapper PID exited
             # or was recycled across the gateway restart (#70716, teknium1 review).
-            if not self._host_pid_is_ours(session.pid, session.host_start_time):
+            if self._detached_host_fate(session.pid, session.host_start_time) != "running":
                 if session.systemd_unit:
                     _stop_systemd_unit(session.systemd_unit)
                 with session._lock:
-                    session.exited = True
-                    session.exit_code = None
                     output = _completion_output(session)
                 if consume_output:
                     self._completion_consumed.add(session_id)
-                self._move_to_finished(session)
+                # No waitable handle, so this is not a collected exit. Close the
+                # entry without queueing a completion, and do not signal a PID
+                # whose start time does not match.
+                self._close_reused_detached(session)
                 return {"status": "already_exited", "exit_code": session.exit_code, **output}
-            self._terminate_host_pid(session.pid, session.host_start_time)
+            # Identity was just proven above. Re-passing the start time would make
+            # an unreadable probe refuse the kill and leave the re-adopted child running.
+            self._terminate_host_pid(session.pid)
         else:
             return {
                 # Reject non-positive timeouts — the schema declares minimum=1, but not every caller
@@ -2335,7 +2418,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             sessions.update(self._finished)
             sessions.update(self._running)
-        all_sessions = [self._refresh_detached_session(s) for s in sessions.values()]
+        all_sessions = [
+            refreshed for refreshed in (
+                self._refresh_detached_session(s) for s in sessions.values()
+            ) if refreshed is not None and not self._uncollected_gone(refreshed)
+        ]
         if task_id or session_key:
             all_sessions = [
                 s for s in all_sessions
@@ -2367,6 +2454,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 entry.update(watch_patterns=list(s.watch_patterns), watch_hit=s._watch_hits > 0)
             if s.notify_on_complete:
                 entry["notify_on_complete"] = True
+            if s.persist_on_release:
+                entry["persist_on_release"] = True
             if s.exited:
                 entry["exit_code"] = s.exit_code
                 entry["exited_at"] = s.exited_at
@@ -2403,6 +2492,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             return [s for s in self._finished.values()
                     if s.owner_task_id == owner_task_id and s.notify_on_complete
+                    and s.exit_code is not None
                     and s.id not in self._completion_consumed and s.id not in self._poll_observed]
 
     def transfer_ownership(self, session_id: str, *, from_owner: str, to_owner: str, to_task_id: str,
@@ -2444,6 +2534,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
         ``default``), shared across turns and sessions, not the turn's id."""
         return frozenset(s.id for s in self.running_owned_by(task_id))
 
+    # Kill sources that are agent-lifecycle cleanup (session end / compression / error
+    # recovery / turn abandon), not a deliberate stop: those must skip persist_on_release
+    # sessions. An explicit stop (process_manage kill, CLI /stop) passes its own source
+    # string and still reaches them.
+    _LIFECYCLE_KILL_SOURCES = frozenset({"kill_all", "gateway_turn_timeout", "agent_close"})
+
     def kill_started_since(self, task_id: str, baseline_ids, *, source: str) -> int:
         """Kill ``task_id`` processes created after ``baseline_ids``. Output is
         consumed so an abandoned turn can't enqueue a follow-up reviving work the
@@ -2454,12 +2550,21 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self, task_id: Optional[str] = None, *, exclude_ids: frozenset = frozenset(),
         source: str = "kill_all", consume_output: bool = False) -> int:
         """Kill all running processes, optionally only those ``task_id`` spawned (its ``owner_task_id``).
-        Returns count killed."""
+        Returns count killed.
+
+        Sessions with ``persist_on_release=True`` are skipped when ``source`` is an
+        agent-lifecycle sweep (the default ``kill_all`` release path, a gateway turn
+        timeout, or ``agent_close``): an explicitly persisted background job must survive
+        session end / compression / error recovery (#41225). An explicit operator stop
+        (``process.kill`` via process_manage, CLI /stop) passes its own source and still
+        reaches them, so the user can always stop a persisted process on purpose."""
+        lifecycle = source in self._LIFECYCLE_KILL_SOURCES
         with self._lock:
             targets = [
                 s for s in self._running.values()
                 if (task_id is None or s.owner_task_id == task_id)
                 and s.id not in exclude_ids and not s.exited
+                and not (lifecycle and s.persist_on_release)
             ]
         return sum(
             self.kill_process(s.id, source=source, consume_output=consume_output).get("status")

@@ -1,0 +1,87 @@
+/* Registered so the gradient can glide instead of jump. Written per card by
+   `trackCatalogPointer`: x/y is the pointer clamped to the card, near is 0–1. */
+@property --catalog-x {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 0%;
+}
+
+@property --catalog-y {
+  syntax: '<percentage>';
+  inherits: false;
+  initial-value: 0%;
+}
+
+@property --catalog-near {
+  syntax: '<number>';
+  inherits: false;
+  initial-value: 0;
+}
+
+/* Each card carries one accent (`--catalog-accent`, set by class). Its gradient
+   keeps one shape and strength and only its center drifts toward the pointer,
+   onto it when on the card. Light surfaces show tint far more than dark ones,
+   so light gets a softer wash from the bottom-left; `:root.dark` restores
+   the stronger top-left glow. */
+[data-catalog-card] {
+  /* How far the gradient leans from its rest point toward the pointer: all the
+     way on the card itself, falling off fast with distance to the box. */
+  --catalog-follow: calc(var(--catalog-near) * var(--catalog-near));
+  --catalog-rest-x: 0%;
+  --catalog-rest-y: 100%;
+  --catalog-tint: 10%;
+  --catalog-edge: 20%;
+  border-color: color-mix(in srgb, var(--catalog-accent) var(--catalog-edge), var(--ui-stroke-tertiary));
+  background:
+    radial-gradient(
+      140% 100% at calc(var(--catalog-rest-x) + (var(--catalog-x) - var(--catalog-rest-x)) * var(--catalog-follow))
+        calc(var(--catalog-rest-y) + (var(--catalog-y) - var(--catalog-rest-y)) * var(--catalog-follow)),
+      color-mix(in srgb, var(--catalog-accent) var(--catalog-tint), transparent),
+      transparent 70%
+    )
+    var(--ui-chat-bubble-background);
+  transition:
+    border-color 0.1s ease,
+    box-shadow 0.1s ease,
+    opacity 0.15s ease,
+    filter 0.15s ease,
+    --catalog-x 5s cubic-bezier(0.2, 0.8, 0.2, 1),
+    --catalog-y 5s cubic-bezier(0.2, 0.8, 0.2, 1),
+    --catalog-near 5s ease;
+}
+
+:root.dark [data-catalog-card] {
+  --catalog-rest-x: 0%;
+  --catalog-rest-y: 0%;
+  --catalog-tint: 18%;
+  --catalog-edge: 24%;
+}
+
+[data-catalog-card]:hover {
+  /* Matches the selected-option treatment (`border-primary ring-2 ring-primary/20`). */
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+
+/* Uniform alternative to Masonry: same column tracks, cards in a row share one
+   height. Rows start at a complete text card (4-line description, two chip
+   rows, dates ≈ 250px) and grow for a card with a hero image, so image and
+   description always show in full. */
+.catalog-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
+  grid-auto-rows: minmax(16rem, auto);
+  gap: calc(var(--spacing) * 3);
+}
+
+/* Store-browsing feel: hovering one card dims its siblings in the same group. */
+[data-catalog-hover-group]:has([data-catalog-card]:hover) [data-catalog-card]:not(:hover) {
+  opacity: 1;
+  filter: saturate(0.8);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-catalog-card] {
+    transition: border-color 0.1s ease, box-shadow 0.1s ease, opacity 0.15s ease, filter 0.15s ease;
+  }
+}

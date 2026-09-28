@@ -30,7 +30,7 @@ def test_run_job_script_applies_explicit_job_env(tmp_path, monkeypatch):
 def test_occurrence_env_is_limited_to_no_agent_jobs(monkeypatch):
     observed = []
 
-    def fake_run(script_path, workdir=None, cancel_event=None, job_env=None):
+    def fake_run(script_path, workdir=None, cancel_event=None, interpreter=None, job_env=None):
         observed.append(job_env)
         return True, ""
 

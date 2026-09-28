@@ -1,3 +1,8 @@
+import {
+  assertPackagedBackendReadyArtifact,
+  assertBackendReadyArtifactSourceAcceptsBothTokens,
+  resolvePackagedAsarPath
+} from './backend-ready-artifact.mjs'
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import os from 'node:os'
@@ -15,6 +20,20 @@ async function configuredHook(context) {
   await hook.default(context)
 }
 
+// The afterPack readiness guard reads the packaged bundle's unpacked main;
+// every fixture here packs a valid dual-token matcher so the tests keep
+// exercising the locale/signing paths the hook also performs.
+async function seedPackagedMain(context) {
+  const asarPath = resolvePackagedAsarPath(context)
+  await mkdir(path.dirname(asarPath), { recursive: true })
+  await writeFile(asarPath, 'stub archive')
+  await mkdir(path.join(`${asarPath}.unpacked`, 'dist'), { recursive: true })
+  await writeFile(
+    path.join(`${asarPath}.unpacked`, 'dist', 'electron-main.mjs'),
+    'const re = /HERMES_(?:BACKEND|DASHBOARD)_READY[^\\n]*port=(\\d+)/m\n'
+  )
+}
+
 function context(appOutDir, productFilename = 'Hermes Preview') {
   // Use electron-builder's real bundle path resolution, including branding.
   const packager = Object.assign(Object.create(PlatformPackager.prototype), {
@@ -29,6 +48,7 @@ it('restores app localizations from the filtered framework without copying local
   const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-locale-pack-'))
   try {
     const ctx = context(root)
+    await seedPackagedMain(ctx)
     const framework = ctx.packager.getMacOsElectronFrameworkResourcesDir(root)
     const resources = ctx.packager.getResourcesDir(root)
     await mkdir(resources, { recursive: true })
@@ -40,7 +60,8 @@ it('restores app localizations from the filtered framework without copying local
     await mkdir(path.join(framework, 'other'), { recursive: true })
     await configuredHook(ctx)
     await configuredHook(ctx)
-    expect((await readdir(resources)).sort()).toEqual(['en_GB.lproj', 'nb.lproj'])
+    expect((await readdir(resources)).filter(name => name.endsWith('.lproj')).sort())
+      .toEqual(['en_GB.lproj', 'nb.lproj'])
     expect(await readdir(path.join(resources, 'nb.lproj'))).toEqual([])
     expect(await readFile(path.join(framework, 'nb.lproj', 'locale.pak'), 'utf8')).toBe('untouched locale data')
   } finally {
@@ -53,12 +74,15 @@ it('leaves Linux alone and reports a missing framework without failing packaging
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
   try {
     // win32 is not a no-op here: the same hook sanitizes and batch-signs the PE tree.
-    await configuredHook({ appOutDir: root, electronPlatformName: 'linux' })
-    expect(await readdir(root)).toEqual([])
+    const linuxCtx = { appOutDir: root, electronPlatformName: 'linux' }
+    await seedPackagedMain(linuxCtx)
+    await configuredHook(linuxCtx)
     expect(warn).not.toHaveBeenCalled()
-    await configuredHook(context(root))
+    const ctx = context(root)
+    await seedPackagedMain(ctx)
+    await configuredHook(ctx)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('macOS locale markers were not restored'))
-    expect(await readdir(root)).toEqual([])
+    expect((await readdir(root)).sort()).toEqual(['Hermes Preview.app', 'resources'])
   } finally {
     warn.mockRestore()
     await rm(root, { recursive: true, force: true })

@@ -64,6 +64,14 @@ export function isDisplayUnavailable(error: unknown): boolean {
   return message.includes('method not found') || message.includes('method-not-found')
 }
 
+/** The bot's backend is a Portal-managed runtime (Hermes Cloud): its Hermes is updated by the
+ *  platform, never by the user, so "update the bot's Hermes" is not an instruction the user
+ *  can follow. A `display.*` method-not-found from a managed release simply means Screen has
+ *  not reached that release yet (#120852). */
+export function isManagedBackend(bot: RosterRow): boolean {
+  return bot.connectionKind === 'cloud'
+}
+
 /**
  * Where `display.*` for `bot` goes. Passive resolution (the typed resolver, never
  * the throwing dispatch wrapper): a source-scoped row whose connection was deleted

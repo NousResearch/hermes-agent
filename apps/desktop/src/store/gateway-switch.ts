@@ -31,6 +31,7 @@ import {
 import { clearAllSessionControl } from '@/store/session-control'
 import { resetSessionPinMirror } from '@/store/session-pin-sync'
 import { clearAllSessionStates } from '@/store/session-states'
+import { clearAllSessionTodos } from '@/store/todos'
 import { clearTranscriptTailPaging } from '@/store/transcript-tail'
 import { clearTranscriptTails } from '@/store/transcript-tail-cache'
 
@@ -216,6 +217,9 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // session-unread.ts are keyed by durable session id and repaint the rows
   // that are still unread once the next gateway's lists load — so a profile
   // round-trip doesn't swallow green dots.
+  // Runtime ids can be reused by the next backend. Retire both the live
+  // checklist and its review snapshot before any new session is bound.
+  clearAllSessionTodos()
   clearAllSessionStates()
   // Structured goal/loop/heartbeat entries are keyed by runtime id, which the
   // next backend re-mints, so a full wipe is exact (and stale-response-safe).

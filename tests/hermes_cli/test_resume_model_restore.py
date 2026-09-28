@@ -417,6 +417,18 @@ def test_session_gateway_runtime_explicit_provider_wins_over_billing():
     assert runtime == {"provider": "nous"}
 
 
+def test_session_gateway_runtime_billing_provider_fills_top_level_route_without_provider():
+    """A TUI row with top-level base_url/api_mode but no provider keeps that endpoint AND takes the
+    provider the session was billed to — the same merge the TUI gateway always did (#125942); a bare
+    bucket still contributes nothing."""
+    meta = _row(model_config={"base_url": "https://f/v1", "api_mode": "chat_completions"})
+    meta["billing_provider"] = "minimax"
+    assert SessionDB.session_gateway_runtime(meta) == {
+        "provider": "minimax", "base_url": "https://f/v1", "api_mode": "chat_completions"}
+    meta["billing_provider"] = "custom"
+    assert SessionDB.session_gateway_runtime(meta) == {"base_url": "https://f/v1", "api_mode": "chat_completions"}
+
+
 def test_restore_session_model_restores_billing_provider_fallback():
     """End-to-end: _restore_session_model uses billing_provider fallback."""
     stub = _make_stub()

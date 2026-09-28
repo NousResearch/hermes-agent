@@ -14,7 +14,7 @@ import {
 import { isVoiceStopCommand } from '@/lib/voice-stop-word'
 import { notify, notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
-import { $bargeInThresholdMultiplier } from '@/store/voice-prefs'
+import { $autoSpeakReplies, $bargeInThresholdMultiplier, $voiceSilenceMs } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 
@@ -142,7 +142,6 @@ export function useVoiceConversation({
   // a torn-down window).
   const cancelFallbackPollRef = useRef<(() => void) | null>(null)
 
-   
   useEffect(() => () => cancelFallbackPollRef.current?.(), [])
 
   const clearTurnTimeout = () => {
@@ -291,9 +290,12 @@ export function useVoiceConversation({
 
     try {
       // VAD tuning mirrors `tools.voice_mode` defaults so the browser loop matches the CLI.
+      // `silenceMs` honours `voice.silence_duration` (seeded by useHermesConfig): only a
+      // user-set value overrides the desktop's tuned 1.25 s hold, which every turn sits
+      // through as dead air.
       await handle.start({
         silenceLevel: 0.075,
-        silenceMs: 1_250,
+        silenceMs: $voiceSilenceMs.get(),
         idleSilenceMs: 12_000,
         onError: error => {
           notifyError(error, voiceCopy.microphoneFailed)
@@ -855,6 +857,19 @@ export function useVoiceConversation({
       }
 
       const response = pendingResponse()
+
+      // "Read replies aloud" off (#44263): Voice Chat is STT-only — the reply
+      // stays text on screen, the loop consumes it and re-arms the mic for
+      // the next turn without ever starting TTS.
+      if (response && !$autoSpeakReplies.get()) {
+        awaitingSpokenResponseRef.current = false
+        dropSpeechSession()
+        consumePendingResponse()
+        pendingStartRef.current = true
+        setStatus('idle')
+
+        return
+      }
 
       if (response) {
         openLiveSpeech(response.id)

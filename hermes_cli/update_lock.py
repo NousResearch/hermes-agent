@@ -158,7 +158,7 @@ def _stdlib_parent_pid(pid: int) -> int | None:
         else:
             out = subprocess.run(
                 ["ps", "-o", "ppid=", "-p", str(pid)],
-                capture_output=True, text=True, check=True, timeout=5,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", check=True, timeout=5,
             ).stdout
             value = int(out.strip() or -1)
             return value if value > 0 else None

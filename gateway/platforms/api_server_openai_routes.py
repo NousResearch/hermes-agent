@@ -82,6 +82,22 @@ def _hermes_extras(completed, is_partial, is_failed, err_msg, finish_reason: str
         "error_code": "output_truncated" if finish_reason == "length" else "agent_error"}
 
 
+_TRANSFORMED_NOTICE = "\n\n[Response transformed after streaming]\n"
+
+
+def _post_stream_transform(result: Any) -> tuple:
+    """``(text, appended)`` a stream still owes after ``transform_llm_output`` rewrote the final
+    (the deltas already carried the raw reply): the appended suffix, or the whole rewrite with
+    ``appended=False`` when it is not a pure append. ``("", False)`` when nothing was transformed."""
+    if not isinstance(result, dict) or not result.get("response_transformed"):
+        return "", False
+    final = result.get("final_response") or ""
+    original = result.get("pre_transform_response") or ""
+    if original and final.startswith(original):
+        return final[len(original):], True
+    return final, False
+
+
 def _message_item(text: Any) -> Dict[str, Any]:
     """Responses ``message`` output item carrying one ``output_text`` part."""
     return {"type": "message", "role": "assistant",
@@ -219,6 +235,7 @@ class _ResponsesStream:
         self.message_opened = False
         self.reasoning_item: Optional[Dict[str, Any]] = None  # open ``reasoning`` output item
         self.final_response_text = ""
+        self.transformed_final = ""  # non-append transform_llm_output rewrite; replaces the deltas
         self.agent_error: Optional[str] = None
         self.usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         self.terminal_snapshot_persisted = False
@@ -456,6 +473,12 @@ class _ResponsesStream:
             self.result = result
             self.usage = agent_usage or self.usage
             agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
+            tail, appended = _post_stream_transform(result)
+            if tail and self.final_text_parts:
+                if appended:
+                    await self.emit_text_delta(tail)
+                else:
+                    self.transformed_final = agent_final
             if agent_final and not self.final_text_parts:
                 await self.emit_text_delta(agent_final)
             if agent_final and not self.final_response_text:
@@ -468,7 +491,8 @@ class _ResponsesStream:
 
     async def close_message_item(self) -> None:
         await self.close_reasoning_item()
-        self.final_response_text = "".join(self.final_text_parts) or self.final_response_text
+        self.final_response_text = (
+            self.transformed_final or "".join(self.final_text_parts) or self.final_response_text)
         if not self.message_opened:
             return
         await self.write_event("response.output_text.done", {
@@ -609,7 +633,7 @@ class OpenAICompatRoutesMixin:
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         from gateway.platforms.api_server import (
-            ThreadSafeAsyncQueue, _chat_usage_payload, _coerce_request_bool,
+            ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
             _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
@@ -688,10 +712,10 @@ class OpenAICompatRoutesMixin:
                 history = []
         else:
             # Stable id from the conversation fingerprint so Open WebUI-style clients map onto
-            # one Hermes session.
+            # one Hermes session; namespaced by the routed profile (#123989).
             first_user = next(
                 (cm.get("content", "") for cm in conversation_messages if cm.get("role") == "user"), "")
-            session_id = _derive_chat_session_id(system_prompt, first_user)
+            session_id = _derive_chat_session_id(system_prompt, first_user, _api_request_profile.get())
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
@@ -847,11 +871,7 @@ class OpenAICompatRoutesMixin:
     ) -> "web.StreamResponse":
         """Open a prepared SSE StreamResponse with CORS + session headers (the CORS middleware
         can't inject headers after ``prepare()`` flushes them, so they are resolved here)."""
-        sse_headers = {
-            "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-        origin = request.headers.get("Origin", "")
-        if origin:
-            sse_headers.update(self._cors_headers_for_origin(origin) or {})
+        sse_headers = self._sse_headers(request)
         if session_id:
             sse_headers["X-Hermes-Session-Id"] = session_id
         if gateway_session_key:
@@ -867,13 +887,14 @@ class OpenAICompatRoutesMixin:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
-            _abandon_agent_task, _chat_usage_payload, _sse_frame)
+            _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
 
         def _chunk(delta: Dict[str, Any], finish_reason=None, **extra) -> Dict[str, Any]:
             return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
                     "model": model,
                     "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}], **extra}
+        content_sent = False
         try:
             await response.write(_sse_frame(_chunk({"role": "assistant"})))
             async for delta in _iter_stream_items(stream_q, agent_task, response):
@@ -881,6 +902,8 @@ class OpenAICompatRoutesMixin:
                     break
                 if isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__tool_progress__":
                     # Custom event: tool lifecycle for frontends without markers in history.
+                    if not self._tool_progress_events:
+                        continue  # opted out for strict OpenAI clients (#12020)
                     await response.write(_sse_frame(delta[1], event="hermes.tool.progress"))
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__reasoning__":
                     # DeepSeek-style ``delta.reasoning_content`` (#99552), the field Open WebUI,
@@ -891,6 +914,8 @@ class OpenAICompatRoutesMixin:
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__approval__":
                     await response.write(_sse_frame(delta[1], event="approval.request"))
                 else:
+                    if delta:
+                        content_sent = True
                     await response.write(_sse_frame(_chunk({"content": delta})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
             # partial): surface a non-"stop" finish_reason like the non-streaming path.
@@ -912,6 +937,19 @@ class OpenAICompatRoutesMixin:
                 (isinstance(result, dict) and result.get("_notification_presentation_suppressed") is True)
                 or getattr(agent_error, "_notification_presentation_suppressed", False) is True
             )
+            # Recovery paths (guardrail halt, partial_stream_recovery, fallback prior-turn
+            # content) can return a final_response without firing any content delta; emit it
+            # once so the client does not see an empty stream (#31449). Mirrors
+            # _ResponsesStream.collect_result for /v1/responses.
+            if not content_sent and not presentation_muted and isinstance(result, dict):
+                fallback_text = _resolve_media_to_data_urls(result.get("final_response") or "")
+                if fallback_text:
+                    await response.write(_sse_frame(_chunk({"content": fallback_text})))
+            elif not presentation_muted:
+                # Chat chunks can only append: a non-append rewrite follows the streamed text (as in the CLI).
+                tail, appended = _post_stream_transform(result)
+                if tail:
+                    await response.write(_sse_frame(_chunk({"content": tail if appended else _TRANSFORMED_NOTICE + tail})))
             if finish_reason != "stop":
                 if err_msg and not presentation_muted:
                     finish_chunk["error"] = {

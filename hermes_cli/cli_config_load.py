@@ -24,14 +24,16 @@ def _cli():
     return cli
 
 
-def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
-    """Load prefill messages (JSON array) from *file_path*; relative to ~/.hermes/; missing/empty -> []."""
-    from cli import _hermes_home
+def _load_prefill_messages(file_path: str, base_dir: Path | None = None) -> List[Dict[str, Any]]:
+    """Load prefill messages (JSON array) from *file_path*; missing/empty -> [].
+
+    Relative paths resolve against *base_dir*, defaulting to the CLI's hermes home.
+    """
     if not file_path:
         return []
     path = Path(file_path).expanduser()
     if not path.is_absolute():
-        path = _hermes_home / path
+        path = (base_dir or _cli()._hermes_home) / path
     if not path.exists():
         logger.warning("Prefill messages file not found: %s", path)
         return []
@@ -182,7 +184,7 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
 
 def _cli_config_defaults():
     """Built-in defaults for every config key the CLI reads (the file overlays these)."""
-    img = "nikolaik/python-nodejs:python3.11-nodejs20"
+    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as img
     return {
         "model": {"default": "", "base_url": "", "provider": "auto"},
         "terminal": {

@@ -11,6 +11,67 @@ export const ja = defineLocale({
     close: '閉じる'
   },
   intro: introJa,
+  catalog: {
+    add: '追加',
+    added: '追加済み',
+    discover: '見つける',
+    featured: 'おすすめ',
+    explorePlugins: 'プラグインを探す',
+    exploreSkills: 'スキルを探す',
+    mostStarred: 'スターが多い順',
+    newest: '新着',
+    recentlyUpdated: '最近の更新',
+    alphabetical: '名前',
+    sortBy: '並べ替え',
+    seeAll: 'すべて表示',
+    related: '類似の項目',
+    tags: 'タグ',
+    screenshots: 'スクリーンショット',
+    listView: 'リスト表示',
+    cardView: 'カード表示',
+    installTitle: (name: string) => `「${name}」をインストールしますか？`,
+    installDescription:
+      'このスキルは新しいセッションで利用できます。信頼できる提供元からのみインストールしてください。',
+    installTo: 'インストール先',
+    thisComputer: 'このコンピューター',
+    installing: 'インストール中…',
+    installComplete: (name: string) => `「${name}」をインストールしました`,
+    destinationChanged:
+      'インストール先が変更されました。このダイアログを閉じ、インストールリンクを開き直してください。',
+    installed: 'インストール済み',
+    searchSkills: 'スキルを検索',
+    searchPlugins: 'プラグインを検索',
+    allSources: 'すべての提供元',
+    allCategories: 'すべてのカテゴリ',
+    about: '概要',
+    author: '作者',
+    source: '提供元',
+    category: 'カテゴリ',
+    version: 'バージョン',
+    platforms: '対応プラットフォーム',
+    requires: '必要なもの',
+    tools: 'ツール',
+    hooks: 'フック',
+    middleware: 'ミドルウェア',
+    commands: 'コマンド',
+    license: 'ライセンス',
+    addedDate: '追加日',
+    updatedDate: '更新日',
+    repository: 'リポジトリ',
+    documentation: 'ドキュメント',
+    noResults: '一致する項目がありません',
+    tryAnother: '別の検索を試すか、フィルターをクリアしてください。',
+    clearFilters: 'フィルターをクリア',
+    filters: 'フィルター',
+    loadFailed: 'カタログを読み込めませんでした',
+    retry: '再試行',
+    more: 'さらに表示',
+    pinned: 'レビュー済みコミット',
+    snapshotHint: 'Hermesカタログの情報です。閲覧時に提供元のリポジトリへ接続することはありません。',
+    installHint: 'インストール前にソースを確認してください。変更は新しいセッションに適用されます。',
+    results: (count: number) => `${count.toLocaleString('ja')}件の結果`,
+    back: '結果に戻る'
+  },
   sessionImport: {
     title: '別のアプリから続ける',
     subtitle: '会話をHermesに取り込み、続きを始めましょう。',
@@ -183,6 +244,10 @@ export const ja = defineLocale({
     backendOutOfDateTitle: 'バックエンドが古いです',
     backendOutOfDateMessage:
       'Hermes バックエンドがこのデスクトップビルドより古く、正常に動作しない場合があります。更新して揃えてください。',
+    desktopOutOfDateTitle: 'アプリが古いです',
+    desktopOutOfDateMessage:
+      'この Hermes アプリは接続先のバックエンドより古く、正常に動作しない場合があります。アプリを更新して揃えてください。',
+    updateDesktopApp: 'アプリを更新',
     installMethodUnsupportedTitle: 'サポート対象外のインストール方法',
     updateHermes: 'Hermes を更新',
     updateReadyTitle: '更新の準備ができました',
@@ -671,7 +736,11 @@ export const ja = defineLocale({
       toursDesc:
         '各ステップを強調しながら、Hermes がアプリを案内します。利用開始から30日後に自動でオフになりますが、再びオンにできます。',
       composerPopoutTitle: 'フローティング入力欄',
-      composerPopoutDesc: '入力欄をドックからドラッグして外せるようにします。オフにすると画面下部に固定されます。',
+      composerPopoutDesc:
+        '入力欄をドックからドラッグして外せるようにします。オフの間は画面下部にドッキングされたままです。',
+      fileBrowserTitle: 'ファイルブラウザ',
+      fileBrowserDesc:
+        'ワークスペースを開いているとき、チャットの横にファイルブラウザを表示します。タイトルバーのボタンでも切り替わります。',
       vibeHeartsTitle: 'バイブハート',
       vibeHeartsDesc:
         'ありがとう・愛してる・good bot・ハート絵文字のときに浮かぶハート。上のメッセージリアクションとは別です。',
@@ -2113,6 +2182,8 @@ export const ja = defineLocale({
     skillsLabel: 'スキル',
     notSet: '未設定',
     soulDesc: 'このプロファイルに組み込まれたシステムプロンプトとペルソナの指示。',
+    soulMissing:
+      'このプロファイルにはまだ SOUL.md がありません。下に指示を入力して保存すると作成できます。config.yaml のペルソナ設定は別途管理されます。',
     soulOptional: '省略可能',
     soulPlaceholder: mode =>
       `このプロファイルのシステムプロンプト / ペルソナ。\n空欄のままにすると ${mode} のデフォルトを使用します。`,
@@ -2267,6 +2338,8 @@ export const ja = defineLocale({
     nameLabel: '名前',
     namePlaceholder: '例: 日次サマリー',
     promptLabel: 'プロンプト',
+    scriptLabel: 'スクリプト',
+    scriptBadge: 'スクリプト',
     promptPlaceholder: '実行ごとにエージェントが行う内容は？',
     frequencyLabel: '頻度',
     deliverLabel: '配信先',
@@ -2730,6 +2803,9 @@ export const ja = defineLocale({
     queueStuckTitle: 'キュー内のメッセージを送信できません',
     queueStuckBody:
       'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',
+    queueDroppedTitle: 'キューのエントリを破棄しました',
+    queueDroppedBody:
+      'このバックグラウンドのエントリは、セッションを繰り返し再開できなかったため破棄されました。キューの他のエントリには影響しません。',
     previewUnavailable: 'プレビューは利用できません',
     previewLabel: label => `${label} のプレビュー`,
     couldNotPreview: label => `${label} をプレビューできませんでした`,
@@ -2786,6 +2862,7 @@ export const ja = defineLocale({
     goalWaiting: '目標待機中',
     subagents: count => `サブエージェント ${count} 件`,
     todos: (done, total) => `タスク ${done}/${total}`,
+    previousTodos: (done, total) => `以前のタスク ${done}/${total}`,
     running: '実行中',
     stop: '停止',
     dismiss: '閉じる',
@@ -2874,7 +2951,8 @@ export const ja = defineLocale({
       copyFailure: '基準のコピーに失敗しました',
       continuationFailed: 'ゴールの継続送信に失敗しました',
       continuationQueued: 'ゴールを再開しました — 継続は現在のターン終了後に送信されます',
-      continuationBusy: 'ゴールを再開しました — セッションが実行中です。続行するには /interrupt してください',
+      continuationBusy:
+        'ゴールを再開しました — セッションが実行中です。続行するには、まず現在の応答を停止してください（Stop ボタンまたは Esc）',
       controlUnavailable: msg => `セッション制御を利用できません: ${msg}`,
       dismissError: 'エラーを閉じる',
       add: '追加'
@@ -2929,7 +3007,8 @@ export const ja = defineLocale({
 
   updates: {
     discontinuedTitle: 'このHermesビルドはサポートされていません',
-    discontinuedBody: 'このHermesビルドはサポートが終了し、動作しなくなる可能性があります。アンインストールしてください。データはディスクに残ります。',
+    discontinuedBody:
+      'このHermesビルドはサポートが終了し、動作しなくなる可能性があります。アンインストールしてください。データはディスクに残ります。',
     channels: { stable: '安定版', canary: '先行版' },
     bundleSwapPending: '再起動して更新を完了',
     bundleSwapPendingDesc:
@@ -2970,9 +3049,13 @@ export const ja = defineLocale({
     maybeLater: '後で',
     moreChanges: count => `さらに ${count} 件の変更が含まれています。`,
     manualTitle: 'ターミナルから更新',
+    manualUnavailableTitle: 'ここからは更新できません',
     manualBody:
       'Hermes をコマンドラインからインストールしたため、更新もそこで実行されます。これをターミナルに貼り付けてください:',
+    manualBodyBackend:
+      'Hermes バックエンドはこのアプリの外部で管理されています。ホストするサーバーで次のコマンドを実行してください:',
     manualPickedUp: 'Hermes は次回起動時に新しいバージョンを読み込みます。',
+    manualPickedUpBackend: 'バックエンドは更新完了後に新しいバージョンを読み込みます。',
     guiSkewTitle: 'デスクトップアプリを更新してください',
     guiSkewBody:
       'バックエンドは更新されましたが、このデスクトップアプリのパッケージは変更されていません。一致させるために Hermes デスクトップアプリ（AppImage / .deb / .rpm）を更新または再インストールしてください。',
@@ -3250,6 +3333,7 @@ export const ja = defineLocale({
       search: 'モデルを検索',
       noModels: 'モデルが見つかりません',
       editModels: 'モデルを編集…',
+      followDefault: '設定のデフォルトを使用',
       refreshModels: 'モデルを更新',
       fast: '高速'
     },
@@ -3708,8 +3792,9 @@ export const ja = defineLocale({
             `${provider} がサーバーエラーを返しました。しばらくしてから再試行するか、プロバイダーを切り替えてください。`
         },
         timeout: {
-          title: '応答がタイムアウトしました',
-          body: provider => `${provider} から時間内に応答がありませんでした。再試行してもう一度送信してください。`
+          title: 'AI サービスに接続できません',
+          body: provider =>
+            `${provider} に接続できないか、時間内に応答がありませんでした。インターネット接続を確認してから再試行してください。`
         },
         ssl_cert_verification: {
           title: '安全な接続に失敗しました',
@@ -3749,6 +3834,8 @@ export const ja = defineLocale({
       preparingAudio: '音声を準備中...',
       stopReading: '読み上げを停止',
       readAloud: '読み上げ',
+      copyFullResponse: '回答全体をコピー',
+      readAloudFullResponseHint: 'Shiftを押しながらクリック: 回答全体を読み上げ',
       editMessage: 'メッセージを編集',
       stop: '停止',
       restorePrevious: '前のチェックポイントに戻す',
@@ -3792,7 +3879,10 @@ export const ja = defineLocale({
       questionProgress: (answered, total) => `${total}問中${answered}問回答済み`,
       lateAnswer: (question, choice) => `「${question}」について — 私の回答: ${choice}`,
       lateAnswerTip: 'この回答をフォローアップメッセージとして下書きします',
-      lateAnswerHint: 'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。'
+      lateAnswerHint:
+        'この質問はもう回答を待っていません。選択肢を選ぶとフォローアップメッセージとして下書きされます。',
+      notDelivered:
+        'この質問はアプリに届かなかったため、ここでは回答できません。停止を押してターンを終了し、チャットで返信してください。'
     },
     tool: {
       copyCode: 'コードをコピー',

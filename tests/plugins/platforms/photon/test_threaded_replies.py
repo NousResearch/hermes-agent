@@ -174,16 +174,19 @@ async def test_attachment_send_is_recorded_as_label(monkeypatch, tmp_path):
     assert handled[-1].reply_to_text == "[attachment: chart.png]"
 
 
-@pytest.mark.asyncio
-async def test_standalone_send_records_text(monkeypatch):
+def _fake_standalone_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand-in for the sidecar HTTP API behind ``_standalone_send``: ids are ``cron-<n>``."""
     monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
+    counter = {"n": 0}
 
     class _Resp:
         status_code = 200
 
-        @staticmethod
-        def json() -> Dict[str, Any]:
-            return {"ok": True, "messageId": "cron-1"}
+        def __init__(self, message_id: str):
+            self._id = message_id
+
+        def json(self) -> Dict[str, Any]:
+            return {"ok": True, "messageId": self._id}
 
     class _FakeClient:
         def __init__(self, *a, **k):
@@ -196,19 +199,57 @@ async def test_standalone_send_records_text(monkeypatch):
             return False
 
         async def post(self, url: str, json: Dict[str, Any], headers=None):
-            return _Resp()
+            counter["n"] += 1
+            return _Resp(f"cron-{counter['n']}")
 
     monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
+
+
+async def _reply_text_for(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch, target_id: str) -> str | None:
+    handled = _capture_handled(adapter, monkeypatch)
+    await adapter._dispatch_inbound(
+        _reply_event({"type": "text", "text": "about this"}, target_id=target_id, target_text=None))
+    assert handled[-1].text == "about this"
+    return handled[-1].reply_to_text
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_records_text_and_attachments(monkeypatch, tmp_path):
+    monkeypatch.setattr(photon_adapter.BasePlatformAdapter, "validate_media_delivery_path",
+                        staticmethod(lambda p: p if os.path.exists(p) else None))
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(b"\x89PNG fake")
+    _fake_standalone_sidecar(monkeypatch)
     cfg = PlatformConfig(enabled=True, token="", extra={})
-    result = await photon_adapter._standalone_send(cfg, PHONE, "daily digest")
+
+    result = await photon_adapter._standalone_send(cfg, PHONE, "daily digest", media_files=[(str(chart), False)])
     assert result.get("success") is True
 
     adapter = _make_adapter(monkeypatch)
-    handled = _capture_handled(adapter, monkeypatch)
-    await adapter._dispatch_inbound(
-        _reply_event({"type": "text", "text": "thanks"}, target_id="cron-1", target_text=None))
+    assert await _reply_text_for(adapter, monkeypatch, "cron-1") == "daily digest"
+    assert await _reply_text_for(adapter, monkeypatch, "cron-2") == "[attachment: chart.png]"
 
-    assert handled[-1].reply_to_text == "daily digest"
+
+@pytest.mark.asyncio
+async def test_poll_clarify_is_recorded_as_its_question(monkeypatch):
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter, message_id="poll-1")
+
+    await adapter.send_clarify(DM, "Which plan?", ["A", "B"], "clarify-1", "session-1")
+
+    assert calls[-1][0] == "/send-poll"
+    assert await _reply_text_for(adapter, monkeypatch, "poll-1") == "Which plan?"
+
+
+@pytest.mark.asyncio
+async def test_plain_fallback_resend_is_recorded(monkeypatch):
+    adapter = _make_adapter(monkeypatch)
+    _capture_sidecar(adapter, message_id="fallback-1")
+
+    result = await adapter._send_plain_fallback(DM, "plain retry", reply_to=None, metadata=None)
+
+    assert result.success
+    assert await _reply_text_for(adapter, monkeypatch, "fallback-1") == "plain retry"
 
 
 @pytest.mark.asyncio

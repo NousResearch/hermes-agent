@@ -2017,11 +2017,27 @@ def _rederive_repeat_for_schedule_change(
     new_kind = new_schedule.get("kind")
     if old_kind == new_kind:
         return
+    if new_kind == "once":
+        # A run started before the edit would land after the reset below and spend the new
+        # occurrence, retiring the one-shot without firing it. Refuse, as rearm_oneshot does. A
+        # scheduler-dispatched recurring run holds no claim, so it is visible only to the scheduler
+        # in this process.
+        now = _hermes_now()
+        if (
+            _claim_is_live(job.get("run_claim"), now, _oneshot_run_claim_ttl_seconds())
+            or _claim_is_live(job.get("fire_claim"), now, FIRE_CLAIM_TTL_SECONDS)
+            or _job_running_in_this_process(job["id"])
+        ):
+            raise ValueError(
+                "Cannot turn a job into a one-shot while a run is in progress; retry when it finishes."
+            )
     explicit = "repeat" in updates
     repeat = dict(updates["repeat"] if explicit else (job.get("repeat") or {}))
     if not explicit:
         times = repeat.get("times")
-        if new_kind == "once" and times is None:
+        if new_kind == "once":
+            # A recurring count (repeat=5) is not the one-shot's budget: kept, the job would fire
+            # again until the old count ran out.
             repeat["times"] = 1
         elif new_kind != "once" and old_kind == "once" and times == 1:
             repeat["times"] = None

@@ -496,20 +496,22 @@ class TestJobCRUD:
         assert updated["schedule"]["kind"] == "once"
         assert updated["repeat"]["times"] == 1
 
-    @pytest.mark.parametrize("via", ["update_job", "update_job+repeat", "cronjob_tool+repeat"])
+    @pytest.mark.parametrize("via", ["update_job", "update_job+repeat", "cronjob_tool+repeat", "bounded"])
     def test_recurring_job_that_ran_turned_oneshot_fires_instead_of_being_deleted(
         self, tmp_cron_dir, monkeypatch, via,
     ):
         """Runs of the old recurring schedule must not spend the one-shot's budget: at
         completed >= times the due scan deletes the job without firing it. The tool and
-        ``cron edit --repeat`` pass an explicit repeat carrying the stored counter."""
+        ``cron edit --repeat`` pass an explicit repeat carrying the stored counter. A bounded
+        recurring count is not the one-shot's budget either: the one-shot fires once."""
         import json
         from tools.cronjob_tools import cronjob
 
-        job = create_job(prompt="water the plants", schedule="every 1h")
+        job = create_job(prompt="water the plants", schedule="every 1h",
+                         repeat=5 if via == "bounded" else None)
         for _ in range(3):
             mark_job_run(job["id"], success=True)
-        if via == "update_job":
+        if via in ("update_job", "bounded"):
             update_job(job["id"], {"schedule": "in 5m"})
         elif via == "update_job+repeat":
             update_job(job["id"], {"schedule": "in 5m", "repeat": 1})
@@ -517,10 +519,38 @@ class TestJobCRUD:
             result = json.loads(cronjob(action="update", job_id=job["id"], schedule="in 5m", repeat=1))
             assert result["success"], result
 
+        assert get_job(job["id"])["repeat"] == {"times": 1, "completed": 0}
         later = _hermes_now() + timedelta(minutes=5, seconds=10)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: later)
         assert job["id"] in {j["id"] for j in get_due_jobs()}
         assert get_job(job["id"]) is not None
+
+    @pytest.mark.parametrize("run", ["fire_claim", "scheduler_run"])
+    def test_turning_a_job_oneshot_mid_run_is_refused(self, tmp_cron_dir, run):
+        """The in-flight run would land after the reset and retire the new one-shot unfired. A
+        ticker-dispatched recurring run holds no claim; this process's running set sees it."""
+        from cron.scheduler import release_running_job, try_register_running_job
+
+        job = create_job(prompt="digest", schedule="every 1h")
+        mark_job_run(job["id"], success=True)
+        if run == "fire_claim":
+            assert claim_job_for_fire(job["id"])
+        else:
+            assert try_register_running_job(job["id"])
+        try:
+            with pytest.raises(ValueError, match="while a run is in progress"):
+                update_job(job["id"], {"schedule": "in 5m"})
+            unchanged = get_job(job["id"])
+            assert unchanged["schedule"]["kind"] == "interval"
+            assert unchanged["repeat"] == {"times": None, "completed": 1}
+        finally:
+            if run == "scheduler_run":
+                release_running_job(job["id"])
+        if run == "fire_claim":
+            # The claimed run still lands on the recurring job, and the flip then succeeds.
+            owner = next(j for j in load_jobs() if j["id"] == job["id"])["fire_claim"]["by"]
+            assert mark_job_run(job["id"], success=True, expected_fire_owner=owner)
+        assert update_job(job["id"], {"schedule": "in 5m"})["repeat"] == {"times": 1, "completed": 0}
 
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)

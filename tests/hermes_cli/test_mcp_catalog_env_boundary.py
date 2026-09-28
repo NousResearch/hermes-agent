@@ -351,3 +351,48 @@ def test_connection_card_install_keeps_env_file_secrets_only(
     assert "DEMO_API_KEY=valid-demo-value" in env_text
     assert "DEMO_BASE_URL" not in env_text and "https://demo.example.test" not in env_text
     assert mcp_config._get_mcp_servers()["demo"]["env"]["DEMO_BASE_URL"] == "https://demo.example.test"
+
+
+def test_connection_card_oauth_install_keeps_env_file_secrets_only(
+    catalog_env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The card's OAuth install makes the same split as its plain install: a declared non-secret
+    (an OAuth client id) is inlined into the saved server block, and only the secret reaches .env."""
+    import hermes_cli.mcp_config as mcp_config
+    from tools.connectors import mcp_oauth
+    from tools.connectors.mcp import _CatalogBackend
+
+    catalog_root = Path(os.environ["HERMES_OPTIONAL_MCPS"])
+    manifest_path = catalog_root / "demo" / "manifest.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    manifest["transport"] = {"type": "http", "url": "https://mcp.example.test/mcp"}
+    manifest["auth"] = {
+        "type": "oauth",
+        "env": [
+            {"name": "DEMO_CLIENT_ID", "prompt": "Demo client id", "secret": False},
+            {"name": "DEMO_CLIENT_SECRET", "prompt": "Demo client secret", "secret": True},
+        ],
+        "oauth": {"client_id": "${DEMO_CLIENT_ID}", "client_secret": "${DEMO_CLIENT_SECRET}"},
+    }
+    manifest_path.write_text(yaml.safe_dump(manifest), encoding="utf-8")
+
+    def start(name, *, cfg=None, env=None, on_commit=None, **_kwargs):
+        # The browser/token exchange is out of scope; commit exactly as the worker does on success.
+        mcp_oauth._commit(name, cfg, on_commit)
+        return None
+
+    monkeypatch.setattr(mcp_oauth, "start", start)
+
+    _CatalogBackend().start_install_oauth(
+        "demo", {"DEMO_CLIENT_ID": "public-client-id", "DEMO_CLIENT_SECRET": "valid-demo-value"}
+    )
+
+    env_text = (catalog_env / ".env").read_text(encoding="utf-8")
+    assert "DEMO_CLIENT_SECRET=valid-demo-value" in env_text
+    assert "DEMO_CLIENT_ID" not in env_text and "public-client-id" not in env_text
+    assert mcp_config._get_mcp_servers()["demo"]["oauth"]["client_id"] == "public-client-id"
+    # The raw file keeps the secret as a ${VAR} ref and never carries its value.
+    raw = (catalog_env / "config.yaml").read_text(encoding="utf-8")
+    assert "${DEMO_CLIENT_SECRET}" in raw and "valid-demo-value" not in raw
+    assert "${DEMO_CLIENT_ID}" not in raw

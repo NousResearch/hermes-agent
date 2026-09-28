@@ -27,6 +27,7 @@ DELIVERY_DIR_NAME = "bot_live_delivery"
 _SEQUENCE_FILE = ".sequence"
 _OWNER_KEYS = ("profile_home", "session_id", "lease_id", "live_session_id")
 _TERMINAL = frozenset({"settled", "failed", "cancelled", "ambiguous"})
+_IS_WINDOWS = os.name == "nt"
 
 
 def find_canonical_owner(profile_home: Path | str) -> dict[str, Any] | None:
@@ -92,8 +93,17 @@ def _locked(home: Path | str):
     root = _root(home)
     created = not root.is_dir()
     root.parent.mkdir(parents=True, exist_ok=True)
-    root.mkdir(mode=0o700, exist_ok=True)
-    root.chmod(0o700)
+    if _IS_WINDOWS:
+        # ``os.mkdir(mode=0o700)`` on Windows applies a *protected* DACL (SYSTEM,
+        # Administrators and OWNER RIGHTS, inheritance disabled) and ``os.chmod`` there
+        # only flips the read-only attribute — WinError 5 without write attributes.
+        # A mailbox created by an elevated process would lock out the same user's
+        # non-elevated processes and never be claimed; inherit the profile home's ACL
+        # instead, the same trust boundary as the rest of the runtime directory.
+        root.mkdir(exist_ok=True)
+    else:
+        root.mkdir(mode=0o700, exist_ok=True)
+        root.chmod(0o700)
     if created:
         # Only a fresh mailbox dir needs its parents durably linked; the live
         # poller re-enters this lock twice a second per profile, and two

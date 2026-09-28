@@ -51,7 +51,9 @@ def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
     assert mailbox.deliver_to_live_owner(tmp_path, owner, "héllo 世界", delivery_id=delivery_id) == receipt
     assert mailbox.claim_pending_delivery(tmp_path, owner) is None
     if os.name != "nt":
-        for path in (tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME).iterdir():
+        root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+        assert root.stat().st_mode & 0o077 == 0
+        for path in root.iterdir():
             assert path.stat().st_mode & 0o077 == 0
 
 @pytest.mark.parametrize("intent_state", ["new", "existing", "raced"])
@@ -275,3 +277,60 @@ def test_schema_damaged_ticket_does_not_wedge_bulk_scans(tmp_path, caplog):
     assert {path: path.read_text(encoding="utf-8") for path in damaged} == damaged
     skipped = [r.message for r in caplog.records if r.message.startswith("bot_live_delivery: skipping unreadable ticket")]
     assert len(skipped) == len(damaged), "each damaged ticket warns once per process, not per scan"
+
+
+def _assert_user_reachable_dacl(path):
+    import win32api
+    import win32con
+    import win32security
+
+    descriptor = win32security.GetFileSecurity(
+        str(path), win32security.DACL_SECURITY_INFORMATION | win32security.OWNER_SECURITY_INFORMATION)
+    control = descriptor.GetSecurityDescriptorControl()[0]
+    assert not control & win32security.SE_DACL_PROTECTED, (
+        "a protected DACL (the Windows os.mkdir(mode=0o700) hardening) strands the mailbox "
+        "for the same user's non-elevated processes")
+    dacl = descriptor.GetSecurityDescriptorDacl()
+    assert dacl is not None, "a null DACL grants everyone"
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+    current = win32security.ConvertSidToStringSid(win32security.GetTokenInformation(token, win32security.TokenUser)[0])
+    inherit_only = getattr(win32security, "INHERIT_ONLY_ACE", 8)
+    allow_types = {
+        win32security.ACCESS_ALLOWED_ACE_TYPE,
+        win32security.ACCESS_ALLOWED_OBJECT_ACE_TYPE,
+        getattr(win32security, "ACCESS_ALLOWED_CALLBACK_ACE_TYPE", 9),
+        getattr(win32security, "ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE", 11)}
+    granted = set()
+    for index in range(dacl.GetAceCount()):
+        ace = dacl.GetAce(index)
+        if ace[0][0] in allow_types and ace[1] and not ace[0][1] & inherit_only:
+            granted.add(win32security.ConvertSidToStringSid(ace[-1]))
+    assert current in granted, "the owning user must be able to reach the mailbox"
+
+
+@pytest.mark.platforms("windows")
+def test_mailbox_dacl_stays_reachable_on_windows(tmp_path):
+    """A mailbox created on Windows must inherit the profile home's ACL.
+
+    ``os.mkdir(mode=0o700)`` applies a *protected* DACL (SYSTEM / Administrators /
+    OWNER RIGHTS, inheritance disabled) and ``os.chmod`` only flips the read-only
+    attribute — so a mailbox first created by an elevated process is unreachable for
+    the same user's non-elevated processes and its tickets are never claimed
+    (see ``tools.bot_live_delivery._locked``).
+    """
+    from tools import bot_live_delivery as mailbox
+
+    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
+                 lease_id="lease", live_session_id="live")
+    delivery_id = "a" * 32
+    mailbox.deliver_to_live_owner(tmp_path, owner, "héllo 世界", delivery_id=delivery_id)
+
+    root = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME
+    _assert_user_reachable_dacl(root)
+    _assert_user_reachable_dacl(root / f"{delivery_id}.json")
+
+    # The incident path: a consumer re-enters a mailbox another process created.
+    claimed = mailbox.claim_pending_delivery(tmp_path, owner)
+    assert claimed is not None and claimed["message"] == "héllo 世界"
+    result = mailbox.read_delivery_result(tmp_path, delivery_id)
+    assert result is not None and result["status"] == "claimed"

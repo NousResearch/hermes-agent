@@ -88,6 +88,9 @@ class PrivateGroupSendMixin:
         # The Send path must not import Read. Read is independently composed,
         # while its native detail and inventory controls share this entry point.
         raw_args = _raw_group_args(event)
+        if re.match(r'^\s*[0-9]+[ \t]+(?:stop|approve)(?:[ \t\r\n]|$)', raw_args):
+            from gateway.group_chat_private_control import handle_private_group_control
+            return await handle_private_group_control(self, event)
         if re.match(r'^\s*[0-9]+[ \t]+send(?:[ \t\r\n]|$)', raw_args) is None:
             from gateway.group_chat_private_read import handle_private_group_read
             return await handle_private_group_read(self, event)

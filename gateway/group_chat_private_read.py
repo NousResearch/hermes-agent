@@ -283,6 +283,19 @@ def render_group_detail(state, log, *, room_id, room_ref, prefix):
             reconnect.append(f'{label} is unavailable.')
     if reconnect:
         lines.extend(['', *reconnect[:MAX_DETAIL_ROSTER]])
+    approvals = [action for action in status['pending_actions']
+                 if type(action) is dict and action.get('kind') == 'approval']
+    for index, action in enumerate(approvals[:MAX_DETAIL_ROSTER], 1):
+        member = action.get('member_id')
+        if (type(member) is str and member in member_labels
+                and type(action.get('request_id')) is str and action['request_id']
+                and type(action.get('task_id')) is str and action['task_id']
+                and type(action.get('execution_generation')) is int
+                and action['execution_generation'] > 0
+                and type(action.get('selector')) is str
+                and re.fullmatch(r'pa-[0-9a-f]{64}', action['selector'])):
+            lines.append(f'Approval {index}: {member_labels[member]} — '
+                         f'{prefix}group {room_ref} approve {action["selector"]} once|deny')
     previews = [preview for event in log['events']
                 if (preview := _message_preview(event, member_labels)) is not None]
     lines.extend(['', 'Recent messages'])
@@ -290,7 +303,8 @@ def render_group_detail(state, log, *, room_id, room_ref, prefix):
         lines.append(f'• {author}: {text}')
     if not previews:
         lines.append('No recent messages in this bounded view.')
-    lines.extend(['', f'Refresh: {prefix}group {room_ref}'])
+    lines.extend(['', f'Stop work: {prefix}group {room_ref} stop',
+                  f'Refresh: {prefix}group {room_ref}'])
     return '\n'.join(lines)
 
 
@@ -325,6 +339,15 @@ async def read_group_detail(context, prefix):
         raise DetailFormatError
     if room['room_id'] != context.room_id:
         raise DetailFormatError
+    # All external awaits are finished: select operation-specific disclosure now.
+    try:
+        from gateway.session_group_messaging_control import pending_room_approvals
+        _, approvals = pending_room_approvals(context.inventory.runner,
+                                               context.inventory.event, context.room_ref)
+    except RuntimeStoreError:
+        approvals = []
+    state = {**state, 'driver_status': {**state['driver_status'],
+                                        'pending_actions': approvals}}
     return render_group_detail(
         state, log, room_id=room_id, room_ref=context.room_ref, prefix=prefix)
 

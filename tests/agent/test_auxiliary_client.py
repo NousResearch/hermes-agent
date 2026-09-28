@@ -441,6 +441,96 @@ class TestBuildCallKwargsMaxTokens:
         assert "max_tokens" not in kw3
 
 
+    # ── Compression lane on DeepSeek needs an explicit output cap (#126305) ──
+
+    def test_compression_deepseek_sends_catalogued_cap(self):
+        """DeepSeek's wire defaults the output to 8,192 tokens when ``max_tokens`` is
+        omitted — below the compression summary's budget — so every summary ended
+        ``finish_reason=length`` and compression wedged (#126305). The compression lane
+        now sends an explicit cap, sized under the model's catalogued output ceiling.
+        ``deepseek-flash`` is a builtin catalog entry (384K output), so this needs no
+        network or cached models.dev data."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-flash",
+            messages=[{"role": "user", "content": "hi"}],
+            task="compression",
+        )
+        assert kwargs["max_tokens"] == 32768
+        assert "max_completion_tokens" not in kwargs
+
+    def test_compression_deepseek_cap_clamped_to_model_ceiling(self, monkeypatch):
+        """The cap is clamped to the catalogued per-model ceiling so an 8K-output
+        model cannot 400 on an oversized ``max_tokens``."""
+        from agent import models_dev
+        from agent.auxiliary_client import _build_call_kwargs
+
+        class _Info:
+            max_output = 8192
+
+        monkeypatch.setattr(models_dev, "get_model_info", lambda *a, **k: _Info())
+        kwargs = _build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": "hi"}],
+            task="compression",
+        )
+        assert kwargs["max_tokens"] == 8192
+
+    def test_compression_deepseek_unknown_model_keeps_omission(self, monkeypatch):
+        """A model unknown to the catalog keeps the omission (provider default) —
+        guessing a ceiling risks a wire 400."""
+        from agent import models_dev
+        from agent.auxiliary_client import _build_call_kwargs
+
+        monkeypatch.setattr(models_dev, "get_model_info", lambda *a, **k: None)
+        kwargs = _build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": "hi"}],
+            task="compression",
+        )
+        assert "max_tokens" not in kwargs
+
+    def test_compression_deepseek_explicit_cap_passes_through(self):
+        """An explicit caller value wins — the lane cap only fills an omission."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-flash",
+            messages=[{"role": "user", "content": "hi"}],
+            task="compression",
+            max_tokens=5000,
+        )
+        assert kwargs["max_tokens"] == 5000
+
+    def test_compression_deepseek_scoping(self):
+        """The cap is DeepSeek-and-compression-lane only: other tasks on DeepSeek and
+        the compression lane on other providers keep the documented omission."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        for task in ("vision", "title_generation", None):
+            kwargs = _build_call_kwargs(
+                provider="deepseek",
+                model="deepseek-flash",
+                messages=[{"role": "user", "content": "hi"}],
+                task=task,
+            )
+            assert "max_tokens" not in kwargs, task
+
+        kwargs = _build_call_kwargs(
+            provider="openai",
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hi"}],
+            task="compression",
+        )
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+
 class TestNousTagsScoping:
     def test_tags_injected_when_provider_is_nous(self, monkeypatch):
         import agent.auxiliary_client as aux

@@ -25,7 +25,11 @@ PIL = pytest.importorskip("PIL")
 from PIL import Image  # noqa: E402
 
 from tools.computer_use.tool import _shrink_capture_for_vision  # noqa: E402
-from tools.vision_tools import _build_scale_note, vision_analyze_tool  # noqa: E402
+from tools.vision_tools import (  # noqa: E402
+    _EMBED_MAX_DIMENSION,
+    _build_scale_note,
+    vision_analyze_tool,
+)
 
 
 ORIG_W, ORIG_H = 3024, 1964
@@ -154,8 +158,31 @@ class TestBuildScaleNote:
         assert "4.00" in note                      # coordinate mapping still disclosed
         assert "Small printed text" in note        # and now the legibility warning
         assert "do not" in note and "region" in note
-        assert "1400" in note                      # the safe crop edge
+        # The hint bound must track the real long-edge trigger, not a hand-maintained
+        # per-side number (#124512).
+        assert "longest side" in note              # phrased as a long-edge bound
+        assert f"~{_EMBED_MAX_DIMENSION}px" in note  # derived from the actual threshold
         assert "quote exact figures" in note
+
+    def test_legibility_bound_derives_from_embed_max_dimension(self):
+        # The note must reference _EMBED_MAX_DIMENSION live: if the dimension
+        # threshold changes, the hint text follows — it cannot drift (#124512).
+        note = _build_scale_note(
+            {"orig_width": 3539, "orig_height": 2499,
+             "new_width": 884, "new_height": 624},
+            None,
+        )
+        assert note is not None
+        assert f"~{_EMBED_MAX_DIMENSION}px" in note
+        with patch("tools.vision_tools._EMBED_MAX_DIMENSION", 2000):
+            patched_note = _build_scale_note(
+                {"orig_width": 3539, "orig_height": 2499,
+                 "new_width": 884, "new_height": 624},
+                None,
+            )
+        assert patched_note is not None
+        assert "~2000px" in patched_note
+        assert f"~{_EMBED_MAX_DIMENSION}px" in note
 
     def test_legibility_warning_only_keyed_on_the_larger_axis(self):
         # An extreme aspect ratio must not trip the warning on its thin axis alone.

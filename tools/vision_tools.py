@@ -284,9 +284,11 @@ def _is_image_size_error(error: Exception) -> bool:
 # A downscale factor at or above this makes small printed text unreliable enough to
 # warn about in the scale note (see _build_scale_note, #124509).
 _SCALE_LEGIBILITY_FACTOR = 2.0
-# Reporter-verified workaround edge: a crop kept at or under ~1400px per side never
-# touched the resize path and read every invoice digit correctly.
-_LEGIBILITY_SAFE_EDGE = 1400
+# The note's crop hint is derived from the long-edge threshold the resize trigger
+# actually tests (_image_exceeds_dimension against _EMBED_MAX_DIMENSION), so the
+# advice cannot drift from the code. It is phrased as a hint, not a guarantee: the
+# resize ladder also fires on the byte budget alone, so even a crop under this long
+# edge can still be downscaled when its encoding is large (#124512).
 
 
 def _build_scale_note(scale_info: Optional[dict], crop_offset: Optional[dict]) -> Optional[str]:
@@ -312,8 +314,11 @@ def _build_scale_note(scale_info: Optional[dict], crop_offset: Optional[dict]) -
                 f"Small printed text (table cells, quantities, prices, fine print) "
                 f"is likely no longer reliably readable at this resolution — do not "
                 f"quote exact figures from tiny text; re-analyze the region of "
-                f"interest with vision_analyze's region argument (keep it under "
-                f"~{_LEGIBILITY_SAFE_EDGE}px per side) instead of trusting digits here."
+                f"interest with vision_analyze's region argument instead of trusting "
+                f"digits here. As a hint, keep the crop's longest side under "
+                f"~{_EMBED_MAX_DIMENSION}px — a crop that small can still be "
+                f"downscaled if its encoded size exceeds the byte budget, so "
+                f"re-verify any figure you quote from it."
             )
     if crop_offset:
         parts.append(

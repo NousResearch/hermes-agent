@@ -216,17 +216,84 @@ class TestToolProgressDispatch:
         assert calls[0].args[3] == {"query": "hermes agent docs"}
 
 class TestAgentMessageInterimDispatch:
-    def test_completed_agent_message_emits_interim(self):
+    def test_completed_message_is_commentary_only_when_a_later_item_starts(self):
         agent = _make_stub_agent()
         bridge = make_codex_app_server_event_bridge(agent)
         bridge(_item_completed({
-            "type": "agentMessage",
-            "id": "am-1",
-            "text": "I'll check the config first.",
+            "type": "agentMessage", "id": "am-1", "text": "I'll check the config first.",
         }))
+        agent._emit_interim_assistant_message.assert_not_called()
+        bridge(_item_started({"type": "commandExecution", "id": "cmd-1", "command": "ls"}))
         agent._emit_interim_assistant_message.assert_called_once_with(
             {"role": "assistant", "content": "I'll check the config first."}
         )
+        bridge(_item_completed({"type": "agentMessage", "id": "am-2", "text": "Done."}))
+        bridge({"method": "turn/completed", "params": {"turn": {"status": "completed"}}})
+        agent._emit_interim_assistant_message.assert_called_once()
+
+    def test_final_message_is_not_published_as_an_interim(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge({"method": "item/agentMessage/delta", "params": {"delta": "Answer."}})
+        bridge(_item_completed({"type": "agentMessage", "id": "final", "text": "Answer."}))
+        bridge({"method": "turn/completed", "params": {"turn": {"status": "completed"}}})
+        agent._fire_stream_delta.assert_called_once_with("Answer.")
+        agent._emit_interim_assistant_message.assert_not_called()
+
+    def test_reasoning_after_final_message_does_not_relabel_it_as_commentary(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_completed({"type": "agentMessage", "id": "final", "text": "Answer."}))
+        bridge(_item_completed({"type": "reasoning", "id": "r1", "summary": ["hidden"]}))
+        bridge({"method": "turn/completed", "params": {"turn": {"status": "completed"}}})
+        agent._emit_interim_assistant_message.assert_not_called()
+
+    def test_bridge_publishes_each_repeated_commentary_item(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        for id in ("first", "second"):
+            bridge(_item_completed({"type": "agentMessage", "id": id, "text": "Checking."}))
+        bridge(_item_completed({"type": "agentMessage", "id": "final", "text": "Checking."}))
+        bridge({"method": "turn/completed", "params": {"turn": {"status": "completed"}}})
+        assert agent._emit_interim_assistant_message.call_count == 2
+
+    def test_commentary_uses_its_own_streamed_text_on_later_delta(self):
+        agent = _make_stub_agent()
+        seen = []
+        agent._current_streamed_assistant_text = ""
+        agent._emit_interim_assistant_message.side_effect = lambda message: seen.append(
+            (message["content"], agent._current_streamed_assistant_text)
+        )
+        bridge = make_codex_app_server_event_bridge(agent)
+        agent._current_streamed_assistant_text = "First."
+        bridge(_item_completed({"type": "agentMessage", "id": "first", "text": "First."}))
+        assert agent._current_streamed_assistant_text == ""
+        bridge({"method": "item/agentMessage/delta", "params": {"delta": "Second."}})
+        assert seen == [("First.", "First.")]
+        assert agent._current_streamed_assistant_text == ""
+
+    def test_next_completed_message_keeps_its_own_stream_buffer(self):
+        agent = _make_stub_agent()
+        agent._current_streamed_assistant_text = ""
+        bridge = make_codex_app_server_event_bridge(agent)
+        agent._current_streamed_assistant_text = "First."
+        bridge(_item_completed({"type": "agentMessage", "id": "first", "text": "First."}))
+        agent._current_streamed_assistant_text = "Final."
+        bridge(_item_completed({"type": "agentMessage", "id": "final", "text": "Final."}))
+        assert agent._current_streamed_assistant_text == ""
+        agent._emit_interim_assistant_message.assert_called_once_with(
+            {"role": "assistant", "content": "First."}
+        )
+
+    def test_later_delta_without_started_item_releases_commentary(self):
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_completed({"type": "agentMessage", "id": "first", "text": "Checking."}))
+        bridge({"method": "item/agentMessage/delta", "params": {"delta": "Final."}})
+        agent._emit_interim_assistant_message.assert_called_once_with(
+            {"role": "assistant", "content": "Checking."}
+        )
+        agent._fire_stream_delta.assert_called_once_with("Final.")
 
     def test_show_commentary_off_suppresses_interim(self):
         """display.show_commentary=false silences agentMessage interim

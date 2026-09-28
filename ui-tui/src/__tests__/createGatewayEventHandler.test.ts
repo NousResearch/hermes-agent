@@ -2356,6 +2356,33 @@ describe('createGatewayEventHandler', () => {
       expect(assistantMsgs).toHaveLength(2)
     })
 
+    it('shows the Codex final once while retaining an identical earlier commentary item', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      // Codex sends a completed commentary item, then a new final item. The
+      // bridge publishes only the first as interim; both item deltas stream.
+      onEvent({ payload: { text: 'Checking.' }, type: 'message.delta' } as any)
+      onEvent({ payload: { already_streamed: true, text: 'Checking.' }, type: 'message.interim' } as any)
+      onEvent({ payload: { text: 'Checking.' }, type: 'message.delta' } as any)
+      onEvent({ payload: { text: 'Checking.' }, type: 'message.complete' } as any)
+
+      const texts = appended.filter(m => m.role === 'assistant' && m.text).map(m => m.text)
+      expect(texts).toEqual(['Checking.', 'Checking.'])
+    })
+
+    it('shows the Codex final only once with streamed text and no interim', () => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: 'Final answer.' }, type: 'message.delta' } as any)
+      onEvent({ payload: { text: 'Final answer.' }, type: 'message.complete' } as any)
+
+      expect(appended.filter(m => m.role === 'assistant' && m.text).map(m => m.text)).toEqual(['Final answer.'])
+    })
+
     it('settles identical terminal reply onto interim when response_previewed', () => {
       const appended: Msg[] = []
       const onEvent = createGatewayEventHandler(buildCtx(appended))

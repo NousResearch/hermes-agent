@@ -373,11 +373,29 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
 
     Tool items fire ``tool_progress_callback`` plus the stable-ID ``tool_start_callback`` /
     ``tool_complete_callback`` card hooks; deltas go to ``_fire_stream_delta`` / ``_fire_reasoning_delta``;
-    a completed agentMessage goes to ``_emit_interim_assistant_message`` (the gateway's ``already_streamed``
-    check dedupes against streamed deltas). Current-turn progress refreshes the activity clock even
-    without display hooks. Every callback is guarded so a buggy display hook cannot tear down the turn loop."""
+    a completed agentMessage is held until another item proves it is commentary; the final item
+    remains streamed but is not also sent as an interim. Current-turn progress refreshes the activity
+    clock even without display hooks. Every callback is guarded so a buggy display hook cannot tear down the turn loop."""
     # item_id -> (tool_name, args, started_monotonic); duration even when codex omits durationMs.
     started: dict[str, tuple[str, dict, float]] = {}
+    # Codex does not mark an agentMessage as final when it completes. Hold the
+    # last completed item until a later item proves it was commentary. The
+    # item still streams live through deltas; turn/completed is the boundary
+    # that identifies the final item without guessing from its text.
+    pending_message: tuple[dict, str] | None = None
+
+    def _publish_pending_message(*, next_message_started: bool = False) -> None:
+        nonlocal pending_message
+        saved, pending_message = pending_message, None
+        if saved is not None:
+            item, streamed = saved
+            # Compare commentary against its OWN completed deltas. If the
+            # next message already streamed, restore that buffer afterwards.
+            later = (getattr(agent, "_current_streamed_assistant_text", "") or "") if next_message_started else None
+            agent._current_streamed_assistant_text = streamed
+            _fire_agent_message_completed(item)
+            if later is not None:
+                agent._current_streamed_assistant_text = later
 
     def agent_cb(attr: str, fail_msg: str, *fail_args: Any, args: tuple = (), kwargs: dict | None = None) -> None:
         _call_guarded(getattr(agent, attr, None), fail_msg, *fail_args, args=args, kwargs=kwargs)
@@ -423,21 +441,29 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         if isinstance(text, str) and text.strip() and getattr(agent, "show_commentary", True):
             agent_cb("_emit_interim_assistant_message", "_emit_interim_assistant_message raised",
                      args=({"role": "assistant", "content": text},))
-        # Each agentMessage item is its own delivered message: the completed item was just compared
-        # against ITS deltas, so drop them before the next item's deltas arrive. Otherwise the buffer
-        # holds "commentary + final", the final agentMessage no longer prefix-matches, and it is
-        # re-delivered with already_streamed=False as a second copy (#74248 boundary 2).
+        # The next item must compare its deltas against its own text, not the
+        # completed commentary item (#74248 boundary 2).
         agent._current_streamed_assistant_text = ""
 
     def _on_item(params: dict, completed: bool) -> None:
+        nonlocal pending_message
         item = params.get("item")
         if not isinstance(item, dict):
             return
         item_type = item.get("type") or ""
+        # A later tool or agentMessage proves the pending message was mid-turn.
+        # Reasoning may still accompany the final message, so it does not prove
+        # a new visible item. Publish before the next visible item's progress.
+        if pending_message is not None and item_type in (_CODEX_TOOL_ITEM_TYPES | {"agentMessage"}):
+            _publish_pending_message(next_message_started=item_type == "agentMessage")
         if item_type in _CODEX_TOOL_ITEM_TYPES:
             (_fire_tool_completed if completed else _fire_tool_started)(item)
         elif completed and item_type == "agentMessage":
-            _fire_agent_message_completed(item)
+            pending_message = (item, getattr(agent, "_current_streamed_assistant_text", "") or "")
+            # The following item's first delta must not inherit this item's
+            # comparison buffer. The snapshot above is restored if it proves
+            # to be commentary.
+            agent._current_streamed_assistant_text = ""
     handlers: dict[str, Callable[[dict], None]] = {
         method: functools.partial(_fire_delta, attr=attr) for method, attr in _CODEX_TEXT_DELTA_METHODS
     }
@@ -445,6 +471,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     handlers["item/completed"] = lambda p: _on_item(p, completed=True)
 
     def on_event(note: dict) -> None:
+        nonlocal pending_message
         if not isinstance(note, dict):
             return
         method = note.get("method") or ""
@@ -461,6 +488,15 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         )
         if is_delta or is_item:
             agent_cb("_touch_activity", "_touch_activity raised", args=(f"codex app-server: {method}",))
+        if method == "turn/completed":
+            # The last agentMessage is the persisted final response, not a
+            # separate interim. Its live deltas already reached the UI.
+            pending_message = None
+            return
+        if pending_message is not None and method == "item/agentMessage/delta" and _delta_text(params):
+            # Some Codex versions omit item/started. A later text delta still
+            # establishes a new message boundary before its text is delivered.
+            _publish_pending_message()
         handler = handlers.get(method)
         if handler is not None:
             handler(params)

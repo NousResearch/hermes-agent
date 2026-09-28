@@ -12,7 +12,8 @@ import pytest
 from nio import RoomMessageText, RoomSendResponse, SyncResponse
 
 from agent.i18n import t
-from hermes_cli.commands import gateway_help_lines
+from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, gateway_help_lines
+from hermes_cli.slash_exec import CommandContext, execute_command
 from plugins.platforms.matrix.adapter import _normalize_matrix_bang_command
 from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
 
@@ -21,8 +22,8 @@ _SKILLS = {
     f"discovery-{index:02d}": f"Discovery task {index:02d}" for index in range(12)
 }
 _SKILLS.update({
-    "discovery-00": "Use ``literal ```/help` literal`` here.",
-    "discovery-01": "Use ``literal `/help` literal`` here.",
+    "discovery-00": r"Use \\`echo /help` here. Use ``literal ```/help` literal`` here.",
+    "discovery-01": "Use ``literal `/help` literal`` here.\n\n    `/help`\n\n\t`/help`\n\nContinue discovering commands.",
     "discovery-02": "Example:\n```/help```\nContinue discovering commands.",
     "discovery-03": "Example:\n   ```/help```\nContinue discovering commands.",
     "discovery-04": "Use ``literal\n`/help`\nliteral`` here.",
@@ -74,6 +75,32 @@ def test_client_discovers_native_commands_without_model_turn(
         for line in gateway_help_lines()
         for command in _COMMAND_SPAN.findall(line)
     }
+    descriptions = re.compile(
+        "(" + "|".join(re.escape(value) for value in _SKILLS.values()) + ")"
+    )
+    command_labels = re.compile(r"`/([A-Za-z][A-Za-z0-9_-]*)(?=\s|`)")
+    known_commands = GATEWAY_KNOWN_COMMANDS | {
+        command.removeprefix("/") for command in skills
+    }
+
+    def expected_reply(command: str) -> str:
+        name, _, args = _normalize_matrix_bang_command(command)[1:].partition(" ")
+        canonical = execute_command(
+            name, CommandContext(surface="gateway", args=args)
+        ).text
+        return "".join(
+            part
+            if index % 2
+            else command_labels.sub(
+                lambda match: (
+                    f"`!{match.group(1)}"
+                    if match.group(1) in known_commands
+                    else match.group(0)
+                ),
+                part,
+            )
+            for index, part in enumerate(descriptions.split(canonical))
+        )
 
     def commands_in(body: str) -> set[str]:
         for command, description in _SKILLS.items():
@@ -120,9 +147,11 @@ def test_client_discovers_native_commands_without_model_turn(
                         assert len(replies) == 1, replies
                         assert gateway.model.main_requests() == []
                         reply = replies[0]
-                        assert reply.formatted_body == object.__new__(
-                            MatrixAdapter
-                        )._markdown_to_html(reply.body)
+                        expected = expected_reply(command).strip()
+                        assert (reply.body, reply.formatted_body) == (
+                            expected,
+                            object.__new__(MatrixAdapter)._markdown_to_html(expected),
+                        )
                         return reply.body
                 pytest.fail(
                     f"No reply to {command} after 15 seconds. Gateway logs:\n"

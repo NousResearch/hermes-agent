@@ -29,6 +29,15 @@ def _cli():
     return cli
 
 
+def message_timestamp_suffix(cli) -> str:
+    """Display-only timestamp shared by transcript labels and tool activity."""
+    if not getattr(cli, "show_timestamps", False):
+        return ""
+    from cli import datetime
+
+    return f" [{datetime.now().strftime(getattr(cli, 'timestamp_format', '%H:%M'))}]"
+
+
 _REASONING_TAGS = THINK_TAG_NAMES
 
 

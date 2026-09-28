@@ -18,6 +18,7 @@ from pathlib import Path
 from rich.markup import escape as _escape
 
 from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
+from hermes_cli.cli_render import message_timestamp_suffix
 
 # Model-generated reasoning tags: suppressed during streaming (they'd display as raw XML;
 # the agent strips them from final_response too) unless show_reasoning routes them to the box.
@@ -118,7 +119,8 @@ class CLIStreamMixin:
         preview_text = reasoning_text.strip()
         if not preview_text:
             return
-        wrap_width = max(30, _terminal_columns() - len("  [thinking] ") - 2)
+        label = f"[thinking]{message_timestamp_suffix(self)}"
+        wrap_width = max(30, _terminal_columns() - len(f"  {label} ") - 2)
         paragraphs = []
         for paragraph in re.split(r"\n\s*\n+", preview_text.replace("\r\n", "\n")):
             compact = " ".join(line.strip() for line in paragraph.splitlines() if line.strip())
@@ -128,14 +130,14 @@ class CLIStreamMixin:
         if not preview_text:
             return
         if self.verbose:
-            _cprint(f"  {_DIM}[thinking] {preview_text}{_RST}")
+            _cprint(f"  {_DIM}{label} {preview_text}{_RST}")
             return
         lines = preview_text.splitlines()
         if len(lines) > 5:
             preview = "\n".join(lines[:5]) + f"\n  ... ({len(lines) - 5} more lines)"
         else:
             preview = preview_text
-        _cprint(f"  {_DIM}[thinking] {preview}{_RST}")
+        _cprint(f"  {_DIM}{label} {preview}{_RST}")
 
     def _flush_reasoning_preview(self, *, force: bool = False) -> None:
         """Flush buffered reasoning text at natural boundaries.
@@ -173,10 +175,9 @@ class CLIStreamMixin:
 
     def _format_submitted_user_message_preview(self, user_input: str) -> str:
         """Format the submitted user-message scrollback preview."""
-        from cli import _accent_hex, datetime
-        ts_suffix = (
-            f" [dim]{datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}[/]"
-            if getattr(self, "show_timestamps", False) else "")
+        from cli import _accent_hex
+        stamp = message_timestamp_suffix(self)
+        ts_suffix = f"[dim]{_escape(stamp)}[/]" if stamp else ""
         lines = user_input.split("\n")
         if len(lines) <= 1:
             return f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]{ts_suffix}"
@@ -230,10 +231,7 @@ class CLIStreamMixin:
             return
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         text = str(user_input or "")
-        if "\n" in text:
-            ChatConsole().print(self._format_submitted_user_message_preview(text))
-        else:
-            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
+        ChatConsole().print(self._format_submitted_user_message_preview(text))
 
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning tokens into a dim box above the response.
@@ -251,7 +249,7 @@ class CLIStreamMixin:
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
             w = self._scrollback_box_width()
-            r_label = " Reasoning "
+            r_label = f" Reasoning{message_timestamp_suffix(self)} "
             r_fill = w - 2 - len(r_label)
             _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
 
@@ -415,7 +413,7 @@ class CLIStreamMixin:
         """Emit filtered text to the streaming display."""
         from agent.markdown_tables import is_table_divider, looks_like_table_row
         from cli import (
-            HermesCLI, _ACCENT, _RST, _STREAM_PARTIAL_PREVIEW_LEN, _cprint, _strip_markdown_syntax, datetime)
+            HermesCLI, _ACCENT, _RST, _STREAM_PARTIAL_PREVIEW_LEN, _cprint, _strip_markdown_syntax)
         if not text:
             return
         # Close a still-open reasoning box on the first content token so the answer streams
@@ -442,8 +440,7 @@ class CLIStreamMixin:
                 self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
-            if self.show_timestamps:
-                label = f"{label} {datetime.now().strftime(getattr(self, 'timestamp_format', '%H:%M'))}"
+            label += message_timestamp_suffix(self)
             w = self._scrollback_box_width()
             fill = w - 2 - HermesCLI._status_bar_display_width(label)
             _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
@@ -654,7 +651,7 @@ class CLIStreamMixin:
         announced.add(tool_name)
         from agent.display import bridge_generating_phrase, get_tool_emoji
         what = bridge_generating_phrase(tool_name) or tool_name
-        _cprint(f"  ┊ {get_tool_emoji(tool_name, default='⚡')} preparing {what}…")
+        _cprint(f"  ┊ {get_tool_emoji(tool_name, default='⚡')} preparing {what}…{message_timestamp_suffix(self)}")
 
     def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None, function_args: dict = None, **kwargs):
         """Tool lifecycle events (tool.started / tool.completed / reasoning.* / moa.*).
@@ -725,7 +722,7 @@ class CLIStreamMixin:
                 try:
                     from agent.display import get_cute_tool_message
                     line = get_cute_tool_message(function_name, stored_args, duration, result=kwargs.get("result"))
-                    _cprint(f"  {line}")
+                    _cprint(f"  {line}{message_timestamp_suffix(self)}")
                 except Exception:
                     pass
                 # One-time /verbose hint on the first long tool in the noisiest mode; latched

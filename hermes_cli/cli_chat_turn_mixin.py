@@ -16,9 +16,11 @@ import time
 from pathlib import Path
 from rich import box as rich_box
 from rich.panel import Panel
+from rich.markup import escape
 from typing import Optional
 
 from hermes_cli.cli_agent_setup_mixin import _retire_agent
+from hermes_cli.cli_render import message_timestamp_suffix
 
 
 class CLIChatTurnMixin:
@@ -246,7 +248,7 @@ class CLIChatTurnMixin:
 
     def _chat_setup_turn_audio(self, turn, message, voice_input):
         """Arm the full-duplex listener and the streaming-TTS pipeline for this turn (voice mode only)."""
-        from cli import _ACCENT, _RST, _STREAM_PAD, _cprint, datetime
+        from cli import _ACCENT, _RST, _STREAM_PAD, _cprint
         if getattr(turn, "mute_notification_reply", False):
             return
         # Continuous voice mode: arm the mic NOW (utterance-submit), not at TTS playback —
@@ -275,9 +277,7 @@ class CLIChatTurnMixin:
             def display_callback(sentence: str):
                 if not turn.box_opened:
                     turn.box_opened = True
-                    label = " ☤ Hermes "
-                    if self.show_timestamps:
-                        label = f"{label}{datetime.now().strftime(self.timestamp_format)} "
+                    label = f" ☤ Hermes{message_timestamp_suffix(self)} "
                     w = self._scrollback_box_width(getattr(self.console, "width", 80))
                     fill = w - 2 - self._status_bar_display_width(label)
                     _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
@@ -650,7 +650,7 @@ class CLIChatTurnMixin:
             reasoning = turn.result.get("last_reasoning")
             if reasoning:
                 w = self._scrollback_box_width()
-                r_label = " Reasoning "
+                r_label = f" Reasoning{message_timestamp_suffix(self)} "
                 r_top = f"{_DIM}┌─{r_label}{'─' * max(w - 3 - len(r_label), 0)}┐{_RST}"
                 r_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
                 # First 10 lines unless the user opted into /reasoning full.
@@ -703,7 +703,7 @@ class CLIChatTurnMixin:
             else:
                 ChatConsole().print(Panel(
                     _render_final_assistant_content(response, mode=self.final_response_markdown),
-                    title=f"[{_resp_color} bold]{label}[/]", title_align="left", border_style=_resp_color,
+                    title=f"[{_resp_color} bold]{label}{escape(message_timestamp_suffix(self))}[/]", title_align="left", border_style=_resp_color,
                     style=_resp_text, box=rich_box.HORIZONTALS, padding=(1, 0),
                     width=self._scrollback_box_width(),
                 ))

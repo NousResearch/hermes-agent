@@ -325,6 +325,10 @@ class TestMatrixConfigLoading:
 # Adapter helpers
 # ---------------------------------------------------------------------------
 
+class _MissingEncryption(Exception):
+    errcode = "M_NOT_FOUND"
+
+
 def _make_adapter():
     """Create a MatrixAdapter with mocked config."""
     from plugins.platforms.matrix.adapter import MatrixAdapter
@@ -388,14 +392,14 @@ class TestMatrixResolveSendTarget:
         client.resolve_room_alias.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_user_mxid_passes_through_unchanged(self):
-        """MXIDs pass through without alias resolution."""
+    async def test_user_mxid_is_rejected(self):
+        """An MXID cannot be used as a room-send destination."""
         client = MagicMock()
         client.resolve_room_alias = AsyncMock()
         self.adapter._client = client
 
-        result = await self.adapter._resolve_send_target("@user:example.org")
-        assert result == "@user:example.org"
+        with pytest.raises(ValueError, match="MXID"):
+            await self.adapter._resolve_send_target("@user:example.org")
         client.resolve_room_alias.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -405,7 +409,7 @@ class TestMatrixResolveSendTarget:
         client.resolve_room_alias = AsyncMock(
             return_value=SimpleNamespace(room_id="!resolved:example.org", servers=[])
         )
-        client.join_room = AsyncMock()
+        client.join_room = AsyncMock(return_value="!resolved:example.org")
         self.adapter._client = client
 
         result = await self.adapter._resolve_send_target("#general:example.org")
@@ -423,7 +427,7 @@ class TestMatrixResolveSendTarget:
         client.resolve_room_alias = AsyncMock(
             return_value=SimpleNamespace(room_id="!resolved:example.org", servers=[])
         )
-        client.join_room = AsyncMock()
+        client.join_room = AsyncMock(return_value="!resolved:example.org")
         self.adapter._client = client
         self.adapter._joined_rooms = set()
 
@@ -437,7 +441,7 @@ class TestMatrixResolveSendTarget:
         client.resolve_room_alias = AsyncMock(
             return_value=SimpleNamespace(room_id="!resolved:example.org", servers=[])
         )
-        client.join_room = AsyncMock()
+        client.join_room = AsyncMock(return_value="!resolved:example.org")
         self.adapter._client = client
         self.adapter._joined_rooms = {"!resolved:example.org"}
 
@@ -446,32 +450,26 @@ class TestMatrixResolveSendTarget:
         client.join_room.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_alias_resolution_failure_returns_original(self):
-        """If resolution fails, return the original chat_id so the underlying
-        homeserver error surfaces from /send rather than being swallowed."""
+    async def test_alias_resolution_failure_reports_target(self):
+        """A failed lookup reports the alias and the directory error."""
         client = MagicMock()
         client.resolve_room_alias = AsyncMock(side_effect=RuntimeError("boom"))
         self.adapter._client = client
 
-        result = await self.adapter._resolve_send_target("#missing:example.org")
-        assert result == "#missing:example.org"
+        with pytest.raises(ValueError, match="#missing:example.org.*boom"):
+            await self.adapter._resolve_send_target("#missing:example.org")
 
     @pytest.mark.asyncio
-    async def test_unpublished_alias_logs_actionable_warning(self, caplog):
-        """An empty room ID produces a warning about publishing the alias."""
+    async def test_unpublished_alias_reports_actionable_error(self):
+        """An empty room ID reports how to publish the alias."""
         client = MagicMock()
         client.resolve_room_alias = AsyncMock(
             return_value=SimpleNamespace(room_id="", servers=[])
         )
         self.adapter._client = client
 
-        with caplog.at_level("WARNING", logger="plugins.platforms.matrix.adapter"):
-            result = await self.adapter._resolve_send_target("#unpublished:example.org")
-
-        assert result == "#unpublished:example.org"
-        warning_text = " ".join(r.getMessage() for r in caplog.records)
-        assert "Local Address" in warning_text
-        assert "#unpublished:example.org" in warning_text
+        with pytest.raises(ValueError, match="#unpublished:example.org.*Local Address"):
+            await self.adapter._resolve_send_target("#unpublished:example.org")
 
     @pytest.mark.asyncio
     async def test_thread_suffix_stripped_defensively(self):
@@ -481,7 +479,7 @@ class TestMatrixResolveSendTarget:
         client.resolve_room_alias = AsyncMock(
             return_value=SimpleNamespace(room_id="!resolved:example.org", servers=[])
         )
-        client.join_room = AsyncMock()
+        client.join_room = AsyncMock(return_value="!resolved:example.org")
         self.adapter._client = client
 
         await self.adapter._resolve_send_target("#general:example.org/$evt")
@@ -494,7 +492,8 @@ class TestMatrixResolveSendTarget:
         client.resolve_room_alias = AsyncMock(
             return_value=SimpleNamespace(room_id="!resolved:example.org", servers=[])
         )
-        client.join_room = AsyncMock()
+        client.join_room = AsyncMock(return_value="!resolved:example.org")
+        client.get_state_event = AsyncMock(side_effect=_MissingEncryption())
         client.send_message_event = AsyncMock(return_value="$evt")
         self.adapter._client = client
         self.adapter._joined_rooms = {"!resolved:example.org"}
@@ -1631,6 +1630,7 @@ async def test_sent_matrix_message_is_available_as_reply_context():
 
     adapter = _make_adapter()
     adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=_MissingEncryption())
     adapter._client.send_message_event = AsyncMock(return_value="$sent")
 
     result = await adapter.send("!room:example.org", "hello from the bot")
@@ -1647,6 +1647,7 @@ async def test_successful_matrix_edit_updates_cached_reply_target():
 
     adapter = _make_adapter()
     adapter._client = MagicMock()
+    adapter._client.get_state_event = AsyncMock(side_effect=_MissingEncryption())
     adapter._client.send_message_event = AsyncMock(side_effect=[
         "$sent", "$edit", RuntimeError("send failed"),
     ])
@@ -2039,6 +2040,7 @@ class TestMatrixRenderingPayloads:
     def setup_method(self):
         self.adapter = _make_adapter()
         self.mock_client = MagicMock()
+        self.mock_client.get_state_event = AsyncMock(side_effect=_MissingEncryption())
         self.mock_client.send_message_event = AsyncMock(return_value="$evt")
         self.adapter._client = self.mock_client
 
@@ -2952,6 +2954,7 @@ class TestMatrixUploadAndSend:
         mock_client.state_store = MagicMock()
         mock_client.state_store.is_encrypted = AsyncMock(return_value=True)
         mock_client.upload_media = AsyncMock(return_value="mxc://example.org/enc")
+        mock_client.get_state_event = AsyncMock(return_value={"algorithm": "m.megolm.v1.aes-sha2"})
         mock_client.send_message_event = AsyncMock(return_value="$event")
         adapter._client = mock_client
 
@@ -2975,6 +2978,7 @@ class TestMatrixUploadAndSend:
         adapter = _make_adapter()
         mock_client = MagicMock()
         mock_client.upload_media = AsyncMock(return_value="mxc://example.org/plain")
+        mock_client.get_state_event = AsyncMock(side_effect=_MissingEncryption())
         mock_client.send_message_event = AsyncMock(return_value="$event")
         adapter._client = mock_client
 
@@ -3002,10 +3006,15 @@ class TestMatrixUploadAndSend:
         adapter._encryption = True
         mock_client = MagicMock()
         mock_client.crypto = object()
-        mock_client.state_store.is_encrypted = AsyncMock(side_effect=[True, False, False, False])
+        mock_client.state_store.is_encrypted = AsyncMock(return_value=True)
         mock_client.upload_media = AsyncMock(side_effect=[
             "mxc://example.org/secret", "mxc://example.org/plain",
             "mxc://example.org/one", "mxc://example.org/two",
+        ])
+        mock_client.get_state_event = AsyncMock(side_effect=[
+            _MissingEncryption(), {"algorithm": "m.megolm.v1.aes-sha2"},
+            {"algorithm": "m.megolm.v1.aes-sha2"},
+            *[_MissingEncryption() for _ in range(6)],
         ])
         mock_client.send_message_event = AsyncMock(side_effect=[
             "$text", "$encrypted", "$plain", "$image-one", "$image-two",
@@ -3162,6 +3171,8 @@ class TestMatrixEncryptedSendFallback:
         adapter._encryption = True
 
         fake_client = MagicMock()
+        fake_client.get_state_event = AsyncMock(return_value={"algorithm": "m.megolm.v1.aes-sha2"})
+        fake_client.state_store.is_encrypted = AsyncMock(return_value=True)
         fake_client.send_message_event = AsyncMock(side_effect=[
             Exception("encryption error"),
             "$event123",  # mautrix returns EventID string directly

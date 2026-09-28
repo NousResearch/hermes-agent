@@ -572,14 +572,23 @@ hermes cron add "Weekly digest" "0 17 * * 5" \
   --deliver "matrix:#announcements:matrix.example.org"
 ```
 
-This mirrors Discord (`discord:channel_id:thread_id`) and Telegram (`telegram:chat_id:topic_id`) cron targeting.
+The existing `matrix:!room:server.org:$event` thread form also works.
+Use the DM's room ID for direct messages. MXIDs (`@user:server.org`) are not
+supported as delivery targets.
+
+For an explicitly requested alias, Hermes joins the resolved room if needed.
+The homeserver still enforces membership and invite requirements. Room discovery
+does not join rooms. Password login and encrypted delivery use the native
+adapter; the HTTP fallback refuses encrypted rooms and required E2EE.
 
 :::caution Aliases must be published as Local Addresses
 The `#alias:server.org` form requires a **Local Address** registered on the room. A display name in the room header does not register an alias. Matrix's `/directory/room/{alias}` lookup only resolves published aliases.
 
 To publish an alias in Element, open the room's **Settings**, then **General**, then **Local Addresses**, and add the alias. The alias does not need to be the Published Address for bot delivery.
 
-If the alias is not published, the homeserver returns the misleading error *"User &lt;bot&gt; not in room &lt;alias&gt;, and room previews are disabled"*. Hermes logs an actionable warning when this happens (`alias did not resolve to a room ID; the alias must be published as a Local Address`).
+If the alias is not published, Hermes returns the directory lookup error and
+does not send a message. An empty lookup result reports that the alias must be
+published as a Local Address.
 
 **Workaround if you can't add an alias:** target by room ID directly (`matrix:!roomid:server.org`).
 :::

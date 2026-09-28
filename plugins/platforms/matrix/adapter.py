@@ -6,7 +6,7 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_DEVICE_ID (stable E2EE device), MATRIX_RECOVERY_KEY (cross-signing after key rotation),
   MATRIX_RECOVERY_KEY_OUTPUT_FILE (one-time 0600 write of a bootstrapped key), MATRIX_PROXY;
   MATRIX_ALLOWED_USERS, MATRIX_ALLOWED_ROOMS (whitelist; DMs exempt), MATRIX_IGNORE_USER_PATTERNS
-  (regexes for bridge ghosts), MATRIX_HOME_ROOM (room ID, MXID or alias for cron delivery,
+  (regexes for bridge ghosts), MATRIX_HOME_ROOM (room ID or alias for cron delivery,
   with an optional /<event_id> thread suffix), MATRIX_REACTIONS (default true);
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
   MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
@@ -51,10 +51,9 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
 
-from agent.secret_scope import get_secret
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
-    get_scoped_secret as _get_scoped_secret, send_error
+    get_scoped_secret as _get_scoped_secret,
 )
 
 try:
@@ -82,6 +81,7 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
+from plugins.platforms.matrix.delivery import MatrixDeliveryMixin
 from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import (
@@ -843,7 +843,7 @@ class _CryptoStateStore:
         return list(self._joined_rooms)  # all joined rooms: correct for a single-user bot
 
 
-class MatrixAdapter(BasePlatformAdapter):
+class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -1448,7 +1448,12 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
-        chat_id = await self._resolve_send_target(chat_id)
+        target = chat_id
+        try:
+            chat_id = await self._resolve_send_target(target)
+            await self._check_room_encryption(chat_id)
+        except Exception as exc:
+            return SendResult(success=False, error=f"Matrix target '{target}': {exc}")
         last_event_id = None
         for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
             msg_content = self._build_text_message_content(chunk)
@@ -1821,10 +1826,15 @@ class MatrixAdapter(BasePlatformAdapter):
         is_voice: bool = False, voice_metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if len(data) > self._max_media_bytes:
             return self._media_too_large(len(data))
-        room_id = await self._resolve_send_target(room_id)
+        target = room_id
+        try:
+            room_id = await self._resolve_send_target(target)
+            encrypted = await self._check_room_encryption(room_id)
+        except Exception as exc:
+            return SendResult(success=False, error=f"Matrix target '{target}': {exc}")
         upload_data = data
         encrypted_file = None
-        if await self._room_needs_encrypted_upload(room_id):
+        if encrypted:
             try:
                 from mautrix.crypto.attachments import encrypt_attachment
                 upload_data, encrypted_file = encrypt_attachment(data)
@@ -1854,18 +1864,6 @@ class MatrixAdapter(BasePlatformAdapter):
         self._apply_relation_metadata(room_id, msg_content, reply_to=reply_to, metadata=metadata)
         return await self._send_content_event(room_id, msg_content)
 
-    async def _room_needs_encrypted_upload(self, room_id: str) -> bool:
-        """E2EE on, Olm machine loaded, and the state store says the room is encrypted."""
-        if not (self._encryption and getattr(self._client, "crypto", None)):
-            return False
-        state_store = getattr(self._client, "state_store", None)
-        if not state_store:
-            return False
-        try:
-            return bool(await state_store.is_encrypted(RoomID(room_id)))
-        except Exception:
-            return False
-
     def _media_too_large(self, size: int) -> SendResult:
         return SendResult(
             success=False, error=f"Media file exceeds Matrix limit ({size} > {self._max_media_bytes} bytes)")
@@ -1873,6 +1871,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _send_content_event(self, room_id: str, msg_content: Dict[str, Any]) -> SendResult:
         """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
         try:
+            await self._check_room_encryption(room_id)
             event_id = await self._client.send_message_event(RoomID(room_id), EventType.ROOM_MESSAGE, msg_content)
             self._thread_fallbacks.remember_sent(room_id, msg_content, str(event_id))
             return SendResult(success=True, message_id=str(event_id))
@@ -2484,36 +2483,6 @@ class MatrixAdapter(BasePlatformAdapter):
                     await self._client.leave_room(RoomID(room_id))
                     logger.info("Matrix: declined dead invite to %s", room_id)
             return False
-
-    async def _resolve_send_target(self, chat_id: str) -> str:
-        """Resolve aliases to room IDs and join the resolved room before sending.
-
-        The Client-Server send endpoint accepts room IDs. On lookup failure,
-        return the original target so the send reports the homeserver error.
-        """
-        if not chat_id:
-            return chat_id
-        target = chat_id.split("/", 1)[0]
-        if not target.startswith("#"):
-            return chat_id
-        try:
-            info = await self._client.resolve_room_alias(target)
-            room_id = str(info.room_id) if info and info.room_id else ""
-        except Exception as exc:
-            logger.warning("Matrix: failed to resolve alias %s: %s", target, exc)
-            return chat_id
-        if not room_id:
-            logger.warning(
-                "Matrix: alias %s did not resolve to a room ID; the alias "
-                "must be published as a Local Address on the target room. "
-                "Either add it in Element (Room Settings, General, Local "
-                "Addresses) or target by room ID instead.",
-                target,
-            )
-            return chat_id
-        if room_id not in self._joined_rooms:
-            await self._join_room_by_id(room_id)
-        return room_id
 
     def _schedule_invite_join(self, room_id: str, *, is_direct: bool = False, inviter: str = "") -> None:
         """Schedule an invite join without blocking sync or gateway readiness."""
@@ -3379,99 +3348,6 @@ class MatrixAdapter(BasePlatformAdapter):
         return result
 
 
-async def _resolve_matrix_room_alias(homeserver: str, token: str, alias: str):
-    """Resolve a room alias to a room ID, or return a lookup error."""
-    try:
-        import aiohttp
-    except ImportError:
-        return None, "aiohttp not installed. Run: pip install aiohttp"
-    from urllib.parse import quote
-    encoded_alias = quote(alias, safe="")
-    url = f"{homeserver}/_matrix/client/v3/directory/room/{encoded_alias}"
-    headers = {"Authorization": f"Bearer {token}"}
-    try:
-        async with aiohttp.ClientSession() as session:
-            async def _lookup():
-                async with session.get(url, headers=headers) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        return None, f"alias resolution failed ({resp.status}): {body}"
-                    return await resp.json(), None
-
-            data, err = await asyncio.wait_for(_lookup(), timeout=15)
-        if err:
-            return None, err
-        room_id = data.get("room_id")
-        if not room_id:
-            return None, f"alias resolution returned no room_id for {alias}"
-        return room_id, None
-    except Exception as e:
-        return None, f"alias resolution failed: {e}"
-
-
-async def _resolve_matrix_room_alias_target(homeserver: str, token: str, chat_id: str):
-    """Return a concrete room ID for alias targets, or the original target."""
-    if not chat_id.startswith("#"):
-        return chat_id, None
-    resolved, err = await _resolve_matrix_room_alias(homeserver, token, chat_id)
-    if err:
-        return chat_id, f"Matrix alias '{chat_id}': {err}"
-    return resolved, None
-
-
-async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
-    """standalone_sender_fn: out-of-process delivery via the Client-Server API (cron without gateway)."""
-    extra = getattr(pconfig, "extra", {}) or {}
-    try:
-        import aiohttp
-    except ImportError:
-        return send_error("aiohttp not installed. Run: pip install aiohttp")
-    try:
-        # In-turn reads inside an installed secret scope: honor get_secret, no env fallback — for the
-        # homeserver too, so the scoped token is never sent to the default profile's server.
-        homeserver = (extra.get("homeserver") or get_secret("MATRIX_HOMESERVER", "") or "").rstrip("/")
-        token = getattr(pconfig, "token", None) or get_secret("MATRIX_ACCESS_TOKEN", "") or ""
-        if not homeserver or not token:
-            return send_error("Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)")
-        chat_id, err = await _resolve_matrix_room_alias_target(homeserver, token, chat_id)
-        if err:
-            return send_error(err)
-        txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
-        from urllib.parse import quote
-        url = f"{homeserver}/_matrix/client/v3/rooms/{quote(chat_id, safe='')}/send/m.room.message/{txn_id}"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        payload = {"msgtype": "m.text", "body": message}
-        with suppress(ImportError):
-            import markdown as _md
-            tokenized, tex_store = _latex_to_tokens(message)
-            html = _md.markdown(tokenized, extensions=["fenced_code", "tables"])
-            payload["format"] = "org.matrix.custom.html"
-            payload["formatted_body"] = _tokens_to_mx_maths(
-                re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html), tex_store)
-        if thread_id:
-            payload["m.relates_to"] = {
-                "rel_type": "m.thread",
-                "event_id": thread_id,
-                "is_falling_back": True,
-            }
-        # asyncio.wait_for, not aiohttp.ClientTimeout: cron invokes this via
-        # run_coroutine_threadsafe ("Timeout context manager should be used inside a task").
-        async with aiohttp.ClientSession() as session:
-            async def _do_send():
-                async with session.put(url, headers=headers, json=payload) as resp:
-                    if resp.status not in {200, 201}:
-                        return send_error(f"Matrix API error ({resp.status}): {await resp.text()}")
-                    data = await resp.json()
-                    return {"success": True, "platform": "matrix", "chat_id": chat_id,
-                            "message_id": data.get("event_id")}
-            try:
-                return await asyncio.wait_for(_do_send(), timeout=30)
-            except asyncio.TimeoutError:
-                return send_error("Matrix API timeout (30s)")
-    except Exception as e:
-        return send_error(f"Matrix send failed: {e}")
-
-
 def interactive_setup() -> None:
     """Interactive credential setup (setup_fn); CLI helpers are lazy-imported."""
     from hermes_cli.config import get_env_value, remove_env_value, save_env_value
@@ -3566,13 +3442,15 @@ def _is_connected(config) -> bool:
 
 
 def register(ctx) -> None:
+    from plugins.platforms.matrix.standalone import standalone_send
+
     ctx.register_platform(
         name="matrix", label="Matrix", adapter_factory=MatrixAdapter, check_fn=matrix_deps_present,
         ensure_deps_fn=ensure_matrix_deps, is_connected=_is_connected,
         required_env=["MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN"], install_hint="pip install 'mautrix[encryption]'",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="MATRIX_ALLOWED_USERS",
         allow_all_env="MATRIX_ALLOW_ALL_USERS", cron_deliver_env_var="MATRIX_HOME_ROOM",
-        standalone_sender_fn=_standalone_send, max_message_length=DEFAULT_MAX_MESSAGE_LENGTH, emoji="🔐",
+        standalone_sender_fn=standalone_send, max_message_length=DEFAULT_MAX_MESSAGE_LENGTH, emoji="🔐",
         allow_update_command=True)
 
 

@@ -71,6 +71,8 @@ class HardwareBudget:
     total_device_bytes: int
     ram_available_bytes: int
     uma: bool = False
+    # False means no supported GPU-memory probe answered; callers must label the RAM fallback.
+    vram_known: bool = True
 
 
 def profile_from_gguf(header: GGUFHeader) -> ModelProfile:

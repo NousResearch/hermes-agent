@@ -75,16 +75,20 @@ def copy_identity_fields(src: Mapping[str, Any], dst: MutableMapping[str, Any]) 
     for key, kind in _IDENTITY_FIELD_TYPES:
         value = src.get(key)
         if isinstance(value, kind) and value:
-            dst[key] = kind(value) if kind is not str else value
+            dst[key] = kind(value)
 
 
-def message_identity(msg: MutableMapping[str, Any]) -> dict:
+def message_identity(msg: MutableMapping[str, Any], *, with_tool_uids: bool = False) -> dict:
     """The identity fields a new row copied from *msg* must carry, minting *msg*'s uid first when it has none:
     a branch/seed copy writes fresh rows from the live dicts the new session keeps using, and a row without
-    them would restore with a different uid than the live dict carries."""
+    them would restore with a different uid than the live dict carries. ``with_tool_uids`` only for a copy
+    that also carries ``tool_calls`` / ``tool_call_id``; a uid map on a row without its calls pairs nothing."""
     stamp_message_uid(msg)
     identity: dict = {}
     copy_identity_fields(msg, identity)
+    if not with_tool_uids:
+        identity.pop(TOOL_CALL_UIDS, None)
+        identity.pop(TOOL_CALL_UID, None)
     return identity
 
 

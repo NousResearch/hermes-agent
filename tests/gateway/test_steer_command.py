@@ -149,6 +149,26 @@ async def test_steer_reaches_ancient_turn_via_fresh_timestamp_fallback(
 
 
 @pytest.mark.asyncio
+async def test_steer_menu_ellipsis_reaches_running_agent():
+    """A command picker may submit ``/steer…`` verbatim; the ellipsis is not part of the name."""
+    runner, _adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    runner._running_agents[sk] = running_agent
+
+    result = await runner._handle_message(
+        _make_event("/steer… use ClaudeCode for the independent review")
+    )
+
+    assert result is not None
+    running_agent.steer.assert_called_once()
+    injected = running_agent.steer.call_args.args[0]
+    assert injected.endswith("\n\nuse ClaudeCode for the independent review")
+    running_agent.interrupt.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_steer_agent_without_steer_method_falls_back():
     """If the running agent somehow lacks the steer() method (older build,
     test stub), the handler must not explode — fall back to /queue."""

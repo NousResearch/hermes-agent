@@ -38,7 +38,14 @@ def memory_dir(home: Path, kind: str, user_id: Optional[str]) -> Path:
     return Path(home) / "shared" / MEMORIES
 
 
+_STORE_CLASS: Optional[type] = None
+
+
 def _store_class():
+    """The ``ScopedMemoryStore`` class, built once (on first use, so Hermes imports lazily)."""
+    global _STORE_CLASS
+    if _STORE_CLASS is not None:
+        return _STORE_CLASS
     from tools.memory_tool import MemoryStore
 
     class ScopedMemoryStore(MemoryStore):
@@ -51,7 +58,8 @@ def _store_class():
         def _path_for(self, target: str) -> Path:  # type: ignore[override]
             return self.directory / ("USER.md" if target == "user" else "MEMORY.md")
 
-    return ScopedMemoryStore
+    _STORE_CLASS = ScopedMemoryStore
+    return _STORE_CLASS
 
 
 def scoped_store(directory: Path, *, like: Any = None):

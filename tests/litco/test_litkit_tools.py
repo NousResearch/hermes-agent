@@ -388,3 +388,18 @@ def test_deliver_before_the_file_exists(env, fake):
     assert len(fake.requests) == before  # nothing reached LitKit
     folder = call("litkit_quote_check", path="deliverables")
     assert "is a folder" in folder["error"]
+
+
+def test_native_download_keeps_the_extension_dot(fake, env):
+    d = _id(7)
+    fake.route("GET", rf"/api/documents/{d}", {"doc": {"batesStart": "ABC0001", "fileName": "budget.XLSX"}})
+    fake.route("GET", rf"/api/documents/{d}/native", (200, b"PK"))
+    out = call("litkit_pdf", documentId=d, native=True)
+    assert out["saved"].endswith("natives/ABC0001.XLSX"), out
+
+
+def test_tag_apply_rejects_non_uuid_document_ids_before_any_request(fake, env):
+    for docs in (["../../api/admin"], [_id(1), "not-an-id"]):
+        out = call("litkit_tags", action="apply", tagId=_id(2), documentIds=docs)
+        assert "uuid" in out["error"], out
+    assert not [r for r in fake.requests if "/tags" in r.path or "bulk-tag" in r.path]

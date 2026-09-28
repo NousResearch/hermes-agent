@@ -423,7 +423,7 @@ def litkit_pdf(args: Dict[str, Any]) -> Any:
     stem = safe_segment(meta.get("batesStart") or doc_id)
     if native:
         ext = Path(str(meta.get("fileName") or "")).suffix or ".bin"
-        target = output_path(args.get("dir") or "natives", stem + safe_segment(ext))
+        target = output_path(args.get("dir") or "natives", stem + "." + safe_segment(ext.lstrip(".")))
         info = client.download(f"/api/documents/{doc_id}/native", target)
     else:
         target = output_path(args.get("dir") or "pdfs", stem + ".pdf")
@@ -840,10 +840,14 @@ def litkit_tags(args: Dict[str, Any]) -> Any:
         docs = args.get("documentIds")
         if not isinstance(docs, list) or not docs:
             raise ValueError("documentIds must be a non-empty list")
+        docs = [str(d).strip() for d in docs]
+        bad = [d for d in docs if not _UUID.match(d)]
+        if bad:
+            raise ValueError(f"documentIds must be LitKit ids (uuid); not ids: {bad[:3]}")
         if action == "apply" and len(docs) == 1:
             return client.post(f"/api/documents/{docs[0]}/tags", {"tagId": tag_id, "scope": args.get("scope") or "doc"})
         return client.post(f"/api/matters/{mid}/bulk-tag",
-                           {"tagId": tag_id, "docIds": [str(d) for d in docs][:5000],
+                           {"tagId": tag_id, "docIds": docs[:5000],
                             "action": "add" if action == "apply" else "remove"})
     raise ValueError("action must be list, create, apply or remove")
 

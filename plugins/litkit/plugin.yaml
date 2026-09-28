@@ -31,6 +31,7 @@ provides_tools:
   - litkit_recall
   - litkit_actions
   - litkit_attachment
+  - litco_deliver_local
 requires_env:
   - name: LITCO_INSTANCE_URL
     description: "Base URL of the firm's LitKit instance"

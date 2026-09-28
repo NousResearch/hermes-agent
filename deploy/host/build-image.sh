@@ -49,7 +49,7 @@ SSH_KEY=""
 TAG="litco-host-builder"
 DRY_RUN=false
 
-usage() { sed -n '2,39p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,37p' "${BASH_SOURCE[0]}"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -89,6 +89,7 @@ SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o
 DROPLET_ID="<droplet-id>"
 DROPLET_IP="<droplet-ip>"
 CREATE_ATTEMPTED=false
+BUILDER_DELETED=false
 STEP=0
 
 # plan <description> -- <command...>: print in dry-run, run otherwise.
@@ -107,18 +108,24 @@ plan() {
 cleanup_builder() {
   local rc=$?
   set +e
-  if [[ "$DRY_RUN" == false && "$CREATE_ATTEMPTED" == true && \
-        ( "$DROPLET_ID" == "<droplet-id>" || -z "$DROPLET_ID" ) ]]; then
+  if [[ "$DRY_RUN" == true || "$BUILDER_DELETED" == true ]]; then
+    exit "$rc"
+  fi
+  local ids="" id
+  if [[ -n "$DROPLET_ID" && "$DROPLET_ID" != "<droplet-id>" ]]; then
+    ids="$DROPLET_ID"
+  elif [[ "$CREATE_ATTEMPTED" == true ]]; then
     # The create call died before returning an id (timeout, signal, parse
-    # failure). Find the builder by tag + exact name so it is not orphaned.
-    DROPLET_ID="$(doctl compute droplet list --tag-name "$TAG" --format ID,Name --no-header 2>/dev/null \
-      | awk -v n="$BUILDER" '$2 == n {print $1}' | head -n1)"
+    # failure). Find every builder with this tag and exact name so none is
+    # orphaned.
+    ids="$(doctl compute droplet list --tag-name "$TAG" --format ID,Name --no-header 2>/dev/null \
+      | awk -v n="$BUILDER" '$2 == n {print $1}')"
   fi
-  if [[ "$DRY_RUN" == false && "$DROPLET_ID" != "<droplet-id>" && -n "$DROPLET_ID" ]]; then
-    echo "[build-image] deleting builder ${DROPLET_ID} (exit ${rc})" >&2
-    doctl compute droplet delete "$DROPLET_ID" --force || \
-      echo "[build-image] WARNING: could not delete builder ${DROPLET_ID}; delete it by hand" >&2
-  fi
+  for id in $ids; do
+    echo "[build-image] deleting builder ${id} (exit ${rc})" >&2
+    doctl compute droplet delete "$id" --force || \
+      echo "[build-image] WARNING: could not delete builder ${id}; delete it by hand" >&2
+  done
   exit "$rc"
 }
 trap cleanup_builder EXIT
@@ -191,6 +198,6 @@ plan "snapshot as ${SNAPSHOT}" -- doctl compute droplet-action snapshot "$DROPLE
 plan "delete builder" -- doctl compute droplet delete "$DROPLET_ID" --force
 
 if [[ "$DRY_RUN" == false ]]; then
-  DROPLET_ID=""   # deleted; disarm the trap
+  BUILDER_DELETED=true   # disarm the trap: a clean run neither re-lists nor re-deletes
   echo "[build-image] DONE: ${SNAPSHOT} (litco-agent@${REF})"
 fi

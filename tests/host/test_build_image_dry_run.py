@@ -94,7 +94,7 @@ def test_bad_arguments_fail_before_any_cloud_call(fake_path, args, message):
 def test_script_is_strict_and_traps_builder_cleanup():
     text = SCRIPT.read_text()
     assert "set -euo pipefail" in text
-    assert "trap cleanup_builder EXIT" in text
+    assert "trap cleanup_builder EXIT" in text  # behaviour is covered by the fake-cloud tests below
     assert subprocess.run(["bash", "-n", str(SCRIPT)]).returncode == 0
 
 
@@ -111,12 +111,67 @@ def test_install_script_installs_what_the_image_needs():
     assert ".env" not in text.replace("/etc/litco-agent/env", ""), "install script must not write env files"
 
 
-def test_builder_is_tagged_and_cleanup_survives_signals_and_lost_ids(fake_path):
+
+def test_builder_is_tagged(fake_path):
     out = run(["--version", "v3", "--dry-run"], fake_path["env"])
-    cmds = plan_commands(out.stdout)
-    assert "--tag-names litco-host-builder" in cmds[1]
+    assert "--tag-names litco-host-builder" in plan_commands(out.stdout)[1]
     out = run(["--version", "v3", "--tag", "other-tag", "--dry-run"], fake_path["env"])
     assert "--tag-names other-tag" in plan_commands(out.stdout)[1]
-    text = SCRIPT.read_text()
-    assert "trap 'exit 130' INT" in text and "trap 'exit 143' TERM" in text
-    assert 'droplet list --tag-name "$TAG"' in text
+
+
+FAKE_DOCTL = """#!/bin/sh
+echo "doctl $*" >> "$LOG"
+case "$*" in
+  "compute snapshot list"*) exit 0 ;;
+  "compute droplet create"*) {create} ;;
+  "compute droplet list"*) printf '%s\\n' "123 litco-agent-builder-v3" "124 litco-agent-builder-v3" \\
+                             "999 litkit-prod-1" "555 litco-agent-builder-v3-other" ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+def _fake_cloud(tmp_path, create: str, ssh_ok: bool) -> dict:
+    """doctl/ssh/scp fakes that log every call; the create branch is scripted."""
+    bin_dir = tmp_path / "cloud"
+    bin_dir.mkdir()
+    log = tmp_path / "calls.log"
+    (bin_dir / "doctl").write_text(FAKE_DOCTL.replace("{create}", create))
+    for tool in ("ssh", "scp"):
+        (bin_dir / tool).write_text(f'#!/bin/sh\necho "{tool} $*" >> "$LOG"\nexit {0 if ssh_ok else 1}\n')
+    for exe in bin_dir.iterdir():
+        exe.chmod(0o755)
+    env = dict(os.environ, PATH=f"{bin_dir}:/usr/bin:/bin", LOG=str(log))
+    return {"env": env, "log": log}
+
+
+def _deletes(log: Path) -> list[str]:
+    return re.findall(r"^doctl compute droplet delete (\S+) --force$", log.read_text(), flags=re.M)
+
+
+def test_failed_create_deletes_every_orphan_by_tag_and_exact_name(tmp_path):
+    cloud = _fake_cloud(tmp_path, "exit 1", ssh_ok=True)
+    out = run(["--version", "v3", "--ssh-key", "1"], cloud["env"])
+    assert out.returncode == 1
+    calls = cloud["log"].read_text()
+    assert "doctl compute droplet list --tag-name litco-host-builder" in calls
+    assert _deletes(cloud["log"]) == ["123", "124"]
+
+
+def test_failure_after_create_deletes_the_known_builder_only(tmp_path):
+    cloud = _fake_cloud(tmp_path, 'echo "777 203.0.113.9"', ssh_ok=False)
+    env = dict(cloud["env"])
+    out = subprocess.run(["bash", "-c", 'sleep() { :; }; export -f sleep; exec bash "$0" "$@"', str(SCRIPT),
+                          "--version", "v3", "--ssh-key", "1"], capture_output=True, text=True, env=env)
+    assert out.returncode == 1
+    assert "droplet list" not in cloud["log"].read_text()
+    assert _deletes(cloud["log"]) == ["777"]
+
+
+def test_clean_run_disarms_the_trap_without_relisting(tmp_path):
+    cloud = _fake_cloud(tmp_path, 'echo "777 203.0.113.9"', ssh_ok=True)
+    out = run(["--version", "v3", "--ssh-key", "1"], cloud["env"])
+    assert out.returncode == 0, out.stderr
+    assert "DONE: litco-agent-host-v3" in out.stdout
+    assert "droplet list" not in cloud["log"].read_text()
+    assert _deletes(cloud["log"]) == ["777"]

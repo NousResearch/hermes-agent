@@ -120,6 +120,8 @@ def _hermes_verdict(name: Optional[str], result: Any) -> Tuple[bool, str]:
         from agent.display import _detect_tool_failure
         failed, suffix = _detect_tool_failure(name, result)
     except Exception:
+        logger.warning("litco: Hermes tool-failure classification raised for %s; treating the call as ok",
+                       name, exc_info=True)
         return False, ""
     return bool(failed), str(suffix or "").strip().strip("[]").strip()
 

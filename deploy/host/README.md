@@ -180,17 +180,27 @@ deploy/host/smoke.sh                             # needs a Docker daemon
 
 The model is a stub OpenAI-compatible server inside the container (`smoke/stub_model.py`), so the turn runs through the real gateway, the `litco_turn` platform, `HermesTurnRunner`, and `AIAgent`. The unit tests in `tests/litco/` already cover the turn server with the fake runner.
 
-## Not verified
+## What the first cloud build verified, and what it did not
 
-The first cloud build ran on 2026-09-28, and `BUILD_LOG.md` records it. `build-image.sh`, the droplet-only install steps, and `cloud-init clean` are now verified: a droplet booted from the snapshot ran cloud-init fresh. The rest of this list is still open unless `BUILD_LOG.md` says otherwise.
+The first cloud build ran on 2026-09-28. `BUILD_LOG.md` records it with the snapshot id, times and cost.
 
-- `install-host.sh` has run only in an arm64 Ubuntu 24.04 container with `--container`. The droplet-only steps have never run: the Tailscale install, `loginctl enable-linger`, fail2ban, unattended-upgrades, the sshd drop-in with `sshd -t`, persistent journald, and the x86_64 package set.
-- cloud-init on a real droplet has not run. That covers `write_files` with `b64`, the hostname, `tailscale up --auth-key=file:` (the `file:` form needs a recent Tailscale), ufw on a real kernel, and the restart ordering. The rendered YAML is parsed in tests, not by cloud-init.
-- `cloud-init clean --logs --machine-id` before the snapshot, and whether droplets from the snapshot then run their user-data, is unverified. That exact failure made LitKit's first worker image boot useless in July 2026.
+**Verified on a real x86_64 droplet.** A second droplet booted from the snapshot with no user-data, and these checks passed on it:
+
+- `build-image.sh` ran end to end: the doctl flags, the SSH wait, the install, the snapshot, and the builder delete.
+- `install-host.sh` ran outside a container on the x86_64 package set. The droplet-only steps ran: the Tailscale install (installed, not joined), `loginctl enable-linger hermes` (`Linger=yes`), fail2ban and unattended-upgrades (both active), and the sshd drop-in (`sshd -t` passes).
+- `cloud-init clean --logs --machine-id` worked. A droplet from the snapshot got a new machine id, and cloud-init applied its hostname and SSH key. So droplets from this image process their user-data.
+- The unit is enabled and does not start without `/etc/litco-agent/env` (`ConditionResult=no`). No secret is in the image.
+
+**Not verified:**
+
+- Matter user-data on a real droplet has not run. That covers `write_files` with `b64`, the `matter-<shortid>` hostname, `tailscale up --auth-key=file:` (the `file:` form needs a recent Tailscale), the ufw reset on a real kernel, the restart ordering, and the gateway answering `/health` on a droplet. The rendered YAML is parsed in tests, not by cloud-init.
+- Persistent journald was not checked on the droplet.
+- The DigitalOcean monitoring agent showed `inactive` about a minute after boot, while cloud-init was still running. Whether it reports later is unchecked.
 - The allowlist egress policy has never been applied anywhere.
-- Linger and the `user@10000.service` ordering: in the container the user manager fails to start (no logind), and the unit runs anyway. Cron jobs that need `systemd-run --user` are untested.
+- Linger is on, but nothing has run through hermes's user manager. Cron jobs that need `systemd-run --user` are untested.
 - A real model provider. The smoke turn used the stub model, not a provider key.
-- The browser tool end to end through a model's tool call. The smoke renders a page with the same Chromium binary but does not drive `agent-browser` from a turn.
+- The browser tool end to end through a model's tool call. The container smoke renders a page with the same Chromium binary but does not drive `agent-browser` from a turn.
 - The pending-approval behavior on `litco_turn`, which comes from reading the code.
 - Native Slack and Telegram through `channelEnv`.
 - The 100 GB block volume for productions (pilot section 5) is not attached or mounted by this tooling. The control plane or a later cloud-init block has to do that.
+- The control plane's `s-4vcpu-8gb` size has not booted this image, though the snapshot's 80 GB minimum disk fits it.

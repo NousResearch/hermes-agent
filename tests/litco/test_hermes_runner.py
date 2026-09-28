@@ -273,3 +273,24 @@ def test_memory_off_stays_off(runner, tmp_path, monkeypatch):
     monkeypatch.setattr(runner, "_build_agent", build)
     runner.run(_ctx(tmp_path, kind="dm", user_id="u1")[0])
     assert holder["agent"]._memory_store is None
+
+
+def test_verdict_logs_when_hermes_classification_raises(monkeypatch, caplog):
+    import agent.display as display
+
+    def boom(name, result):
+        raise RuntimeError("classifier broke")
+
+    monkeypatch.setattr(display, "_detect_tool_failure", boom)
+    with caplog.at_level("WARNING", logger="litco.hermes_runner"):
+        assert hermes_runner._hermes_verdict("terminal", "{}") == (False, "")
+    assert any("classification raised for terminal" in r.getMessage() and r.exc_info for r in caplog.records)
+
+
+def test_scoped_memory_store_class_is_built_once(tmp_path):
+    from litco import memory_scope
+
+    a = memory_scope.scoped_store(tmp_path / "a")
+    b = memory_scope.scoped_store(tmp_path / "b")
+    assert type(a) is type(b) is memory_scope._store_class()
+    assert a.directory != b.directory

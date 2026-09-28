@@ -754,6 +754,17 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (45, _migrate_to_45),
     # 45 → 46: legacy editor `disabled: true` on MCP servers becomes `enabled: false` (see _migrate_to_46).
     (46, _migrate_to_46),
+    # 46 → 47: compression.threshold_tokens defaults back to null (ratio-only). The briefly shipped
+    # 256000 default was copied into config.yaml by the template seeder and `doctor --fix`, where it
+    # reads as a user choice and keeps capping 1M-window models at 256K. Drop only that exact value;
+    # any other explicit cap, and an explicit null, are preserved.
+    (47, _rewrite_stale_default(
+        section="compression", key="threshold_tokens", old=256000, new=None,
+        added="removed compression.threshold_tokens: 256000 (the old default)",
+        message=(
+            "  ✓ Removed compression.threshold_tokens: 256000 — the old default. Compaction "
+            "follows compression.threshold (50% of the window) again. Set threshold_tokens "
+            "to a token count to cap it on purpose."))),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or

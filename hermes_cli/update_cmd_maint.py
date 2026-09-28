@@ -889,12 +889,13 @@ def _refresh_cua_driver_after_update() -> None:
 
 
 def _install_default_tools_after_update() -> None:
-    """Give an existing install the optional default PM tools (agent-browser + Chromium).
+    """Give the install its optional default tools: the PM defaults (agent-browser +
+    Chromium, cua-driver). The Browser Use CLI engine (browser-harness) is a venv dependency.
 
-    A source update re-syncs only the venv, so a tool that became a default after
-    this install was created would never arrive and browser tools would stay
-    missing. The installers' PM stage runs the same selection. Declined packages
-    stay declined (pm/defaults.py). A failed download warns and never fails the update.
+    Runs at the end of both the installers (via the source completion) and
+    ``hermes update``: a source update re-syncs only the venv, so a tool that became
+    a default after this install was created would never arrive otherwise. Declined
+    packages stay declined (pm/defaults.py). A failed download warns and never fails.
     """
     import pm
     from pm.defaults import default_packages
@@ -909,7 +910,7 @@ def _install_default_tools_after_update() -> None:
     for name in default_packages(Lockfile(lockfile_path()).names()):
         if pm.installed_package(name) is not None:
             continue
-        print(f"\n→ Installing {name} (browser tools; opt out with `hermes pm install --without {name}`)...")
+        print(f"\n→ Installing {name} (default tool; opt out with `hermes pm install --without {name}`)...")
         try:
             pm.ensure(name, explicit=True)
         except (pm.InstallError, OSError) as exc:

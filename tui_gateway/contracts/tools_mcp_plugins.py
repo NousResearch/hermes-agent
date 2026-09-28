@@ -751,6 +751,8 @@ class PluginsManageResult(Result):
     missing_env: list[str] | None = None
     # ``install`` → the manifest's ``python_dependencies`` the installer applied (``[]`` when none).
     python_dependencies: list[str] | None = None
+    # ``install`` from the catalog → the entry's informational ``known_issues`` (``[]`` when none).
+    known_issues: list[str] | None = None
     after_install_path: str | None = None
     enabled: bool | None = None
     sha: str | None = None

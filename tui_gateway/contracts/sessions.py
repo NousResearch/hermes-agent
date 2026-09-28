@@ -181,6 +181,9 @@ class SessionResumeParams(SessionParams):
     omit_messages: bool = False
     eager_build: bool = False
     close_on_disconnect: bool = False
+    # False: render image parts as "[image]" instead of their data URIs — a remote client reads a
+    # transcript in kilobytes instead of re-transmitting every stored attachment (#116511).
+    inline_images: bool = True
 
 
 class SessionResumeResult(LiveSessionSnapshot):
@@ -320,6 +323,24 @@ class SessionSetHiddenResult(Result):
 
 method("session.set_hidden", params=SessionSetHiddenParams, result=SessionSetHiddenResult,
        doc="Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage.")
+
+
+class SessionArchiveParams(Params):
+    """``session_id`` (or its ``session_key`` alias) is a live runtime id first, else a stored id / key / title."""
+
+    session_id: str | None = None
+    session_key: str | None = None
+    archived: bool = True
+    profile: str | None = None
+
+
+class SessionArchiveResult(Result):
+    archived: bool
+    session_key: str
+
+
+method("session.archive", params=SessionArchiveParams, result=SessionArchiveResult,
+       doc="Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity.")
 
 
 class SessionWorkspaceMoveParams(ProfileParams):

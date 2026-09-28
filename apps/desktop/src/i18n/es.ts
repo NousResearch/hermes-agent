@@ -685,6 +685,8 @@ export const esOverrides = {
       'composer.focus': 'Enfocar compositor',
       'composer.modelPicker': 'Abrir selector de modelo',
       'composer.voice': 'Iniciar / detener conversación por voz',
+      'composer.reasoningUp': 'Subir nivel de razonamiento',
+      'composer.reasoningDown': 'Bajar nivel de razonamiento',
       'view.toggleSidebar': 'Alternar barra lateral de sesiones',
       'view.cycleSidebarGrouping': 'Cambiar la agrupación de sesiones',
       'view.toggleRightSidebar': 'Alternar explorador de archivos',
@@ -2045,6 +2047,8 @@ export const esOverrides = {
       provider: 'Proveedor',
       model: 'Modelo',
       applying: 'Aplicando...',
+      mainAppliedTitle: 'Modelo principal actualizado',
+      mainAppliedMessage: model => `Las sesiones nuevas usarán ${model}.`,
       defaultsLabel: 'Valores predeterminados',
       reasoning: 'Razonamiento',
       reasoningOff: 'Desactivado',
@@ -5456,8 +5460,9 @@ export const esOverrides = {
             `${provider} devolvió un error del servidor. Reinténtalo en un momento o cambia de proveedor.`
         },
         timeout: {
-          title: 'Se agotó el tiempo de la respuesta',
-          body: (provider: string) => `${provider} no respondió a tiempo. Reinténtalo para enviarlo de nuevo.`
+          title: 'No se pudo conectar con el servicio de IA',
+          body: (provider: string) =>
+            `No se pudo conectar con ${provider} o no respondió a tiempo. Revisa tu conexión a internet y vuelve a intentarlo.`
         },
         stream_drop: {
           title: 'La respuesta se cortó',

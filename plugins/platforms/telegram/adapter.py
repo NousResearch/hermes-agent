@@ -6243,6 +6243,12 @@ class TelegramAdapter(BasePlatformAdapter):
             "broker_image_ingress_timeout_seconds", 30.0, min_value=0.1, max_value=300.0)
         return value if math.isfinite(value) else 30.0
 
+    def _broker_image_schema(self) -> str:
+        """Return the explicitly configured broker vision schema."""
+        value = (getattr(self.config, "extra", None) or {}).get(
+            "broker_image_schema", "receipt")
+        return value.strip() if value in {"receipt", "image_description"} else "receipt"
+
     async def _handoff_broker_image(self, msg: Any, cached_path: str, mime: str, kind: str) -> str:
         """Offer a cached Telegram image to the broker and return its durable path on success.
 
@@ -6265,6 +6271,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "user_id": getattr(sender, "id", None),
             "caption": getattr(msg, "caption", None) or "",
             "media_group_id": getattr(msg, "media_group_id", None),
+            "schema": self._broker_image_schema(),
         }
         process = None
         try:

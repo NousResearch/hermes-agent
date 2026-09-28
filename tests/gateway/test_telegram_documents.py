@@ -302,6 +302,16 @@ class TestBrokerImageIngress:
         adapter._route_photo_event = AsyncMock()
         return adapter
 
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [(None, "receipt"), ("image_description", "image_description"), ("invalid", "receipt")],
+    )
+    def test_broker_image_schema_is_explicit_and_validated(self, configured, expected):
+        extra = {} if configured is None else {"broker_image_schema": configured}
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token", extra=extra))
+
+        assert adapter._broker_image_schema() == expected
+
     @pytest.mark.asyncio
     async def test_photo_is_handed_to_broker_and_uses_durable_path(self, tmp_path):
         cached = tmp_path / "hermes-cache.jpg"
@@ -339,6 +349,7 @@ class TestBrokerImageIngress:
             "user_id": 1,
             "caption": "check this",
             "media_group_id": None,
+            "schema": "receipt",
         }
 
     @pytest.mark.asyncio

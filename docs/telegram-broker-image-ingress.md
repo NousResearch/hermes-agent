@@ -16,6 +16,7 @@ platforms:
         - /absolute/path/to/gtx-image-ingress
         - --json-stdin
       broker_image_ingress_timeout_seconds: 30
+      broker_image_schema: receipt
 ```
 
 The command is executed without a shell. It receives one JSON object on stdin:
@@ -29,7 +30,8 @@ The command is executed without a shell. It receives one JSON object on stdin:
   "message_id": 456,
   "user_id": 789,
   "caption": "optional caption",
-  "media_group_id": null
+  "media_group_id": null,
+  "schema": "receipt"
 }
 ```
 

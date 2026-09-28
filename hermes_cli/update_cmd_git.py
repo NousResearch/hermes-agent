@@ -377,14 +377,15 @@ class UpstreamTargetBroken(Exception):
 
 def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: bool = False, input_fn=None,
                                   checkout_move=None) -> bool:
-    """Offer to add ``upstream``, compare origin/main vs upstream/main, ff-pull when strictly behind, then push origin.
+    """Offer to add ``upstream``, compare HEAD vs upstream/main, rebase local commits onto upstream/main
+    (falling back to an ff-merge when the fork is strictly behind).
 
-    Returns True only when origin/main was actually verified against upstream/main; False when the check never
+    Returns True only when upstream/main was actually verified against HEAD; False when the check never
     happened, so the caller never reports "up to date" on an origin-only compare. Fetches only upstream/main:
     a bare fetch drags in thousands of auto-generated branches. ``UpstreamTargetBroken`` when the
     upstream commit fails the startup syntax check: nothing moved, the caller rolls the update back.
 
-    ``checkout_move(target)`` is the caller's context for the one tree write (the merge): the
+    ``checkout_move(target)`` is the caller's context for the one tree write (the merge or rebase): the
     paused gateways' tree gate is bound to *target* before git writes a file.
 
     See #97052.
@@ -403,26 +404,32 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
         return False
     # One commit for the whole sync (m2): the short `upstream/main` also names a local branch of
-    # that name, so the count and the merge could each see a different commit.
+    # that name, so the count and the move could each see a different commit.
     upstream = _git_stdout(git_cmd, ["rev-parse", "-q", "--verify", "refs/remotes/upstream/main^{commit}"], cwd)
-    origin_ahead = _count_commits_between(git_cmd, cwd, upstream, "refs/remotes/origin/main") if upstream else -1
-    upstream_ahead = _count_commits_between(git_cmd, cwd, "refs/remotes/origin/main", upstream) if upstream else -1
-    if origin_ahead < 0 or upstream_ahead < 0:
+    # Count from HEAD, not origin/main: the fork's remote-tracking ref goes stale
+    # whenever local commits are never pushed, which hid real drift behind a false
+    # "up to date" (maintainer repro on #101127).
+    local_ahead = _count_commits_between(git_cmd, cwd, upstream, "HEAD") if upstream else -1
+    upstream_ahead = _count_commits_between(git_cmd, cwd, "HEAD", upstream) if upstream else -1
+    if local_ahead < 0 or upstream_ahead < 0:
         print("  ✗ Could not compare branches. Skipping upstream sync.")
         return False
-    if origin_ahead > 0:
+    if upstream_ahead == 0:
         print(
-            f"\nℹ Your fork has {origin_ahead} commit(s) not on upstream.\n"
-            "  Skipping upstream sync to preserve your changes.\n"
-            "  If you want to merge upstream changes, run:\n    git pull upstream main"
+            f"  ✓ Upstream is up to date ({local_ahead} local commit(s) ahead)"
+            if local_ahead > 0
+            else "  ✓ Fork is up to date with upstream"
         )
         return True
-    if upstream_ahead == 0:
-        print("  ✓ Fork is up to date with upstream")
-        return True
-    print(f"\n→ Fork is {upstream_ahead} commit(s) behind upstream\n→ Pulling from upstream...")
+    if local_ahead > 0:
+        print(
+            f"\n→ Upstream has {upstream_ahead} new commit(s); local branch has {local_ahead} commit(s) not on upstream.\n"
+            "→ Rebasing local changes onto upstream..."
+        )
+    else:
+        print(f"\n→ Fork is {upstream_ahead} commit(s) behind upstream\n→ Pulling from upstream...")
     # A tree move like the pull itself: the marker and the owed tail are armed before git writes,
-    # and the just-fetched ref is merged (a second `git pull` fetch could move past the marker's target).
+    # and the just-fetched ref is moved to (a second `git pull` fetch could move past the marker's target).
     from hermes_cli import update_cmd_commit as _commit
     from hermes_cli._early_recovery import interrupted_pull_marker, is_object_id
     pre = _git_stdout(git_cmd, ["rev-parse", "HEAD"], cwd)
@@ -430,7 +437,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
         # The marker's ``pre`` is what a killed move is restored to: never arm ``pre=``.
         print("  ✗ Could not resolve HEAD. Skipping upstream sync.")
         return False
-    target = upstream  # the counted commit is the marker's target and the merge's (m2)
+    target = upstream  # the counted commit is the marker's target and the move's (m2)
     # Judged BEFORE the move, like the origin target's preflight: the marker goes on git's exit 0,
     # so a broken target must never land on the strength of the caller's later guard (review G1).
     from hermes_cli.update_cmd import _UPDATE_CRITICAL_FILES
@@ -438,34 +445,64 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
         raise UpstreamTargetBroken(target, *broken)
     refused = _commit.arm_commit_point(git_cmd, cwd, _commit.debt_sha_for_move(pre, target), pre=pre,
                                        target=target, stash=None)
-    try:
-        # The fetch above already brought upstream/main: a local fast-forward (no network, so no
-        # credential helper is started under the checkout lock fd a mutator inherits) to the
-        # very commit counted above.
-        if refused:
-            raise subprocess.CalledProcessError(1, "merge", stderr=refused)  # no marker, no move
-        with (checkout_move or _no_move)(upstream):
-            run_git(git_cmd, ["merge", "--ff-only", upstream], cwd=cwd, check=True, **_no_prompt_git_kwargs())
-    except (OSError, subprocess.SubprocessError) as exc:  # CustodyRefused is an OSError; a timeout too
-        if refused or _commit.settle_failed_tree_move(cwd):
-            # Back at ``pre``; that is still new code when the origin pull moved first, and disarm
-            # then owes the restart for it instead of ``target`` (it hands obligations back only at
-            # the run's start commit).
+    if local_ahead > 0:
+        # Diverged histories cannot fast-forward: rebase the local commits onto the just-fetched
+        # upstream instead of failing (#101127). The rebase names the fetched commit directly —
+        # no network, so no credential helper starts under the checkout lock fd a mutator inherits.
+        try:
+            if refused:
+                raise subprocess.CalledProcessError(1, "rebase", stderr=refused)  # no marker, no move
+            with (checkout_move or _no_move)(upstream):
+                run_git(git_cmd, ["rebase", upstream], cwd=cwd, check=True, **_no_prompt_git_kwargs())
+        except (OSError, subprocess.SubprocessError) as exc:  # CustodyRefused is an OSError; a timeout too
+            # Never leave the checkout mid-rebase: abort back to the pre-sync state.
+            with suppress(Exception):
+                run_git(git_cmd, ["rebase", "--abort"], cwd=cwd, check=False, **_no_prompt_git_kwargs())
+            if refused or _commit.settle_failed_tree_move(cwd):
+                _commit.disarm_commit_obligations()
+            else:
+                _commit.owe_restore_of(cwd, pre)  # torn under its marker: the restore lands on ``pre``
+            print("  ⚠ Conflicts detected during upstream rebase. Rebase aborted.\n"
+                  "    To resolve manually, run:\n      git pull --rebase upstream main")
+            return False
+        interrupted_pull_marker(cwd).unlink(missing_ok=True)  # git exited 0: whole at what it landed on
+        if not _git_ok(git_cmd, ["merge-base", "--is-ancestor", upstream, "HEAD"], cwd):
+            # A rebase lands on a NEW commit, never the counted one (O3's check, here): owed for the
+            # HEAD it is on, or handed back at the run's start commit; the caller's HEAD check
+            # refuses the update.
             _commit.disarm_commit_obligations()
-        else:
-            _commit.owe_restore_of(cwd, pre)  # torn under its marker: the restore lands on ``pre``
-        print("  ✗ Failed to pull from upstream. You may need to resolve conflicts manually.")
-        if detail := (getattr(exc, "stderr", None) or ("" if isinstance(exc, subprocess.CalledProcessError) else str(exc))):
-            print(f"    ({detail})")
-        return False
-    interrupted_pull_marker(cwd).unlink(missing_ok=True)  # git exited 0: whole at what it landed on
-    if (landed := _git_stdout(git_cmd, ["rev-parse", "-q", "--verify", "HEAD"], cwd)) != upstream:
-        # Not the commit the debt was armed for (O3's check, here): owed for the HEAD it is on, or
-        # handed back at the run's start commit; the caller's HEAD check refuses the update.
-        _commit.disarm_commit_obligations()
-        print(f"  ✗ HEAD is on {(landed or '?')[:10]} after the upstream merge, not {upstream[:10]}.")
-        return False
-    print("  ✓ Updated from upstream")
+            print(f"  ✗ HEAD does not contain {upstream[:10]} after the upstream rebase.")
+            return False
+        print("  ✓ Successfully rebased local changes on top of upstream")
+    else:
+        try:
+            # The fetch above already brought upstream/main: a local fast-forward (no network, so no
+            # credential helper is started under the checkout lock fd a mutator inherits) to the
+            # very commit counted above.
+            if refused:
+                raise subprocess.CalledProcessError(1, "merge", stderr=refused)  # no marker, no move
+            with (checkout_move or _no_move)(upstream):
+                run_git(git_cmd, ["merge", "--ff-only", upstream], cwd=cwd, check=True, **_no_prompt_git_kwargs())
+        except (OSError, subprocess.SubprocessError) as exc:  # CustodyRefused is an OSError; a timeout too
+            if refused or _commit.settle_failed_tree_move(cwd):
+                # Back at ``pre``; that is still new code when the origin pull moved first, and disarm
+                # then owes the restart for it instead of ``target`` (it hands obligations back only at
+                # the run's start commit).
+                _commit.disarm_commit_obligations()
+            else:
+                _commit.owe_restore_of(cwd, pre)  # torn under its marker: the restore lands on ``pre``
+            print("  ✗ Failed to pull from upstream. You may need to resolve conflicts manually.")
+            if detail := (getattr(exc, "stderr", None) or ("" if isinstance(exc, subprocess.CalledProcessError) else str(exc))):
+                print(f"    ({detail})")
+            return False
+        interrupted_pull_marker(cwd).unlink(missing_ok=True)  # git exited 0: whole at what it landed on
+        if (landed := _git_stdout(git_cmd, ["rev-parse", "-q", "--verify", "HEAD"], cwd)) != upstream:
+            # Not the commit the debt was armed for (O3's check, here): owed for the HEAD it is on, or
+            # handed back at the run's start commit; the caller's HEAD check refuses the update.
+            _commit.disarm_commit_obligations()
+            print(f"  ✗ HEAD is on {(landed or '?')[:10]} after the upstream merge, not {upstream[:10]}.")
+            return False
+        print("  ✓ Updated from upstream")
     # The fork push waits for a validated update: ``_push_synced_fork`` after the syntax guard.
     return True
 

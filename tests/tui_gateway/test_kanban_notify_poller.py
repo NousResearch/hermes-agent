@@ -249,6 +249,33 @@ class TestFormatKanbanEventText:
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
 
+    def test_orchestration_wake_kinds_are_announced(self):
+        """block_loop_detected / review_requested / changes_requested wake the origin on
+        gateway platforms; Desktop sessions must get a notification for them too (#82597, #99436)."""
+        cases = {
+            "block_loop_detected": ({"kind": "capability", "reason": "same wall twice"}, "TRIAGE"),
+            "review_requested": ({"summary": "candidate ready"}, "ready for review"),
+            "changes_requested": ({"reason": "missing test"}, "requested changes"),
+        }
+        for kind, (payload, needle) in cases.items():
+            ev = SimpleNamespace(kind=kind, payload=payload)
+            text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+            assert text is not None, kind
+            assert "t_abc123" in text and needle in text, (kind, text)
+
+    def test_block_loop_needs_input_names_a_human_decision(self):
+        ev = SimpleNamespace(kind="block_loop_detected", payload={"kind": "needs_input"})
+        assert "needs a human decision" in _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+
+
+def test_tui_poller_claims_every_gateway_wake_kind():
+    """The TUI poller serves platform='tui' subscriptions exclusively, so any kind that wakes the
+    origin on the gateway but is missing here is silently undeliverable to Desktop sessions."""
+    from gateway.kanban_watchers_notifier import _WAKE_KINDS
+    from tui_gateway.session_notifications import _KANBAN_NOTIFY_KINDS
+
+    assert not set(_WAKE_KINDS) - set(_KANBAN_NOTIFY_KINDS)
+
 
 class TestNotificationPollerLoopKanbanWiring:
     """Drive a real TUI subscription through ``_notification_poller_loop``.

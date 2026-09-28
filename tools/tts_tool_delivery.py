@@ -59,6 +59,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
 ELEVENLABS_MODEL_MAX_TEXT_LENGTH: Dict[str, int] = {
+    "eleven_v4": 10000, "eleven_v4_turbo": 10000,
     "eleven_v3": 5000, "eleven_ttv_v3": 5000,
     "eleven_multilingual_v2": 10000, "eleven_multilingual_v1": 10000,
     "eleven_english_sts_v2": 10000, "eleven_english_sts_v1": 10000,

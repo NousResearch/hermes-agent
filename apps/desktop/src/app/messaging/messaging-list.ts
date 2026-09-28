@@ -39,6 +39,34 @@ const STATUS_ORDER: Record<Exclude<MessagingStatusFilter, 'all'>, number> = {
   inactive: 3
 }
 
+type MessagingQueryToken = {
+  key: 'sort' | 'status'
+  value: string
+}
+
+/** Parse only operators the search grammar recognizes. Unknown key/value pairs
+ * remain literal search text and must survive a dropdown edit. */
+function messagingQueryToken(part: string): MessagingQueryToken | null {
+  const separator = part.indexOf(':')
+
+  if (separator <= 0) {
+    return null
+  }
+
+  const key = part.slice(0, separator).toLowerCase()
+  const value = part.slice(separator + 1).toLowerCase()
+
+  if (key === 'status' && Object.hasOwn(STATUS_ALIASES, value)) {
+    return { key, value }
+  }
+
+  if (key === 'sort' && Object.hasOwn(SORT_ALIASES, value)) {
+    return { key, value }
+  }
+
+  return null
+}
+
 export function messagingStatusFilter(platform: MessagingListPlatform): Exclude<MessagingStatusFilter, 'all'> {
   if (platform.enabled === false) {
     return 'inactive'
@@ -65,21 +93,16 @@ export function parseMessagingQuery(query: string): {
   const textParts: string[] = []
 
   for (const part of query.trim().split(/\s+/).filter(Boolean)) {
-    const separator = part.indexOf(':')
+    const operator = messagingQueryToken(part)
 
-    if (separator > 0) {
-      const key = part.slice(0, separator).toLowerCase()
-      const value = part.slice(separator + 1).toLowerCase()
+    if (operator?.key === 'status') {
+      status = STATUS_ALIASES[operator.value]
+      continue
+    }
 
-      if (key === 'status' && STATUS_ALIASES[value]) {
-        status = STATUS_ALIASES[value]
-        continue
-      }
-
-      if (key === 'sort' && SORT_ALIASES[value]) {
-        sort = SORT_ALIASES[value]
-        continue
-      }
+    if (operator?.key === 'sort') {
+      sort = SORT_ALIASES[operator.value]
+      continue
     }
 
     textParts.push(part)
@@ -94,7 +117,7 @@ export function setMessagingQueryToken(
   value: MessagingSortMode | MessagingStatusFilter
 ): string {
   const parts = query.trim().split(/\s+/).filter(Boolean)
-  const next = parts.filter(part => !part.toLowerCase().startsWith(`${key}:`))
+  const next = parts.filter(part => messagingQueryToken(part)?.key !== key)
   const isDefault = (key === 'status' && value === 'all') || (key === 'sort' && value === 'default')
 
   if (!isDefault) {

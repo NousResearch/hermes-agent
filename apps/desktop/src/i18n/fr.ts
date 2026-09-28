@@ -684,6 +684,8 @@ export const frOverrides = {
       'composer.focus': 'Mettre le focus sur le compositeur',
       'composer.modelPicker': 'Ouvrir le sélecteur de modèle',
       'composer.voice': 'Démarrer / arrêter la conversation vocale',
+      'composer.reasoningUp': 'Augmenter le niveau de raisonnement',
+      'composer.reasoningDown': 'Réduire le niveau de raisonnement',
       'view.toggleSidebar': 'Basculer la barre latérale des sessions',
       'view.cycleSidebarGrouping': 'Changer le regroupement des sessions',
       'view.toggleRightSidebar': "Basculer l'explorateur de fichiers",

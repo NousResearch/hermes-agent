@@ -315,9 +315,7 @@ export function ProfileRail() {
           clientHeight: el.clientWidth,
           scrollHeight: el.scrollWidth,
           scrollTop:
-            getComputedStyle(el).direction === 'rtl'
-              ? el.scrollWidth - el.clientWidth + el.scrollLeft
-              : el.scrollLeft
+            getComputedStyle(el).direction === 'rtl' ? el.scrollWidth - el.clientWidth + el.scrollLeft : el.scrollLeft
         }),
         'x'
       )

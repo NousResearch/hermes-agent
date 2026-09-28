@@ -16,9 +16,11 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
+import { translateNow } from '@/i18n/runtime'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import {
   contributedKeybindHandler,
+  keybindAction,
   PROFILE_SLOT_COUNT,
   SESSION_SLOT_COUNT,
   TAB_SLOT_COUNT
@@ -26,6 +28,7 @@ import {
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
+import { stepReasoningEffort, writeSessionReasoningEffort } from '@/lib/reasoning-step'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
 import {
@@ -45,6 +48,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { notifyError } from '@/store/notifications'
 import { openBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
@@ -57,7 +61,15 @@ import {
 import { toggleProfileRailVisible } from '@/store/profile-rail-prefs'
 import { openFolderAsProject } from '@/store/projects'
 import { toggleReview } from '@/store/review'
-import { $selectedStoredSessionId, setModelPickerOpen } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentReasoningEffort,
+  $defaultReasoningEffort,
+  $selectedStoredSessionId,
+  markComposerSelectionManual,
+  setCurrentReasoningEffort,
+  setModelPickerOpen
+} from '@/store/session'
 import { $focusedStoredSessionId, reopenLastClosedTile } from '@/store/session-states'
 import {
   $switcherOpen,
@@ -99,6 +111,8 @@ import {
 } from '../routes'
 
 export interface KeybindRuntimeDeps {
+  /** Gateway RPC requester for session-scoped model controls (reasoning). */
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /** Open/close the command center overlay (sessions / system / usage). */
   toggleCommandCenter: () => void
   /** Drop to a fresh new-session draft. */
@@ -111,7 +125,9 @@ export interface KeybindRuntimeDeps {
   archiveSelectedSession: () => void
 }
 
-type HandlerMap = Record<string, () => void>
+/** A handler returns `false` to decline the chord (see `passthrough`); any other
+ *  return value (void, a navigate() promise, …) means it ran. */
+type HandlerMap = Record<string, () => unknown>
 
 // Mount once near the top of the app. Owns the single global keydown listener
 // for every rebindable hotkey: it runs the matched action, or — while capture
@@ -142,11 +158,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   }
 
   for (let slot = 1; slot <= PROFILE_SLOT_COUNT; slot += 1) {
-    // Unconditional (#92569): ⌘1…⌘9 are PROFILE switchers, period. The old
-    // tab-first dispatch (activateTreeTabSlot before switchProfileToSlot)
-    // lived inside this handler, so session tabs silently ate the chord and
-    // rebinding could not change the semantics. Positional tab switching
-    // moved to the unbound view.tabSlot.N actions below.
+    // Unconditional: the ⌘1…⌘9 tab dispatch is view.tabSlot.N, which sits
+    // ahead of this action on the same chord and passes through when no tab
+    // strip is eligible (#92569).
     profileSwitchHandlers[`profile.switch.${slot}`] = () => {
       switchProfileToSlot(slot)
     }
@@ -168,18 +182,20 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     }
   }
 
-  // view.tabSlot.N: activate the Nth visible tab in the focused zone's tab
-  // strip. Ships unbound (#92569) — users who want positional tab switching
-  // can assign chords in Settings → Keyboard Shortcuts.
+  // view.tabSlot.N: activate the Nth visible tab of the hovered / focused /
+  // workspace zone (`activateTreeTabSlot`'s ladder). Declines when no rung is
+  // a real tab strip, so the chord falls through to profile.switch.N.
   const tabSlotHandlers: HandlerMap = {}
 
   for (let slot = 1; slot <= TAB_SLOT_COUNT; slot += 1) {
     tabSlotHandlers[`view.tabSlot.${slot}`] = () => {
       const pane = activateTreeTabSlot(slot)
 
-      if (pane) {
-        leavePageForWorkspaceChat(pane)
+      if (!pane) {
+        return false
       }
+
+      leavePageForWorkspaceChat(pane)
     }
   }
 
@@ -208,6 +224,51 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     setTerminalTakeover(false)
   }
 
+  // Reasoning level up/down (#71627): step the ACTIVE session one notch
+  // through off → minimal → … → xhigh (clamped; max/ultra stay behind the
+  // menu). Optimistic store write with rollback, and a monotonic sequence so
+  // a slow earlier response can't revert a newer press.
+  const reasoningRequestSeqRef = useRef(0)
+
+  const stepSessionReasoning = (direction: 1 | -1) => {
+    const sessionId = $activeSessionId.get()
+
+    // No live session: the draft's pick still steps (it ships on the next
+    // session.create); no `config.set` — without a session the RPC falls
+    // back to the persistent profile config and would rewrite the default.
+    const rollback = $currentReasoningEffort.get()
+    const fallback = $defaultReasoningEffort.get() || undefined
+    const next = stepReasoningEffort(rollback, direction, fallback)
+
+    if (next === rollback.trim().toLowerCase()) {
+      return
+    }
+
+    markComposerSelectionManual()
+    setCurrentReasoningEffort(next)
+
+    if (!sessionId) {
+      return
+    }
+
+    const requestSeq = reasoningRequestSeqRef.current + 1
+
+    reasoningRequestSeqRef.current = requestSeq
+
+    void writeSessionReasoningEffort(deps.requestGateway, sessionId, next)
+      .then(value => {
+        if (reasoningRequestSeqRef.current === requestSeq) {
+          setCurrentReasoningEffort(value)
+        }
+      })
+      .catch(error => {
+        if (reasoningRequestSeqRef.current === requestSeq) {
+          setCurrentReasoningEffort(rollback)
+          notifyError(error, translateNow('shell.modelOptions.updateFailed'))
+        }
+      })
+  }
+
   handlersRef.current = {
     'keybinds.openPanel': () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`),
 
@@ -221,6 +282,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     },
     'composer.voice': requestVoiceToggle,
     'composer.dictate': requestComposerDictation,
+    'composer.reasoningUp': () => stepSessionReasoning(1),
+    'composer.reasoningDown': () => stepSessionReasoning(-1),
 
     // On the Settings overlay, ⌘K scopes to settings search; the second press
     // (or Esc) still closes as usual via toggle.
@@ -455,10 +518,10 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      const actionId = $comboIndex.get().get(combo)
+      const actionIds = $comboIndex.get().get(combo)
 
       // Unbound printable → type-to-focus. Bound chords (shift+n, …) win above.
-      if (!actionId) {
+      if (!actionIds) {
         const typeChar = typeToFocusChar(event)
 
         if (typeChar && composerFocusKeysAllowed(event, 'type')) {
@@ -469,33 +532,42 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      if (isEditableTarget(event.target) && !actionAllowedInInput(actionId, combo)) {
-        return
-      }
+      // Actions bound to the chord, in registration order. The first runs; a
+      // `passthrough` action that declines hands the chord to the next.
+      for (const actionId of actionIds) {
+        if (isEditableTarget(event.target) && !actionAllowedInInput(actionId, combo)) {
+          return
+        }
 
-      // Soft `/` / Enter: gated so dialogs/buttons/terminal keep those keys.
-      // Rebound chords fall through to the normal handler.
-      if (actionId === 'composer.focus' && isComposerFocusSoftCombo(combo)) {
-        if (!composerFocusKeysAllowed(event, combo)) {
+        // Soft `/` / Enter: gated so dialogs/buttons/terminal keep those keys.
+        // Rebound chords fall through to the normal handler.
+        if (actionId === 'composer.focus' && isComposerFocusSoftCombo(combo)) {
+          if (!composerFocusKeysAllowed(event, combo)) {
+            return
+          }
+
+          event.preventDefault()
+          requestComposerFocus('active', { typeChar: combo === '/' ? '/' : undefined })
+
+          return
+        }
+
+        // Built-in handlers first (they carry React context); contributed
+        // actions bring their own `run` through the registry.
+        const handler = handlersRef.current[actionId] ?? contributedKeybindHandler(actionId)
+
+        if (!handler) {
           return
         }
 
         event.preventDefault()
-        requestComposerFocus('active', { typeChar: combo === '/' ? '/' : undefined })
+
+        if (handler() === false && keybindAction(actionId)?.passthrough) {
+          continue
+        }
 
         return
       }
-
-      // Built-in handlers first (they carry React context); contributed
-      // actions bring their own `run` through the registry.
-      const handler = handlersRef.current[actionId] ?? contributedKeybindHandler(actionId)
-
-      if (!handler) {
-        return
-      }
-
-      event.preventDefault()
-      handler()
     }
 
     // Mac-app-switcher commit: lifting Ctrl with the overlay open lands on the

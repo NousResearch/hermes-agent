@@ -88,6 +88,30 @@ or the worker runs with no scope and fails closed (or writes into the launch pro
 Platform plugins never mutate `os.environ`: YAML goes to `PlatformConfig.extra` through
 `_shared.apply_yaml_bridge`, gates through `platform_gate_env` (`gateway/AGENTS.md`).
 
+## Plugin host boundary (`plugins.isolation: host`)
+
+`in_process` (default) imports user plugins into Hermes. `host` runs every non-bundled plugin in a
+per-profile host process (`hermes_cli/plugin_host.py` parent side, `plugin_host_child.py` child,
+`plugin_host_wire.py` framed JSON protocol). The child hands plugins a `RemotePluginContext`; Hermes
+registers proxies (tools, hooks, commands, provider objects as subclasses of the ABC it checks).
+Invariants:
+
+- **Every user-code import path routes to the host or refuses** — general plugins
+  (`plugins_loader`), memory / context engine / cron providers (`load_instance`), model-provider
+  profiles (`plugin_host_profiles.py`: credential-free extraction cached by file fingerprint, because
+  discovery runs while `hermes_cli.config`/`auth` import; overrides run by name in the host), dashboard
+  APIs (ASGI bridge). `plugins/plugin_loader.load_plugin_module` refuses any other synthetic-namespace
+  import. A new user-code loader MUST do the same.
+- **What cannot cross is one table:** `plugin_isolation.HOST_UNSUPPORTED_CTX_METHODS` (live gateway /
+  adapter objects). The runtime refusal and the static audit (`plugin_isolation_audit.py`, shown by
+  `hermes plugins validate/show`) both read it; `evals/plugin_isolation/audit_catalog.py` re-measures
+  the catalog.
+- **A host never spawns a host** (`HERMES_PLUGIN_HOST_PROCESS=1` makes `isolation_mode()` in-process
+  there) and must not start while a module import holds its lock (model-provider discovery is the
+  known case).
+- Plugins stay tenant-unaware: no new API, same `ctx`. Per-profile env comes from
+  `served_profile_child_env`, so a host sees only its own profile's secrets.
+
 ## Native plugin compatibility contract (summary — canonical text in the docs page)
 
 Compatibility is a **behavior contract**, not a monolithic `PLUGIN_API_VERSION`, a manifest-wide

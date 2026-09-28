@@ -8,7 +8,7 @@
 #   -IncludeDesktop       add the desktop build stage
 #   -ProtocolVersion      print the stage protocol version
 #   -SkipBrowser          do not install the browser tools (agent-browser +
-#                         Chromium, Browser Use CLI); remembered by later
+#                         Chromium); remembered by later
 #                         installs and `hermes update`, undone by
 #                         `hermes pm install agent-browser`
 #   -SkipComputerUse      do not install the computer-use driver (cua-driver);

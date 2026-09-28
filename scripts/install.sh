@@ -65,8 +65,8 @@ while [ $# -gt 0 ]; do
             echo "                  [--non-interactive] [--include-desktop] [--verbose]"
             echo "                  [--skip-browser] [--skip-computer-use]"
             echo
-            echo "  --skip-browser  Do not install the browser tools (agent-browser + Chromium,"
-            echo "                  Browser Use CLI). Alias: --no-playwright. Remembered by later"
+            echo "  --skip-browser  Do not install the browser tools (agent-browser + Chromium)."
+            echo "                  Alias: --no-playwright. Remembered by later"
             echo "                  installs and 'hermes update'; undo with 'hermes pm install agent-browser'."
             echo "  --skip-computer-use"
             echo "                  Do not install the computer-use driver (cua-driver). Remembered"

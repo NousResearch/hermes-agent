@@ -19,7 +19,6 @@ import shutil
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.network import _netedge as N
@@ -94,13 +93,7 @@ def test_update_with_corporate_root_only_in_ssl_cert_file(inst):
         r = inst.hermes("update", "--yes", edge=edge, corporate_root=False, env={"SSL_CERT_FILE": str(bundle)})
     finally:
         edge.close()
-    with known_failure(
-        r"unable to access 'https://github\.com/NousResearch/hermes-agent\.git/': "
-        r"(SSL certificate|server certificate verification failed|SSL certificate problem)",
-        "gated on #124654: the updater's git fetch ignores SSL_CERT_FILE, so a corporate root "
-        "supplied that way passes the channel read and then fails at `Fetching updates`",
-    ):
-        _assert_updated_through_proxy(inst, r, new)
+    _assert_updated_through_proxy(inst, r, new)
 
 
 def test_tunnel_cut_to_channel_host_fails_fast_and_changes_nothing(inst):

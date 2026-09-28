@@ -268,8 +268,9 @@ def _finish_dashboard_update_cleanup(
     stop_for_relaunch()
 
 
-def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> None:
-    """Refresh managed dashboards or stop stale manual ones after an update.
+def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None = None) -> set[int]:
+    """Refresh managed dashboards or stop stale manual ones after an update; returns the PIDs it
+    stopped and could not bring back, so the receipt records them ``failed`` (#109290).
 
     *already_restarted_units*: systemd unit names (no ``.service``) the fleet-restart loop
     already restarted, so a Serve-only install isn't restarted a second time here.
@@ -295,14 +296,16 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
         print(f"⚠ Could not refresh running dashboard/serve process(es): {exc}")
         print("  If one is still running, restart it so it serves the updated code:")
         print("    hermes dashboard --port <port>   (or: systemctl --user restart hermes-dashboard)")
-        return
-    if not stop_result.get("unrecovered"):
-        return
+        return set()
+    unrecovered = {int(pid) for pid in stop_result.get("unrecovered") or ()}
+    if not unrecovered:
+        return unrecovered
 
     print()
     print("⚠ A web dashboard/serve process was stopped during update and could not be auto-restarted.")
     print("  Re-launch it when you want the web UI back:")
     print("    hermes dashboard --port <port>")
+    return unrecovered
 
 
 def _print_update_completion(message: str) -> None:
@@ -888,34 +891,9 @@ def _refresh_cua_driver_after_update() -> None:
         pm.ensure("cua-driver", explicit=True)
 
 
-#: Bound for the Browser Use CLI provision inside install/update (well under the
-#: 600s interactive default - an update must not stall on one optional download).
-_BROWSER_USE_CLI_UPDATE_TIMEOUT_S = 180
-
-
-def _ensure_browser_use_cli_after_update() -> None:
-    """Provision the Browser Use CLI, the default browser driver.
-
-    It is a PM tool environment, not a store package, so ``Package.default`` cannot
-    carry it; without this step an unset ``browser.backend`` silently downgrades to
-    the built-in tools. ``off`` and Camofox never use it, and declining the browser
-    tools (``--skip-browser``) declines it too.
-    """
-    from pm.defaults import declined
-    from tools.browser_use_cli import _BACKEND_KEY, _camofox_active, _find_cli, get_browser_backend
-
-    if "agent-browser" in declined() or get_browser_backend() not in ("", _BACKEND_KEY):
-        return
-    if _camofox_active() or _find_cli() is not None:
-        return
-    from hermes_cli.tools_config_post_setup import _ensure_browser_use_cli
-
-    _ensure_browser_use_cli(timeout_s=_BROWSER_USE_CLI_UPDATE_TIMEOUT_S)
-
-
 def _install_default_tools_after_update() -> None:
     """Give the install its optional default tools: the PM defaults (agent-browser +
-    Chromium, cua-driver) and the Browser Use CLI.
+    Chromium, cua-driver). The Browser Use CLI engine (browser-harness) is a venv dependency.
 
     Runs at the end of both the installers (via the source completion) and
     ``hermes update``: a source update re-syncs only the venv, so a tool that became
@@ -941,7 +919,6 @@ def _install_default_tools_after_update() -> None:
         except (pm.InstallError, OSError) as exc:
             print(f"  ⚠ {name} was not installed: {exc}")
             print(f"    Retry with: hermes pm install {name}")
-    _ensure_browser_use_cli_after_update()
 
 
 def _print_checkpoint_footprint_notice() -> None:

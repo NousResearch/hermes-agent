@@ -84,6 +84,20 @@ class TestEveryWriterPreservesComments:
         data = _assert_preserved(home / "config.yaml")
         assert "default" not in data["model"]
 
+    def test_config_unset_keeps_the_next_sections_comments(self, home):
+        """ruamel files the notes above a section on the entry that ends before it; unsetting that
+        entry must not take the next section's notes with it."""
+        from hermes_cli.config import unset_config_value
+
+        (home / "config.yaml").write_text(
+            "model:\n  default: some-model\n  provider: test\n\n"
+            "# terminal MUST stay on docker on this box\n"
+            "terminal:\n  backend: docker\n", encoding="utf-8")
+        unset_config_value("model.provider")
+        text = (home / "config.yaml").read_text(encoding="utf-8")
+        assert "\n# terminal MUST stay on docker on this box\nterminal:\n" in text, text
+        assert yaml.safe_load(text) == {"model": {"default": "some-model"}, "terminal": {"backend": "docker"}}
+
     def test_save_config_plugin_enable_and_memory_provider(self, home):
         """The bulk writer behind ``plugins enable``, ``memory setup``, the wizard and the dashboard."""
         from hermes_cli.config import load_config, save_config

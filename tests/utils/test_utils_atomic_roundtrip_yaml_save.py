@@ -178,6 +178,30 @@ class TestAtomicRoundtripYamlSave:
         assert "custom_prompt" not in result
         assert result["model"]["default"] == "test-model"
 
+    @pytest.mark.parametrize("removed, doc", [
+        ("whole section", "a: 1\nsec:\n  x: 1\n  y: 2  # eol-y\n\n# NOTE below\nb: 2\n"),
+        ("first nested key", "sec:\n  x: 1\n  # NOTE below\n  y: 2\nb: 2\n"),
+        ("list tail", "sec:\n  - a\n  - b  # eol-b\n\n# NOTE below\nb: 2\n"),
+    ])
+    def test_removing_an_entry_keeps_the_comments_below_it(self, config_path, removed, doc):
+        from utils import atomic_roundtrip_yaml_save
+
+        config_path.write_text(doc, encoding="utf-8")
+        state = yaml.safe_load(doc)
+        if removed == "whole section":
+            state.pop("sec")
+        elif removed == "first nested key":
+            state["sec"].pop("x")
+        else:
+            state["sec"].pop()
+
+        atomic_roundtrip_yaml_save(config_path, state)
+
+        text = config_path.read_text(encoding="utf-8")
+        assert "# NOTE below" in text, text
+        assert "eol-" not in text, text  # the removed entry's own end-of-line comment goes with it
+        assert yaml.safe_load(text) == state
+
     def test_overwrites_scalar_value(self, config_path):
         config_path.write_text(
             "display:\n"

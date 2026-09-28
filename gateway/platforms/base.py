@@ -1251,11 +1251,11 @@ def format_media_dropped_notice(dropped: Optional[List[dict]]) -> str:
     entries: List[str] = []
     seen = set()
     for item in dropped or []:
-        path = str(item.get("path", "") if isinstance(item, dict) else item)
+        path = str(item.get("path") or "")
         if not path or path in seen:
             continue
         seen.add(path)
-        reason = str(item.get("reason", "")) if isinstance(item, dict) else ""
+        reason = str(item.get("reason") or "")
         safe = _LOG_UNSAFE_CHARS.sub("?", path)
         entries.append(f"{safe} - {reason}" if reason else safe)
     if not entries:
@@ -4499,8 +4499,10 @@ class BasePlatformAdapter(ABC):
         queue_feedback = getattr(self.gateway_runner, "_queue_media_delivery_feedback", None)
         if not callable(queue_feedback) or not dropped:
             return
-        with contextlib.suppress(Exception):
+        try:
             queue_feedback(event, session_key, self, dropped)
+        except Exception:
+            logger.debug("[%s] Failed to queue MEDIA delivery feedback", self.name, exc_info=True)
 
     async def _extract_response_content(self, response: str, event: MessageEvent, session_key: str,
                                         *, is_ephemeral_response: bool) -> "_ExtractedResponse":

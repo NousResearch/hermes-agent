@@ -19,6 +19,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter, append_media_dropped_notice, format_media_dropped_notice,
 )
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_notifications import GatewayNotificationsMixin
 from gateway.session import SessionSource
 
@@ -26,7 +27,8 @@ MISSING_REASON = "not found on this host"
 
 
 def _source() -> SessionSource:
-    return SessionSource(platform=Platform.DISCORD, chat_id="D1", chat_type="dm", thread_id=None)
+    return SessionSource(platform=Platform.DISCORD, chat_id="D1", chat_type="dm", thread_id=None,
+                         message_id="m1")
 
 
 def _event(metadata=None) -> MessageEvent:
@@ -174,7 +176,7 @@ class TestExtractionCollectsRejections:
         assert [p for p, _ in extracted.media_files] == [str(good.resolve())]
 
 
-class _Runner(GatewayNotificationsMixin):
+class _Runner(GatewayGoalsMixin, GatewayNotificationsMixin):
     """Real notification mixin method under test; collaborators captured, not a live runner."""
 
     def __init__(self):
@@ -219,6 +221,9 @@ class TestSameSessionFeedback:
         assert session_key == "agent:main:discord:dm:D1"
         assert feedback.internal is True
         assert feedback.message_id is None
+        # Not a reply to the message that produced the bad path (#52694 anchor rule).
+        assert feedback.source.message_id is None
+        assert feedback.source.chat_id == "D1"
         assert feedback.metadata.get("media_delivery_feedback") is True
         assert "[IMPORTANT: 1 MEDIA attachment(s) were skipped: /workspace/x.mp4 - " \
                + MISSING_REASON + "]" in feedback.text
@@ -258,6 +263,40 @@ class TestSameSessionFeedback:
         assert session_key_arg == "agent:main:discord:dm:D1"
         assert adapter_arg is adapter
         assert dropped_arg == dropped
+
+    @pytest.mark.asyncio
+    async def test_foreground_turn_delivers_text_and_hands_off_the_rejection(self, tmp_path, monkeypatch):
+        """Non-streaming turn end to end: the reply is delivered without the MEDIA line and the
+        runner receives the rejection after delivery (the ``_process_message_background`` wiring)."""
+        _strict_roots(tmp_path, monkeypatch)
+        missing = tmp_path / "never-written.mp4"
+        adapter = _Adapter()
+        sent: list = []
+        captured: list = []
+
+        async def _send(chat_id, content, reply_to=None, metadata=None):
+            from gateway.platforms.base import SendResult
+            sent.append(content)
+            return SendResult(success=True, message_id="m2")
+
+        adapter.send = _send
+        adapter.gateway_runner = SimpleNamespace(
+            _queue_media_delivery_feedback=lambda *args: captured.append(args))
+
+        async def handler(_event):
+            return f"Here you go.\nMEDIA:{missing}"
+
+        adapter.set_message_handler(handler)
+        event = _event()
+        await adapter._process_message_background(event, "agent:main:discord:dm:D1")
+
+        assert sent == ["Here you go."]
+        assert len(captured) == 1
+        event_arg, session_key_arg, adapter_arg, dropped_arg = captured[0]
+        assert event_arg is event and adapter_arg is adapter
+        assert session_key_arg == "agent:main:discord:dm:D1"
+        assert [d["reason"] for d in dropped_arg] == [MISSING_REASON]
+        assert "never-written.mp4" in dropped_arg[0]["path"]
 
     @pytest.mark.asyncio
     async def test_post_stream_rejected_media_reenters_the_session(self, tmp_path, monkeypatch):

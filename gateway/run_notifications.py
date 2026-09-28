@@ -421,6 +421,9 @@ class GatewayNotificationsMixin:
         (#75065). The notice re-enters as an internal turn AFTER the current one, so text delivery,
         attachment delivery and prompt caching are unchanged. Bounded to a single hop by the
         ``media_delivery_feedback`` flag: a follow-up reply that re-emits a bad path cannot loop.
+        The queued-follow-up lane (``_deliver_queued_first_response``) hands a bare synthetic event
+        here without that flag, so a feedback turn that itself has a queued follow-up may chain one
+        more notice — each extra hop costs a real inbound message, so it stays bounded.
         """
         if not dropped:
             return
@@ -429,17 +432,13 @@ class GatewayNotificationsMixin:
         notice = format_media_dropped_notice(dropped)
         if not notice:
             return
-        feedback_metadata: Dict[str, Any] = {"media_delivery_feedback": True}
+        # Same anchor-less shape as goal/heartbeat prompts: the notice is not a reply to the
+        # message that produced the bad path (#52694).
+        feedback_event = self._synthetic_prompt_event(
+            event.source, _mark_internal_notification(notice), internal=True)
+        feedback_event.metadata["media_delivery_feedback"] = True
         if session_key.startswith("agent:"):
-            feedback_metadata["gateway_session_key"] = session_key
-        feedback_event = MessageEvent(
-            text=_mark_internal_notification(notice),
-            message_type=MessageType.TEXT,
-            source=event.source,
-            message_id=None,
-            internal=True,
-            metadata=feedback_metadata,
-        )
+            feedback_event.metadata["gateway_session_key"] = session_key
         logger.info(
             "MEDIA delivery feedback — queuing same-session notice for %s chat=%s (%d path(s) skipped)",
             getattr(adapter, "name", "?"), event.source.chat_id, len(dropped),

@@ -11,6 +11,7 @@ recovery every turn.
 
 import json
 
+from agent.agent_runtime_helpers import STEER_DISPLAY_KIND
 from run_agent import AIAgent
 
 
@@ -1592,3 +1593,70 @@ def test_repair_encoded_row_text_only_decodes_to_plain_merge():
     assert repairs == 1
     assert len(messages) == 1
     assert messages[0]["content"] == "first\n\nsecond"
+
+
+def test_repair_structured_accumulator_keeps_merging_following_text_rows():
+    """After a structural merge the survivor's content is a list; the guard must still accept it so
+    the remaining plain-text user rows in the same run collapse too — the pass is the last repair
+    stage, so a fall-through would ship consecutive user rows to the provider (ehz0ah review)."""
+    agent = _bare_agent()
+    encoded = _encoded_multimodal_user_row()
+    messages = [
+        {"role": "user", "content": encoded},
+        {"role": "user", "content": "second"},
+        {"role": "user", "content": "third"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 2
+    assert len(messages) == 1
+    merged = messages[0]["content"]
+    assert isinstance(merged, list)
+    assert {"type": "text", "text": "screenshot of the error"} in merged
+    assert {"type": "text", "text": "second"} in merged
+    assert {"type": "text", "text": "third"} in merged
+    assert any(part.get("type") == "image_url" for part in merged)
+    # Still a durable shape: survives the state codec round-trip.
+    from hermes_state import SessionDB
+    decoded = SessionDB._decode_content(SessionDB._encode_content(merged))
+    assert decoded == merged
+
+
+def test_repair_text_row_before_encoded_row_then_text_row_all_collapse():
+    """text + encoded-multimodal + text: the middle merge turns the survivor's content into a list,
+    which must not stop the trailing text row from folding in."""
+    agent = _bare_agent()
+    encoded = _encoded_multimodal_user_row()
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": encoded},
+        {"role": "user", "content": "third"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 2
+    assert len(messages) == 1
+    merged = messages[0]["content"]
+    assert isinstance(merged, list)
+    assert {"type": "text", "text": "first"} in merged
+    assert {"type": "text", "text": "third"} in merged
+    assert any(part.get("type") == "image_url" for part in merged)
+
+
+def test_repair_structured_accumulator_still_respects_steer_guard():
+    """Widening the content guard must not weaken the deliberate-shape guards: a /steer row as the
+    previous turn still blocks merging the next user row into it (durable persisted shape)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "steer instruction", "display_kind": STEER_DISPLAY_KIND},
+        {"role": "user", "content": "next prompt"},
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert len(messages) == 2
+    assert messages[0]["display_kind"] == STEER_DISPLAY_KIND
+    assert messages[1]["content"] == "next prompt"

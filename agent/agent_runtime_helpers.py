@@ -608,9 +608,22 @@ def _merge_consecutive_user_pair_content(prev_content: str, new_content: str) ->
     return parts
 
 
+def _mergeable_user_content_shape(msg: Dict) -> bool:
+    """True when a user row's content can take part in a consecutive-user merge: plain text, or the
+    structured list a prior structural merge in this same pass produced (dict parts). Any other
+    shape stays as persisted."""
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        return True
+    return isinstance(content, list) and all(
+        isinstance(part, dict) and isinstance(part.get("text", ""), str) for part in content
+    )
+
+
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
+    from hermes_state import SessionDB
 
     repairs = 0
     merged: List[Dict] = []
@@ -625,10 +638,16 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
             and prev.get("display_kind") != STEER_DISPLAY_KIND
-            # Only merge plain-text content; leave multimodal (list) content alone.
-            and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
+            # Plain text merges as text; a list accumulator from an earlier structural merge in
+            # this pass must keep accepting the following text rows, or the pass would return
+            # with consecutive user rows still stacked (the exact shape this module removes).
+            and _mergeable_user_content_shape(prev) and isinstance(msg.get("content", ""), str)
         ):
             prev_content, new_content = prev.get("content", ""), msg.get("content", "")
+            if isinstance(prev_content, list):
+                # Re-encode the accumulator to its persisted sentinel form so the pair merge
+                # decodes it like any other structured row.
+                prev_content = SessionDB._encode_content(prev_content)
             merged_content = _merge_consecutive_user_pair_content(prev_content, new_content)
             if merged_content is None:
                 # Undecodable/unsupported encoded shape: keep both rows as persisted rather than

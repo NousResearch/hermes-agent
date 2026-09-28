@@ -365,14 +365,19 @@ def setup_logging(
 
     # (filename, level, max_bytes, backup_count, component) — a component gates
     # the file on ``mode`` and restricts it to that component's logger prefixes.
-    # Every file feeds config ``logging.max_size_mb``/``backup_count``; the
-    # per-file sizes below only apply while those keys are unset.
-    cfg_bytes = (cfg_max_size or 0) * 1024 * 1024
+    # Every file feeds the ``max_size_mb``/``backup_count`` params and the
+    # ``logging.*`` config keys; the per-file sizes below only apply while
+    # both are unset.
+    size_mb = max_size_mb or cfg_max_size
+    backups_resolved = backup_count or cfg_backup
+    max_bytes = (size_mb or 5) * 1024 * 1024
+    backups = backups_resolved or 3
+    comp_bytes = (size_mb or 0) * 1024 * 1024
     handler_specs = (
         ("agent.log", level, max_bytes, backups, None),
-        ("errors.log", logging.WARNING, cfg_bytes or 2 * 1024 * 1024, cfg_backup or 2, None),
-        ("gateway.log", logging.INFO, cfg_bytes or 5 * 1024 * 1024, cfg_backup or 3, "gateway"),
-        ("gui.log", logging.INFO, cfg_bytes or 10 * 1024 * 1024, cfg_backup or 5, "gui"),
+        ("errors.log", logging.WARNING, comp_bytes or 2 * 1024 * 1024, backups_resolved or 2, None),
+        ("gateway.log", logging.INFO, comp_bytes or 5 * 1024 * 1024, backups_resolved or 3, "gateway"),
+        ("gui.log", logging.INFO, comp_bytes or 10 * 1024 * 1024, backups_resolved or 5, "gui"),
     )
     for filename, lvl, size, count, component in handler_specs:
         if component is not None and mode != component:

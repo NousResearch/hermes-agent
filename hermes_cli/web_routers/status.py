@@ -24,7 +24,7 @@ from gateway.status import (
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import get_version_info, release_only_version
 from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
 from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
@@ -117,7 +117,17 @@ async def get_ssh_ownership(request: Request):
 async def get_health():
     """Lightweight process liveness for desktop/backend readiness probes."""
     info = get_version_info()
-    return {"ok": True, "version": info.base_version, "displayVersion": info.display_version,
+    # display.version_label: "release" shortens the desktop pill's label; the
+    # distance stays in the pill tooltip and the expanded version details
+    # (which read the /api/version payload, not this one).
+    from hermes_cli.config_effective import load_user_config_effective
+
+    try:
+        label = ((load_user_config_effective() or {}).get("display") or {}).get("version_label")
+    except Exception:
+        label = None
+    display = info.display_version if label != "release" else release_only_version(info.display_version, info.base_version)
+    return {"ok": True, "version": info.base_version, "displayVersion": display,
             "auth_required": bool(getattr(app.state, "auth_required", False))}
 
 

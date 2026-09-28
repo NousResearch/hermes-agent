@@ -78,6 +78,7 @@ import {
   $updateStatus,
   openUpdateOverlayFor
 } from '@/store/updates'
+import { $versionLabel } from '@/store/version-label'
 import type { StatusResponse, UsageStats } from '@/types/hermes'
 
 import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
@@ -166,6 +167,7 @@ export function useStatusbarItems({
   const backendUpdateStatus = useStore($backendUpdateStatus)
   const backendUpdateApply = useStore($backendUpdateApply)
   const desktopVersion = useStore($desktopVersion)
+  const versionLabel = useStore($versionLabel)
   const connection = useStore($connection)
 
   // The FOCUSED session (interacted tile, else the primary — the same
@@ -397,7 +399,8 @@ export function useStatusbarItems({
       sha: updateStatus?.currentSha?.slice(0, 7) ?? null,
       target: 'client',
       updateAvailable: updateStatus?.updateAvailable,
-      version: desktopVersion?.appVersion
+      version: desktopVersion?.appVersion,
+      versionLabel
     })
 
     return {
@@ -424,7 +427,8 @@ export function useStatusbarItems({
     updateStatus?.behind,
     updateStatus?.branch,
     updateStatus?.currentSha,
-    updateStatus?.updateAvailable
+    updateStatus?.updateAvailable,
+    versionLabel
   ])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
@@ -443,7 +447,8 @@ export function useStatusbarItems({
       restarting: backendUpdateApply.stage === 'restart',
       target: 'backend',
       updateAvailable: backendUpdateStatus?.updateAvailable,
-      version: statusSnapshot?.version
+      version: statusSnapshot?.version,
+      versionLabel
     })
 
     return {
@@ -466,7 +471,8 @@ export function useStatusbarItems({
     backendUpdateApply.applying,
     backendUpdateApply.message,
     backendUpdateApply.stage,
-    copy
+    copy,
+    versionLabel
   ])
 
   const coreLeftStatusbarItems = useMemo<readonly StatusbarItem[]>(

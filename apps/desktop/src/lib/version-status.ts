@@ -10,6 +10,7 @@
 
 import type { UpdateTarget } from '@/lib/update-copy'
 import { shortVersion } from '@/lib/version-label'
+import type { VersionLabelMode } from '@/store/version-label'
 
 export interface VersionStatusCopy {
   backendLabel: (version: string) => string
@@ -55,6 +56,8 @@ export interface VersionStatusInput {
   /** An update the commit count can't express (shallow clones, pip installs). */
   updateAvailable?: boolean
   version?: null | string
+  /** display.version_label: 'release' drops the +<distance> from the short label. */
+  versionLabel?: VersionLabelMode
 }
 
 export interface VersionStatusResult {
@@ -79,11 +82,20 @@ export function resolveVersionStatus({
   sha = null,
   target,
   updateAvailable,
-  version: rawVersion = null
+  version: rawVersion = null,
+  versionLabel = 'release+distance'
 }: VersionStatusInput): VersionStatusResult {
   // The label names the distance past the release; the commit stays in the
-  // tooltip and the expanded version details.
-  const version: null | string = rawVersion && rawVersion !== 'unknown' ? shortVersion(rawVersion) : null
+  // tooltip and the expanded version details. display.version_label: 'release'
+  // drops the distance too — on an up-to-date install it reads as "N commits
+  // behind" exactly where the row's hint reports actual staleness (#123538).
+  const version: null | string =
+    rawVersion && rawVersion !== 'unknown'
+      ? versionLabel === 'release'
+        ? shortVersion(rawVersion).split('+')[0]
+        : shortVersion(rawVersion)
+      : null
+
   const client = target === 'client'
   const busy = applying || restarting
   // updateAvailable covers every "behind but uncountable" shape: shallow

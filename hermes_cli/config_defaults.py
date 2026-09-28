@@ -899,6 +899,11 @@ DEFAULT_CONFIG = {
         # UI language for static messages (approval prompts, some gateway slash replies); not agent
         # responses/logs/tool outputs. en, zh, ja, de, es, fr, tr, uk; unknown → en.
         "language": "en",
+        # How surfaces name the running version's label: "release+distance" (v0.21.5+2453, the
+        # historical form) | "release" (v0.21.5; the commit distance stays in the tooltip/details
+        # surfaces). /api/health shortens displayVersion for "release" so the desktop statusbar
+        # pill stops reading the distance as "N commits behind" (#123538).
+        "version_label": "release+distance",
         # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
         # Seconds between idle prompt_toolkit redraws in the classic CLI; keeps wall-clock

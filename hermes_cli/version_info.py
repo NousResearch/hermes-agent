@@ -22,6 +22,20 @@ from hermes_cli.steward import UPDATE_MECHANISMS
 from hermes_cli.update_channel import STABLE_TAG_RE
 
 
+def release_only_version(display_version: str, base_version: str) -> str:
+    """The release-only short form of ``display_version`` for ``release`` labels.
+
+    ``display_version`` is ``<base>+<distance>[.g<sha>]`` past a release (or
+    ``git.<sha>`` for a tagless checkout). The distance reads as "N commits
+    behind" on surfaces whose same row already expresses staleness (#123538),
+    so ``display.version_label: "release"`` strips it from short labels; the
+    tooltip/details surfaces keep the full form.
+    """
+    if base_version == "unknown":
+        return display_version
+    return display_version.split("+", 1)[0]
+
+
 @dataclass(frozen=True)
 class VersionInfo:
     base_version: str

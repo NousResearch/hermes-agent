@@ -110,4 +110,24 @@ describe('resolveVersionStatus', () => {
     expect(tooltip).not.toContain('main')
     expect(tooltip).toContain(`${copy.releaseAvailable('v0.18.0')}`)
   })
+
+  // #123538: display.version_label 'release' drops the +<distance> from the
+  // short label — on an up-to-date install it reads as "N commits behind"
+  // exactly where the row's hint reports actual staleness. The distance
+  // stays in the tooltip and the expanded version details.
+  it('release label mode drops the distance from the label but keeps the tooltip', () => {
+    const status = client({ sha: 'abc1234', version: '0.4.2+1913.gabc1234', versionLabel: 'release' })
+
+    expect(status.label).toBe('v0.4.2')
+    expect(status.tooltip).toContain('abc1234')
+  })
+
+  it('release label mode keeps the behind hint and the tagless git identity', () => {
+    expect(client({ behind: 12, branch: 'main', version: '0.4.2', versionLabel: 'release' }).label).toBe('v0.4.2 (+12)')
+    expect(client({ version: 'git.abc1234', versionLabel: 'release' }).label).toBe('vgit.abc1234')
+  })
+
+  it('default label mode keeps the distance form unchanged', () => {
+    expect(client({ sha: 'abc1234', version: '0.4.2+1913.gabc1234' }).label).toBe('v0.4.2+1913')
+  })
 })

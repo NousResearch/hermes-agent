@@ -467,6 +467,7 @@ export interface HermesConfig {
     skin?: string
     interim_assistant_messages?: boolean
     timestamps?: boolean
+    version_label?: string
   }
   desktop?: {
     font_family?: string

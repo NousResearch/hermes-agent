@@ -333,8 +333,11 @@ def unmetered_backend_calls() -> Iterator[None]:
 
 def record_execution_backend(kind: str, backend: Any, result: Any = None, *, error_class: str | None = None) -> Any:
     """Count one tool call that reached its backend; returns ``result`` unchanged. ``backend`` may be a
-    callable so resolving it costs nothing while collection is off."""
-    if _UNMETERED.get():
+    callable so resolving it costs nothing while collection is off. Calls the background review /
+    curator forks make are Hermes' own work, not the user's (terminal.outcome skips them too)."""
+    from tools.skill_provenance import is_background_review
+
+    if _UNMETERED.get() or is_background_review():
         return result
     _emit(
         "EXECUTION_BACKEND_MARK", execution_backend_fields, kind=kind, backend=backend, result=result,

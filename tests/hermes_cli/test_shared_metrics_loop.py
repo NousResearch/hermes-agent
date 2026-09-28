@@ -208,6 +208,22 @@ def test_foreground_terminal_timeout_is_a_failed_timeout(home):
     ]
 
 
+def test_background_review_fork_terminal_calls_are_not_backend_usage(home):
+    import tools.skill_provenance as provenance
+    from tools.terminal_tool import terminal_tool
+
+    token = provenance.set_current_write_origin(provenance.BACKGROUND_REVIEW)
+    try:
+        assert json.loads(terminal_tool("echo review"))["exit_code"] == 0
+    finally:
+        provenance.reset_current_write_origin(token)
+    terminal_tool("echo user-work")
+
+    assert _rows(home, "hermes.execution_backend.count") == [
+        ({"backend": "local", "error_class": "none", "kind": "terminal", "outcome": "success"}, 1),
+    ]
+
+
 def test_path_completion_listing_is_not_user_backend_work(home):
     import tui_gateway.methods_complete as mc
     from tools.terminal_tool import terminal_tool

@@ -439,6 +439,8 @@ class TestRunDebugShareRedaction:
         "https://user:{s}@backup.example/v1",
         "https://backup.example/v1?key={s}",
         "https://backup.example/v1?X-Amz-Signature={s}",
+        "https://backup.example/v1?X-Goog-Signature={s}",
+        "https://backup.example/v1?sv=2024-11-04&sig={s}",
         "https://backup.example/v1#access_token={s}&view=public",
     ])
     def test_fallback_base_url_credential_never_reaches_upload_bound_content(self, hermes_home_with_secret, base_url):

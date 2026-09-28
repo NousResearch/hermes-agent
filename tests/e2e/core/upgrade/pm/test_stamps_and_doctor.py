@@ -82,11 +82,9 @@ def test_managed_env_hermes_can_check_for_updates(updated):
     exe = _venv_hermes(sb)
     assert Path(exe).is_file(), f"harness: selected generation ships no hermes console script: {exe}"
     cp = sb.run([exe, "update", "--check"], timeout=300)
-    with known_failure(r"`hermes update --check` from the managed environment: .*Not a git repository",
-                       "gated on #122627: PROJECT_ROOT resolves to the PM workspace copy"):
-        assert cp.returncode == 0 and "Not a git repository" not in cp.stdout + cp.stderr, (
-            "`hermes update --check` from the managed environment: " + (cp.stdout + cp.stderr).strip()[-400:]
-            + "\n" + I.describe(cp))
+    assert cp.returncode == 0 and "Not a git repository" not in cp.stdout + cp.stderr, (
+        "`hermes update --check` from the managed environment: " + (cp.stdout + cp.stderr).strip()[-400:]
+        + "\n" + I.describe(cp))
 
 
 def test_managed_env_hermes_reports_the_checkout_as_the_install(updated):

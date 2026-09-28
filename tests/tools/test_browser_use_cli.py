@@ -137,11 +137,9 @@ class TestSubprocessEnvironment:
         env = bu_cli._base_subprocess_env()
         assert env["ANONYMIZED_TELEMETRY"] == "false"
 
-    def test_subprocess_env_strips_parent_python_import_paths(self, monkeypatch):
-        """#83427/#84841/#86006/#86104: the browser-use CLI runs under its
-        own Python — inherited PYTHONPATH/PYTHONHOME pointing at Hermes's
-        venv make it import wrong-ABI C-extensions (pydantic_core) and
-        crash. Both must be stripped; unrelated vars survive."""
+    def test_subprocess_env_replaces_parent_python_import_paths(self, monkeypatch):
+        """#83427/#84841/#86006/#86104: an inherited PYTHONPATH/PYTHONHOME must never reach the
+        harness child; PYTHONPATH is replaced by the harness's own site dir, unrelated vars survive."""
         import sys
         from types import ModuleType
 
@@ -152,10 +150,11 @@ class TestSubprocessEnvironment:
             "KEEP_ME": "yes",
         }
         monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        monkeypatch.setattr(bu_cli, "_harness_site_dir", lambda: "/harness-site")
 
         env = bu_cli._base_subprocess_env()
 
-        assert "PYTHONPATH" not in env
+        assert env["PYTHONPATH"] == "/harness-site"
         assert "PYTHONHOME" not in env
         assert env["KEEP_ME"] == "yes"
 

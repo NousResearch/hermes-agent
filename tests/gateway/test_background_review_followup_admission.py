@@ -996,6 +996,7 @@ async def test_queued_followup_turn_carries_the_outer_review_admission(monkeypat
         _status_thread_metadata={},
         result_holder=[None],
         context_prompt="",
+        channel_prompt=None,
         gateway_review_admission=admission,
     )
 
@@ -1045,6 +1046,7 @@ async def test_queued_followup_runs_unowned_when_the_turn_context_carries_no_adm
         _status_thread_metadata={},
         result_holder=[None],
         context_prompt="",
+        channel_prompt=None,
     )
 
     result = await runner._run_agent_queued_followup(
@@ -1417,7 +1419,7 @@ async def test_direct_handoff_completes_ownership_from_its_own_event_beside_a_li
     async def _get_or_create_session(_source):
         return None
 
-    async def _switch_session(_key, _cli_session_id):
+    async def _switch_session(_key, _cli_session_id, **_kwargs):
         return object()
 
     store = types.SimpleNamespace()

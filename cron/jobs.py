@@ -1245,18 +1245,37 @@ def record_ticker_heartbeat(success: bool = False) -> None:
     Resolution uses ``_current_cron_store()`` so the heartbeat is correctly scoped to the active profile's
     store — critical under multiplex_profiles where each profile needs its own liveness signal (#69377).
     """
-    _write_marker("ticker_heartbeat", str(time.time()), ".hb_")
+    # ``<epoch> <pid>``: a killed ticker's last stamp reads fresh for ~3 minutes, so a reader with no
+    # other proof of the scheduler (the in-process serve/Desktop ticker) checks the writer is alive.
+    _write_marker("ticker_heartbeat", f"{time.time()} {os.getpid()}", ".hb_")
     if success:
         _write_marker("ticker_last_success", str(time.time()), ".hb_")
+
+
+def _read_marker_fields(name: str) -> List[str]:
+    try:
+        return (_current_cron_store().cron_dir / name).read_text(encoding="utf-8-sig").split()
+    except Exception:
+        return []
 
 
 def _epoch_file_age(name: str) -> Optional[float]:
     """Seconds since the epoch stamp stored in ``<cron_dir>/<name>``; None = missing/unreadable."""
     try:
-        raw = (_current_cron_store().cron_dir / name).read_text(encoding="utf-8-sig").strip()
-        return max(0.0, time.time() - float(raw))
+        return max(0.0, time.time() - float(_read_marker_fields(name)[0]))
     except Exception:
         return None
+
+
+def ticker_heartbeat_writer_alive() -> bool:
+    """True when the process that wrote this store's ticker heartbeat is still running. A legacy
+    bare-epoch stamp names no writer and is NOT proof of a live scheduler by itself."""
+    fields = _read_marker_fields("ticker_heartbeat")
+    try:
+        from hermes_cli._subprocess_compat import pid_exists_stdlib
+        return len(fields) >= 2 and pid_exists_stdlib(int(fields[1]))
+    except Exception:
+        return False
 
 
 def get_ticker_heartbeat_age() -> Optional[float]:
@@ -1724,11 +1743,13 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "no_agent": bool,
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
+    "interpreter": _normalize_job_optional_text,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
+    "interpreter": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
 }
 
@@ -1800,6 +1821,7 @@ def create_job(
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: bool = False,
+    interpreter: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1808,7 +1830,9 @@ def create_job(
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    interpreter: absolute/``~`` Python for ``.py`` script/monitor_script, validated at run time
+    (a venv can be rebuilt or moved after creation)."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1893,7 +1917,7 @@ def create_job(
     # jobs.
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
-        ("failure_deliver", f["failure_deliver"]),
+        ("failure_deliver", f["failure_deliver"]), ("interpreter", f["interpreter"]),
     ):
         if value is not None:
             job[key] = value

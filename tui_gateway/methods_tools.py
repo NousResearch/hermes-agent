@@ -66,6 +66,8 @@ def _profile_scoped_rpc(
             try:
                 with scope:
                     return body(*args)
+            except ProfileUnavailableError:
+                raise  # a body that binds ``profile`` itself (_session_home_scope) reports 4064 via dispatch
             except Exception as e:
                 return _err(rid, fail_code, f"{prefix}{e}")
         handler.__doc__ = body.__doc__
@@ -213,10 +215,24 @@ def _joined_output(r) -> str:
     return "\n".join(p for p in (r.stdout or "", r.stderr or "") if p).strip()
 
 
+def _session_toolsets(session) -> tuple:
+    """``(enabled, disabled)`` a session's read-back RPCs must reflect: the live agent's sets once built,
+    else what that session's profile would build with — ``_load_enabled_toolsets`` under the session's
+    profile scope, the same read ``_build_agent``/``_refresh_live_sessions`` make and the key
+    ``profiles.configure`` pins. A session whose agent is not built yet (``session.create`` with no
+    prompt) otherwise read back as "everything enabled" (#117977). ``None`` = all toolsets.
+    No session → the launch profile's config."""
+    agent = session.get("agent") if session else None
+    if agent is not None:
+        return getattr(agent, "enabled_toolsets", None), getattr(agent, "disabled_toolsets", None)
+    with _session_profile_runtime_scope(session or {}):
+        return _load_enabled_toolsets(_resolve_agent_platform(_session_source(session))), _load_disabled_toolsets()
+
+
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
     toolsets = _tools_mod("toolsets")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = set((getattr(session["agent"], "enabled_toolsets", []) if session else _load_enabled_toolsets()) or [])
+    enabled = set(_session_toolsets(session)[0] or [])
     items = []
     for name in sorted(toolsets.get_all_toolsets().keys()):
         if info := toolsets.get_toolset_info(name):
@@ -488,28 +504,31 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
     (skills' message wins, then quick commands', then plugins'); only with no failure does it carry
-    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Skill
-    discovery is bound to the calling session's profile and workspace (``_completion_cwd``: its record,
-    else the cwd a new session would be seeded with) so project-local skills register for the repo the
-    session is actually in (#114359)."""
+    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Quick
+    command, plugin command and skill discovery are all home-keyed, so every loader runs bound to the
+    calling session's profile and workspace (``_completion_cwd``: its record, else the cwd a new
+    session would be seeded with) so project-local skills register for the repo the session is
+    actually in (#114359); a session-less draft is bound to ``params['profile']`` (#124651), and an
+    unknown profile is 4064 like ``complete.slash`` — never a launch-profile palette."""
     cat = _Catalog()
     _catalog_registry(cat)
     warning = ""
-    try:
-        _catalog_quick_commands(cat)
-    except Exception as e:
-        warning = f"quick_commands discovery unavailable: {e}"
-    try:
-        _catalog_plugin_commands(cat)
-    except Exception as e:
-        warning = warning or f"plugin command discovery unavailable: {e}"
     skills: dict[str, dict] = {}
-    try:
-        with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
+                             profile=params.get("profile")):
+        try:
+            _catalog_quick_commands(cat)
+        except Exception as e:
+            warning = f"quick_commands discovery unavailable: {e}"
+        try:
+            _catalog_plugin_commands(cat)
+        except Exception as e:
+            warning = warning or f"plugin command discovery unavailable: {e}"
+        try:
             collision_note = _catalog_skills(cat, skills)  # always runs: skills must list even when a loader failed
-        warning = warning or collision_note
-    except Exception as e:
-        warning = f"skill discovery unavailable: {e}"
+            warning = warning or collision_note
+        except Exception as e:
+            warning = f"skill discovery unavailable: {e}"
     return _ok(rid, {
         "pairs": cat.pairs, "sub": {k: v[:] for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()},
         "canon": cat.canon,
@@ -589,7 +608,7 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
 
 
 @contextlib.contextmanager
-def _session_home_scope(session, cwd: str | None = None):
+def _session_home_scope(session, cwd: str | None = None, profile: str | None = None):
     """Bind HERMES_HOME and the logical cwd to the session for the block.
 
     Skill/bundle/quick-command resolution is home-keyed (``skills.external_dirs``, ``skill-bundles/``,
@@ -598,10 +617,13 @@ def _session_home_scope(session, cwd: str | None = None):
     are cwd-keyed (``find_project_root`` reads the session-bound cwd first): these RPCs run on the socket
     thread with no session context, where the terminal scope resolves a placeholder ``terminal.cwd`` to
     ``$HOME`` and no project skill ever registers or dispatches (#114359). ``cwd`` overrides the session
-    record (a session-less catalog request binds the workspace a new session would be seeded with)."""
+    record (a session-less catalog request binds the workspace a new session would be seeded with).
+    ``profile`` scopes a session-less call (a Desktop draft names its rail-selected profile) (#124651)."""
     hc = _tools_mod("hermes_constants")
     rc = _tools_mod("agent.runtime_cwd")
     profile_home = session.get("profile_home") if session else None
+    if not session and profile:
+        profile_home = str(_profile_home(profile) or "") or None
     cwd = cwd or (str(session.get("cwd") or "") if session else "")
     token = hc.set_hermes_home_override(profile_home) if profile_home else None
     cwd_token = rc.set_session_cwd(cwd) if cwd else None
@@ -1169,8 +1191,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     mt = _tools_mod("model_tools")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
-    disabled = getattr(session["agent"], "disabled_toolsets", None) if session else _load_disabled_toolsets()
+    enabled, disabled = _session_toolsets(session)
     # Pre-assembly list: /tools must also show tools deferred behind the tool_search bridge (as the CLI).
     tools = mt.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True,
                                     skip_tool_search_assembly=True)
@@ -1337,7 +1358,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     # Bound like ``commands.catalog``: an unbound rescan runs against the launch env, reports the session's
     # project skills as "Removed" and republishes a registry without them (#114359).
-    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
+                             profile=params.get("profile")):
         result = _tools_mod("agent.skill_commands").reload_skills()
     added, removed = result.get("added") or [], result.get("removed") or []
     lines = ["Reloading skills..."] + ([] if added or removed else ["No new skills detected."])

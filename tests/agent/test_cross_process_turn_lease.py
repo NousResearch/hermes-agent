@@ -8,6 +8,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent import relay_runtime
 from hermes_state import SessionDB
 from run_agent import AIAgent
@@ -337,26 +339,130 @@ def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
     ]
 
 
-def test_fresh_session_keeps_caller_seed_without_durable_lease(monkeypatch):
-    db = _DB(session_exists=False)
-    agent = _agent_with_db(db, session_id="fresh", platform="subagent")
-    agent._session_db_created = False
-    agent._parent_session_id = "parent"
-    agent._conversation_root_id = lambda: "parent"
+_LATEST = [{"role": "user", "content": "durable latest"}]
 
+
+@pytest.mark.parametrize(
+    "row_after, reload_rows, expect_reload",
+    [
+        # No row after the wait: keep the caller's seed, even if a reload would return rows.
+        (False, _LATEST, False),
+        # The holder created the row meanwhile: reload it, and skip the redundant create.
+        (True, _LATEST, True),
+        # A proven row wins even when its transcript is empty.
+        (True, [], True),
+        # An unreadable row that reloads nothing keeps the caller's history, carried input included.
+        ("raises", [], False),
+    ],
+    ids=["absent-after-wait", "created-during-wait", "created-empty-during-wait", "unreadable-empty"],
+)
+def test_waited_admission_uses_the_row_read_after_the_lease(
+    monkeypatch, row_after, reload_rows, expect_reload,
+):
+    """After a contended wait, the row state read under the lease decides reload and row flag."""
+    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+
+    db = _DB()
+
+    def locked_get_session(_session_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    def acquire_with_wait(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        kwargs["on_wait"](0.0)
+        if row_after == "raises":
+            db.get_session = locked_get_session
+        else:
+            db.session_exists = row_after
+        return True
+
+    db.acquire_session_turn_lease = acquire_with_wait
+    db.get_messages_as_conversation = lambda *_a, **_k: [dict(m) for m in reload_rows]
+    agent = _agent_with_db(db, session_id="client-id", platform="api_server")
+    agent._session_db_created = False
     observed = {}
 
     def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
         observed["history"] = history
+        observed["row_known"] = _agent._session_db_created
         return {"final_response": "ok", "messages": history, "failed": False}
 
     monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
-    seed = [{"role": "user", "content": "delegated context"}]
-
+    carried = {"role": "user", "content": "carried", _PERSIST_AFTER_ADMISSION_INTERRUPT: True}
+    seed = [{"role": "user", "content": "caller history"}, carried]
     AIAgent.run_conversation(agent, "work", conversation_history=seed)
 
-    assert observed["history"] is seed
-    assert db.events == []
+    if expect_reload:
+        assert observed["history"] == reload_rows + [carried]
+    else:
+        assert observed["history"] is seed
+    assert observed["row_known"] is (row_after is True)
+
+
+def test_first_turn_on_fresh_session_serializes_a_second_writer(tmp_path, monkeypatch):
+    """A client-addressed session id has no row until its first turn writes one; a second
+    turn arriving meanwhile must wait for that turn and see its rows, not interleave."""
+    path = tmp_path / "state.db"
+    db_a, db_b = SessionDB(path), SessionDB(path)
+    a_in_turn, a_may_finish, a_finished = threading.Event(), threading.Event(), threading.Event()
+    observed = {}
+
+    def fake_run(_agent, message, _system, history, *_args, **_kwargs):
+        if message == "first":
+            _agent._session_db.create_session("client-id", source="api_server")
+            _agent._session_db.append_message("client-id", "user", "first")
+            a_in_turn.set()
+            a_may_finish.wait(timeout=10)
+            _agent._session_db.append_message("client-id", "assistant", "first answer")
+            a_finished.set()  # still inside the turn, so strictly before the lease is released
+        else:
+            observed["a_finished"] = a_finished.is_set()
+            observed["history"] = [m.get("content") for m in history]
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    agent_a = _agent_with_db(db_a, session_id="client-id", platform="api_server")
+    agent_a._session_db_created = False
+    agent_b = _agent_with_db(db_b, session_id="client-id", platform="api_server")
+    # B either starts waiting on the lease or, unserialized, runs to the end.
+    b_waiting_or_done = threading.Event()
+    real_acquire = db_b.acquire_session_turn_lease
+
+    def acquire_b(*args, on_wait=None, **kwargs):
+        def waiting(elapsed):
+            b_waiting_or_done.set()
+            on_wait(elapsed)
+        return real_acquire(*args, on_wait=waiting, **kwargs)
+
+    db_b.acquire_session_turn_lease = acquire_b
+
+    def run_b():
+        try:
+            AIAgent.run_conversation(
+                agent_b, "second",
+                conversation_history=db_b.get_messages_as_conversation("client-id"))
+        finally:
+            b_waiting_or_done.set()
+
+    thread_a = threading.Thread(
+        target=lambda: AIAgent.run_conversation(agent_a, "first", conversation_history=[]))
+    thread_b = threading.Thread(target=run_b)
+    try:
+        thread_a.start()
+        assert a_in_turn.wait(timeout=10)
+        thread_b.start()
+        assert b_waiting_or_done.wait(timeout=10)
+        a_may_finish.set()
+        thread_a.join(timeout=10)
+        thread_b.join(timeout=10)
+        assert not thread_a.is_alive() and not thread_b.is_alive()
+    finally:
+        a_may_finish.set()
+        db_a.close()
+        db_b.close()
+
+    assert observed["a_finished"] is True
+    assert observed["history"] == ["first", "first answer"]
 
 
 def test_run_conversation_lease_timeout_returns_resend_notice(monkeypatch):

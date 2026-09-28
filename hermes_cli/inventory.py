@@ -454,20 +454,46 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     except Exception:
         get_model_capabilities = None  # type: ignore[assignment]
 
+    # Context, the capability flags and the catalog price all come from one ModelInfo; memoize so a
+    # row's models are resolved once rather than once per consumer.
+    info_memo: dict[tuple[str, str], Any] = {}
+
+    def _info(slug: str, model_id: str):
+        key = (slug, model_id)
+        if key not in info_memo:
+            info_memo[key] = _catalog_model_info(slug, model_id, metadata_config=metadata_config)
+        return info_memo[key]
+
     def _catalog_context_window(slug: str, model_id: str) -> int:
-        info = _catalog_model_info(slug, model_id, metadata_config=metadata_config)
+        info = _info(slug, model_id)
         ctx = getattr(info, "context_window", None) if info is not None else None
         try:
             return int(ctx) if ctx else 0
         except (TypeError, ValueError):
             return 0
 
+    def _apply_modalities(entry: dict, slug: str, model_id: str) -> None:
+        """Attach vision/pdf/tools from the catalog. Absent when the model is unknown — a metadata
+        miss must read as unknown rather than as "cannot" (#112649)."""
+        info = _info(slug, model_id)
+        if info is None:
+            return
+        try:
+            entry["supports_vision"] = bool(info.supports_vision())
+            entry["supports_pdf"] = bool(info.supports_pdf())
+        except Exception:
+            return
+        entry["supports_tools"] = bool(getattr(info, "tool_call", False))
+        mods = [str(m) for m in (getattr(info, "input_modalities", ()) or ())]
+        if mods:
+            entry["input_modalities"] = mods
+
     def _fill_catalog_pricing(row: dict, slug: str, models: list[str]) -> None:
         pricing = row.setdefault("pricing", {})
         for m in models:
             if m in pricing:  # a provider-reported price always wins over the catalog
                 continue
-            info = _catalog_model_info(slug, m, metadata_config=metadata_config)
+            info = _info(slug, m)
             if info is None:
                 continue
             # ModelInfo carries cost_input/cost_output (USD per 1M tokens); it has no `pricing`
@@ -504,6 +530,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                 "reasoning": reasoning,
                 "context_window": _catalog_context_window(slug, model),
             }
+            _apply_modalities(entry, slug, model)
 
             if reasoning and read_reasoning_catalog is not None:
                 try:

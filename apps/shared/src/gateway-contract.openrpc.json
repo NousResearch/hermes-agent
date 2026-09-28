@@ -18027,7 +18027,7 @@
       },
       "ModelCapabilities": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_capabilities``.",
+        "description": "``hermes_cli/inventory.py::_apply_capabilities``.\n\nThe ``supports_*`` fields stay ``None`` when the catalog has no entry for a model: a metadata\nmiss must read as unknown, never as \"cannot\" (#112649), so a renderer shows nothing rather than\nmarking a capable model as text-only.",
         "properties": {
           "fast": {
             "title": "Fast",
@@ -18060,6 +18060,57 @@
             ],
             "default": null,
             "title": "Context Window"
+          },
+          "supports_vision": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Supports Vision"
+          },
+          "supports_pdf": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Supports Pdf"
+          },
+          "supports_tools": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Supports Tools"
+          },
+          "input_modalities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Input Modalities"
           }
         },
         "required": [

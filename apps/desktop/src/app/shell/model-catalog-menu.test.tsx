@@ -125,6 +125,59 @@ describe('context window and price on a model row', () => {
   })
 })
 
+describe('vision and the per-1K price on a model row', () => {
+  it('marks a vision model, leaves a text-only one unmarked, and says nothing when unknown', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          capabilities: {
+            'mimo-v2.5': { context_window: 1_048_576, fast: false, reasoning: true, supports_vision: true },
+            'deepseek-v4-pro': { context_window: 1_000_000, fast: false, reasoning: true, supports_vision: false },
+            'mystery-1': { context_window: 0, fast: false, reasoning: true }
+          },
+          models: ['mimo-v2.5', 'deepseek-v4-pro', 'mystery-1'],
+          name: 'Mixed',
+          slug: 'mixed'
+        }
+      ]
+    })
+    renderMenu()
+
+    const seeing = (await screen.findByText(/Mimo V2\.5/i)).closest('[role="menuitem"]')!
+    const textOnly = (await screen.findByText(/DeepSeek V4 Pro/i)).closest('[role="menuitem"]')!
+    const unknown = (await screen.findByText(/Mystery 1/i)).closest('[role="menuitem"]')!
+
+    expect(seeing.querySelector('.codicon-eye')).not.toBeNull()
+    expect(textOnly.querySelector('.codicon-eye')).toBeNull()
+    // Unknown must not be marked as text-only either — no badge, and no claim in the tooltip.
+    expect(unknown.querySelector('.codicon-eye')).toBeNull()
+    expect(unknown.querySelector('[title]')?.getAttribute('title') ?? '').not.toContain('text only')
+  })
+
+  it('carries the per-1K price in the tooltip while the row stays per-1M', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          capabilities: { 'glm-5.3-flash': { context_window: 1_000_000, fast: false, reasoning: true } },
+          models: ['glm-5.3-flash'],
+          name: 'GLM',
+          pricing: { 'glm-5.3-flash': { free: false, input: '0.15', output: '0.5', source: 'catalog' } },
+          slug: 'glm'
+        }
+      ]
+    })
+    renderMenu()
+
+    const row = (await screen.findByText(/Glm 5\.3 Flash/i)).closest('[role="menuitem"]')!
+    const title = row.querySelector('[title]')!.getAttribute('title')!
+
+    expect(row.textContent).toContain('0.15 / 0.5')
+    expect(title).toContain('0.15 / 0.5 per 1M tokens')
+    expect(title).toContain('0.00015 / 0.0005 per 1K')
+    expect(title).toContain('vendor list price')
+  })
+})
+
 // A minimal controller — these tests are about the CATALOG's own behaviour
 // (what it lists, what it offers), not about what any host does with a pick.
 function renderMenu(current: Partial<ModelMenuController['current']> = {}) {

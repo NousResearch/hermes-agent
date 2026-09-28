@@ -237,12 +237,21 @@ class ModelPricing(Result):
 
 
 class ModelCapabilities(Result):
-    """``hermes_cli/inventory.py::_apply_capabilities``."""
+    """``hermes_cli/inventory.py::_apply_capabilities``.
+
+    The ``supports_*`` fields stay ``None`` when the catalog has no entry for a model: a metadata
+    miss must read as unknown, never as "cannot" (#112649), so a renderer shows nothing rather than
+    marking a capable model as text-only.
+    """
 
     fast: bool
     reasoning: bool
     can_disable_reasoning: bool | None = None
     context_window: int | None = None
+    supports_vision: bool | None = None
+    supports_pdf: bool | None = None
+    supports_tools: bool | None = None
+    input_modalities: list[str] | None = None
 
 
 class ModelOptionProvider(OpenModel):

@@ -96,6 +96,20 @@ function priceLabelFor(price?: ModelPricing): string | null {
   return `${price.input || '?'} / ${price.output || '?'}`
 }
 
+// $/1M → $/1K, derived from the same string the row shows, so the two units can never disagree.
+// Per-1K is tooltip-only: these models price at $0.00015/1K, which is five decimals in a menu row.
+function perThousandFrom(label: string | null): string | null {
+  if (!label || label === 'free') {
+    return null
+  }
+
+  return label.replace(/\d+(?:\.\d+)?/g, (n) => {
+    const v = Number(n) / 1000
+
+    return Number.isFinite(v) ? v.toFixed(6).replace(/\.?0+$/, '') : n
+  })
+}
+
 // Lets the host dropdown (model-pill, a kanban field trigger, …) hand the panel
 // a way to dismiss itself so clicking a model row commits + closes, while the
 // hover-revealed edit submenu (reasoning/fast) stays open to play with (its
@@ -589,7 +603,12 @@ export function ModelCatalogMenu({
                     const { name, tag } = modelDisplayParts(family.id)
                     const caps = group.provider.capabilities?.[family.id]
                     const ctx = formatContext(caps?.context_window)
-                    const priceLabel = priceLabelFor(group.provider.pricing?.[family.id])
+                    const priceEntry = group.provider.pricing?.[family.id]
+                    const priceLabel = priceLabelFor(priceEntry)
+                    const perK = perThousandFrom(priceLabel)
+                    // null/undefined = the catalog has no entry: unknown, so the row says nothing
+                    // rather than marking a capable model as text-only (#112649).
+                    const vision = caps?.supports_vision
 
                     // Managed local model loading into memory right now:
                     // real load percent, keyed by exact model id (remote
@@ -647,16 +666,19 @@ export function ModelCatalogMenu({
                           <span className="min-w-0 flex-1 truncate">
                             <HighlightMatches foldSeparators query={search} text={name} />
                             {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
-                            {ctx || priceLabel ? (
+                            {ctx || priceLabel || vision === true ? (
                               <span
                                 className="ml-1.5 text-[0.58rem] tabular-nums text-(--ui-text-tertiary) opacity-80"
                                 title={[
                                   ctx ? `${ctx} context` : '',
                                   priceLabel && priceLabel !== 'free'
-                                    ? `${priceLabel} per 1M tokens`
+                                    ? `${priceLabel} per 1M tokens${perK ? ` (${perK} per 1K)` : ''}`
                                     : priceLabel === 'free'
                                       ? 'free'
-                                      : ''
+                                      : '',
+                                  priceEntry?.source === 'catalog' ? 'vendor list price' : '',
+                                  vision === true ? 'vision' : vision === false ? 'text only' : '',
+                                  caps?.supports_pdf ? 'PDF input' : ''
                                 ]
                                   .filter(Boolean)
                                   .join(' · ')}
@@ -664,6 +686,13 @@ export function ModelCatalogMenu({
                                 {ctx ? <span>{ctx}</span> : null}
                                 {ctx && priceLabel ? <span className="mx-0.5 opacity-50">·</span> : null}
                                 {priceLabel ? <span>{priceLabel}</span> : null}
+                                {vision === true ? (
+                                  <Codicon
+                                    className="ml-1 align-[-0.1em] opacity-70"
+                                    name="eye"
+                                    size="0.66rem"
+                                  />
+                                ) : null}
                               </span>
                             ) : null}
                           </span>

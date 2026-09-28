@@ -1,9 +1,10 @@
-import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
+import type { ModelCapabilities, ModelOptionProvider, ModelPricing } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { type ReactElement, useMemo, useRef, useState } from 'react'
 
+import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
@@ -353,6 +354,7 @@ function ModelResults({
             {models.map(model => {
               const isCurrent = model === currentModel && catalogProviderMatches(provider, currentProvider)
               const price = provider.pricing?.[model]
+              const caps = provider.capabilities?.[model]
               const locked = unavailable.has(model)
               // Managed local model loading into memory right now: show the
               // real load percent inline (keyed by exact model id — remote
@@ -378,6 +380,7 @@ function ModelResults({
                 >
                   <span className="min-w-0 flex-1 truncate">
                     <HighlightMatches foldSeparators query={search} text={model} />
+                    <ModelMetrics caps={caps} />
                   </span>
                   {loadProgress && (
                     <span className="flex shrink-0 items-center gap-1.5" title={copy.loadingIntoMemory}>
@@ -490,6 +493,40 @@ function DownloadingModelRow({
         </span>
       </span>
     </CommandItem>
+  )
+}
+
+// Context window + vision, beside the model name. Mirrors the catalog menu's row so the two
+// pickers never disagree. Renders nothing the catalog has no answer for: a metadata miss reads as
+// unknown, never as "cannot" (#112649).
+function ModelMetrics({ caps }: { caps?: ModelCapabilities }) {
+  const tokens = caps?.context_window
+
+  const ctx =
+    tokens && tokens > 0
+      ? tokens >= 1_000_000
+        ? `${Math.abs(tokens / 1_000_000 - Math.round(tokens / 1_000_000)) < 0.05 ? Math.round(tokens / 1_000_000) : (tokens / 1_000_000).toFixed(1)}M`
+        : tokens >= 1_000
+          ? `${Math.abs(tokens / 1_000 - Math.round(tokens / 1_000)) < 0.05 ? Math.round(tokens / 1_000) : (tokens / 1_000).toFixed(1)}K`
+          : String(tokens)
+      : null
+
+  const vision = caps?.supports_vision
+
+  if (!ctx && vision !== true) {
+    return null
+  }
+
+  return (
+    <span
+      className="ml-1.5 text-[0.58rem] tabular-nums text-muted-foreground opacity-80"
+      title={[ctx ? `${ctx} context` : '', vision === true ? 'vision' : '', caps?.supports_pdf ? 'PDF input' : '']
+        .filter(Boolean)
+        .join(' · ')}
+    >
+      {ctx ? <span>{ctx}</span> : null}
+      {vision === true ? <Codicon className="ml-1 align-[-0.1em] opacity-70" name="eye" size="0.66rem" /> : null}
+    </span>
   )
 }
 

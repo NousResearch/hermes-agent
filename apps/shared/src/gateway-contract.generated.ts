@@ -680,12 +680,16 @@ export interface ModelOptionProvider {
   unavailable_models?: string[] | null
   [key: string]: unknown
 }
-/** ``hermes_cli/inventory.py::_apply_capabilities``. */
+/** ``hermes_cli/inventory.py::_apply_capabilities``. The ``supports_*`` fields stay ``None`` when the catalog has no entry for a model: a metadata miss must read as unknown, never as "cannot" (#112649), so a renderer shows nothing rather than marking a capable model as text-only. */
 export interface ModelCapabilities {
   fast: boolean
   reasoning: boolean
   can_disable_reasoning?: boolean | null
   context_window?: number | null
+  supports_vision?: boolean | null
+  supports_pdf?: boolean | null
+  supports_tools?: boolean | null
+  input_modalities?: string[] | null
 }
 /** ``hermes_cli/inventory.py::_apply_pricing`` — formatted $/Mtok strings (``""`` unknown, ``"free"``); the sale fields are Nous Portal-only. */
 export interface ModelPricing {

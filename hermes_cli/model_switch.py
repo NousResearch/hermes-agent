@@ -470,12 +470,14 @@ class ModelFlagParseResult:
     force_refresh: bool = False
     is_session: bool = False
     is_once: bool = False
+    list_by_provider_raw: str = ""
 
 
 # --- Flag parsing
 
 _BOOL_FLAGS = {"--global": "is_global", "--session": "is_session", "--refresh": "force_refresh", "--once": "is_once"}
-_VALUE_FLAGS = {"--provider": "explicit_provider", "--reasoning": "reasoning_effort"}
+_VALUE_FLAGS = {"--provider": "explicit_provider", "--reasoning": "reasoning_effort",
+                "--list-by-provider": "list_by_provider_raw"}
 
 
 def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
@@ -489,7 +491,7 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
     time) so a model pick and its effort travel as ONE request on every surface."""
     # Telegram/iOS auto-convert ``--`` to an em/en dash: normalize a single Unicode dash before
     # a flag keyword.
-    raw_args = re.sub(r'[\u2012\u2013\u2014\u2015](provider|reasoning|global|session|refresh|once)', r'--\1', raw_args)
+    raw_args = re.sub(r'[\u2012\u2013\u2014\u2015](provider|reasoning|global|session|refresh|once|list-by-provider)', r'--\1', raw_args)
 
     # Hand-rolled: model IDs may contain colons/slashes and the historical parser did not
     # require shell quoting.
@@ -558,13 +560,17 @@ def resolve_persist_behavior(
 MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL = "once_with_global"
 MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET = "once_requires_target"
 MODEL_SWITCH_ERR_BAD_REASONING = "bad_reasoning"
+MODEL_SWITCH_ERR_LIST_BY_PROVIDER_VALUE = "list_by_provider_value"
+MODEL_SWITCH_ERR_LIST_BY_PROVIDER_GLOBAL = "list_by_provider_global"
 
 # Canonical (surface-neutral) error copy. Surfaces prepend their own decoration ("  ✗ " in the
 # CLI, "❌ " in the gateway) but MUST NOT change the core sentence — it is shared user-visible copy.
 MODEL_SWITCH_ERROR_TEXT = {
     MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL: "/model --once cannot be combined with --global",
     MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET: "/model --once requires a model or provider.",
-    MODEL_SWITCH_ERR_BAD_REASONING: "/model --reasoning takes none, minimal, low, medium, high, xhigh, max or ultra."}
+    MODEL_SWITCH_ERR_BAD_REASONING: "/model --reasoning takes none, minimal, low, medium, high, xhigh, max or ultra.",
+    MODEL_SWITCH_ERR_LIST_BY_PROVIDER_VALUE: "/model --list-by-provider requires a positive integer.",
+    MODEL_SWITCH_ERR_LIST_BY_PROVIDER_GLOBAL: "/model --list-by-provider is per-user; set model.max_models_per_provider in config.yaml for a global cap."}
 
 
 @dataclass(frozen=True)
@@ -584,6 +590,7 @@ class ModelSwitchRequest:
     is_session: bool = False
     is_once: bool = False
     force_refresh: bool = False
+    list_by_provider: Optional[int] = None
     scope: str = "default"
     errors: tuple = ()
 
@@ -615,11 +622,24 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
         from hermes_constants import parse_reasoning_effort
         if parse_reasoning_effort(parsed.reasoning_effort) is None:
             errors.append(MODEL_SWITCH_ERR_BAD_REASONING)
+    list_by_provider: Optional[int] = None
+    if parsed.list_by_provider_raw:
+        try:
+            _cap = int(parsed.list_by_provider_raw)
+        except ValueError:
+            _cap = 0
+        if _cap < 1:
+            errors.append(MODEL_SWITCH_ERR_LIST_BY_PROVIDER_VALUE)
+        else:
+            list_by_provider = _cap
+            if parsed.is_global:
+                errors.append(MODEL_SWITCH_ERR_LIST_BY_PROVIDER_GLOBAL)
     # First matching flag wins: once > session > global > default.
     scope = next((name for name, on in (("once", parsed.is_once), ("session", parsed.is_session),
                                         ("global", parsed.is_global)) if on), "default")
     return ModelSwitchRequest(
         raw=raw, target=parsed.model_input, scope=scope, errors=tuple(errors),
+        list_by_provider=list_by_provider,
         **{f: getattr(parsed, f)
            for f in ("explicit_provider", "reasoning_effort", "is_global", "is_session", "is_once", "force_refresh")})
 

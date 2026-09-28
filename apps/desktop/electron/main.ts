@@ -13176,7 +13176,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // start alone runs 2-8s) and advanceBootProgress awaits renderer IPC.
     // stdout is already flowing into the tail, and Node streams never replay
     // consumed chunks to late listeners, so a sentinel printed during that
-    // window was lost forever — the wait then hit its 90s timeout and a
+    // window was lost forever — the wait then hit its announce timeout and a
     // healthy backend was killed (deterministic on Windows, racy on
     // macOS/Linux). The tail-buffer accessor covers any residual gap.
     const portAnnouncement = waitForDashboardPortAnnouncement(hermesProcess, {

@@ -184,7 +184,7 @@ describe('reconcileBackgroundProcesses', () => {
 
     expect(dispatchNativeNotification).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: 'npm run build (exit 0)\nCompilation successful\nOutput written to dist/',
+        body: 'npm run build (exit 0)\nBuilding...\nCompilation successful\nOutput written to dist/',
         kind: 'backgroundDone'
       })
     )

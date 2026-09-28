@@ -48,20 +48,61 @@ def _parent_is_systemd() -> bool:
     terminal tool, a shell, a test) shares a *live* process's cgroup, so
     reaping there SIGKILLs that process. Refuse loudly instead (issue:
     2026-09-29 engineering-gateway self-kill incident).
+
+    No PID-1 shortcut: in a plain container the gateway itself can be PID 1
+    (or the init can be ``tini``/``launchd``), and an orphan reparented to
+    PID 1 shares the live gateway's cgroup. PID 1 must present as systemd
+    like any other parent, and an unreadable ``/proc/<ppid>/comm`` fails
+    closed.
     """
     ppid = os.getppid()
-    if ppid == 1:
-        return True
     try:
         return Path(f"/proc/{ppid}/comm").read_text(encoding="utf-8").strip() == "systemd"
     except OSError:
         return False
 
 
+def _live_gateway_in_cgroup(cgroup_path: str) -> bool:
+    """True when a live Hermes gateway process still sits in the cgroup.
+
+    The reaper's hard precondition is that the gateway's main process is
+    gone: ExecStopPost runs after it, and the cgroup then holds orphans. A
+    live gateway in the cgroup (a container where the gateway is PID 1, a
+    targeted reap of a still-running service) would be SIGKILLed by the
+    reap, so it must be detected and the reap refused. A PID whose command
+    line can no longer be read has already exited (or is a zombie) — exactly
+    what the reaper exists to clear — so only a readable, gateway-shaped
+    command line blocks.
+    """
+    from gateway.status import _read_process_cmdline, looks_like_gateway_command_line
+
+    for pid in _read_cgroup_pids(cgroup_path):
+        if pid == os.getpid():
+            continue
+        cmdline = _read_process_cmdline(pid)
+        if cmdline and looks_like_gateway_command_line(cmdline):
+            return True
+    return False
+
+
 def reap_cgroup(cgroup_path: str | None = None) -> int:
-    """SIGKILL every PID in the cgroup other than the caller. Returns the count killed."""
+    """SIGKILL every PID in the cgroup other than the caller. Returns the count killed.
+
+    Refuses (returns 0, no signals) when a live gateway process is still in
+    the cgroup — the reaper must never signal the live gateway, no matter
+    how it was invoked.
+    """
     cgroup_path = _own_cgroup_path() if cgroup_path is None else cgroup_path
     if not cgroup_path:
+        return 0
+    if _live_gateway_in_cgroup(cgroup_path):
+        print(
+            "cgroup_cleanup: refusing — a live gateway process is still in the "
+            "cgroup; reaping would SIGKILL it. Stop the service first (then "
+            "ExecStopPost reaps its orphans), or call reap_cgroup(path) once "
+            "the gateway process has exited.",
+            file=sys.stderr,
+        )
         return 0
     killed = 0
     for pid in _read_cgroup_pids(cgroup_path):

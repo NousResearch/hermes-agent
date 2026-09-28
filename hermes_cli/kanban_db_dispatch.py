@@ -1366,7 +1366,10 @@ def _record_task_failure(
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
-    error = error[:500]
+    # 4000, not 500: a spawn failure's git stderr (worktree add diagnostics
+    # among them) must keep its fatal line — the old cap hid the real cause
+    # behind progress noise and forced manual RCA (#126004).
+    error = error[:4000]
     with _kb.write_txn(conn):
         row = conn.execute(
             "SELECT consecutive_failures, status, max_retries, current_run_id "

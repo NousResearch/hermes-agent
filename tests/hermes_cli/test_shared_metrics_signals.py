@@ -104,6 +104,29 @@ def test_counter_rows_map_to_features():
     assert signals.features_for(contract.FEATURE_USED_MARK, {"feature": "bot_mode"}) == ("bot_mode",)
 
 
+def test_hermes_internal_work_never_latches_adoption():
+    from hermes_cli.observability.shared_metrics_fields import milestones_for
+
+    curator = {"archived_bucket": "0", "created_bucket": "0", "merged_bucket": "0", "patched_bucket": "0",
+               "outcome": "success"}
+    assert signals.features_for(contract.CURATOR_RUN_METRIC, {**curator, "trigger": "scheduled"}) == ()
+    assert signals.features_for(contract.CURATOR_RUN_METRIC, {**curator, "trigger": "manual"}) == ("curator",)
+    by_review = {"action": "created", "provenance": "agent_created"}  # the background-review fork
+    assert signals.features_for(contract.SKILL_LIFECYCLE_METRIC, by_review) == ()
+    assert milestones_for(contract.SKILL_LIFECYCLE_METRIC, by_review) == ()
+    by_user = {"action": "created", "provenance": "local"}
+    assert signals.features_for(contract.SKILL_LIFECYCLE_METRIC, by_user) == ("skills_created",)
+    assert milestones_for(contract.SKILL_LIFECYCLE_METRIC, by_user) == ("first_skill_created",)
+
+
+def test_unreadable_first_session_reads_unknown(monkeypatch, tmp_path):
+    def text_stamp(home):
+        return float("yesterday")
+
+    monkeypatch.setattr("hermes_cli.observability.shared_metrics_snapshot._first_session_started_at", text_stamp)
+    assert signals.days_since_install_bucket(tmp_path) == "unknown"
+
+
 @pytest.mark.parametrize(("age_s", "bucket"), [
     (60, "same_day"), (2 * 86_400, "1d_to_7d"), (10 * 86_400, "7d_to_30d"), (40 * 86_400, "30d_to_90d"),
     (200 * 86_400, "gte_90d"),

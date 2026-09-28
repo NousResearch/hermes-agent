@@ -62,15 +62,20 @@ def _tool(*names: str, prefix: str = "") -> Callable[[dict[str, str]], bool]:
     return used
 
 
+def user_created_skill(d: dict[str, str]) -> bool:
+    """A skill created at the user's request (``agent_created`` is Hermes' own background review)."""
+    return d.get("action") == "created" and d.get("provenance") != "agent_created"
+
+
 _TASK_SURFACE = {"desktop": "desktop", "tui": "tui"}
 # metric -> [(feature, predicate over the recorded dimensions)]. Unattended Hermes-owned work only
-# counts where the user set it up (a cron job, a curator run doing real work).
+# counts where the user set it up (a cron job, a curator run the user started).
 _FEATURE_RULES: dict[str, tuple[tuple[str, Callable[[dict[str, str]], bool]], ...]] = {
     contract.MEMORY_OP_METRIC: (("memory", lambda d: _success(d) and d.get("origin") == "foreground"),),
-    contract.SKILL_LIFECYCLE_METRIC: (("skills_created", lambda d: d.get("action") == "created"),),
+    contract.SKILL_LIFECYCLE_METRIC: (("skills_created", user_created_skill),),
     contract.DELEGATION_RUN_METRIC: (("delegation", lambda d: True),),
     contract.CRON_RUN_METRIC: (("cron", lambda d: d.get("outcome") in {"success", "failed"}),),
-    contract.CURATOR_RUN_METRIC: (("curator", _success),),
+    contract.CURATOR_RUN_METRIC: (("curator", lambda d: _success(d) and d.get("trigger") == "manual"),),
     contract.TASK_STARTED_METRIC: (
         ("gateway_platform", lambda d: d.get("platform") not in {None, "none"}),
         ("desktop", lambda d: d.get("execution_surface") == "desktop"),
@@ -103,7 +108,7 @@ def days_since_install_bucket(home: Path) -> str:
 
     try:
         first = _first_session_started_at(home)
-    except sqlite3.Error:
+    except (sqlite3.Error, OSError, TypeError, ValueError):  # unreadable, or a non-numeric started_at
         return "unknown"
     age = contract._non_negative_number(time.time() - first) if first is not None else None
     return "unknown" if age is None else contract._bucket(age, _DAYS_SINCE_INSTALL_THRESHOLDS, "gte_90d")

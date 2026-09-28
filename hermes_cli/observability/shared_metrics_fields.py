@@ -14,6 +14,7 @@ from . import shared_metrics_contract as contract
 from .shared_metrics_contract import (
     MODEL_IDENTIFIER_MAX_LENGTH, PROVIDER_IDENTIFIER_MAX_LENGTH, _bucket, _metric_identifier, _norm,
 )
+from .shared_metrics_signals import user_created_skill
 
 _MINUTE_MS = 60_000
 _SESSION_DURATION_THRESHOLDS = (
@@ -188,7 +189,7 @@ _MILESTONE_RULES = {
         ("first_mcp_tool_success", lambda d: d.get("outcome") == "success" and d.get("tool_name") == "mcp"),
         ("first_delegation", lambda d: d.get("outcome") == "success" and d.get("tool_name") == "delegate_task"),
     ),
-    contract.SKILL_LIFECYCLE_METRIC: (("first_skill_created", lambda d: d.get("action") == "created"),),
+    contract.SKILL_LIFECYCLE_METRIC: (("first_skill_created", user_created_skill),),
     contract.SKILL_LOAD_METRIC: (("first_skill_reused", lambda d: d.get("reuse_state") == "reused"),),
     contract.SESSION_METRIC: (("first_long_session", _long_session),),
     contract.SETUP_COMPLETED_METRIC: (("setup_completed", lambda d: True),),

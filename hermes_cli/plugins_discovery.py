@@ -10,6 +10,7 @@ import contextlib
 import contextvars
 import importlib.metadata
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -187,9 +188,10 @@ def scan_directory(
 
 
 def collect_directory_manifests() -> List[PluginManifest]:
-    """Read directory manifests in full-discovery order (bundled top-level, bundled/platforms, user, opt-in
-    project) without loading or mutating anything, so startup probes share the exact precedence/containment
-    rules of the real discovery sweep."""
+    """Read directory manifests in full-discovery order (bundled top-level, bundled/platforms, shared,
+    user, opt-in project) without loading or mutating anything, so startup probes share the exact
+    precedence/containment rules of the real discovery sweep. Per-profile ``plugins/`` still wins on key
+    collision (scanned last), so existing per-profile overrides are preserved (#87238)."""
     from hermes_cli import plugins as _origin  # patched names resolve through the origin
     manifests: List[PluginManifest] = []
 
@@ -206,6 +208,12 @@ def collect_directory_manifests() -> List[PluginManifest]:
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
     _scan("bundled (top-level)", repo_plugins, "bundled",
           {"memory", "context_engine", "model-providers", "cron_providers"})
+    # Shared plugins dir for per-directory profiles (#87238): env wins over config so the same plugin
+    # installed once is visible from any profile without per-profile reinstall.
+    shared_dir = _get_shared_plugins_dir()
+    if shared_dir is not None and shared_dir != get_hermes_home() / "plugins":
+        logger.debug("Scanning shared plugins: %s", shared_dir)
+        _scan("shared", shared_dir, "shared")
     user_dir = get_hermes_home() / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)
     _scan("user", user_dir, "user")
@@ -218,17 +226,36 @@ def collect_directory_manifests() -> List[PluginManifest]:
     return manifests
 
 
+def _get_shared_plugins_dir() -> Optional[Path]:
+    """Resolve the cross-profile shared plugins directory.
+
+    ``HERMES_SHARED_PLUGINS`` env var wins over ``plugins.shared_dir`` in config.yaml; an empty or
+    unparseable config entry is treated as unset. Returns ``None`` when neither is configured, or when the
+    resolved path is the same as the per-profile ``plugins/`` dir (no point double-scanning)."""
+    env_override = os.getenv("HERMES_SHARED_PLUGINS", "").strip()
+    if env_override:
+        return Path(env_override)
+    try:
+        from hermes_cli.config import load_config
+        cfg_value = cfg_get(load_config(), "plugins", "shared_dir", default="")
+    except Exception:
+        cfg_value = ""
+    if isinstance(cfg_value, str) and cfg_value.strip():
+        return Path(cfg_value.strip())
+    return None
+
+
 def resolve_manifest_winners(manifests: List[PluginManifest]) -> Dict[str, PluginManifest]:
-    """Later sources win on key collision (project > user > bundled): a same-named copy under
+    """Later sources win on key collision (project > user > shared > bundled): a same-named copy under
     ``~/.hermes/plugins/<name>`` is the documented way to override a bundled plugin, and is logged. A flat
-    user/project manifest that claims a bundled key from a *differently named* directory is an impostor, not
+    user/project/shared manifest that claims a bundled key from a *differently named* directory is an impostor, not
     an override (``impostor_dir/plugin.yaml`` with ``name: kanban``): it is skipped with a warning so
     ``hermes plugins enable kanban`` never activates unrelated code under the bundled name."""
     winners: Dict[str, PluginManifest] = {}
     for manifest in manifests:
         key = manifest_key(manifest)
         shadowed = winners.get(key)
-        if shadowed is not None and shadowed.source == "bundled" and manifest.source in {"user", "project"}:
+        if shadowed is not None and shadowed.source == "bundled" and manifest.source in {"user", "project", "shared"}:
             own_dir = Path(manifest.path).name if manifest.path else ""
             bundled_dir = Path(shadowed.path).name if shadowed.path else ""
             if own_dir and bundled_dir and own_dir != bundled_dir:

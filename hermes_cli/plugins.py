@@ -1419,7 +1419,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             logger.warning("Removed Hermes plugin %s is still listed in plugins.enabled; "
                            "remove it and configure native Relay plugins with %s",
                            ", ".join(stale_relay_keys), RELAY_PLUGINS_CONFIG_ENV)
-        # Later sources win on key collision (project > user > bundled) except a flat impostor claiming a
+        # Later sources win on key collision (project > user > shared > bundled) except a flat impostor claiming a
         # bundled key from another directory (resolve_manifest_winners); gate the winners, then
         # load survivors in requires_plugins order (see resolve_plugin_load_order).
         winners = resolve_manifest_winners(manifests)

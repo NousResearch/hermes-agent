@@ -445,7 +445,7 @@ class PluginLoaderMixin:
             # Reuse a deferred platform's already-imported package so its body doesn't run twice.
             # See #78050.
             module = self._predeclared_modules.pop(plugin_key, None)
-            if module is None and manifest.source in {"user", "project", "bundled"}:
+            if module is None and manifest.source in {"user", "project", "shared", "bundled"}:
                 module = self._load_directory_module(manifest, module_name=module_name)
             elif module is None:
                 module = self._load_entrypoint_module(manifest)

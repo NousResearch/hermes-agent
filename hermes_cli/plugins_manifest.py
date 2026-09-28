@@ -348,7 +348,7 @@ class PluginManifest:
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
-    source: str = ""        # "bundled", "user", "project", or "entrypoint"
+    source: str = ""        # "bundled", "shared", "user", "project", or "entrypoint"
     path: Optional[str] = None
     # ``standalone`` (default; opt-in via plugins.enabled) | ``backend`` (pluggable backend for a core tool;
     # bundled auto-load, user-installed gated) | ``exclusive`` (one active provider, selected via

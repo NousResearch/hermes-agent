@@ -319,13 +319,13 @@ def _reuse_git_env():
 
 
 def _selected_base_env() -> dict:
-    # git child with hand-isolated config env; exact preservation; a HOME
-    # rewrite would change which ~/.gitconfig the isolation vars are hiding.
     from tools.environments.local import build_subprocess_env
 
     slot = _reused_git_env.get()
     if slot is not None and "env" in slot:
         return dict(slot["env"])
+    # git child with hand-isolated config env; exact preservation; a HOME
+    # rewrite would change which ~/.gitconfig the isolation vars are hiding.
     env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
     if slot is not None:
         slot["env"] = dict(env)
@@ -547,9 +547,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     # ``git init --bare`` rejects GIT_WORK_TREE, so we can't use _run_git
     # here (which always sets GIT_DIR + GIT_WORK_TREE).  Use a raw
     # subprocess with just the config-isolation env vars.
-    from tools.environments.local import build_subprocess_env
-
-    init_env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
+    init_env = _selected_base_env()
     init_env["GIT_CONFIG_GLOBAL"] = os.devnull
     init_env["GIT_CONFIG_SYSTEM"] = os.devnull
     init_env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -968,37 +966,38 @@ class CheckpointManager:
         if not (store / "HEAD").exists():
             return []
 
-        ref = _ref_name(_project_hash(abs_dir))
-        ok, stdout, _ = _run_git(
-            ["log", ref, "--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
-            store, abs_dir,
-            allowed_returncodes={128, 129},
-        )
+        with _reuse_git_env():
+            ref = _ref_name(_project_hash(abs_dir))
+            ok, stdout, _ = _run_git(
+                ["log", ref, "--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
+                store, abs_dir,
+                allowed_returncodes={128, 129},
+            )
 
-        if not ok or not stdout:
-            return []
+            if not ok or not stdout:
+                return []
 
-        results: List[Dict] = []
-        for line in stdout.splitlines():
-            parts = line.split("|", 3)
-            if len(parts) == 4:
-                entry = {
-                    "hash": parts[0],
-                    "short_hash": parts[1],
-                    "timestamp": parts[2],
-                    "reason": parts[3],
-                    "files_changed": 0,
-                    "insertions": 0,
-                    "deletions": 0,
-                }
-                stat_ok, stat_out, _ = _run_git(
-                    ["diff", "--shortstat", f"{parts[0]}~1", parts[0]],
-                    store, abs_dir,
-                    allowed_returncodes={128, 129},
-                )
-                if stat_ok and stat_out:
-                    self._parse_shortstat(stat_out, entry)
-                results.append(entry)
+            results: List[Dict] = []
+            for line in stdout.splitlines():
+                parts = line.split("|", 3)
+                if len(parts) == 4:
+                    entry = {
+                        "hash": parts[0],
+                        "short_hash": parts[1],
+                        "timestamp": parts[2],
+                        "reason": parts[3],
+                        "files_changed": 0,
+                        "insertions": 0,
+                        "deletions": 0,
+                    }
+                    stat_ok, stat_out, _ = _run_git(
+                        ["diff", "--shortstat", f"{parts[0]}~1", parts[0]],
+                        store, abs_dir,
+                        allowed_returncodes={128, 129},
+                    )
+                    if stat_ok and stat_out:
+                        self._parse_shortstat(stat_out, entry)
+                    results.append(entry)
         return results
 
     def list_all_checkpoints(self) -> List[Dict]:
@@ -1149,7 +1148,7 @@ class CheckpointManager:
         from tools.checkpoint_pruning import PruneError, store_lock
 
         try:
-            with store_lock(_resolve_checkpoint_base()):
+            with store_lock(_resolve_checkpoint_base()), _reuse_git_env():
                 return self._restore(working_dir, commit_hash, file_path, safe)
         except (PruneError, OSError) as exc:
             return {"success": False, "error": str(exc)}

@@ -362,6 +362,57 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
     return published
 
 
+def _launcher_exe_replaceable(exe: Path, repo_root: Path) -> bool:
+    """Whether a native launcher exe may be deleted to unshadow a staged
+    ``.cmd`` fallback.
+
+    Only a verifiably dead launcher is replaceable: not one of our launcher
+    archives, the obsolete pre-pm venv trampoline, a launcher whose embedded
+    interpreter no longer exists, or one that boots another install's root. A
+    bootable launcher for THIS install must survive the fallback — without
+    distlib the fallback cannot re-mint a native exe, and absolute-path
+    consumers (services, shortcuts, scheduled tasks) pin the exe itself:
+    deleting it leaves e.g. an NSSM gateway service with no Application and
+    the update's resume step crashes (#126279)."""
+    import ast
+    import re
+    from zipfile import BadZipFile, ZipFile
+
+    from hermes_constants import project_venv_dir
+
+    if exe_is_venv_bound(exe, project_venv_dir(repo_root)):
+        return True
+    try:
+        with ZipFile(exe) as archive:
+            if archive.namelist() != ["__main__.py"]:
+                return True
+            script = archive.read("__main__.py").decode("utf-8")
+            header_offset = archive.infolist()[0].header_offset
+        with open(exe, "rb") as handle:
+            prefix = handle.read(header_offset)
+    except (OSError, BadZipFile, KeyError, UnicodeDecodeError):
+        return True
+    shebang = prefix.splitlines()[-1] if prefix.splitlines() else b""
+    if not shebang.startswith(b"#!"):
+        return True
+    interpreter = shebang[2:].strip()
+    if interpreter.endswith(b"-I"):
+        interpreter = interpreter[:-2].strip()
+    if interpreter[:1] == b'"' and interpreter[-1:] == b'"':
+        interpreter = interpreter[1:-1]
+    match = re.search(r"sys\.path\.insert\(0, ('(?:[^'\\]|\\.)*')\)", script)
+    if match is None:
+        return True
+    try:
+        boot_root = Path(ast.literal_eval(match.group(1)))
+    except (ValueError, SyntaxError):
+        return True
+    return not (
+        Path(os.fsdecode(interpreter)).exists()
+        and boot_root == Path(repo_root).resolve()
+    )
+
+
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     """Publish one launcher bound to store Python, or refuse missing tools."""
     repo_root = Path(repo_root)
@@ -369,10 +420,14 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     if store_python is not None:
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
         if path is not None and path.suffix == ".cmd":
-            # cmd.exe prefers .exe. An older launcher must not shadow the
-            # newly published command when distlib is unavailable.
+            # cmd.exe prefers .exe, so a dead launcher must not shadow the
+            # newly published command. A live native launcher outranks the
+            # fallback and must survive it: it boots this install's code at
+            # runtime and its absolute path is pinned by services (#126279).
             try:
-                (Path(out_dir) / f"{name}.exe").unlink(missing_ok=True)
+                stale = Path(out_dir) / f"{name}.exe"
+                if _launcher_exe_replaceable(stale, repo_root):
+                    stale.unlink(missing_ok=True)
             except OSError:
                 return None
         return path

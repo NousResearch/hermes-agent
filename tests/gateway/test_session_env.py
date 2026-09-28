@@ -76,6 +76,49 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     runner._clear_session_env(tokens)
 
 
+def test_set_session_env_binds_session_id(monkeypatch):
+    """_set_session_env must bind context.session_id, not leave it at the "" default
+    (#126115): build_session_context copies session_entry.session_id onto the context
+    right before the bind, and once the session context is engaged the subprocess env
+    bridge treats the bound ContextVar as authoritative — an omitted id meant tool
+    subprocesses saw HERMES_SESSION_ID="" while platform/chat/user ids came through.
+    """
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        user_id="123456",
+        user_name="alice",
+    )
+    context = SessionContext(
+        source=source,
+        connected_platforms=[],
+        home_channels={},
+        session_key="agent:main:telegram:group:-1001",
+        session_id="20260928_120000_abcd1234",
+    )
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert get_session_env("HERMES_SESSION_KEY") == "agent:main:telegram:group:-1001"
+        assert get_session_env("HERMES_SESSION_ID") == "20260928_120000_abcd1234"
+
+        # The subprocess-env bridge is ContextVar-authoritative once engaged, so the
+        # bound id is exactly what a tool child process receives.
+        from tools.environments.local import _inject_session_context_env
+
+        child_env: dict = {}
+        _inject_session_context_env(child_env)
+        assert child_env.get("HERMES_SESSION_ID") == "20260928_120000_abcd1234"
+    finally:
+        runner._clear_session_env(tokens)
+        assert get_session_env("HERMES_SESSION_ID") == ""
+
+
 def test_clear_session_env_restores_previous_state(monkeypatch):
     """_clear_session_env should restore contextvars to their pre-handler values."""
     runner = object.__new__(GatewayRunner)

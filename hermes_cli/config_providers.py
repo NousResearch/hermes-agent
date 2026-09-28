@@ -114,7 +114,7 @@ _CAMEL_ALIASES: Dict[str, str] = {
 _KNOWN_PROVIDER_KEYS = {
     # ``provider`` duplicates the ``providers.<name>`` mapping key and is unused here, but Hermes'
     # own config writer has historically emitted it. Accept it so self-written configs don't warn.
-    "provider",
+    "provider", "enabled",
     "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env", "key_cmd",
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
@@ -610,3 +610,48 @@ def is_provider_enabled(provider_cfg: Optional[Dict[str, Any]]) -> bool:
     if isinstance(flag, str):
         return flag.strip().lower() not in _FALSE_WORDS
     return bool(flag)
+
+
+def is_provider_id_enabled(provider_id: Any, providers: Any = None) -> bool:
+    """Whether ``provider_id`` is enabled in a ``providers:`` mapping.
+
+    Provider-profile aliases share the canonical profile's switch, so
+    ``providers.copilot.enabled: false`` also disables ``github-copilot``.
+    Named custom routes stay isolated: ``custom:relay`` consults only the
+    ``relay``/``custom:relay`` entries and never inherits another generic
+    custom alias's flag.  Missing entries retain the historical enabled
+    behavior.
+    """
+    raw = coerce_provider_id(provider_id).lower()
+    if not raw:
+        return True
+    if providers is None:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+        providers = config.get("providers") if isinstance(config, dict) else None
+    provider_map = stringify_provider_map(providers)
+    if not provider_map:
+        return True
+
+    identities = {raw}
+    if raw.startswith("custom:") and raw.partition(":")[2]:
+        identities.add(raw.partition(":")[2])
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(raw)
+    except Exception:
+        profile = None
+    canonical = coerce_provider_id(getattr(profile, "name", "")).lower()
+    if profile is not None and canonical and canonical != "custom":
+        identities.add(canonical)
+        identities.update(
+            coerce_provider_id(alias).lower()
+            for alias in (getattr(profile, "aliases", ()) or ())
+            if coerce_provider_id(alias))
+
+    return all(
+        is_provider_enabled(entry)
+        for stored, entry in provider_map.items()
+        if coerce_provider_id(stored).lower() in identities)

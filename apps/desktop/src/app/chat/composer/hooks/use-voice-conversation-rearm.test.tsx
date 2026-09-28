@@ -438,3 +438,32 @@ describe('useVoiceConversation playback rearm', () => {
     expect(mocks.handle.start).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('useVoiceConversation start with audio still playing', () => {
+  afterEach(() => {
+    cleanup()
+    vi.clearAllMocks()
+    mocks.resetSpeechMocks()
+    $voicePlayback.set({ audioElement: null, messageId: null, sequence: 0, source: null, status: 'idle' })
+  })
+
+  it('cuts a read-aloud clip that is still playing when the conversation starts', async () => {
+    $voicePlayback.set({ audioElement: null, messageId: 'm1', sequence: 3, source: 'read-aloud', status: 'speaking' })
+    const hook = renderRearmConversation('reply-1', 'Hello back')
+
+    hook.rerender({ enabled: true })
+
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(1))
+    expect(mocks.stopVoicePlayback).toHaveBeenCalled()
+    expect($voicePlayback.get().status).toBe('idle')
+  })
+
+  it('leaves the playback sequence alone when nothing is playing', async () => {
+    const hook = renderRearmConversation('reply-1', 'Hello back')
+
+    hook.rerender({ enabled: true })
+
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(1))
+    expect(mocks.stopVoicePlayback).not.toHaveBeenCalled()
+  })
+})

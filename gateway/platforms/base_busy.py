@@ -150,6 +150,12 @@ class BaseBusyMixin:
                             return
                     if handled:
                         return
+                if event._queue_at_turn_boundary:
+                    existing = self._pending_messages.get(session_key)
+                    if existing is None or existing._pending_coalesce_key == event._pending_coalesce_key:
+                        self._pending_messages[session_key] = event
+                        event._gateway_accepted = True
+                    return
                 # Without a runner FIFO, do not merge a wake into an occupied human slot
                 # (or collapse distinct wakes into one turn). Its caller can retry admission.
                 if event.internal and session_key in self._pending_messages:

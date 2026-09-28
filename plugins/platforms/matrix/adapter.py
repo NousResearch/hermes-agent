@@ -8,7 +8,7 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_ALLOWED_USERS, MATRIX_ALLOWED_ROOMS (whitelist; DMs exempt), MATRIX_IGNORE_USER_PATTERNS
   (regexes for bridge ghosts), MATRIX_HOME_ROOM (cron delivery), MATRIX_REACTIONS (default true);
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
-  MATRIX_PROCESS_NOTICES, MATRIX_PROCESS_EDITS, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
+  MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
   MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_REPLY_TO_MODE off|first|all (default first);
   MATRIX_MAX_MESSAGE_LENGTH (UTF-8 bytes, default/max 15000),
@@ -102,6 +102,7 @@ from plugins.platforms.matrix.redaction_mixin import MatrixRedactionMixin
 from plugins.platforms.matrix.intake_mixin import MatrixIntakeMixin
 from plugins.platforms.matrix.adapter_media import MatrixMediaMixin
 from plugins.platforms.matrix.inbound_events import MatrixInboundEventMixin
+from plugins.platforms.matrix.edit_followups import MatrixEditFollowupsMixin, edit_followup_rooms
 from plugins.platforms.matrix.turn_context import MatrixTurnContextUpdate
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote, _label_body,
@@ -795,7 +796,7 @@ from plugins.platforms.matrix.invites import MatrixInvitesMixin
 from plugins.platforms.matrix.feedback import MatrixFeedbackMixin
 
 
-class MatrixAdapter(MatrixApprovalMixin, MatrixFeedbackMixin, MatrixReactionPromptMixin, MatrixInvitesMixin, MatrixInboundEventMixin, MatrixMediaMixin, MatrixIntakeMixin, MatrixRedactionMixin, MatrixFollowupMixin, MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdapter):
+class MatrixAdapter(MatrixEditFollowupsMixin, MatrixApprovalMixin, MatrixFeedbackMixin, MatrixReactionPromptMixin, MatrixInvitesMixin, MatrixInboundEventMixin, MatrixMediaMixin, MatrixIntakeMixin, MatrixRedactionMixin, MatrixFollowupMixin, MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
@@ -898,7 +899,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixFeedbackMixin, MatrixReactionProm
         raw_session_scope = str(_extra_or_secret(config.extra, "session_scope", "MATRIX_SESSION_SCOPE", "auto")).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
-        self._process_edits: bool = self._parse_process_edits(config)
+        self._process_edits = edit_followup_rooms(config)
 
         feedback = MatrixFeedbackPolicy.from_config(config)
         self._reactions_enabled: bool = feedback.reactions
@@ -1630,7 +1631,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixFeedbackMixin, MatrixReactionProm
                 "ignored_user_pattern_count": len(self._ignored_user_patterns),
                 "require_mention": self._require_mention, "free_response_room_count": len(self._free_rooms),
                 "allow_room_mentions": self._allow_room_mentions, "process_notices": self._process_notices,
-                "process_edits": self._process_edits,
+                "process_edits": sorted(self._process_edits),
                 "allow_public_rooms": _env_truthy("MATRIX_ALLOW_PUBLIC_ROOMS")},
             "media": {"max_media_bytes": self._max_media_bytes}}
 
@@ -3329,7 +3330,6 @@ def interactive_setup() -> None:
 
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "MATRIX_REQUIRE_MENTION", "lower"), ("process_notices", "MATRIX_PROCESS_NOTICES", "lower"),
-    ("process_edits", "MATRIX_PROCESS_EDITS", "lower"),
     ("session_scope", "MATRIX_SESSION_SCOPE", "lower"), ("auto_thread", "MATRIX_AUTO_THREAD", "lower"),
     ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "lower"),
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
@@ -3342,6 +3342,8 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` (#24849): config.yaml matrix: keys → MATRIX_* env (env wins; skipped under a
     multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
     seeded = _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE) or {}
+    if "process_edits" in matrix_cfg:
+        seeded["process_edits"] = matrix_cfg["process_edits"]
     if "thread_backfill_limit" in matrix_cfg:
         seeded["thread_backfill_limit"] = matrix_cfg["thread_backfill_limit"]
     if "room_backfill_limit" in matrix_cfg:

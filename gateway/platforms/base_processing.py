@@ -136,6 +136,10 @@ class BaseProcessingMixin:
         event._gateway_accepted = self._start_session_processing(event, session_key)
 
 
+    async def validate_inbound_event(self, event: MessageEvent) -> bool:
+        """Recheck platform policy before a queued event starts a new turn."""
+        return True
+
     def _release_session_guard(self, session_key: str, *, guard: Optional[asyncio.Event] = None) -> None:
         """Release the session guard; with ``guard`` given, only if the entry is still that exact
         Event (an old task's unwind must not clear the guard a reset-like command swapped in)."""

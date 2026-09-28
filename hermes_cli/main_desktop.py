@@ -954,8 +954,9 @@ def _stage_macos_bundle_copy(src: Path, dst: Path) -> None:
     subprocess.run(["/usr/bin/ditto", str(src), str(dst)], check=True, capture_output=True)
 
 
-def _install_rebuilt_desktop_app(desktop_dir: Path) -> tuple[list[Path], list[str]]:
-    """Copy the rebuilt macOS bundle over every stale installed ``Hermes.app`` (#52339).
+def _install_rebuilt_desktop_app(desktop_dir: Path, candidates: list[Path]) -> tuple[list[Path], list[str]]:
+    """Copy the rebuilt macOS bundle into every stale or missing installed ``Hermes.app`` in
+    *candidates* (``_installed_desktop_apps()``) (#52339).
 
     ``hermes desktop --build-only`` (what ``hermes update`` runs) packages into
     ``apps/desktop/release/`` only. Finder, the Dock and Spotlight launch the copy in
@@ -964,7 +965,7 @@ def _install_rebuilt_desktop_app(desktop_dir: Path) -> tuple[list[Path], list[st
     only the bundle it was launched from, so an app running from ``release/`` never refreshed
     the installed copy either.
 
-    Returns ``(installed, problems)``: bundles that were replaced, and one user-facing line per
+    Returns ``(installed, problems)``: bundles that were (re)installed, and one user-facing line per
     bundle that could not be (running, copy or swap failure). Both empty means every installed
     copy was already current.
     """
@@ -975,16 +976,32 @@ def _install_rebuilt_desktop_app(desktop_dir: Path) -> tuple[list[Path], list[st
         return [], []
     # .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app
     return _install_rebuilt_macos_bundles(
-        rebuilt_exe.parents[2], _installed_desktop_apps(), running=_running_macos_app_bundles())
+        rebuilt_exe.parents[2], candidates, running=_running_macos_app_bundles())
 
 
 def _refresh_installed_desktop_apps(desktop_dir: Path) -> None:
-    """Install the rebuilt bundle over stale installed copies and report each outcome."""
-    installed, problems = _install_rebuilt_desktop_app(desktop_dir)
+    """Install the rebuilt bundle over stale or missing installed copies, report each outcome, and
+    record which copies this update keeps current."""
+    owned = _installed_desktop_apps()
+    missing = {app for app in owned if not app.exists()}
+    installed, problems = _install_rebuilt_desktop_app(desktop_dir, owned)
     for app in installed:
-        print(f"  ✓ Installed the rebuilt Desktop app at {app}")
+        if app in missing:
+            print(f"  ✓ Reinstalled the Desktop app at {app}: it had been removed, so Finder, "
+                  "the Dock and Spotlight could not find Hermes")
+        else:
+            print(f"  ✓ Installed the rebuilt Desktop app at {app}")
     for problem in problems:
         print(f"  ⚠ {problem}")
+    if not _owns_installed_desktop_apps():
+        return
+    from hermes_cli.gui_uninstall import desktop_install_record  # noqa: PLC0415
+    from utils import atomic_json_write  # noqa: PLC0415
+    try:
+        # A copy that failed to reinstall stays recorded, so the next update retries it.
+        atomic_json_write(desktop_install_record(), {"apps": [str(app) for app in owned]})
+    except OSError as exc:
+        print(f"  ⚠ Could not record the installed Desktop app ({exc})")
 
 
 def _update_owned_macos_bundles(candidates: list[Path]) -> list[Path]:
@@ -1006,20 +1023,34 @@ def _update_owned_macos_bundles(candidates: list[Path]) -> list[Path]:
     return owned
 
 
-def _installed_desktop_apps() -> list[Path]:
-    """Installed macOS ``Hermes.app`` bundles this checkout's update owns (none off macOS).
-
-    A packaged app runs the checkout under the default Hermes home, so only that checkout may
-    build for it: a bundle from any other tree (a dev worktree) would split shell from backend.
-    """
+def _owns_installed_desktop_apps() -> bool:
+    """A packaged app runs the checkout under the default Hermes home, so only that checkout (on
+    macOS) may build for it: a bundle from any other tree (a dev worktree) would split shell from
+    backend."""
     if sys.platform != "darwin":
-        return []
-    from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: PLC0415
+        return False
     from hermes_cli.main import PROJECT_ROOT  # noqa: PLC0415
     from hermes_constants import get_default_hermes_root  # noqa: PLC0415
-    if Path(PROJECT_ROOT).resolve() != (get_default_hermes_root() / "hermes-agent").resolve():
+    return Path(PROJECT_ROOT).resolve() == (get_default_hermes_root() / "hermes-agent").resolve()
+
+
+def _installed_desktop_apps() -> list[Path]:
+    """Installed macOS ``Hermes.app`` bundles this checkout's update owns.
+
+    When no owned copy is left, a recorded one that has gone missing still counts: its ownership
+    stamp left with the bundle, and without the record nothing would ever put it back (Finder, the
+    Dock and Spotlight lose Hermes for good). A copy moved to the other Applications folder keeps
+    its stamp, so it is found instead of doubled. Hermes' GUI uninstall deletes the record.
+    """
+    if not _owns_installed_desktop_apps():
         return []
-    return _update_owned_macos_bundles(packaged_gui_app_paths())
+    from hermes_cli.gui_uninstall import desktop_install_record, packaged_gui_app_paths  # noqa: PLC0415
+    from utils import read_json_or_empty  # noqa: PLC0415
+    candidates = packaged_gui_app_paths()
+    if owned := _update_owned_macos_bundles(candidates):
+        return owned
+    recorded = read_json_or_empty(desktop_install_record()).get("apps", [])
+    return [app for app in candidates if str(app) in recorded and not app.exists()]
 
 
 def _installed_desktop_launch_target(desktop_dir: Path, packaged_executable: Path) -> Path:
@@ -1043,8 +1074,8 @@ def _installed_desktop_launch_target(desktop_dir: Path, packaged_executable: Pat
 
 def _install_rebuilt_macos_bundles(
         rebuilt_app: Path, candidates: list[Path], *, running: set[Path]) -> tuple[list[Path], list[str]]:
-    """Stage-and-swap ``rebuilt_app`` over each existing bundle in ``candidates`` whose ``app.asar``
-    differs. The rebuilt bundle already carries the stable local signing identity and no
+    """Stage-and-swap ``rebuilt_app`` into each bundle path in ``candidates`` that is missing or
+    whose ``app.asar`` differs. The rebuilt bundle already carries the stable local signing identity and no
     quarantine xattr (``_desktop_macos_relaunchable_fixup``); ``ditto`` preserves both, so nothing
     is re-signed here and TCC grants survive."""
     rebuilt_hash = _app_asar_hash(rebuilt_app)
@@ -1053,7 +1084,7 @@ def _install_rebuilt_macos_bundles(
     installed: list[Path] = []
     problems: list[str] = []
     for app in candidates:
-        if not app.is_dir() or _app_asar_hash(app) == rebuilt_hash:
+        if app.is_dir() and _app_asar_hash(app) == rebuilt_hash:
             continue
         if app.resolve() in running:
             problems.append(
@@ -1069,7 +1100,8 @@ def _install_rebuilt_macos_bundles(
             _swap_in_new_macos_bundle(tmp, app, old)
         except (OSError, subprocess.CalledProcessError) as exc:
             shutil.rmtree(tmp, ignore_errors=True)
-            problems.append(f"{app} could not be replaced ({exc}); the previous app was kept")
+            kept = "; the previous app was kept" if app.exists() else ""
+            problems.append(f"{app} could not be installed ({exc}){kept}")
             continue
         installed.append(app)
     return installed, problems

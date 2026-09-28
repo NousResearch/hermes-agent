@@ -437,9 +437,11 @@ def _marker_only_restart_obsolete() -> bool:
     except Exception as exc:
         logger.debug("Fleet probe failed; keeping fleet-restart-pending marker: %s", exc)
         return False
-    if not fleet:
+    if not fleet or (not expected_sha and all(row_is_external(row) for row in fleet)):
         if owed is not None or not expected_sha:
-            return False  # Absence cannot prove recovery of the recorded inventory / unnamed code.
+            # Absence cannot prove recovery of the recorded inventory / unnamed code; a fleet
+            # whose every row serves ANOTHER checkout root is absence too, not evidence.
+            return False
         return _discharge_gatewayless_marker(checkout_sha, expected_sha)
     covered = _fleet_covered_gateways(fleet)
     if covered is None:

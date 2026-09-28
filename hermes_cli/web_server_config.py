@@ -85,7 +85,13 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity",
     ),
     # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
-    "terminal.vercel_runtime": _select("Vercel Sandbox runtime", "node24", "node22", "python3.13"),
+    "terminal.vercel_image": {
+        "type": "string",
+        "description": "Vercel Sandbox image: a Vercel managed image (vercel/sandbox/universal:latest) or a VCR repository[:tag]",
+    },
+    "terminal.vercel_runtime": _select(
+        "Legacy Vercel Sandbox runtime (deprecated by Vercel; a pinned runtime overrides the image; clear to use the image)",
+        "node24", "node22", "python3.13", clearable=True),
     "terminal.modal_mode": _select("Modal sandbox mode", "sandbox", "function"),
     "proxy.enabled": {
         "type": "boolean",

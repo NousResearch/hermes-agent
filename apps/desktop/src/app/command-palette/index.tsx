@@ -70,6 +70,7 @@ import {
   closeCommandPalette,
   setCommandPaletteOpen
 } from '@/store/command-palette'
+import { completeFlow, recordAction } from '@/store/desktop-metrics'
 import { $bindings, bindingsFor } from '@/store/keybinds'
 import { $dismissedAutoProjectIds, $pinnedSessionIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
@@ -1564,6 +1565,9 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
       return
     }
+
+    completeFlow('command_palette')
+    recordAction(item.action ?? 'other', 'palette')
 
     if (item.runWithEvent) {
       item.runWithEvent(lastSelectMods.current)

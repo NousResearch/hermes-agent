@@ -180,6 +180,7 @@ _LONG_HANDLERS = frozenset({
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
+    "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
 })
 
 _rpc_pool_workers = max(2, env_int("HERMES_TUI_RPC_POOL_WORKERS", 8))
@@ -3505,7 +3506,7 @@ from . import (  # noqa: E402
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
     methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account,
     methods_display as _methods_display, methods_display_watch as _methods_display_watch,
-    methods_onboarding as _methods_onboarding)
+    methods_onboarding as _methods_onboarding, methods_shared_metrics as _methods_shared_metrics)
 
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _session_agent_worktree, _compute_host_bridge, _model_switch,
@@ -3516,6 +3517,7 @@ for _m in (
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
     _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
-    _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding):
+    _methods_connectors_account, _methods_display, _methods_display_watch, _methods_onboarding,
+    _methods_shared_metrics):
     _m.register(sys.modules[__name__])
 del _m

@@ -840,7 +840,7 @@ class SessionStore(
         from gateway.session_db_recovery import RecoverableHandleCache
 
         self._db_handle_cache = RecoverableHandleCache(
-            handles=self._db_handles, lock=self._db_handles_lock
+            handles=self._db_handles, lock=self._db_handles_lock, registry_backed=True
         )
         # The routing index needs exactly one home for its lifetime: the gateway's own, captured
         # before any profile scope exists (see ``_routing_db``).

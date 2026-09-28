@@ -2123,13 +2123,16 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         return None
     if not _is_gateway_runtime_lock_active_strict(resolved_lock_path):
         return None
-    if not pid_exists:
-        raise RuntimeError("active gateway lock has no PID metadata")
-    records = (_read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path))
+    lock_record = _read_gateway_lock_record(resolved_lock_path)
+    # The PID file is advisory beside a HELD lock: a launch-service gateway keeps serving after its
+    # gateway.pid was unlinked (#110166) and --replace force-unlinks the old one (#123430). The
+    # holder wrote its own identity into the lock at acquisition, so that record validated against
+    # the live process below is the same proof — raising here blocked every following update.
+    records = (_read_pid_record(resolved_pid_path), lock_record) if pid_exists else (lock_record,)
     if not all(records):
         raise RuntimeError("gateway PID or lock metadata is malformed")
     pid = _pid_from_record(records[0])
-    if pid is None or pid <= 0 or _pid_from_record(records[1]) != pid:
+    if pid is None or pid <= 0 or any(_pid_from_record(record) != pid for record in records[1:]):
         raise RuntimeError("gateway PID and lock identities disagree")
     if not _pid_exists(pid):
         raise RuntimeError("gateway identity is not live")

@@ -1762,6 +1762,29 @@ def test_strict_gateway_identity_rejects_reused_pid(tmp_path, monkeypatch):
         status.get_running_pid_identity_strict(pid_path)
 
 
+def test_strict_gateway_identity_adopts_held_lock_when_pid_file_is_gone(tmp_path, monkeypatch):
+    """A held lock whose record validates against the live process IS the gateway's identity: a
+    --replace relaunch (or a launch-service gateway, #110166) leaves gateway.lock without
+    gateway.pid, and raising there aborted every following `hermes update` (#123430)."""
+    pid_path = tmp_path / "gateway.pid"
+    lock_path = tmp_path / "gateway.lock"
+    record = {"pid": 123, "start_time": 10.0, "kind": "hermes-gateway",
+              "argv": ["python", "-m", "hermes_cli.main", "gateway", "run", "--replace"]}
+    lock_path.write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(status, "_get_gateway_lock_path", lambda _path=None: lock_path)
+    monkeypatch.setattr(status, "_is_gateway_runtime_lock_active_strict", lambda _path=None: True)
+    monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 10.0)
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: "python -m hermes_cli.main gateway run --replace")
+    monkeypatch.setattr(status, "_IS_WINDOWS", False)
+
+    assert status.get_running_pid_identity_strict(pid_path) == (123, 10.0)
+    # The lock alone is still held to the full proof: a recycled PID is refused, not adopted.
+    monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 20.0)
+    with pytest.raises(RuntimeError, match="identity changed"):
+        status.get_running_pid_identity_strict(pid_path)
+
+
 def test_pid_record_names_the_entry_point_under_an_inline_launcher(tmp_path, monkeypatch):
     """The published launcher script runs `python -I -c <script> gateway run`, so sys.argv[0] is
     "-c"; the persisted record must still read as a gateway when the live cmdline is unreadable

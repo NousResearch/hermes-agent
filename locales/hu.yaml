@@ -27,6 +27,20 @@ gateway:
   config_read_failed: "⚠️ Nem sikerült olvasni a config.yaml fájlt: {error}"
   config_save_failed: "⚠️ Nem sikerült menteni a konfigurációt: {error}"
 
+  clarify:
+    other_button:      "✏️ Egyéb (válasz beírása)"
+    type_answer_toast: "✏️ Írd be a válaszod a csevegésbe."
+    awaiting_typed:    "Várakozás {user} írásos válaszára…"
+    expired_toast:     "⚠️ Ez a kérdés lejárt — használd a /retry parancsot."
+    expired_notice:    "⚠️ Ez a kérdés lejárt, vagy a munkamenet újraindult — használd a /retry parancsot."
+    already_resolved:  "Erre a kérdésre már válaszoltak."
+    already_answered:  "Erre a kérdésre már válaszoltak~"
+    invalid_choice:    "Érvénytelen választás."
+    needs_input:       "Hermes a válaszodra vár"
+    pick_hint:         "Válassz lent egyet, vagy kattints az ✏️ Egyéb gombra a saját válaszodhoz."
+    reply_hint:        "Válaszolj ebben a csatornában."
+    answered_by:       "{user} válasza: {choice}"
+
   model:
     error_prefix:           "Hiba: {error}"
     switched:               "Modell átváltva: `{model}`"

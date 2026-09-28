@@ -27,6 +27,20 @@ gateway:
   config_read_failed: "⚠️ Не вдалося прочитати config.yaml: {error}"
   config_save_failed: "⚠️ Не вдалося зберегти конфігурацію: {error}"
 
+  clarify:
+    other_button:      "✏️ Інше (ввести відповідь)"
+    type_answer_toast: "✏️ Напишіть відповідь у чаті."
+    awaiting_typed:    "Очікування письмової відповіді від {user}…"
+    expired_toast:     "⚠️ Термін питання минув — використайте /retry."
+    expired_notice:    "⚠️ Термін питання минув або сесію скинуто — використайте /retry."
+    already_resolved:  "На це питання вже відповіли."
+    already_answered:  "На це питання вже відповіли~"
+    invalid_choice:    "Неприпустимий варіант."
+    needs_input:       "Hermes чекає на вашу відповідь"
+    pick_hint:         "Оберіть варіант нижче або натисніть ✏️ Інше, щоб написати власну відповідь."
+    reply_hint:        "Відповідайте в цьому каналі."
+    answered_by:       "Відповідь від {user}: {choice}"
+
   model:
     error_prefix:           "Помилка: {error}"
     switched:               "Модель змінено на `{model}`"

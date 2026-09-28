@@ -27,6 +27,20 @@ gateway:
   config_read_failed: "⚠️ config.yaml を読み込めませんでした: {error}"
   config_save_failed: "⚠️ 設定を保存できませんでした: {error}"
 
+  clarify:
+    other_button:      "✏️ その他（回答を入力）"
+    type_answer_toast: "✏️ チャットに回答を入力してください。"
+    awaiting_typed:    "{user} さんの回答を待っています…"
+    expired_toast:     "⚠️ この質問は期限切れです — /retry を使ってください。"
+    expired_notice:    "⚠️ この質問は期限切れか、セッションがリセットされました — /retry を使ってください。"
+    already_resolved:  "この質問にはすでに回答済みです。"
+    already_answered:  "この質問にはすでに回答済みです~"
+    invalid_choice:    "無効な選択です。"
+    needs_input:       "Hermes があなたの回答を待っています"
+    pick_hint:         "下から選ぶか、✏️ その他 をクリックして回答を入力してください。"
+    reply_hint:        "このチャンネルで回答してください。"
+    answered_by:       "{user} さんの回答: {choice}"
+
   model:
     error_prefix:           "エラー: {error}"
     switched:               "モデルを `{model}` に切り替えました"

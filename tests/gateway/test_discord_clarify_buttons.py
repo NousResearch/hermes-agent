@@ -85,6 +85,15 @@ def _make_interaction(*, user_id="42", display_name="Tester", roles=None,
 class TestClarifyChoiceViewConstruction:
     """The view should build numeric buttons plus an Other button."""
 
+    @pytest.mark.parametrize("lang,other", [("en", "✏️ Other (type answer)"), ("fr", "✏️ Autre (réponse écrite)")])
+    def test_other_button_follows_the_display_language(self, monkeypatch, lang, other):
+        from agent import i18n
+        monkeypatch.setenv("HERMES_LANGUAGE", lang)
+        i18n.reset_language_cache()
+        view = ClarifyChoiceView(choices=["a", "b"], clarify_id="cid-lang", allowed_user_ids=set())
+        assert view.children[-1].label == other
+        i18n.reset_language_cache()
+
 
     def test_truncates_long_choice_label(self):
         long_choice = "x" * 200

@@ -256,3 +256,33 @@ class TestBaseAdapterClarifyFallback:
         assert "1." in text and "apple" in text
         assert "2." in text and "banana" in text
 
+
+
+# ===========================================================================
+# Localized strings (gateway.clarify.* in locales/*.yaml, display.language)
+# ===========================================================================
+
+class TestTelegramClarifyLocalized:
+    def setup_method(self):
+        _clear_clarify_state()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lang,other", [("en", "✏️ Other (type answer)"), ("fr", "✏️ Autre (réponse écrite)")])
+    async def test_other_button_follows_the_display_language(self, monkeypatch, lang, other):
+        from agent import i18n
+        monkeypatch.setenv("HERMES_LANGUAGE", lang)
+        i18n.reset_language_cache()
+        import plugins.platforms.telegram.adapter as tg
+        # The Telegram library is stubbed in tests: capture labels instead of MagicMocks.
+        monkeypatch.setattr(tg, "InlineKeyboardButton", lambda text, callback_data: (text, callback_data))
+        monkeypatch.setattr(tg, "InlineKeyboardMarkup", lambda rows: rows)
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 1
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        await adapter.send_clarify(chat_id="1", question="Q?", choices=["a", "b"], clarify_id="cl-lang", session_key="sk")
+
+        rows = adapter._bot.send_message.call_args[1]["reply_markup"]
+        assert rows[-1][0][0] == other
+        i18n.reset_language_cache()

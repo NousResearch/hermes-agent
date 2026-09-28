@@ -27,6 +27,20 @@ gateway:
   config_read_failed: "⚠️ 無法讀取 config.yaml：{error}"
   config_save_failed: "⚠️ 無法儲存設定：{error}"
 
+  clarify:
+    other_button:      "✏️ 其他（輸入回答）"
+    type_answer_toast: "✏️ 請在聊天中輸入你的回答。"
+    awaiting_typed:    "正在等待 {user} 輸入回答…"
+    expired_toast:     "⚠️ 此問題已逾期 — 請使用 /retry。"
+    expired_notice:    "⚠️ 此問題已逾期或工作階段已重設 — 請使用 /retry。"
+    already_resolved:  "此問題已有回答。"
+    already_answered:  "此問題已有回答~"
+    invalid_choice:    "無效的選擇。"
+    needs_input:       "Hermes 需要你的回答"
+    pick_hint:         "請在下方選擇，或點擊 ✏️ 其他 輸入自訂回答。"
+    reply_hint:        "請在此頻道中回覆。"
+    answered_by:       "{user} 的回答：{choice}"
+
   model:
     error_prefix:           "錯誤：{error}"
     switched:               "已切換模型為 `{model}`"

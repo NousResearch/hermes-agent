@@ -27,6 +27,20 @@ gateway:
   config_read_failed: "⚠️ config.yaml konnte nicht gelesen werden: {error}"
   config_save_failed: "⚠️ Konfiguration konnte nicht gespeichert werden: {error}"
 
+  clarify:
+    other_button:      "✏️ Andere (Antwort eingeben)"
+    type_answer_toast: "✏️ Geben Sie Ihre Antwort im Chat ein."
+    awaiting_typed:    "Warte auf die Antwort von {user}…"
+    expired_toast:     "⚠️ Diese Frage ist abgelaufen — bitte /retry."
+    expired_notice:    "⚠️ Diese Frage ist abgelaufen oder die Sitzung wurde zurückgesetzt — bitte /retry."
+    already_resolved:  "Diese Frage wurde bereits beantwortet."
+    already_answered:  "Diese Frage wurde bereits beantwortet~"
+    invalid_choice:    "Ungültige Auswahl."
+    needs_input:       "Hermes braucht Ihre Eingabe"
+    pick_hint:         "Wählen Sie unten eine Option oder klicken Sie auf ✏️ Andere, um eine eigene Antwort einzugeben."
+    reply_hint:        "Antworten Sie in diesem Kanal."
+    answered_by:       "Beantwortet von {user}: {choice}"
+
   model:
     error_prefix:           "Fehler: {error}"
     switched:               "Modell gewechselt zu `{model}`"

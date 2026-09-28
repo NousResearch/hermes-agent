@@ -27,6 +27,20 @@ gateway:
   config_read_failed: "⚠️ No se pudo leer config.yaml: {error}"
   config_save_failed: "⚠️ No se pudo guardar la configuración: {error}"
 
+  clarify:
+    other_button:      "✏️ Otra (escribir respuesta)"
+    type_answer_toast: "✏️ Escriba su respuesta en el chat."
+    awaiting_typed:    "Esperando la respuesta escrita de {user}…"
+    expired_toast:     "⚠️ Esta pregunta ha caducado — use /retry."
+    expired_notice:    "⚠️ Esta pregunta ha caducado o la sesión se reinició — use /retry."
+    already_resolved:  "Esta pregunta ya fue respondida."
+    already_answered:  "Esta pregunta ya fue respondida~"
+    invalid_choice:    "Opción no válida."
+    needs_input:       "Hermes necesita su respuesta"
+    pick_hint:         "Elija una opción abajo, o pulse ✏️ Otra para escribir su propia respuesta."
+    reply_hint:        "Responda en este canal."
+    answered_by:       "Respondido por {user}: {choice}"
+
   model:
     error_prefix:           "Error: {error}"
     switched:               "Modelo cambiado a `{model}`"

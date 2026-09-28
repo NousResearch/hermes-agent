@@ -27,6 +27,20 @@ gateway:
   config_read_failed: "⚠️ Impossible de lire config.yaml : {error}"
   config_save_failed: "⚠️ Impossible de sauvegarder la configuration : {error}"
 
+  clarify:
+    other_button:      "✏️ Autre (réponse écrite)"
+    type_answer_toast: "✏️ Écrivez votre réponse dans la conversation."
+    awaiting_typed:    "En attente de la réponse écrite de {user}…"
+    expired_toast:     "⚠️ Cette question a expiré — utilisez /retry."
+    expired_notice:    "⚠️ Cette question a expiré ou la session a été réinitialisée — utilisez /retry."
+    already_resolved:  "Cette question a déjà reçu une réponse."
+    already_answered:  "Cette question a déjà reçu une réponse."
+    invalid_choice:    "Choix invalide."
+    needs_input:       "Hermes a besoin de votre réponse"
+    pick_hint:         "Choisissez ci-dessous, ou cliquez sur ✏️ Autre pour écrire votre réponse."
+    reply_hint:        "Répondez dans ce salon."
+    answered_by:       "Réponse de {user} : {choice}"
+
   model:
     error_prefix:           "Erreur : {error}"
     switched:               "Modèle changé pour `{model}`"

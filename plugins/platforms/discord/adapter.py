@@ -1004,6 +1004,12 @@ def _read_discord_prompt_timeout() -> int:
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 
 
+
+def _clarify_t(key: str, **kwargs) -> str:
+    """Clarify-prompt strings from the locale catalog (``gateway.clarify.*``, display.language)."""
+    from agent.i18n import t
+    return t(f"gateway.clarify.{key}", **kwargs)
+
 class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
@@ -5593,21 +5599,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         def _build(_channel):
             # Header-only card (same rule as the exec approval prompt): the question and hint live
             # in content only, so embed-rendering clients don't see them twice (#114693).
-            embed = discord.Embed(title="❓ Hermes needs your input", color=discord.Color.orange())
+            embed = discord.Embed(title=f"❓ {_clarify_t('needs_input')}", color=discord.Color.orange())
             # 5 buttons × 5 rows = 25; one slot is reserved for "Other".
             clean_choices = [s for s in (_flatten_choice(c) for c in (choices or [])) if s][:24]
             if clean_choices:
-                hint = "Pick one below, or click ✏️ Other to type a custom answer."
+                hint = _clarify_t("pick_hint")
                 view = ClarifyChoiceView(
                     choices=clean_choices, clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
                 )
             else:
-                hint = "Reply in this channel with your answer."
+                hint = _clarify_t("reply_hint")
                 view = None
             content = self._self_contained_prompt_content(
-                "❓ **Hermes needs your input**", str(question or "").strip(), tail=f"\n\n{hint}",
+                f"❓ **{_clarify_t('needs_input')}**", str(question or "").strip(), tail=f"\n\n{hint}",
             )
             send_kwargs = {"content": content, "embed": embed}
             if view:
@@ -6712,7 +6718,7 @@ def _define_discord_view_classes() -> None:
                 button.callback = self._make_choice_callback(index, choice)
                 self.add_item(button)
             other_btn = discord.ui.Button(
-                label="✏️ Other (type answer)", style=discord.ButtonStyle.secondary,
+                label=_clarify_t("other_button"), style=discord.ButtonStyle.secondary,
                 custom_id=f"clarify:{clarify_id}:other",
             )
             other_btn.callback = self._on_other
@@ -6766,12 +6772,12 @@ def _define_discord_view_classes() -> None:
         async def _resolve_choice(self, interaction: "discord.Interaction", index: int, choice: str) -> None:
             """Resolve the clarify with a chosen option."""
             if not await self._gate(
-                interaction, resolved_msg="This prompt has already been answered~",
+                interaction, resolved_msg=_clarify_t("already_answered"),
                 unauth_msg=_UNAUTHORIZED,
             ):
                 return
             display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
-            await self._finish(interaction, discord.Color.green(), f"Answered by {display_name}: {choice}", log_edit_failure=True)
+            await self._finish(interaction, discord.Color.green(), _clarify_t("answered_by", user=display_name, choice=choice), log_edit_failure=True)
             # Round-trip the canonical choice text from the entry, not the button label.
             resolved_text: Optional[str] = None
             try:
@@ -6797,7 +6803,7 @@ def _define_discord_view_classes() -> None:
         async def _on_other(self, interaction: "discord.Interaction") -> None:
             """Flip the clarify entry into text-capture mode."""
             if not await self._gate(
-                interaction, resolved_msg="This prompt has already been answered~",
+                interaction, resolved_msg=_clarify_t("already_answered"),
                 unauth_msg=_UNAUTHORIZED,
             ):
                 return
@@ -6808,7 +6814,7 @@ def _define_discord_view_classes() -> None:
             except Exception as exc:
                 logger.warning("Discord clarify mark_awaiting_text failed (id=%s): %s", self.clarify_id, exc)
             display_name = getattr(getattr(interaction, "user", None), "display_name", "user")
-            await self._finish(interaction, discord.Color.blue(), f"Awaiting typed response from {display_name}…", log_edit_failure=False)
+            await self._finish(interaction, discord.Color.blue(), _clarify_t("awaiting_typed", user=display_name), log_edit_failure=False)
 
 if DISCORD_AVAILABLE:
     _define_discord_view_classes()

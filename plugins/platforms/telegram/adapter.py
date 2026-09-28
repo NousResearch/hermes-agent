@@ -479,6 +479,12 @@ class _PollingStallError(RuntimeError):
     """
 
 
+
+def _clarify_t(key: str, **kwargs) -> str:
+    """Clarify-prompt strings from the locale catalog (``gateway.clarify.*``, display.language)."""
+    from agent.i18n import t
+    return t(f"gateway.clarify.{key}", **kwargs)
+
 class TelegramAdapter(BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
@@ -4296,7 +4302,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_clarify(
         self, chat_id: str, question: str, choices: Optional[list], clarify_id: str, session_key: str,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Render a clarify prompt: numbered buttons per choice plus "✏️ Other (type answer)" (flips to
+        """Render a clarify prompt: numbered buttons per choice plus a localized "✏️ Other" (flips to
         text-capture mode); without choices, plain question and the gateway text-intercept captures."""
         def build():
             text = f"❓ {_html.escape(question)}"
@@ -4306,7 +4312,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
                 rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
-                rows.append([InlineKeyboardButton("✏️ Other (type answer)", callback_data=f"cl:{clarify_id}:other")])
+                rows.append([InlineKeyboardButton(_clarify_t("other_button"), callback_data=f"cl:{clarify_id}:other")])
                 keyboard = InlineKeyboardMarkup(rows)
             return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, session_key)
         return await self._send_prompt(
@@ -4620,9 +4626,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Tell the user a clarify tap arrived too late (entry evicted or gateway restarted) — otherwise
         the tap leaves a misleading ✓ the agent never sees."""
         with contextlib.suppress(Exception):
-            await query.answer(text="⚠️ This prompt expired — please /retry.")
+            await query.answer(text=_clarify_t("expired_toast"))
         await self._edit_html_quiet(
-            query, f"❓ {_html.escape(query.message.text or '')}\n\n<i>⚠️ This question expired or the session reset — please /retry.</i>")
+            query, f"❓ {_html.escape(query.message.text or '')}\n\n<i>{_html.escape(_clarify_t('expired_notice'))}</i>")
 
     @staticmethod
     async def _edit_html_quiet(query, text: str) -> None:
@@ -4835,7 +4841,7 @@ class TelegramAdapter(BasePlatformAdapter):
         choice_token = parts[2]
         session_key = await self._claim_callback_state(
             query, cb, self._clarify_state, clarify_id, _UNAUTHORIZED,
-            "This prompt has already been resolved.", pop=False)
+            _clarify_t("already_resolved"), pop=False)
         if not session_key:
             return
         user_display = getattr(query.from_user, "first_name", "User")
@@ -4853,15 +4859,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._clarify_state.pop(clarify_id, None)
                 await self._notify_clarify_expired(query, user_display)
                 return
-            await query.answer(text="✏️ Type your answer in the chat.")
+            await query.answer(text=_clarify_t("type_answer_toast"))
             await self._edit_html_quiet(
-                query, f"❓ {query.message.text or ''}\n\n<i>Awaiting typed response from {_html.escape(user_display)}…</i>")
+                query, f"❓ {query.message.text or ''}\n\n<i>{_html.escape(_clarify_t('awaiting_typed', user=user_display))}</i>")
             return
         # Numeric choice → resolve immediately with the chosen text
         try:
             idx = int(choice_token)
         except (ValueError, TypeError):
-            await query.answer(text="Invalid choice.")
+            await query.answer(text=_clarify_t("invalid_choice"))
             return
         resolved_text: Optional[str] = None
         try:

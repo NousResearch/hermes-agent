@@ -27,6 +27,20 @@ gateway:
   config_read_failed: "⚠️ Kon nie config.yaml lees nie: {error}"
   config_save_failed: "⚠️ Kon nie konfigurasie stoor nie: {error}"
 
+  clarify:
+    other_button:      "✏️ Ander (tik antwoord)"
+    type_answer_toast: "✏️ Tik jou antwoord in die gesprek."
+    awaiting_typed:    "Wag vir getikte antwoord van {user}…"
+    expired_toast:     "⚠️ Hierdie vraag het verval — gebruik asseblief /retry."
+    expired_notice:    "⚠️ Hierdie vraag het verval of die sessie is herstel — gebruik asseblief /retry."
+    already_resolved:  "Hierdie vraag is reeds beantwoord."
+    already_answered:  "Hierdie vraag is reeds beantwoord~"
+    invalid_choice:    "Ongeldige keuse."
+    needs_input:       "Hermes het jou insette nodig"
+    pick_hint:         "Kies een hieronder, of klik ✏️ Ander om jou eie antwoord te tik."
+    reply_hint:        "Antwoord in hierdie kanaal."
+    answered_by:       "Beantwoord deur {user}: {choice}"
+
   model:
     error_prefix:           "Fout: {error}"
     switched:               "Model verander na `{model}`"

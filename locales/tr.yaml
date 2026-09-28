@@ -27,6 +27,20 @@ gateway:
   config_read_failed: "⚠️ config.yaml okunamadı: {error}"
   config_save_failed: "⚠️ Yapılandırma kaydedilemedi: {error}"
 
+  clarify:
+    other_button:      "✏️ Diğer (yanıt yazın)"
+    type_answer_toast: "✏️ Yanıtınızı sohbete yazın."
+    awaiting_typed:    "{user} kullanıcısının yazılı yanıtı bekleniyor…"
+    expired_toast:     "⚠️ Bu sorunun süresi doldu — lütfen /retry kullanın."
+    expired_notice:    "⚠️ Bu sorunun süresi doldu veya oturum sıfırlandı — lütfen /retry kullanın."
+    already_resolved:  "Bu soru zaten yanıtlandı."
+    already_answered:  "Bu soru zaten yanıtlandı~"
+    invalid_choice:    "Geçersiz seçim."
+    needs_input:       "Hermes yanıtınızı bekliyor"
+    pick_hint:         "Aşağıdan birini seçin veya kendi yanıtınızı yazmak için ✏️ Diğer'e tıklayın."
+    reply_hint:        "Yanıtınızı bu kanala yazın."
+    answered_by:       "{user} yanıtladı: {choice}"
+
   model:
     error_prefix:           "Hata: {error}"
     switched:               "Model `{model}` olarak değiştirildi"

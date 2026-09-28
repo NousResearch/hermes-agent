@@ -27,6 +27,20 @@ gateway:
   config_read_failed: "⚠️ config.yaml을 읽을 수 없습니다: {error}"
   config_save_failed: "⚠️ 설정을 저장할 수 없습니다: {error}"
 
+  clarify:
+    other_button:      "✏️ 기타 (직접 입력)"
+    type_answer_toast: "✏️ 채팅에 답변을 입력하세요."
+    awaiting_typed:    "{user}님의 입력 답변을 기다리는 중…"
+    expired_toast:     "⚠️ 이 질문은 만료되었습니다 — /retry 를 사용하세요."
+    expired_notice:    "⚠️ 이 질문이 만료되었거나 세션이 초기화되었습니다 — /retry 를 사용하세요."
+    already_resolved:  "이 질문에는 이미 답변했습니다."
+    already_answered:  "이 질문에는 이미 답변했습니다~"
+    invalid_choice:    "잘못된 선택입니다."
+    needs_input:       "Hermes가 답변을 기다리고 있습니다"
+    pick_hint:         "아래에서 하나를 고르거나 ✏️ 기타 를 눌러 직접 답변을 입력하세요."
+    reply_hint:        "이 채널에 답변하세요."
+    answered_by:       "{user}님의 답변: {choice}"
+
   model:
     error_prefix:           "오류: {error}"
     switched:               "모델이 `{model}`(으)로 전환되었습니다"

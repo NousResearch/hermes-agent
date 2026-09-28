@@ -50,6 +50,20 @@ gateway:
   config_read_failed: "⚠️ تعذّر قراءة config.yaml: {error}"
   config_save_failed: "⚠️ تعذّر حفظ الإعدادات: {error}"
 
+  clarify:
+    other_button:      "✏️ أخرى (اكتب الإجابة)"
+    type_answer_toast: "✏️ اكتب إجابتك في المحادثة."
+    awaiting_typed:    "في انتظار الإجابة المكتوبة من {user}…"
+    expired_toast:     "⚠️ انتهت صلاحية هذا السؤال — يرجى استخدام /retry."
+    expired_notice:    "⚠️ انتهت صلاحية هذا السؤال أو أُعيد ضبط الجلسة — يرجى استخدام /retry."
+    already_resolved:  "تمت الإجابة عن هذا السؤال بالفعل."
+    already_answered:  "تمت الإجابة عن هذا السؤال بالفعل~"
+    invalid_choice:    "اختيار غير صالح."
+    needs_input:       "يحتاج Hermes إلى إجابتك"
+    pick_hint:         "اختر أحد الخيارات أدناه، أو انقر ✏️ أخرى لكتابة إجابتك."
+    reply_hint:        "أجب في هذه القناة."
+    answered_by:       "أجاب {user}: {choice}"
+
   model:
     error_prefix:           "خطأ: {error}"
     switched:               "تم التبديل إلى النموذج `{model}`"

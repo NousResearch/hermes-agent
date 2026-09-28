@@ -42,6 +42,20 @@ gateway:
   # Provider names, model IDs, capability strings, and cost figures are NOT
   # translated -- they're identifiers/values, not prose.  Only the labels
   # ("Provider:", "Context:", etc.) and the help/footer lines are localized.
+  clarify:
+    other_button:      "✏️ Other (type answer)"
+    type_answer_toast: "✏️ Type your answer in the chat."
+    awaiting_typed:    "Awaiting typed response from {user}…"
+    expired_toast:     "⚠️ This prompt expired — please /retry."
+    expired_notice:    "⚠️ This question expired or the session reset — please /retry."
+    already_resolved:  "This prompt has already been resolved."
+    already_answered:  "This prompt has already been answered~"
+    invalid_choice:    "Invalid choice."
+    needs_input:       "Hermes needs your input"
+    pick_hint:         "Pick one below, or click ✏️ Other to type a custom answer."
+    reply_hint:        "Reply in this channel with your answer."
+    answered_by:       "Answered by {user}: {choice}"
+
   model:
     error_prefix:           "Error: {error}"
     switched:               "Model switched to `{model}`"

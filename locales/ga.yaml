@@ -31,6 +31,20 @@ gateway:
   config_read_failed: "⚠️ Níorbh fhéidir config.yaml a léamh: {error}"
   config_save_failed: "⚠️ Níorbh fhéidir an chumraíocht a shábháil: {error}"
 
+  clarify:
+    other_button:      "✏️ Eile (clóscríobh freagra)"
+    type_answer_toast: "✏️ Clóscríobh do fhreagra sa chomhrá."
+    awaiting_typed:    "Ag fanacht le freagra clóscríofa ó {user}…"
+    expired_toast:     "⚠️ Tá an cheist seo imithe in éag — úsáid /retry."
+    expired_notice:    "⚠️ Tá an cheist seo imithe in éag nó athshocraíodh an seisiún — úsáid /retry."
+    already_resolved:  "Tugadh freagra ar an gceist seo cheana."
+    already_answered:  "Tugadh freagra ar an gceist seo cheana~"
+    invalid_choice:    "Rogha neamhbhailí."
+    needs_input:       "Tá do fhreagra ag teastáil ó Hermes"
+    pick_hint:         "Roghnaigh ceann thíos, nó cliceáil ✏️ Eile chun do fhreagra féin a chlóscríobh."
+    reply_hint:        "Freagair sa chainéal seo."
+    answered_by:       "Freagra ó {user}: {choice}"
+
   model:
     error_prefix:           "Earráid: {error}"
     switched:               "Athraíodh an tsamhail go `{model}`"

@@ -18,10 +18,18 @@ function mark(tone: StatusTone): HTMLElement {
 
 describe('StatusDot', () => {
   it('uses a distinct non-color shape for each semantic tone', () => {
-    expect(mark('good').className).toContain('rounded-full')
-    expect(mark('warn').className).toContain('rotate-45')
-    expect(mark('bad').className).toContain('rounded-[1px]')
-    expect(mark('muted').className).toContain('border')
+    const good = mark('good').className
+    const warn = mark('warn').className
+    const bad = mark('bad').className
+    const muted = mark('muted').className
+
+    expect(good).toContain('rounded-full')
+    expect(good).not.toContain('border')
+    expect(warn).toContain('rotate-45')
+    expect(bad).toContain('rounded-[1px]')
+    expect(bad).not.toContain('rotate-45')
+    expect(muted).toContain('rounded-full')
+    expect(muted).toContain('border')
   })
 
   it('exposes the semantic tone for diagnostics without adding spoken noise', () => {

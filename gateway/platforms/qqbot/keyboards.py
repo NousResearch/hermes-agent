@@ -14,7 +14,9 @@ APPROVAL_BUTTON_PREFIX = "approve:"
 UPDATE_PROMPT_PREFIX = "update_prompt:"
 
 # session_key may itself contain colons (agent:main:qqbot:c2c:OPENID): greedy group, decision trails.
-_APPROVAL_DATA_RE = re.compile(r"^approve:(.+):(allow-once|allow-always|deny)$")
+# An optional ``:rid=<32-hex>`` segment sits between the session_key and the decision; the literal
+# ``rid=`` marker keeps the split unambiguous even when the session_key ends in hex (#124974).
+_APPROVAL_DATA_RE = re.compile(r"^approve:(.+?)(?::rid=([0-9a-f]{32}))?:(allow-once|allow-always|deny)$")
 _UPDATE_PROMPT_RE = re.compile(r"^update_prompt:(y|n)$")
 
 def _to_dict(value: Any) -> Any:
@@ -79,7 +81,22 @@ class InlineKeyboard(_Serializable):
 
 def parse_approval_button_data(button_data: str) -> Optional[tuple[str, str]]:
     """Parse approval ``button_data`` into ``(session_key, decision)`` or ``None``."""
-    return m.groups() if (m := _APPROVAL_DATA_RE.match(button_data or "")) else None
+    full = parse_approval_button_data_full(button_data)
+    return None if full is None else (full[0], full[1])
+
+
+def parse_approval_button_data_full(button_data: str) -> Optional[tuple[str, str, Optional[str]]]:
+    """Parse approval ``button_data`` into ``(session_key, decision, request_id)`` or ``None``.
+
+    ``request_id`` is the forwarded ``approval_request_id`` embedded in the
+    button data by :func:`build_approval_keyboard` (``None`` for pre-``rid=``
+    buttons / legacy callers) so a tap resolves ITS card's queued entry instead
+    of the FIFO-oldest one (#124974).
+    """
+    m = _APPROVAL_DATA_RE.match(button_data or "")
+    if not m:
+        return None
+    return m.group(1), m.group(3), m.group(2) or None
 
 
 def parse_update_prompt_button_data(button_data: str) -> Optional[str]:
@@ -96,10 +113,15 @@ def _single_row_keyboard(group_id: str, *buttons: tuple) -> InlineKeyboard:
     return InlineKeyboard(content=KeyboardContent(rows=[row]))
 
 
-def build_approval_keyboard(session_key: str, *, allow_permanent: bool = True) -> InlineKeyboard:
+def build_approval_keyboard(session_key: str, *, allow_permanent: bool = True,
+                            request_id: Optional[str] = None) -> InlineKeyboard:
     """Build ``[✅ 允许一次] [⭐ 始终允许] [❌ 拒绝]`` (one group, so a click greys the rest). ⭐ is hidden when
-    persistent scope is unavailable; *session_key* rides in ``button_data`` so the decision routes correctly."""
+    persistent scope is unavailable; *session_key* rides in ``button_data`` so the decision routes correctly.
+    *request_id* (the card's forwarded ``approval_request_id``, #124974) rides along as ``rid=<id>`` so a
+    tap resolves ITS queued entry instead of the FIFO-oldest one; omitted when absent (legacy format)."""
     prefix = f"{APPROVAL_BUTTON_PREFIX}{session_key}"
+    if request_id:
+        prefix = f"{prefix}:rid={request_id}"
     buttons = [("allow", "✅ 允许一次", "已允许", f"{prefix}:allow-once", 1)]
     if allow_permanent:
         buttons.append(("always", "⭐ 始终允许", "已始终允许", f"{prefix}:allow-always", 1))

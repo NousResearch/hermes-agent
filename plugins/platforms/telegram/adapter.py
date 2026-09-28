@@ -696,7 +696,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._max_doc_bytes: int = 2 * 1024 * 1024 * 1024 if extra.get("base_url") else 20 * 1024 * 1024
         self._model_picker_state: Dict[str, dict] = {}  # per-chat interactive picker state
         self._choice_picker_state: Dict[str, dict] = {}
-        self._approval_state: Dict[int, str] = {}  # message_id → session_key
+        self._approval_state: Dict[int, Any] = {}  # message_id → session_key (or {"session_key","request_id"})
         self._slash_confirm_state: Dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: Dict[str, str] = {}  # clarify_id → session_key
         # "important" (default): only final responses, approvals and slash confirmations notify;
@@ -4332,8 +4332,15 @@ class TelegramAdapter(BasePlatformAdapter):
             approval_id = next(self._approval_counter)
             buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
                        for label, choice, _ in prompt.actions]
+            # Store the forwarded approval_request_id alongside the session_key so a
+            # tap resolves ITS card's queued entry, not the FIFO-oldest one (#124974).
+            from tools.approval import metadata_request_id
+            rid = metadata_request_id(prompt.metadata)
+            entry: Any = {"session_key": prompt.session_key}
+            if rid:
+                entry["request_id"] = rid
             return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), (
-                lambda msg: self._approval_state.__setitem__(approval_id, prompt.session_key))
+                lambda msg: self._approval_state.__setitem__(approval_id, entry))
         return await self._send_prompt(
             "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
             thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
@@ -4819,9 +4826,19 @@ class TelegramAdapter(BasePlatformAdapter):
         except (ValueError, IndexError):
             await query.answer(text=_toast("platform.telegram.approval.toast_invalid_data"))
             return
-        session_key = await self._claim_callback_state(
+        stored = await self._claim_callback_state(
             query, cb, self._approval_state, approval_id, _unauthorized(),
             _toast("platform.telegram.approval.toast_already_resolved"))
+        if not stored:
+            return
+        # Exec-approval sends store ``{"session_key", "request_id"}`` so a tap resolves ITS
+        # card's queued entry, not the FIFO-oldest one (#124974); bare session_key values
+        # (legacy state, tests) fall back to FIFO exactly as before.
+        if isinstance(stored, dict):
+            session_key = str(stored.get("session_key") or "")
+            request_id = str(stored.get("request_id") or "").strip() or None
+        else:
+            session_key, request_id = stored, None
         if not session_key:
             return
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
@@ -4832,7 +4849,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # the approval wait timed out (count == 0) must NOT claim "Approved" — the command was already
             # denied and will not run (#63501 regression follow-up: 60s waits made stale taps common).
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(session_key, choice)
+            count = resolve_gateway_approval(session_key, choice, request_id=request_id)
             logger.info(
                 "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
         except Exception as exc:

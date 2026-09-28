@@ -349,6 +349,7 @@ class _MatrixApprovalPrompt:
     message_id: str
     resolved: bool = False
     requester_user_id: str | None = None
+    request_id: str | None = None  # the card's approval_request_id (#124974): resolves ITS queued entry
     expires_at: float | None = None
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
@@ -1701,9 +1702,10 @@ class MatrixAdapter(BasePlatformAdapter):
             if old_event:
                 self._approval_prompts_by_event.pop(old_event, None)
             self._approval_prompt_by_session[session_key] = message_id
+            from tools.approval import metadata_request_id
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at)
+                request_id=metadata_request_id(prompt.metadata), expires_at=expires_at)
         return await self._send_reaction_prompt(
             chat_id, text, prompt.metadata, _make, self._approval_prompts_by_event, reactions, "approval")
 
@@ -2520,7 +2522,10 @@ class MatrixAdapter(BasePlatformAdapter):
             return handled
         try:
             from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(prompt.session_key, choice)
+            # The reaction resolves ITS card's queued entry via the forwarded
+            # approval_request_id; absent (legacy prompt) → None → FIFO fallback (#124974).
+            count = resolve_gateway_approval(prompt.session_key, choice,
+                                             request_id=getattr(prompt, "request_id", None))
             if count:
                 prompt.resolved = True
                 self._approval_prompts_by_event.pop(reacts_to, None)

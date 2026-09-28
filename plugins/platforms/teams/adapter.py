@@ -650,7 +650,10 @@ class TeamsAdapter(BasePlatformAdapter):
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
         if not has_blocking_approval(session_key):
             return self._invoke_card([TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
-        resolve_gateway_approval(session_key, choice)
+        # The card carries its own approval_request_id (#124974): resolve THAT queued
+        # entry, not the FIFO-oldest one. Absent (legacy card) → None → FIFO fallback.
+        request_id = str(data.get("approval_request_id") or "").strip() or None
+        resolve_gateway_approval(session_key, choice, request_id=request_id)
         body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
         body.append(TextBlock(text=t(_APPROVAL_LABEL_KEYS[choice]), wrap=True, weight="Bolder"))
         return self._invoke_card(body)
@@ -685,7 +688,13 @@ class TeamsAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
         # Button data carries a truncated cmd — just enough to reconstruct the card body.
-        btn_data_base = {"session_key": prompt.session_key, "cmd": _truncate(prompt.command, 200), "desc": prompt.description}
+        btn_data_base: Dict[str, Any] = {"session_key": prompt.session_key, "cmd": _truncate(prompt.command, 200), "desc": prompt.description}
+        # Forward the card's approval_request_id so a tap resolves ITS queued entry, not
+        # the FIFO-oldest one (#124974). Absent id → exactly the legacy button data.
+        from tools.approval import metadata_request_id
+        rid = metadata_request_id(prompt.metadata)
+        if rid:
+            btn_data_base["approval_request_id"] = rid
         actions = []
         for label, choice, style in prompt.actions:
             kw = {"style": self._EA_CARD_STYLES[style]} if style else {}

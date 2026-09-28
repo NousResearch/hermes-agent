@@ -1201,7 +1201,7 @@ class TestDispatchInteractiveReplyApproval:
         calls = []
         monkeypatch.setattr(
             "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            lambda session_key, choice, request_id=None: calls.append((session_key, choice, request_id)) or 1,
         )
 
         raw = {
@@ -1215,7 +1215,7 @@ class TestDispatchInteractiveReplyApproval:
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        assert calls == [("sess-app-1", "approve")]
+        assert calls == [("sess-app-1", "approve", None)]
         assert "app1" not in adapter._exec_approval_state
         confirm_payload = adapter._http_client.post.call_args.kwargs["json"]
         assert confirm_payload["type"] == "text"
@@ -1284,7 +1284,7 @@ class TestDispatchInteractiveReplyAuthorization:
         calls = []
         monkeypatch.setattr(
             "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            lambda session_key, choice, request_id=None: calls.append((session_key, choice, request_id)) or 1,
         )
 
         raw = {
@@ -1298,7 +1298,7 @@ class TestDispatchInteractiveReplyAuthorization:
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        assert calls == [("sess-app-1", "approve")]
+        assert calls == [("sess-app-1", "approve", None)]
 
 
 @pytest.mark.usefixtures("authorized_interactive_env")
@@ -1497,3 +1497,57 @@ class TestReplyContextResolution:
         assert event.media_urls == [str(image)]
         assert event.media_types == ["image/png"]
 
+
+
+@pytest.mark.usefixtures("authorized_interactive_env")
+class TestApprovalRequestIdForwarding:
+    """#124974: an approval tap must resolve ITS card's queued entry (real
+    tools.approval queue, real resolve), not the FIFO-oldest one; absent id → FIFO."""
+
+    def _raw_tap(self, approval_id: str, choice: str = "approve") -> dict:
+        return {
+            "from": "15551234567",
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {"id": f"appr:{approval_id}:{choice}", "title": "Approve"},
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_tap_with_request_id_resolves_its_own_card_entry(self):
+        from tests.gateway._approval_queue_helpers import (
+            assert_resolved, assert_still_pending, clear_approvals, enqueue_approvals)
+        session_key = "sess-app-rid-1"
+        old, new = enqueue_approvals(session_key, {"command": "old"}, {"command": "new"})
+        rid = new.data["request_id"]
+        adapter = _make_adapter()
+        adapter._exec_approval_state["app1"] = (session_key, rid)
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]}))
+        try:
+            handled = await adapter._dispatch_interactive_reply(self._raw_tap("app1"), {})
+        finally:
+            clear_approvals(session_key)
+        assert handled is True
+        assert_resolved(new, "approve")
+        assert_still_pending(old)
+        assert "app1" not in adapter._exec_approval_state
+
+    @pytest.mark.asyncio
+    async def test_tap_without_request_id_keeps_fifo(self):
+        from tests.gateway._approval_queue_helpers import (
+            assert_resolved, assert_still_pending, clear_approvals, enqueue_approvals)
+        session_key = "sess-app-fifo-1"
+        old, new = enqueue_approvals(session_key, {"command": "old"}, {"command": "new"})
+        adapter = _make_adapter()
+        adapter._exec_approval_state["app2"] = session_key  # legacy bare-session_key state
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]}))
+        try:
+            handled = await adapter._dispatch_interactive_reply(self._raw_tap("app2"), {})
+        finally:
+            clear_approvals(session_key)
+        assert handled is True
+        assert_resolved(old, "approve")
+        assert_still_pending(new)

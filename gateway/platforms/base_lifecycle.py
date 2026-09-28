@@ -52,6 +52,7 @@ class BaseLifecycleMixin:
             if hook_name == "on_processing_start":
                 event._processing_state.deferred = False
                 event._processing_state.completed = False
+                event._processing_state.outcome = None
             elif hook_name in {"on_processing_complete", "on_inline_processing_complete"}:
                 if event._processing_state.deferred or event._processing_state.completed:
                     return

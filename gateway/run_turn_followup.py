@@ -262,7 +262,8 @@ class GatewayQueuedFollowupMixin:
                     _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
                 raise
             await _run_followup_processing_hook(
-                _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
+                _hook_adapter, pending_event, "on_processing_complete",
+                ProcessingOutcome.from_agent_result(followup_result))
             merged = _preserve_queued_followup_history_offset(result, followup_result)
             # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
             # the adapter brackets against the event that OPENED the chain. Without this the terminal

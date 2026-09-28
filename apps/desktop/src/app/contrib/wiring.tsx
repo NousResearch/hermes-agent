@@ -93,6 +93,7 @@ import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/stor
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
+import type { SessionInfo } from '@/types/hermes'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
 import { requestComposerInsert } from '../chat/composer/focus'
@@ -1070,6 +1071,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   useKeybinds({
     archiveSelectedSession,
     openNewSessionTab,
+    requestGateway,
     startFreshSession: startFreshSessionDraft,
     toggleCommandCenter,
     toggleSelectedPin
@@ -1093,6 +1095,32 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
     return () => registerPaneCloser('workspace')
   }, [navigate])
+
+  // One owner-aware door for "open a stored session from a list row" — the
+  // sessions sidebar, the Cron page's run history and the command center all
+  // funnel here. The clicked ROW is the identity, not its bare id: two
+  // profiles can hold twins with the same stored id (#92454), and an id-only
+  // resume resolves against whichever cached row is found first — the user
+  // clicks a row previewing profile A (or a cron run served by an SSH backend)
+  // and the resume dials the ambient backend instead, so the transcript never
+  // loads (#82527). Pin the row's own (connection, profile) as the resume owner
+  // before navigating; untagged rows (single-profile installs and the legacy
+  // primary-SSH path) keep the ambient/id-only path. Clear any stale explicit
+  // hint first: older builds incorrectly persisted those rows as `local`,
+  // which made a remote session click switch to the Mac backend and fail with
+  // "session not found".
+  const openStoredSession = (sessionId: string, session?: SessionInfo) => {
+    const ownerRoute = sessionOwnerRouteFromRow(session)
+
+    if (ownerRoute) {
+      requestSessionResume(sessionId, ownerRoute)
+    } else {
+      forgetSessionOwnerHintsForSession(sessionId)
+      requestSessionResume(sessionId)
+    }
+
+    openSession(sessionId, navigate)
+  }
 
   // The controller's entire callback surface, gathered into the stable
   // `actions` bag. `nextActions` is TS-checked against WiringActions each
@@ -1155,28 +1183,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onRemoveAttachment: id => void composer.removeAttachment(id),
     onRestoreToMessage: restoreToMessage,
     // Already on screen (open tile, or the main session)? Jump to its tab;
-    // otherwise load it into main. Same door every other session link uses.
-    // The clicked ROW is the identity, not its bare id: two profiles can hold
-    // twins with the same stored id (#92454), and an id-only resume resolves
-    // against whichever cached row is found first — the user clicks a row
-    // previewing profile A and the resume dials profile B. Pin the row's own
-    // (connection, profile) as the resume owner before navigating; untagged
-    // rows (single-profile installs and the legacy primary-SSH path) keep the
-    // ambient/id-only path. Clear any stale explicit hint first: older builds
-    // incorrectly persisted those rows as `local`, which made a remote session
-    // click switch to the Mac backend and fail with "session not found".
-    onResumeSession: (sessionId, session) => {
-      const ownerRoute = sessionOwnerRouteFromRow(session)
-
-      if (ownerRoute) {
-        requestSessionResume(sessionId, ownerRoute)
-      } else {
-        forgetSessionOwnerHintsForSession(sessionId)
-        requestSessionResume(sessionId)
-      }
-
-      openSession(sessionId, navigate)
-    },
+    // otherwise load it into main. Same owner-aware door every other session
+    // link uses (openStoredSession).
+    onResumeSession: openStoredSession,
     onRetryResume: sessionId => void resumeSession(sessionId, true),
     onSteer: steerPrompt,
     onSteerHidden: injectHiddenPrompt,
@@ -1414,7 +1423,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             onDeleteSession={removeSession}
             onLoadMoreSessions={loadMoreSessions}
             onNavigateRoute={path => navigateToWorkspacePage(navigate, path)}
-            onOpenSession={sessionId => openSession(sessionId, navigate)}
+            onOpenSession={openStoredSession}
           />
         </Suspense>
       )}
@@ -1427,10 +1436,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       {cronOpen && (
         <Suspense fallback={null}>
-          <CronView
-            onClose={closeOverlayToPreviousRoute}
-            onOpenSession={sessionId => openSession(sessionId, navigate)}
-          />
+          <CronView onClose={closeOverlayToPreviousRoute} onOpenSession={openStoredSession} />
         </Suspense>
       )}
 

@@ -812,9 +812,30 @@ export function useMessageStream({
             // is the same failure, so it settles onto that card.
             const failureRepeatsErrorCard = Boolean(completionError && existing.error && !existingText)
 
+            // The terminal frame names the stored row it settled; this
+            // trailing bubble is a still-unsettled display-only interim that
+            // never carried a durable rowId of its own. A rewritten final
+            // (response_previewed / response_transformed) shares no prefix
+            // with the streamed interim text, so the heuristics above miss
+            // and the volatile boundary flag cannot speak for it once a
+            // chained message.start reset it (#74560's ordering). The receipt
+            // is the durable identity the flag never was: settle onto the
+            // interim instead of painting a second bubble for one row
+            // (#124128). A frame with no receipt keeps the rules below, so a
+            // genuinely distinct reply still appends its own bubble.
+            const finalRowId = persistedTurn?.final_assistant_row_id
+
+            const settlesPersistedRow =
+              existing.interim === true &&
+              existing.rowId === undefined &&
+              typeof finalRowId === 'number' &&
+              Number.isSafeInteger(finalRowId) &&
+              finalRowId > 0
+
             if (
               existing.pending ||
               failureRepeatsErrorCard ||
+              settlesPersistedRow ||
               (!interimBoundaryPending && finalText && existingText === finalText)
             ) {
               nextMessages = settleAt(index)
@@ -823,8 +844,11 @@ export function useMessageStream({
               finalContinuesInterim
             ) {
               // Settle the interim in place instead of creating a duplicate —
-              // the DB has one row, so the live UI must agree. Two distinct
+              // the DB has one row, so the live UI must agree. Three distinct
               // settle paths with different boundary requirements:
+              //
+              // • settlesPersistedRow (above) keys on the frame's own durable
+              //   row address, so it needs no boundary flag at all.
               //
               // • responsePreviewed covers the verify-on-stop continuation-
               //   budget case, where the final may be a rewrite sharing no
@@ -1082,10 +1106,10 @@ export function useMessageStream({
     (request: ScopedServerRequest): boolean =>
       dispatchServerRequest(
         request,
-        { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall },
+        { activeSessionIdRef, sessionInterrupted, sessionStateByRuntimeIdRef, updateSessionState, upsertToolCall },
         activeSessionIdRef.current
       ),
-    [activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall]
+    [activeSessionIdRef, sessionInterrupted, sessionStateByRuntimeIdRef, updateSessionState, upsertToolCall]
   )
 
   return {

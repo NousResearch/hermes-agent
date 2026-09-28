@@ -293,7 +293,9 @@ describe('ProfileRail overflow', () => {
   })
 
   it('maps negative RTL offsets to physical clipped edges and scrolls toward hidden profiles', () => {
-    profiles.set(Array.from({ length: 8 }, (_, index) => ({ is_default: index === 0, name: index ? `agent${index}` : 'default' })))
+    profiles.set(
+      Array.from({ length: 8 }, (_, index) => ({ is_default: index === 0, name: index ? `agent${index}` : 'default' }))
+    )
     render(<ProfileRail />)
     const scroller = screen.getByRole('button', { name: 'agent1' }).closest('.overflow-x-auto') as HTMLDivElement
     scroller.style.direction = 'rtl'

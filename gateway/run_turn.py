@@ -3870,6 +3870,10 @@ class GatewayTurnMixin:
                 next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
             )
             next_message_type = getattr(pending_event, "message_type", None)
+        else:
+            # Event-less interrupt/steer follow-ups continue the effective prompt
+            # of the turn they are recursively following.
+            next_channel_prompt = turn_ctx.channel_prompt
 
         # Clear the prior turn's streaming-TTS completion marker so the recursive turn isn't suppressed.
         # See #60671.

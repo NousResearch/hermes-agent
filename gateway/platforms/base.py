@@ -419,6 +419,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import fence_state_after
+from gateway.platforms.base_chunking import link_safe_split
 from gateway.platforms.base_exec_approval import (
     EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
@@ -4822,6 +4823,8 @@ class BasePlatformAdapter(ABC):
                         candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
+            if carry_lang is None:
+                split_at = link_safe_split(remaining, split_at, headroom, _len)
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()
             full_chunk = prefix + chunk_body

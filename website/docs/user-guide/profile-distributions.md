@@ -686,13 +686,13 @@ You cannot import as `default` — that name is the built-in root profile (`~/.h
 
 ### What an export file contains
 
-Always excluded, both profiles types: `auth.json` and `.env`. Your API keys never leave the machine.
+Always excluded, both profile types: `auth.json`, `.env` and the other credential stores Hermes reads from a profile (OAuth token files, `mcp-tokens/`, `vault/`, browser profiles, platform sessions and pairing stores). Your API keys never leave the machine.
 
 **The default profile** (`~/.hermes`) is exported through an allow-list — only known Hermes artifacts, so an unrelated file sitting in your home directory can't get swept in:
 
 `config.yaml`, `SOUL.md`, `MEMORY.md`, `USER.md`, `todo.json`, `system_prompt.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `skills/`, `plugins/`, `cron/`, `scripts/`, `sessions/`, `memories/`, `knowledge/`, `preferences/`, and `desktop.json` when the desktop staged one.
 
-**A named profile** (`~/.hermes/profiles/<name>`) copies the whole directory minus `auth.json` / `.env`. That's broader — if the profile has `state.db`, logs, or caches, they go in the archive too, and the file gets big.
+**A named profile** (`~/.hermes/profiles/<name>`) copies the whole directory minus those credential stores and the recovery copies Hermes keeps of them (`backups/`, `state-snapshots/`, `auth.json.corrupt`, `.env.bak-*`, `config.yaml.bak-*`). That's broader — if the profile has `state.db`, logs, or caches, they go in the archive too, and the file gets big.
 
 :::caution Read your archive before you send it
 An export is a snapshot of your profile, not a curated release. Unlike a distribution, it **can** include `memories/`, `sessions/`, and `USER.md` — and nothing scans skills, memories, or your persona for anything personal you wrote into them. Credentials are filtered by filename; content is not.

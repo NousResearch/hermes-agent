@@ -84,6 +84,43 @@ class TestCredentialExclusion:
         root_stores = {r for r in stores if "/" not in r}
         assert root_stores <= USER_OWNED_EXCLUDE, sorted(root_stores - USER_OWNED_EXCLUDE)
 
+    def test_export_ships_no_recovery_copy_hermes_writes_of_a_store(self, tmp_path, monkeypatch):
+        """Every copy Hermes' own writers leave in a profile home (pre-update zip, update snapshot,
+        config-migration .bak, config backup, corrupt auth.json) stays out of a named-profile
+        export: each carries the same credentials, and none ends in a suffix the scrub edits."""
+        from hermes_cli.auth import _load_auth_store
+        from hermes_cli.backup import create_pre_update_backup, create_quick_snapshot
+        from hermes_cli.config_backups import backup_config
+        from hermes_cli.post_update import _backup_existing
+
+        profiles_root = tmp_path / "profiles"
+        profile_dir = profiles_root / "testprofile"
+        (profile_dir / "pairing").mkdir(parents=True)
+        (profile_dir / "config.yaml").write_text(f"model:\n  api_key: {_LEAKED_KEY}\n")
+        (profile_dir / ".env").write_text(f"OPENROUTER_API_KEY={_LEAKED_KEY}\n")
+        (profile_dir / "pairing" / "telegram-approved.json").write_text('{"123": {}}')
+        (profile_dir / "auth.json").write_text('{"providers": {"x": {"api_key": "' + _LEAKED_KEY + '"')
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+
+        copies = [
+            create_pre_update_backup(hermes_home=profile_dir),
+            profile_dir / "state-snapshots" / create_quick_snapshot(hermes_home=profile_dir),
+            backup_config(profile_dir / "config.yaml", "setup"),
+            *_backup_existing((profile_dir / ".env", profile_dir / "config.yaml")).values(),
+        ]
+        _load_auth_store(profile_dir / "auth.json")
+        copies.append(profile_dir / "auth.json.corrupt")
+        assert all(c and c.exists() for c in copies), copies
+        _patch_named_profile(monkeypatch, profiles_root, profile_dir)
+
+        with tarfile.open(export_profile("testprofile", str(tmp_path / "export.tar.gz")), "r:gz") as tf:
+            names = set(tf.getnames())
+
+        assert "testprofile/config.yaml" in names
+        rels = [c.relative_to(profile_dir).as_posix() for c in copies]
+        shipped = sorted(r for r in rels if any(n == f"testprofile/{r}" or n.startswith(f"testprofile/{r}/") for n in names))
+        assert not shipped, shipped
+
 
 class TestExportSecretScrub:
 

@@ -163,7 +163,7 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "mcp-tokens",                   # MCP OAuth tokens
     "vault",                        # vault.key + vault.json.enc
     "browser-profile", "browser_auth", "bot-desktop",  # browser cookies / logins
-    "pairing", "platforms/pairing",
+    "pairing", "platforms/pairing", "feishu_comment_pairing.json",
     "whatsapp/session", "platforms/whatsapp/session", "matrix/store", "platforms/matrix/store",
     "cache/bws_cache.json", "cache/bws_cache.enc.json",
 })
@@ -2200,6 +2200,15 @@ def _default_export_ignore(root_dir: Path):
 # its persistent Chromium profile (Cookies, Login Data — the bot's live web sessions), Xauthority, sockets.
 _EXPORT_CREDENTIAL_FILES = frozenset({"auth.json", ".env", "bot-desktop"})
 
+# Recovery copies Hermes writes of those stores at a profile's root, dropped from a named-profile
+# export (the default export's root allow-list already omits them). ``backups/`` holds pre-update
+# zips of the whole home and config.yaml copies; ``state-snapshots/`` holds per-profile update
+# snapshots (pairing stores, state.db). The sibling copies (``auth.json.corrupt``, the config
+# migration's ``.env.bak-<stamp>`` / ``config.yaml.bak-<stamp>``, legacy ``config.yaml.bak.<n>``
+# and ``config.yaml.corrupt.*``) end in suffixes the text scrub never edits.
+_EXPORT_RECOVERY_ROOT_DIRS = frozenset({"backups", "state-snapshots"})
+_EXPORT_STORE_COPY_PREFIXES = ("auth.json.", ".env.bak", "config.yaml.bak", "config.yaml.corrupt")
+
 # Text/config suffixes secret-scrubbed on export; binary DBs, images etc. are left alone.
 _EXPORT_REDACT_SUFFIXES = frozenset({
     ".md", ".txt", ".yaml", ".yml", ".json", ".jsonl", ".toml", ".ini", ".cfg", ".conf", ".py", ".sh",
@@ -2261,7 +2270,8 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
         rel = Path(directory).relative_to(profile_dir)
         ignored.update(e for e in contents if (rel / e).as_posix() in PROFILE_CREDENTIAL_PATHS)
         if Path(directory) == profile_dir:
-            ignored |= PM_RUNTIME_ROOT_DIRS & set(contents)
+            ignored |= (PM_RUNTIME_ROOT_DIRS | _EXPORT_RECOVERY_ROOT_DIRS) & set(contents)
+            ignored.update(e for e in contents if e.startswith(_EXPORT_STORE_COPY_PREFIXES))
         return ignored
 
     ignore = _default_export_ignore(profile_dir) if canon == "default" else _ignore_credentials

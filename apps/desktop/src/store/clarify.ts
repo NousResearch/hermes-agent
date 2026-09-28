@@ -177,6 +177,40 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
 export const hasClarifyRequest = (sessionId: string | null | undefined): boolean =>
   Boolean($clarifyRequests.get()[keyFor(sessionId)])
 
+// Sessions whose composer currently hosts the docked "Needs you" clarify panel
+// (mount count per session — split layouts can mount two composers for one
+// session). While a session is docked, the transcript's inline pending card
+// collapses to a one-line marker so exactly ONE live form exists: the keyboard
+// shortcuts resolve their card by DOM (`visibleClarifyCard`), and two forms
+// for the same request would race each other. A transcript rendered with no
+// composer (a watch tile, a read-only view) is never docked and keeps the full
+// inline form, so the question stays answerable everywhere it is visible.
+export const $clarifyDockedSessions = atom<Record<string, number>>({})
+
+export function registerClarifyDock(sessionId: string): () => void {
+  const key = keyFor(sessionId)
+
+  $clarifyDockedSessions.set({ ...$clarifyDockedSessions.get(), [key]: ($clarifyDockedSessions.get()[key] ?? 0) + 1 })
+
+  return () => {
+    const current = $clarifyDockedSessions.get()
+    const remaining = (current[key] ?? 1) - 1
+    const next = { ...current }
+
+    if (remaining > 0) {
+      next[key] = remaining
+    } else {
+      delete next[key]
+    }
+
+    $clarifyDockedSessions.set(next)
+  }
+}
+
+/** Reactive "is this session's clarify hosted by a composer panel" view. */
+export const sessionClarifyDocked = (sessionId: string | null) =>
+  computed($clarifyDockedSessions, docked => (docked[keyFor(sessionId)] ?? 0) > 0)
+
 /**
  * Answer `sessionId`'s pending clarify with an empty answer (a skip) and drop it
  * locally, resolving to whether there was one to skip.

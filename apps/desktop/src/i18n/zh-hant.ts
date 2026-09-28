@@ -3108,6 +3108,8 @@ export const zhHant = defineLocale({
     agents: '代理',
     background: count => `${count} 個背景任務`,
     goalActive: '目標進行中',
+    needsYou: '需要你回答',
+    needsYouCount: count => `需要你回答 · ${count} 個問題`,
     goalBlocked: '目標受阻',
     goalDone: '目標已完成',
     goalPaused: '目標已暫停',
@@ -4100,6 +4102,8 @@ export const zhHant = defineLocale({
       lateAnswer: (question, choice) => `關於「${question}」 — 我的回答: ${choice}`,
       lateAnswerTip: '將此回答起草為後續訊息',
       lateAnswerHint: '此問題已不再等待回答。選擇一個選項會將其起草為後續訊息。',
+      answerBelow: '在下方輸入框旁回答',
+      answerBelowCount: count => `${count} 個問題 — 在下方輸入框旁回答`,
       notDelivered: '此問題未送達應用程式，無法在此回答。請按停止結束本輪，然後在聊天中回覆。'
     },
     tool: {

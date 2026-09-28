@@ -3807,6 +3807,8 @@ export const zh = defineLocale({
     agents: '代理',
     background: count => `${count} 个后台任务`,
     goalActive: '目标进行中',
+    needsYou: '需要你回答',
+    needsYouCount: count => `需要你回答 · ${count} 个问题`,
     goalBlocked: '目标受阻',
     goalDone: '目标已完成',
     goalPaused: '目标已暂停',
@@ -4890,6 +4892,8 @@ export const zh = defineLocale({
       lateAnswer: (question, choice) => `关于"${question}" — 我的回答: ${choice}`,
       lateAnswerTip: '将此回答起草为后续消息',
       lateAnswerHint: '此问题已不再等待回答。选择一个选项会将其起草为后续消息。',
+      answerBelow: '在下方输入框旁回答',
+      answerBelowCount: count => `${count} 个问题 — 在下方输入框旁回答`,
       notDelivered: '此问题未送达应用，无法在此回答。请按停止结束本轮，然后在聊天中回复。'
     },
     catalogInstall: {

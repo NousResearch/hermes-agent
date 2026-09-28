@@ -36,6 +36,7 @@ import {
   clearClarifyRequest,
   normalizeChoices,
   RECOMMENDED_LABEL,
+  sessionClarifyDocked,
   sessionClarifyRequest,
   warnDroppedChoices
 } from '@/store/clarify'
@@ -61,6 +62,11 @@ interface ClarifyResult {
   answer?: string
   error?: string
 }
+
+/** Where a live form is hosted: `inline` in the transcript (widget shell,
+ *  question glyph) or `docked` in the composer's "Needs you" panel (flat — the
+ *  panel is the surface). */
+type ClarifyFormVariant = 'docked' | 'inline'
 
 function stringField(row: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const key of keys) {
@@ -192,11 +198,25 @@ const CLARIFY_TEXTAREA_CLASS = 'field-sizing-content max-h-40 min-h-0 resize-non
 
 const CLARIFY_SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
 
+// Docked in the composer panel the card sits on the panel's own fill, so the
+// widget shell (rounded surface + padding) is dropped and only the type
+// treatment stays — the panel is the surface.
+const CLARIFY_DOCKED_SHELL_CLASS = 'text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)'
+
 const CLARIFY_ICON_CLASS = 'mt-px size-4 shrink-0 text-(--ui-text-tertiary)'
 
-function ClarifyShell({ children, className, ...props }: ComponentProps<'div'>) {
+function ClarifyShell({
+  children,
+  className,
+  variant = 'inline',
+  ...props
+}: ComponentProps<'div'> & { variant?: ClarifyFormVariant }) {
   return (
-    <div className={cn(CLARIFY_SHELL_CLASS, className)} data-slot="clarify-inline" {...props}>
+    <div
+      className={cn(variant === 'docked' ? CLARIFY_DOCKED_SHELL_CLASS : CLARIFY_SHELL_CLASS, className)}
+      data-slot={variant === 'docked' ? 'clarify-docked' : 'clarify-inline'}
+      {...props}
+    >
       {children}
     </div>
   )
@@ -452,6 +472,8 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   const sessionId = useStore(useSessionView().$runtimeId)
   const $request = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
   const request = useStore($request)
+  const $docked = useMemo(() => sessionClarifyDocked(sessionId), [sessionId])
+  const docked = useStore($docked)
   const fromArgs = useMemo(() => readClarifyArgs(props.args), [props.args])
   const messageRunning = useAuiState(selectMessageRunning)
   // Answering clears the request a beat before `tool.complete` swaps in the
@@ -466,6 +488,14 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   // card while a request is open or this instance already submitted.
   if (!messageRunning && !request && !answered) {
     return <ToolFallback {...props} />
+  }
+
+  // The composer's docked "Needs you" panel owns the live form for this
+  // session. The transcript keeps a quiet one-line marker at the point the
+  // agent asked, so the reading order still makes sense, but the buttons and
+  // shortcuts live in exactly one place — next to where the user types.
+  if (docked && request && !answered) {
+    return <ClarifyDockedMarker request={request} />
   }
 
   // Batch: the gateway request carries qid-keyed questions. Args alone can't
@@ -507,15 +537,69 @@ function UndeliveredNotice() {
   )
 }
 
+/** Inline stand-in while the composer panel hosts the live form: the question
+ *  (or the batch's first question) as a single scaffold line, plus a jump to
+ *  the panel — the transcript row is where the eye lands when reading back, the
+ *  panel is where the answer goes. */
+function ClarifyDockedMarker({ request }: { request: ClarifyRequest }) {
+  const { t } = useI18n()
+  const copy = t.assistant.clarify
+  const question = request.questions?.[0]?.question ?? request.question
+  const count = request.questions?.length ?? 1
+
+  return (
+    <ClarifyShell className="my-1.5 flex items-start gap-2" data-clarify-docked="">
+      <div className="min-w-0 flex-1">
+        <p className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</p>
+        <button
+          className="mt-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary) underline-offset-2 hover:text-(--ui-text-secondary) hover:underline"
+          onClick={() => requestComposerFocus()}
+          type="button"
+        >
+          {count > 1 ? copy.answerBelowCount(count) : copy.answerBelow}
+        </button>
+      </div>
+      <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
+    </ClarifyShell>
+  )
+}
+
+/**
+ * The live clarify form for `sessionId`, hosted OUTSIDE the transcript by the
+ * composer's "Needs you" panel. Same single/batch forms as the inline card
+ * (same store, same owner-routed `clarify.respond`, same shortcut ownership),
+ * rendered flat — the panel supplies the chrome, so the widget shell is off.
+ */
+export function ClarifyPendingForm({ request }: { request: ClarifyRequest }) {
+  if (request.questions?.length) {
+    return <ClarifyToolBatchPending onAnswered={noop} request={request} undelivered={false} variant="docked" />
+  }
+
+  return (
+    <ClarifyToolSinglePending
+      fromArgs={emptyArgs}
+      onAnswered={noop}
+      request={request}
+      undelivered={false}
+      variant="docked"
+    />
+  )
+}
+
+const noop = () => {}
+const emptyArgs: ClarifyArgs = {}
+
 function ClarifyToolSinglePending({
   fromArgs,
   onAnswered,
   request,
+  variant = 'inline',
   undelivered
 }: {
   fromArgs: ClarifyArgs
   onAnswered: () => void
   request: ClarifyRequest | null
+  variant?: ClarifyFormVariant
   undelivered: boolean
 }) {
   const { t } = useI18n()
@@ -838,18 +922,21 @@ function ClarifyToolSinglePending({
     // The form is the outer element so the actions can sit OUTSIDE the card and
     // still submit it — the panel holds the question, the buttons ride below it.
     <form
-      className="my-1.5 grid gap-4"
+      className={cn('grid', variant === 'docked' ? 'gap-2.5' : 'my-1.5 gap-4')}
       data-clarify-choices={hasChoices ? choices.length : undefined}
+      data-clarify-variant={variant}
       onKeyDownCapture={handleClarifySubmitShortcut}
       onSubmit={handleSubmit}
       ref={formRef}
     >
-      <ClarifyShell className="grid gap-2">
+      <ClarifyShell className="grid gap-2" variant={variant}>
         <div className="flex items-start gap-2">
           <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">
             {question}
           </span>
-          <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
+          {variant === 'inline' && (
+            <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
+          )}
         </div>
         {undelivered ? <UndeliveredNotice /> : null}
 
@@ -1077,12 +1164,14 @@ function ClarifyToolBatchPending({
   fromArgs,
   onAnswered,
   request,
-  undelivered
+  undelivered,
+  variant = 'inline'
 }: {
   fromArgs?: ClarifyArgs
   onAnswered: () => void
   request: ClarifyRequest | null
   undelivered: boolean
+  variant?: ClarifyFormVariant
 }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
@@ -1295,9 +1384,10 @@ function ClarifyToolBatchPending({
   return (
     <form
       aria-busy={ready || undelivered ? undefined : 'true'}
-      className="my-1.5 grid gap-4"
+      className={cn('grid', variant === 'docked' ? 'gap-2.5' : 'my-1.5 gap-4')}
       data-clarify-batch={questions.length}
       data-clarify-batch-preview={ready ? undefined : ''}
+      data-clarify-variant={variant}
       onKeyDownCapture={handleClarifySubmitShortcut}
       onSubmit={handleSubmit}
     >
@@ -1306,12 +1396,12 @@ function ClarifyToolBatchPending({
           {copy.loadingQuestion}
         </span>
       )}
-      <ClarifyShell className="grid gap-3">
+      <ClarifyShell className="grid gap-3" variant={variant}>
         <div className="flex items-start gap-2">
           <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
             {copy.questionProgress(answeredCount, questions.length)}
           </span>
-          <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
+          {variant === 'inline' && <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />}
         </div>
         {undelivered ? <UndeliveredNotice /> : null}
         {questions.map(question => (

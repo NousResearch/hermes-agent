@@ -2052,6 +2052,13 @@ class CLITuiMixin:
         kb.add('c-z')(self._tui_handle_ctrl_z)
 
         kb.add(*self._tui_voice_record_key_sequence())(self._tui_handle_voice_record)
+        _detach_seq = self._tui_background_key_sequence()
+        if _detach_seq:
+            # Only while a turn runs: outside it the key keeps its readline meaning. eager: emacs mode
+            # also binds the 2-key ``c-] <char>`` (character-search), which would otherwise make
+            # prompt_toolkit wait ``timeoutlen`` for a second key before firing the detach.
+            kb.add(*_detach_seq, filter=Condition(lambda: bool(self._agent_running)), eager=True)(
+                self._tui_handle_detach_key)
         kb.add(Keys.BracketedPaste, eager=True)(self._tui_handle_paste)
         kb.add('c-v')(self._tui_handle_ctrl_v)
         kb.add('escape', 'v')(self._tui_handle_alt_v)
@@ -2163,6 +2170,56 @@ class CLITuiMixin:
         for _num in range(10):
             _idx = 9 if _num == 0 else _num - 1
             kb.add(str(_num), filter=_slash_confirm)(self._tui_make_slash_confirm_number_handler(_idx))
+
+    def _tui_background_key_sequence(self) -> tuple:
+        """prompt_toolkit sequence for ``display.background_key`` (default ``ctrl+]``), or ``()``
+        when it is disabled or collides with ``voice.record_key`` (voice wins: it shipped first).
+        Parsed with the voice-key normalizer so both keys accept the same spellings."""
+        from cli import logger
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.voice import (
+                normalize_voice_record_key_for_prompt_toolkit, pt_key_to_sequence, voice_record_key_from_config)
+            cfg = load_config()
+            display = cfg.get("display") if isinstance(cfg, dict) else None
+            raw = display.get("background_key", "ctrl+]") if isinstance(display, dict) else "ctrl+]"
+            if raw in (None, False, "", "none", "off"):
+                return ()
+            key = normalize_voice_record_key_for_prompt_toolkit(raw)
+            voice_key = normalize_voice_record_key_for_prompt_toolkit(voice_record_key_from_config(cfg))
+            if key == voice_key:
+                logger.warning(
+                    "display.background_key %r collides with voice.record_key; detach key disabled "
+                    "(use /detach or pick another key).", raw)
+                return ()
+            return pt_key_to_sequence(key)
+        except Exception:
+            logger.debug("background_key setup failed; detach key disabled", exc_info=True)
+            return ()
+
+    def _tui_handle_detach_key(self, event):
+        """Detach key: hand the running foreground terminal command to the background (not killed)."""
+        self._detach_foreground()
+        event.app.invalidate()
+
+    def _detach_foreground(self) -> int:
+        """Shared by the detach key and ``/detach``; prints a one-line status. Returns workers signalled."""
+        from cli import _ACCENT, _DIM, _RST, _cprint
+        agent = getattr(self, "agent", None)
+        if not getattr(self, "_agent_running", False) or agent is None or not hasattr(agent, "detach_foreground"):
+            _cprint(f"  {_DIM}Nothing running to detach.{_RST}")
+            return 0
+        try:
+            n = int(agent.detach_foreground())
+        except Exception as exc:
+            _cprint(f"  {_DIM}Detach failed ({exc}).{_RST}")
+            return 0
+        if n:
+            _cprint(f"  {_ACCENT}⇥ Detaching foreground command to background (still running)…{_RST}")
+        else:
+            _cprint(f"  {_DIM}Nothing to detach: no foreground terminal command is running on a "
+                    f"local backend (the model may be thinking, or the backend is docker/ssh/remote).{_RST}")
+        return n
 
     def _tui_voice_record_key_sequence(self) -> tuple:
         """Resolve the push-to-talk key (voice.record_key, default Ctrl+B) to a prompt_toolkit

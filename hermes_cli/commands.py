@@ -101,6 +101,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                desktop="messaging"),
     CommandDef("bg", "Run a prompt in a separate background session", "Session",
                args_hint="<prompt>", busy_policy="dispatch"),
+    CommandDef("detach", "Send the running foreground command to the background without killing it",
+               "Session", cli_only=True, busy_policy="dispatch"),
     CommandDef("btw", "Ask a side question about the current conversation without interrupting it", "Session",
                args_hint="<question>", busy_policy="dispatch"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
@@ -392,7 +394,7 @@ for _cmd in COMMAND_REGISTRY:
 HELP_SESSION_SUBGROUPS: dict[str, tuple[str, ...]] = {
     "Context": ("compress", "compact", "context", "ctx", "status"),
     "Background & Automation": (
-        "bg", "btw", "agents", "tasks", "queue", "q", "steer", "s", "goal", "subgoal", "heartbeat", "hb",
+        "bg", "btw", "detach", "agents", "tasks", "queue", "q", "steer", "s", "goal", "subgoal", "heartbeat", "hb",
         "refine", "loop", "proactive", "moa", "journey", "learning", "memory-graph")}
 
 # All names + aliases the gateway dispatches. Config-gated commands are

@@ -156,6 +156,9 @@ def _resolve_budget_fallback(
                     f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
                     "— requesting summary...", diagnostic=True,
                 )
+            # A pending "(empty)" nudge pair would be buried under the summary request, out of
+            # reach of the tail-only scaffolding drop, and replayed as history next turn.
+            agent._drop_trailing_empty_response_scaffolding(messages)
             _summary_start = time.time()
             try:
                 final_response = agent._handle_max_iterations(messages, api_call_count)

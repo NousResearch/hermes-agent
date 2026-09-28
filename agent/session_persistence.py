@@ -52,6 +52,14 @@ def _is_ephemeral_scaffolding(msg: Any) -> bool:
     return isinstance(msg, dict) and any(msg.get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
 
 
+def drop_ephemeral_scaffolding(messages: Any) -> None:
+    """Remove scaffolding anywhere in a finished turn's list, in place. Tail drops miss a pair
+    buried by a later tool round, and CLI/TUI/ACP replay this list as the next turn's history:
+    a replayed ``(empty)`` turn is what the model then imitates (#92877)."""
+    if isinstance(messages, list) and any(_is_ephemeral_scaffolding(m) for m in messages):
+        messages[:] = [m for m in messages if not _is_ephemeral_scaffolding(m)]
+
+
 # `_DB_PERSISTED_MARKER` (agent.context_compressor) is the intrinsic "already written to SQLite" marker: an
 # id(msg) set can alias a freed dict's address onto a new message, a key on the dict cannot. The `_` prefix is
 # mandatory (wire sanitizers strip `_` keys). CONTRACT: the marker asserts the dict's CONTENT is durable as

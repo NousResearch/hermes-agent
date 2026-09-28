@@ -22,15 +22,20 @@ _GATEWAY_FATAL_CONFIG_EXIT_CODE = 78
 _TIMESTAMP_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}(?:\s|$)")
 
 
-def _timestamp() -> str:
-    """Match logging.Formatter's default ``%(asctime)s`` timestamp shape."""
+def timestamp() -> str:
+    """Local time in logging.Formatter's default ``%(asctime)s`` shape, which ``hermes logs --since`` parses."""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:23]
 
 
-def _write_timestamped_line(log_file: TextIO, line: str) -> None:
+def stamp_line(line: str) -> str:
+    """*line* with a leading :func:`timestamp` (kept as-is if it already has one) and one ``\\n``."""
     rendered = line.rstrip("\r\n")
-    prefix = "" if _TIMESTAMP_PREFIX.match(rendered) else f"{_timestamp()} "
-    log_file.write(f"{prefix}{rendered}\n")
+    prefix = "" if _TIMESTAMP_PREFIX.match(rendered) else f"{timestamp()} "
+    return f"{prefix}{rendered}\n"
+
+
+def _write_timestamped_line(log_file: TextIO, line: str) -> None:
+    log_file.write(stamp_line(line))
     log_file.flush()
 
 

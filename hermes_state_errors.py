@@ -172,6 +172,12 @@ class SessionTurnLeaseLostError(RuntimeError):
     be persisting a newer turn, and landing this one would interleave a stale reply."""
 
 
+class SessionInUseError(RuntimeError):
+    """A session (or a delegate child a deletion would cascade into) is held by a live
+    turn lease or compression lock. Distinct from "not found": the holder's next flush
+    would trip FKs on rows the deletion removed, so deletion is refused until it finishes."""
+
+
 class StateDbReplacedError(RuntimeError):
     """The state.db path no longer names the file this SessionDB opened
     (out-of-band cp/mv/restore). In-place FTS repair and fail-open trigger

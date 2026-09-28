@@ -1553,9 +1553,19 @@ class SessionSessionsMixin:
         def _do(conn):
             if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone() is None:
                 return False
-            if expected_ids is not None and expected_ids != {
-                session_id, *_collect_delegate_child_ids(conn, [session_id])
-            }:
+            covered = [session_id, *_collect_delegate_child_ids(conn, [session_id])]
+            # Live-owner gate (sibling paths of #125157): the turn-lease / compression-lock
+            # rows are persisted in the DB, so they are visible cross-process — prune/sweep
+            # already refuse under them via _write_guards_reject. Every user-initiated
+            # delete (CLI, dashboard REST, gateway) funnels into this same store method and
+            # must not bypass the guard, or the holder's next flush trips FKs on gone rows.
+            # Expired / dead-holder guards are reclaimed by the check itself.
+            from hermes_state_errors import SessionInUseError
+            for sid in covered:
+                if self._write_guards_reject(conn, sid):
+                    raise SessionInUseError(
+                        f"session {sid!r} has a live turn lease or compression lock; refusing deletion")
+            if expected_ids is not None and expected_ids != set(covered):
                 return False
             if expected_display_messages is not None and any(
                 self._display_messages_from_conn(conn, covered_id) != expected

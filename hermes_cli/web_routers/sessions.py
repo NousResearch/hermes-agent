@@ -24,7 +24,7 @@ from hermes_cli.web_models import (
     BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
 from hermes_cli.web_routers._common import CORRUPT_STORE_DETAIL, log as _log, destructive_profile, http_failure
 from hermes_state import is_malformed_db_error
-from hermes_state_errors import is_transient_sqlite_error
+from hermes_state_errors import SessionInUseError, is_transient_sqlite_error
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 
 list_router = APIRouter()
@@ -705,7 +705,12 @@ async def delete_session_endpoint(session_id: str, profile: Optional[str] = None
         db.delete_session(sid)
         return {"ok": True}
 
-    return await asyncio.to_thread(_with_db, profile, _delete, read_only=False)
+    try:
+        return await asyncio.to_thread(_with_db, profile, _delete, read_only=False)
+    except SessionInUseError as e:
+        # 409, not 500: a live turn in another process holds the session; the desktop's
+        # optimistic-restore path still runs on the error response.
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @manage_router.post("/api/sessions/owner-backfill")

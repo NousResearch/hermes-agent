@@ -123,6 +123,7 @@ def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=
             "source": row.get("source") or ""}
 
 
+from hermes_state_errors import SessionInUseError
 from hermes_state_sessions import INTERNAL_LISTING_SOURCES
 
 # Hidden from human listings (kanban workers, tool integrations, one-shot runs); see INTERNAL_LISTING_SOURCES.
@@ -1017,6 +1018,10 @@ def _(rid, params: dict) -> dict:
         try:
             home = Path(profile_home) if profile_home is not None else get_hermes_home()
             deleted = db.delete_session(target, sessions_dir=home / "sessions")
+        except SessionInUseError:
+            # Cross-process live owner (the active-session check above only sees this
+            # process's registry) — same refusal, same code, as an active session.
+            return _err(rid, 4023, "cannot delete an active session")
         except Exception as e:
             return _err(rid, 5036, f"delete failed: {e}")
     return _ok(rid, {"deleted": target}) if deleted else _err(rid, 4007, "session not found")

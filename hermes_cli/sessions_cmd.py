@@ -16,6 +16,7 @@ from pathlib import Path
 
 from hermes_cli.cli_output import print_truncated
 from hermes_cli.sessions_cmd_browse import _relative_time, _session_browse_picker
+from hermes_state_errors import SessionInUseError
 
 
 def get_hermes_home():
@@ -584,7 +585,14 @@ def _cmd_delete(db, args):
             return
     elif _pinned_note:
         print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
-    if not db.delete_session(resolved_session_id, sessions_dir=_sessions_dir()):
+    try:
+        deleted = db.delete_session(resolved_session_id, sessions_dir=_sessions_dir())
+    except SessionInUseError as e:
+        # A live turn (another process's gateway/cron/agent) still holds it; deleting
+        # anyway would trip FKs on the holder's next flush (#125157 failure mode).
+        print(f"Refused: {e}")
+        return 1
+    if not deleted:
         return _not_found(args.session_id)
     print(f"Deleted session '{resolved_session_id}'.")
 

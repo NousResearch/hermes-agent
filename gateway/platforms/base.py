@@ -4793,13 +4793,15 @@ class BasePlatformAdapter(ABC):
             headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
             if headroom < 1:
                 headroom = max(1, max_length // 2)
-            # Remainder fits in one final chunk; close a reopened fence if still open.
+            # Remainder fits in one final chunk; close a reopened fence if still open, and count
+            # that close against the budget too.
             if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
                 final_chunk = prefix + remaining
                 if carry_lang is not None and fence_state_after(remaining, True, carry_lang)[0]:
                     final_chunk += FENCE_CLOSE
-                chunks.append(final_chunk)
-                break
+                if _len(final_chunk) <= max_length - INDICATOR_RESERVE:
+                    chunks.append(final_chunk)
+                    break
             # Natural split (newline, then space); a custom _len budget maps to a codepoint offset.
             _cp_limit = (
                 _custom_unit_to_cp(remaining, headroom, _len) if _len is not len else headroom)

@@ -50,9 +50,10 @@ class BranchRecord:
     reason: str
 
 
-def _run(cmd: list, timeout: int, cwd: Optional[str] = None) -> subprocess.CompletedProcess:
+def _run(cmd: list, timeout: int, cwd: Optional[str] = None,
+         env: Optional[dict] = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=timeout, cwd=cwd)
+                          timeout=timeout, cwd=cwd, env=env, stdin=subprocess.DEVNULL)
 
 
 @dataclass
@@ -70,9 +71,11 @@ class ExternalTreeRecord:
 def _git(args: list, cwd: str, timeout: int = 15) -> subprocess.CompletedProcess:
     """Run git, translating timeouts into returncode 124. Every verdict fails safe toward "keep"
     on nonzero, so a slow ``git cherry`` on a huge repo degrades to keep instead of aborting the
-    audit mid-list."""
+    audit mid-list. :func:`noninteractive_git_env` because ``status`` executes the repo's
+    ``core.fsmonitor`` (GHSA-7x36-8jrh-v4pw)."""
+    from hermes_cli._subprocess_compat import noninteractive_git_env
     try:
-        return _run(["git", *args], timeout, cwd)
+        return _run(["git", *args], timeout, cwd, env=noninteractive_git_env())
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(args=["git", *args], returncode=124, stdout="",
                                            stderr=f"timeout after {timeout}s")

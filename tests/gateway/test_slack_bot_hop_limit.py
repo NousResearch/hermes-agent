@@ -6,6 +6,7 @@ resets it. A different thread is a different count.
 
 import importlib
 import sys
+import time
 from importlib.machinery import PathFinder
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock
@@ -125,6 +126,29 @@ def _bot(n):
     return _event(
         text=f"<@{BOT}> reply {n}", user=PEER,
         ts=f"1700000001.{n:06d}", bot_id="B_PEER")
+
+
+@pytest.mark.asyncio
+async def test_seventh_user_id_only_bot_reply_is_dropped(adapter):
+    adapter._resolve_user_is_bot = AsyncMock(return_value=True)
+    for n in range(1, 8):
+        event = _event(text=f"<@{BOT}> reply {n}", user=PEER,
+                       ts=f"1700000010.{n:06d}", bot_id=None)
+        await adapter._handle_slack_message(event)
+    assert adapter.handle_message.await_count == 6
+
+
+def test_hypest_fleet_user_id_is_counted_as_bot(adapter):
+    assert adapter._event_declares_bot_sender({"user": "U0C0VLG0XG8"}) is True
+
+
+def test_stale_hop_thread_keys_are_bounded(adapter):
+    old = time.time() - 2 * adapter._BOT_HOP_WINDOW_SECONDS
+    adapter._bot_hops = {(TEAM, CHANNEL, f"thread-{n}"): [old] for n in range(1000)}
+    key = adapter._bot_hop_key(TEAM, CHANNEL, "new")
+    adapter._note_bot_hop(key, time.time())
+    assert len(adapter._bot_hops) <= adapter._BOT_HOPS_MAX
+    assert key in adapter._bot_hops
 
 
 class TestSlackBotHopLimit:

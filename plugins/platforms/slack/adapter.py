@@ -2849,6 +2849,14 @@ class SlackAdapter(BasePlatformAdapter):
     # with no operator asking for it.
     _BOT_HOP_LIMIT = 6
     _BOT_HOP_WINDOW_SECONDS = 600
+    _BOT_HOPS_MAX = 2048
+    _FLEET_BOT_USER_IDS = frozenset({
+        "U0C01906BKL",  # Hermes
+        "U0BVASPN63F",  # Argo
+        "U0C0VLG6FNC",  # ClaudeCode
+        "U0C0VLG0XG8",  # HYPEST
+        "U0C4HQG6D5G",  # Aside
+    })
 
     def _bot_hop_key(self, team_id: str, channel_id: str, thread_ts: str) -> tuple:
         return (str(team_id or ""), str(channel_id or ""), str(thread_ts or ""))
@@ -2859,9 +2867,29 @@ class SlackAdapter(BasePlatformAdapter):
         if hops is None:
             hops = self._bot_hops = {}
         recent = [t for t in hops.get(key, []) if now - t < self._BOT_HOP_WINDOW_SECONDS]
+        if recent:
+            hops[key] = recent
+        else:
+            hops.pop(key, None)
+        recent = hops.get(key, [])
         recent.append(now)
         hops[key] = recent
+        self._trim_bot_hops(now)
         return len(recent)
+
+    def _trim_bot_hops(self, now: float) -> None:
+        """Drop expired thread histories globally and cap active-key growth."""
+        hops = getattr(self, "_bot_hops", None)
+        if not hops:
+            return
+        cutoff = now - self._BOT_HOP_WINDOW_SECONDS
+        for key, timestamps in list(hops.items()):
+            live = [stamp for stamp in timestamps if stamp >= cutoff]
+            if live:
+                hops[key] = live
+            else:
+                hops.pop(key, None)
+        self._evict_oldest_by_ts(hops, self._BOT_HOPS_MAX)
 
     def _reset_bot_hops(self, key: tuple) -> None:
         hops = getattr(self, "_bot_hops", None)
@@ -2900,7 +2928,11 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _event_declares_bot_sender(self, event: dict) -> bool:
         """Return True when the Slack event itself identifies a bot sender."""
-        if event.get("bot_id") or event.get("bot_profile") or event.get("subtype") == "bot_message":
+        if (
+            event.get("bot_id") or event.get("bot_profile")
+            or event.get("subtype") == "bot_message"
+            or event.get("user") in self._FLEET_BOT_USER_IDS
+        ):
             return True
         profile = event.get("user_profile")
         if isinstance(profile, dict) and bool(profile.get("is_bot")):
@@ -4549,13 +4581,16 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _peer_bot_drop(
         self, event: dict, user_id: str, bot_uid: Optional[str], channel_id: str, team_id: str,
-        is_mentioned: bool) -> bool:
+        is_mentioned: bool, sender_is_bot: Optional[bool] = None,
+    ) -> bool:
         """True when a bot *user* post (peer agent: no bot_id/subtype) must be dropped.
         Such posts would otherwise re-trigger via old thread mentions or active sessions and cause
         agent-agent loops. Under ``mentions`` only the current text counts as a summons."""
         if not user_id or user_id == bot_uid:
             return False
-        sender_is_bot_user = self._event_declares_bot_sender(event)
+        sender_is_bot_user = (
+            sender_is_bot if sender_is_bot is not None else self._event_declares_bot_sender(event)
+        )
         if not sender_is_bot_user:
             sender_is_bot_user = await self._resolve_user_is_bot(
                 user_id, chat_id=channel_id, team_id=team_id)
@@ -4653,12 +4688,17 @@ class SlackAdapter(BasePlatformAdapter):
         # Internal triggers (reactions) skip the mention requirement but NOT
         # allowed_channels or user authorization.
         force_process = bool(event.get("_hermes_force_process"))
-        if await self._peer_bot_drop(event, user_id, bot_uid, channel_id, team_id, is_mentioned):
+        sender_is_bot = self._event_declares_bot_sender(event)
+        if not sender_is_bot and user_id and user_id != bot_uid:
+            sender_is_bot = await self._resolve_user_is_bot(
+                user_id, chat_id=channel_id, team_id=team_id)
+        if await self._peer_bot_drop(
+            event, user_id, bot_uid, channel_id, team_id, is_mentioned, sender_is_bot=sender_is_bot,
+        ):
             return
         # A person stepping in restarts the exchange. Only an unbroken run of
-        # bot messages counts toward the cap.
+        # bot messages counts toward the cap; Slack may identify bots only by user ID.
         hop_key = self._bot_hop_key(team_id, channel_id, thread_ts or ts)
-        sender_is_bot = self._event_declares_bot_sender(event)
         if not sender_is_bot and is_mentioned:
             self._reset_bot_hops(hop_key)
         elif sender_is_bot:

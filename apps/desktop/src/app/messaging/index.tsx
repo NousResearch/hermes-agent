@@ -11,6 +11,7 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
+import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
 import {
   approvePairing,
@@ -26,6 +27,7 @@ import {
 import { type Translations, useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icons'
+import { platformStatusTone } from '@/lib/platform-status'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
@@ -62,20 +64,19 @@ const PILL_TONE: Record<StatusTone, string> = {
 const stateLabel = (state: null | string | undefined, m: Translations['messaging']) =>
   state ? m.states[state] || state.replace(/_/g, ' ') : m.unknown
 
-function stateTone({ enabled, state }: MessagingPlatformInfo): StatusTone {
-  if (!enabled) {
-    return 'muted'
-  }
+// Filter order: what needs you first, then what's fine, then what's off.
+const STATUS_FILTER_ORDER: StatusTone[] = ['bad', 'warn', 'good', 'muted']
 
-  if (state === 'connected') {
-    return 'good'
-  }
+function platformMatches(platform: MessagingPlatformInfo, tone: 'all' | StatusTone, query: string): boolean {
+  const q = normalize(query)
 
-  if (state === 'fatal' || state === 'startup_failed') {
-    return 'bad'
-  }
-
-  return 'warn'
+  return (
+    (tone === 'all' || platformStatusTone(platform) === tone) &&
+    (!q ||
+      [platform.id, platform.name, platform.description, platform.state]
+        .filter(Boolean)
+        .some(value => String(value).toLowerCase().includes(q)))
+  )
 }
 
 const trimEdits = (edits: Record<string, string>): Record<string, string> =>
@@ -151,6 +152,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const [pendingRevoke, setPendingRevoke] = useState<null | PairingUser>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | StatusTone>('all')
   const [refreshing, setRefreshing] = useState(false)
   const [saving, setSaving] = useState<string | null>(null)
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
@@ -326,23 +328,33 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const pendingByPlatform = useMemo(() => byPlatform(pairing.pending), [pairing.pending])
   const approvedByPlatform = useMemo(() => byPlatform(pairing.approved), [pairing.approved])
 
-  const visiblePlatforms = useMemo(() => {
-    if (!platforms) {
-      return []
+  // Only tones some platform is actually in get a tab; a filter whose last
+  // platform changed state falls back to All instead of an empty list.
+  const presentTones = useMemo(
+    () => STATUS_FILTER_ORDER.filter(tone => platforms?.some(platform => platformStatusTone(platform) === tone)),
+    [platforms]
+  )
+
+  const activeStatusFilter = statusFilter !== 'all' && presentTones.includes(statusFilter) ? statusFilter : 'all'
+
+  const visiblePlatforms = useMemo(
+    () => platforms?.filter(platform => platformMatches(platform, activeStatusFilter, query)) ?? [],
+    [activeStatusFilter, platforms, query]
+  )
+
+  // Picking a filter moves the detail pane into it. Only on that click: a
+  // platform that leaves the filter because you just enabled it stays open.
+  function handleStatusFilter(next: 'all' | StatusTone) {
+    setStatusFilter(next)
+
+    if (selected && !platformMatches(selected, next, query)) {
+      const first = platforms?.find(platform => platformMatches(platform, next, query))
+
+      if (first) {
+        setSelectedId(first.id)
+      }
     }
-
-    const q = normalize(query)
-
-    if (!q) {
-      return platforms
-    }
-
-    return platforms.filter(platform =>
-      [platform.id, platform.name, platform.description, platform.state]
-        .filter(Boolean)
-        .some(value => String(value).toLowerCase().includes(q))
-    )
-  }, [platforms, query])
+  }
 
   async function handleToggle(platform: MessagingPlatformInfo, enabled: boolean) {
     setSaving(`enabled:${platform.id}`)
@@ -528,6 +540,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       searchHidden={(platforms?.length ?? 0) === 0}
       searchHints={platforms?.slice(0, 5).map(platform => t.common.tryHint(platform.name.toLowerCase()))}
       searchPlaceholder={m.search}
+      searchTrailingAction={
+        presentTones.length > 1 && (
+          <ResponsiveTabs
+            align="end"
+            onChange={id => handleStatusFilter(id as 'all' | StatusTone)}
+            tabs={(['all', ...presentTones] as const).map(id => ({ id, label: m.statusFilter[id] }))}
+            value={activeStatusFilter}
+          />
+        )
+      }
       searchValue={query}
     >
       {!platforms ? (
@@ -668,7 +690,7 @@ function PlatformRow({
               {pendingCount}
             </span>
           )}
-          <StatusDot tone={stateTone(platform)} />
+          <StatusDot tone={platformStatusTone(platform)} />
         </span>
       </span>
     </button>
@@ -718,7 +740,7 @@ function PlatformDetail({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{platform.name}</h3>
-            <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
+            <StatePill tone={platformStatusTone(platform)}>{stateLabel(platform.state, m)}</StatePill>
             {/* Resting states earn no pill — only actionable ones. */}
             {!platform.configured && <SetupPill active={false}>{m.needsSetup}</SetupPill>}
             {/* The state pill already reads "gateway stopped" when that is the

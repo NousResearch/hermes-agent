@@ -22,7 +22,7 @@ from agent import model_metadata_http
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
-from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, without_persistence_fields
 
 logger = logging.getLogger(__name__)
 
@@ -2424,7 +2424,10 @@ def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
         return _estimate_message_tokens_without_images(msg), _count_image_tokens(msg, 1)
     try:
         pins: list = []
-        key = _msg_fingerprint(msg, pins)
+        # Persistence-only fields (identity, timestamps, display metadata) never reach the estimate: keep them
+        # out of the key so stamping them neither costs a walk nor misses the memo.
+        key = _msg_fingerprint(
+            without_persistence_fields(msg) if type(msg) is dict else msg, pins)
         hash(key)
     except Exception:
         text, images = _compute()

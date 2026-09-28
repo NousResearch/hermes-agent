@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.status import looks_like_gateway_command_line
+from gateway.status import _bootstrap_entry, _split_windows_command_line, looks_like_gateway_command_line
 from hermes_cli import _launchers, venv_sync
 from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
 
@@ -53,3 +53,55 @@ def test_bootstrap_argv_is_identity_only_for_the_process_running_it(join: str) -
     watcher = _JOINS[join]([PY, "-c", "import os, sys, time\npid = int(sys.argv[1]); cmd = sys.argv[2:]\n", "1234", *store])
     assert not looks_like_gateway_command_line(chat) and _hermes_holder_subcommand(chat) == "chat"
     assert not looks_like_gateway_command_line(watcher) and _hermes_holder_subcommand(watcher) is None
+
+
+@pytest.mark.parametrize("join", _JOINS)
+def test_venv_reentry_preserves_commas_inside_literal_argv(join: str) -> None:
+    payload = "prefix, gateway, run"
+    argv = [str(ROOT / "hermes_cli" / "main.py"), "chat", payload]
+    command = venv_sync.relaunch_command(
+        Path(PY), ROOT, argv, ["/old/python", "-m", "hermes_cli.main", *argv[1:]],
+        "hermes_cli.main",
+    )
+
+    assert _bootstrap_entry(command[-1], []) == ["-m", "hermes_cli.main", "chat", payload]
+    command_line = _JOINS[join]([str(part) for part in command])
+    assert not looks_like_gateway_command_line(command_line)
+    assert _hermes_holder_subcommand(command_line) == "chat"
+
+
+def test_windows_venv_reentry_round_trips_repr_with_apostrophe() -> None:
+    """list2cmdline must not split the ``-c`` source at repr() double quotes."""
+    profile = "O\'Brien"
+    argv = [str(ROOT / "hermes_cli" / "main.py"), "gateway", "run", "--profile", profile]
+    command = venv_sync.relaunch_command(
+        Path(PY), ROOT, argv, ["/old/python", "-m", "hermes_cli.main", *argv[1:]],
+        "hermes_cli.main",
+    )
+    command_line = subprocess.list2cmdline([str(part) for part in command])
+
+    assert _split_windows_command_line(command_line) == [str(part) for part in command]
+    assert looks_like_gateway_command_line(command_line)
+    assert _hermes_holder_subcommand(command_line) == "gateway"
+
+
+def test_venv_reentry_rejects_computed_sys_argv() -> None:
+    command = venv_sync.relaunch_command(
+        Path(PY), ROOT, [str(ROOT / "hermes_cli" / "main.py"), "gateway", "run"],
+        ["/old/python", "-m", "hermes_cli.main", "gateway", "run"], "hermes_cli.main",
+    )
+    source = command[-1].replace("sys.argv = [", "sys.argv = list([", 1)
+    source = source.replace("; runpy.run_module", "); runpy.run_module", 1)
+    assert _bootstrap_entry(source, []) is None
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["python.exe", "-c", "print(1)"],
+        ["C:\\Program Files\\Python\\python.exe", "-c", 'print("x")', "arg with spaces"],
+        ["python.exe", "-c", r'print("C:\\tmp\\")', 'O\'Brien'],
+    ],
+)
+def test_windows_command_line_splitter_inverts_list2cmdline(argv: list[str]) -> None:
+    assert _split_windows_command_line(subprocess.list2cmdline(argv)) == argv

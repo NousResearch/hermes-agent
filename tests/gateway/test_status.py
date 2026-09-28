@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import status
+from hermes_cli import venv_sync
 
 
 class TestGatewayPidState:
@@ -168,6 +170,79 @@ class TestGatewayPidState:
         # Cleanup for atexit hooks.
         monkeypatch.setenv("HERMES_HOME", str(process_home))
         (process_home / "gateway.pid").unlink(missing_ok=True)
+
+
+    def test_unscoped_live_identity_mismatch_never_unlinks_active_files(
+        self, tmp_path, monkeypatch
+    ):
+        """A live PID behind an active lock is not stale cleanup authority (#125610)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        record = {
+            "pid": 4242,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 123,
+            "hermes_home": str(tmp_path.resolve()),
+        }
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        pid_path.write_text(json.dumps(record), encoding="utf-8")
+        lock_path.write_text(json.dumps(record), encoding="utf-8")
+
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda _path=None: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline", lambda _pid: "python -m hermes_cli.main chat"
+        )
+        monkeypatch.setattr(status, "get_runtime_status_running_pid", lambda: None)
+
+        assert status.get_running_pid() is None
+        assert pid_path.exists()
+        assert lock_path.exists()
+
+    def test_managed_relaunch_identity_returns_pid_without_cleanup(
+        self, tmp_path, monkeypatch
+    ):
+        """Exercise the #125610 producer -> identity -> get_running_pid chain."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        record = {
+            "pid": 4242,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 123,
+            "hermes_home": str(tmp_path.resolve()),
+        }
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        pid_path.write_text(json.dumps(record), encoding="utf-8")
+        lock_path.write_text(json.dumps(record), encoding="utf-8")
+
+        root = tmp_path / "Hermes Agent" / "hermes-agent"
+        argv = [
+            str(root / "hermes_cli" / "main.py"),
+            "gateway",
+            "run",
+            "--profile",
+            "O\'Brien",
+        ]
+        command = venv_sync.relaunch_command(
+            Path("C:/managed/python.exe"),
+            root,
+            argv,
+            ["C:/old/python.exe", "-m", "hermes_cli.main", *argv[1:]],
+            "hermes_cli.main",
+        )
+        command_line = subprocess.list2cmdline([str(part) for part in command])
+
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda _path=None: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: command_line)
+
+        assert status.get_running_pid() == 4242
+        assert pid_path.exists()
+        assert lock_path.exists()
 
 
 class TestScopedGatewayPidQuery:

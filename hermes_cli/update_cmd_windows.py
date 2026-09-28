@@ -8,7 +8,6 @@ import logging
 from contextlib import contextmanager, suppress
 import os
 import re
-import shlex
 import subprocess
 import sys
 import time as _time
@@ -236,10 +235,8 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     Profile selectors (``--profile X``, ``-p X``) are skipped like the canonical gateway matcher does. See
     #90778.
     """
-    try:
-        tokens = shlex.split(cmdline, posix=False)
-    except Exception:
-        tokens = cmdline.split()
+    from gateway.status import _split_windows_command_line
+    tokens = _split_windows_command_line(cmdline)
     # ``python -c <src> … -m hermes_cli.main <subcommand>``: the entry token belongs to the argv the
     # inline source carries for a LATER spawn, not to this holder (#107002) -- unless the source is a
     # Hermes bootstrap running the entry point in this process (#124318).

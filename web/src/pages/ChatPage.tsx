@@ -916,7 +916,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
       const markReplacementInput = (ev: Event) => {
         const input = ev as InputEvent;
+        // The heuristic assumes xterm dropped the deletion before this insert.
+        // After a replayed deletion the PTY line is exact, and an insert that
+        // echoes the last word (`ok ha` + `ha `) would otherwise delete it.
         if (
+          !mobileTextareaBridge?.followsReplayedDelete() &&
           shouldTreatInputAsMobileReplacement(
             input.inputType,
             input.data,
@@ -1570,8 +1574,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // must not consume the mobile replacement window intended for xterm's
       // normal onData path.
       sendComposedText = (data) => forwardPtyData(data, false);
-      // A replayed textarea edit is exact bytes, never a replacement candidate.
-      sendTextareaEdit = (data) => forwardPtyData(data, false);
+      // A replayed textarea edit is exact bytes, never a replacement candidate,
+      // and it closes a window an earlier compositionend opened.
+      sendTextareaEdit = (data) => {
+        forwardPtyData(data, false);
+        mobileReplacementInputUntilRef.current = 0;
+      };
       onDataDisposable = term.onData((data) => {
         if (!SGR_MOUSE_RE.test(data)) {
           compositionForwarder.noteTerminalData(data);

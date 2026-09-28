@@ -71,6 +71,19 @@ describe("bridgeMobileTextarea", () => {
     expect(setValue.mock.calls).toEqual([["đ"]]);
   });
 
+  it("reports whether the last input was a replayed deletion", () => {
+    const { bridge, edit } = setup();
+
+    edit("insertText", "ok haja");
+    expect(bridge.followsReplayedDelete()).toBe(false);
+
+    edit("deleteContentBackward", "ok ha");
+    expect(bridge.followsReplayedDelete()).toBe(true);
+
+    edit("insertText", "ok haha ");
+    expect(bridge.followsReplayedDelete()).toBe(false);
+  });
+
   it("ignores a synthetic input event that carries no inputType", () => {
     const { send, textarea } = setup("abc");
     const onError = vi.fn();

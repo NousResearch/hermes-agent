@@ -23,6 +23,8 @@ export function textareaEditBytes(before: string, after: string): string {
 export interface MobileTextareaBridge {
   /** Typed input xterm forwarded through onData (never mouse reports). */
   onTerminalData: (data: string) => void;
+  /** The last input event was a deletion replayed onto the PTY. */
+  followsReplayedDelete: () => boolean;
   dispose: () => void;
 }
 
@@ -31,6 +33,7 @@ export function bridgeMobileTextarea(
   send: (data: string) => void,
 ): MobileTextareaBridge {
   let valueBeforeInput = textarea.value;
+  let replayedDelete = false;
   const snapshot = () => {
     valueBeforeInput = textarea.value;
   };
@@ -41,6 +44,7 @@ export function bridgeMobileTextarea(
   const replayDroppedEdit = (ev: Event) => {
     // A synthetic `new Event("input")` has no inputType.
     const input = ev as Partial<InputEvent>;
+    replayedDelete = false;
     if (!input.isComposing && input.inputType?.startsWith("delete")) {
       const bytes = textareaEditBytes(valueBeforeInput, textarea.value);
       if (bytes) {
@@ -49,6 +53,7 @@ export function bridgeMobileTextarea(
         // caret (not reproduced on a device) would put the next insertion somewhere
         // else in the textarea than xterm puts it on the PTY.
         textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+        replayedDelete = true;
       }
     }
     // Diff the next edit from here even if no beforeinput precedes it.
@@ -70,6 +75,7 @@ export function bridgeMobileTextarea(
       }
       snapshot();
     },
+    followsReplayedDelete: () => replayedDelete,
     dispose: () => {
       textarea.removeEventListener("beforeinput", snapshot, true);
       textarea.removeEventListener("input", replayDroppedEdit, true);

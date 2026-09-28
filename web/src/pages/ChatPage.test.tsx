@@ -791,19 +791,39 @@ describe("ChatPage mobile IME textarea edits (#122766)", () => {
     type("t");
     expect(ptyLine()).toBe("xin chào việt");
 
-    // Defensive, not reproduced on a device: a caret moved mid-line (the PTY cursor
-    // stays at the end). The retained tail is retyped after the deletion, and
-    // what is typed next lands at the same place on both sides.
+    // Defensive, not reproduced on a device (scenario D): a caret moved mid-line
+    // (the PTY cursor stays at the end). The retained tail is retyped after the
+    // deletion and the caret is moved to the end, so mid-line editing is not
+    // supported: what is typed next lands at the end, on both sides.
     textarea.setSelectionRange("xin chào".length, "xin chào".length);
     deleteBack(1);
     expect(ptyLine()).toBe("xin chà việt");
     type("!");
-    expect(ptyLine()).toBe(textarea.value);
+    expect(textarea.value).toBe("xin chà việt!");
+    expect(ptyLine()).toBe("xin chà việt!");
 
     // A deletion inside an active composition belongs to the composition path.
     const line = ptyLine();
     deleteBack(1, true);
     expect(ptyLine()).toBe(line);
+  });
+
+  // Picking a suggestion for a reduplicated word: Gboard sends the minimal
+  // diff, so the inserted text can equal the last word left on the line
+  // (`ok ha` + `ha `) or start with the whole line (`ha` + `ha!`). The
+  // deletion already reached the PTY; the insertion is a plain append.
+  it.each([
+    ["ok haja", 2, "ha ", "ok haha "],
+    ["hajo", 2, "ha!", "haha!"],
+  ])("does not re-delete after a replayed deletion: %j", async (typed, removed, inserted, expected) => {
+    const { deleteBack, ptyLine, textarea, type } = await openMobileChat();
+
+    for (const ch of typed) type(ch);
+    deleteBack(removed);
+    type(inserted);
+
+    expect(textarea.value).toBe(expected);
+    expect(ptyLine()).toBe(expected);
   });
 
   it("keeps the hidden textarea in step with input xterm forwards itself", async () => {

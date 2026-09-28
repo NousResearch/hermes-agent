@@ -104,6 +104,19 @@ source: https://github.com/sweetrb/apple-mail-mcp
 #     (without `BODYSTRUCTURE`, then per-UID from raw headers), and anything
 #     still unreadable is named in a new `omittedMessages` field with
 #     `partial: true` rather than silently returned short.
+#
+# 2.19.19 is re-pinned on the same footing — a follow-up defect on the same
+# huge-iCloud-mailbox report (sweetrb/apple-mail-mcp#256, @j5pu): even after
+# 2.19.17/18, a deep unfiltered `offset` still cost more the deeper it went —
+# `list-messages({ limit: 1, offset: 350000 })` on a ~793k-message mailbox hit
+# the ~60s client timeout, because the large-mailbox path still read UID+FLAGS
+# for every skipped message, 50,000 at a time. It now computes the page's
+# sequence range directly (`N-offset-limit+1 .. N-offset` against the
+# mailbox's EXISTS) and fetches only that range plus a 32-message margin, so
+# offset 790,000 costs the same single small `FETCH` as offset 0. Reporter
+# re-tested and confirmed: offset 350,000 went from "no response within 60s"
+# to ~10s, offset 790,000 ~7s, and a full 1,589-page pagination of the
+# 793,614-message mailbox returned every message exactly once.
 # No new tools since 2.19.16: still 52 tools, all 18 default_enabled entries
 # resolve.
 transport:
@@ -111,7 +124,7 @@ transport:
   command: "npx"
   args:
     - "-y"
-    - "apple-mail-mcp@2.19.18"
+    - "apple-mail-mcp@2.19.19"
 
 # Drives Apple Mail locally via AppleScript; no credentials.
 auth:

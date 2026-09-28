@@ -70,13 +70,19 @@ def begin_compression_attempt(trigger: str, tokens_before: Any) -> None:
     _compression_attempt.pending = (trigger, tokens_before)
 
 
-def finish_compression_attempt(commit_status: str, failure_class: str | None, context_length: Any) -> None:
-    """Count this thread's pending compression attempt once."""
+def finish_compression_attempt(
+    commit_status: str, failure_class: str | None, context_length: Any, agent: Any = None,
+) -> None:
+    """Count this thread's pending compression attempt once; a committed one broke the prompt cache."""
     pending, _compression_attempt.pending = getattr(_compression_attempt, "pending", None), None
     if not pending:
         return
     outcome = "success" if commit_status == "committed" else "skipped" if failure_class == "lock_contended" else "failed"
     record_compression(trigger=pending[0], outcome=outcome, tokens_before=pending[1], context_length=context_length)
+    if outcome == "success" and agent is not None:
+        from .shared_metrics_efficiency import record_cache_break
+
+        record_cache_break(agent, "compression")
 
 
 def record_gateway_slash_command(event: Any) -> None:

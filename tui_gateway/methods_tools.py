@@ -833,11 +833,11 @@ def _cmd_retry(rid, params, session, name, arg):
     return _ok(rid, {"type": "send", "message": content})
 
 
-def _tui_model_friction(signal, session):
+def _tui_model_friction(signal, session, turns=1):
     from hermes_cli.observability.shared_metrics_model import record_model_friction
     record_model_friction(
         signal, session_id=session.get("session_key"), agent=session.get("agent"),
-        hermes_home=session.get("profile_home"))
+        hermes_home=session.get("profile_home"), turns=turns)
 
 
 def _cmd_steer(rid, params, session, name, arg):
@@ -935,7 +935,7 @@ def _cmd_undo(rid, params, session, name, arg):
         ):
             with contextlib.suppress(Exception):
                 step()
-    _tui_model_friction("undo", session)
+    _tui_model_friction("undo", session, turns_undone)
     turn_word = "turn" if turns_undone == 1 else "turns"
     notice = f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). Edit and resubmit, or send a new message."
     return _ok(rid, {"type": "prefill", "message": target_text, "notice": notice})

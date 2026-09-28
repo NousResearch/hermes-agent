@@ -258,6 +258,7 @@ TOOLSETS = {
 # Captured before create_custom_toolset() can add user-named tools: shared metrics may export only
 # these names, so a plugin, MCP server or custom toolset name never leaves the machine.
 BUILTIN_TOOL_NAMES = frozenset(tool for spec in TOOLSETS.values() for tool in spec["tools"])
+BUILTIN_TOOLSET_NAMES = frozenset(TOOLSETS)
 
 
 def _registry():

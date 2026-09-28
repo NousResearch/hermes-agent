@@ -183,9 +183,10 @@ def record_tool_call_quality(agent: Any, tool_calls: Iterable[Any], repaired_ids
 
 def record_model_friction(
     signal: str, *, session_id: Any = None, agent: Any = None, provider: Any = None, model: Any = None,
-    hermes_home: Any = None,
+    hermes_home: Any = None, turns: int = 1,
 ) -> None:
     """Count one user friction action against the model that produced the session's last turn.
+    ``turns``: how many turns an /undo removed (their tokens count as wasted).
 
     Falls back to ``agent`` (or ``provider``/``model``) when this process never saw the session's
     turns (restart, remote compute host). ``hermes_home`` binds the owning profile for callers that
@@ -204,7 +205,7 @@ def record_model_friction(
         if agent is not None:
             provider, model = getattr(agent, "provider", provider), getattr(agent, "model", model)
             session_id = getattr(agent, "session_id", None) or session_id
-        record_session_friction(signal, str(session_id or ""), model_route(provider, model))
+        record_session_friction(signal, str(session_id or ""), model_route(provider, model), turns)
     except Exception:
         logger.debug("Shared-metrics %s friction not recorded", signal, exc_info=True)
     finally:

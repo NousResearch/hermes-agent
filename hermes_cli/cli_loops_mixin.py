@@ -179,13 +179,13 @@ class CLILoopsMixin:
             return True  # confirmation cancelled — command handled, keep REPL alive
         self.new_session(title=title)
 
-    def _record_model_friction(self, signal: str) -> None:
+    def _record_model_friction(self, signal: str, turns: int = 1) -> None:
         # The TUI slash worker's shadow CLI has no metrics surface: tui_gateway counts what it executes.
         if self._slash_metrics_surface:
             from hermes_cli.observability.shared_metrics_model import record_model_friction
             record_model_friction(
                 signal, session_id=getattr(self, "session_id", None), agent=getattr(self, "agent", None),
-                provider=getattr(self, "provider", None), model=getattr(self, "model", None))
+                provider=getattr(self, "provider", None), model=getattr(self, "model", None), turns=turns)
 
     def _cmd_retry(self, cmd_original: str):
         retry_msg = self.retry_last()
@@ -217,7 +217,7 @@ class CLILoopsMixin:
         _history = self.conversation_history
         self.undo_last(_undo_n)
         if self.conversation_history is not _history:  # only a successful rewind installs a new history
-            self._record_model_friction("undo")
+            self._record_model_friction("undo", min(_undo_n, sum(isinstance(m, dict) and m.get("role") == "user" for m in _history)))
 
     def _cmd_skills(self, cmd_original: str):
         with self._busy_command(self._slow_command_status(cmd_original)):

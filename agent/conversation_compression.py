@@ -1499,7 +1499,7 @@ def _emit_compression_attempt_telemetry(
         )
         from hermes_cli.observability.shared_metrics_events import finish_compression_attempt
 
-        finish_compression_attempt(commit_status, failure_class, getattr(agent.context_compressor, "context_length", None))
+        finish_compression_attempt(commit_status, failure_class, getattr(agent.context_compressor, "context_length", None), agent=agent)
 
 
 def _existing_system_prompt(agent: Any, system_message: str) -> str:

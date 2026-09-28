@@ -210,6 +210,24 @@
           },
           {
             "$ref": "#/$defs/model_reply_issue_counter"
+          },
+          {
+            "$ref": "#/$defs/task_cost_counter"
+          },
+          {
+            "$ref": "#/$defs/wasted_tokens_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_output_truncation_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_overhead_counter"
+          },
+          {
+            "$ref": "#/$defs/tool_enabled_unused_counter"
+          },
+          {
+            "$ref": "#/$defs/cache_break_counter"
           }
         ]
       }
@@ -2806,6 +2824,421 @@
             }
           },
           "description": "One per primary model response; issue=none when the response is usable, so issue rates have a denominator."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "task_cost_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.task_cost.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "api_calls_bucket",
+            "model",
+            "outcome",
+            "provider",
+            "tokens_bucket",
+            "tool_calls_bucket"
+          ],
+          "properties": {
+            "api_calls_bucket": {
+              "enum": [
+                "0",
+                "1",
+                "2",
+                "3_to_5",
+                "6_to_10",
+                "11_to_25",
+                "26_to_50",
+                "51_to_100",
+                "gte_101"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "outcome": {
+              "enum": [
+                "completed",
+                "failed",
+                "interrupted"
+              ]
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "tokens_bucket": {
+              "enum": [
+                "lt_2k",
+                "2k_to_10k",
+                "10k_to_50k",
+                "50k_to_200k",
+                "200k_to_1m",
+                "gte_1m",
+                "unknown"
+              ]
+            },
+            "tool_calls_bucket": {
+              "enum": [
+                "0",
+                "1",
+                "2",
+                "3_to_5",
+                "6_to_10",
+                "11_to_25",
+                "26_to_50",
+                "51_to_100",
+                "gte_101"
+              ]
+            }
+          },
+          "description": "One per user turn the user saw end: what it cost (prompt + completion tokens over its primary calls) and how much work it took."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "wasted_tokens_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.wasted_tokens.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "provider",
+            "reason",
+            "tokens_bucket"
+          ],
+          "properties": {
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            },
+            "reason": {
+              "enum": [
+                "interrupt",
+                "retry",
+                "undo"
+              ]
+            },
+            "tokens_bucket": {
+              "enum": [
+                "lt_2k",
+                "2k_to_10k",
+                "10k_to_50k",
+                "50k_to_200k",
+                "200k_to_1m",
+                "gte_1m",
+                "unknown"
+              ]
+            }
+          },
+          "description": "One per user turn thrown away by an interrupt, /retry or /undo, with the tokens it had spent."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tool_output_truncation_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_output_truncation.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "original_size_bucket",
+            "tool",
+            "truncated"
+          ],
+          "properties": {
+            "original_size_bucket": {
+              "enum": [
+                "lt_1k",
+                "1k_to_10k",
+                "10k_to_50k",
+                "50k_to_100k",
+                "100k_to_500k",
+                "gte_500k",
+                "unknown"
+              ]
+            },
+            "tool": {
+              "$ref": "#/$defs/vocabulary_identifier"
+            },
+            "truncated": {
+              "enum": [
+                "no",
+                "yes"
+              ]
+            }
+          },
+          "description": "One per tool result: whether Hermes spilled or truncated it (per-result cap or per-turn budget), by raw size."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tool_overhead_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_overhead.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled_tool_count_bucket",
+            "execution_surface",
+            "tool_schema_tokens_bucket"
+          ],
+          "properties": {
+            "enabled_tool_count_bucket": {
+              "$ref": "#/$defs/size_bucket"
+            },
+            "execution_surface": {
+              "$ref": "#/$defs/execution_surface"
+            },
+            "tool_schema_tokens_bucket": {
+              "enum": [
+                "0",
+                "lt_2k",
+                "2k_to_5k",
+                "5k_to_10k",
+                "10k_to_20k",
+                "20k_to_40k",
+                "gte_40k"
+              ]
+            }
+          },
+          "description": "One per closed interactive conversation: how many tools it had enabled and the estimated tokens their definitions cost per request."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "tool_enabled_unused_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.tool_enabled_unused.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "toolset",
+            "used"
+          ],
+          "properties": {
+            "toolset": {
+              "enum": [
+                "bot_room",
+                "browser",
+                "clarify",
+                "code_execution",
+                "coding",
+                "computer_use",
+                "connections",
+                "context_engine",
+                "cronjob",
+                "custom",
+                "debugging",
+                "delegation",
+                "desktop_ui",
+                "discord",
+                "discord_admin",
+                "feishu_doc",
+                "feishu_drive",
+                "file",
+                "hermes-acp",
+                "hermes-api-server",
+                "hermes-bluebubbles",
+                "hermes-cli",
+                "hermes-cron",
+                "hermes-dingtalk",
+                "hermes-discord",
+                "hermes-email",
+                "hermes-feishu",
+                "hermes-gateway",
+                "hermes-homeassistant",
+                "hermes-matrix",
+                "hermes-mattermost",
+                "hermes-qqbot",
+                "hermes-signal",
+                "hermes-slack",
+                "hermes-sms",
+                "hermes-telegram",
+                "hermes-webhook",
+                "hermes-wecom",
+                "hermes-wecom-callback",
+                "hermes-weixin",
+                "hermes-whatsapp",
+                "hermes-yuanbao",
+                "homeassistant",
+                "image_gen",
+                "kanban",
+                "memory",
+                "project",
+                "safe",
+                "search",
+                "session_search",
+                "setup",
+                "skills",
+                "spotify",
+                "terminal",
+                "todo",
+                "tts",
+                "video",
+                "video_gen",
+                "vision",
+                "web",
+                "x_search",
+                "yuanbao"
+              ]
+            },
+            "used": {
+              "enum": [
+                "no",
+                "yes"
+              ]
+            }
+          },
+          "description": "One per enabled shipped toolset per closed interactive conversation (MCP/plugin/user toolsets read custom): whether any of its tools ran."
+        },
+        "value": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "cache_break_counter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "dimensions",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "const": "hermes.cache_break.count"
+        },
+        "type": {
+          "const": "counter"
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cause",
+            "model",
+            "provider"
+          ],
+          "properties": {
+            "cause": {
+              "enum": [
+                "cache_expired",
+                "compression",
+                "model_switch",
+                "provider_reported_miss",
+                "system_prompt_rebuild",
+                "toolset_change"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[a-z0-9][a-z0-9._:/@+\\-]*$"
+            },
+            "provider": {
+              "$ref": "#/$defs/provider_identifier"
+            }
+          },
+          "description": "A prompt-cache break mid-conversation: a cause Hermes knows (compression is expected), or a cold provider read after a warm one on the same route."
         },
         "value": {
           "type": "integer",

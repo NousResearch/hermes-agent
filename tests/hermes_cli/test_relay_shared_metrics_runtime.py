@@ -413,6 +413,7 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
         "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.model_route.count",
+        "hermes.task_cost.count",
         "hermes.task_run.finished",
         "hermes.task_run.started",
         "hermes.tool.usage.count",

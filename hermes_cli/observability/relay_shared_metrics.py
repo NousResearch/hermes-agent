@@ -8,7 +8,7 @@ import contextvars
 import logging
 import threading
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from time import monotonic_ns
 from typing import Any, Callable
@@ -19,6 +19,7 @@ from hermes_cli.version_info import get_version_info
 
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
+from . import shared_metrics_efficiency as eff
 from . import shared_metrics_fields as fields_
 from . import shared_metrics_model as model_
 from .shared_metrics_contract import MODEL_CALL_SCOPE, SUBSCRIBER_NAME, TASK_SCOPE
@@ -111,6 +112,7 @@ class _ModelCall:
     fields: dict[str, str]
     error_class: str = "none"
     ttft_bucket: str = "unknown"
+    started_ns: int = field(default_factory=monotonic_ns)
 
 
 @dataclass
@@ -137,6 +139,7 @@ class _TaskRun:
     unidentified_tool_calls: int = 0
     retry_count: int = 0
     model_route: dict[str, str] | None = None
+    cost: eff.TurnCost = field(default_factory=eff.TurnCost)
 
 
 @dataclass
@@ -158,6 +161,7 @@ class _MetricsSession:
     last_turn_ns: int = 0
     model_state: model_.ModelSessionState = field(default_factory=model_.ModelSessionState)
     lineage_root: str = ""
+    efficiency: eff.SessionEfficiency = field(default_factory=eff.SessionEfficiency)
 
 
 @dataclass
@@ -166,6 +170,7 @@ class _PeakLineage:
 
     open: set[str] = field(default_factory=set)
     peak: model_.ModelSessionState = field(default_factory=model_.ModelSessionState)
+    tools: eff.ToolUsage = field(default_factory=eff.ToolUsage)
 
 
 def _absorb_peak(into: model_.ModelSessionState, segment: model_.ModelSessionState) -> None:
@@ -197,6 +202,9 @@ class _Runtime:
         # Leaf lock (nothing is acquired under it): taken while a session.lock is held.
         self._lineages: dict[str, _PeakLineage] = {}
         self._lineage_lock = threading.Lock()
+        # Leaf lock: conversations whose next cold cache read Hermes already announced.
+        self._cold_expected: OrderedDict[str, None] = OrderedDict()
+        self._cold_lock = threading.Lock()
         self._task_creation_lock = threading.RLock()
         self._task_sessions_lock = threading.RLock()
         # Guards the opt-in send pass: at most one in flight per process.
@@ -313,6 +321,12 @@ class _Runtime:
                 self._remember_turn(session, task, event)
                 return task
 
+    def start_user_turn(self, event: dict[str, Any]) -> None:
+        """pre_llm_call: a user message started this task (Hermes-owned forks never fire it)."""
+        task = self.start_task(event)
+        if task is not None:
+            task.cost.user_turn = True
+
     def _run_in_task(
         self, task: _TaskRun, callback: Callable[..., Any], *args: Any, **kwargs: Any
     ) -> Any:
@@ -383,6 +397,7 @@ class _Runtime:
             self._join_lineage(session, session.tasks.get(model_call.task_id))
             if finish:
                 session.model_state.observe_call(model_call.fields, event.get("usage"), event.get("context_length"))
+                self._observe_turn_call(session, session.tasks.get(model_call.task_id), model_call, event)
                 model_call.ttft_bucket = fields_.ttft_bucket(event)
                 self._finish_model_call(session, model_call_key, "success")
                 tokens = fields_.model_token_fields(
@@ -473,6 +488,8 @@ class _Runtime:
                 task.unidentified_tool_calls += 1
             if tool_call is None:
                 tool_call = self._open_tool_call(task, event)
+            if task.cost.user_turn:
+                session.efficiency.tools.used.add(eff.toolset_metric_name(event.get("toolset")))
             self._finish_tool_call(task, tool_call, event)
 
     def record_skill_lifecycle(self, event: dict[str, Any]) -> None:
@@ -863,6 +880,74 @@ class _Runtime:
                 "Hermes shared-metrics friction mark failed", self._mark,
                 session, None, contract.MODEL_FRICTION_MARK, model_.friction_fields("interrupt", route),
             )
+        if task.cost.user_turn and model_.attended(task.start_fields):
+            rows = session.efficiency.finish_turn(
+                task.cost, fields, route=route, model_calls=len(task.model_call_ids),
+                tool_calls=len(task.tool_call_ids) + task.unidentified_tool_calls,
+            )
+            self._emit_rows(session, rows)
+
+    def _emit_rows(self, session: _MetricsSession | None, rows: list[tuple[str, dict[str, str]]]) -> None:
+        for mark, data in rows:
+            if session is None:
+                self._guarded("Hermes shared-metrics efficiency mark failed", self.record_process_mark, mark, data)
+            else:
+                self._guarded("Hermes shared-metrics efficiency mark failed", self._mark, session, None, mark, data)
+
+    def _observe_turn_call(
+        self, session: _MetricsSession, task: _TaskRun | None, model_call: _ModelCall, event: dict[str, Any]
+    ) -> None:
+        """One finished primary call of a user turn: its tokens, and a cold cache read nobody announced."""
+        if task is None or not task.cost.user_turn:
+            return
+        route, usage = model_call.fields, event.get("usage")
+        task.cost.add_call(route, usage)
+        expected = self._consume_cold(self._cold_key(session.session_id))
+        cause = session.efficiency.observe_cache(route, usage, model_call.started_ns, monotonic_ns(), expected=expected)
+        if cause is not None:
+            self._emit_rows(session, [eff.cache_break_row(cause, route)])
+
+    @staticmethod
+    def _cold_key(session_id: str) -> str:
+        """The conversation (lineage root survives compression rotation), else the session."""
+        return get_conversation_context() or session_id
+
+    def _announce_cold(self, key: str) -> bool:
+        """Expect the next read of ``key`` to be cold; False when a break was already announced."""
+        with self._cold_lock:
+            if key in self._cold_expected:
+                return False
+            self._cold_expected[key] = None
+            while len(self._cold_expected) > 256:
+                self._cold_expected.popitem(last=False)
+            return True
+
+    def _consume_cold(self, key: str) -> bool:
+        with self._cold_lock:
+            return self._cold_expected.pop(key, False) is None
+
+    def record_known_cache_break(self, cause: str, route: dict[str, str], session_id: str) -> None:
+        """Hermes invalidated the prefix itself: count it, and don't recount the cold read it causes."""
+        self._announce_cold(self._cold_key(session_id))
+        self._emit_rows(None, [eff.cache_break_row(cause, route)])
+
+    def record_session_tools(self, session_id: str, agent: Any, tools_for_api: list) -> None:
+        session = self._session({"session_id": session_id}) if session_id else None
+        if session is None:
+            return
+        key = (id(getattr(agent, "tools", None)), id(tools_for_api), len(tools_for_api))
+        with session.lock:
+            if session.closing or session.efficiency.tools_key == key:
+                return
+        snapshot = eff.tool_snapshot(agent, tools_for_api)  # registry + estimator: outside the lock
+        with session.lock:
+            if session.closing:
+                return
+            session.efficiency.tools_key = key
+            changed = session.efficiency.tools.observe(*snapshot)
+        route = model_.model_route(getattr(agent, "provider", None), getattr(agent, "model", None))
+        if changed and self._announce_cold(self._cold_key(session_id)):
+            self._emit_rows(session, [eff.cache_break_row("toolset_change", route)])
 
     def _join_lineage(self, session: _MetricsSession, task: _TaskRun | None) -> None:
         """Compression rotates the session id mid-conversation. The turn publishes the lineage root
@@ -877,24 +962,30 @@ class _Runtime:
         with self._lineage_lock:
             self._lineages.setdefault(root, _PeakLineage()).open.add(session.session_id)
 
-    def _context_peak_fields(self, session: _MetricsSession, counted: bool) -> dict[str, str] | None:
-        """This session's peak, or, for a lineage segment, the conversation's merged peak once its
-        last open segment closes (None before that)."""
+    def _close_lineage_segment(
+        self, session: _MetricsSession, counted: bool
+    ) -> tuple[dict[str, str] | None, eff.ToolUsage | None]:
+        """This session's context peak and tool usage, or, for a lineage segment, the conversation's
+        merged ones once its last open segment closes (None before that)."""
         state = session.model_state if counted else None
+        tools = session.efficiency.tools if counted and model_.attended(session.start_fields) else eff.ToolUsage()
+        tools.surface = (session.start_fields or {}).get("execution_surface", "unknown")
         with self._lineage_lock:
             lineage = self._lineages.get(session.lineage_root) if session.lineage_root else None
             if lineage is None:
-                return state.context_peak_fields() if state is not None else None
+                return (state.context_peak_fields() if state is not None else None), tools
             lineage.open.discard(session.session_id)
             if state is not None:
                 _absorb_peak(lineage.peak, state)
+            lineage.tools.absorb(tools)
             if lineage.open:
-                return None
+                return None, None
             del self._lineages[session.lineage_root]
-        return lineage.peak.context_peak_fields()
+        return lineage.peak.context_peak_fields(), lineage.tools
 
     def _emit_model_session_marks(self, session: _MetricsSession, counted: bool) -> None:
-        marks = [(contract.CONTEXT_PEAK_MARK, self._context_peak_fields(session, counted))]
+        peak, tools = self._close_lineage_segment(session, counted)
+        marks = [(contract.CONTEXT_PEAK_MARK, peak), *(tools.rows() if tools is not None else ())]
         abandoned = session.model_state.quick_abandon_route(monotonic_ns()) if counted else None
         if abandoned is not None and model_.attended(session.start_fields):
             marks.append((contract.MODEL_FRICTION_MARK, model_.friction_fields("quick_abandon", abandoned)))
@@ -902,16 +993,22 @@ class _Runtime:
             if data is not None:
                 self._guarded("Hermes shared-metrics model session mark failed", self._mark, session, None, mark, data)
 
-    def record_friction(self, signal: str, session_id: str, fallback_route: dict[str, str]) -> None:
-        """A user friction action, attributed to the session's last primary model when known."""
+    def record_friction(self, signal: str, session_id: str, fallback_route: dict[str, str], turns: int = 1) -> None:
+        """A user friction action, attributed to the session's last primary model when known; an
+        /undo or /retry also counts the tokens of the turns it threw away."""
         session = self._session({"session_id": session_id}) if session_id else None
-        route = None
-        if session is not None:
-            with session.lock:
+        route, wasted = None, []
+        # A session this process never saw (restart, remote host) still counts, with tokens unknown.
+        with session.lock if session is not None else contextlib.nullcontext():
+            if session is not None:
                 route = session.model_state.last_route
+            if signal in contract.WASTE_REASONS:
+                efficiency = session.efficiency if session is not None else eff.SessionEfficiency()
+                wasted = efficiency.discard_turns(signal, turns, route or fallback_route)
         data = model_.friction_fields(signal, route or fallback_route)
         if data is not None:
             self.record_process_mark(contract.MODEL_FRICTION_MARK, data)
+            self._emit_rows(None, wasted)
 
     def _emit_session_summary(self, session: _MetricsSession) -> None:
         """One hermes.session.count row per closed top-level session (delegated children excluded)."""
@@ -1137,7 +1234,7 @@ def _close_child_session(runtime: _Runtime, kwargs: dict[str, Any]) -> None:
 
 _HOOK_HANDLERS: dict[str, Callable[[_Runtime, dict[str, Any]], Any]] = {
     "on_session_start": lambda rt, kw: rt.record_client_active(kw),
-    "pre_llm_call": lambda rt, kw: rt.start_task(kw),
+    "pre_llm_call": lambda rt, kw: rt.start_user_turn(kw),
     "pre_api_request": lambda rt, kw: rt.start_model_call(kw),
     "pre_tool_call": lambda rt, kw: rt.start_tool_call(_with_runtime_toolset(kw)),
     "post_tool_call": lambda rt, kw: rt.record_tool_call(_with_runtime_toolset(kw)),
@@ -1211,13 +1308,29 @@ def record_process_marks_saved(marks: list[tuple[str, dict[str, Any]]]) -> int:
     return (runtime._safe(runtime.record_process_marks_saved, marks) or 0) if runtime is not None else 0
 
 
-def record_session_friction(signal: str, session_id: str, fallback_route: dict[str, str]) -> None:
+def record_session_friction(signal: str, session_id: str, fallback_route: dict[str, str], turns: int = 1) -> None:
     """Record one friction signal in the active profile's runtime (callers already checked enabled())."""
     if not relay_runtime.relay_instrumentation_enabled():
         return
     runtime = _get_runtime(retry_failed=True)
     if runtime is not None:
-        runtime._safe(runtime.record_friction, signal, session_id, fallback_route)
+        runtime._safe(runtime.record_friction, signal, session_id, fallback_route, turns)
+
+
+def record_session_tools(session_id: str, agent: Any, tools_for_api: list) -> None:
+    """The tools one primary request sent (caller checked enabled()); never creates a runtime."""
+    runtime = _RUNTIMES.get(relay_runtime.current_profile_key())
+    if isinstance(runtime, _Runtime):
+        runtime._safe(runtime.record_session_tools, session_id, agent, tools_for_api)
+
+
+def record_known_cache_break(cause: str, route: dict[str, str], session_id: str) -> None:
+    """A prompt-cache break Hermes caused (caller checked enabled())."""
+    if not relay_runtime.relay_instrumentation_enabled():
+        return
+    runtime = _get_runtime(retry_failed=True)
+    if runtime is not None:
+        runtime._safe(runtime.record_known_cache_break, cause, route, session_id)
 
 
 def _run_task_hook(method: str, *, retry_failed: bool = False, **event: Any) -> None:

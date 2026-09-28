@@ -13,7 +13,7 @@ from agent.relay_runtime import (
     RUNTIME_SCHEMA_VERSION,
 )
 from hermes_cli.platforms import PLATFORMS
-from toolsets import BUILTIN_TOOL_NAMES
+from toolsets import BUILTIN_TOOL_NAMES, BUILTIN_TOOLSET_NAMES
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
 # A random per-emit token (no payload) on rows whose producer waits to learn they were SAVED: facts
@@ -372,6 +372,39 @@ TERMINAL_COMMAND_KINDS = frozenset({
 TERMINAL_OUTCOMES = frozenset({"killed", "nonzero", "ok", "timeout"})
 MODEL_REPLY_ISSUES = frozenset({"empty", "none", "reasoning_only", "refusal", "truncated_length"})
 # ---- end v5 harness ----
+# ---- v5 efficiency ----
+TASK_COST_MARK = TASK_COST_METRIC = "hermes.task_cost.count"
+WASTED_TOKENS_MARK = WASTED_TOKENS_METRIC = "hermes.wasted_tokens.count"
+TOOL_OUTPUT_TRUNCATION_MARK = TOOL_OUTPUT_TRUNCATION_METRIC = "hermes.tool_output_truncation.count"
+TOOL_OVERHEAD_MARK = TOOL_OVERHEAD_METRIC = "hermes.tool_overhead.count"
+TOOL_ENABLED_UNUSED_MARK = TOOL_ENABLED_UNUSED_METRIC = "hermes.tool_enabled_unused.count"
+CACHE_BREAK_MARK = CACHE_BREAK_METRIC = "hermes.cache_break.count"
+# Prompt + completion tokens of one user turn, summed over its primary calls.
+TURN_TOKEN_BUCKETS = frozenset({
+    "lt_2k", "2k_to_10k", "10k_to_50k", "50k_to_200k", "200k_to_1m", "gte_1m", "unknown",
+})
+TASK_COST_OUTCOMES = frozenset({"completed", "failed", "interrupted"})
+# Tool and API calls of one agentic turn: COUNT_BUCKETS stops at gte_11, far below real loops.
+TURN_ACTIVITY_BUCKETS = frozenset({
+    "0", "1", "2", "3_to_5", "6_to_10", "11_to_25", "26_to_50", "51_to_100", "gte_101",
+})
+WASTE_REASONS = frozenset({"interrupt", "retry", "undo"})
+# Characters of one raw tool result, before Hermes spills or truncates it.
+TOOL_OUTPUT_SIZE_BUCKETS = frozenset({
+    "lt_1k", "1k_to_10k", "10k_to_50k", "50k_to_100k", "100k_to_500k", "gte_500k", "unknown",
+})
+TOOL_SCHEMA_TOKEN_BUCKETS = frozenset({
+    "0", "lt_2k", "2k_to_5k", "5k_to_10k", "10k_to_20k", "20k_to_40k", "gte_40k",
+})
+# Toolsets Hermes ships; MCP servers and plugin toolsets collapse to custom.
+TOOLSET_NAMES = BUILTIN_TOOLSET_NAMES | {"custom"}
+# compression is the expected cause; the rest are Hermes invalidating a warm prefix (bugs or
+# user-driven), or the provider reporting a cold read Hermes did not cause.
+CACHE_BREAK_CAUSES = frozenset({
+    "cache_expired", "compression", "model_switch", "provider_reported_miss", "system_prompt_rebuild",
+    "toolset_change",
+})
+# ---- end v5 efficiency ----
 
 _ARCHITECTURE_ALIASES = {
     "amd64": "x86_64", "x64": "x86_64", "x86_64": "x86_64",
@@ -579,6 +612,22 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     },
     MODEL_REPLY_ISSUE_METRIC: {"issue": MODEL_REPLY_ISSUES},
     # ---- end v5 harness ----
+    # ---- v5 efficiency ----
+    TASK_COST_METRIC: {
+        "api_calls_bucket": TURN_ACTIVITY_BUCKETS, "outcome": TASK_COST_OUTCOMES,
+        "tokens_bucket": TURN_TOKEN_BUCKETS, "tool_calls_bucket": TURN_ACTIVITY_BUCKETS,
+    },
+    WASTED_TOKENS_METRIC: {"reason": WASTE_REASONS, "tokens_bucket": TURN_TOKEN_BUCKETS},
+    TOOL_OUTPUT_TRUNCATION_METRIC: {
+        "original_size_bucket": TOOL_OUTPUT_SIZE_BUCKETS, "tool": TOOL_NAMES, "truncated": YES_NO,
+    },
+    TOOL_OVERHEAD_METRIC: {
+        "enabled_tool_count_bucket": SIZE_BUCKETS, "execution_surface": EXECUTION_SURFACES,
+        "tool_schema_tokens_bucket": TOOL_SCHEMA_TOKEN_BUCKETS,
+    },
+    TOOL_ENABLED_UNUSED_METRIC: {"toolset": TOOLSET_NAMES, "used": YES_NO},
+    CACHE_BREAK_METRIC: {"cause": CACHE_BREAK_CAUSES},
+    # ---- end v5 efficiency ----
 }
 _MODEL_ROUTE_MAX_LENGTHS = {
     "model": MODEL_IDENTIFIER_MAX_LENGTH, "provider": PROVIDER_IDENTIFIER_MAX_LENGTH,
@@ -601,6 +650,11 @@ _IDENTIFIER_FIELDS: dict[str, dict[str, int]] = {
     TOOL_RECOVERY_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
     MODEL_REPLY_ISSUE_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
     # ---- end v5 harness ----
+    # ---- v5 efficiency ----
+    TASK_COST_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    WASTED_TOKENS_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    CACHE_BREAK_METRIC: _MODEL_ROUTE_MAX_LENGTHS,
+    # ---- end v5 efficiency ----
 }
 # metric -> closed dimension field set
 _METRIC_FIELDS: dict[str, frozenset[str]] = {
@@ -657,6 +711,11 @@ _DECISION_MARK_METRICS = {
     TOOL_RECOVERY_MARK: TOOL_RECOVERY_METRIC, TERMINAL_OUTCOME_MARK: TERMINAL_OUTCOME_METRIC,
     MODEL_REPLY_ISSUE_MARK: MODEL_REPLY_ISSUE_METRIC,
     # ---- end v5 harness ----
+    # ---- v5 efficiency ----
+    TASK_COST_MARK: TASK_COST_METRIC, WASTED_TOKENS_MARK: WASTED_TOKENS_METRIC,
+    TOOL_OUTPUT_TRUNCATION_MARK: TOOL_OUTPUT_TRUNCATION_METRIC, TOOL_OVERHEAD_MARK: TOOL_OVERHEAD_METRIC,
+    TOOL_ENABLED_UNUSED_MARK: TOOL_ENABLED_UNUSED_METRIC, CACHE_BREAK_MARK: CACHE_BREAK_METRIC,
+    # ---- end v5 efficiency ----
 }
 
 

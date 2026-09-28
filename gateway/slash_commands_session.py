@@ -429,7 +429,7 @@ class GatewaySessionCommandsMixin:
             text=last_user_msg, message_type=MessageType.TEXT, source=source,
             raw_message=event.raw_message, channel_prompt=event.channel_prompt))
 
-    def _record_model_friction(self, signal: str, source, session_id: str) -> None:
+    def _record_model_friction(self, signal: str, source, session_id: str, turns: int = 1) -> None:
         """Slash dispatch does not install the routed profile's scope, so a multiplexed runner
         names the owning home explicitly."""
         from hermes_cli.observability.shared_metrics_model import record_model_friction
@@ -437,7 +437,7 @@ class GatewaySessionCommandsMixin:
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with contextlib.suppress(Exception):
                 home = self._resolve_profile_home_for_source(source)
-        record_model_friction(signal, session_id=session_id, hermes_home=home)
+        record_model_friction(signal, session_id=session_id, hermes_home=home, turns=turns)
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo [N] — back up N user turns (default 1), soft-deleting the truncated rows and
@@ -456,7 +456,7 @@ class GatewaySessionCommandsMixin:
         if result is None:
             return t("gateway.undo.nothing")
         session_entry.last_prompt_tokens = 0  # transcript was truncated
-        self._record_model_friction("undo", source, session_entry.session_id)
+        self._record_model_friction("undo", source, session_entry.session_id, result.get("turns_undone") or 1)
         try:
             # The cache is keyed by the profile-namespaced key; a bare build_session_key(source)
             # yields ``agent:main:…`` and misses for every secondary profile.

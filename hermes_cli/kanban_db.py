@@ -337,6 +337,20 @@ def _resolve_quota_block_seconds() -> int:
     return _env_int("HERMES_KANBAN_QUOTA_BLOCK_SECONDS", DEFAULT_QUOTA_BLOCK_SECONDS)
 
 
+def _resolve_auth_block_seconds() -> int:
+    r"""``HERMES_KANBAN_AUTH_BLOCK_SECONDS`` (0 = next tick, for tests) else default.
+
+    Self-releasing cooldown for the ``blocker_auth`` guard (#t_258dc2c3). The
+    text-driven auth pattern is intentionally narrow (only provider phrases,
+    not the open ``auth\w*`` stem), but a real auth failure can still park a
+    card forever without a probe cycle. This cooldown — keyed off the latest
+    ended run's timestamp — re-probes the provider after a long quiet period
+    (default 24h). The ``consecutive_failures`` breaker still trips a repeat
+    offender; this gate just prevents a permanent latch on a single blip.
+    """
+    return _env_int("HERMES_KANBAN_AUTH_BLOCK_SECONDS", DEFAULT_AUTH_BLOCK_SECONDS)
+
+
 # build_worker_context() caps, sized for a ~100k-char prompt with headroom.
 _CTX_MAX_PRIOR_ATTEMPTS = 10      # most recent N prior runs shown in full
 _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
@@ -4693,6 +4707,7 @@ from hermes_cli.kanban_db_workspace import (  # noqa: E402
     _scratch_workspace,
 )
 from hermes_cli.kanban_db_dispatch import (  # noqa: E402
+    DEFAULT_AUTH_BLOCK_SECONDS,
     DEFAULT_FAILURE_LIMIT,
     DEFAULT_QUOTA_BLOCK_SECONDS,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,

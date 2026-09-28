@@ -87,18 +87,67 @@ _RESPAWN_QUOTA_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+# ``_RESPAWN_AUTH_RE`` — provider auth error strings only. The regex used to
+# be the open ``auth\w*`` stem which matched any word starting with
+# ``auth``: ``auth``, ``authenticated``, ``authenticator``, ``authorize``,
+# ``authority``, ``authorise``, ``authoring``... A worker that printed any
+# of those in its last output (e.g. an auth library import in a code-review
+# context, an explanation of the policy it was implementing) would stamp the
+# text into ``last_failure_error`` and the guard would forever refuse to
+# respawn (#t_258dc2c3). The fix tightens the pattern to phrase-level
+# diagnostics the provider actually emits on a 401/403: explicit HTTP
+# status codes, ``unauthorized``, ``invalid api key``, ``access denied``,
+# ``permission denied``, ``authentication required``, ``auth token`` /
+# ``auth error`` / ``auth failed`` / ``auth header``, ``credentials
+# missing`` / ``credentials not set`` (the openai/anthropic "credentials
+# not configured" wording — though we have to be careful with prose that
+# says "credentials are missing"; this is scoped to the provider phrasing).
+# The standalone word ``forbidden`` is NOT in this set: a card whose
+# SUBJECT is "forbidden" must dispatch (t_961892f2 live proof: "POLICY:
+# Patroni password rotation is hard-rule forbidden..."). The HTTP 403
+# canonical phrase is already covered by the ``\b403\b`` code above, and
+# the variants ``HTTP 403 forbidden``, ``403 forbidden``, ``request
+# forbidden``, ``access forbidden`` are covered by ``\b403\b`` + the
+# optional trailing word and by ``access[\s_]denied`` respectively.
+# ``permission denied`` is the canonical 403 phrase in unix / AWS.
+# ``authentication required`` is the openai/anthropic 401 wording;
+# ``invalid api key`` is openai/google; ``access denied`` and
+# ``permission denied`` are the catchall 403 phrasings; ``unauthorized``
+# is the raw 401 word. ``auth token`` / ``auth error`` / ``auth failed``
+# / ``auth header`` are provider-side phrasings — the ``\b`` boundaries
+# keep them from matching a run that mentions ``authority`` or
+# ``authoring``. The auth pattern runs ONLY on the run's error field —
+# never on the task title/body, which is what ``t_961892f2`` ("POLICY:
+# Patroni password rotation is hard-rule forbidden…") demonstrates is a
+# real hazard.
 _RESPAWN_AUTH_RE = re.compile(
-    r"\b("
-    r"403|"
-    r"auth\w*|"
+    r"(?:"
+    # Explicit provider HTTP status codes — the canonical signal. The
+    # trailing ``(?:[\s_]forbidden)?`` catches the canonical phrase
+    # ``403 forbidden`` without letting the word ``forbidden`` match
+    # standalone.
+    r"\b(?:401|403)(?:[\s_]forbidden)?\b|"
+    # Provider-error phrases (case-insensitive).
+    r"\b(?:"
     r"unauthorized|"
-    r"forbidden|"
     r"invalid[\s_]api[\s_]key|"
     r"access[\s_]denied|"
-    r"permission[\s_]denied"
-    r")\b",
+    r"access[\s_]forbidden|"
+    r"request[\s_]forbidden|"
+    r"permission[\s_]denied|"
+    r"authentication[\s_]required|"
+    r"auth[\s_](?:token|error|failed|header)|"
+    r"missing[\s_](?:api[\s_]key|credentials|token)|"
+    r"credential[s]?[\s_]missing|"
+    r"credential[s]?[\s_](?:not[\s_]set|invalid|expired)|"
+    r"credential[s]?[\s_]not[\s_]configured"
+    r")\b"
+    r")",
     re.IGNORECASE,
 )
+# ``_RESPAWN_BLOCKER_RE`` — kept as the UNION for backward compatibility with
+# anything that imports it (diagnostics, snapshots, tests). New code should
+# pick the specific set it needs.
 _RESPAWN_BLOCKER_RE = re.compile(
     r"\b("
     # Quota family (transient — self-heals via DEFAULT_QUOTA_BLOCK_SECONDS).
@@ -111,14 +160,23 @@ _RESPAWN_BLOCKER_RE = re.compile(
     r"entitlement[\s_]exhausted|"
     r"exhausted|"
     r"token[\s_]plan|"
-    # Auth family (terminal — surfaces via blocker_auth).
+    # Auth family (terminal — surfaces via blocker_auth). Mirrors the tightened
+    # ``_RESPAWN_AUTH_RE`` above so a leftover import of the union doesn't
+    # regress the false-positive window the tightener just closed.
+    r"401|"
     r"403|"
-    r"auth\w*|"
     r"unauthorized|"
-    r"forbidden|"
     r"invalid[\s_]api[\s_]key|"
     r"access[\s_]denied|"
-    r"permission[\s_]denied"
+    r"access[\s_]forbidden|"
+    r"request[\s_]forbidden|"
+    r"permission[\s_]denied|"
+    r"authentication[\s_]required|"
+    r"auth[\s_](?:token|error|failed|header)|"
+    r"missing[\s_](?:api[\s_]key|credentials|token)|"
+    r"credential[s]?[\s_]missing|"
+    r"credential[s]?[\s_](?:not[\s_]set|invalid|expired)|"
+    r"credential[s]?[\s_]not[\s_]configured"
     r")\b",
     re.IGNORECASE,
 )
@@ -144,6 +202,19 @@ DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 # automatic once the provider is healthy. Overridable via
 # ``HERMES_KANBAN_QUOTA_BLOCK_SECONDS``.
 DEFAULT_QUOTA_BLOCK_SECONDS = 900  # 15 minutes
+
+# Cooldown after a CRASH / TIMEOUT / SPAWN-FAILURE that stamped auth-flavoured
+# text in ``last_failure_error``. The text-driven ``blocker_auth`` guard used
+# to latch forever — a parked card sat in ``respawn_guarded`` indefinitely
+# until a human intervened (#t_258dc2c3, t_961892f2 live proof). The breaker
+# (consecutive_failures) still trips a repeat-offender, but it doesn't run
+# until a spawn attempt actually counts against the budget. This cooldown
+# lets the next tick probe the provider after a long quiet period — long
+# enough that a real, persistent credential breakage stays surfaced via
+# repeated trip cycles, short enough that a transient token-missing blip
+# self-heals the same way ``quota_cooldown`` does. Overridable via
+# ``HERMES_KANBAN_AUTH_BLOCK_SECONDS``.
+DEFAULT_AUTH_BLOCK_SECONDS = 86400  # 24 hours
 
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
@@ -211,7 +282,9 @@ class DispatchResult:
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
     """``(task_id, reason)`` skipped by the respawn guard. Reasons:
     ``"blocker_auth"`` (auth pattern in ``last_failure_error`` — surfaces for a
-    human; retrying will not help), ``"quota_cooldown"`` (quota/billing/rate
+    human; retrying will not help while the auth cooldown is in effect;
+    releases after ``DEFAULT_AUTH_BLOCK_SECONDS`` so a parked card never
+    latches forever — #t_258dc2c3), ``"quota_cooldown"`` (quota/billing/rate
     text from a crashed worker; transient — wait
     ``DEFAULT_QUOTA_BLOCK_SECONDS`` then probe), ``"rate_limit_cooldown"``
     (latest run ``rate_limited`` within the rate-limit cooldown;
@@ -1615,15 +1688,26 @@ def check_respawn_guard(
     CRASH/TIMEOUT, not a clean ``rate_limited`` requeue — wait one
     ``DEFAULT_QUOTA_BLOCK_SECONDS`` and probe again; if the cooldown has
     elapsed, return ``None`` so the next tick can attempt the work), then
-    ``"blocker_auth"`` (auth pattern in ``last_failure_error`` — retrying
-    won't help; surface for a human; the breaker still trips eventually), then
-    for the ready lane only ``"recent_success"`` (completed run within the
-    window, unless a re-queue event arrived after it — a deliberate re-run)
-    and ``"active_pr"`` (PR URL in a recent comment; re-spawning risks a
-    duplicate PR — unless a handoff event followed the comment: the named
-    profile must work on that PR). The review lane skips the last two: they
-    are the *inputs* to a review handoff. Stale / dead claim locks are NOT a
-    guard reason — the reclaim passes own those.
+    ``"blocker_auth"`` (auth pattern in ``last_failure_error`` — the regex is
+    tight to provider-error phrases only, so a card whose TITLE or BODY
+    happens to mention "authentication" or "authorise" is NOT classified as
+    an auth failure; retrying won't help while the cooldown is in effect,
+    but the cooldown releases after ``DEFAULT_AUTH_BLOCK_SECONDS`` so a
+    parked task never latches forever — #t_258dc2c3; the breaker still trips
+    eventually via ``consecutive_failures``), then for the ready lane only
+    ``"recent_success"`` (completed run within the window, unless a re-queue
+    event arrived after it — a deliberate re-run) and ``"active_pr"`` (PR
+    URL in a recent comment; re-spawning risks a duplicate PR — unless a
+    handoff event followed the comment: the named profile must work on that
+    PR). The review lane skips the last two: they are the *inputs* to a
+    review handoff. Stale / dead claim locks are NOT a guard reason — the
+    reclaim passes own those.
+
+    The guard NEVER reads the task title or body. Only ``last_failure_error``
+    and the latest ended ``task_runs`` row are consulted, and the only fields
+    of those are timestamps, outcome, and the error string (#t_258dc2c3,
+    t_961892f2 live proof: a card whose subject is "password rotation
+    forbidden" was being parked because the body matched the auth stem).
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1695,9 +1779,24 @@ def check_respawn_guard(
         # below is intentionally NOT consulted for quota text.
         return None
 
-    # 3. Auth blocker: retrying will not help. Surface for a human.
+    # 3. Auth blocker: retrying will not help. Surface for a human — UNTIL
+    #    the auth cooldown elapses, after which the next tick re-probes the
+    #    provider (#t_258dc2c3). The breaker (separate ``consecutive_failures``
+    #    counter) still trips a repeat offender — this cooldown just prevents
+    #    a parked card from latching forever on a one-off blip. A
+    #    ``HERMES_KANBAN_AUTH_BLOCK_SECONDS=0`` returns ``None`` immediately
+    #    (matches the quota/rate-limit escape hatches).
     if err and _RESPAWN_AUTH_RE.search(err):
-        return "blocker_auth"
+        auth_block = _kb._resolve_auth_block_seconds()
+        if auth_block <= 0:
+            return None
+        if latest_run is not None and latest_run["ended_at"] is not None:
+            ended_at = int(latest_run["ended_at"])
+            if (now - ended_at) < auth_block:
+                return "blocker_auth"
+        # Cooldown elapsed OR no ended run to anchor against: the next tick
+        # probes again. The breaker still trips if it keeps failing.
+        return None
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
     # are the canonical *inputs* to a review handoff, not duplicate-work signals.

@@ -817,7 +817,7 @@ def test_respawn_guard_quota_cooldown_after_crash_then_self_heals(
             ("pid 1 not alive Worker's last output: 'out of credits on "
              "OpenRouter. Switch providers with /model'", q_tid),
         )
-        # Auth case: a worker crashed with a 401 / ANTHROPIC_TOKEN missing.
+        # Auth case: a worker crashed with a real 401 / 403 provider response.
         a_tid = kb.create_task(conn, title="auth-crash", assignee="a")
         kb.claim_task(conn, a_tid)
         run_id_a = kb.get_task(conn, a_tid).current_run_id
@@ -830,8 +830,7 @@ def test_respawn_guard_quota_cooldown_after_crash_then_self_heals(
             "UPDATE tasks SET status='ready', current_run_id=NULL, "
             "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
             "last_failure_error=? WHERE id=?",
-            ("No Anthropic credentials found. Run 'hermes auth add "
-             "anthropic' to sign in, or set ANTHROPIC_TOKEN.", a_tid),
+            ("HTTP 401 unauthorized: missing api key", a_tid),
         )
         conn.commit()
 
@@ -911,18 +910,22 @@ def test_respawn_guard_quota_cooldown_no_ended_run_does_not_park(
 def test_respawn_guard_auth_text_outside_quota_window_still_blocked(
     kanban_home, monkeypatch,
 ):
-    """Auth text must NOT inherit the quota cooldown. Even a long-elapsed
-    crash with auth text in ``last_failure_error`` stays blocked so a human
-    gets the signal — retrying would just hit the same 401.
+    """Auth text stays blocked WITHIN the auth cooldown window so a human
+    gets the signal — retrying would just hit the same 401. After
+    ``DEFAULT_AUTH_BLOCK_SECONDS`` the next tick re-probes the provider;
+    the ``consecutive_failures`` breaker still trips a repeat offender
+    (#t_258dc2c3).
     """
     import hermes_cli.kanban_db as _kb
 
+    monkeypatch.setenv("HERMES_KANBAN_AUTH_BLOCK_SECONDS", "86400")
     now = 5_000_000
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="auth-old", assignee="a")
         kb.claim_task(conn, tid)
         run_id = kb.get_task(conn, tid).current_run_id
-        # Crash long in the past — well past DEFAULT_QUOTA_BLOCK_SECONDS.
+        # Crash long in the past — well past DEFAULT_QUOTA_BLOCK_SECONDS but
+        # inside the auth cooldown window.
         conn.execute(
             "UPDATE task_runs SET outcome='crashed', status='crashed', "
             "ended_at=? WHERE id=?",
@@ -936,12 +939,152 @@ def test_respawn_guard_auth_text_outside_quota_window_still_blocked(
         )
         conn.commit()
 
-        # An hour later, a day later — still blocked. No time-based decay
-        # for auth.
-        monkeypatch.setattr(_kb.time, "time", lambda: now - 86000)
+        # Just inside the cooldown — still blocked.
+        monkeypatch.setattr(_kb.time, "time", lambda: now - 1)
         assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
-        monkeypatch.setattr(_kb.time, "time", lambda: now + 86400)
-        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+        # Just past the cooldown — the next tick probes again. The breaker
+        # is the safety net, not the cooldown.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 1)
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+
+def test_respawn_guard_does_not_match_auth_words_in_task_title_or_body(
+    kanban_home, monkeypatch,
+):
+    """The guard MUST key off the run's error field only (#t_258dc2c3).
+
+    A card whose TITLE or BODY mentions auth/quota words is not an auth
+    failure: ``t_961892f2`` ("POLICY: Patroni password rotation is
+    hard-rule forbidden — use Infisical instead") was being parked on
+    ``blocker_auth`` because the body/title matched the auth stem. The
+    guard only ever reads ``last_failure_error`` (and the latest
+    ``task_runs`` row's outcome + timestamp), so a healthy run with
+    auth-themed prose in the title must dispatch.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kbc.connect() as conn:
+        # Title and body each contain auth-flavoured words that the
+        # OLD ``auth\\w*`` stem would have matched. The card has no
+        # ``last_failure_error`` text (healthy run, no failure), so the
+        # guard must return ``None`` (allow dispatch).
+        tid = kb.create_task(
+            conn,
+            title="POLICY: Patroni password rotation is hard-rule forbidden - use Infisical instead",
+            body=(
+                "Card documents that authoring credentials via Patroni\n"
+                "is forbidden. The authenticated user must NOT be\n"
+                "authorised to rotate passwords. Authentication must\n"
+                "go through Infisical only."
+            ),
+            assignee="a",
+        )
+        # Seed a clean completed run so the latest_run lookup doesn't
+        # fall through to the auth path on a NULL ended_at.
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        now = 5_000_000
+        conn.execute(
+            "UPDATE task_runs SET outcome='completed', status='done', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL "
+            "WHERE id=?",
+            (tid,),
+        )
+        conn.commit()
+
+        # Stub time so cooldown decay is irrelevant AND the completed
+        # run is outside the recent-success window. monkeypatch handles
+        # restoration automatically — patching the stdlib ``time`` module
+        # here is safe because every `import time` in the codebase binds
+        # to the same module object (matching the pattern used by all
+        # other respawn-guard tests).
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 7200)
+        # The guard must NOT look at the title or body. None of the
+        # text above should classify this card as ``blocker_auth`` (or
+        # any other guard reason — there's a clean completed run outside
+        # the recent-success window).
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_respawn_guard_tightened_auth_regex_does_not_match_english_prose(
+    kanban_home, monkeypatch,
+):
+    """The old ``auth\\w*`` stem caught bare prose; the tightened regex
+    must not. Regression: every one of these strings used to match.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    now = 5_000_000
+    samples = [
+        "authentication module imported but never invoked",
+        "the authorisation flow is delegated to oauth",
+        "we authorised the change in the previous PR",
+        "the author noted this is a backward-incompatible refactor",
+        "the task's subject is forbidden; it must dispatch anyway",
+        "credential rotation goes through Infisical",
+    ]
+    with kbc.connect() as conn:
+        for i, err in enumerate(samples):
+            tid = kb.create_task(conn, title=f"prose-{i}", assignee="a")
+            kb.claim_task(conn, tid)
+            run_id = kb.get_task(conn, tid).current_run_id
+            conn.execute(
+                "UPDATE task_runs SET outcome='crashed', status='crashed', "
+                "ended_at=? WHERE id=?",
+                (now - 60, run_id),
+            )
+            conn.execute(
+                "UPDATE tasks SET status='ready', current_run_id=NULL, "
+                "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+                "last_failure_error=? WHERE id=?",
+                (err, tid),
+            )
+            conn.commit()
+            monkeypatch.setattr(_kb.time, "time", lambda: now)
+            # None of these should be classified blocker_auth — they're
+            # English prose about auth/permissions, not provider error
+            # strings. The text-guard is a safety net, not a prose sniffer.
+            assert kbd.check_respawn_guard(conn, tid) is None, (
+                f"sample {i!r} ({err!r}) was misclassified as "
+                f"{kbd.check_respawn_guard(conn, tid)!r}"
+            )
+
+
+def test_respawn_guard_auth_cooldown_zero_means_next_tick(
+    kanban_home, monkeypatch,
+):
+    """``HERMES_KANBAN_AUTH_BLOCK_SECONDS=0`` must NOT park a card on
+    auth text alone — matches the quota/rate-limit escape hatches so
+    operators can run with the breaker on but the guard off.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_AUTH_BLOCK_SECONDS", "0")
+    now = 5_000_000
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="auth-no-block", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='crashed', status='crashed', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("HTTP 401 unauthorized: missing api key", tid),
+        )
+        conn.commit()
+        monkeypatch.setattr(_kb.time, "time", lambda: now)
+        assert kbd.check_respawn_guard(conn, tid) is None
 
 
 

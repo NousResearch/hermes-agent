@@ -26,6 +26,10 @@ _STATUS_ICONS = {
 #
 # Operators reading ``hermes kanban list`` should be able to spot a parked
 # card WITHOUT running ``hermes kanban dispatch --json`` (#t_cfbbb112, AC#3).
+#
+# The auth sniff is the SAME tight set as ``kanban_db_dispatch._RESPAWN_AUTH_RE``
+# so a card whose TITLE / BODY happens to mention "authentication" or
+# "authorise" is NOT misclassified here (#t_258dc2c3, t_961892f2 live proof).
 _QUOTA_SNIFF_RE = re.compile(
     r"\b(quota|rate[\s_\-]?limit(?:ed)?|429|billing|subscription|"
     r"out[\s_]of[\s_]credits|entitlement[\s_]exhausted|exhausted|"
@@ -33,8 +37,23 @@ _QUOTA_SNIFF_RE = re.compile(
     re.IGNORECASE,
 )
 _AUTH_SNIFF_RE = re.compile(
-    r"\b(403|auth\w*|unauthorized|forbidden|invalid[\s_]api[\s_]key|"
-    r"access[\s_]denied|permission[\s_]denied)\b",
+    r"(?:"
+    r"\b(?:401|403)(?:[\s_]forbidden)?\b|"
+    r"\b(?:"
+    r"unauthorized|"
+    r"invalid[\s_]api[\s_]key|"
+    r"access[\s_]denied|"
+    r"access[\s_]forbidden|"
+    r"request[\s_]forbidden|"
+    r"permission[\s_]denied|"
+    r"authentication[\s_]required|"
+    r"auth[\s_](?:token|error|failed|header)|"
+    r"missing[\s_](?:api[\s_]key|credentials|token)|"
+    r"credential[s]?[\s_]missing|"
+    r"credential[s]?[\s_](?:not[\s_]set|invalid|expired)|"
+    r"credential[s]?[\s_]not[\s_]configured"
+    r")\b"
+    r")",
     re.IGNORECASE,
 )
 

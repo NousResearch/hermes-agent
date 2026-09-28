@@ -119,8 +119,27 @@ class TestParkedReasonHelper:
             "invalid api key passed",
             "permission denied",
             "access denied",
-            "Run 'hermes auth add anthropic'",
+            "access forbidden by admin policy",
+            "authentication required: missing api key",
+            "auth token expired",
+            "missing credentials for openai",
+            "credentials not configured",
         ]
         for err in cases:
             t = _mk_task(last_failure_error=err)
             assert ko._parked_reason(t) == "blocker_auth", f"text={err!r}"
+
+    def test_auth_sample_does_not_match_prose(self):
+        r"""Prose that happens to mention "auth" / "credentials" / "forbidden"
+        must NOT classify as ``blocker_auth`` (#t_258dc2c3 — the old
+        ``auth\w*`` stem caught these)."""
+        cases = [
+            "Run 'hermes auth add anthropic'",
+            "POLICY: Patroni password rotation is hard-rule forbidden",
+            "the authorisation flow is delegated to oauth",
+            "credential rotation goes through Infisical",
+            "the task's subject is forbidden; dispatch anyway",
+        ]
+        for err in cases:
+            t = _mk_task(last_failure_error=err)
+            assert ko._parked_reason(t) is None, f"text={err!r}"

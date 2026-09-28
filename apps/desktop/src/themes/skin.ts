@@ -15,9 +15,10 @@
  * still picks `.dark` from the real background luminance.
  */
 
+import { ensureContrast, mix } from '@hermes/shared/color'
 import type { HermesSkin, SkinColors } from '@hermes/shared/skin'
 
-import { ensureContrast, luminance, mix, normalizeHex, readableOn } from './color'
+import { luminance, normalizeHex, readableInk } from './color'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 
 // The accent labels the sidebar in small uppercase text, so it must clear WCAG AA
@@ -86,7 +87,7 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
     popover: mix(background, foreground, dark ? 0.08 : 0.05),
     popoverForeground: foreground,
     primary: accent,
-    primaryForeground: readableOn(accent),
+    primaryForeground: readableInk(accent),
     secondary: mix(accent, background, dark ? 0.72 : 0.86),
     secondaryForeground: foreground,
     accent: mix(accent, background, dark ? 0.82 : 0.88),
@@ -95,10 +96,10 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
     input: pick(colors, ['completion_menu_bg'], background) ?? mix(background, foreground, dark ? 0.1 : 0.06),
     ring: accent,
     midground: accent,
-    midgroundForeground: readableOn(accent),
+    midgroundForeground: readableInk(accent),
     composerRing: accent,
     destructive,
-    destructiveForeground: readableOn(destructive),
+    destructiveForeground: readableInk(destructive),
     sidebarBackground: sidebar,
     sidebarBorder: border,
     userBubble: mix(background, accent, dark ? 0.18 : 0.12),
@@ -112,6 +113,9 @@ export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
     // Single palette in both slots: a skin is one-mode, so the light/dark toggle
     // shouldn't invert it. renderedModeFor still paints `.dark` from luminance.
     colors: palette,
-    darkColors: palette
+    darkColors: palette,
+    // Pass through raw CSS so the desktop can inject it as a scoped <style>
+    // tag — users put CSS in their skin YAML instead of hacking app.asar.
+    customCSS: skin.customCSS?.trim() || undefined
   }
 }

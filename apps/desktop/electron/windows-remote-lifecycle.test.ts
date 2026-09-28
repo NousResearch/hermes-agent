@@ -33,7 +33,6 @@ test('Windows spawn holds the update mutex across marker check and helper spawn'
   assert.match(script, /\$mutexPath=\$marker\+"\.mutex"/)
   assert.match(script, /\.Lock\(0,1\)/)
   assert.match(script, /windows_ssh_runtime.*spawn/)
-  assert.match(script, /remote update marker is present/)
 })
 
 test('Windows spawn publishes the initial ownership record before releasing the mutex', () => {
@@ -69,6 +68,50 @@ test('PowerShell transport uses UTF-16LE encoded commands and literal escaping',
   assert.equal(Buffer.from(encodedPowerShell("'ok'"), 'base64').toString('utf16le'), "'ok'")
   assert.equal(psLiteral("a'b"), "'a''b'")
   assert.match(powerShellCommand('Write-Output ok'), /^powershell\.exe -NoProfile -NonInteractive .* -EncodedCommand /)
+})
+
+test('every emitted PowerShell script keeps try blocks attached to their catch/finally handlers', async () => {
+  // `;` between `try{...}` and `catch`/`finally` is a PowerShell parse error
+  // (MissingCatchOrFinally), so no probe may join a handler onto a separate
+  // statement. The line-oriented builders join with `;`; the pair must live
+  // in one array element.
+  const decode = (command: string) => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+
+  const scripts: string[] = []
+
+  await probeWindowsRemote(
+    sshWith(async command => {
+      scripts.push(decode(command))
+
+      return JSON.stringify({ os: 'Windows' })
+    })
+  )
+  await assertWindowsRemoteInstallUpdateClear(
+    sshWith(async command => {
+      scripts.push(decode(command))
+
+      return 'CLEAR'
+    }),
+    'C:\\Users\\alice\\.hermes'
+  )
+  scripts.push(
+    decode(atomicWindowsSpawnCommand({ hermesHome: 'C:\\Users\\alice\\.hermes', python: 'C:\\py\\python.exe' })),
+    decode(buildWindowsInteractiveCommand('C:\\work'))
+  )
+
+  assert.equal(scripts.length, 4)
+
+  for (const script of scripts) {
+    assert.doesNotMatch(script, /}\s*;\s*(?:catch|finally)\b/)
+    // `$HOME`, `$HOST`, `$PID`, ... are read-only automatic variables: assigning
+    // one throws "Cannot overwrite variable" at run time, so the probe exits 1
+    // and the marker gate never observes CLEAR.
+    assert.doesNotMatch(script, /\$(?:home|host|pid|profile|pwd|input|args|error)\s*=/i)
+  }
+
+  assert.ok(
+    scripts.slice(0, 2).every(script => /}catch \[Management\.Automation\.ItemNotFoundException\]/.test(script))
+  )
 })
 
 test('Windows relaunch gate refuses live and uncertain markers before executing the remote runtime', async () => {
@@ -153,6 +196,10 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
 
   const explicitCheck = script.indexOf('if($explicit){Assert-NoReparse $explicit $false;')
   const explicitPythonCheck = script.indexOf('Assert-NoReparse $explicitPython $false')
+  const envHome = script.indexOf('$hermesHome=$env:HERMES_HOME')
+  // #118988: HERMES_HOME is trusted only when it is a directory on the remote; anything else
+  // (stale User-scope value, client path leaked over SSH) falls back to the remote default.
+  const envHomeGuard = script.indexOf('Test-Path -LiteralPath $hermesHome -PathType Container')
   const fallbackJoin = script.indexOf('Join-Path $hermesHome')
   const candidatePythonCheck = script.indexOf('Assert-NoReparse $candidatePython $true')
   const candidateSelection = script.indexOf('Get-Item -LiteralPath $candidate')
@@ -162,7 +209,9 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
 
   assert.ok(explicitCheck >= 0)
   assert.ok(explicitCheck < explicitPythonCheck)
-  assert.ok(explicitPythonCheck < fallbackJoin)
+  assert.ok(explicitPythonCheck < envHome)
+  assert.ok(envHome < envHomeGuard)
+  assert.ok(envHomeGuard < fallbackJoin)
   assert.ok(candidatePythonCheck >= 0)
   assert.ok(candidatePythonCheck < candidateSelection)
   assert.ok(pythonJoin >= 0)

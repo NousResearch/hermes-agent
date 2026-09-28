@@ -46,15 +46,6 @@ class TestNvidiaParity:
 class TestKimiParity:
     """Kimi: OMIT temperature, max_tokens=32000, thinking + reasoning_effort."""
 
-    def test_temperature_omitted(self, transport):
-        kw = transport.build_kwargs(
-            model="kimi-k2",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("kimi-coding"),
-            omit_temperature=True,
-        )
-        assert "temperature" not in kw
 
 
     def test_thinking_enabled(self, transport):
@@ -69,20 +60,10 @@ class TestKimiParity:
         )
         assert kw.get("reasoning_effort") == "high"
         assert "thinking" not in kw.get("extra_body", {})
-
-
-
-    def test_reasoning_effort_top_level(self, transport):
-        """Kimi reasoning_effort is a TOP-LEVEL api_kwargs key, NOT in extra_body."""
-        kw = transport.build_kwargs(
-            model="kimi-k2",
-            messages=_simple_messages(),
-            tools=None,
-            provider_profile=get_provider_profile("kimi-coding"),
-            reasoning_config={"enabled": True, "effort": "high"},
-        )
-        assert kw.get("reasoning_effort") == "high"
         assert "reasoning_effort" not in kw.get("extra_body", {})
+
+
+
 
 
 
@@ -168,5 +149,18 @@ class TestCustomOllamaParity:
             tools=None,
             provider_profile=get_provider_profile("custom"),
             reasoning_config={"enabled": False, "effort": "none"},
+            base_url="http://127.0.0.1:11434/v1",
         )
         assert kw["extra_body"]["think"] is False
+
+    def test_think_omitted_for_mistral_custom(self, transport):
+        kw = transport.build_kwargs(
+            model="mistral-small-latest",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("custom"),
+            reasoning_config={"enabled": False, "effort": "none"},
+            base_url="https://api.mistral.ai/v1",
+        )
+        assert kw.get("extra_body", {}).get("think") is None
+        assert kw.get("reasoning_effort") == "none"

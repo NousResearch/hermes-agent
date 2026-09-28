@@ -512,7 +512,7 @@ def _run_agent(
     ``(final_response, run_result)``. Imports are local to keep CLI startup cheap. *ledger* (set when
     ``--usage-file`` is requested) attaches this run's auxiliary usage to the result."""
     from hermes_cli.config import load_config
-    from hermes_cli.runtime_provider import resolve_runtime_with_fallback
+    from hermes_cli.runtime_provider import resolve_runtime_provider, resolve_runtime_with_fallback
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
 
@@ -526,13 +526,14 @@ def _run_agent(
     choice = _apply_stored_session_runtime(choice, resume_meta, explicit_model=bool((model or "").strip()))
     # Resolution-time fallback (#81209): a quota-exhausted/expired primary raises AuthError here, before
     # AIAgent (and its mid-session ``fallback_model`` wiring) exists, so walk the chain like the gateway.
-    runtime, fallback_entry = resolve_runtime_with_fallback(
-        cfg,
-        requested=choice.provider,
-        target_model=choice.model or None,
-        explicit_base_url=choice.base_url,
-        explicit_api_key=choice.api_key,
-    )
+    # A route pinned with --model/--provider resolves as requested or fails: it never silently swaps to a
+    # ``fallback_providers`` entry (same contract as the interactive CLI and pinned cron jobs).
+    resolve_kwargs = dict(requested=choice.provider, target_model=choice.model or None,
+                          explicit_base_url=choice.base_url, explicit_api_key=choice.api_key)
+    if (model or "").strip() or (provider or "").strip():
+        runtime, fallback_entry = resolve_runtime_provider(**resolve_kwargs), None
+    else:
+        runtime, fallback_entry = resolve_runtime_with_fallback(cfg, **resolve_kwargs)
     if fallback_entry is not None:
         # The chosen entry names the model that will be sent; the primary's stored api_mode no longer applies.
         choice = dataclasses.replace(choice, model=fallback_entry["model"], provider=runtime.get("provider"),

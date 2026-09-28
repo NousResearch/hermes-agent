@@ -104,3 +104,34 @@ def test_run_agent_falls_back_when_primary_resolution_raises_auth_error(monkeypa
     assert text == "pong"
     assert (captured["provider"], captured["model"]) == ("anthropic", "claude-x")
     assert captured["api_key"] == "fb"
+
+
+@pytest.mark.parametrize("pin", [{"model": "gpt-5.4", "provider": "openai-codex"}, {"provider": "openai-codex"}],
+                         ids=["model_and_provider", "provider_only"])
+def test_run_agent_pinned_route_fails_instead_of_falling_back(monkeypatch, pin):
+    """``hermes -z --model/--provider`` pins the route: an AuthError on it surfaces, and no
+    fallback_providers entry is resolved or sent."""
+    import hermes_cli.oneshot as oneshot_mod
+
+    requested = []
+
+    def fake_resolve(**kw):
+        requested.append(kw.get("requested"))
+        if kw.get("requested") in (None, "openai-codex"):
+            raise AuthError("Codex provider quota exhausted (429).")
+        return {"api_key": "fb", "base_url": None, "provider": kw["requested"], "api_mode": "chat", "credential_pool": None}
+
+    def _no_agent(**_kw):
+        raise AssertionError("AIAgent must not be built for a failed pinned route")
+
+    cfg = {"model": {"default": "gpt-5.4", "provider": "openai-codex"}, **_CFG}
+    monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: None)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", fake_resolve)
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda _cfg, _p: [])
+    monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+    monkeypatch.setattr("run_agent.AIAgent", _no_agent)
+
+    with pytest.raises(AuthError, match="quota exhausted"):
+        oneshot_mod._run_agent("Health check: reply pong.", **pin)
+    assert requested == ["openai-codex"]

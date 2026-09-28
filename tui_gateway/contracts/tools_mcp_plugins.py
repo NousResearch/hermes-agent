@@ -205,9 +205,11 @@ method("skills.manage", params=SkillsManageParams, result=SkillsManageResult,
 
 
 class SkillsReloadParams(Params):
-    """``session_id`` binds the rescan to that session's profile and workspace (project skills)."""
+    """``session_id`` binds the rescan to that session's profile and workspace (project skills);
+    ``profile`` scopes a session-less rescan."""
 
     session_id: str | None = None
+    profile: str | None = None
 
 
 class SkillCommandRef(Result):
@@ -751,6 +753,8 @@ class PluginsManageResult(Result):
     missing_env: list[str] | None = None
     # ``install`` → the manifest's ``python_dependencies`` the installer applied (``[]`` when none).
     python_dependencies: list[str] | None = None
+    # ``install`` from the catalog → the entry's informational ``known_issues`` (``[]`` when none).
+    known_issues: list[str] | None = None
     after_install_path: str | None = None
     enabled: bool | None = None
     sha: str | None = None

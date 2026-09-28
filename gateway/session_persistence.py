@@ -368,6 +368,12 @@ class SessionPersistenceMixin:
                 "gateway.session: repointing stale sessions.json entry %r from ended %s "
                 "(end_reason=%r) to recovered %s", key, entry.session_id, row["end_reason"],
                 recovered_entry.session_id)
+            if entry.prompt_pin and (
+                self._compression_tip_for_session_id(entry.session_id) == recovered_entry.session_id
+            ):
+                # The compression child continues this conversation: its internal turns keep the
+                # pinned system bytes (the rebuilt entry is minimal and would drop them).
+                recovered_entry.prompt_pin = entry.prompt_pin
             return recovered_entry
         # Same-id recovery == successful resume: keep the ORIGINAL entry object (the recovered one
         # is rebuilt minimal and would drop counters, model_override, resume markers, metadata).

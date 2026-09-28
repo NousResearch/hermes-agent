@@ -309,6 +309,43 @@ class MemoryStore:
             return _error(scan_error)
         return self._edit(target, old_text.strip(), new_content, matched_entry)
 
+    def patch(self, target: str, old_text: str, new_text: str,
+              matched_entry: Optional[str] = None) -> Dict[str, Any]:
+        """Find the entry containing *old_text* and splice every occurrence of it into
+        *new_text* — the rest of the entry is preserved verbatim. This is the partial-edit
+        shape ``replace`` deliberately is not (replace overwrites the WHOLE entry)."""
+        if not (old_text or "").strip():
+            return _error("old_text cannot be empty.")
+        if new_text is None or not str(new_text).strip():
+            return _error("new_text cannot be empty. Use 'remove' to delete entries, "
+                          "or an empty-sense edit is not a change.")
+        return self._patch(target, old_text.strip(), str(new_text), matched_entry)
+
+    def _patch(self, target: str, old_text: str, new_text: str,
+               matched_entry: Optional[str] = None) -> Dict[str, Any]:
+        """Locked find-and-splice inside the matched entry (#124582)."""
+        def _apply(entries, limit):
+            idx = self._locate(entries, old_text, "patch", matched_entry)
+            if isinstance(idx, dict):
+                return idx
+            before = entries[idx]
+            after = before.replace(old_text, new_text)
+            if after == before:
+                return _error(f"Patched entry is unchanged by replacing '{old_text}' "
+                              f"with '{new_text}'.")
+            if scan_error := _scan_memory_content(after):
+                return _error(scan_error)
+            patched = entries[:idx] + [after] + entries[idx + 1:]
+            new_total = len(ENTRY_DELIMITER.join(patched))
+            if new_total > limit:
+                return self._failure_with_entries(target, (
+                    f"Patch would put memory at {new_total:,}/{limit:,} chars. Shorten the new "
+                    f"text, or 'remove' other stale or less important entries to make room "
+                    f"(see current_entries below), then retry — all in this turn."))
+            return patched, "Entry patched.", {
+                "patched_entry_before": before, "patched_entry_after": after}
+        return self._mutate(target, _apply)
+
     def remove(self, target: str, old_text: str, matched_entry: Optional[str] = None) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
         if not old_text.strip():
@@ -374,12 +411,12 @@ class MemoryStore:
             if content not in working:  # idempotent -- skip duplicate, don't fail the batch
                 working.append(content)
             return None, None
-        if act not in ("replace", "remove"):
-            return f"{pos}: unknown action. Use add, replace, or remove.", None
+        if act not in ("replace", "remove", "patch"):
+            return f"{pos}: unknown action. Use add, replace, patch, or remove.", None
         if not old_text:
             return f"{pos}: old_text is required.", None
-        if act == "replace" and not content:
-            return f"{pos}: content is required (use action='remove' to delete).", None
+        if act in ("replace", "patch") and not content:
+            return (f"{pos}: content is required (use action='remove' to delete).", None)
         if matched_entry is not None:
             idx = _pinned_index(working, matched_entry)
             if idx is None:
@@ -391,7 +428,16 @@ class MemoryStore:
             if idx is None:
                 return f"{pos}: no entry matched '{old_text}'.", None
         previous_content = working[idx]
-        working[idx:idx + 1] = [content] if act == "replace" else []
+        if act == "patch":
+            patched = previous_content.replace(old_text, content)
+            if patched == previous_content:
+                return (f"{pos}: patch is a no-op -- '{old_text}' -> '{content}' leaves the "
+                        f"entry unchanged.", None)
+            if scan_error := _scan_memory_content(patched):
+                return f"{pos}: {scan_error}", None
+            working[idx:idx + 1] = [patched]
+        else:
+            working[idx:idx + 1] = [content] if act == "replace" else []
         return None, previous_content
 
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:

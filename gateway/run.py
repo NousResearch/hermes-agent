@@ -3224,6 +3224,24 @@ def _is_gateway_hidden_reasoning_incomplete_turn(agent_result: dict) -> bool:
     return not final_response or final_response == error_text
 
 
+def _is_promoted_reasoning_response(agent_result: dict) -> bool:
+    """Detect the reasoning-only clean-stop promotion: ``final_response`` IS the turn's chain-of-thought.
+
+    ``agent/turn_final_response.py`` returns the reasoning as the answer when a provider ends a turn
+    with ``finish_reason="stop"``, no tool call and no visible content, while the assistant row keeps
+    ``content`` empty and the text in its reasoning fields — so the delivered text and this turn's
+    ``last_reasoning`` are byte-identical. A real answer never is, which is what tells the two apart
+    without asking the agent to carry another flag.
+    """
+    if not isinstance(agent_result, dict):
+        return False
+    final_response = str(agent_result.get("final_response") or "").strip()
+    if not final_response:
+        return False
+    last_reasoning = str(agent_result.get("last_reasoning") or "").strip()
+    return bool(last_reasoning) and final_response == last_reasoning
+
+
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
     """True only when a gateway turn really completed successfully.
     ``resume_pending`` is a durable restart-recovery marker; a soft interrupt can look like a normal

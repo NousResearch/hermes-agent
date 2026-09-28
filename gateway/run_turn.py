@@ -89,6 +89,29 @@ _UNEXPECTED_SILENCE_REPLY = (
     "Try again or rephrase."
 )
 
+# Reasoning-only clean-stop promotion (`agent/turn_final_response.py`) reaches a multi-party chat
+# as the reply. For the operator it is a useful diagnostic; for the other participants it is
+# chain-of-thought that was never authored as an answer, so a group/channel/forum gets this
+# instead. Private chats keep the promoted text (see `_is_promoted_reasoning_response`).
+_PROMOTED_REASONING_WITHHELD_REPLY = (
+    "⚠️ The model ended its turn with internal reasoning and no visible answer, so there is "
+    "nothing to show here. Try again or rephrase."
+)
+
+
+_PRIVATE_CHAT_TYPES = frozenset({"dm", "private"})
+
+
+def _is_multiparty_chat(source) -> bool:
+    """True unless the chat is a known one-to-one conversation (``dm``/``private`` — the same pair
+    the gateway uses for off-turn ``/login``). Called only on the promotion path, where a wrong
+    guess is expensive in one direction: an unrecognized chat type must not be treated as private,
+    because that delivers chain-of-thought into a room.
+    """
+    return str(getattr(source, "chat_type", "") or "").strip().lower() not in _PRIVATE_CHAT_TYPES
+
+
+
 
 def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
     """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
@@ -1520,14 +1543,28 @@ class GatewayTurnMixin:
         post-compression session_id propagation. Returns
         ``(response, _intentional_silence, agent_messages)``."""
         from gateway.run import (
-            _is_gateway_hidden_reasoning_incomplete_turn, _normalize_empty_agent_response,
-            _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
+            _is_gateway_hidden_reasoning_incomplete_turn, _is_promoted_reasoning_response,
+            _normalize_empty_agent_response, _sanitize_gateway_final_response,
+            _should_clear_resume_pending_after_turn,
         )
         response = agent_result.get("final_response") or ""
         # Hidden-reasoning-only retry exhaustion: the loop's sentinel text doubles as final_response
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
+        # Reasoning-only clean-stop promotion: ``final_response`` IS the turn's chain-of-thought
+        # (``agent/turn_final_response.py`` returns the reasoning when the provider ends a turn with
+        # ``stop``, no tool call and no visible text). The operator reads that as a diagnostic in a
+        # private chat; in a multi-party chat it is not an answer and hands internal reasoning to
+        # everyone else in the room, so withhold the text there.
+        if _is_promoted_reasoning_response(agent_result) and _is_multiparty_chat(source):
+            logger.warning(
+                "promoted reasoning withheld from a multi-party chat: platform=%s chat=%s "
+                "chat_type=%s chars=%d",
+                _platform_name, source.chat_id or "unknown",
+                getattr(source, "chat_type", "") or "unknown", len(response),
+            )
+            response = _PROMOTED_REASONING_WITHHELD_REPLY
         _intentional_silence = self._is_intentional_silence(agent_result, response)
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up, or a message not addressed to the bot, may go

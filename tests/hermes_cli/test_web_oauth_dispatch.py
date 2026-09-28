@@ -21,6 +21,7 @@ The fix:
 
 These tests pin the corrected behavior.
 """
+import contextlib
 import json
 import time
 from unittest.mock import patch
@@ -426,9 +427,23 @@ def test_codex_worker_final_save_is_atomic_with_cancel_delete(tmp_path, monkeypa
     monkeypatch.setattr(auth_mod, "_save_codex_tokens", fake_save)
     monkeypatch.setattr(ws.time, "sleep", lambda *_a, **_k: None)
 
+    # Lock order: every saver enters the profile scope (_SKILLS_PROFILE_LOCK) before
+    # _oauth_sessions_lock; one saver taking them the other way round deadlocks with the rest.
+    real_scope = _rt_oauth._profile_scope
+    session_lock_held_at_scope = []
+
+    @contextlib.contextmanager
+    def recording_scope(profile):
+        session_lock_held_at_scope.append(_web_server_oauth._oauth_sessions_lock.locked())
+        with real_scope(profile) as scoped:
+            yield scoped
+
+    monkeypatch.setattr(_rt_oauth, "_profile_scope", recording_scope)
+
     sid, _ = _rt_oauth._new_oauth_session("openai-codex", "device_code", profile="coder")
 
     _rt_oauth._codex_full_login_worker(sid)
+    assert session_lock_held_at_scope == [False], "profile scope entered while holding the session lock"
 
     # The lock is released now (worker returned), so the DELETE thread can
     # finally complete.

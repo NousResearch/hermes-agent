@@ -212,12 +212,16 @@ class _DeepLineageSessionDB(_FakeSessionDB):
                 "ended_at": n + 1, "started_at": n}
 
     def get_compression_tip(self, session_id):
-        # Faithful simulation of the bounded forward walk from ANY start id:
-        # root→tip hops are capped, matched-id→tip hops are not (the walk
-        # terminates at the real tip when started near it).
-        cap = 1000  # the raised bound; the OLD bound (100) truncated root walks
+        # Faithful simulation of the REAL bounded forward walk in
+        # SessionDB.get_compression_chain: at most _CHAIN_CAP hops from the
+        # START id, so a lineage deeper than the cap truncates when the walk
+        # starts far from the tip. Resolving from the MATCHED id keeps the
+        # remaining distance under the cap; the raised bound lets even a
+        # root-started walk terminate at the live tip (#125041).
+        from hermes_state_compression import _CHAIN_CAP
+
         idx = int(session_id[1:])
-        return f"s{min(idx + cap, self.DEPTH - 1):03d}"
+        return f"s{min(idx + _CHAIN_CAP, self.DEPTH - 1):03d}"
 
 
 def test_deep_lineage_search_resolves_tip_from_matched_id(monkeypatch):

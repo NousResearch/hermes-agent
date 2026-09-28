@@ -562,6 +562,32 @@ Reaction controls use:
 
 Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
 
+### Image-pack stickers
+
+In a Matrix session, `matrix_image_packs` lists sticker images from current-room
+packs and accessible room packs referenced by the bot account. It supports
+[MSC2545 image packs][image-packs-msc] and the legacy Cinny room and account
+formats. Private account packs belong to the bot account. The tool does not
+read the requester's private packs or join referenced rooms.
+
+Use `action: "list"`, then pass an item's `selection_id` to `action: "send"`.
+Selections expire after five minutes and are limited to the same conversation,
+requester, room, bot and profile. The tool reads the selected pack again before
+sending and rejects changed or removed images. It sends a native `m.sticker`
+event with the current reply and thread relations. In encrypted rooms, the
+owning Matrix client's crypto encrypts the sticker event. Pack media remains
+public, as specified by MSC2545.
+
+Pack labels, descriptions and image bodies are untrusted data. Catalogs return
+at most 20 packs, 100 inspected images and 20 account references, with explicit
+errors and truncation indicators. Room-state discovery rejects more than 1,000
+state events. Matrix's state endpoint has no pagination, so the SDK receives the
+complete state response before Hermes applies this processing limit. Declared
+image sizes must fit the adapter's media limit; sending an existing MXC URL does
+not download or re-upload the image.
+
+[image-packs-msc]: https://github.com/matrix-org/matrix-spec-proposals/blob/0923024fe35068874e59b5536b793dfcfcfc96c0/proposals/2545-emotes.md
+
 ### Media Limits
 
 Hermes uploads and downloads Matrix images, files, audio, and video through Matrix media APIs. Multiple generated images are sent as one ordered logical batch, preserving captions and thread context across the batch.
@@ -632,6 +658,7 @@ Other Matrix clients (Element, matrix-commander) may cache the old device keys. 
 :::info
 If `mautrix[encryption]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
 :::
+
 
 ## Home Room
 

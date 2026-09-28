@@ -4,8 +4,9 @@ shadow git store.
 
 Creates automatic snapshots of working directories before file-mutating
 operations (``write_file``, ``patch``, ``terminal`` with destructive flags),
-triggered once per conversation turn.  Provides rollback to any previous
-checkpoint.
+triggered once per working directory per agent iteration (see ``new_turn()``).
+Provides rollback to any previous checkpoint.  Directory prefixes listed in
+``checkpoints.exclude_paths`` are never snapshotted.
 
 This is NOT a tool — the LLM never sees it.  It's transparent infrastructure
 controlled by the ``checkpoints`` config flag or ``--checkpoints`` CLI flag.
@@ -60,7 +61,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from utils import env_int, rmtree_readonly
 
@@ -211,6 +212,32 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
 def _normalize_path(path_value: str) -> Path:
     """Return a canonical absolute path for checkpoint operations."""
     return Path(path_value).expanduser().resolve()
+
+
+def _normalize_excludes(paths: object) -> Tuple[str, ...]:
+    """Normalize ``checkpoints.exclude_paths`` into absolute directory prefixes.
+
+    Accepts a list/tuple of paths or one comma/newline-separated string (so
+    ``hermes config set checkpoints.exclude_paths /tmp,/var/tmp`` works), expands ``~``,
+    drops blanks and duplicates.  Never raises — a bad entry is ignored, not fatal.
+    """
+    if isinstance(paths, str):
+        raw_items: Sequence[object] = re.split(r"[,\n]", paths)
+    elif isinstance(paths, (list, tuple, set)):
+        raw_items = list(paths)
+    else:
+        return ()
+    out: List[str] = []
+    for raw in raw_items:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        try:
+            norm = str(_normalize_path(raw.strip()))
+        except Exception:  # noqa: BLE001 — an unresolvable entry is skipped, not fatal
+            continue
+        if norm and norm not in out:
+            out.append(norm)
+    return tuple(out)
 
 
 def _project_hash(working_dir: str) -> str:
@@ -746,9 +773,9 @@ class CheckpointManager:
     """Manages automatic filesystem checkpoints.
 
     Designed to be owned by AIAgent.  Call ``new_turn()`` at the start of
-    each conversation turn and ``ensure_checkpoint(dir, reason)`` before
+    each agent iteration and ``ensure_checkpoint(dir, reason)`` before
     any file-mutating tool call.  The manager deduplicates so at most one
-    snapshot is taken per directory per turn.
+    snapshot is taken per directory per iteration.
 
     Parameters
     ----------
@@ -762,6 +789,10 @@ class CheckpointManager:
     max_file_size_mb : int
         Skip adding any single file larger than this to a checkpoint.
         (Implemented via ``.gitignore`` excludes + a post-stage size check.)
+    exclude_paths : sequence of str
+        Directory prefixes that are never snapshotted (``checkpoints.exclude_paths``).
+        Scratch trees such as ``/tmp`` belong here: a snapshot of them stages every
+        other session's junk instead of the user's work.
     """
 
     def __init__(
@@ -770,11 +801,13 @@ class CheckpointManager:
         max_snapshots: int = 20,
         max_total_size_mb: int = 500,
         max_file_size_mb: int = 10,
+        exclude_paths: Optional[Sequence[str]] = None,
     ):
         self.enabled = enabled
         self.max_snapshots = max(1, int(max_snapshots))
         self.max_total_size_mb = max(0, int(max_total_size_mb))
         self.max_file_size_mb = max(0, int(max_file_size_mb))
+        self.exclude_paths = _normalize_excludes(exclude_paths)
         self._checkpointed_dirs: Set[str] = set()
 
     # ------------------------------------------------------------------
@@ -784,6 +817,21 @@ class CheckpointManager:
     def new_turn(self) -> None:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
         self._checkpointed_dirs.clear()
+
+    def is_excluded(self, working_dir: str) -> bool:
+        """True when ``working_dir`` is (or lives under) a configured ``exclude_paths`` prefix.
+
+        Snapshotting scratch trees buys no rollback value, and it makes every write inside
+        them pay to stage unrelated files (a 44k-file ``/tmp`` costs ~9s per snapshot).
+        """
+        try:
+            abs_dir = str(_normalize_path(working_dir))
+        except Exception:  # noqa: BLE001 — an unresolvable path is not ours to skip
+            return False
+        for prefix in self.exclude_paths:
+            if abs_dir == prefix or abs_dir.startswith(prefix + os.sep):
+                return True
+        return False
 
     def unsupported_backend_reason(self, task_id: str = "default") -> Optional[str]:
         """Explain why host checkpoints are off limits for a container-backed session.
@@ -910,6 +958,10 @@ class CheckpointManager:
         # Skip root, home, and other overly broad directories
         if abs_dir in {"/", str(Path.home())}:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
+            return False
+
+        if self.is_excluded(abs_dir):
+            logger.debug("Checkpoint skipped: excluded path (%s)", abs_dir)
             return False
 
         if abs_dir in self._checkpointed_dirs:
@@ -1325,12 +1377,27 @@ class CheckpointManager:
                 allowed_returncodes={128},
             )
             if ok_ref and ref_commit:
-                _run_git(
-                    ["read-tree", ref_commit],
+                # ``read-tree`` rewrites every index entry WITHOUT stat data, so the
+                # ``git add -A`` below has to re-read and re-hash the whole working
+                # directory even when nothing changed (measured: 9.1s on a 44k-file
+                # directory, vs 0.2s when the index still carries its stat cache).
+                # Our own previous snapshot leaves the index matching the ref tip, so
+                # when ``diff-index --cached`` already agrees the reseed is a content
+                # no-op — skip it and keep the stat cache.  Real edits still stage:
+                # --cached compares the index against the tree, not the worktree.
+                ok_same, _, _ = _run_git(
+                    ["diff-index", "--cached", "--quiet", ref_commit],
                     store, working_dir,
                     index_file=index_file,
-                    allowed_returncodes={128},
+                    allowed_returncodes={1},
                 )
+                if not ok_same:
+                    _run_git(
+                        ["read-tree", ref_commit],
+                        store, working_dir,
+                        index_file=index_file,
+                        allowed_returncodes={128},
+                    )
             else:
                 try:
                     index_file.unlink()

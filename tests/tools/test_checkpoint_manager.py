@@ -19,10 +19,13 @@ from tools.checkpoint_manager import (
     _ref_name,
     _project_meta_path,
     _touch_project,
+    _index_path,
+    _normalize_excludes,
 )
 from tools.checkpoint_maintenance import (
     clear_all, clear_legacy, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
 )
+from tools import checkpoint_manager as cpm
 
 
 # =========================================================================
@@ -1332,3 +1335,144 @@ class TestSessionDiff:
         assert result["success"] is True
         assert "feature.py" in result["diff"]
         assert "+x = 1" in result["diff"]
+
+
+# =========================================================================
+# CheckpointManager — excluded paths
+# =========================================================================
+
+class TestExcludedPaths:
+    def test_configured_prefix_is_never_snapshotted(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        mgr = CheckpointManager(enabled=True, exclude_paths=[str(work_dir)])
+        assert mgr.ensure_checkpoint(str(work_dir), "excluded") is False
+        assert mgr.list_checkpoints(str(work_dir)) == []
+
+    def test_exclusion_is_prefix_scoped_not_name_scoped(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        scratch = work_dir / "tmp"
+        scratch.mkdir()
+        (scratch / "payload.sh").write_text("echo hi\n")
+        sibling = work_dir / "tmp2"
+        sibling.mkdir()
+        (sibling / "f.py").write_text("x = 1\n")
+
+        mgr = CheckpointManager(enabled=True, exclude_paths=[str(scratch)])
+        assert mgr.ensure_checkpoint(str(scratch), "excluded") is False
+        # An ancestor of an exclusion is still snapshotted, and a sibling whose name merely
+        # starts with the excluded one ("tmp2" vs "tmp") is not inside it.
+        assert mgr.ensure_checkpoint(str(work_dir), "parent kept") is True
+        assert mgr.ensure_checkpoint(str(sibling), "sibling kept") is True
+
+    def test_excluded_dir_creates_no_project(self, work_dir, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        mgr = CheckpointManager(enabled=True, exclude_paths=[str(work_dir)])
+        mgr.ensure_checkpoint(str(work_dir), "excluded")
+        assert not _project_meta_path(_store_path(), _project_hash(str(work_dir))).exists()
+
+    def test_exclude_paths_accepts_string_and_drops_junk(self):
+        assert _normalize_excludes("/tmp,/var/tmp") == ("/tmp", "/var/tmp")
+        assert _normalize_excludes(["/tmp", " ", None, "/tmp"]) == ("/tmp",)
+        assert _normalize_excludes("") == ()
+        assert _normalize_excludes(None) == ()
+        assert _normalize_excludes(123) == ()
+
+    def test_exclude_paths_expands_user_and_drops_duplicates(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        assert _normalize_excludes(["~/scratch", "~/scratch", "~/scratch/"]) == (str(tmp_path / "scratch"),)
+
+
+# =========================================================================
+# CheckpointManager — index reseed (stat-cache preservation)
+# =========================================================================
+
+class TestIndexReseed:
+    @staticmethod
+    def _spy_run_git(monkeypatch):
+        calls = []
+        real = cpm._run_git
+
+        def spy(args, *a, **kw):
+            calls.append(list(args))
+            return real(args, *a, **kw)
+
+        monkeypatch.setattr(cpm, "_run_git", spy)
+        return calls
+
+    @staticmethod
+    def _index_for(work_dir: Path) -> Path:
+        return _index_path(_store_path(), _project_hash(str(work_dir)))
+
+    def test_repeat_snapshot_does_not_reseed_the_index(self, mgr, work_dir, monkeypatch):
+        """``read-tree`` wipes the index stat cache, so the next ``add -A`` re-hashes the whole
+        directory (measured: ~9s on 44k files vs ~0.2s warm).  Our own previous snapshot left the
+        index at the ref tip, so the reseed is a content no-op and must be skipped."""
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is True
+        mgr.new_turn()
+        (work_dir / "main.py").write_text("print('v2')\n")
+
+        calls = self._spy_run_git(monkeypatch)
+        assert mgr.ensure_checkpoint(str(work_dir), "second") is True
+
+        assert not [c for c in calls if c and c[0] == "read-tree"], calls
+        assert [c for c in calls if c and c[0] == "add"]  # the snapshot still staged
+        latest = mgr.list_checkpoints(str(work_dir))[0]
+        assert latest["reason"] == "second"
+
+    def test_drifted_index_is_still_reseeded(self, mgr, work_dir, monkeypatch):
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is True
+        mgr.new_turn()
+        (work_dir / "main.py").write_text("print('v3')\n")
+        # Drift the index away from the ref (empty index ⇒ every ref entry looks new).
+        store = _store_path()
+        _run_git(["read-tree", "--empty"], store, str(work_dir),
+                 index_file=self._index_for(work_dir))
+
+        calls = self._spy_run_git(monkeypatch)
+        assert mgr.ensure_checkpoint(str(work_dir), "second") is True
+
+        assert [c for c in calls if c and c[0] == "read-tree"], calls
+
+    def test_warm_index_still_detects_deletions(self, mgr, work_dir):
+        """The reseed existed so deletions stage correctly — skipping it must not resurrect a
+        file the worktree no longer has."""
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is True
+        (work_dir / "README.md").unlink()
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "after delete") is True
+
+        latest = mgr.list_checkpoints(str(work_dir))[0]
+        store = _store_path()
+        ok, out, err = _run_git(["ls-tree", "--name-only", "-r", latest["hash"]], store, str(work_dir))
+        assert ok, err
+        names = out.split()
+        assert "README.md" not in names
+        assert "main.py" in names
+
+    def test_warm_index_still_detects_new_files(self, mgr, work_dir):
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is True
+        (work_dir / "added.py").write_text("y = 2\n")
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "after add") is True
+
+        latest = mgr.list_checkpoints(str(work_dir))[0]
+        store = _store_path()
+        ok, out, err = _run_git(["ls-tree", "--name-only", "-r", latest["hash"]], store, str(work_dir))
+        assert ok, err
+        assert "added.py" in out.split()
+
+    def test_new_turn_resets_dedup_without_losing_the_index(self, mgr, work_dir, monkeypatch):
+        """``new_turn()`` clears the per-directory dedup only: an unchanged directory is still
+        reported as "nothing to snapshot", and a changed one is staged without a reseed."""
+        assert mgr.ensure_checkpoint(str(work_dir), "first") is True
+        assert mgr.ensure_checkpoint(str(work_dir), "same iteration") is False  # deduped
+        mgr.new_turn()
+        assert mgr.ensure_checkpoint(str(work_dir), "no changes") is False  # attempted, nothing to commit
+        mgr.new_turn()  # the iteration remembers the attempt, so a fresh one is needed
+
+        (work_dir / "main.py").write_text("print('v2')\n")
+        calls = self._spy_run_git(monkeypatch)
+        assert mgr.ensure_checkpoint(str(work_dir), "after change") is True
+        assert not [c for c in calls if c and c[0] == "read-tree"], calls
+        assert mgr.list_checkpoints(str(work_dir))[0]["reason"] == "after change"

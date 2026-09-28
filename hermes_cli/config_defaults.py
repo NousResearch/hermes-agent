@@ -501,6 +501,12 @@ DEFAULT_CONFIG = {
         "auto_prune": True,
         "retention_days": 7,
         "min_interval_hours": 24,
+        # Directory prefixes that are NEVER snapshotted. List of paths, or one comma/newline
+        # separated string (so `hermes config set checkpoints.exclude_paths /tmp,/var/tmp`
+        # works). Use it for scratch trees: snapshotting /tmp makes every write inside it
+        # stage every session's temp files (measured: ~9s per snapshot on a 44k-file /tmp,
+        # vs ~0.1s when excluded). Empty by default.
+        "exclude_paths": [],
     },
     # Hard cap (chars) for one auto-loaded context file (SOUL.md, AGENTS.md, CLAUDE.md, .hermes.md,
     # .cursorrules) before head/tail truncation. null = scale with the model's context window (floor

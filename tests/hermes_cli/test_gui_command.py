@@ -1139,7 +1139,7 @@ def test_gui_launches_even_when_desktop_entry_install_fails(tmp_path, monkeypatc
 def test_desktop_launch_options_normalizes_password_store(raw, expected):
     cfg = {"desktop": {"password_store": raw}}
     with patch("hermes_cli.config.load_config", return_value=cfg):
-        _, _, store, _, _ = main_desktop._desktop_launch_options()
+        _, _, store, _ = main_desktop._desktop_launch_options()
     assert store == expected
 
 
@@ -1157,7 +1157,7 @@ def test_desktop_launch_options_normalizes_ozone_hint(raw, expected):
     """``desktop.ozone_platform_hint`` normalizes to x11/wayland/auto."""
     cfg = {"desktop": {"ozone_platform_hint": raw}}
     with patch("hermes_cli.config.load_config", return_value=cfg):
-        _, _, _, hint, _ = main_desktop._desktop_launch_options()
+        _, _, _, hint = main_desktop._desktop_launch_options()
     assert hint == expected
 
 
@@ -1198,7 +1198,7 @@ def test_desktop_launch_options_normalizes_renderer_accessibility(raw, expected)
     """``desktop.renderer_accessibility`` defaults to ON; only explicit false words opt out."""
     cfg = {"desktop": {} if raw is None else {"renderer_accessibility": raw}}
     with patch("hermes_cli.config.load_config", return_value=cfg):
-        _, _, _, _, renderer_a11y = main_desktop._desktop_launch_options()
+        _, _, _, _, renderer_a11y = main_desktop._read_desktop_launch_options()
     assert renderer_a11y is expected
 
 

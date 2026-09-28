@@ -723,7 +723,7 @@ class TestMatrixMediaLiveAdapterReuse:
             ("disconnect",),
         ]
 
-    def test_send_matrix_via_adapter_resolves_alias_before_adapter_send(self):
+    def test_send_matrix_via_adapter_forwards_alias_after_connect(self):
         calls = []
 
         class FakeAdapter:
@@ -741,12 +741,7 @@ class TestMatrixMediaLiveAdapterReuse:
             async def disconnect(self):
                 calls.append(("disconnect",))
 
-        async def fake_resolve(homeserver, token, alias):
-            calls.append(("resolve", homeserver, token, alias))
-            return "!resolved:example.com", None
-
-        fake_module = SimpleNamespace(
-            MatrixAdapter=FakeAdapter, _resolve_matrix_room_alias_target=fake_resolve)
+        fake_module = SimpleNamespace(MatrixAdapter=FakeAdapter)
 
         with patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": fake_module}), \
              patch("tools.send_message_senders._live_adapter", return_value=(None, None)):
@@ -765,13 +760,12 @@ class TestMatrixMediaLiveAdapterReuse:
         assert result == {
             "success": True,
             "platform": "matrix",
-            "chat_id": "!resolved:example.com",
+            "chat_id": "#general:example.com",
             "message_id": "$text",
         }
         assert calls == [
-            ("resolve", "https://matrix.example.com", "tok", "#general:example.com"),
             ("connect",),
-            ("send", "!resolved:example.com", "hello", None),
+            ("send", "#general:example.com", "hello", None),
             ("disconnect",),
         ]
 
@@ -815,7 +809,7 @@ class TestMatrixMediaLiveAdapterReuse:
 
     def test_send_matrix_threaded_reply_uses_m_thread_relates_to(self):
         """Standalone thread replies include m.thread and the fallback hint."""
-        from plugins.platforms.matrix.adapter import _standalone_send
+        from plugins.platforms.matrix.standalone import standalone_send
 
         captured = {}
 
@@ -833,9 +827,14 @@ class TestMatrixMediaLiveAdapterReuse:
         class _FakeSession:
             def __init__(self, *_a, **_k):
                 pass
-            def put(self, url, headers=None, json=None):
+            def request(self, method, url, **kwargs):
+                if method == "GET":
+                    response = _FakeResponse()
+                    response.status = 404
+                    response.json = AsyncMock(return_value={"errcode": "M_NOT_FOUND"})
+                    return response
                 captured["url"] = url
-                captured["payload"] = json
+                captured["payload"] = kwargs["json"]
                 return _FakeResponse()
             async def __aenter__(self):
                 return self
@@ -849,7 +848,7 @@ class TestMatrixMediaLiveAdapterReuse:
 
         with patch.dict(sys.modules, {"aiohttp": fake_aiohttp}):
             result = asyncio.run(
-                _standalone_send(
+                standalone_send(
                     SimpleNamespace(token="tok", extra={"homeserver": "https://matrix.example.com"}),
                     "!room:example.com",
                     "in the thread",
@@ -862,12 +861,13 @@ class TestMatrixMediaLiveAdapterReuse:
             "rel_type": "m.thread",
             "event_id": "$thread-root",
             "is_falling_back": True,
+            "m.in_reply_to": {"event_id": "$thread-root"},
         }
 
     def test_send_matrix_resolves_room_alias_before_send(self):
         """Aliases (#name:server) must be resolved to a room ID via
         /_matrix/client/v3/directory/room/{alias} before /rooms/{id}/send."""
-        from plugins.platforms.matrix.adapter import _standalone_send
+        from plugins.platforms.matrix.standalone import standalone_send
 
         get_calls = []
         put_calls = []
@@ -888,11 +888,15 @@ class TestMatrixMediaLiveAdapterReuse:
         class _Session:
             def __init__(self, *_a, **_k):
                 pass
-            def get(self, url, headers=None):
-                get_calls.append(url)
-                return _Resp(200, {"room_id": "!resolved:example.com"})
-            def put(self, url, headers=None, json=None):
-                put_calls.append((url, json))
+            def request(self, method, url, **kwargs):
+                if method == "GET":
+                    get_calls.append(url)
+                    if "/state/" in url:
+                        return _Resp(404, {"errcode": "M_NOT_FOUND"})
+                    return _Resp(200, {"room_id": "!resolved:example.com", "servers": []})
+                if method == "POST":
+                    return _Resp(200, {"room_id": "!resolved:example.com"})
+                put_calls.append((url, kwargs["json"]))
                 return _Resp(200, {"event_id": "$evt"})
             async def __aenter__(self):
                 return self
@@ -906,7 +910,7 @@ class TestMatrixMediaLiveAdapterReuse:
 
         with patch.dict(sys.modules, {"aiohttp": fake_aiohttp}):
             result = asyncio.run(
-                _standalone_send(
+                standalone_send(
                     SimpleNamespace(token="tok", extra={"homeserver": "https://matrix.example.com"}),
                     "#general:example.com",
                     "hi",

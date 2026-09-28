@@ -136,6 +136,32 @@ class SessionTurnLeaseRegistry:
         lease.acquired_at = lease.last_used = time.time()
         return token
 
+    async def try_acquire_many(
+        self, session_ids, *, owner_key: str, generation: int,
+    ) -> Optional[list[TurnLeaseToken]]:
+        """Acquire an idle set without waiting, including compression aliases only once.
+
+        An unlocked asyncio.Lock acquires without suspending; checking pending acquires
+        also respects the handoff window in acquire(). No other loop task can enter
+        between this check and publication of the complete set.
+        """
+        tokens, seen = [], set()
+        for session_id in sorted(set(session_ids)):
+            lease = self._get_or_create(session_id)
+            if id(lease) in seen:
+                continue
+            if not lease.idle:
+                for token in tokens:
+                    self.release(token)
+                return None
+            seen.add(id(lease))
+            await lease.lock.acquire()
+            token = TurnLeaseToken(session_id, owner_key, int(generation), lease=lease)
+            lease.holder = token
+            lease.acquired_at = lease.last_used = time.time()
+            tokens.append(token)
+        return tokens
+
     def rebind(self, token: Optional[TurnLeaseToken], new_session_id: str) -> bool:
         """Alias a HELD lease onto ``new_session_id`` after mid-turn rotation (compression) so the
         flush target stays serialized: the SAME ``_SessionLease`` is registered under the new id

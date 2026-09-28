@@ -129,6 +129,17 @@ VALID_HOOKS: Set[str] = {
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
+    # on_native_turn_settled: synchronous observer after the entered native loop and
+    # its durable-lease cleanup, including failed/interrupted and first persisted turns.
+    # Kwargs: session_id, task_id, turn_id, platform. No transcript/response; returns
+    # ignored. Detached forks/admission refusals do not fire. A gateway local lease
+    # may still be held; gateway reconciliation uses the later hook below.
+    "on_native_turn_settled",
+    # on_gateway_turn_settled: synchronous observer on the gateway loop after actual
+    # local lease release. Kwargs: session_id, session_key, run_generation, gateway.
+    # Schedule async reconciliation on that loop; never synchronously wait for it.
+    # Returns ignored; repeated/stale releases do not fire.
+    "on_gateway_turn_settled",
     "on_session_finalize", "on_session_reset",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",

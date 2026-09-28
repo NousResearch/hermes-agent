@@ -287,10 +287,15 @@ def admit_durable_turn_lease(
     agent._active_session_turn_lease_holder = holder
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:
-        if waited:
-            agent._emit_status("Session is free; loading the latest transcript...")
+        revision = db.get_transcript_redaction_revision(session_id)
+        previous_session, previous_revision = getattr(agent, '_transcript_redaction_revision', ('', 0))
+        redacted = revision != (previous_revision if previous_session == session_id else 0)
+        if waited or redacted:
+            agent._emit_status("Forgotten content was removed; reloading this session." if redacted else
+                               "Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
-            # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
+            # AFTER admission. Explicit erasure also invalidates an idle client's old history,
+            # even when its next acquisition was immediate. Unchanged sessions keep their cache.
             latest_session_id = db.resolve_resume_session_id(session_id)
             if latest_session_id:
                 agent.session_id = latest_session_id
@@ -307,6 +312,11 @@ def admit_durable_turn_lease(
                 and "_row_id" not in m
             )
             admission.conversation_history = reloaded
+            if redacted:
+                agent._session_messages = admission.conversation_history
+                agent._db_flush_scan_prefix = None
+            revision = db.get_transcript_redaction_revision(agent.session_id)
+        agent._transcript_redaction_revision = (agent.session_id, revision)
         lease.build_threads()
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.

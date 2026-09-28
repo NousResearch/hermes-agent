@@ -107,6 +107,36 @@ class SessionTranscriptMixin:
         """Return the lock that serializes pending-queue drain boundaries."""
         return self._lazy("_transcript_drain_lock", threading.RLock)
 
+    def _redact_message_payloads_serialized(self, db, session_id, expected_rows, *,
+                                          session_ids, turn_lease_holder, expected_message_watermark=None):
+        """An exact DB rewrite cannot pass outstanding recovery copies of its lineage.
+
+        Leave queues and files untouched: their normal recovery must settle before the
+        caller takes a fresh snapshot. The caller owns the native turn leases.
+        """
+        import json
+        from pathlib import Path
+
+        with self._get_transcript_drain_lock():
+            if any(self._dirty_transcripts.get(sid) for sid in session_ids):
+                return {"status": "pending", "reason": "transcript_queue", "session_id": session_id}
+            if set(getattr(self, "_spooled_drop_sessions", ())) & set(session_ids):
+                return {"status": "pending", "reason": "transcript_spool", "session_id": session_id}
+            # Use the owning DB's home, including when this is an unscoped background call.
+            for path in (Path(db.db_path).parent / "pending_messages").glob("*.json"):
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    data = payload.get("data") or {}
+                    owners = {payload.get("session_id"), payload.get("session_key"), data.get("session_id")}
+                except (OSError, ValueError, AttributeError, TypeError):
+                    return {"status": "pending", "reason": "unreadable_transcript_spool", "session_id": session_id}
+                if owners & set(session_ids):
+                    return {"status": "pending", "reason": "transcript_spool", "session_id": session_id}
+            return db.redact_message_payloads(
+                session_id, expected_rows, turn_lease_holder=turn_lease_holder,
+                expected_message_watermark=expected_message_watermark,
+            )
+
     def append_to_transcript(self, session_id: str, message: Dict[str, Any], skip_db: bool = False) -> None:
         """Serialize transcript draining across queue migration boundaries. A session with no usable
         store is NOT skipped: the write is queued and counted like any other failed append, so a

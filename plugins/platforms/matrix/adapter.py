@@ -103,6 +103,7 @@ from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
 from plugins.platforms.matrix.read_context import read_matrix_context
 from plugins.platforms.matrix.room_admin import administer_matrix_pin, administer_matrix_room
 from plugins.platforms.matrix.room_inspection import inspect_matrix_room
+from plugins.platforms.matrix.image_packs import matrix_image_packs
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -3263,6 +3264,13 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
             self, kind, room_id, event_id, limit,
             requester=requester,
         )
+
+    async def matrix_image_packs(
+        self, action: str, room_id: str, *, requester: str, selection_id: str | None = None,
+        reply_to: str | None = None, thread_id: str | None = None,
+    ) -> dict:
+        return await matrix_image_packs(self, action, room_id, requester=requester,
+            selection_id=selection_id, reply_to=reply_to, thread_id=thread_id)
 
     async def inspect_matrix_room(
         self, kind: str, room_id: str, limit: int, *, requester: str,

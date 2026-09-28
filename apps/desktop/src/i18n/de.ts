@@ -685,6 +685,8 @@ export const deOverrides = {
       'composer.focus': 'Composer fokussieren',
       'composer.modelPicker': 'Modellauswahl öffnen',
       'composer.voice': 'Sprachkonversation starten / stoppen',
+      'composer.reasoningUp': 'Reasoning-Stufe erhöhen',
+      'composer.reasoningDown': 'Reasoning-Stufe senken',
       'view.toggleSidebar': 'Session-Sidebar umschalten',
       'view.cycleSidebarGrouping': 'Session-Gruppierung wechseln',
       'view.toggleRightSidebar': 'Dateibrowser umschalten',

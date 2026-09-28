@@ -296,6 +296,19 @@ def test_serve_reconciles_against_its_own_unit_vocabulary():
     assert outcomes[0]["outcome"] == "unaccounted"
 
 
+def test_failed_respawn_outranks_incarnation_probe():
+    """A dashboard the cleanup stopped and could not bring back is ``failed``: the probe sees its
+    pre-update pid gone, which is exactly what a failed respawn looks like. See #109290."""
+    plan = _plan(_serve("default", 900), _serve("default", 901, kind="dashboard"))
+    outcomes = match_runtime_outcomes(
+        plan, restarted_services=[], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+        stale_serve_pids=set(), failed_respawn_pids={901},
+    )
+    by_pid = {o["pid"]: o["outcome"] for o in outcomes}
+    assert by_pid == {900: "restarted", 901: "failed"}
+
+
 def test_serve_outcome_follows_incarnation_probe_when_provided():
     """With the (pid, create_time) survivor probe result, liveness decides:
     a pre-update serve that is gone was replaced (restarted); one still

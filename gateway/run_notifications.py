@@ -22,7 +22,7 @@ from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource
-from gateway.run_shutdown import _log_suppressed, _notice_target_key, _send_error, _send_failed
+from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
@@ -49,15 +49,6 @@ def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_
     """
     return _notice_target_key(
         platform_value if profile is None else f"{profile}:{platform_value}", chat_id, thread_id)
-
-
-def _delivery_target_key(platform_value: str, chat_id, thread_id) -> tuple:
-    """Dedupe key for one DELIVERED chat, profile-independent.
-
-    Two served profiles can share a single home chat (one Telegram group for the whole host);
-    keyed per profile they would each post their own "Gateway online" notice into it.
-    """
-    return _notice_target_key(platform_value, chat_id, thread_id)
 
 
 def _safe_delivery_transport(platform, config, adapters, *, profile: Optional[str] = None):
@@ -1014,7 +1005,7 @@ class GatewayNotificationsMixin:
         targets = list(self._served_home_channel_transports())
         # A chat already notified for ANOTHER profile is not notified again.
         notified_chats = {
-            _delivery_target_key(platform.value, home.chat_id, home.thread_id)
+            _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
             for profile, platform, _cfg, home, _transport in targets
             if _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id) in skipped
         }
@@ -1028,7 +1019,7 @@ class GatewayNotificationsMixin:
             target = _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id)
             if target in skipped or target in delivered:
                 continue
-            chat = _delivery_target_key(platform.value, home.chat_id, home.thread_id)
+            chat = _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
             if chat in notified_chats:
                 delivered.add(target)
                 continue

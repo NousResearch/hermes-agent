@@ -2614,3 +2614,57 @@ class TestFailureStreakNudge:
         job = {"id": "old", "schedule": {"kind": "interval"}}  # pre-field job
         with patch("cron.scheduler.load_config", return_value={}):
             assert _failure_streak_nudge(job) == ""
+
+
+class TestCronHandoffThreadTitleCarriesRunDate:
+    """A recurring continuable job seeds one handoff thread per run. Without a run-date stamp
+    every thread of a given job carries the same title, so a channel reader cannot tell today's
+    brief from last week's. The title must contain the job name AND the local-timezone run date."""
+
+    def _open(self, job, *, created):
+        from concurrent.futures import Future
+        from cron import scheduler_delivery
+
+        adapter = MagicMock()
+        adapter.name = "slack"
+
+        async def _create(chat_id, name):
+            created.append((chat_id, name))
+            return "9001"
+
+        adapter.create_handoff_thread = _create
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_schedule(coro, _loop):
+            import asyncio as _asyncio
+            fut = Future()
+            fut.set_result(_asyncio.run(coro))
+            return fut
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", fake_schedule):
+            return scheduler_delivery._open_continuable_cron_thread(job, adapter, "C123", loop)
+
+    def test_title_has_job_name_and_local_date(self):
+        from cron import scheduler_delivery
+
+        created = []
+        thread_id = self._open({"id": "j1", "name": "Teams morning digest"}, created=created)
+        assert thread_id == "9001"
+        assert len(created) == 1
+        _chat_id, title = created[0]
+        assert "Teams morning digest" in title
+        # Relationship, not a frozen literal: the date in the title is the date the local-time
+        # helper reports for this run.
+        assert scheduler_delivery._cron_thread_date() in title
+
+    def test_two_runs_on_different_days_get_different_titles(self):
+        from cron import scheduler_delivery
+
+        created = []
+        job = {"id": "j1", "name": "Teams morning digest"}
+        with patch.object(scheduler_delivery, "_cron_thread_date", return_value="2026-09-28"):
+            self._open(job, created=created)
+        with patch.object(scheduler_delivery, "_cron_thread_date", return_value="2026-09-29"):
+            self._open(job, created=created)
+        assert created[0][1] != created[1][1]

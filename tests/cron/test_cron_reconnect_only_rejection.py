@@ -75,3 +75,36 @@ def test_dropped_attachments_are_reported(monkeypatch):
 def test_failure_reports_name_the_thread():
     assert _target(thread_id="42").where == "telegram:-100:42"
     assert _target(thread_id=None).where == "telegram:-100"
+
+
+def test_live_rejection_raised_by_the_router_is_queued(monkeypatch):
+    import asyncio
+    import threading
+
+    from gateway.config import GatewayConfig, Platform
+    from gateway.platforms.base import SendResult
+
+    class Transport:
+        adapter = type("Adapter", (), {"_owner_profile": "satellite"})()
+        is_relay = False
+
+        async def send(self, platform, chat_id, content, metadata=None):
+            return SendResult(success=False, error="send_path_degraded", retryable=True)
+
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+    try:
+        t = _target()
+        t.live_error = None
+        t.platform, t.transport, t.config, t.loop, t.target_adapters = (
+            Platform.TELEGRAM, Transport(), GatewayConfig(), loop, {})
+        _standalone(monkeypatch, None, "You must pass the token from BotFather")
+        target_errors, delivery_errors = [], []
+        assert not sd._deliver_via_live_adapter(
+            t, "the report", [], target_errors=target_errors, delivery_errors=delivery_errors,
+            unverified_targets=[])
+        sd._deliver_standalone(t, "the report", [], target_errors, delivery_errors)
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+    claimed = dl.sweep_failed_for_runtime("telegram", profile="satellite")
+    assert [(row["chat_id"], row["thread_id"], row["content"]) for row in claimed] == [("-100", "42", "the report")]

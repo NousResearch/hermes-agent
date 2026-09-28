@@ -453,6 +453,53 @@ def _fmt_timed_out(ev, n) -> tuple:
     return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
 
 
+def _fmt_stale_waiting_manager_escalated(ev, n) -> tuple:
+    """Bounded retry/backoff exhausted with no resolution: named a manager
+    (config-resolved, never hardcoded) and left a durable board comment.
+    This ping is the best-effort extra layer on top of that comment for
+    whoever already holds a notify subscription on the card."""
+    manager = _payload(ev, "manager") or "?"
+    status = _payload(ev, "status") or "?"
+    ping_count = int(_payload(ev, "ping_count") or 0)
+    assignee = _payload(ev, "assignee") or "its assignee"
+    return (
+        f"🚨 {n.head} escalated to @{manager}: {status} with {ping_count} unresolved "
+        f"reminder(s) to {assignee}. `hermes kanban show {n.task_id}` for detail.",
+        None, None,
+    )
+
+
+def _fmt_pr_review_ready_escalated(ev, n) -> tuple:
+    """The fm #37 gap directly: the task's declared GitHub PR was found
+    APPROVED while the kanban card itself is still ``running`` -- distinct
+    from ``review_requested``/``stale_waiting_escalated``, which only watch
+    kanban's own review/blocked status, not a linked PR's real state."""
+    pr_url = _payload(ev, "pr_url") or "?"
+    return (
+        f"✅ {n.head} -- its PR {pr_url} was approved but the card is still "
+        f"running. Merge it or complete the card once the merge lands.",
+        None, None,
+    )
+
+
+def _fmt_stale_waiting_escalated(ev, n) -> tuple:
+    """PR #37 class of incident: reviewed/blocked and sitting untouched past
+    the configured threshold (``kanban.stale_review_timeout_seconds``).
+    Re-uses the existing notify-sub delivery path — no new wake channel — so
+    the human/reviewer/manager subscribed to this card gets a second, louder
+    nudge instead of the card silently aging past the first one."""
+    status = _payload(ev, "status") or "?"
+    elapsed = int(_payload(ev, "elapsed_seconds") or 0)
+    hours = elapsed / 3600
+    verb = "in review" if status == "review" else "blocked"
+    return (
+        f"⏰ {n.head} has been {verb} for {hours:.1f}h with no action. "
+        f"`hermes kanban show {n.task_id}` to check it, or reassign/unblock it — "
+        f"it will keep aging silently otherwise.",
+        None, None,
+    )
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
@@ -468,6 +515,9 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
     "block_loop_detected": _fmt_block_loop_detected,
+    "stale_waiting_escalated": _fmt_stale_waiting_escalated,
+    "stale_waiting_manager_escalated": _fmt_stale_waiting_manager_escalated,
+    "pr_review_ready_escalated": _fmt_pr_review_ready_escalated,
 }
 
 

@@ -494,12 +494,16 @@ def _cmd_show(args: argparse.Namespace) -> int:
         runs = kb.list_runs(conn, args.task_id, **rsk)
         # Workers hand off via task_runs.summary; tasks.result stays NULL unless set.
         latest_summary = kb.latest_summary(conn, args.task_id)
+        request_view = kb.compute_request_view(conn, task)
         if not want_json:
             graph = kb.task_graph_context(conn, task.id)
 
     if want_json:
         _print_json({
             "task": _task_to_dict(task), "latest_summary": latest_summary, "parents": parents, "children": children,
+            # owner, verified_outcome, open_spawned_children, blocker_age_seconds,
+            # next_action — request-level status distinct from raw task.status.
+            "request_view": request_view,
             "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
             "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
@@ -512,6 +516,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
     print(f"Task {task.id}: {task.title}")
     field("status", task.status)
     field("assignee", task.assignee or "-")
+    field("outcome", request_view["verified_outcome"])
+    if request_view["next_action"]:
+        field("next", request_view["next_action"])
+    if request_view["blocker_age_seconds"] is not None:
+        field("waiting", f"{request_view['blocker_age_seconds'] // 3600}h "
+                          f"{(request_view['blocker_age_seconds'] % 3600) // 60}m")
     if task.tenant:
         field("tenant", task.tenant)
     field("workspace", f"{task.workspace_kind}" + (f" @ {task.workspace_path}" if task.workspace_path else ""))
@@ -932,6 +942,13 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
                                  f"--force to close its run and complete anyway.")
+                return False
+            except kb.OpenChildrenError as open_err:
+                detail = ", ".join(f"{cid} ({status})" for cid, status in open_err.open_children)
+                fail_msg[tid] = (f"cannot complete {tid}: it spawned children still open: {detail}. "
+                                 f"Wait for them (done/archived), or re-run with --force to complete "
+                                 f"anyway (explicit operator override — the request will report "
+                                 f"delivered while that work is still in flight).")
                 return False
             except kb.EmptyCompletionError as empty_err:
                 fail_msg[tid] = (f"cannot complete {tid}: {empty_err}. Pass --result/--summary "

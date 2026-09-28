@@ -109,6 +109,37 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
         return receipt
 
 
+def fetch_pr_review_state(pr_url: str) -> dict:
+    """``{"review_decision", "state", "merged"}`` for the PR named by
+    ``pr_url`` (``https://github.com/OWNER/REPO/pull/N``), or
+    ``{"error": ...}`` on any failure (auth, network, malformed url) --
+    never raises, so a dispatcher tick calling this in a loop can't be
+    taken down by one bad/unreachable PR.
+
+    ``review_decision`` is GitHub's own rollup: ``APPROVED``,
+    ``CHANGES_REQUESTED``, ``REVIEW_REQUIRED``, or ``None`` (no reviews
+    requested/submitted yet). This is the fm #37 gap :func:`collect_acceptance`
+    does not cover -- that function checks CI status checks, not human
+    review approval.
+    """
+    match = _PR.fullmatch(pr_url or "")
+    if not match:
+        return {"error": "not a recognized GitHub PR URL"}
+    repo, number = match[1], int(match[2])
+    owner, name = repo.split("/")
+    query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){
+        state reviewDecision merged}}}''' % (json.dumps(owner), json.dumps(name), number)
+    try:
+        data = _api("graphql", query=query)["data"]["repository"]["pullRequest"]
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
+        return {"error": "GitHub review-state evidence unavailable; check gh authentication/API access"}
+    return {
+        "review_decision": data.get("reviewDecision"),
+        "state": data.get("state"),
+        "merged": bool(data.get("merged")),
+    }
+
+
 def _classify(check: dict, sha: str, outcome: str | None, is_run: bool) -> str:
     if check.get("head_sha", check.get("sha")) != sha:
         return "stale"

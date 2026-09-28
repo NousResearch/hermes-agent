@@ -837,6 +837,11 @@ _LATER_TASK_COLUMNS = (
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
+    # Task id of the worker that spawned this task via kanban_create; NULL on
+    # legacy rows and tasks created outside a dispatcher-owned worker turn.
+    # Drives the open-decomposed-children completion gate (kanban_db.py::
+    # unsatisfied_decomposed_children / complete_task).
+    ("creator_task_id", "creator_task_id TEXT"),
 )
 
 _NOTIFY_SUB_COLUMNS = (
@@ -902,6 +907,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_creator_task_id ON tasks(creator_task_id)")
 
     # task_events.run_id back-fills as NULL for historical events (they predate
     # runs and can't be attributed).

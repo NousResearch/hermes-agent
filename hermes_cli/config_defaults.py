@@ -1897,6 +1897,25 @@ DEFAULT_CONFIG = {
         # Running tasks with no heartbeat (last_heartbeat_at) for this many seconds are reclaimed to
         # ready on the next tick; a still-running local worker is terminated first. 0 = off.
         "dispatch_stale_timeout_seconds": 14400,
+        # Tasks sitting in review or blocked (no worker running, waiting on a human/reviewer) for
+        # this many seconds get ONE escalation ping through their existing notify subscriptions
+        # (fm #37 class of incident: LGTM'd, then a 3h38m post-review stall nobody was told about).
+        # Never mutates status -- only a human resolves review/blocked. 0 = off.
+        "stale_review_timeout_seconds": 0,
+        # After this many unresolved stale_review_timeout_seconds pings (each backed off
+        # exponentially), escalate once to the resolved manager (escalation_manager_map
+        # per-assignee, else escalation_manager) via a board comment + event. 0 = off --
+        # this is config, never a hardcoded org chart in the kernel.
+        "stale_review_escalation_limit": 0,
+        # {"assignee_profile": "manager_profile"} -- per-assignee escalation routing.
+        "escalation_manager_map": {},
+        # Board-wide fallback escalation target when an assignee has no entry above.
+        "escalation_manager": "",
+        # Off by default: the only dispatcher detector that makes a network call. When true,
+        # a task still `running` whose declared GitHub PR (completion_contract, an exact PR
+        # URL) reaches reviewDecision=APPROVED gets one durable ping -- the fm #37 gap
+        # (collect_acceptance checks CI status, never human review approval).
+        "pr_review_wakeup_enabled": False,
         # Each tick, requeue 'running' cards with broken claim bookkeeping (claim_lock or
         # claim_expires NULL with a dead worker) that TTL/crash/stale recovery can't see. False
         # keeps orphans frozen for manual forensics.

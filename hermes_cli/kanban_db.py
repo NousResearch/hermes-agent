@@ -732,6 +732,7 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    creator_task_id: Optional[str] = None    # task id that spawned this via kanban_create; NULL if not
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -761,7 +762,7 @@ _TASK_REQUIRED_COLUMNS = (
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "session_id", "completion_contract", "creator_task_id",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -954,6 +955,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- profile's state.db (kanban_create verifies before stamping). Indexed
     -- so per-session list queries stay cheap on larger boards.
     session_id           TEXT,
+    -- Task id of the worker that spawned this task via kanban_create,
+    -- independent of ``task_links`` dependency edges (a worker's fan-out
+    -- children usually carry NO ``parents=[self]`` edge, since gating a
+    -- child on the very task that spawned it would deadlock the graph).
+    -- NULL for tasks created outside a dispatcher-owned worker turn (CLI,
+    -- dashboard, cron, human). Drives the open-decomposed-children
+    -- completion gate (``unsatisfied_decomposed_children``) — see there
+    -- for why a dependency edge back to the creator is excluded.
+    creator_task_id       TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -1359,8 +1369,9 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract,
+                        creator_task_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1370,6 +1381,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        creator_task_id,
                     ),
                 )
                 for pid in parents:
@@ -2213,6 +2225,104 @@ def unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[st
     return [(row["id"], row["status"]) for row in rows]
 
 
+# Status -> the task_events "kind" that marks entry into it, for a
+# human-facing wait status (no worker running; only a reviewer/operator
+# resolves it). Shared by detect_stale_waiting (kanban_db_dispatch.py) and
+# compute_request_view's blocker-age field, so there is one source of truth
+# for "when did this task start waiting".
+WAIT_STATUS_ENTRY_EVENT_KINDS = {"review": "review_requested", "blocked": "blocked"}
+
+
+def status_entry_age_seconds(conn: sqlite3.Connection, task_id: str, status: str) -> Optional[int]:
+    """Seconds since ``task_id`` last entered ``status`` (per
+    :data:`WAIT_STATUS_ENTRY_EVENT_KINDS`), or ``None`` when the status has
+    no tracked entry kind or no such event exists. Read-only."""
+    entry_kind = WAIT_STATUS_ENTRY_EVENT_KINDS.get(status)
+    if not entry_kind:
+        return None
+    row = conn.execute(
+        "SELECT created_at FROM task_events WHERE task_id = ? AND kind = ? "
+        "ORDER BY id DESC LIMIT 1", (task_id, entry_kind),
+    ).fetchone()
+    if row is None:
+        return None
+    return int(time.time()) - int(row["created_at"])
+
+
+def compute_request_view(conn: sqlite3.Connection, task: "Task") -> dict:
+    """Request-level view distinct from the raw orchestration ``status``:
+    owner, a verified outcome that does not just mirror ``status`` for a
+    decomposed-but-undelivered task, blocker age, and next action. Every
+    field is derived from durable DB state -- no invented ETAs. See
+    ``unsatisfied_decomposed_children`` for why ``open_spawned_children``
+    excludes a dependency-linked release child.
+    """
+    open_children = unsatisfied_decomposed_children(conn, task.id)
+    if task.status == "done" and open_children:
+        # The orchestration step (this task) finished, but the delivery
+        # work it fanned out has not -- the exact falsely-completed-parent
+        # shape this whole feature exists to surface, not hide.
+        verified_outcome = "orchestration_done_delivery_pending"
+    elif task.status == "done":
+        verified_outcome = "delivered"
+    elif task.status == "archived":
+        verified_outcome = "archived"
+    elif task.status in ("review", "blocked", "triage", "todo"):
+        verified_outcome = "waiting"
+    elif task.status in ("running", "ready"):
+        verified_outcome = "in_progress"
+    else:
+        verified_outcome = task.status
+
+    if open_children:
+        detail = ", ".join(f"{cid} ({status})" for cid, status in open_children)
+        next_action = f"waiting on spawned children: {detail}"
+    elif task.status == "blocked":
+        next_action = "needs a human to unblock (see the last `blocked` event's reason)"
+    elif task.status == "review":
+        next_action = f"waiting on reviewer{f' ({task.assignee})' if task.assignee else ''}"
+    elif task.status in ("ready", "todo", "triage"):
+        next_action = "queued; will run once a worker/dispatcher picks it up"
+    elif task.status == "running":
+        next_action = "worker in progress"
+    else:
+        next_action = None
+
+    return {
+        "owner": task.assignee,
+        "verified_outcome": verified_outcome,
+        "open_spawned_children": [{"id": cid, "status": status} for cid, status in open_children],
+        "blocker_age_seconds": status_entry_age_seconds(conn, task.id, task.status),
+        "next_action": next_action,
+    }
+
+
+def unsatisfied_decomposed_children(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
+    """``(child_id, status)`` for every task this task spawned
+    (``creator_task_id = task_id``) that is not yet terminal (``done`` /
+    ``archived``), in id order.
+
+    Excludes a child linked as DEPENDING on ``task_id`` via ``task_links``
+    (``parent_id = task_id``) — that is the release-on-completion pattern
+    (a review/QA/follow-up child parked in ``todo`` until this task
+    finishes; see the kanban-orchestrator skill). Completing ``task_id`` is
+    what promotes those, so counting them here would deadlock the graph.
+    What remains is exactly the "fanned out but nothing tracks whether it
+    ever finished" case (a worker's parallel decomposition children with no
+    dependency edge back) — the falsely-completed-parent failure mode this
+    gate exists to catch. Read-only.
+    """
+    rows = conn.execute(
+        "SELECT c.id, c.status FROM tasks c "
+        "WHERE c.creator_task_id = ? AND c.id != ? "
+        "AND c.status NOT IN ('done', 'archived') "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM task_links l WHERE l.parent_id = ? AND l.child_id = c.id"
+        ") ORDER BY c.id", (task_id, task_id, task_id),
+    ).fetchall()
+    return [(row["id"], row["status"]) for row in rows]
+
+
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
     *, event_extra: Optional[dict] = None,
@@ -2706,6 +2816,27 @@ class LiveClaimError(ValueError):
         )
 
 
+class OpenChildrenError(ValueError):
+    """``complete_task`` refused: the task spawned children
+    (``creator_task_id``) that have no dependency edge back to it and are
+    still open. Completing anyway would report the request delivered while
+    the actual work it fanned out is still in flight — the
+    falsely-completed-decomposed-parent failure mode. A ``ValueError`` so
+    tool error handlers treat it as recoverable; ``force=True`` (explicit
+    operator override, same fence as :class:`LiveClaimError`) bypasses it
+    for a genuinely fire-and-forget fan-out."""
+
+    def __init__(self, task_id: str, open_children: list[tuple[str, str]]):
+        self.task_id = task_id
+        self.open_children = list(open_children)
+        detail = ", ".join(f"{cid} ({status})" for cid, status in open_children)
+        super().__init__(
+            f"{task_id} spawned children still open: {detail}. Wait for them to "
+            "reach done/archived, or force=True (explicit operator override) to "
+            "complete anyway."
+        )
+
+
 def _claim_is_live(trow) -> bool:
     """True when a ``running`` task's claim still protects a run: the worker process
     it spawned exists (PID + start-time fingerprint). A claim whose worker is gone,
@@ -2747,6 +2878,10 @@ def complete_task(
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
+    if not force:
+        open_children = unsatisfied_decomposed_children(conn, task_id)
+        if open_children:
+            raise OpenChildrenError(task_id, open_children)
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
@@ -2762,6 +2897,10 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
+        if not force:
+            open_children = unsatisfied_decomposed_children(conn, task_id)
+            if open_children:
+                raise OpenChildrenError(task_id, open_children)
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         trow = conn.execute(

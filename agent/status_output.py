@@ -7,6 +7,7 @@ Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO
 import logging
 import sys
 
+from agent.i18n import t
 from agent.session_activity import ActivityProvenance
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -131,12 +132,8 @@ class StatusOutputMixin:
         _warn_key = ("uncompressed_ctx_overflow", context_length)
         if getattr(self, "_last_ctx_overflow_warn", None) != _warn_key:
             self._last_ctx_overflow_warn = _warn_key
-            self._emit_warning(
-                f"⚠️ Session context (~{preflight_tokens:,} tokens) exceeds the model "
-                f"context window (~{context_length:,} tokens) with compression disabled "
-                f"(compression.enabled: false). Use /compact to compress history or "
-                f"enable compression in config.yaml."
-            )
+            self._emit_warning(t("display.notice.uncompressed_context_overflow",
+                                 tokens=f"{preflight_tokens:,}", context_length=f"{context_length:,}"))
 
     def _clear_context_overflow_warn(self) -> None:
         """Reset the blocked-overflow warning dedup so it can re-fire on the next blocked turn."""

@@ -941,6 +941,7 @@ def _print_post_update_notices_and_self_heals() -> None:
         from hermes_cli._install_repair import migrate_windows_bin_path
         migrate_windows_bin_path(_m().PROJECT_ROOT)
 
+    print("\n→ Finishing post-update maintenance (notices, self-heals; this can take a while)...")
     for message, step in (
         # v23 FTS layout is opt-in (existing indexes untouched); surface the command here.
         ('FTS optimize notice failed: %s', _print_fts_optimize_available_notice),
@@ -958,6 +959,7 @@ def _print_post_update_notices_and_self_heals() -> None:
     ):
         with _best_effort(message):
             step()
+    print("✓ Post-update maintenance finished.")
 
 
 def _migrate_relay_exporter_env() -> None:

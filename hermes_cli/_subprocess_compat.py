@@ -31,6 +31,7 @@ __all__ = [
     "selected_git_env",
     "expose_pm_git",
     "noninteractive_git_env",
+    "noninteractive_repo_git_env",
     "NO_DRIVER_DIFF_FLAGS",
     "NO_LAZY_FETCH_ENV",
     "pid_is_hermes",
@@ -42,8 +43,8 @@ __all__ = [
 # arbitrary program via ``[diff "evil"] command=/textconv=`` in ``.git/config``; because the
 # attacker chooses the name, ``GIT_CONFIG_KEY`` overrides in ``noninteractive_git_env`` cannot
 # enumerate it — only these flags do. ``--no-ext-diff`` kills ``command=``; ``--no-textconv`` kills
-# ``textconv=``; each alone leaves the other live. Smudge/clean filters are neutralized by the env
-# layer's ``core.hooksPath`` + running against the index without checkout.
+# ``textconv=``; each alone leaves the other live. Repository-named clean/smudge/process filters
+# are handled separately by ``noninteractive_repo_git_env`` at repo-scoped automatic call sites.
 NO_DRIVER_DIFF_FLAGS = ("--no-ext-diff", "--no-textconv")
 
 # Only these subcommands accept ``NO_DRIVER_DIFF_FLAGS`` — ``status`` and friends reject them
@@ -464,6 +465,61 @@ def noninteractive_git_env(base: "Mapping[str, str] | None" = None) -> dict[str,
     for idx, (key, value) in enumerate(overrides):
         env[f"GIT_CONFIG_KEY_{idx}"] = key
         env[f"GIT_CONFIG_VALUE_{idx}"] = value
+    return env
+
+
+_FILTER_COMMAND_KEY = re.compile(r"^filter\..+\.(?:clean|smudge|process)$", re.IGNORECASE)
+
+
+def noninteractive_repo_git_env(
+    cwd: "str | os.PathLike[str]",
+    base: "Mapping[str, str] | None" = None,
+) -> "dict[str, str] | None":
+    """Harden internal git for one repository, including named clean/smudge/process filters.
+
+    The static environment can pin fixed config keys such as core.fsmonitor and
+    core.hooksPath, but a repository chooses filter driver names through .gitattributes.
+    Discover the effective filter command keys for this checkout and append empty command
+    overrides plus required=false to the already-isolated config block. Discovery is
+    bounded and fail-closed: if filter discovery cannot be trusted, callers skip the
+    automatic git operation instead of running with only partial hardening.
+    """
+    env = noninteractive_git_env(base)
+    try:
+        proc = subprocess.run(
+            [
+                "git", "-C", str(cwd), "config", "--includes", "--name-only", "-z",
+                "--get-regexp", r"^filter\..*\.(clean|smudge|process)$",
+            ],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=2, stdin=subprocess.DEVNULL, env=env, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+
+    keys: list[str] = []
+    required: list[str] = []
+    seen: set[str] = set()
+    for raw in proc.stdout.split("\0"):
+        key = raw.strip()
+        lowered = key.lower()
+        if not key or lowered in seen or not _FILTER_COMMAND_KEY.fullmatch(key):
+            continue
+        seen.add(lowered)
+        keys.append(key)
+        required_key = key.rsplit(".", 1)[0] + ".required"
+        if required_key.lower() not in seen:
+            seen.add(required_key.lower())
+            required.append(required_key)
+
+    start = int(env.get("GIT_CONFIG_COUNT", "0") or 0)
+    overrides = [(key, "") for key in keys] + [(key, "false") for key in required]
+    for offset, (key, value) in enumerate(overrides):
+        env[f"GIT_CONFIG_KEY_{start + offset}"] = key
+        env[f"GIT_CONFIG_VALUE_{start + offset}"] = value
+    env["GIT_CONFIG_COUNT"] = str(start + len(overrides))
     return env
 
 

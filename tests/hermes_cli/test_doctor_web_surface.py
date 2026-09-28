@@ -51,6 +51,22 @@ class TestWebSurfaceImportFailure:
         assert f.issues, "import failure must produce an issue"
         assert any("web" in i.lower() or "dashboard" in i.lower() for i in f.issues)
 
+    def test_systemexit_from_absent_web_extra_reports_not_crash(self, monkeypatch):
+        """#124235 review finding: an absent web extra raises SystemExit (BaseException,
+        which except Exception misses), killing the doctor run instead of reporting."""
+
+        def boom(name):
+            if name == "hermes_cli.web_server":
+                raise SystemExit(
+                    "Web UI requires fastapi and uvicorn.\nRun hermes pm repair, then restart Hermes."
+                )
+            return _REAL_IMPORT(name)
+
+        monkeypatch.setattr(importlib, "import_module", boom)
+        f = doctor_platform._check_web_surface(False)  # must NOT raise SystemExit
+        assert f.issues, "SystemExit from an absent web extra must produce an issue"
+        assert any("repair" in i.lower() for i in f.issues)
+
 
 class TestWebPinDrift:
     def test_pin_drift_is_reported(self, monkeypatch):

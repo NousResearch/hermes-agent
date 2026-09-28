@@ -603,11 +603,13 @@ def _check_web_surface(should_fix: bool, f: Finding) -> None:
 
     try:
         importlib.import_module("hermes_cli.web_server")
-    except Exception as exc:  # noqa: BLE001 - surface any import-time failure
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - surface any import-time failure; SystemExit (BaseException) is how an absent web extra aborts
+        from pm.extras import install_hint
+
         _fail_and_issue(
             "Web surface (dashboard)",
             f"import hermes_cli.web_server failed: {exc}",
-            f"Repair: run `hermes pm install --extra web` (or `uv pip install "
+            f"Repair: run `{install_hint('web')}` (or `uv pip install "
             f"--python <venv> fastapi=={_WEB_EXTRA_PINS['fastapi']} "
             f"\"uvicorn[standard]=={_WEB_EXTRA_PINS['uvicorn']}\"`)",
             f.issues,

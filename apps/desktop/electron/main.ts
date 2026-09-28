@@ -524,6 +524,7 @@ import {
   windowOpacityOptions
 } from './translucency'
 import { waitForUpdateClearance } from './update-gate'
+import { canHandOffLockedUpdateToInstaller, listWindowsInstallVenvHolders } from './update-lock-handoff'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import {
   resolveUpdaterMechanism,
@@ -4417,6 +4418,16 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
   rememberLog(
     `[${tag}] venv shim still locked after 15s; aborting hand-off (something outside this app holds the venv)`
   )
+
+  const remainingHolders = listWindowsInstallVenvHolders(updateRoot)
+
+  if (canHandOffLockedUpdateToInstaller(updateRoot, remainingHolders)) {
+    rememberLog(
+      `[${tag}] venv shim still locked, but only same-install gateway process(es) remain; handing off so \`hermes update\` can pause/resume them safely`
+    )
+
+    return { unlocked: true }
+  }
 
   return { unlocked: false }
 }

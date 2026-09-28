@@ -518,43 +518,64 @@ if _legacy_post_swap is not None:
     raise SystemExit(_continue_legacy_post_swap(_handoff_path, argv_tail=_argv_tail))
 
 
-from pm.environments import activate_dependencies
-from hermes_cli._early_recovery import recover_if_needed
+from pm.environments import activate_dependencies, activate_health_dependencies
+from hermes_cli._early_recovery import (
+    recover_if_needed, _emit_health_dependency_failure,
+    _probe_broken_packages, _probe_selected_health_packages, _forget_launcher_health_imports,
+)
 
 from hermes_cli._parser import command_argv
 
 # Repair needs only stdlib. Do not activate the damaged tree to reach it.
 _pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
+_health_command = command_argv(sys.argv[1:])[:1] == ["health"]
 if not _pm_repair:
-    from hermes_cli.venv_sync import prepare_launch, relaunch_command
+    if not _health_command:
+        from hermes_cli.venv_sync import prepare_launch, relaunch_command
 
-    try:
-        _launch_python = prepare_launch(_root, sys.argv[1:])
-        if _launch_python is not None:
-            _main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
-            _command = relaunch_command(
-                _launch_python, _root, sys.argv, sys.orig_argv,
-                getattr(_main_spec, "name", None),
-            )
-            if os.name == "nt":
-                import subprocess
+        try:
+            _launch_python = prepare_launch(_root, sys.argv[1:])
+            if _launch_python is not None:
+                _main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+                _command = relaunch_command(
+                    _launch_python, _root, sys.argv, sys.orig_argv,
+                    getattr(_main_spec, "name", None),
+                )
+                if os.name == "nt":
+                    import subprocess
 
-                raise SystemExit(subprocess.call(_command))
-            os.execv(str(_launch_python), _command)
-    except Exception as exc:
-        # Degrade, never brick the CLI: the previous dependency generation is still selected
-        # (a failed sync commits nothing), so an offline or half-finished update leaves a
-        # usable Hermes plus a warning. Activation below is the real gate — a tree whose
-        # dependencies cannot load still exits with the repair remedy.
-        print(f"hermes: source-update completion failed: {exc}; "
-              "running with the previous dependencies — run `hermes update` to finish it",
-              file=sys.stderr)
-    recover_if_needed(_root)
-    try:
-        activate_dependencies(_root)
-    except (RuntimeError, OSError) as exc:
-        if command_argv(sys.argv[1:])[:1] != ["pm"]:
-            print(f"hermes: {exc}; run `hermes pm repair`", file=sys.stderr)
-            raise SystemExit(1) from None
+                    raise SystemExit(subprocess.call(_command))
+                os.execv(str(_launch_python), _command)
+        except Exception as exc:
+            # Degrade, never brick the CLI: the previous dependency generation is still selected
+            # (a failed sync commits nothing), so an offline or half-finished update leaves a
+            # usable Hermes plus a warning. Activation below is the real gate — a tree whose
+            # dependencies cannot load still exits with the repair remedy.
+            print(f"hermes: source-update completion failed: {exc}; "
+                  "running with the previous dependencies — run `hermes update` to finish it",
+                  file=sys.stderr)
+    if _health_command:
+        _selected_health = None
+        try:
+            _selected_health = activate_health_dependencies(_root)
+        except (RuntimeError, OSError, ValueError):
+            _emit_health_dependency_failure(sys.argv[1:], ["selected dependency environment"])
+        _broken_health = (
+            _probe_selected_health_packages(_root, _selected_health)
+            if _selected_health is not None else _probe_broken_packages()
+        )
+        if _broken_health:
+            _emit_health_dependency_failure(sys.argv[1:], _broken_health)
+        if _selected_health is not None:
+            _forget_launcher_health_imports()
+    else:
+        recover_if_needed(_root)
+        try:
+            activate_dependencies(_root)
+        except (RuntimeError, OSError) as exc:
+            if command_argv(sys.argv[1:])[:1] != ["pm"]:
+                print(f"hermes: {exc}; run `hermes pm repair`", file=sys.stderr)
+                raise SystemExit(1) from None
 install_happy_eyeballs_socket_connect()
-export_scratch_tmp_env()
+if not _health_command:
+    export_scratch_tmp_env()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import importlib
 import os
 import subprocess
 import sys
@@ -78,6 +79,190 @@ def _should_skip_external_secret_sources() -> bool:
     the authoritative subcommand.
     """
     return _UPDATE_RETRY_RECOVERED or sys.argv[1:2] == ["update"]
+
+
+def early_cli_subcommand(argv: list[str]) -> str:
+    """Find the command using the canonical parser's value-option grammar."""
+    from hermes_cli._parser import PRE_ARGPARSE_INHERITED_FLAGS, top_level_value_flag_sets
+
+    required, optional = top_level_value_flag_sets()
+    value_flags = required | optional | {flag for flag, takes_value in PRE_ARGPARSE_INHERITED_FLAGS if takes_value}
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument in value_flags:
+            index += 2
+            continue
+        if argument.startswith("-"):
+            index += 1
+            continue
+        return argument
+    return ""
+
+
+_HEALTH_IMPORT_PROBES: tuple[tuple[str, str], ...] = (
+    ("ruamel.yaml", "YAML"), ("dotenv", "load_dotenv"), ("click", "Command"),
+    ("certifi", "contents"), ("rich", "print"), ("cryptography", "__version__"),
+    ("jwt", "encode"),
+)
+_HEALTH_PACKAGE_NAMES = {
+    "ruamel.yaml": "ruamel.yaml", "dotenv": "python-dotenv", "click": "click", "certifi": "certifi",
+    "rich": "rich", "cryptography": "cryptography", "jwt": "PyJWT",
+}
+
+
+def _certifi_bundle_broken() -> bool:
+    try:
+        import certifi
+
+        bundle = Path(certifi.where())
+        return not bundle.is_file() or bundle.stat().st_size < 1024
+    except Exception:
+        return True
+
+
+def _probe_broken_packages() -> list[str]:
+    """Find required imports that would prevent the pre-dispatch health report."""
+    broken: list[str] = []
+    for module_name, attribute in _HEALTH_IMPORT_PROBES:
+        try:
+            module = importlib.import_module(module_name)
+            if not hasattr(module, attribute):
+                raise ImportError(f"{module_name} missing {attribute}")
+            if module_name == "certifi" and _certifi_bundle_broken():
+                raise ImportError("certifi bundle missing or corrupt")
+        except Exception:
+            package = _HEALTH_PACKAGE_NAMES.get(module_name)
+            if package and package not in broken:
+                broken.append(package)
+    return broken
+
+
+def _probe_selected_health_packages(project_root: Path, environment: Path) -> list[str]:
+    """Check imports in a fresh selected interpreter, not this launcher's module cache.
+
+    -I -S excludes inherited PYTHONPATH and the interpreter's ambient site;
+    only the committed generation's site is added. -B prevents bytecode writes.
+    """
+    import json
+    from pm.environments import site_packages, venv_python
+
+    script = (
+        "import json, sys; from pathlib import Path; "
+        "sys.path.insert(0, sys.argv[1]); "
+        "from pm.environments import _health_site_paths; "
+        "sys.path.extend(_health_site_paths(Path(sys.argv[2]))); "
+        "from hermes_cli._early_recovery import _probe_broken_packages; "
+        "print(json.dumps(_probe_broken_packages()))"
+    )
+    try:
+        proc = subprocess.run(
+            [str(venv_python(environment)), "-I", "-S", "-B", "-c", script,
+             str(project_root.resolve()), str(site_packages(environment))],
+            capture_output=True, text=True, timeout=20, cwd=project_root,
+        )
+        if proc.returncode == 0:
+            broken = json.loads(proc.stdout)
+            if isinstance(broken, list) and all(isinstance(name, str) for name in broken):
+                return broken
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return ["selected dependency environment"]
+
+
+def _forget_launcher_health_imports() -> None:
+    """Health starts before dispatch; cached launcher modules must not beat the selection."""
+    roots = {name.split(".", 1)[0] for name, _ in _HEALTH_IMPORT_PROBES}
+    roots.update(("hermes_yaml", "hermes_cli.health"))
+    for name in tuple(sys.modules):
+        if any(name == root or name.startswith(root + ".") for root in roots):
+            sys.modules.pop(name, None)
+
+
+def _emit_health_dependency_failure(args: list[str], broken: list[str]) -> None:
+    """Exit through the health contract before importing broken dependencies."""
+    explicit_profile = None
+    for index, argument in enumerate(args):
+        if argument in {"-p", "--profile"} and index + 1 < len(args):
+            explicit_profile = args[index + 1]
+        elif argument.startswith("--profile="):
+            explicit_profile = argument.split("=", 1)[1]
+    if explicit_profile is not None:
+        # Match normal CLI profile normalization before constructing a path;
+        # this fallback must remain usable with broken runtime dependencies.
+        explicit_profile = explicit_profile.strip().lower()
+
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        root = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        root /= "hermes"
+    else:
+        root = Path.home() / ".hermes"
+
+    default_root = root
+    inherited_home = os.environ.get("HERMES_HOME", "").strip()
+    if inherited_home:
+        inherited_path = Path(inherited_home)
+        root = (
+            inherited_path.parent.parent
+            if inherited_path.parent.name == "profiles"
+            else inherited_path
+        )
+
+    profile = explicit_profile or os.environ.get("HERMES_PROFILE", "").strip()
+    if not profile and inherited_home and Path(inherited_home).parent.name == "profiles":
+        profile = Path(inherited_home).name
+    if not profile and not os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+        try:
+            sticky = (root / "active_profile").read_text(encoding="utf-8").strip()
+            if sticky and sticky != "default":
+                profile = sticky
+        except (OSError, UnicodeError):
+            pass
+    if not profile and inherited_home and root.resolve() != default_root.resolve():
+        profile = "custom"
+    profile = profile or "default"
+
+    if profile == "custom" and not explicit_profile:
+        home_path = root
+    elif explicit_profile or not inherited_home or Path(inherited_home).parent.name != "profiles":
+        home_path = root if profile == "default" else root / "profiles" / profile
+    else:
+        home_path = Path(inherited_home)
+
+    package = sys.modules.get("hermes_cli")
+    version = str(getattr(package, "__version__", "unknown"))
+    home = str(home_path)
+    detail = f"core runtime dependencies unavailable: {', '.join(broken)}"
+    result = {
+        "schema_version": 1,
+        "status": "critical",
+        "exit_code": 2,
+        "profile": profile,
+        "hermes_home": home,
+        "hermes_version": version,
+        "checks": [
+            {
+                "id": "runtime_dependencies",
+                "subsystem": "runtime dependencies",
+                "status": "critical",
+                "detail": detail,
+                "action": "run: hermes update",
+            }
+        ],
+    }
+    if "--json" in args:
+        import json
+
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print()
+        print("Hermes Health")
+        print("Status: critical (exit 2)")
+        print(f"Profile: {profile}")
+        print(f"CRITICAL runtime dependencies: {detail}")
+        print("Action: run: hermes update")
+    raise SystemExit(2)
 
 
 def _project_root() -> Path:
@@ -555,11 +740,14 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
     global _UPDATE_RETRY_RECOVERED
 
     root = _project_root() if project_root is None else Path(project_root).resolve()
-    if not explicit and _pytest_owns_live_checkout(root):
-        return False
     from hermes_cli._parser import command_argv
 
-    args = command_argv(sys.argv[1:] if argv is None else argv)
+    raw_args = sys.argv[1:] if argv is None else argv
+    args = command_argv(raw_args)
+    if args[:1] == ["health"]:
+        return False  # health binds and probes the selected generation in bootstrap
+    if not explicit and _pytest_owns_live_checkout(root):
+        return False
     if not explicit and args[:1] == ["pm"]:
         return False  # PM's command boundary owns the explicit repair.
     from pm.environments import install_state_dir

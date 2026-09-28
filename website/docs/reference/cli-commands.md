@@ -74,6 +74,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |
 | `hermes doctor` | Diagnose config and dependency issues. |
+| `hermes health` | Run offline, automation-friendly health checks with stable exit codes. |
 | `hermes security audit` | On-demand supply-chain audit (OSV.dev) for the venv, plugin requirements, and pinned MCP servers. |
 | `hermes approvals` | Approval-prompt tools — mine approval history into allowlist proposals. |
 | `hermes dump` | Copy-pasteable setup summary for support/debugging. |
@@ -988,6 +989,26 @@ Custom-endpoint config checks (both warn-only; `--fix` does not rewrite them):
 - A legacy `custom_providers` list entry with no matching `providers:` entry (same endpoint URL) is reported with the move to make: such an entry is still served from the retired list store (the model picker and the Custom Endpoints page dual-read it) rather than the `providers:` map every other surface edits, and the one-shot v12 migration that moved the list into `providers:` does not run again.
 
 **Config Structure** also flags any list/mapping setting stored as one quoted string (`plugins.enabled: '["a","b"]'`, `model_catalog.excluded_providers: '["openai-api"]'` — the shape older `config set` versions wrote): every reader ignores such a string, so the plugins silently stay unmounted and the exclusion never applies. The finding names the key and the `hermes config set <key> '<literal>'` command that stores a real list; the same warning appears in the startup banner. `--fix` does not rewrite the file.
+
+## `hermes health`
+
+```bash
+hermes health [--json] [--quiet]
+```
+
+Runs offline, read-only checks for profile/config readability, the state database,
+cron storage and latest persisted run, disk space, provider-route configuration,
+and core runtime modules. It does not call model providers or probe the network.
+
+Exit codes are stable for automation: `0` healthy, `1` warning/degraded, and `2`
+critical. `--json` emits the versioned machine-readable payload. `--quiet` emits
+nothing when healthy while retaining diagnostics for warning and critical states.
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Emit a machine-readable payload (`schema_version: 1`) with stable check IDs. |
+| `--quiet` | Suppress healthy output; warning and critical diagnostics are still printed. |
+
 
 ## `hermes dump`
 

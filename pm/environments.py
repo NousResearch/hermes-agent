@@ -291,14 +291,75 @@ def _require_own_dependencies(project_root: Path) -> None:
         raise RuntimeError("no dependency environment is committed for this install")
 
 
+def activate_health_dependencies(project_root: Path) -> Path | None:
+    """Select only PM's committed generation for read-only health diagnostics.
+
+    Never take the install lock, recover publication, or create a lease. A
+    missing/broken selected tree is an error, not permission to use the launcher's
+    dependencies. Without a selection a non-store interpreter retains its own.
+    """
+    environment = committed_venv(project_root)
+    if environment is None:
+        _require_own_dependencies(project_root)
+        return None
+    # Unlike normal startup, health never repairs or relaunches an install.
+    # Refuse a different/unknown ABI before loading its .pth files or packages;
+    # probing them successfully in their own interpreter would not make them
+    # importable in this process.
+    import sys
+    if venv_python_version(environment) != sys.version_info[:2]:
+        raise RuntimeError("selected dependency environment requires a different Python interpreter")
+    selected = site_packages(environment)
+    if not selected.is_dir() or not venv_python(environment).is_file():
+        raise RuntimeError(f"dependency environment incomplete: {environment}")
+    _bind_selected_site(project_root, environment, selected, execute_pth=False)
+    return environment
+
+
+def _health_site_paths(selected: Path) -> list[str]:
+    """Read declarative .pth paths without running their executable import hooks."""
+    paths = [str(selected)]
+    for declaration in sorted(selected.glob("*.pth")):
+        for raw in declaration.read_text(encoding="utf-8").splitlines():
+            line = raw.rstrip()
+            if not line or line.startswith(("#", "import ", "import\t")):
+                continue
+            path = str((selected / line).resolve())
+            if Path(path).exists() and path not in paths:
+                paths.append(path)
+    return paths
+
+
+def _bind_selected_site(
+    project_root: Path, environment: Path, selected: Path, *, execute_pth: bool = True,
+) -> None:
+    import site
+    import sys
+
+    sys.path[:] = [entry for entry in sys.path
+                   if Path(entry).name not in ("site-packages", "dist-packages")
+                   and Path(entry).resolve() != project_root.resolve()]
+    # Normal startup activates editable hooks. Read-only health uses only the
+    # declarative path entries and never executes .pth import statements.
+    if execute_pth:
+        site.addsitedir(str(selected))
+    else:
+        sys.path.extend(_health_site_paths(selected))
+    sys.path[:] = [str(project_root.resolve()), str(selected),
+                   *[entry for entry in sys.path if Path(entry).resolve() != selected.resolve()]]
+    os.environ["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
+    os.environ.pop("VIRTUAL_ENV", None)
+    executable_dir = venv_bin_dir(environment)
+    if executable_dir.is_dir():
+        os.environ["PATH"] = os.pathsep.join([str(executable_dir), os.environ.get("PATH", "")])
+
+
 def activate_dependencies(project_root: Path) -> None:
     """Select the committed tree at process boot, before third-party imports.
 
     A process with no extension selection keeps its original launch contract.
     Already-running processes are never switched after a dependency install.
     """
-    import sys
-
     state = install_state_dir(project_root)
     if state.is_dir():
         from hermes_cli.runtime_state import runtime_lock, recover_publication, lease_generation
@@ -331,20 +392,7 @@ def activate_dependencies(project_root: Path) -> None:
             return  # External/Nix interpreter owns its original sys.path.
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
-    import site
-
-    sys.path[:] = [entry for entry in sys.path
-                   if Path(entry).name not in ("site-packages", "dist-packages")
-                   and Path(entry).resolve() != project_root.resolve()]
-    # uv editable members are activated by .pth files, not by sys.path alone.
-    site.addsitedir(str(selected))
-    sys.path[:] = [str(project_root.resolve()), str(selected),
-                   *[entry for entry in sys.path if Path(entry).resolve() != selected.resolve()]]
-    os.environ["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
-    os.environ.pop("VIRTUAL_ENV", None)
-    executable_dir = venv_bin_dir(environment)
-    if executable_dir.is_dir():
-        os.environ["PATH"] = os.pathsep.join([str(executable_dir), os.environ.get("PATH", "")])
+    _bind_selected_site(project_root, environment, selected)
 
 
 def activation_environment(project_root: Path) -> dict[str, str]:

@@ -278,7 +278,8 @@ telemetry:
 
 
 # One interactive turn (2 model calls, 1 read_file) on the canary custom model: the v5 per-turn,
-# per-conversation and adoption rows it must produce, identical in SQLite and in the export.
+# per-conversation rows it must produce, identical in SQLite and in the export. The agent-created
+# skill is Hermes' own work, so it records no feature_adoption row (the exact name sets assert that).
 V5_EXPECTED_DIMENSIONS = {
     "hermes.task_cost.count": {
         "api_calls_bucket": "2", "model": "custom", "outcome": "completed", "provider": "custom",
@@ -286,7 +287,6 @@ V5_EXPECTED_DIMENSIONS = {
     },
     "hermes.tool_output_truncation.count": {"original_size_bucket": "lt_1k", "tool": "read_file", "truncated": "no"},
     "hermes.tool_enabled_unused.count": {"toolset": "file", "used": "yes"},
-    "hermes.feature_adoption.count": {"days_since_install_bucket": "same_day", "feature": "skills_created"},
 }
 
 
@@ -330,7 +330,6 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     if set(by_name) != {
         "hermes.client.active",
         "hermes.context_peak.count",
-        "hermes.feature_adoption.count",
         "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.model_reply_issue.count",
@@ -554,7 +553,6 @@ def _validate_packages(
     if set(metrics) != {
         "hermes.client.active",
         "hermes.context_peak.count",
-        "hermes.feature_adoption.count",
         "hermes.install.milestone",
         "hermes.install.snapshot",
         "hermes.model_reply_issue.count",

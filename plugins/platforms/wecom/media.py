@@ -14,7 +14,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
-from gateway.platforms.base import SendResult, cache_document_from_bytes_async, cache_image_from_bytes_async
+from gateway.platforms.base import (
+    SendResult,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
+    get_inbound_media_max_bytes,
+)
 
 logger = logging.getLogger("plugins.platforms.wecom.adapter")
 
@@ -98,7 +103,11 @@ class WeComMediaMixin:
         aes_key = unquote(str(media.get("aeskey") or "").strip())
         try:
             step = "download"
-            raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
+            # The 20 MiB WeCom ceiling governs outbound uploads. Inbound files use the
+            # gateway-wide download budget so a larger document is not silently lost.
+            raw, headers = await self._download_remote_bytes(
+                url, max_bytes=get_inbound_media_max_bytes()
+            )
             step = "decrypt"
             raw = self._decrypt_file_bytes(raw, aes_key) if aes_key else raw
         except Exception as exc:

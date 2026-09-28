@@ -193,6 +193,7 @@ def todo_tool(todos: Optional[List[Dict[str, Any]]] = None, merge: bool = False,
     """Write ``todos`` (replace, or ``merge`` by id) or read when None -> list + summary JSON."""
     if store is None:
         return tool_error("TodoStore not initialized")
+    mode = "read"
     if todos is None:
         items = store.read()
     else:
@@ -204,11 +205,13 @@ def todo_tool(todos: Optional[List[Dict[str, Any]]] = None, merge: bool = False,
         if not isinstance(todos, list):
             return tool_error(f"todos must be a list, got {type(todos).__name__}")
         items = store.write(todos, merge)
+        mode = "write"
     summary = {"total": len(items)}
     for status in ("pending", "in_progress", "completed", "cancelled"):
         summary[status] = sum(1 for i in items if i["status"] == status)
+    # ``mode`` keeps an empty write ("plan cleared") distinguishable from an empty read.
     return json.dumps({"todos": items, "revision": store.snapshot()["revision"],
-                       "summary": summary}, ensure_ascii=False)
+                       "mode": mode, "summary": summary}, ensure_ascii=False)
 
 
 def check_todo_requirements() -> bool:
@@ -321,8 +324,23 @@ def is_todo_tool_call(tool_call: Any) -> bool:
 
 from tools.registry import registry, tool_error
 
+# Schema-declared parameters only. A plausible-but-wrong call shape ({action, list}) used to
+# have its keys dropped here, fall through to a read, and return an empty success-shaped
+# payload — the caller believed its plan had saved (#126656).
+_TODO_ALLOWED_ARGS = frozenset(("todos", "merge"))
+
+
+def _todo_dispatch(args: Any, **kw: Any) -> str:
+    if isinstance(args, dict):
+        unexpected = sorted(k for k in args if k not in _TODO_ALLOWED_ARGS)
+        if unexpected:
+            return tool_error(
+                "todo_list: unexpected parameter(s): " + ", ".join(unexpected)
+                + ". Expected 'todos' (list of items) and optional 'merge' (bool); "
+                "call with no parameters to read the current list.")
+    return todo_tool(todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store"))
+
+
 registry.register(
     name="todo_list", toolset="todo", schema=TODO_SCHEMA, check_fn=check_todo_requirements,
-    handler=lambda args, **kw: todo_tool(
-        todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")),
-    emoji="📋")
+    handler=_todo_dispatch, emoji="📋")

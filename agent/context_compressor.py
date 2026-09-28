@@ -3250,8 +3250,13 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         return min(boundary, len(result) - min_protect)
 
     @staticmethod
-    def _dedupe_tool_results(result: list[dict[str, Any]]) -> int:
-        """Pass 1: keep the newest copy of identical tool results, back-reference older ones."""
+    def _dedupe_tool_results(result: list[dict[str, Any]], head_bound: int = 0) -> int:
+        """Pass 1: keep the newest copy of identical tool results, back-reference older ones.
+
+        ``head_bound`` shields the first N messages: a protected-head tool result is never
+        replaced by the duplicate stub, even when a later result is byte-identical to it (the
+        walk is newest-first, so the head is the *older* copy that would otherwise be stubbed).
+        The head then keeps its full body while the ``protect_first_n`` head still applies (#123935)."""
         pruned = 0
         content_hashes: set = set()
         for i in range(len(result) - 1, -1, -1):
@@ -3261,7 +3266,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
             if msg.get("role") != "tool" or not isinstance(content, str) or len(content) < _PRUNE_MIN_CHARS:
                 continue
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
-            if h in content_hashes:
+            if h in content_hashes and i >= head_bound:
                 result[i] = {**msg, "content": "[Duplicate tool output — same content as a more recent call]"}
                 pruned += 1
             content_hashes.add(h)
@@ -3378,10 +3383,12 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         Returns ``(messages, count)``; token budget (when given) takes priority over the
         message-count floor.
 
-        ``protect_head_count`` shields the first N messages from the demote pass, matching the
-        ``protect_first_n`` head that the later summarization phase already honours (#123935). Dedup
-        (Pass 1) stays head-agnostic — it is lossless (older exact copies back-reference the newest full
-        one), so it never stubs the head. The head bound decays to 0 after the first compression via
+        ``protect_head_count`` shields the first N messages from both the dedup pass (Pass 1) and the
+        demote pass (Pass 2), matching the ``protect_first_n`` head that the later summarization phase
+        already honours (#123935). Dedup keeps the newest copy and back-references older ones, but the
+        walk is newest-first, so a protected-head result byte-identical to a *later* one is the older
+        copy — without the head bound it would be replaced by the duplicate stub, losing the head card
+        this shield exists to keep. The head bound decays to 0 after the first compression via
         ``_effective_protect_first_n``."""
         if not messages:
             return messages, 0
@@ -3395,7 +3402,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
         # is not room the round can keep) — the #61932 single-200KB-read case, which must still give way.
         spared = self._spared_pending_tool_round(result)
         prune_boundary = min(prune_boundary, spared.start) if spared else prune_boundary
-        pruned = self._dedupe_tool_results(result)
+        pruned = self._dedupe_tool_results(result, head_bound=head_bound)
         # Just-loaded / tail-referenced skills keep full skill_view bodies through the ordinary passes.
         # Without this, a skill loaded moments before a compaction can be demoted to metadata while the
         # model still believes its instructions are in context. See #32106.

@@ -560,6 +560,34 @@ class TestPruneProtectsHead:
         assert self.MID_MARKER not in pruned[5]["content"]
         assert count >= 1
 
+    def test_head_bound_spares_head_dupe_of_a_later_result(self):
+        """#123935 follow-up: dedup (Pass 1) walks newest-first, so a protected-head tool result
+        byte-identical to a *later* one is the older copy it would otherwise stub. The head bound
+        must spare it, or the head card this shield exists to keep is replaced by the duplicate stub."""
+        dup = json.dumps({"card": self.HEAD_MARKER, "detail": "y" * 400})
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "start task"},
+            {"role": "assistant", "tool_calls": [{"id": "k1", "type": "function",
+                                                  "function": {"name": "kanban_show", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "k1", "content": dup},          # protected head
+            {"role": "assistant", "tool_calls": [{"id": "k2", "type": "function",
+                                                  "function": {"name": "kanban_show", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "k2", "content": dup},          # later, byte-identical
+            {"role": "user", "content": "recent request"},
+            {"role": "assistant", "content": "recent response"},
+        ]
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2)
+            _ = c.context_length
+        head_size = c._protect_head_size(messages)
+        pruned, _ = c._prune_old_tool_results(
+            messages, protect_tail_count=2, protect_head_count=head_size,
+        )
+        # The head keeps its full card even though a later result is identical to it.
+        assert self.HEAD_MARKER in pruned[3]["content"]
+        assert "[Duplicate tool output" not in pruned[3]["content"]
+
     def test_default_head_bound_zero_preserves_prior_behaviour(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2)

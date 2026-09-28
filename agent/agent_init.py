@@ -52,6 +52,27 @@ logger = logging.getLogger("run_agent")
 _warned_unavailable_providers: set[str] = set()
 
 
+def _link_kanban_run_session(session_id: str) -> None:
+    """Stamp a dispatcher-spawned worker's session onto its kanban run.
+
+    Lets the kanban REST API serve the run's transcript while it is still
+    running (``worker_session_id`` in metadata only lands at completion).
+    No-op outside a kanban worker; never breaks agent startup.
+    """
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    run_id = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
+    if not (task_id and run_id.isdigit() and session_id):
+        return
+    try:
+        from hermes_cli import kanban_db
+        from hermes_cli.kanban_db_connect import connect_closing
+
+        with connect_closing() as conn:
+            kanban_db.set_run_worker_session(conn, int(run_id), task_id, session_id)
+    except Exception:
+        logger.debug("kanban run session link failed", exc_info=True)
+
+
 def _warn_memory_provider_unavailable(name: str, reason: str = "") -> None:
     """Warn once per provider that a configured memory provider is unavailable.
 
@@ -1194,6 +1215,7 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     agent.session_start = datetime.now()
     agent.session_id = session_id or new_session_id(agent.session_start)
     _publish_session_id(agent.session_id)
+    _link_kanban_run_session(agent.session_id)
 
     # ~/.hermes/sessions/ — kept unconditionally for request_dump_*.json debug breadcrumbs.
     agent.logs_dir = get_hermes_home() / "sessions"

@@ -802,6 +802,8 @@ class Run:
     summary: Optional[str]
     metadata: Optional[dict]
     error: Optional[str]
+    # NULL on legacy/pre-start runs; see set_run_worker_session.
+    worker_session_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Run":
@@ -816,6 +818,7 @@ class Run:
             started_at=int(row["started_at"]),
             ended_at=_opt_int(row["ended_at"]),
             metadata=_json_or(_lossy_text(row["metadata"])),
+            worker_session_id=row["worker_session_id"] if "worker_session_id" in row.keys() else None,
         )
 
 
@@ -1034,7 +1037,9 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
-    error               TEXT
+    error               TEXT,
+    -- hermes_state session the worker opened (set_run_worker_session); NULL until agent start.
+    worker_session_id   TEXT
 );
 
 -- Files attached to a task (PDFs, images, source documents). The blob
@@ -4545,6 +4550,22 @@ def list_runs(
         params.append(int(limit))
     rows = conn.execute(q, params).fetchall()
     return [Run.from_row(r) for r in rows]
+
+
+def set_run_worker_session(conn: sqlite3.Connection, run_id: int, task_id: str, session_id: str) -> bool:
+    """Link a running attempt to the hermes_state session its worker opened; True on update.
+
+    Scoped to ``task_id`` + ``status='running'`` so a stale env var can't relabel another
+    task's run or a closed attempt. First writer wins: the worker's main agent initializes
+    first, and later agents in the same process (background review, delegated children)
+    must not relabel it."""
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE task_runs SET worker_session_id = ? "
+            "WHERE id = ? AND task_id = ? AND status = 'running' AND worker_session_id IS NULL",
+            (session_id, int(run_id), task_id),
+        )
+    return cur.rowcount == 1
 
 
 def get_run(conn: sqlite3.Connection, run_id: int) -> Optional[Run]:

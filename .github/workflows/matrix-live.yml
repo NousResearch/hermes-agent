@@ -36,5 +36,5 @@ jobs:
         run: scripts/run_tests.sh --include-integration tests/integration/matrix_live/
         env:
           HERMES_TEST_WORKERS: '1'
-          HERMES_TEST_FILE_TIMEOUT: '1800'
+          HERMES_TEST_FILE_TIMEOUT: '300'
           HERMES_TEST_FILE_RETRIES: '0'

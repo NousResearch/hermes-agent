@@ -1,10 +1,3 @@
-"""The setup profile: where guided onboarding runs and the guide keeps checking in afterwards.
-
-The backend owns it. One per home, found by ``role: setup`` in ``profile.yaml`` (the name is an
-implementation detail). ``ensure_setup_profile`` creates it once and afterwards returns it as-is;
-``reset_setup_profile`` restores the created state in place, keeping the directory, name and role.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -50,7 +43,6 @@ class SetupProfile(NamedTuple):
 
 
 def find_setup_profile() -> Optional[tuple[str, Path]]:
-    """``(name, path)`` of the profile carrying ``role: setup``, first by name; None when absent."""
     found = [(p.name, Path(p.path)) for p in profiles_mod.list_profiles(lazy_skill_count=True)
              if p.role == profiles_mod.SETUP_ROLE]
     if len(found) > 1:
@@ -60,10 +52,6 @@ def find_setup_profile() -> Optional[tuple[str, Path]]:
 
 
 def ensure_setup_profile() -> SetupProfile:
-    """Create-or-read. A found profile is returned untouched (soul, memories, skills, config).
-
-    A ``hermes-setup`` profile from before the role existed is adopted: it gets the role and
-    nothing else, so existing installs keep their guide chat."""
     found = find_setup_profile()
     if found is not None:
         return SetupProfile(found[0], found[1], created=False)
@@ -79,9 +67,6 @@ def ensure_setup_profile() -> SetupProfile:
 
 
 def reset_setup_profile() -> SetupProfile:
-    """Restore the created state in place: soul from the template, memories and skills re-copied
-    from ``default`` as create copies them. Session history is cleared by the caller, which owns
-    the live sessions and the session store. Raises LookupError when no setup profile exists."""
     found = find_setup_profile()
     if found is None:
         raise LookupError("no setup profile to reset")
@@ -99,14 +84,11 @@ def reset_setup_profile() -> SetupProfile:
 
 
 def _write_soul(path: Path) -> None:
-    # Bytes, so Windows text mode cannot turn the template's \n into \r\n.
     from utils import atomic_write_bytes
     atomic_write_bytes(path / "SOUL.md", SETUP_SOUL.encode("utf-8"))
 
 
 def _replace_dir(directory: Path) -> None:
-    """Empty *directory*. A link (symlink or NTFS junction) is removed, never followed: its
-    target belongs to another profile or an external skills root."""
     if directory.is_symlink() or profiles_mod._junction_target(str(directory)) is not None:
         directory.unlink() if directory.is_symlink() else directory.rmdir()
     elif directory.exists():

@@ -1558,6 +1558,111 @@ class TestGatewayRoutingTable:
         assert rehydrated.model_override == {"model": "test-model"}
         restarted._db.close()
 
+    def test_malformed_prompt_pin_is_omitted_from_serialized_entry(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+
+        # Defence-in-depth: direct in-memory corruption must not serialize as
+        # "prompt_pin": null into state.db or the sessions.json mirror.
+        entry.prompt_pin = {"version": 1}
+        serialized = entry.to_dict()
+
+        assert "prompt_pin" not in serialized
+        store._db.close()
+
+    def test_prompt_pin_survives_restart_and_stale_writer_cannot_cross_reset(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        pin = {
+            "version": 1,
+            "context_key": "ctx-key",
+            "context_prompt": "exact session context",
+            "redact_pii": False,
+            "channel_prompt": "Channel hint.",
+            "parent_chat_id": "parent-1",
+        }
+        assert store.set_prompt_pin(
+            entry.session_key, pin, expected_session_id=entry.session_id,
+        )
+        assert store.get_prompt_pin(entry.session_key) == pin
+        assert not store.set_prompt_pin(
+            entry.session_key, {"version": 1}, expected_session_id=entry.session_id,
+        )
+        assert store.get_prompt_pin(entry.session_key) == pin
+
+        # Prove the primary state.db routing index carries the pin by removing the JSON mirror.
+        (tmp_path / "sessions.json").unlink()
+        old_session_id = entry.session_id
+        store._db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        assert restarted.get_prompt_pin(entry.session_key) == pin
+
+        fresh = restarted.reset_session(entry.session_key)
+        assert fresh is not None and fresh.session_id != old_session_id
+        assert restarted.get_prompt_pin(entry.session_key) is None
+
+        stale = dict(pin, context_prompt="stale old-conversation bytes")
+        assert not restarted.set_prompt_pin(
+            entry.session_key, stale, expected_session_id=old_session_id,
+        )
+        assert restarted.get_prompt_pin(entry.session_key) is None
+
+        # A turn that resolved before the boundary must not consume the new conversation's pin.
+        new_pin = dict(pin, context_key="new-key", context_prompt="new context")
+        assert restarted.set_prompt_pin(entry.session_key, new_pin, expected_session_id=fresh.session_id)
+        assert restarted.get_prompt_pin(entry.session_key, expected_session_id=old_session_id) is None
+        assert restarted.get_prompt_pin(entry.session_key, expected_session_id=fresh.session_id) == new_pin
+        restarted._db.close()
+
+    def test_prompt_pin_follows_compression_child_recovered_after_crash(self, tmp_path):
+        """A crash between publishing the compression child and advancing the route leaves the
+        entry on the ended parent; restart recovery repoints it and must keep the pin."""
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        pin = {
+            "version": 1, "context_key": "ctx-key", "context_prompt": "exact session context",
+            "redact_pii": False, "channel_prompt": "Channel hint.", "parent_chat_id": None,
+        }
+        assert store.set_prompt_pin(entry.session_key, pin, expected_session_id=entry.session_id)
+        assert store._db.try_acquire_compression_lock(entry.session_id, "compressor")
+        store._db.publish_compression_child(
+            parent_session_id=entry.session_id, child_session_id="compressed-child", source="telegram",
+            messages=[{"role": "user", "content": "summary"}], compression_lock_holder="compressor",
+        )
+        store._db.close()
+
+        restarted = SessionStore(sessions_dir=tmp_path, config=config)
+        assert restarted.get_prompt_pin(entry.session_key, expected_session_id="compressed-child") == pin
+        restarted._db.close()
+
+    def test_switch_session_preserves_prompt_pin_unless_boundary_requests_clear(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        entry = store.get_or_create_session(self._source())
+        pin = {
+            "version": 1,
+            "context_key": "ctx-key",
+            "context_prompt": "exact session context",
+            "redact_pii": False,
+            "channel_prompt": None,
+            "parent_chat_id": None,
+        }
+        assert store.set_prompt_pin(entry.session_key, pin, expected_session_id=entry.session_id)
+
+        moved = store.switch_session(entry.session_key, "internal-repoint")
+        assert moved is not None and moved.prompt_pin == pin
+
+        boundary = store.switch_session(
+            entry.session_key, "resume-target", preserve_prompt_pin=False,
+        )
+        assert boundary is not None and boundary.prompt_pin is None
+        assert store.get_prompt_pin(entry.session_key) is None
+        store._db.close()
+
     def test_write_sessions_json_false_stops_producing_file(self, tmp_path):
         config = GatewayConfig(write_sessions_json=False)
         store = SessionStore(sessions_dir=tmp_path, config=config)

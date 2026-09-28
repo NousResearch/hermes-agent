@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { decideNvidiaEglFallback, NVIDIA_BROKEN_EGL_MAJOR, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
+import { decideNvidiaEglFallback, NVIDIA_BROKEN_EGL_MAJORS, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
 
 const LINUX = { env: {}, platform: 'linux' as const, isWsl: false, remoteDisplayReason: null }
 
@@ -23,16 +23,30 @@ describe('parseNvidiaDriverMajor', () => {
 })
 
 describe('decideNvidiaEglFallback', () => {
-  it('enables on linux with driver >= 580', () => {
+  it('enables on linux with a known-broken series major (580)', () => {
     const decision = decideNvidiaEglFallback({ ...LINUX, driverMajor: 580 })
     expect(decision.enable).toBe(true)
     expect(decision.reason).toContain('580')
   })
 
-  it('enables on newer majors (570-series is fine, 580+ is not)', () => {
+  it('stays off on series without confirmed EGL reports (#123203)', () => {
+    // 570.x is the recommended downgrade from #40077; 615.x (two driver
+    // generations later) probes fine. An open-ended >= check wrongly forced
+    // these onto CPU SwiftShader rendering.
     expect(decideNvidiaEglFallback({ ...LINUX, driverMajor: 570 }).enable).toBe(false)
-    expect(decideNvidiaEglFallback({ ...LINUX, driverMajor: 580 + 5 }).enable).toBe(true)
-    expect(NVIDIA_BROKEN_EGL_MAJOR).toBe(580)
+    expect(decideNvidiaEglFallback({ ...LINUX, driverMajor: 590 }).enable).toBe(false)
+    expect(decideNvidiaEglFallback({ ...LINUX, driverMajor: 615 }).enable).toBe(false)
+  })
+
+  it('the known-broken set is closed, not a floor', () => {
+    // Contract: only series with confirmed #40077-style reports belong in the
+    // set; adding one is a deliberate, evidence-backed change. Detection must
+    // follow set membership exactly, so no neighbouring series rides along.
+    expect(NVIDIA_BROKEN_EGL_MAJORS.has(580)).toBe(true)
+
+    for (let major = 500; major <= 700; major++) {
+      expect(decideNvidiaEglFallback({ ...LINUX, driverMajor: major }).enable).toBe(NVIDIA_BROKEN_EGL_MAJORS.has(major))
+    }
   })
 
   it('stays off below the broken major and when detection finds no driver', () => {

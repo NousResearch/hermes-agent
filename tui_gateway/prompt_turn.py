@@ -445,6 +445,8 @@ def _run_post_turn_followups(
         with _session_turn_admission(session) as admitted:
             if not admitted or session.get("running"):
                 return  # user already sent something — their turn wins
+            if session.get("_turn_cancel_requested"):
+                return  # the user pressed Stop; the goal resumes after their next prompt
             session["running"] = True
         _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof

@@ -18486,6 +18486,20 @@ def test_notification_poller_starts_no_turn_after_stop(monkeypatch):
         server._sessions.pop("sid_stopped", None)
 
 
+def test_goal_continuation_starts_no_turn_after_stop(monkeypatch):
+    """A Stop that lands after the model answered but before the post-turn follow-ups
+    must not let an active /goal chain its continuation turn."""
+    started = []
+    sess = _session(running=False, _turn_cancel_requested=True)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **kw: started.append(a) or True)
+
+    server._run_post_turn_followups("r", "sid_goal_stopped", sess, {}, "keep going")
+
+    assert started == []
+    assert sess["running"] is False
+
+
 def test_notification_poller_requeues_when_busy(monkeypatch):
     """When the agent is busy, the poller requeues the event."""
     import queue as _queue_mod

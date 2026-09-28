@@ -611,6 +611,8 @@ def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
     if not has_mailbox(home):
         return False
     with _session_turn_admission(session) as admitted:
+        # No _turn_cancel_requested here: a delivery is a person's message, not an automatic turn,
+        # and only a local prompt clears the latch, so gating it would park the sender until then.
         if not admitted or any(session.get(key) for key in (
                 "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
                 "_auto_continue_scheduled")) or session.get("agent") is None:

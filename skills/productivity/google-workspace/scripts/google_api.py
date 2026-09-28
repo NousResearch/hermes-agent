@@ -136,22 +136,60 @@ def _headers_dict(msg: dict) -> dict[str, str]:
     }
 
 
+def _extract_bodies(msg: dict) -> dict[str, str]:
+    """Recursively walk the MIME tree and return the first text/plain and
+    first text/html leaf parts found, decoded. Recursing (rather than only
+    checking the top-level payload.parts, as the old single-pass version
+    did) matters because a lot of real mail is multipart/mixed (attachment)
+    wrapping a multipart/alternative (plain+html) — the body lives two
+    levels down, not at the top."""
+    text = ""
+    html = ""
+
+    def walk(part):
+        nonlocal text, html
+        mime = part.get("mimeType", "")
+        data = part.get("body", {}).get("data")
+        if data and mime == "text/plain" and not text:
+            text = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+        elif data and mime == "text/html" and not html:
+            html = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+        for sub in part.get("parts") or []:
+            walk(sub)
+
+    walk(msg.get("payload", {}))
+    return {"text": text, "html": html}
+
+
 def _extract_message_body(msg: dict) -> str:
-    body = ""
-    payload = msg.get("payload", {})
-    if payload.get("body", {}).get("data"):
-        body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
-    elif payload.get("parts"):
-        for part in payload["parts"]:
-            if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
-                body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                break
-        if not body:
-            for part in payload["parts"]:
-                if part.get("mimeType") == "text/html" and part.get("body", {}).get("data"):
-                    body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                    break
-    return body
+    bodies = _extract_bodies(msg)
+    return bodies["text"] or bodies["html"]
+
+
+def _extract_attachments(msg: dict) -> list[dict]:
+    """Recursively walk the MIME tree and collect every part that is a
+    real attachment (has a filename and a body.attachmentId — inline
+    images referenced only by Content-ID still get a filename from most
+    mail clients, but parts with no filename are structural, not
+    attachments, so skip those)."""
+    out = []
+
+    def walk(part):
+        filename = part.get("filename")
+        body = part.get("body", {})
+        attachment_id = body.get("attachmentId")
+        if filename and attachment_id:
+            out.append({
+                "filename": filename,
+                "mime_type": part.get("mimeType", "application/octet-stream"),
+                "attachment_id": attachment_id,
+                "size": body.get("size", 0),
+            })
+        for sub in part.get("parts") or []:
+            walk(sub)
+
+    walk(msg.get("payload", {}))
+    return out
 
 
 def _extract_body_text(body: dict) -> str:
@@ -346,6 +384,7 @@ def gmail_get(args):
             params={"userId": "me", "id": args.message_id, "format": "full"},
         )
         headers = _headers_dict(msg)
+        bodies = _extract_bodies(msg)
         result = {
             "id": msg["id"],
             "threadId": msg["threadId"],
@@ -354,7 +393,10 @@ def gmail_get(args):
             "subject": headers.get("subject", ""),
             "date": headers.get("date", ""),
             "labels": msg.get("labelIds", []),
-            "body": _extract_message_body(msg),
+            "body": bodies["text"] or bodies["html"],
+            "body_text": bodies["text"],
+            "body_html": bodies["html"],
+            "attachments": _extract_attachments(msg),
         }
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return
@@ -365,6 +407,7 @@ def gmail_get(args):
     ).execute()
 
     headers = _headers_dict(msg)
+    bodies = _extract_bodies(msg)
     result = {
         "id": msg["id"],
         "threadId": msg["threadId"],
@@ -373,7 +416,10 @@ def gmail_get(args):
         "subject": headers.get("subject", ""),
         "date": headers.get("date", ""),
         "labels": msg.get("labelIds", []),
-        "body": _extract_message_body(msg),
+        "body": bodies["text"] or bodies["html"],
+        "body_text": bodies["text"],
+        "body_html": bodies["html"],
+        "attachments": _extract_attachments(msg),
     }
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

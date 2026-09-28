@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+import json
+import logging
 from urllib.parse import quote
 
 from nio import (
@@ -10,10 +13,12 @@ from nio import (
     Event,
     KeysUploadResponse,
     MatrixRoom,
+    MegolmEvent,
     RoomMessageText,
     RoomPutStateResponse,
     RoomSendResponse,
     SyncResponse,
+    ToDeviceEvent,
 )
 
 from client import open_encrypted_client
@@ -95,9 +100,63 @@ async def _exchange(
     target: str | None = None,
 ) -> dict:
     client = open_encrypted_client()
+    olm = client.olm
+    assert olm is not None
+    loaded_sessions = [
+        session.id for session in olm.inbound_group_store if session.room_id == room_id
+    ][:32]
     replies: asyncio.Queue[RoomMessageText] = asyncio.Queue()
+    events: deque[dict] = deque(maxlen=32)
+    key_events: deque[dict] = deque(maxlen=16)
+    crypto_errors: deque[str] = deque(maxlen=32)
+
+    class CryptoErrors(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            crypto_errors.append(record.getMessage()[:2000])
+
+    handler = CryptoErrors(level=logging.WARNING)
+    crypto_logger = logging.getLogger("nio.crypto")
+    crypto_logger.addHandler(handler)
     sync_task = None
     try:
+
+        def receive(room: MatrixRoom, event: Event) -> None:
+            if room.room_id != room_id:
+                return
+            summary = {
+                "event_id": event.event_id,
+                "sender": event.sender,
+                "type": type(event).__name__,
+            }
+            if isinstance(event, MegolmEvent):
+                summary.update(
+                    session_id=event.session_id,
+                    device_id=event.device_id,
+                    session_available=(
+                        event.sender_key is not None
+                        and event.session_id is not None
+                        and olm.inbound_group_store.get(
+                            room_id, event.sender_key, event.session_id
+                        )
+                        is not None
+                    ),
+                )
+            events.append(summary)
+            if isinstance(event, RoomMessageText) and event.sender == bot_user_id:
+                replies.put_nowait(event)
+
+        for event_type in (RoomMessageText, MegolmEvent):
+            client.add_event_callback(receive, event_type)
+
+        def receive_key(event: ToDeviceEvent) -> None:
+            key_events.append({
+                "type": type(event).__name__,
+                "sender": event.sender,
+                "session_id": getattr(event, "session_id", None),
+                "room_id": getattr(event, "room_id", None),
+            })
+
+        client.add_to_device_callback(receive_key, ToDeviceEvent)
         synced = await client.sync(timeout=0, full_state=True)
         assert isinstance(synced, SyncResponse), synced
         if client.should_upload_keys:
@@ -114,15 +173,6 @@ async def _exchange(
             assert isinstance(synced, SyncResponse), synced
         assert client.rooms[room_id].encrypted
 
-        async def receive(room: MatrixRoom, event: Event) -> None:
-            if (
-                room.room_id == room_id
-                and isinstance(event, RoomMessageText)
-                and event.sender == bot_user_id
-            ):
-                replies.put_nowait(event)
-
-        client.add_event_callback(receive, RoomMessageText)
         sync_task = asyncio.create_task(client.sync_forever(timeout=250))
         if target is not None:
             assert root is not None
@@ -162,7 +212,35 @@ async def _exchange(
             for i, part in enumerate(parts)
         ]
         return {"root": root, "event_ids": [chunk.event_id for chunk in chunks]}
+    except BaseException:
+        task_error = None
+        if sync_task is not None and sync_task.done() and not sync_task.cancelled():
+            task_error = repr(sync_task.exception())
+        diagnostics = json.dumps({
+            "root": root,
+            "target": target,
+            "device_id": client.device_id,
+            "loaded_sync_token": client.loaded_sync_token,
+            "next_batch": client.next_batch,
+            "sync_task_error": task_error,
+            "loaded_inbound_sessions": loaded_sessions,
+            "inbound_sessions": [
+                session.id
+                for session in olm.inbound_group_store
+                if session.room_id == room_id
+            ][:32],
+            "events": list(events),
+            "key_events": list(key_events),
+            "crypto_errors": list(crypto_errors),
+        })
+        print(
+            "Observer diagnostics: "
+            + diagnostics.replace(client.access_token, "<redacted>"),
+            flush=True,
+        )
+        raise
     finally:
+        crypto_logger.removeHandler(handler)
         if sync_task is not None:
             sync_task.cancel()
             await asyncio.gather(sync_task, return_exceptions=True)

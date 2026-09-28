@@ -168,6 +168,176 @@ def batch(token, *events):
     }
 
 
+def encrypted_message(event_id):
+    return {
+        **message(event_id),
+        "type": "m.room.encrypted",
+        "content": {
+            "algorithm": "m.megolm.v1.aes-sha2",
+            "ciphertext": "ciphertext",
+            "sender_key": "key",
+            "device_id": "ALICE",
+            "session_id": "session",
+        },
+    }
+
+
+def reaction(event_id):
+    return {
+        **message(event_id),
+        "type": "m.reaction",
+        "content": {
+            "m.relates_to": {
+                "rel_type": "m.annotation",
+                "event_id": "$final",
+                "key": "👍",
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["mautrix"], indirect=True)
+@pytest.mark.parametrize("unreadable", ["missing-key", "malformed"])
+async def test_unreadable_ciphertext_allows_connection_and_native_traffic(
+    tmp_path,
+    monkeypatch,
+    transport,
+    unreadable,
+):
+    from mautrix.errors import DecryptionError, SessionNotFound
+
+    _requests, responses = transport
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    error = (
+        SessionNotFound("session", "key")
+        if unreadable == "missing-key"
+        else DecryptionError("Failed to decrypt megolm event")
+    )
+    decrypt = AsyncMock(side_effect=error)
+
+    async def setup(_adapter, client, _api, _state_store):
+        client._crypto = SimpleNamespace(
+            decrypt_megolm_event=decrypt, share_keys=AsyncMock()
+        )
+        return True
+
+    monkeypatch.setattr(matrix.MatrixAdapter, "_connect_setup_e2ee", setup)
+    adapter = make_adapter(encryption=True)
+    responses.append(
+        batch(
+            "s1",
+            encrypted_message("$unreadable"),
+            message("$plain"),
+            reaction("$reaction"),
+        )
+    )
+    try:
+        assert await adapter.connect()
+        assert await adapter._client.sync_store.get_next_batch() == "s1"
+        await adapter._absorb_sync(
+            adapter._client, batch("s2", message("$next"), reaction("$next-reaction"))
+        )
+        assert (
+            [call.args[2] for call in adapter._handle_text_message.await_args_list],
+            [call.args for call in adapter._dispatch_reaction.await_args_list],
+            await adapter._client.sync_store.get_next_batch(),
+        ) == (
+            ["$plain", "$next"],
+            [
+                ("!room:example.org", "$final", "👍", "@alice:example.org", event_id)
+                for event_id in ("$reaction", "$next-reaction")
+            ],
+            "s2",
+        )
+        decrypt.assert_awaited_once()
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["mautrix"], indirect=True)
+@pytest.mark.parametrize("kind", ["plain", "encrypted", "reaction"])
+@pytest.mark.parametrize("failed_owner", ["hermes", "plugin"])
+async def test_retry_clears_only_the_failed_intake_owners_deduplication(
+    tmp_path,
+    monkeypatch,
+    transport,
+    kind,
+    failed_owner,
+):
+    from mautrix.types import Event
+
+    _requests, responses = transport
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    async def setup(_adapter, client, _api, _state_store):
+        client._crypto = SimpleNamespace(
+            share_keys=AsyncMock(),
+            decrypt_megolm_event=AsyncMock(
+                side_effect=lambda event: Event.deserialize({
+                    **message(str(event.event_id)),
+                    "room_id": str(event.room_id),
+                }),
+            ),
+        )
+        return True
+
+    monkeypatch.setattr(matrix.MatrixAdapter, "_connect_setup_e2ee", setup)
+    adapter = make_adapter(encryption=kind == "encrypted")
+    responses.append(batch("s1"))
+    assert await adapter.connect()
+    accepted = asyncio.Event()
+    intake_attempts, accepted_ids, plugin_attempts = [], [], []
+
+    async def intake(*args):
+        event_id = args[4] if kind == "reaction" else args[2]
+        intake_attempts.append(event_id)
+        if failed_owner == "hermes" and len(intake_attempts) == 1:
+            raise RuntimeError("Hermes intake failed")
+        accepted_ids.append(event_id)
+        accepted.set()
+
+    async def plugin(event):
+        plugin_attempts.append(str(event.event_id))
+        if failed_owner == "plugin" and len(plugin_attempts) == 1:
+            await accepted.wait()
+            raise RuntimeError("plugin handler failed")
+
+    handler_type = (
+        matrix.EventType.REACTION
+        if kind == "reaction"
+        else matrix.EventType.ROOM_MESSAGE
+    )
+    adapter._client.add_event_handler(handler_type, plugin, wait_sync=False)
+    if kind == "reaction":
+        adapter._dispatch_reaction = intake
+    else:
+        adapter._handle_text_message = intake
+    event = {"plain": message, "encrypted": encrypted_message, "reaction": reaction}[
+        kind
+    ]("$event")
+    response = batch("s2", event)
+    try:
+        with pytest.raises(RuntimeError, match="intake failed|plugin handler failed"):
+            await adapter._absorb_sync(adapter._client, response)
+        assert await adapter._client.sync_store.get_next_batch() == "s1"
+        await adapter._absorb_sync(adapter._client, response)
+        assert (
+            intake_attempts,
+            accepted_ids,
+            plugin_attempts,
+            await adapter._client.sync_store.get_next_batch(),
+        ) == (
+            ["$event"] * (2 if failed_owner == "hermes" else 1),
+            ["$event"],
+            ["$event", "$event"],
+            "s2",
+        )
+    finally:
+        await adapter.disconnect()
+
+
 @pytest.mark.asyncio
 async def test_fresh_reconnect_and_restart_resume_per_profile(
     tmp_path, monkeypatch, transport
@@ -345,14 +515,16 @@ async def test_cursor_cannot_cross_authenticated_identity(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("intake_error", ["runtime", "decryption"])
 async def test_queued_keys_room_state_and_decrypted_dispatch_precede_ack(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, intake_error,
 ):
     pytest.importorskip("mautrix.client")
     types = pytest.importorskip("mautrix.types")
     from mautrix.client.state_store import MemoryStateStore
     from mautrix.client.dispatcher import MembershipEventDispatcher
     from mautrix.util.logging import TraceLogger
+    from mautrix.errors import DecryptionError
     from plugins.platforms.matrix.sync_transport import (
         DurableSyncStore,
         create_sync_client,
@@ -401,6 +573,7 @@ async def test_queued_keys_room_state_and_decrypted_dispatch_precede_ack(
     monkeypatch.setattr(client.state_store, "update_state", refresh_state)
     imported_keys = []
     received_messages = []
+    error_type = RuntimeError if intake_error == "runtime" else DecryptionError
 
     async def import_key(_event):
         imported_keys.append("key")
@@ -424,7 +597,7 @@ async def test_queued_keys_room_state_and_decrypted_dispatch_precede_ack(
         message_entered.set()
         await message_ready.wait()
         if len(received_messages) == 1:
-            raise RuntimeError("decrypted dispatch failed")
+            raise error_type("decrypted dispatch failed")
 
     client.add_event_handler(types.EventType.ROOM_KEY, import_key)
     client._crypto = SimpleNamespace(decrypt_megolm_event=decrypt)
@@ -505,7 +678,7 @@ async def test_queued_keys_room_state_and_decrypted_dispatch_precede_ack(
     state_ready.set()
     await checkpoint(message_entered)
     message_ready.set()
-    with pytest.raises(RuntimeError, match="decrypted dispatch failed"):
+    with pytest.raises(error_type, match="decrypted dispatch failed"):
         await dispatch
     assert await store.get_next_batch() == "s1"
     await adapter._absorb_sync(client, response)

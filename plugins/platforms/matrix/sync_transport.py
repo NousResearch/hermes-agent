@@ -90,7 +90,7 @@ class SyncDispatch:
     def __init__(self, client: Any):
         self.client = client
         self._sync_dispatch_tasks: list[asyncio.Task] = []
-        self.failed_sync_event_ids: set[str] = set()
+        self.failed_sync_handlers: set[tuple[Any, str]] = set()
         self._completed_key_handlers: set[tuple[Any, bytes]] = set()
         self._rooms_only = False
 
@@ -110,7 +110,7 @@ class SyncDispatch:
         except BaseException as exc:
             event_id = getattr(data, "event_id", None)
             if event_id:
-                self.failed_sync_event_ids.add(str(event_id))
+                self.failed_sync_handlers.add((handler, str(event_id)))
             if isinstance(exc, Exception):
                 logger.exception(
                     "Matrix: sync handler failed for event %s", event_id or "<internal>"
@@ -132,7 +132,7 @@ class SyncDispatch:
         self._completed_key_handlers.clear()
 
     async def dispatch_sync(self, response: dict[str, Any]) -> None:
-        self.failed_sync_event_ids.clear()
+        self.failed_sync_handlers.clear()
         try:
             self.client.handle_sync({
                 key: value for key, value in response.items() if key != "rooms"
@@ -163,7 +163,15 @@ class SyncDispatch:
             self._rooms_only = False
 
     async def decrypt_sync_event(self, event) -> None:
-        decrypted = await self.client.crypto.decrypt_megolm_event(event)
+        from mautrix.errors import DecryptionError
+
+        try:
+            decrypted = await self.client.crypto.decrypt_megolm_event(event)
+        except DecryptionError as exc:
+            self.client.crypto_log.warning(
+                "Failed to decrypt %s: %s", event.event_id, exc
+            )
+            return
         self.client.dispatch_event(decrypted, event.source)
 
 

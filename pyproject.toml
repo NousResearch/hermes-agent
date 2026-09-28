@@ -259,6 +259,10 @@ piper = [
 modal = ["modal==1.5.5"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
+# LDAP / Active Directory dashboard auth — installed at first use
+# (pm.ensure_import("ldap")) when dashboard.ldap_auth is configured.
+# ldap3 is pure Python so it works on native Windows and Termux.
+ldap = ["ldap3==2.9.1"]
 google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",
@@ -556,6 +560,7 @@ dev = [
 test = [
   "distlib==0.4.3; sys_platform == 'win32'",
   "anthropic==0.87.0",
+  "ldap3==2.9.1", # dashboard-auth ldap plugin tests; same pin as the ldap extra
 ]
 
 [build-system]
@@ -736,6 +741,7 @@ huggingface_hub = false
 jinja2 = false
 langfuse = "2026-09-09T16:01:26Z"
 lark-oapi = false
+ldap3 = false
 markdown = false
 maturin = false
 mautrix = false

@@ -43,6 +43,7 @@ ANCHORS: dict[str, str | tuple[str, ...]] = {
     "honcho": "honcho",
     "supermemory": "supermemory",
     "mem0": "mem0",
+    "ldap": "ldap3",
     "messaging": "telegram",
     "telegram": "telegram",
     "discord": "discord",

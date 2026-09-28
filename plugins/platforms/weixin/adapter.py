@@ -1056,7 +1056,14 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)
-            return SendResult(success=False, error=str(exc))
+            # A rate-limited failure leaves the breaker's remaining cooldown on the result:
+            # _send_with_retry honors a server-advertised retry_after (one inline sleep, capped)
+            # instead of tight-looping its own backoff into a still-open breaker (#77836 — field
+            # evidence: 7s of 2s/4s retries against a 12.9s cooldown the adapter had measured).
+            retry_after = None
+            if self._is_rate_limited_error(str(exc)):
+                retry_after = self._rate_limit_cooldown_remaining() or None
+            return SendResult(success=False, error=str(exc), retry_after=retry_after)
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
         """Return a valid typing ticket, refreshing via getConfig once the 600s TTL evicts it —

@@ -388,21 +388,6 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         pass  # best-effort — don't block gateway startup
 
 
-def _is_launch_home_load(home_path: Path) -> bool:
-    """Is THIS load for the process's own (launch) profile rather than a routed one?
-
-    Same launch-home identity as ``_reapply_terminal_config_bridge``: the override being set only
-    proves SOME profile is routed — under multiplex the launch profile's own scoped bodies also
-    bind an override naming the launch home (``tui_gateway.model_switch
-    ._profile_runtime_scope_tokens(None)``), and its .env is process configuration, not a foreign
-    secret (#125530).
-    """
-    try:
-        return Path(home_path).resolve() == _process_hermes_home().resolve()
-    except OSError:
-        return False
-
-
 def load_hermes_dotenv(
     *,
     hermes_home: str | os.PathLike | None = None,
@@ -416,16 +401,17 @@ def load_hermes_dotenv(
     from hermes_constants import get_process_hermes_home
     home_path = Path(hermes_home) if hermes_home else get_process_hermes_home()
 
-    # Multiplex gateway: while a routed profile-home override is active, copying THAT profile's .env
-    # into os.environ would expose its credentials to sibling turns and every spawned child. The
-    # PROCESS home's .env is different: it is the launch profile's own file, already shared process
-    # configuration, so it still loads (#125530) — skipping it silently hid launch-profile-only
-    # credentials (e.g. an OPENROUTER_API_KEY backing fallback_providers) from the process env. Only
-    # a load whose target is a FOREIGN (routed) profile home is skipped.
+    # Multiplex gateway: while a routed profile-home override is active, copying that profile's .env
+    # into os.environ would expose its credentials to sibling turns and every spawned child. The launch
+    # home's own .env is process configuration and still loads: the launch profile's scoped bodies bind
+    # an override naming the launch home too, and skipping it hid launch-only credentials such as a
+    # fallback_providers key from the process env (#125530). External sources still refresh against
+    # the profile mapping.
     from agent.secret_scope import is_multiplex_active
     from hermes_constants import get_hermes_home_override
 
-    if is_multiplex_active() and get_hermes_home_override() is not None and not _is_launch_home_load(home_path):
+    if (is_multiplex_active() and get_hermes_home_override() is not None
+            and home_path.resolve() != _process_hermes_home().resolve()):
         home_key = str(home_path.resolve())
         if home_key not in _SCOPED_SKIP_LOGGED:
             _SCOPED_SKIP_LOGGED.add(home_key)

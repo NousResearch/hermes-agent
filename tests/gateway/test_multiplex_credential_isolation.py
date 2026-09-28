@@ -136,56 +136,41 @@ def test_turn_scoped_dotenv_reload_does_not_pollute_process_env(tmp_path, monkey
 
 
 def test_launch_home_dotenv_still_loads_under_multiplex(tmp_path, monkeypatch):
-    """#125530: the guard must skip only FOREIGN (routed) home loads.
+    """#125530: the multiplex guard skips only FOREIGN (routed) home loads.
 
-    The launch profile's own scoped bodies bind an override naming the launch
-    home (``_profile_runtime_scope_tokens(None)``), so a launch-home load can
-    legitimately arrive with an override set. Skipping it hid the launch
-    home's `.env` from the process env, silently breaking fallback_providers
-    whose key lives only there. A routed profile's `.env` must still never be
-    copied into ``os.environ``.
+    The launch profile's own scoped bodies bind an override naming the launch home, so a
+    launch-home load legitimately arrives with an override set; skipping it hid the launch
+    home's ``.env`` (a fallback_providers key) from the process env. A routed profile's
+    ``.env`` is still never copied into ``os.environ``.
     """
     import os
 
     from hermes_cli.env_loader import load_hermes_dotenv
-    from hermes_constants import (
-        get_process_hermes_home,
-        reset_hermes_home_override,
-        set_hermes_home_override,
-    )
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    launch_home = get_process_hermes_home().resolve()
+    launch = tmp_path / "launch"
+    routed = tmp_path / "profiles" / "routed"
+    launch.mkdir()
+    routed.mkdir(parents=True)
+    (launch / ".env").write_text("LAUNCH_ONLY_FALLBACK_KEY=launch-key\n", encoding="utf-8")
+    (routed / ".env").write_text("LAUNCH_ONLY_FALLBACK_KEY=routed-secret\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.delenv("LAUNCH_ONLY_FALLBACK_KEY", raising=False)
-
     ss.set_multiplex_active(True)
-    home_token = set_hermes_home_override(launch_home)
-    try:
-        # The launch home's OWN .env is process configuration: it must load.
-        (launch_home / ".env").write_text(
-            f"LAUNCH_ONLY_FALLBACK_KEY=launch-key-{launch_home.name}\n", encoding="utf-8"
-        )
+
+    def _load(home):
+        token = set_hermes_home_override(str(home))
         try:
-            loaded = load_hermes_dotenv(hermes_home=launch_home)
-            assert loaded == [launch_home / ".env"]
-            assert os.environ.get("LAUNCH_ONLY_FALLBACK_KEY") == f"launch-key-{launch_home.name}"
+            return load_hermes_dotenv(hermes_home=home)
         finally:
-            monkeypatch.delenv("LAUNCH_ONLY_FALLBACK_KEY", raising=False)
-    finally:
-        reset_hermes_home_override(home_token)
-        ss.set_multiplex_active(False)
+            reset_hermes_home_override(token)
 
-    # A FOREIGN routed home's .env is still never copied into os.environ.
-    foreign = tmp_path / "profiles" / "routed"
-    foreign.mkdir(parents=True)
-    (foreign / ".env").write_text("LAUNCH_ONLY_FALLBACK_KEY=foreign-secret\n", encoding="utf-8")
-    ss.set_multiplex_active(True)
-    home_token = set_hermes_home_override(foreign)
-    try:
-        assert load_hermes_dotenv(hermes_home=foreign) == []
-        assert "LAUNCH_ONLY_FALLBACK_KEY" not in os.environ
-    finally:
-        reset_hermes_home_override(home_token)
-        ss.set_multiplex_active(False)
+    assert _load(launch) == [launch / ".env"]
+    assert os.environ["LAUNCH_ONLY_FALLBACK_KEY"] == "launch-key"
+    assert _load(routed) == []
+    assert os.environ["LAUNCH_ONLY_FALLBACK_KEY"] == "launch-key"
+    assert _load(launch) == [launch / ".env"]
+    assert os.environ["LAUNCH_ONLY_FALLBACK_KEY"] == "launch-key"
 
 
 def test_cold_profile_hydrates_external_source_without_global_env(

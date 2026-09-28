@@ -441,3 +441,20 @@ class TestPersistedMergeWitness:
             assert other.get_messages_as_conversation("s")[1]["_absorbed_message_uids"] == ["b" * 32]
         finally:
             other.close()
+
+
+def test_a_branch_copy_writes_the_uids_its_live_history_keeps(tmp_path):
+    """The branch child keeps using the copied live dicts; rows minted with other uids would restore a
+    different identity than the running agent saw. A dict without a uid gets one on both sides."""
+    from tui_gateway import server
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("parent", source="desktop", model="m")
+        history = [{"role": "user", "content": "hello", "message_uid": "a" * 32}, {"role": "assistant", "content": "hi"}]
+        server._persist_branch(db, "child", "parent", "Branch", history, source="desktop", cwd=str(tmp_path),
+                               profile_name="default", model="m")
+        assert [r["message_uid"] for r in _rows(db, "child")] == [m.get("message_uid") for m in history]
+        assert history[0]["message_uid"] == "a" * 32 and UID_RE.match(history[1]["message_uid"])
+    finally:
+        db.close()

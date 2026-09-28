@@ -78,6 +78,16 @@ def copy_identity_fields(src: Mapping[str, Any], dst: MutableMapping[str, Any]) 
             dst[key] = kind(value) if kind is not str else value
 
 
+def message_identity(msg: MutableMapping[str, Any]) -> dict:
+    """The identity fields a new row copied from *msg* must carry, minting *msg*'s uid first when it has none:
+    a branch/seed copy writes fresh rows from the live dicts the new session keeps using, and a row without
+    them would restore with a different uid than the live dict carries."""
+    stamp_message_uid(msg)
+    identity: dict = {}
+    copy_identity_fields(msg, identity)
+    return identity
+
+
 def record_absorbed_message(
     survivor: MutableMapping[str, Any], dropped: Mapping[str, Any], *, dropped_leads: bool = False,
 ) -> None:

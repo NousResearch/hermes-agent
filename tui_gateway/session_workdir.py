@@ -453,8 +453,9 @@ def _persist_branch_seed(session: dict) -> None:
     ``history`` and must never re-append it."""
     if not (key := session.get("session_key")) or not session.get("seeded") or session.get("_branch_seed_persisted"):
         return
+    from agent.message_metadata import message_identity
     with session["history_lock"]:
-        seed = [dict(msg) for msg in (session.get("history") or [])]
+        seed = [{**msg, **message_identity(msg)} for msg in (session.get("history") or [])]
     if not seed:
         return
     with _session_db(session) as db:
@@ -466,7 +467,8 @@ def _persist_branch_seed(session: dict) -> None:
             # Bounded-chunk transactions (see #23254): a branch seed can be hundreds of rows; chunking keeps
             # each BEGIN IMMEDIATE short so concurrent writers aren't starved.
             db.append_messages_batch(
-                key, [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS}} for msg in seed],
+                key, [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
+                       **message_identity(msg)} for msg in seed],
                 chunk_rows=500)
             session["_branch_seed_persisted"] = True
         except Exception as exc:

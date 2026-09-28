@@ -36,13 +36,31 @@ function authoredMessageCount(messages: ChatMessage[]): number {
  * the head (rows older than the window plus its budget — see
  * app/chat/transcript-retention.ts), so the last durable row is always the
  * live tail; unpersisted rows (optimistic prompts, live streams) sit past it.
+ *
+ * A folded assistant bubble spans several rows but carries one `rowId`: the
+ * live settle keeps `rowId: message.rowId ?? final_assistant_row_id` (the
+ * turn's last row) while hydration keeps the bubble's first text row. Both
+ * paths bind the final row on the bubble's last text part (`sourceRowId`), so
+ * the tip is the highest durable address in the bubble (#125975).
  */
+function bubbleTip(message: ChatMessage): number | undefined {
+  let tip = message.rowId
+
+  for (const part of message.parts) {
+    if (part.type === 'text' && typeof part.sourceRowId === 'number') {
+      tip = tip === undefined ? part.sourceRowId : Math.max(tip, part.sourceRowId)
+    }
+  }
+
+  return tip
+}
+
 function lastDurableRowId(messages: readonly ChatMessage[]): number | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const rowId = messages[index].rowId
+    const tip = bubbleTip(messages[index])
 
-    if (typeof rowId === 'number') {
-      return rowId
+    if (tip !== undefined) {
+      return tip
     }
   }
 

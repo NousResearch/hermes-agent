@@ -33,6 +33,16 @@ const userTurn = (id: number, text: string): SessionMessage =>
 const assistantTurn = (id: number, text: string): SessionMessage =>
   row({ content: text, id, role: 'assistant', timestamp: 1_700_000_000 + id })
 
+/** What a tool step persists, exactly as the gateway writes it. */
+const assistantToolStep = (id: number, callId: string): SessionMessage =>
+  row({
+    content: 'checking',
+    id,
+    role: 'assistant',
+    timestamp: 1_700_000_000 + id,
+    tool_calls: [{ id: callId, function: { name: 'terminal', arguments: '{}' } }]
+  })
+
 /** What an in-place model switch persists, exactly as the gateway writes it. */
 const modelSwitchNotice = (id: number): SessionMessage =>
   row({
@@ -91,5 +101,37 @@ describe('messagesIfTranscriptBehind', () => {
 
     expect(messagesIfTranscriptBehind(toChatMessages(rows), [])).toBeNull()
     expect(messagesIfTranscriptBehind([], toChatMessages(rows))).toEqual(toChatMessages(rows))
+  })
+
+  it('is current when the window settled the last tool turn live and the page starts mid-turn', () => {
+    // Two tool-using turns folded into bubbles. The window watched turn 2
+    // stream, so its last bubble carries the turn's last row both as `rowId`
+    // and on its last text part (`rowId: message.rowId ?? final_assistant_row_id`
+    // in `use-message-stream`). The latest page starts after turn 1's first
+    // tool step, so hydration gives turn 1's bubble its first text row instead.
+    const turn1 = [userTurn(10, 'q1'), assistantToolStep(11, 'tc-1'), assistantTurn(12, 'done1')]
+    const turn2 = [userTurn(20, 'q2'), assistantToolStep(21, 'tc-2'), assistantTurn(22, 'done2')]
+
+    const hydratedWindow = toChatMessages([...turn1, ...turn2])
+    expect(hydratedWindow.map(message => message.rowId)).toEqual([10, 11, 20, 21])
+
+    const liveSettledWindow = hydratedWindow.map(message =>
+      message.rowId === 21
+        ? {
+            ...message,
+            rowId: 22,
+            parts: message.parts.map((part, index) =>
+              index === message.parts.findLastIndex(candidate => candidate.type === 'text')
+                ? { ...part, sourceRowId: 22 }
+                : part
+            )
+          }
+        : message
+    )
+
+    const page = toChatMessages([assistantTurn(12, 'done1'), ...turn2])
+    expect(page.map(message => message.rowId)).toEqual([12, 20, 21])
+
+    expect(messagesIfTranscriptBehind(liveSettledWindow, page)).toBeNull()
   })
 })

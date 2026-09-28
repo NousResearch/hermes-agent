@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import socket
 import sqlite3
 import subprocess
 import threading
@@ -119,6 +120,15 @@ def _profile_home(profile: str) -> Optional[str]:
         from hermes_cli.config import get_hermes_home
         return str(get_hermes_home())
     return None
+
+
+class _ThreadingHTTPServerV6(ThreadingHTTPServer):
+    address_family = socket.AF_INET6
+
+
+def _http_server_class(host: str) -> type:
+    """``ThreadingHTTPServer`` is AF_INET only, so an IPv6 bind (``::1``, ``::``) needs the v6 family."""
+    return _ThreadingHTTPServerV6 if ":" in host else ThreadingHTTPServer
 
 
 def _daemon_thread(target, name: str) -> threading.Thread:
@@ -317,7 +327,7 @@ class A2AAdapter(BasePlatformAdapter):
         # Capture the gateway loop so the HTTP thread can marshal events via run_coroutine_threadsafe.
         self._loop = asyncio.get_running_loop()
         try:
-            self._httpd = ThreadingHTTPServer((self.host, self.port), A2ARequestHandler)
+            self._httpd = _http_server_class(self.host)((self.host, self.port), A2ARequestHandler)
         except OSError as e:
             logger.error("A2A: could not bind %s:%s — %s", self.host, self.port, e)
             self._set_fatal_error("bind_failed", f"A2A bind failed: {e}", retryable=True)
@@ -421,7 +431,8 @@ class A2AAdapter(BasePlatformAdapter):
         return agents
 
     def _base_url(self, public_url: Optional[str]) -> str:
-        return (public_url or "").strip() or f"http://{self.host}:{self.port}/"
+        host = f"[{self.host}]" if ":" in self.host else self.host  # IPv6 literal
+        return (public_url or "").strip() or f"http://{host}:{self.port}/"
 
     def _served_agent_summary(self, public_url: Optional[str] = None) -> list[dict]:
         base = self._base_url(public_url)

@@ -713,9 +713,20 @@ function Emit-Frame([bool]$ok, [string]$name, [bool]$skipped, [string]$reason = 
 # the type, HResult and the operation it died on; the category target is
 # best-effort (cmdlet errors carry the offending path there). Fail() throws
 # bare strings that are already actionable -- and asserted verbatim by
-# tests -- so an OperationStopped RuntimeException passes through as-is.
+# tests -- so a bare string throw passes through as-is. Every `throw` lands
+# as OperationStopped whatever its payload (pwsh 7), and cmdlet errors under
+# EAP=Stop also surface as RuntimeException subclasses (e.g.
+# ItemNotFoundException) with no inner exception, so neither the category nor
+# the payload alone can make the call: a string throw is the intersection --
+# OperationStopped AND a RuntimeException with no inner exception -- while a
+# real exception rethrown by value (e.g. Invoke-DownloadWithProgress's
+# `throw $streamError` web failure) keeps its own type and reaches the
+# diagnostics path below.
 function Get-StageFailureReason([System.Management.Automation.ErrorRecord]$ErrorRecord) {
-    if ($ErrorRecord.CategoryInfo.Category -eq 'OperationStopped') { return "$ErrorRecord" }
+    $bareStringThrow = ($ErrorRecord.CategoryInfo.Category -eq 'OperationStopped') -and
+        ($ErrorRecord.Exception -is [System.Management.Automation.RuntimeException]) -and
+        ($null -eq $ErrorRecord.Exception.InnerException)
+    if ($bareStringThrow) { return "$ErrorRecord" }
     $parts = @($ErrorRecord.Exception.GetType().FullName)
     try { $parts += ('hresult 0x{0:X8}' -f [int]$ErrorRecord.Exception.HResult) } catch {}
     if ($ErrorRecord.CategoryInfo -and $ErrorRecord.CategoryInfo.TargetName) {

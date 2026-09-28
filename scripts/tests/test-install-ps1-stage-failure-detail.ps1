@@ -117,6 +117,41 @@ try {
 }
 
 Write-Host ""
+Write-Host "-- a real exception rethrown by value keeps its diagnostics --"
+
+# install.ps1 rethrows genuine exception objects by value -- the download
+# path's `throw $streamError` hands Invoke-WebRequest's WebException (DNS /
+# TLS / timeout) straight to the stage catch. On pwsh 7 every `throw` is
+# categorized OperationStopped, string or exception object alike, so this
+# case pins that the classifier looks at the payload, not the category: the
+# suffixed frame must survive a by-value rethrow that the old
+# category-only check exempted. The real function is loaded via the
+# installer's official dot-source entry (definitions only, no install run);
+# each shape below is fed through a real `throw`, not a hand-built record.
+. $installScript
+$rethrowShapes = @(
+    @{ label = 'by-value WebException'; body = { throw [System.Net.WebException]::new('name resolution failed') } },
+    @{ label = 'by-value IOException'; body = { throw [System.IO.IOException]::new('disk denied') } }
+)
+foreach ($shape in $rethrowShapes) {
+    try {
+        & $shape.body
+        throw "$($shape.label): the probe throw did not fire"
+    } catch {
+        $reason = Get-StageFailureReason $_
+        Assert-True ("$reason" -match 'System\.[A-Za-z.]+Exception') "$($shape.label): the reason names the exception type" $reason
+        Assert-True ("$reason" -match 'hresult 0x[0-9A-Fa-f]{8}') "$($shape.label): the reason carries the HResult" $reason
+    }
+}
+# A Fail() string throw must stay exempt under the same payload classifier:
+# OperationStopped plus a bare RuntimeException (no inner exception).
+try { throw 'occupied-refusal-style message' } catch {
+    $reason = Get-StageFailureReason $_
+    Assert-True ("$reason" -eq 'occupied-refusal-style message') "string throw: the Fail() message stays verbatim" $reason
+    Assert-True ("$reason" -notmatch 'hresult 0x') "string throw: no diagnostic suffix" $reason
+}
+
+Write-Host ""
 if ($failures -gt 0) {
     Write-Host "FAILED: $failures assertion(s) failed" -ForegroundColor Red
     exit 1

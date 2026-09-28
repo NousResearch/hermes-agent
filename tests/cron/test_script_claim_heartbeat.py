@@ -2,7 +2,6 @@
 
 from datetime import datetime, timedelta, timezone
 import contextlib
-import sys
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -10,123 +9,68 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def test_cancel_event_terminates_script_process_tree(tmp_path, monkeypatch):
-    """Losing a fire claim must stop both the script and its descendants."""
-    import cron.scheduler as scheduler
-    from cron import scheduler_script as sched_script
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.parametrize("trigger", ["cancel", "timeout"])
+@pytest.mark.parametrize("topology", ["detached", "stubborn-pipe"])
+def test_script_termination_reaps_descendants(tmp_path, monkeypatch, trigger, topology):
+    import os
+    import psutil
+    from cron import scheduler, scheduler_script
 
     monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    started = tmp_path / "started"
-    child_done = tmp_path / "child-done"
-    script = scripts_dir / "blocking.py"
-    child_code = (
-        "import time; from pathlib import Path; "
-        f"time.sleep(1); Path({str(child_done)!r}).write_text('done')"
-    )
-    script.write_text(
-        "import subprocess, sys, time\n"
-        f"subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
-        f"open({str(started)!r}, 'w').close()\n"
-        "time.sleep(30)\n",
-        encoding="utf-8",
-    )
-
-    cancel = threading.Event()
-    result = []
-    errors = []
-
-    def _run() -> None:
+    monkeypatch.setattr(scheduler_script, "_get_script_timeout", lambda: 3 if trigger == "timeout" else 60)
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    ready = tmp_path / "child.pid"
+    # Publish atomically: the parent polls for existence, and write_text
+    # creates the file before it writes the pid.
+    child = ("import os, signal, time; from pathlib import Path; "
+             + ("signal.signal(signal.SIGTERM, signal.SIG_IGN); " if topology == "stubborn-pipe" else "")
+             + f"Path({str(ready) + '.tmp'!r}).write_text(str(os.getpid())); "
+             + f"os.replace({str(ready) + '.tmp'!r}, {str(ready)!r}); time.sleep(60)")
+    script = scripts / "blocking.py"
+    script.write_text("import subprocess, sys, time\n"
+                      + f"subprocess.Popen([sys.executable, '-c', {child!r}], start_new_session={topology == 'detached'})\n"
+                      + "time.sleep(60)\n", encoding="utf-8")
+    cancel, results, errors = threading.Event(), [], []
+    def run():
         try:
-            result.append(
-                sched_script._run_job_script(
-                    str(script),
-                    workdir=str(tmp_path),
-                    cancel_event=cancel,
-                )
-            )
-        except Exception as exc:
+            results.append(scheduler_script._run_job_script(str(script), workdir=str(tmp_path), cancel_event=cancel))
+        except BaseException as exc:
             errors.append(exc)
-
-    thread = threading.Thread(target=_run)
-    thread.start()
-    deadline = time.monotonic() + 5
-    while not started.exists() and not errors and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert errors == []
-    assert started.exists(), "script did not start"
-
-    cancel.set()
-    thread.join(timeout=3)
-
-    assert errors == []
-    assert not thread.is_alive(), "script ignored cancellation"
-    assert result and result[0][0] is False
-    assert "cancel" in result[0][1].lower()
-    time.sleep(1.2)
-    assert not child_done.exists(), "script descendant survived cancellation"
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group semantics")
-def test_cancel_event_kills_sigterm_ignoring_descendant(tmp_path, monkeypatch):
-    """A SIGTERM-ignoring grandchild must not wedge the cancellation path:
-    the tree kill escalates to SIGKILL for surviving group members, and the
-    pipe drain is bounded even if a descendant still holds the write ends."""
-    import cron.scheduler as scheduler
-    from cron import scheduler_script as sched_script
-
-    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    started = tmp_path / "started"
-    script = scripts_dir / "stubborn.py"
-    child_code = (
-        "import signal, time; "
-        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-        f"open({str(started)!r}, 'w').close(); "
-        "time.sleep(60)"
-    )
-    script.write_text(
-        "import subprocess, sys, time\n"
-        f"subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
-        "time.sleep(60)\n",
-        encoding="utf-8",
-    )
-
-    cancel = threading.Event()
-    result = []
-    errors = []
-
-    def _run() -> None:
+    def live(pid):
         try:
-            result.append(
-                sched_script._run_job_script(
-                    str(script),
-                    workdir=str(tmp_path),
-                    cancel_event=cancel,
-                )
-            )
-        except Exception as exc:
-            errors.append(exc)
-
-    thread = threading.Thread(target=_run)
+            return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+    thread = threading.Thread(target=run)
     thread.start()
-    deadline = time.monotonic() + 5
-    while not started.exists() and not errors and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert errors == []
-    assert started.exists(), "script did not spawn its descendant"
-
-    cancel.set()
-    # TERM grace (1s) + KILL + bounded drain (5s) + margin: must return well
-    # before the unbounded-communicate hang this regresses against.
-    thread.join(timeout=10)
-
-    assert errors == []
-    assert not thread.is_alive(), "cancellation wedged on a SIGTERM-ignoring descendant"
-    assert result and result[0][0] is False
-    assert "cancel" in result[0][1].lower()
+    pid = None
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and not errors and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists() and not errors, errors
+        pid = int(ready.read_text(encoding="utf-8"))
+        assert live(pid), "child must acknowledge readiness before termination"
+        if trigger == "cancel":
+            cancel.set()
+        thread.join(timeout=15)
+        assert not thread.is_alive() and not errors, errors
+        assert results[0][0] is False
+        assert ("cancelled" if trigger == "cancel" else "timed out") in results[0][1]
+        deadline = time.monotonic() + 5
+        while live(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not live(pid), f"descendant {pid} survived {trigger}"
+    finally:
+        cancel.set()
+        if pid is None and ready.exists():
+            pid = int(ready.read_text(encoding="utf-8"))
+        if pid is not None and live(pid):
+            os.kill(pid, 9)
+        thread.join(timeout=15)
 
 
 def test_no_agent_forwards_cancel_event_to_script_runner(monkeypatch):
@@ -643,21 +587,29 @@ def test_heartbeat_thread_start_failure_does_not_start_execution(monkeypatch):
 
 
 def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
-    """Store uncertainty cannot let a run outlive its last confirmed lease forever."""
+    """Store uncertainty cannot let a run outlive its last confirmed lease forever.
+
+    The contract is elapsed-time based (grace since the last confirmed renewal), not a renewal
+    count: on a slow host the first wake can land after the grace, so cancellation after a single
+    failed renewal is correct (#111471). Assert the contract, never a minimum attempt count."""
     import cron.scheduler as scheduler
     from cron import scheduler_script as sched_script
 
+    last_confirmed_at = []
+    cancellation_after = []
     calls = 0
 
     def heartbeat(*_args, **_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
+            last_confirmed_at.append(time.monotonic())
             return True
         raise OSError("store unavailable")
 
     def run_body(_job, **kwargs):
-        assert kwargs["fire_claim_lost"].wait(timeout=0.5)
+        assert kwargs["claim_lost"].wait(timeout=0.5)
+        cancellation_after.append(time.monotonic() - last_confirmed_at[0])
         return True
 
     job = {
@@ -667,10 +619,19 @@ def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
     monkeypatch.setattr(scheduler, "heartbeat_fire_claim", heartbeat)
     monkeypatch.setattr(scheduler, "_run_one_job_body", run_body)
     monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
-    monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.03)
+    # Generous grace (30x the interval, not 3x): the heartbeat thread competes
+    # with 36-way parallel test workers for the GIL/CPU; a couple of slow
+    # ticks must not cancel before the run body's 0.5s wait completes
+    # (loose-bounds rule for timing-sensitive tests).
+
+    # Intervals well above Windows' ~15ms timer resolution so the grace window
+    # reliably spans 3+ heartbeat ticks (10ms/30ms left only ~2 on win32).
+    monkeypatch.setattr(scheduler, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(scheduler, "_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS", 0.3)
 
     assert scheduler.run_one_job(job) is True
-    assert calls >= 3
+    assert calls >= 2, "cancellation must follow at least one failed renewal"
+    assert cancellation_after[0] >= scheduler._FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
 
 
 def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):

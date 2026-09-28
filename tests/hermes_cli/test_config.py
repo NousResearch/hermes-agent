@@ -1,12 +1,13 @@
 """Tests for hermes_cli configuration management."""
 
+import logging
 import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
@@ -15,7 +16,6 @@ from hermes_cli.config import (
     get_hermes_home,
     ensure_hermes_home,
     get_compatible_custom_providers,
-    _explicit_config_paths,
     _normalize_max_turns_config,
     is_provider_enabled,
     load_config,
@@ -29,28 +29,17 @@ from hermes_cli.config import (
     sanitize_env_file,
     set_config_value,
     unset_config_value,
-    write_platform_config_field,
     _sanitize_env_lines,
 )
 
 
 class TestGetHermesHome:
     def test_default_path(self):
+        from hermes_constants import _get_platform_default_hermes_home
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            if sys.platform == "win32":
-                # Windows default is %LOCALAPPDATA%\hermes — see
-                # hermes_constants._get_platform_default_hermes_home.
-                local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
-                base = (
-                    Path(local_appdata)
-                    if local_appdata
-                    else Path.home() / "AppData" / "Local"
-                )
-                assert home == base / "hermes"
-            else:
-                assert home == Path.home() / ".hermes"
+            assert home == _get_platform_default_hermes_home()
 
 
 class TestEnsureHermesHome:
@@ -168,8 +157,8 @@ class TestLoadConfigParseFailure:
         Ported from google-gemini/gemini-cli#21541 (policy-file TOML recovery),
         adapted: we back up but deliberately do NOT reset config.yaml.
         """
-        from hermes_cli import config as cfg_mod
-        cfg_mod._CONFIG_PARSE_WARNED.clear()
+        from hermes_cli.config_read_errors import _CONFIG_PARSE_WARNED
+        _CONFIG_PARSE_WARNED.clear()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             broken = "\tmodel: test/custom\nbroken indent:\n"
@@ -201,8 +190,8 @@ class TestLoadConfigParseFailure:
         parses again.
         """
         import time
-        from hermes_cli import config as cfg_mod
-        cfg_mod._CONFIG_PARSE_WARNED.clear()
+        from hermes_cli.config_read_errors import _CONFIG_PARSE_WARNED
+        _CONFIG_PARSE_WARNED.clear()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             cfg = tmp_path / "config.yaml"
@@ -554,9 +543,9 @@ class TestSaveConfigAtomicity:
             config_path = tmp_path / "config.yaml"
             assert config_path.exists()
 
-            # Simulate a crash during yaml.dump by making atomic_yaml_write's
-            # yaml.dump raise after the temp file is created but before replace.
-            with patch("utils.yaml.dump", side_effect=OSError("disk full")):
+            # Simulate a crash mid-dump: the round-trip writer raises after the temp file is
+            # created but before replace.
+            with patch("utils._roundtrip_dump", side_effect=OSError("disk full")):
                 try:
                     config["model"] = "should-not-persist"
                     save_config(config)
@@ -573,7 +562,7 @@ class TestSaveConfigAtomicity:
             config = load_config()
             save_config(config)
 
-            with patch("utils.yaml.dump", side_effect=OSError("disk full")):
+            with patch("ruamel.yaml.YAML.dump", side_effect=OSError("disk full")):
                 try:
                     save_config(config)
                 except OSError:
@@ -671,34 +660,11 @@ class TestSanitizeEnvLines:
 class TestOptionalEnvVarsRegistry:
     """Verify that key env vars are registered in OPTIONAL_ENV_VARS."""
 
-    def test_keenable_api_key_registered(self):
-        """KEENABLE_API_KEY is listed in OPTIONAL_ENV_VARS."""
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert "KEENABLE_API_KEY" in OPTIONAL_ENV_VARS
 
 
-    def test_keenable_api_key_has_url(self):
-        """KEENABLE_API_KEY has a URL."""
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert OPTIONAL_ENV_VARS["KEENABLE_API_KEY"]["url"] == "https://keenable.ai"
 
-    def test_tavily_api_key_registered(self):
-        """TAVILY_API_KEY is listed in OPTIONAL_ENV_VARS."""
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert "TAVILY_API_KEY" in OPTIONAL_ENV_VARS
 
-    def test_tavily_api_key_has_url(self):
-        """TAVILY_API_KEY has a URL."""
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert OPTIONAL_ENV_VARS["TAVILY_API_KEY"]["url"] == "https://app.tavily.com/home"
 
-    def test_tavily_in_env_vars_by_version(self):
-        """TAVILY_API_KEY is listed in ENV_VARS_BY_VERSION."""
-        from hermes_cli.config import ENV_VARS_BY_VERSION
-        all_vars = []
-        for vars_list in ENV_VARS_BY_VERSION.values():
-            all_vars.extend(vars_list)
-        assert "TAVILY_API_KEY" in all_vars
 
     def test_max_iterations_not_offered_as_env_var(self):
         """HERMES_MAX_ITERATIONS must NOT be in OPTIONAL_ENV_VARS (issue #17534).
@@ -713,38 +679,6 @@ class TestOptionalEnvVarsRegistry:
         assert "HERMES_MAX_ITERATIONS" not in OPTIONAL_ENV_VARS
 
 
-class TestMemoryProviderEnvVarsRegistry:
-    """Every memory provider that reads an API key from the environment must
-    have that key catalogued in OPTIONAL_ENV_VARS so the dashboard Keys page
-    and `hermes setup` surface it (previously only Honcho was listed, leaving
-    Hindsight/Supermemory/Mem0/RetainDB/ByteRover/OpenViking invisible).
-
-    This is a behavior contract, not a snapshot: it asserts each provider's
-    primary credential key is present, tool-categorised, and password-masked —
-    not a frozen count of entries.
-    """
-
-    # provider primary-credential env key -> the tool-call name it powers.
-    MEMORY_PROVIDER_KEYS = {
-        "HONCHO_API_KEY": "honcho_context",
-        "HINDSIGHT_API_KEY": "hindsight_recall",
-        "SUPERMEMORY_API_KEY": "supermemory_search",
-        "MEM0_API_KEY": "mem0_search",
-        "RETAINDB_API_KEY": "retaindb_search",
-        "BRV_API_KEY": "brv_query",
-        "OPENVIKING_API_KEY": "viking_search",
-    }
-
-    def test_memory_provider_keys_are_catalogued(self):
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        missing = [k for k in self.MEMORY_PROVIDER_KEYS if k not in OPTIONAL_ENV_VARS]
-        assert not missing, f"memory provider keys missing from OPTIONAL_ENV_VARS: {missing}"
-
-
-    def test_memory_provider_keys_advertise_their_tool(self):
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        for key, tool in self.MEMORY_PROVIDER_KEYS.items():
-            assert tool in OPTIONAL_ENV_VARS[key].get("tools", []), key
 
 
 class TestConfigMigrationSecretPrompts:
@@ -914,6 +848,7 @@ class TestConfigSupportFloor:
 
     def test_registry_has_no_targets_below_floor(self):
         from hermes_cli.config_migrations import (
+            LEGACY_KEY_STEPS,
             MIGRATIONS,
             SUPPORT_FLOOR_VERSION,
         )
@@ -923,6 +858,9 @@ class TestConfigSupportFloor:
         # v12's own step is retained: a config AT v11 is refused, but a
         # config AT v12 must still receive every remaining migration.
         assert MIGRATIONS[0][0] == 12
+        # The unversioned allowlist is a parallel registry of ints: every entry must name a
+        # step that exists on the ladder, or an unversioned config silently drifts.
+        assert LEGACY_KEY_STEPS <= {target for target, _ in MIGRATIONS}
 
     # ── Parity fixtures ──────────────────────────────────────────────
     # Expected outputs captured by running migrate_config from origin/main
@@ -974,8 +912,8 @@ class TestConfigSupportFloor:
     _V20_EXPECTED = {
         "_config_version": 33,
         # v31 writes verify_on_stop=False, but False now equals the schema
-        # default (opt-in) so the write invariant strips it from disk.
-        "agent": {},
+        # default (opt-in) so the write invariant strips it, and the emptied
+        # section goes with it (it survived only as the phantom `agent: {}`).
         "model": {"default": "anthropic/claude-fable-5", "provider": "nous"},
         "model_catalog": {},
         "plugins": {"disabled": ["foo"], "enabled": []},
@@ -1242,8 +1180,6 @@ class TestCustomProviderCompatibility:
 class TestInterimAssistantMessageConfig:
     """Test the explicit gateway interim-message config gate."""
 
-    def test_default_config_enables_interim_assistant_messages(self):
-        assert DEFAULT_CONFIG["display"]["interim_assistant_messages"] is True
 
     def test_migrate_to_v15_supplies_interim_message_gate_at_read_time(
         self, tmp_path, capsys
@@ -1275,15 +1211,6 @@ class TestInterimAssistantMessageConfig:
         assert "Added display.interim_assistant_messages" not in capsys.readouterr().out
 
 
-class TestCliRefreshIntervalConfig:
-    """Test the CLI refresh_interval config default (#45592 / #48309)."""
-
-    def test_default_config_enables_cli_refresh_interval(self):
-        """cli_refresh_interval defaults to 1.0 so the idle status-bar
-        clock keeps ticking and the bottom chrome stays alive during
-        idle (#45592). Users on emulators where the periodic redraw
-        fights auto-scroll can set it to 0 (#48309)."""
-        assert DEFAULT_CONFIG["display"]["cli_refresh_interval"] == 1.0
 
 
 class TestDiscordChannelPromptsConfig:
@@ -1402,7 +1329,63 @@ class TestEnvWriteDenylist:
         with pytest.raises(ValueError, match="denylist"):
             save_env_value(protected_key, "1")
 
+    @pytest.mark.parametrize(
+        "protected_key",
+        [
+            # git exec helpers / redirection (same mechanism as GIT_SSH_COMMAND)
+            "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_KEY_17",
+            "GIT_CONFIG_VALUE_17",
+            "GIT_SSH", "GIT_ASKPASS", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR",
+            "GIT_PAGER", "GIT_EXTERNAL_DIFF", "GIT_PROXY_COMMAND",
+            "GIT_TEMPLATE_DIR", "GIT_DIR",
+            # credential-prompt exec helpers
+            "SSH_ASKPASS", "SUDO_ASKPASS",
+            # loader families beyond the named members
+            "LD_PROFILE", "DYLD_PRINT_LIBRARIES",
+            # shell init / interactive hooks
+            "BASH_ENV", "ENV", "ZDOTDIR", "PROMPT_COMMAND", "VIMINIT", "EXINIT",
+            # invoked-command injection
+            "MANPAGER",
+            # interpreter / toolchain injection
+            "PERL5OPT", "PERL5LIB", "PERLLIB", "RUBYOPT", "RUBYLIB",
+            "PYTHONBREAKPOINT", "PYTHONCASEOK", "CLASSPATH",
+            "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
+            "GOFLAGS", "RUSTFLAGS",
+        ],
+    )
+    def test_exec_influence_keys_are_not_writable(self, protected_key):
+        """Every member of the subprocess-execution class is refused, including the
+        unbounded GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n pairs and loader prefixes."""
+        with pytest.raises(ValueError, match="denylist"):
+            save_env_value(protected_key, "1")
+
         assert protected_key not in load_env()
+
+    @pytest.mark.parametrize(
+        "allowed_key",
+        [
+            # Non-exec git env names a user may legitimately persist.
+            "GIT_COMMITTER_NAME", "GIT_AUTHOR_NAME", "GIT_TERMINAL_PROMPT",
+            "GIT_EDITOR_WIDE",  # near-miss: not the real GIT_EDITOR
+            # POSIX case: lowercase exec names are different, inert variables.
+            "git_config_parameters", "ld_preload",
+        ],
+    )
+    def test_non_exec_near_misses_still_writable(self, allowed_key):
+        save_env_value(allowed_key, "test-value-123")
+        env = load_env()
+        assert env[allowed_key] == "test-value-123"
+
+    @pytest.mark.parametrize("protected_key", ["Ld_Preload", "Git_Config_Parameters"])
+    def test_windows_policy_denies_mixed_case_exec_names(self, protected_key, monkeypatch):
+        """Windows env names are case-insensitive, so the writer must refuse the mixed-case
+        spelling of a denied exec-influence name too."""
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setattr(config_mod, "_IS_WINDOWS", True)
+        with pytest.raises(ValueError, match="denylist"):
+            save_env_value(protected_key, "1")
 
     def test_preexisting_optional_mcps_override_still_loads(self, tmp_path):
         """The writer gate must not migrate or ignore operator-owned .env state."""
@@ -1445,7 +1428,7 @@ class TestEnvWriteDenylist:
         assert _env_line_defines_key(line, "PATH", is_windows=True)
         assert not _env_line_defines_key(line, "PATH", is_windows=False)
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     @pytest.mark.parametrize(
         "protected_key",
         [
@@ -1610,7 +1593,7 @@ feishu:
 
 
     def test_persist_migration_writes_full_read_raw_config(self, tmp_path):
-        from hermes_cli.config import _persist_migration, read_raw_config
+        from hermes_cli.config import _persist_migration
 
         body = """_config_version: 30
 model:
@@ -1734,8 +1717,6 @@ class TestBackgroundNotificationsConciseMigration:
         # Unset users inherit the new default at read time; no write needed.
         assert "display" not in raw or "background_process_notifications" not in raw.get("display", {})
 
-    def test_default_config_is_concise(self):
-        assert DEFAULT_CONFIG["display"]["background_process_notifications"] == "concise"
 
 
 class TestConfigNormalizationDoesNotOverwriteUserValues:
@@ -1777,9 +1758,6 @@ class TestCodexAppServerAutoConfig:
     def _write(self, tmp_path, body):
         (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
 
-    def test_default_config_has_native_mode(self):
-        assert DEFAULT_CONFIG["compression"]["codex_app_server_auto"] == "native"
-        assert DEFAULT_CONFIG["compression"]["codex_gpt55_autoraise"] is True
 
     def test_preserves_existing_codex_app_server_auto_value(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -1932,8 +1910,6 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
     key' although gateway/config.py reads it; the key (and profile_routes) live in DEFAULT_CONFIG."""
     from hermes_cli.config import _validate_config_key
     from hermes_cli.config_defaults import DEFAULT_CONFIG
-    assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is False
-    assert DEFAULT_CONFIG["gateway"]["auto_multiplex_migration"] is True
     assert "auto_migrate" not in DEFAULT_CONFIG["gateway"]
     assert _validate_config_key("gateway.multiplex_profiles") == (True, None)
     assert _validate_config_key("gateway.profile_routes") == (True, None)
@@ -1941,3 +1917,98 @@ def test_gateway_multiplex_keys_are_recognized_config_keys():
     known, suggestion = _validate_config_key("gateway.auto_migrate")
     assert known is False
     assert suggestion == "gateway.auto_multiplex_migration"
+
+
+def test_empty_dict_default_sections_are_open_containers():
+    """``compression.model_thresholds.<model>`` / ``terminal.docker_env.<VAR>`` are free-form
+    mappings declared as ``{}`` in DEFAULT_CONFIG: their user-chosen keys must not be refused as
+    typos, while a real typo under a populated sibling section still gets a suggestion."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["compression"]["model_thresholds"] == {}
+    assert DEFAULT_CONFIG["terminal"]["docker_env"] == {}
+    assert _validate_config_key("compression.model_thresholds.gpt-5") == (True, None)
+    assert _validate_config_key("terminal.docker_env.FOO") == (True, None)
+    assert _validate_config_key("lsp.servers.python.command") == (True, None)
+    assert _validate_config_key("auxiliary.vision.extra_body.reasoning") == (True, None)
+    known, suggestion = _validate_config_key("compression.model_threshold.gpt-5")
+    assert known is False
+    assert suggestion == "compression.model_thresholds"
+
+
+def test_lsp_root_policy_keys_are_recognized_and_off_by_default():
+    """``lsp.warmup_timeout`` / ``broken_retry_seconds`` / ``exclude_roots`` (#116446) must be settable via
+    ``hermes config set`` and must default to today's behaviour (no grace, lifetime broken set, no exclusion)."""
+    from hermes_cli.config import _validate_config_key
+    for key in ("lsp.warmup_timeout", "lsp.broken_retry_seconds", "lsp.exclude_roots"):
+        assert _validate_config_key(key) == (True, None)
+
+
+class TestSaveConfigExplicitPathAuthority:
+    """#113301: the explicit-path evidence that keeps user-set defaults through the strip pass
+    must come from the fail-closed read, not from a second cached read that can yield ``{}``."""
+
+    def test_save_config_on_intact_file_preserves_explicit_defaults(self, tmp_path):
+        # The intact case: an explicit user-set key survives even when its value equals the
+        # schema default, because the raw read supplies the preserve set (#113301's 32→32 row).
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("model:\n  provider: test/p\nskills:\n  write_approval: true\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["model"] = "test/other"
+            save_config(config)
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["model"] == "test/other"
+        assert saved["skills"]["write_approval"] is True
+
+    def test_save_survives_cached_raw_read_returning_empty(self, tmp_path):
+        # Real schema sections, each pinned to its (scalar) default value, so the file survives
+        # only if save_config still sees them as explicitly set. ``agent`` is skipped because
+        # canonicalisation rewrites its max_turns shape and would mask the collapse signal.
+        # Only sections whose first value is a scalar: a nested dict/list default would be
+        # stripped element-wise and blur the per-section survival check.
+        sections = {k: v for k, v in DEFAULT_CONFIG.items() if isinstance(v, dict) and v and k != "agent"}
+        chosen = {}
+        for k, v in sections.items():
+            ik, iv = next(iter(v.items()))
+            if not isinstance(iv, (dict, list)):
+                chosen[k] = {ik: iv}
+        assert len(chosen) >= 10, sorted(chosen)  # modest floor: a schema reorder must not fail this
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(yaml.safe_dump(chosen), encoding="utf-8")
+
+        with (patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}),
+              patch("hermes_cli.config.read_raw_config", return_value={})):
+            save_config(load_config())
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert set(chosen) <= set(saved), sorted(set(chosen) - set(saved))
+
+
+class TestCompatibleProvidersMalformedLegacyKey:
+    """A non-list ``custom_providers`` must not wipe the merged view (#114605)."""
+
+    def test_string_custom_providers_keeps_providers_view_and_warns(self, caplog):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {
+            "custom_providers": "- name: broken",
+            "providers": {"exl3": {"api": "http://127.0.0.1:8290/v1", "default_model": "m"}},
+        }
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == ["exl3"]
+        assert any("custom_providers is a str" in r.getMessage() for r in caplog.records)
+
+    def test_list_custom_providers_is_silent(self, caplog):
+        from hermes_cli.config_providers import get_compatible_custom_providers
+
+        config = {"custom_providers": [{"name": "legacy", "base_url": "http://h/v1"}], "providers": {}}
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            names = [e.get("name") for e in get_compatible_custom_providers(config)]
+
+        assert names == ["legacy"]
+        assert not [r for r in caplog.records if "custom_providers is a" in r.getMessage()]

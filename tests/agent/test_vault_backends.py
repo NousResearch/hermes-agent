@@ -51,7 +51,7 @@ sys.exit(2)
 '''
 
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="fake bw is a shebang script; the backend under test is host-agnostic")
+pytestmark = pytest.mark.platforms("posix")  # fake bw is a shebang script; the backend under test is host-agnostic
 
 
 @pytest.fixture
@@ -221,3 +221,13 @@ def test_onepassword_multi_url_item_binds_every_saved_web_origin():
     # helpers: dedupe keeps first occurrence; app-only items keep their single origin
     assert _all_origins(["https://a.com/x", "https://a.com/y"]) == ["https://a.com"]
     assert _web_origins(["androidapp://com.x"]) == ("androidapp://com.x",)
+
+
+def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
+    """Vault reads use the same explicit 1Password CLI config location."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    monkeypatch.setenv("OP_CONFIG_DIR", "/tmp/op-config")
+    backend = OnePasswordLoginBackend({"enabled": True})
+
+    assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"

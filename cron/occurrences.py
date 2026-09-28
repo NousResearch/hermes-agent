@@ -20,8 +20,8 @@ def scheduled_instant(value):
 
 def completed_occurrence(job, instant):
     """Unknown/failed/pruned attempts cannot prove completion: keep them eligible."""
+    from cron.constants import FIRE_CLAIM_SKEW_SECONDS
     from cron.executions import _transaction
-    from cron.jobs import FIRE_CLAIM_SKEW_SECONDS
 
     instant = scheduled_instant(instant)
     if instant is None:
@@ -31,7 +31,7 @@ def completed_occurrence(job, instant):
     try:
         with _transaction() as conn:
             rows = conn.execute(
-                "SELECT finished_at, claimed_at FROM executions "
+                "SELECT id, finished_at, claimed_at FROM executions "
                 "WHERE job_id=? AND scheduled_instant=? "
                 "AND status='completed'", (str(job['id']), instant)
             ).fetchall()
@@ -40,6 +40,13 @@ def completed_occurrence(job, instant):
             # Legacy or malformed timestamps remain proof; only positively identified poison
             # rows — completions recorded before their claimed occurrence — are ignored.
             if completed_at is None or datetime.fromisoformat(completed_at) >= earliest_real:
+                # Both dedup gates (due scan and fire claim) consume the slot on True without a
+                # run or a ledger row, so this line is the only trace the skip leaves (#111414).
+                logger.warning(
+                    "Job '%s' (%s): scheduled occurrence %s was already completed by execution "
+                    "%s (finished %s); skipping the due slot without a new run",
+                    job.get("name", job.get("id")), job.get("id"), instant, row["id"],
+                    row["finished_at"] or row["claimed_at"])
                 return True
         return False
     except Exception:
@@ -75,9 +82,8 @@ def unclaimed_pending_slot(job, now):
     THIS process on a job not running here is orphaned (dispatch refused). A stamp by another
     process is honoured while that owner may still be alive within the fire-claim lease — a
     second live gateway on the same store is mid-dispatch, not dead."""
-    from cron.jobs import (
-        FIRE_CLAIM_TTL_SECONDS, _claim_is_live, _job_running_in_this_process, _machine_id,
-    )
+    from cron.constants import FIRE_CLAIM_TTL_SECONDS
+    from cron.jobs import _claim_is_live, _job_running_in_this_process, _machine_id
 
     pending = job.get("pending_slot")
     if not isinstance(pending, dict):

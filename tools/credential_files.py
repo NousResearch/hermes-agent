@@ -233,7 +233,7 @@ def _safe_skills_path(skills_dir: Path) -> str:
 
 def iter_skills_files(container_base: str = "/root/.hermes") -> List[Dict[str, str]]:
     """Per-file entries for all skills files (for backends that upload individually)."""
-    return [_mount(item, f"{container_root}/{item.relative_to(host_dir)}")
+    return [_mount(item, f"{container_root}/{item.relative_to(host_dir).as_posix()}")
             for host_dir, container_root in _skill_dir_roots(container_base)
             for _base, files in _walk_skill_tree(host_dir) for item in files]
 
@@ -258,6 +258,13 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     # Mount it so the agent's file tools can read dropped binaries (zip/pdf/...) from inside sandbox
     # containers instead of dangling host paths (#76577).
     ("attachments", "attachments"),
+    # Desktop stages a large plain-text paste as a `.txt` under this Hermes-managed dir
+    # (apps/desktop/electron/composer-paste.ts; `COMPOSER_PASTES_DIRNAME` in
+    # agent/context_references.py) and attaches it as `@file:`. Without a mount/sync
+    # entry, remote execution backends (ssh/daytona/vercel_sandbox) never received the
+    # bytes and `to_agent_visible_cache_path` left the gateway-host path dangling on
+    # the remote host (#110174). No legacy alias, so both tuple slots match.
+    ("composer-pastes", "composer-pastes"),
 ]
 
 

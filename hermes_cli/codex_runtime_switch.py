@@ -63,6 +63,17 @@ def get_current_runtime(config: dict) -> str:
     return value if value in VALID_RUNTIMES else "auto"
 
 
+def get_configured_codex_binary(config: dict) -> str:
+    """``model.codex_bin`` (one argv element, never shell-parsed) or bare ``codex`` from PATH.
+
+    Gateway/service/Kanban-worker processes often run with a minimal PATH that lacks the codex
+    CLI (e.g. a desktop-bundled ``.../Codex.app/Contents/Resources/codex``), so users need a
+    config-level override for every codex spawn site (#61360)."""
+    model_cfg = config.get("model") if isinstance(config, dict) else None
+    value = model_cfg.get("codex_bin") if isinstance(model_cfg, dict) else None
+    return str(value or "").strip() or "codex"
+
+
 def set_runtime(config: dict, new_value: str) -> str:
     """Persist *new_value* into the config dict in place; returns the previous value."""
     if new_value not in VALID_RUNTIMES:
@@ -74,12 +85,12 @@ def set_runtime(config: dict, new_value: str) -> str:
     return old
 
 
-def check_codex_binary_ok() -> tuple[bool, Optional[str]]:
+def check_codex_binary_ok(codex_bin: str = "codex") -> tuple[bool, Optional[str]]:
     """Best-effort codex CLI install/version check → ``(ok, version_or_message)``."""
     try:
         from agent.transports.codex_app_server import check_codex_binary
 
-        return check_codex_binary()
+        return check_codex_binary(codex_bin=codex_bin)
     except Exception as exc:  # pragma: no cover
         return False, f"codex check failed: {exc}"
 
@@ -88,10 +99,10 @@ def _migration_lines(config: dict) -> list[str]:
     """Run the ~/.codex/config.toml migration and describe it; failures are non-fatal."""
     lines: list[str] = []
     try:
-        from hermes_cli.codex_runtime_plugin_migration import migrate
+        from hermes_cli.codex_runtime_plugin_migration import HERMES_TOOLS_MCP_SERVER_NAME, migrate
         mig_report = migrate(config)
         # The hermes-tools callback is internal plumbing — surfaced separately below.
-        user_servers = [s for s in mig_report.migrated if s != "hermes-tools"]
+        user_servers = [s for s in mig_report.migrated if s != HERMES_TOOLS_MCP_SERVER_NAME]
         if user_servers:
             lines.append(f"Migrated {len(user_servers)} MCP server(s): {', '.join(user_servers)}")
         if mig_report.migrated_plugins:
@@ -104,7 +115,7 @@ def _migration_lines(config: dict) -> list[str]:
             lines.append(
                 f"Default sandbox: {mig_report.wrote_permissions_default} "
                 f"(no approval prompt on every write)")
-        if "hermes-tools" in mig_report.migrated:
+        if HERMES_TOOLS_MCP_SERVER_NAME in mig_report.migrated:
             lines.extend(_HERMES_TOOLS_CALLBACK_NOTE)
         lines.append(f"  (config: {mig_report.target_path})")
         for err in mig_report.errors:
@@ -119,12 +130,13 @@ def apply(
     """Entry point for CLI and gateway. ``config`` is mutated in place when ``new_value`` is set
     (None = show current state); ``persist_callback(config)`` writes it, skipped when None."""
     current = get_current_runtime(config)
+    codex_bin = get_configured_codex_binary(config)
 
     # Cached per apply() call: the enable path would otherwise spawn `codex --version` up to 3x.
     _check_binary_cached = functools.cache(check_codex_binary_ok)
 
     if new_value is None:
-        ok, ver = _check_binary_cached()
+        ok, ver = _check_binary_cached(codex_bin)
         msg = (
             f"openai_runtime: {current}\n"
             f"codex CLI: {'OK ' + ver if ok else 'not available — ' + (ver or 'install with `npm i -g @openai/codex`')}"
@@ -145,7 +157,7 @@ def apply(
     # Switching ON: verify codex CLI before persisting — an opt-in toggle that silently fails on
     # the first turn is the worst possible UX.
     if new_value == "codex_app_server":
-        ok, ver_or_msg = _check_binary_cached()
+        ok, ver_or_msg = _check_binary_cached(codex_bin)
         if not ok:
             return CodexRuntimeStatus(
                 success=False, new_value=None, old_value=current,
@@ -170,7 +182,7 @@ def apply(
         if reapplying_enable
         else f"openai_runtime: {current} → {new_value}"]
     if new_value == "codex_app_server":
-        ok, ver = _check_binary_cached()
+        ok, ver = _check_binary_cached(codex_bin)
         if ok:
             msg_lines.append(f"codex CLI: {ver}")
         # Migrate Hermes' MCP servers + Codex's curated plugins into ~/.codex/config.toml so the

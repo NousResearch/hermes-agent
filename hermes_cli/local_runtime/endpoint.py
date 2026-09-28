@@ -136,14 +136,12 @@ def _kick_managed_boot(config: dict | None) -> None:
 
 
 def _boot_in_flight(config: dict | None) -> bool:
-    """True when the managed runtime is enabled and installed (a verified-manifest scan under
-    runtimes_root(), NOT a bare ``server_binary()`` call — that needs an install_dir, and calling
-    it bare once made this gate throw-and-return False forever, disabling the boot wait)."""
+    """True when the managed runtime is enabled and PM holds an installed engine."""
     with suppress(Exception):
         config = _load_config_if_none(config)
         if not ((config or {}).get("local_runtime") or {}).get("enabled"):
             return False
-        from hermes_cli.local_runtime.binaries import manifest_verified, runtimes_root
+        from hermes_cli.local_runtime.binaries import installed_engine
 
-        return any(manifest_verified(m) for m in runtimes_root().glob("*/*/manifest.json"))
+        return installed_engine() is not None
     return False

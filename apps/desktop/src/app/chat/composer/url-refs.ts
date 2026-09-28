@@ -13,7 +13,115 @@ import { textBeforeCaret } from './text-utils'
 // (a filename, a version, a sentence). Brackets and quotes fence a URL in prose;
 // parens don't, so they stay in and an unbalanced tail is trimmed below.
 const URL_RE = /https?:\/\/[^\s<>[\]{}"'`]+/gi
+// Anchored, non-global twin for the whole-payload check: `exec` on the shared
+// global `URL_RE` would leave its `lastIndex` past the match, and `matchAll`
+// inherits that offset, so the `linkifyUrls` call later in the same paste
+// handler would start scanning after the link and chip nothing.
+const EXACT_URL_RE = /^https?:\/\/[^\s<>[\]{}"'`]+$/i
 const TYPED_URL_RE = /(?:^|\s)(https?:\/\/[^\s<>[\]{}"'`]+)$/i
+
+/** A half-open `[start, end)` span of the draft text. */
+interface TextRange {
+  end: number
+  start: number
+}
+
+const containsIndex = (ranges: TextRange[], index: number) =>
+  ranges.some(range => index >= range.start && index < range.end)
+
+/** A backtick run preceded by an odd number of backslashes is escaped prose, not
+ *  a code delimiter (`\`` reads literally). */
+function isEscaped(text: string, index: number) {
+  let backslashes = 0
+
+  for (let cursor = index - 1; cursor >= 0 && text[cursor] === '\\'; cursor -= 1) {
+    backslashes += 1
+  }
+
+  return backslashes % 2 === 1
+}
+
+/** Markdown fenced code blocks (``` or ~~~), including an unfinished block while
+ *  the user is still composing one. */
+function fencedCodeRanges(text: string) {
+  const ranges: TextRange[] = []
+  let opening: { marker: string; start: number } | undefined
+
+  for (const match of text.matchAll(/^[ \t]{0,3}(`{3,}|~{3,})([^\r\n]*)(?:\r?\n|$)/gm)) {
+    const marker = match[1]
+    const tail = match[2]
+
+    if (!opening) {
+      // Backticks in a backtick fence's info string are invalid Markdown, so a
+      // stray run must not turn the rest of the draft into protected code.
+      if (marker[0] === '`' && tail.includes('`')) {
+        continue
+      }
+
+      opening = { marker, start: match.index ?? 0 }
+
+      continue
+    }
+
+    // A closing fence is the same character, at least as long, with nothing but
+    // whitespace after it.
+    if (marker[0] === opening.marker[0] && marker.length >= opening.marker.length && tail.trim() === '') {
+      ranges.push({ end: (match.index ?? 0) + match[0].length, start: opening.start })
+      opening = undefined
+    }
+  }
+
+  if (opening) {
+    ranges.push({ end: text.length, start: opening.start })
+  }
+
+  return ranges
+}
+
+/** Markdown inline code spans outside fences, including an unfinished span while
+ *  the user is still composing one. Runs pair up by matching backtick length, so
+ *  `` `a ` b` `` stays one span. */
+function inlineCodeRanges(text: string, fenced: TextRange[]) {
+  const ranges: TextRange[] = []
+
+  const markers = Array.from(text.matchAll(/`+/g)).filter(marker => {
+    const index = marker.index ?? 0
+
+    return !containsIndex(fenced, index) && !isEscaped(text, index)
+  })
+
+  let markerIndex = 0
+
+  while (markerIndex < markers.length) {
+    const opening = markers[markerIndex]
+
+    const closingIndex = markers.findIndex(
+      (candidate, index) => index > markerIndex && candidate[0].length === opening[0].length
+    )
+
+    if (closingIndex === -1) {
+      ranges.push({ end: text.length, start: opening.index ?? 0 })
+
+      break
+    }
+
+    const closing = markers[closingIndex]
+
+    ranges.push({ end: (closing.index ?? 0) + closing[0].length, start: opening.index ?? 0 })
+    markerIndex = closingIndex + 1
+  }
+
+  return ranges
+}
+
+/** The spans of `text` Markdown renders as code — fenced blocks plus inline
+ *  spans. A URL inside one is verbatim payload (a stack trace, a log line, a
+ *  command), not prose to chip, so the recognizer must leave it alone. */
+function markdownCodeRanges(text: string) {
+  const fenced = fencedCodeRanges(text)
+
+  return [...fenced, ...inlineCodeRanges(text, fenced)]
+}
 
 /** A URL at the end of a sentence carries the punctuation that ended it. */
 function splitUrlTail(raw: string) {
@@ -35,11 +143,16 @@ const hasHost = (url: string) => /^https?:\/\/[^/\s]/i.test(url)
 export function linkifyUrls(text: string) {
   REF_RE.lastIndex = 0
 
-  const fenced = Array.from(text.matchAll(REF_RE)).map(match => {
+  // URLs inside an existing `@url:` directive or a Markdown code span are not
+  // prose to chip — the directive is already a reference, and code is verbatim
+  // payload the user pasted (a stack trace, a command, a log line).
+  const protectedRanges = Array.from(text.matchAll(REF_RE)).map(match => {
     const start = match.index ?? 0
 
     return { end: start + match[0].length, start }
   })
+
+  protectedRanges.push(...markdownCodeRanges(text))
 
   let out = ''
   let cursor = 0
@@ -48,7 +161,7 @@ export function linkifyUrls(text: string) {
     const start = match.index ?? 0
     const { url } = splitUrlTail(match[0])
 
-    if (!hasHost(url) || fenced.some(span => start >= span.start && start < span.end)) {
+    if (!hasHost(url) || containsIndex(protectedRanges, start)) {
       continue
     }
 
@@ -68,11 +181,7 @@ export function resolveExactLinkPaste(raw: string): string | null {
   const text = raw.trim()
   const unwrapped = text.startsWith('<') && text.endsWith('>') && text.length > 2 ? text.slice(1, -1).trim() : text
 
-  URL_RE.lastIndex = 0
-
-  const match = URL_RE.exec(unwrapped)
-
-  if (!match || match.index !== 0 || match[0].length !== unwrapped.length) {
+  if (!EXACT_URL_RE.test(unwrapped)) {
     return null
   }
 
@@ -141,10 +250,21 @@ export function chipTypedUrlOnSpace(event: KeyboardEvent<HTMLDivElement>) {
   }
 
   const before = textBeforeCaret(editor)
-  const match = before ? TYPED_URL_RE.exec(before) : null
+
+  if (!before) {
+    return false
+  }
+
+  const match = TYPED_URL_RE.exec(before)
   const token = match?.[1]
 
   if (!token) {
+    return false
+  }
+
+  // A link typed inside a code block or span is verbatim payload, not prose —
+  // chipping it would rewrite code the user is authoring.
+  if (containsIndex(markdownCodeRanges(before), before.length - token.length)) {
     return false
   }
 

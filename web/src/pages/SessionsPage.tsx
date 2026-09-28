@@ -91,6 +91,7 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     sms: { icon: MessageCircle, color: "text-success" },
     cron: { icon: Clock, color: "text-warning" },
     tool: { icon: Play, color: "text-warning" },
+    oneshot: { icon: Terminal, color: "text-warning" },
     api_server: { icon: Globe, color: "text-muted-foreground" },
     acp: { icon: Database, color: "text-muted-foreground" },
     hermes_flow: { icon: Play, color: "text-warning" },
@@ -101,6 +102,7 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
 const AUTOMATION_SESSION_SOURCES = [
   "cron",
   "tool",
+  "oneshot",
   "api_server",
   "acp",
   "hermes_flow",
@@ -1280,10 +1282,11 @@ export default function SessionsPage() {
   // the global management profile, which lags the row (it stays "" while the
   // sticky active profile equals the dashboard process's own, so the request
   // hits the process store — a delete then "succeeds" as already_absent).
-  // Search rows carry no stamp: undefined falls back to the management profile.
+  // Current search rows carry the same stamp; an unstamped row from an older
+  // backend still falls back to the management profile.
   const rowProfile = useCallback(
-    (id: string) => sessions.find((s) => s.id === id)?.profile,
-    [sessions],
+    (id: string) => (searchResults ?? sessions).find((s) => s.id === id)?.profile,
+    [searchResults, sessions],
   );
 
   const sessionDelete = useConfirmDelete({
@@ -1393,19 +1396,31 @@ export default function SessionsPage() {
         ids,
         owners.size === 1 ? [...owners][0] : undefined,
       );
-      showToast(
-        t.sessions.selectedSessionsDeleted.replace(
-          "{count}",
-          String(resp.deleted),
-        ),
-        "success",
-      );
+      const skippedCount = resp.skipped_active?.length ?? 0;
+      if (skippedCount) {
+        showToast(
+          t.sessions.selectedSessionsSkippedActive
+            .replace("{deleted}", String(resp.deleted))
+            .replace("{count}", String(skippedCount)),
+          "error",
+        );
+      } else {
+        showToast(
+          t.sessions.selectedSessionsDeleted.replace(
+            "{count}",
+            String(resp.deleted),
+          ),
+          "success",
+        );
+      }
       setDeleteSelectedOpen(false);
       // Drop deleted rows out of the visible list immediately rather
       // than waiting for the reload. The reload still runs so total /
       // pagination stays correct, and so any rows the reload pulls in
       // from later pages render in place.
-      const deletedSet = new Set(ids);
+      // Rows a live turn still owns were refused server-side; keep them listed.
+      const skipped = new Set(resp.skipped_active ?? []);
+      const deletedSet = new Set(ids.filter((id) => !skipped.has(id)));
       setSessions((prev) => prev.filter((s) => !deletedSet.has(s.id)));
       setTotal((prev) => Math.max(0, prev - resp.deleted));
       if (expandedId && deletedSet.has(expandedId)) setExpandedId(null);

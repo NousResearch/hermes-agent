@@ -1,0 +1,48 @@
+name: Icon Assets Freshness
+
+# The committed icon outputs must match what scripts/generate_icons.py
+# renders from assets/nous-girl-*.svg + assets/backgrounds/*.svg. Regular
+# builds and user installs consume the committed files and never render, so
+# this lane is what keeps them honest: regenerate, structural --check, then
+# fail on any byte difference. Fix a red run with
+# `node scripts/generate-icons.mjs` on a Hermes runtime interpreter and commit.
+#
+# Byte-determinism note: resvg renders the same SVG to identical bytes on any
+# host for pure-shape artwork. If the master ever contains <text>, font
+# rendering can differ across OSes — pin fonts via resvg's font_files/font_dirs
+# and commit a known font before relying on this check for that master.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Regenerate icons + diff against committed
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # The generator runs on a Hermes runtime interpreter; [] exports one as HERMES_PYTHON.
+      - uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          extras: '[]'
+          cache-python: true
+          prune-python-cache: true
+
+      - name: Regenerate every target, verify structure, diff against committed
+        env:
+          HERMES_PAYLOAD_TAG: ''
+          HERMES_BUILD_COMMIT: ''
+        run: |
+          node scripts/generate-icons.mjs
+          node scripts/generate-icons.mjs --check
+          if ! git diff --exit-code --stat || [ -n "$(git status --porcelain --untracked-files=all)" ]; then
+            git status --porcelain --untracked-files=all
+            echo "::error::Committed icons are stale. Run 'node scripts/generate-icons.mjs' and commit the result."
+            exit 1
+          fi

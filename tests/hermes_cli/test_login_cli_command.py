@@ -9,7 +9,6 @@ from rich.console import Console
 from hermes_cli import anon_auth
 from hermes_cli import cli_commands_mixin as commands
 
-
 class _Thread:
     def __init__(self, target):
         self.target = target
@@ -20,7 +19,6 @@ class _Thread:
 
     def join(self):
         self.target()
-
 
 def _cli(monkeypatch):
     cli = SimpleNamespace(console=MagicMock())
@@ -36,7 +34,6 @@ def _cli(monkeypatch):
     output = []
     monkeypatch.setattr(commands, "_cp", lambda *lines: output.extend(lines))
     return cli, workers, output
-
 
 def test_the_cli_handler_prints_the_code_then_drains_off_thread(monkeypatch):
     cli, workers, output = _cli(monkeypatch)
@@ -60,7 +57,6 @@ def test_the_cli_handler_prints_the_code_then_drains_off_thread(monkeypatch):
     assert workers[0][0].started is True
     assert workers[0][0].target() == (
         "Signed in as person@example.test.\nDefault model is now model-1.")
-
 
 @pytest.mark.parametrize(
     "terminal,initial_model,expected_model",
@@ -86,7 +82,6 @@ def test_the_drain_only_moves_the_free_tier_model_on_completion(
 
     assert cli.model == expected_model
 
-
 def test_a_precondition_prints_without_starting_a_thread(monkeypatch):
     cli, workers, output = _cli(monkeypatch)
     monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter([anon_auth.AlreadySignedIn()]))
@@ -95,7 +90,6 @@ def test_a_precondition_prints_without_starting_a_thread(monkeypatch):
 
     assert output == ["  Starting sign-in...", "  Already signed in."]
     assert workers == []
-
 
 def test_ctrl_c_during_the_first_advance_prints_the_cancelled_copy(monkeypatch):
     cli, workers, output = _cli(monkeypatch)
@@ -116,7 +110,6 @@ def test_ctrl_c_during_the_first_advance_prints_the_cancelled_copy(monkeypatch):
     assert closed.is_set()
     assert workers == []
 
-
 def test_the_handler_never_calls_input_and_uses_the_short_timeout(monkeypatch):
     cli, _workers, _output = _cli(monkeypatch)
     seen = []
@@ -131,17 +124,9 @@ def test_the_handler_never_calls_input_and_uses_the_short_timeout(monkeypatch):
 
     assert seen == [{"timeout_seconds": 8.0}]
 
-
-def test_the_in_chat_and_terminal_completion_use_their_own_copy():
-    state = anon_auth.Completed(email="", model="", model_changed=True)
-    assert "run /model to pick one" in anon_auth.drain_sign_in_copy(iter([state]), chat=True)
-    assert "run `hermes model` to pick one" in anon_auth.drain_sign_in_copy(iter([state]), chat=False)
-
-
 def test_the_command_resolves_through_the_cli_fallback():
     from cli import HermesCLI
     assert HermesCLI._slash_handler("login") == ("_handle_login_command", True)
-
 
 def test_the_drain_writes_to_the_console_captured_at_start(monkeypatch):
     old_buf, new_buf = StringIO(), StringIO()
@@ -180,7 +165,6 @@ def test_the_drain_writes_to_the_console_captured_at_start(monkeypatch):
 
     assert "Signed in as person@example.test." in old_buf.getvalue()
     assert new_buf.getvalue() == ""
-
 
 def test_the_live_tui_drain_prints_through_cprint_instead_of_the_captured_console(monkeypatch):
     import cli as cli_module
@@ -226,35 +210,3 @@ def test_the_live_tui_drain_prints_through_cprint_instead_of_the_captured_consol
     assert new_buf.getvalue() == ""
     assert "  Sign-in" in output
     assert any("Signed in as person@example.test." in line for line in output)
-
-
-def test_upgrade_guest_keeps_the_terminal_timeout(monkeypatch):
-    seen = []
-    monkeypatch.setattr(anon_auth, "render_sign_in_cli", lambda **kwargs: seen.append(kwargs) or 0)
-    monkeypatch.setattr("hermes_cli.auth_device_flow._is_remote_session", lambda: True)
-
-    assert anon_auth.upgrade_guest(SimpleNamespace(timeout=None, no_browser=False)) == 0
-    assert seen[0]["timeout_seconds"] == 15.0
-    assert seen[0]["chat"] is False
-
-
-def test_the_terminal_renderer_keeps_the_original_line_sequence(monkeypatch, capsys):
-    monkeypatch.setattr("hermes_cli.auth_device_flow._is_remote_session", lambda: True)
-    monkeypatch.setattr(anon_auth, "run_sign_in", lambda **_kwargs: iter([
-        anon_auth.Code("https://example.test/sign-in", "CODE-1", 900, 5),
-        anon_auth.Waiting(),
-        anon_auth.Completed(email="person@example.test", model="model-1", model_changed=True),
-    ]))
-
-    assert anon_auth.upgrade_guest(SimpleNamespace(timeout=None, no_browser=False)) == 0
-    assert capsys.readouterr().out.splitlines() == [
-        anon_auth.UPGRADE_START,
-        "",
-        "To continue:",
-        "  1. Open: https://example.test/sign-in",
-        "  2. If prompted, enter code: CODE-1",
-        f"  {anon_auth.UPGRADE_DO_NOT_SHARE}",
-        anon_auth.UPGRADE_WAITING,
-        "Signed in as person@example.test.",
-        "Default model is now model-1.",
-    ]

@@ -46,7 +46,15 @@ function requester(result: Record<string, unknown> = { ok: true }) {
   return { calls, request }
 }
 
-const stored = () => window.localStorage.getItem(DESKTOP_METRICS_STATE_KEY)
+// One record per (connection, profile); the tests' single profile owns the only one.
+const stored = () => {
+  const key = Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i) ?? '').find(k =>
+    k.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`)
+  )
+
+  return key ? window.localStorage.getItem(key) : null
+}
+
 const methods = (calls: Call[]) => calls.map(([method]) => method)
 const flush = () => new Promise(resolve => setTimeout(resolve, 0))
 
@@ -110,7 +118,7 @@ describe('consent gate', () => {
 
     expect(calls).toEqual([])
     expect(stored()).toBeNull()
-    expect(bridge.setEnabled).toHaveBeenCalledWith(false)
+    expect(bridge.setEnabled).toHaveBeenCalledWith(false, expect.any(String))
     expect(bridge.takeRendererCrashes).not.toHaveBeenCalled()
   })
 
@@ -229,7 +237,7 @@ describe('friction', () => {
     await flush()
     await flush()
 
-    expect(bridge.setEnabled).toHaveBeenCalledWith(true)
+    expect(bridge.setEnabled).toHaveBeenCalledWith(true, expect.any(String))
     expect(calls.map(([, p]) => p.detail)).toEqual(['oom', 'crash'])
     expect(bridge.ackRendererCrashes).toHaveBeenCalledWith(true)
   })
@@ -414,5 +422,56 @@ describe('dislike signals', () => {
 
     await flush()
     expect(calls).toHaveLength(20)
+  })
+})
+
+describe('per profile, per window', () => {
+  it('a profile switch forgets the gate: nothing of A is kept or sent under B, and A keeps its own day', async () => {
+    const a = requester()
+    const b = requester()
+
+    bindDesktopMetrics(a.request, 'local|alpha')
+    setDesktopMetricsGate('on')
+    recordFeatureUse('terminal_pane')
+    recordAction('view.toggleSidebar', 'shortcut')
+
+    bindDesktopMetrics(b.request, 'local|beta') // B's switch not read yet
+    vi.setSystemTime(DAY2)
+    tickDesktopMetrics()
+    recordFeatureUse('projects')
+    await flush()
+    expect(b.calls).toEqual([])
+
+    setDesktopMetricsGate('on')
+    recordFeatureUse('terminal_pane')
+    await flush()
+    expect(b.calls).toEqual([['shared_metrics.desktop_feature_use', { area: 'terminal_pane' }]])
+
+    bindDesktopMetrics(a.request, 'local|alpha')
+    setDesktopMetricsGate('on')
+    await flush()
+    expect(a.calls.filter(([m]) => m === 'shared_metrics.desktop_daily').map(([, p]) => p.actions)).toEqual([
+      [{ action: 'view.toggleSidebar', count: 1, via: 'shortcut' }]
+    ])
+  })
+
+  it('two windows of one profile add to one day instead of overwriting each other', async () => {
+    const w1 = await import('./desktop-metrics')
+
+    w1.bindDesktopMetrics(null, 'local|default')
+    w1.setDesktopMetricsGate('on')
+    vi.resetModules()
+    const w2 = await import('./desktop-metrics')
+
+    w2.bindDesktopMetrics(null, 'local|default')
+    w2.setDesktopMetricsGate('on')
+
+    w1.recordAction('composer.send', 'shortcut')
+    w2.recordAction('composer.send', 'shortcut')
+    w2.recordAction('session.new', 'shortcut')
+    w1.recordAction('composer.send', 'shortcut')
+
+    expect(JSON.parse(stored()!).today.actions).toEqual({ 'composer.send|shortcut': 3, 'session.new|shortcut': 1 })
+    w2.resetDesktopMetricsForTests()
   })
 })

@@ -5,16 +5,17 @@
  * count. Main window only; renders nothing.
  */
 
-import { useEffect } from 'react'
+import { useStore } from '@nanostores/react'
+import { useEffect, useMemo } from 'react'
 
 import { contributedRoutes } from '@/app/routes'
 import { $workspaceMode } from '@/components/pane-shell/workspace-scope'
 import { $commandPaletteOpen } from '@/store/command-palette'
+import { $activeConnectionId } from '@/store/connections'
 import {
   bindDesktopMetrics,
   cancelPendingBackendDrop,
   noteInteraction,
-  persistDesktopMetricsNow,
   recordFeatureUse,
   recordFriction,
   routeArea,
@@ -26,16 +27,16 @@ import {
   trackFlow
 } from '@/store/desktop-metrics'
 import { $findInPage } from '@/store/find-in-page'
+import { requestGatewayForAgent } from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { SESSION_SEARCH_FOCUS_EVENT } from '@/store/layout'
-import { $profiles, $profilesByConnection } from '@/store/profile'
+import { $profiles, $profilesByConnection, normalizeProfileKey } from '@/store/profile'
 import { $modelPickerOpen, $sessionPickerOpen } from '@/store/session'
 import { $switcherOpen } from '@/store/session-switcher'
 import {
   $sharedMetricsConsent,
   readSharedMetricsConsent,
-  type SharedMetricsConsent,
-  type SharedMetricsRequester
+  type SharedMetricsConsent
 } from '@/store/shared-metrics'
 
 import { observeOnboardingMetrics } from './desktop-onboarding-metrics'
@@ -93,16 +94,26 @@ export function useDesktopMetrics({
   enabled,
   gatewayOpen,
   pathname,
-  profile,
-  requestGateway
+  profile
 }: {
   enabled: boolean
   gatewayOpen: boolean
   pathname: string
   profile: string
-  requestGateway: SharedMetricsRequester
 }): void {
-  // The focused gateway and its collection switch (re-read on every attach and profile switch).
+  const connectionId = useStore($activeConnectionId)
+  const profileKey = normalizeProfileKey(profile)
+
+  // Pinned to the focused (connection, profile): never whichever session tile is focused.
+  const request = useMemo(
+    () =>
+      <T>(method: string, params: Record<string, unknown> = {}) =>
+        requestGatewayForAgent<T>(connectionId, profileKey, method, params),
+    [connectionId, profileKey]
+  )
+
+  // The focused profile and its collection switch: re-read on attach, profile switch and window
+  // focus (a CLI or another window may have changed it meanwhile).
   useEffect(() => {
     if (!enabled || !gatewayOpen) {
       bindDesktopMetrics(null)
@@ -112,18 +123,23 @@ export function useDesktopMetrics({
 
     let cancelled = false
 
-    bindDesktopMetrics(requestGateway)
-    void readSharedMetricsConsent(requestGateway).then(consent => {
-      // An unreadable answer (older backend, flap) keeps the last known gate.
-      if (!cancelled && consent) {
-        setDesktopMetricsGate(gateFor(consent))
-      }
-    })
+    const refresh = () =>
+      void readSharedMetricsConsent(request).then(consent => {
+        // An unreadable answer (older backend, flap) keeps the last known gate.
+        if (!cancelled && consent) {
+          setDesktopMetricsGate(gateFor(consent))
+        }
+      })
+
+    bindDesktopMetrics(request, `${connectionId ?? ''}|${profileKey}`)
+    refresh()
+    window.addEventListener('focus', refresh)
 
     return () => {
       cancelled = true
+      window.removeEventListener('focus', refresh)
     }
-  }, [enabled, gatewayOpen, profile, requestGateway])
+  }, [connectionId, enabled, gatewayOpen, profileKey, request])
 
   // A first-run answer or a Settings change lands in the consent atom.
   useEffect(() => {
@@ -176,9 +192,7 @@ export function useDesktopMetrics({
     })()
 
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') {
-        persistDesktopMetricsNow()
-      } else {
+      if (document.visibilityState === 'visible') {
         tickDesktopMetrics()
       }
     }
@@ -210,7 +224,6 @@ export function useDesktopMetrics({
     window.addEventListener('keydown', onInteraction, { capture: true, passive: true })
     window.addEventListener('wheel', onInteraction, { capture: true, passive: true })
     document.addEventListener('visibilitychange', onVisibility)
-    window.addEventListener('pagehide', persistDesktopMetricsNow)
     const tick = window.setInterval(() => tickDesktopMetrics(), DAY_TICK_MS)
 
     return () => {
@@ -220,7 +233,6 @@ export function useDesktopMetrics({
       window.removeEventListener('keydown', onInteraction, { capture: true })
       window.removeEventListener('wheel', onInteraction, { capture: true })
       document.removeEventListener('visibilitychange', onVisibility)
-      window.removeEventListener('pagehide', persistDesktopMetricsNow)
       window.clearInterval(tick)
     }
   }, [enabled])

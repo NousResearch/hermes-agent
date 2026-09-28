@@ -8,17 +8,21 @@
  * profile's `telemetry.shared_metrics.enabled` as last read from the backend
  * (the same switch the consent strip and Settings › Privacy write). While it is
  * not `on` nothing is persisted and nothing is sent; turning it off purges the
- * local state and tells main to drop its pending renderer-crash record.
+ * local state and tells main to drop its pending renderer-crash record. Binding
+ * another (connection, profile) forgets the gate until that profile's switch is
+ * read, so nothing of one profile is ever kept or sent under another's.
  *
  * Every value is a code-defined id from the closed sets below (mirrored by
  * hermes_cli/observability/shared_metrics_contract.py, which collapses any
  * stranger to `other`). Never a session id, path, message, bot name or setting
  * value.
  *
- * Local state (localStorage `hermes.desktop.metrics.v1`, written only while on):
- * the UTC day, areas already reported today, per-day caps, today's aggregated
- * action counts and per-mode activity, finished days awaiting the backend's ack,
- * and the onboarding latch (steps sent / steps still open).
+ * Local state (localStorage `hermes.desktop.metrics.v1:<hash of connection|profile>`,
+ * written only while on): the UTC day, areas already reported today, per-day
+ * caps, today's aggregated action counts and per-mode activity, finished days
+ * awaiting the backend's ack, and the onboarding latch (steps sent / still open).
+ * Every change re-reads the record, so peer windows of one profile add to it
+ * instead of overwriting each other; the backend latches each day and area once.
  */
 
 import { atom } from 'nanostores'
@@ -316,7 +320,6 @@ const RAGE_CLICK_COUNT = 3
 export const ACTIVE_IDLE_GAP_MS = 5 * 60_000
 const PENDING_DAYS_MAX = 7
 const QUEUE_MAX = 50
-const SAVE_DEBOUNCE_MS = 5000
 const DROP_SETTLE_MS = 3000
 
 // ── state ─────────────────────────────────────────────────────────────────────
@@ -350,10 +353,10 @@ export const $desktopMetricsGate = atom<DesktopMetricsGate>(null)
 /** One id per renderer load: an onboarding step still open from another load was abandoned. */
 const LAUNCH_ID = typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : String(Math.random())
 
-let state: MetricsState | null = null
+/** Hash of the bound `connection|profile`: names the local record and main's crash consent. */
+let scope = scopeKey('|default')
 let request: SharedMetricsRequester | null = null
 let queue: [string, Record<string, unknown>][] = []
-let saveTimer: ReturnType<typeof setTimeout> | null = null
 let flushingDays = false
 let botCount = 0
 let lastInteractionAt = 0
@@ -362,6 +365,21 @@ const openFlows = new Map<DesktopFlowId, boolean>()
 let pendingDrop: { detail: BackendDisconnectDetail; timer: ReturnType<typeof setTimeout> } | null = null
 let lastBackendExitAt = 0
 const recentClicks = new Map<string, number[]>()
+
+/** FNV-1a: the local key never carries a profile name. */
+function scopeKey(value: string): string {
+  let hash = 0x811c9dc5
+
+  for (let i = 0; i < value.length; i++) {
+    hash = Math.imul(hash ^ value.charCodeAt(i), 0x01000193)
+  }
+
+  return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+function stateKey(): string {
+  return `${STATE_KEY}:${scope}`
+}
 
 function utcDay(now = Date.now()): string {
   return new Date(now).toISOString().slice(0, 10)
@@ -408,7 +426,7 @@ function readDay(raw: unknown): DayAggregate | null {
 }
 
 function readState(): MetricsState {
-  const raw = readJson<Partial<MetricsState>>(STATE_KEY)
+  const raw = readJson<Partial<MetricsState>>(stateKey())
   const today = (raw && readDay(raw.today)) || emptyDay(utcDay())
 
   return {
@@ -424,7 +442,6 @@ function readState(): MetricsState {
   }
 }
 
-/** Roll a finished day into `pending` (only days with real use) and reset the per-day sets. */
 /** Close out a finished day (into `pending`) when the UTC date moved; true when it did. */
 function rollDay(current: MetricsState, now = Date.now()): boolean {
   const day = utcDay(now)
@@ -444,36 +461,21 @@ function rollDay(current: MetricsState, now = Date.now()): boolean {
   return true
 }
 
-function persist(): void {
-  if (saveTimer) {
-    clearTimeout(saveTimer)
-    saveTimer = null
-  }
-
-  if ($desktopMetricsGate.get() === 'on' && state) {
-    writeJson(STATE_KEY, state)
-  }
-}
-
-function persistSoon(): void {
-  if (!saveTimer) {
-    saveTimer = setTimeout(persist, SAVE_DEBOUNCE_MS)
-  }
-}
-
-/** Run `fn` on the live state — only while collection is on. */
+/** Run `fn` on this profile's stored record and write it back — only while collection is on.
+ *  Read fresh each time (peer windows share it); never nest (the inner write would be lost). */
 function withState<T>(fn: (current: MetricsState) => T): T | undefined {
   if ($desktopMetricsGate.get() !== 'on') {
     return undefined
   }
 
-  state ??= readState()
+  const current = readState()
 
-  if (rollDay(state)) {
-    persist()
-  }
+  rollDay(current)
+  const result = fn(current)
 
-  return fn(state)
+  writeJson(stateKey(), current)
+
+  return result
 }
 
 function send(method: string, params: Record<string, unknown>): void {
@@ -515,7 +517,6 @@ export function recordFeatureUse(area: DesktopFeatureArea, now = Date.now()): vo
     }
 
     current.areas = [...current.areas, area]
-    persist()
     send('shared_metrics.desktop_feature_use', { area })
   })
 }
@@ -613,7 +614,6 @@ export function recordFriction(kind: DesktopFrictionKind, detail: DesktopFrictio
       return
     }
 
-    persistSoon()
     send('shared_metrics.desktop_friction', { detail, kind })
   })
 }
@@ -629,7 +629,6 @@ export function recordDislike(
       return
     }
 
-    persistSoon()
     send('shared_metrics.desktop_dislike', {
       ...(setting ? { setting, signal, target: 'setting' } : { signal, target }),
       ...(profile ? { profile } : {})
@@ -671,7 +670,6 @@ export function recordAction(action: string, via: DesktopActionVia, now = Date.n
     const key = `${action}|${via}`
 
     current.today.actions[key] = (current.today.actions[key] ?? 0) + 1
-    persistSoon()
   })
 
   if (via !== 'click' || $desktopMetricsGate.get() !== 'on') {
@@ -701,24 +699,22 @@ export function noteInteraction(now = Date.now(), mode: DesktopMode = $workspace
     if (gap > 0 && gap <= ACTIVE_IDLE_GAP_MS) {
       entry.activeMs += gap
     }
-
-    persistSoon()
   })
 }
 
 /** The user sent a message from a session in `mode` (a bot-owned tile is `bots`). */
 export function noteMessageSent(mode: DesktopMode = $workspaceMode.get()): void {
-  withState(current => {
+  const onboarded = withState(current => {
     const entry = (current.today.modes[mode] ??= { activeMs: 0, messages: 0 })
 
     entry.messages += 1
-    persistSoon()
-    const onboarded = current.onboarding.sent.some(key => !key.startsWith('first_message:'))
 
-    if (onboarded) {
-      recordOnboarding('first_message', 'completed')
-    }
+    return current.onboarding.sent.some(key => !key.startsWith('first_message:'))
   })
+
+  if (onboarded) {
+    recordOnboarding('first_message', 'completed')
+  }
 }
 
 /** Configured bots (Bot Mode roster = Hermes profiles) — a count, never names. */
@@ -729,7 +725,7 @@ export function setDesktopBotCount(count: number): void {
   })
 }
 
-/** One first-run step transition, once per (step, event) per install. A step
+/** One first-run step transition, once per (step, event) per profile. A step
  *  reached but not completed is remembered; if it is still open on a later
  *  load, it was abandoned. */
 export function recordOnboarding(step: DesktopOnboardingStep, event: DesktopOnboardingEvent): void {
@@ -750,8 +746,6 @@ export function recordOnboarding(step: DesktopOnboardingStep, event: DesktopOnbo
       current.onboarding.sent = [...current.onboarding.sent, key]
     }
 
-    persist()
-
     if (fresh) {
       send('shared_metrics.desktop_onboarding', { event, step })
     }
@@ -762,22 +756,19 @@ export function recordOnboarding(step: DesktopOnboardingStep, event: DesktopOnbo
  *  longer open, so the next launch does not call it abandoned. */
 export function closeOnboardingStep(step: DesktopOnboardingStep): void {
   withState(current => {
-    if (!(step in current.onboarding.open)) {
-      return
-    }
-
     const open = { ...current.onboarding.open }
 
     delete open[step]
     current.onboarding.open = open
-    persist()
   })
 }
 
 // ── lifecycle ─────────────────────────────────────────────────────────────────
 
-function reportAbandonedSteps(current: MetricsState): void {
-  for (const [step, launch] of Object.entries(current.onboarding.open)) {
+function reportAbandonedSteps(): void {
+  const open = withState(current => Object.entries(current.onboarding.open)) ?? []
+
+  for (const [step, launch] of open) {
     if (launch !== LAUNCH_ID) {
       recordOnboarding(step as DesktopOnboardingStep, 'abandoned')
     }
@@ -785,17 +776,18 @@ function reportAbandonedSteps(current: MetricsState): void {
 }
 
 async function flushPendingDays(): Promise<void> {
-  if (flushingDays || !request || $desktopMetricsGate.get() !== 'on' || !state?.pending.length) {
+  if (flushingDays || !request) {
     return
   }
 
   flushingDays = true
 
   try {
-    while (state?.pending.length && request !== null && $desktopMetricsGate.get() === 'on') {
-      const day = state.pending[0]!
+    // Pinned to the profile and gateway that started the flush: a switch mid-await stops it.
+    const [owner, requester] = [scope, request]
 
-      const result = await request<{ recorded?: boolean }>('shared_metrics.desktop_daily', {
+    for (let day = withState(current => current.pending[0]); day; day = withState(current => current.pending[0])) {
+      const result = await requester<{ recorded?: boolean }>('shared_metrics.desktop_daily', {
         actions: Object.entries(day.actions)
           .filter(([, count]) => count > 0)
           .map(([key, count]) => {
@@ -810,12 +802,15 @@ async function flushPendingDays(): Promise<void> {
           .map(mode => ({ active_ms: day.modes[mode]!.activeMs, messages_sent: day.modes[mode]!.messages, mode }))
       })
 
-      if (result?.recorded !== true || !state) {
+      if (result?.recorded !== true || scope !== owner || request !== requester) {
         return
       }
 
-      state.pending = state.pending.filter(entry => entry !== day)
-      persist()
+      const reported = day.day
+
+      withState(current => {
+        current.pending = current.pending.filter(entry => entry.day !== reported)
+      })
     }
   } catch {
     // An older backend or a flap: the day stays pending for the next attach.
@@ -865,46 +860,39 @@ export function flushDesktopMetrics(): void {
     send(method, params)
   }
 
-  withState(current => {
-    reportAbandonedSteps(current)
-    persist()
-  })
+  reportAbandonedSteps()
   void flushPendingDays()
   void drainRendererCrashes()
 }
 
-/** Main records renderer crashes only while this is on; off deletes its pending record. */
+/** Main records this window's renderer crashes only while its profile is on; off drops that profile's. */
 function tellMain(on: boolean): void {
   try {
-    Promise.resolve(window.hermesDesktop?.desktopMetrics?.setEnabled?.(on)).catch(() => undefined)
+    Promise.resolve(window.hermesDesktop?.desktopMetrics?.setEnabled?.(on, scope)).catch(() => undefined)
   } catch {
     // An older shell without the bridge.
   }
 }
 
+function forgetInMemory(): void {
+  queue = []
+  areaOpenedAt.clear()
+  openFlows.clear()
+  recentClicks.clear()
+  cancelPendingBackendDrop()
+}
+
 /** Apply the focused profile's collection switch. Off purges everything local. */
 export function setDesktopMetricsGate(next: DesktopMetricsGate): void {
-  const previous = $desktopMetricsGate.get()
-
-  if (next === previous) {
+  if (next === $desktopMetricsGate.get()) {
     return
   }
 
   $desktopMetricsGate.set(next)
 
   if (next === 'off') {
-    if (saveTimer) {
-      clearTimeout(saveTimer)
-      saveTimer = null
-    }
-
-    state = null
-    queue = []
-    areaOpenedAt.clear()
-    openFlows.clear()
-    recentClicks.clear()
-    cancelPendingBackendDrop()
-    writeJson(STATE_KEY, null)
+    forgetInMemory()
+    writeJson(stateKey(), null)
     tellMain(false)
 
     return
@@ -916,35 +904,31 @@ export function setDesktopMetricsGate(next: DesktopMetricsGate): void {
   }
 }
 
-/** The requester for the focused profile's gateway (null while it is down: events queue in memory). */
-export function bindDesktopMetrics(next: SharedMetricsRequester | null): void {
+/** The requester for the focused profile's gateway (null while it is down: events queue in memory).
+ *  `profileScope` (`connection|profile`) other than the bound one forgets the gate until that
+ *  profile's switch is read. */
+export function bindDesktopMetrics(next: SharedMetricsRequester | null, profileScope?: string): void {
+  const nextScope = profileScope === undefined ? scope : scopeKey(profileScope)
+
+  if (nextScope !== scope) {
+    forgetInMemory()
+    scope = nextScope
+    $desktopMetricsGate.set(null)
+  }
+
   request = next
   flushDesktopMetrics()
 }
 
 /** Periodic/visibility tick: roll the day over and send what finished. */
 export function tickDesktopMetrics(now = Date.now()): void {
-  withState(current => {
-    if (rollDay(current, now)) {
-      persist()
-    }
-  })
+  withState(current => void rollDay(current, now))
   void flushPendingDays()
-}
-
-/** Write any debounced state now (page hide / unload). */
-export function persistDesktopMetricsNow(): void {
-  persist()
 }
 
 /** Test-only: forget in-memory state (localStorage is the test's to clear). */
 export function resetDesktopMetricsForTests(): void {
-  if (saveTimer) {
-    clearTimeout(saveTimer)
-  }
-
-  saveTimer = null
-  state = null
+  scope = scopeKey('|default')
   request = null
   queue = []
   flushingDays = false
@@ -958,4 +942,5 @@ export function resetDesktopMetricsForTests(): void {
   $desktopMetricsGate.set(null)
 }
 
+/** Prefix of the per-profile local record (`<prefix>:<scope hash>`). */
 export const DESKTOP_METRICS_STATE_KEY = STATE_KEY

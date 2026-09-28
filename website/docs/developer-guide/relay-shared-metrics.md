@@ -329,7 +329,11 @@ A turn whose inbound the connector did not stamp is still a gateway message
 
 Recorded by the Desktop app into the focused profile's store, only while that
 profile's collection switch is on. With it off the app keeps no local record
-(switching it off deletes what was kept) and sends nothing. There is no rating
+(switching it off deletes what was kept) and sends nothing. The app keeps one
+local record per gateway connection and profile, shared by that profile's
+windows; after a profile switch nothing is kept or sent until the new profile's
+switch has been read, and the switch is re-read whenever a window regains focus
+(so an opt-out from the CLI or another window takes effect there). There is no rating
 prompt or other new UI; each fact comes from an interaction the app already has.
 Every value is a closed id defined in the app's code (area, action, notice, flow,
 toggle, step), a published config key, or a bucket. Message text, toast text,

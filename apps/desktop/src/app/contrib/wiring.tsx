@@ -958,8 +958,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     enabled: !isAuxiliaryWindow(),
     gatewayOpen: gatewayState === 'open',
     pathname: location.pathname,
-    profile: activeGatewayProfile,
-    requestGateway
+    profile: activeGatewayProfile
   })
 
   const activeIsMessaging =

@@ -593,6 +593,7 @@ def _prune_unanswered_tool_calls(messages: List[Dict]) -> Tuple[List[Dict], int]
 def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
     """Pass 3: merge consecutive plain-text user messages (no user input lost)."""
     from agent.context_compressor import _DB_PERSISTED_MARKER, split_user_originated_turn
+    from agent.conversation_compression_archive import MERGED_DURABLE_ROWS
     from hermes_state import SessionDB
 
     def _plain_text(content: Any) -> bool:
@@ -620,6 +621,12 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
                 (prev_content + "\n\n" + new_content) if prev_content and new_content else (prev_content or new_content)
             )
             had_api_sidecar = "api_content" in prev
+            # Read before the marker is popped below. An unpersisted turn folded in ends the claim:
+            # the dict no longer stands for durable rows only.
+            if (prev.get(_DB_PERSISTED_MARKER) or prev.get(MERGED_DURABLE_ROWS)) and msg.get(_DB_PERSISTED_MARKER):
+                prev[MERGED_DURABLE_ROWS] = int(prev.get(MERGED_DURABLE_ROWS) or 1) + 1
+            else:
+                prev.pop(MERGED_DURABLE_ROWS, None)
             prev["content"] = merged_content
             # The clean-text persist override must replace only the absorbed turn, never the
             # unanswered text before it; kept across replay passes (an empty turn absorbs too).

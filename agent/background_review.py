@@ -388,6 +388,20 @@ _LESSON_LAYER_BLOCK = (
     "'UPDATE: actually...' underneath it.\n\n"
 )
 
+# Scope rule for the skill-writing path only: skills live in the active profile and
+# are read by every project on the machine, so the review fork must generalize the
+# lesson (the class of task) and leave the session's instance detail behind.
+_GLOBAL_SKILL_SCOPE_RULE = (
+    "GLOBAL-SKILL SCOPE RULE (hard requirement):\n"
+    "Global skill memory may learn GENERALIZABLE workflow lessons, but it must not persist\n"
+    "project-specific names, paths, repository names, session ids, device addresses,\n"
+    "credentials, project filenames, user-specific infrastructure, branch/worktree names,\n"
+    "or temporary implementation details such as concrete test values.\n"
+    "Before writing to a GLOBAL skill: GENERALIZE the lesson. Write the CLASS of task; the\n"
+    "instance stays in the repository it came from. If a lesson cannot be stated without\n"
+    "those details, state the class-level rule and drop the example.\n\n"
+)
+
 # Shared tail of the skill and combined prompts: what NOT to persist as a skill.
 _DO_NOT_CAPTURE_BLOCK = (
     " (these become persistent self-imposed constraints that bite you later when the environment "
@@ -421,7 +435,7 @@ _SKILL_REVIEW_PROMPT = (
     "Target shape of the library: CLASS-LEVEL skills, each with a SKILL.md of always-on rules and a "
     "small `references/` set of topical depth. Not a flat list of narrow one-session skills, and "
     "not an umbrella hoarding a references/ file per session. This shapes HOW you update, not "
-    "WHETHER you update.\n\n" + _LESSON_LAYER_BLOCK +
+    "WHETHER you update.\n\n" + _LESSON_LAYER_BLOCK + _GLOBAL_SKILL_SCOPE_RULE +
     "Signals to look for (any one of these warrants action):\n"
     "  • User corrected your style, tone, format, legibility, or verbosity. Frustration signals "
     "like 'stop doing X', 'this is too verbose', 'don't format like this', 'why are you "
@@ -508,7 +522,7 @@ _COMBINED_REVIEW_PROMPT = (
     "outcome.\n\n"
     "Target shape of the skill library: CLASS-LEVEL skills with a SKILL.md of always-on rules and a "
     "small `references/` set of topical depth — not narrow one-session skills, and not an umbrella "
-    "hoarding a references/ file per session.\n\n" + _LESSON_LAYER_BLOCK +
+    "hoarding a references/ file per session.\n\n" + _LESSON_LAYER_BLOCK + _GLOBAL_SKILL_SCOPE_RULE +
     "Signals that warrant a skill update (any one is enough):\n"
     "  • User corrected your style, tone, format, legibility, verbosity, or approach. Frustration "
     "is a FIRST-CLASS skill signal, not just a memory signal. 'stop doing X', 'don't format like "

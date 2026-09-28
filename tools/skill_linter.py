@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 from agent.skill_utils import SKILL_PROMPT_DESC_LIMIT, parse_frontmatter
 
@@ -194,25 +194,50 @@ def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintF
                         "Merge same-topic files into one rule set and drop incident narration.")
 
 
-def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> List[LintFinding]:
+def _check_project_specific_leakage(body: str, project_tokens: Sequence[str] = ()) -> Iterator[LintFinding]:
+    """Advisory only: flag session instance detail (paths, ids, branch names,
+    ...) so the author can generalize the lesson. One WARNING per category,
+    never ERROR — skills that legitimately document the owner's own machine
+    would otherwise trip a gate. Excerpts are redacted (secrets fully)."""
+    try:
+        from tools.project_leak_scan import scan as _scan_leaks
+    except Exception:
+        return
+    seen: set[str] = set()
+    for finding in _scan_leaks(body, project_tokens=project_tokens):
+        if finding.category in seen:
+            continue
+        seen.add(finding.category)
+        yield _warn("project-specific-content",
+                    f"project-specific-content:{finding.category}: possible instance detail "
+                    f"({finding.redacted()}); generalize the lesson — write the class of "
+                    f"task, not this session's names, paths, or ids.")
+
+
+def lint_content(content: str, *, skill_dir: Optional[Path] = None,
+                 project_tokens: Sequence[str] = ()) -> List[LintFinding]:
     """Lint raw SKILL.md *content*.
 
     ``skill_dir`` enables on-disk checks (name/dir match, dangling links, POSIX
     gating, forbidden files); without it only content checks run, which is what
-    the create path needs before the file exists.
+    the create path needs before the file exists. ``project_tokens`` (e.g. the
+    session repository name) lets the advisory leakage rule also recognise a
+    bare project name; without it paths, ids, addresses, filenames and branch
+    names are still detected.
     """
     frontmatter, body = parse_frontmatter(content)
     findings = list(_check_frontmatter(frontmatter, skill_dir)) + list(_check_body(body, skill_dir))
+    findings += _check_project_specific_leakage(body, project_tokens)
     if skill_dir is not None:
         findings += _check_files(frontmatter, skill_dir)
     return findings
 
 
-def lint_skill(skill_md_path: Path) -> List[LintFinding]:
+def lint_skill(skill_md_path: Path, project_tokens: Sequence[str] = ()) -> List[LintFinding]:
     """Lint a SKILL.md file on disk, with all on-disk checks enabled."""
     skill_md_path = Path(skill_md_path)
     content = skill_md_path.read_text(encoding="utf-8-sig", errors="ignore")
-    return lint_content(content, skill_dir=skill_md_path.parent)
+    return lint_content(content, skill_dir=skill_md_path.parent, project_tokens=project_tokens)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

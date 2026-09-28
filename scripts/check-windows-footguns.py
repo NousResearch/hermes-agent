@@ -21,6 +21,8 @@ Usage:
 Exit status:
     0 — no Windows footguns found (or all matches suppressed)
     1 — at least one unsuppressed match
+    2 — --diff <ref> could not be computed (unresolvable ref, shallow
+        clone with no merge base, or missing git) — NOT a clean scan
 
 Encoding policy: READS pass encoding='utf-8-sig' (Windows tooling —
 PowerShell Set-Content/Out-File, some editors — BOM-prefixes files it
@@ -839,17 +841,40 @@ def get_staged_files() -> list[Path]:
     return [REPO_ROOT / f for f in out.splitlines() if f.strip()]
 
 
+class DiffRefError(RuntimeError):
+    """``git diff <ref>...HEAD`` could not be computed."""
+
+
 def get_diff_files(ref: str) -> list[Path]:
-    """Return paths modified vs. the given git ref."""
+    """Return paths modified vs. the given git ref.
+
+    Raises DiffRefError when the diff cannot be computed — unresolvable
+    ref, a shallow checkout with no merge base, or a missing git — so a
+    failed scan is never mistaken for an empty one.
+    """
     try:
         out = subprocess.check_output(
             ["git", "diff", f"{ref}...HEAD", "--name-only", "--diff-filter=ACMR"],
             cwd=REPO_ROOT,
-            stderr=subprocess.DEVNULL,
-            text=True, encoding='utf-8', errors='replace',
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return []
+    except FileNotFoundError as exc:
+        raise DiffRefError("git executable not found — cannot diff") from exc
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        if "no merge base" in stderr:
+            raise DiffRefError(
+                f"{ref!r} resolves, but there is no merge base between it "
+                "and HEAD (typical of a --depth 1 checkout). Deepen history "
+                "with `git fetch --unshallow` or `git fetch --deepen=<n>`, "
+                "or pass an explicit base SHA that shares history with HEAD."
+            ) from exc
+        raise DiffRefError(
+            f"git diff {ref}...HEAD failed: {stderr or f'exit {exc.returncode}'}"
+        ) from exc
     return [REPO_ROOT / f for f in out.splitlines() if f.strip()]
 
 
@@ -919,7 +944,17 @@ def main(argv: list[str]) -> int:
         ]
         roots = [r for r in roots if r.exists()]
     elif args.diff:
-        roots = get_diff_files(args.diff)
+        try:
+            roots = get_diff_files(args.diff)
+        except DiffRefError as exc:
+            print(f"✗ --diff {args.diff}: {exc}", file=sys.stderr)
+            return 2
+        if not roots:
+            print(
+                f"✓ No Windows footguns found — nothing changed vs "
+                f"{args.diff} (0 files scanned)."
+            )
+            return 0
     elif args.paths:
         roots = [p.resolve() for p in args.paths]
     else:

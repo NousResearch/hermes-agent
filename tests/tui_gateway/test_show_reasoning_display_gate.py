@@ -61,11 +61,11 @@ def test_child_mirror_skips_reasoning_delta_when_hidden(monkeypatch):
     events = _capture(monkeypatch)
     _session(monkeypatch, "child-sid", show_reasoning=False)
     monkeypatch.setattr(
-        server, "_find_live_session_by_key", lambda key: ("child-sid", {"agent": None, "show_reasoning": False})
+        server, "_find_live_session_by_key", lambda key, _home: ("child-sid", {"agent": None, "show_reasoning": False})
     )
 
     server._mirror_subagent_to_child(
-        "subagent.thinking", {"child_session_id": "child-key", "text": "delegated thought"}
+        "subagent.thinking", {"child_session_id": "child-key", "text": "delegated thought"}, None
     )
 
     assert not any(event[0] == "reasoning.delta" for event in events)

@@ -257,7 +257,21 @@ def _telegram_format(message):
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
-    """One-shot Telegram Bot API send; parse failures fall back to plain text."""
+    """One-shot Telegram Bot API send; parse failures fall back to plain text.
+
+    ``python-telegram-bot`` is the only optional dependency of THIS function, so resolve it
+    explicitly and narrow the ImportError to that one import. A blanket ``except ImportError``
+    around the whole body misreports any nested import failure (the lazily-imported telegram id
+    helpers, ``gateway.platforms.base``) as "python-telegram-bot not installed" — misleading
+    exactly when PTB IS installed, and it hides the real exception from the log. Observed live:
+    a cron delivery reported that string while ``import telegram`` returned 22.8 in the same venv.
+    """
+    try:
+        from telegram.constants import ParseMode as _PTBParseMode  # noqa: F401
+    except ImportError as ptb_err:
+        logger.error("Telegram send unavailable: python-telegram-bot is not importable (%s)", ptb_err)
+        return {"error": "python-telegram-bot not installed. Run: "
+                f"{install_hint('telegram')}"}
     try:
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token)

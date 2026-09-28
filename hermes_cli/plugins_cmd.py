@@ -973,7 +973,7 @@ _PLUGIN_ACTIONS = {
     "browse": lambda args: _catalog().cmd_search(""),
     "validate": lambda args: _catalog().cmd_validate(
         args.path, as_json=getattr(args, "json", False), install_deps=getattr(args, "install_deps", False)),
-    "update": lambda args: cmd_update(args.name),
+    "update": lambda args: cmd_update(args.name, force=getattr(args, "force", False)),
     "adopt": lambda args: cmd_adopt(args.name),
     "trust-update-url": lambda args: cmd_trust_update_url(args.name),
     "check-updates": lambda args: cmd_check_updates(args),

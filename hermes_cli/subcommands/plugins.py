@@ -62,6 +62,9 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_update = plugins_subparsers.add_parser(
         "update", help="Pull latest changes for an installed plugin")
     plugins_update.add_argument("name", help="Plugin name to update")
+    plugins_update.add_argument(
+        "--force", "-f", action="store_true",
+        help="Accept a caution scan verdict, as `install --force` does (a dangerous verdict still blocks)")
 
     plugins_adopt = plugins_subparsers.add_parser(
         "adopt",

@@ -308,12 +308,24 @@ def _resolve_cron_context_deliver(deliver: Optional[str]) -> Optional[str]:
     return ",".join(dict.fromkeys(resolved)) or None
 
 
+def _same_origin(base_url: str, configured: str) -> bool:
+    """Origin (scheme, host, effective port) equality, as for any bearer secret moved to a
+    new URL: a host-only or subdomain match would let a job send the stored key over plain
+    HTTP, to another port, or to a host the operator never configured."""
+    from utils import base_url_origin
+    try:
+        want, got = base_url_origin(configured), base_url_origin(base_url)
+    except ValueError:  # malformed URL (e.g. unclosed IPv6 bracket) cannot match
+        return False
+    return bool(want[1]) and got == want
+
+
 def _validate_cron_base_url(
     provider: Optional[Any], base_url: Optional[Any]) -> Optional[str]:
-    """Reject pairing a named provider's stored credential with an off-host base_url (a
+    """Reject pairing a named provider's stored credential with an off-origin base_url (a
     prompt-injected job could exfil the key). Allowed: no override; bare 'custom' (pure BYOK,
-    key derived from the base_url); an override whose host matches the named provider's own
-    endpoint. Everything else fails closed. Returns an error string if blocked, else None."""
+    key derived from the base_url); an override with the same origin as the named provider's
+    own endpoint. Everything else fails closed. Returns an error string if blocked, else None."""
     bu = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
     if not bu:
         return None
@@ -328,7 +340,6 @@ def _validate_cron_base_url(
             resolve_requested_provider,
             _get_named_custom_provider)
         from hermes_cli.auth import PROVIDER_REGISTRY
-        from utils import base_url_host_matches, base_url_hostname
     except Exception:
         return f"Unable to validate base_url override for provider {prov!r}; refused."
 
@@ -340,25 +351,26 @@ def _validate_cron_base_url(
             cp = _get_named_custom_provider(prov)
         except Exception:
             cp = None
-        cfg_host = base_url_hostname((cp or {}).get("base_url", "")) if cp else ""
-        if cfg_host and base_url_host_matches(bu, cfg_host):
+        cfg_url = str((cp or {}).get("base_url") or "")
+        if cfg_url and _same_origin(bu, cfg_url):
             return None
         return (
             f"base_url {bu!r} is not allowed for provider {prov!r}. A named "
             f"custom provider's stored credential may only be sent to its own "
-            f"configured endpoint ({cfg_host or 'unknown'}).")
+            f"configured endpoint ({cfg_url or 'unknown'}): same scheme, host and port.")
     try:
         resolved = resolve_requested_provider(prov)
     except Exception:
         resolved = prov
     pconfig = PROVIDER_REGISTRY.get(resolved) if isinstance(resolved, str) else None
-    known_host = base_url_hostname(getattr(pconfig, "inference_base_url", "") if pconfig else "")
-    if known_host and base_url_host_matches(bu, known_host):
+    known_url = str(getattr(pconfig, "inference_base_url", "") or "") if pconfig else ""
+    if known_url and _same_origin(bu, known_url):
         return None
-    # Fail closed: named providers with stored credentials AND unknown names we cannot host-match.
+    # Fail closed: named providers with stored credentials AND unknown names we cannot origin-match.
     return (
         f"base_url {bu!r} is not allowed for provider {prov!r}. A named "
-        f"provider's stored credential may only be sent to its own endpoint; "
+        f"provider's stored credential may only be sent to its own endpoint "
+        f"(same scheme, host and port); "
         f'use a configured custom provider (provider="custom") for a custom base_url.')
 
 

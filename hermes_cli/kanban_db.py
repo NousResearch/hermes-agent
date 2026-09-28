@@ -1608,7 +1608,7 @@ def list_tasks(
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
     """Assign/reassign; raises RuntimeError while the task is running under a claim."""
-    return update_task_fields(conn, task_id, fields=("assignee",), assignee=profile)
+    return update_task_fields(conn, task_id, assign=True, assignee=profile)
 
 
 def _assign_locked(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
@@ -1685,76 +1685,40 @@ def set_reasoning_effort(conn: sqlite3.Connection, task_id: str, effort: Optiona
     )
 
 
-# Scalar fields an external editor may set directly. ``assignee`` is excluded on
-# purpose — ``assign_task`` owns its running-task guard.
-_EDITABLE_TASK_FIELDS = ("title", "body", "priority")
-# What a mixed PATCH may carry: the scalars plus the assignee, applied together.
-_ASSIGNABLE_TASK_FIELDS = ("assignee", *_EDITABLE_TASK_FIELDS)
-# Content edits are refused here: a finished card's text is a historical record.
+# Content edits the external API refuses: a finished card's text is a historical record.
 _TERMINAL_EDIT_STATES = frozenset({"done", "archived"})
 
 
-def edit_task_fields(
-    conn: sqlite3.Connection, task_id: str, *, fields: Iterable[str],
-    title: Optional[str] = None, body: Optional[str] = None, priority: Optional[int] = None,
-) -> bool:
-    """Edit ``title`` / ``body`` / ``priority``, writing only the names in ``fields`` (so ``None``
-    can be stored explicitly, e.g. clearing a body), and record an ``edited`` event.
-
-    Title/body edits on a ``done``/``archived`` task raise ``RuntimeError``; ``priority`` stays
-    editable (harmless once terminal, keeps bulk re-prioritising working). ``False`` when the
-    task does not exist."""
-    return update_task_fields(
-        conn, task_id, fields=[f for f in fields if f in _EDITABLE_TASK_FIELDS],
-        title=title, body=body, priority=priority,
-    )
-
-
-def _edit_fields_locked(
-    conn: sqlite3.Connection, task_id: str, requested: list[str], values: dict[str, Any],
-) -> bool:
-    """Scalar edit + ``edited`` event inside the CALLER's txn (see ``_assign_locked``)."""
-    row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
-    if row is None:
-        return False
-    if row["status"] in _TERMINAL_EDIT_STATES and ("title" in requested or "body" in requested):
-        raise RuntimeError(f"cannot edit the title/body of a {row['status']} task")
-    assignments = ", ".join(f"{name} = ?" for name in requested)
-    conn.execute(
-        f"UPDATE tasks SET {assignments} WHERE id = ?",
-        [values[name] for name in requested] + [task_id],
-    )
-    _append_event(conn, task_id, "edited", {"fields": list(requested)})
-    return True
-
-
 def update_task_fields(
-    conn: sqlite3.Connection, task_id: str, *, fields: Iterable[str],
-    assignee: Optional[str] = None, title: Optional[str] = None,
-    body: Optional[str] = None, priority: Optional[int] = None,
+    conn: sqlite3.Connection, task_id: str, *, assign: bool = False, assignee: Optional[str] = None,
+    title: Optional[str] = None, body: Optional[str] = None, priority: Optional[int] = None,
+    board: Optional[str] = None,
 ) -> bool:
-    """Apply an assignee change and/or ``title``/``body``/``priority`` edits in ONE
-    transaction, writing only the names listed in ``fields``.
+    """Reassign (when ``assign``) and/or edit ``title``/``body``/``priority`` (``None`` =
+    unchanged) in ONE transaction; ``False`` when the task does not exist.
 
-    Mixed mutations are all-or-nothing: a concurrent transition that lands after the
-    assignee write makes the scalar guard raise, which rolls the assignee back too, so a
-    PATCH can never answer 409 having already persisted (and announced) the reassignment.
-    Observers fire only after the combined commit. ``False`` when the task does not exist.
+    All-or-nothing: a transition landing between the phases makes a later guard raise
+    ``RuntimeError`` and rolls the reassignment back too, so a caller never sees a refusal
+    after the assignee was already persisted (and announced). Title/body edits on a
+    ``done``/``archived`` task raise. Observers fire once, after the combined commit.
     """
-    requested = [f for f in fields if f in _ASSIGNABLE_TASK_FIELDS]
-    if not requested:
-        return get_task(conn, task_id) is not None
-    scalars = [f for f in requested if f != "assignee"]
-    values = {"title": title, "body": body, "priority": priority}
-    assigning = "assignee" in requested
+    changed: list[str] = []
     with write_txn(conn):
-        if assigning and not _assign_locked(conn, task_id, _canonical_assignee(assignee)):
-            return False
-        if scalars and not _edit_fields_locked(conn, task_id, scalars, values):
-            return False
+        if assign:
+            if not _assign_locked(conn, task_id, _canonical_assignee(assignee)):
+                return False
+            changed.append("assignee")
+        if (title is not None or body is not None) and _task_status(conn, task_id) in _TERMINAL_EDIT_STATES:
+            raise RuntimeError("cannot edit the title/body of a finished task")
+        if title is not None or body is not None or priority is not None:
+            edited = _edit_task_locked(conn, task_id, title=title, body=body, priority=priority)
+            if edited is None:
+                return False
+            changed += edited
+        elif not assign:
+            return _task_status(conn, task_id) is not None
     # Observer fires AFTER commit so subscribers see durable state.
-    if assigning:
-        notify_task_updated(conn, task_id, ("assignee",))
+    notify_task_updated(conn, task_id, changed, board=board)
     return True
 
 
@@ -3283,42 +3247,60 @@ def edit_task(
     metadata: Optional[dict] = None, board: Optional[str] = None,
 ) -> bool:
     """Edit task fields, optionally backfilling a completed task's result."""
+    with write_txn(conn):
+        changed_fields = _edit_task_locked(
+            conn, task_id, title=title, body=body, priority=priority,
+            result=result, summary=summary, metadata=metadata,
+        )
+    if changed_fields is None:
+        return False
+    notify_task_updated(conn, task_id, changed_fields, board=board)
+    return True
+
+
+def _edit_task_locked(
+    conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
+    body: Optional[str] = None, priority: Optional[int] = None,
+    result: Optional[str] = None, summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> Optional[list[str]]:
+    """``edit_task``'s write + events inside the CALLER's txn; the changed field names, or
+    ``None`` when nothing was applied. The caller owns the commit and the observer."""
     changed_fields = [
         field for field, value in (("title", title), ("body", body), ("priority", priority))
         if value is not None
     ]
-    with write_txn(conn):
-        status = _task_status(conn, task_id)
-        if status is None or (result is not None and status != "done"):
-            return False
-        assignments = []
-        params = []
-        for field, value in (("title", title), ("body", body), ("priority", priority)):
-            if value is not None:
-                assignments.append(f"{field} = ?")
-                params.append(value)
-        if result is not None:
-            assignments.append("result = ?")
-            params.append(result)
-            changed_fields.append("result")
-        if not assignments:
-            return False
-        conn.execute(
-            f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?",
-            (*params, task_id),
-        )
-        if priority is not None:
-            _append_event(conn, task_id, "reprioritized", {"priority": priority})
-        if result is None:
-            non_priority_fields = [field for field in changed_fields if field != "priority"]
-            if non_priority_fields:
-                _append_event(conn, task_id, "edited", {"fields": non_priority_fields})
-        else:
-            handoff_summary = summary if summary is not None else result
-            changed_fields.append("summary")
-            if metadata is not None:
-                changed_fields.append("metadata")
-            run = conn.execute(
+    status = _task_status(conn, task_id)
+    if status is None or (result is not None and status != "done"):
+        return None
+    assignments = []
+    params = []
+    for field, value in (("title", title), ("body", body), ("priority", priority)):
+        if value is not None:
+            assignments.append(f"{field} = ?")
+            params.append(value)
+    if result is not None:
+        assignments.append("result = ?")
+        params.append(result)
+        changed_fields.append("result")
+    if not assignments:
+        return None
+    conn.execute(
+        f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?",
+        (*params, task_id),
+    )
+    if priority is not None:
+        _append_event(conn, task_id, "reprioritized", {"priority": priority})
+    if result is None:
+        non_priority_fields = [field for field in changed_fields if field != "priority"]
+        if non_priority_fields:
+            _append_event(conn, task_id, "edited", {"fields": non_priority_fields})
+    else:
+        handoff_summary = summary if summary is not None else result
+        changed_fields.append("summary")
+        if metadata is not None:
+            changed_fields.append("metadata")
+        run = conn.execute(
             """
             SELECT id FROM task_runs
              WHERE task_id = ?
@@ -3328,29 +3310,28 @@ def edit_task(
             """,
             (task_id,),
         ).fetchone()
-            if run is None:
-                run_id = _synthesize_ended_run(
-                    conn, task_id, outcome="completed", summary=handoff_summary, metadata=metadata,
-                )
-            else:
-                run_id = int(run["id"])
-                conn.execute("UPDATE task_runs SET summary = ? WHERE id = ?", (handoff_summary, run_id))
-                if metadata is not None:
-                    conn.execute(
-                        "UPDATE task_runs SET metadata = ? WHERE id = ?",
-                        (json.dumps(metadata, ensure_ascii=False), run_id),
-                    )
-            _append_event(
-                conn, task_id, "edited",
-                {
-                    "fields": ["result", "summary"] + (["metadata"] if metadata is not None else []),
-                    "result_len": len(result) if result else 0,
-                    "summary": _first_line(handoff_summary, 400) or None,
-                },
-                run_id=run_id,
+        if run is None:
+            run_id = _synthesize_ended_run(
+                conn, task_id, outcome="completed", summary=handoff_summary, metadata=metadata,
             )
-    notify_task_updated(conn, task_id, changed_fields, board=board)
-    return True
+        else:
+            run_id = int(run["id"])
+            conn.execute("UPDATE task_runs SET summary = ? WHERE id = ?", (handoff_summary, run_id))
+            if metadata is not None:
+                conn.execute(
+                    "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                    (json.dumps(metadata, ensure_ascii=False), run_id),
+                )
+        _append_event(
+            conn, task_id, "edited",
+            {
+                "fields": ["result", "summary"] + (["metadata"] if metadata is not None else []),
+                "result_len": len(result) if result else 0,
+                "summary": _first_line(handoff_summary, 400) or None,
+            },
+            run_id=run_id,
+        )
+    return changed_fields
 
 
 def block_task(

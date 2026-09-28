@@ -500,3 +500,23 @@ def test_profiles_roster_unavailable_is_503(
     assert resp.json()["detail"] == "profiles unavailable"
     assert "disk exploded" not in resp.text
 
+
+def test_patch_edits_notify_observers_like_the_dashboard(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """REST edits go through ``edit_task``'s write path: same events, and the
+    ``on_kanban_task_updated`` observer fires once after commit with the board."""
+    task_id = _create(client, idempotency_key="notify-edit")["task"]["id"]
+    notified = []
+    monkeypatch.setattr(
+        kanban_db, "notify_task_updated",
+        lambda conn, tid, fields, board=None: notified.append((tid, sorted(fields), board)),
+    )
+    patched = client.patch(
+        f"/api/plugins/kanban/v1/tasks/{task_id}",
+        json={"assignee": "worker-two", "title": "renamed", "priority": 7},
+    )
+    assert patched.status_code == 200, patched.text
+    assert notified == [(task_id, ["assignee", "priority", "title"], kanban_db.get_current_board())]
+    kinds = [e["kind"] for e in client.get(f"/api/plugins/kanban/v1/tasks/{task_id}/events").json()["events"]]
+    assert {"assigned", "reprioritized", "edited"} <= set(kinds)

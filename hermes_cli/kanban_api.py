@@ -417,8 +417,8 @@ def update_task(
     fields = payload.model_fields_set
     if not fields:
         raise HTTPException(status_code=400, detail="at least one field is required")
-    with _connection(board) as conn:
-        _require_task(conn, task_id)
+    slug = _resolve_board_slug(board)
+    with _connection(slug) as conn:
         # One storage-layer transaction for the whole patch: a transition landing
         # mid-request rolls back every field, so a 409 never leaves the assignee
         # applied (and announced) while the title/body edit was refused.
@@ -426,11 +426,13 @@ def update_task(
             applied = kanban_db.update_task_fields(
                 conn,
                 task_id,
-                fields=[f for f in ("assignee", "title", "body", "priority") if f in fields],
+                assign="assignee" in fields,
                 assignee=payload.assignee or None,
                 title=payload.title,
-                body=payload.body,
+                # An explicit ``"body": null`` clears the body; omitted leaves it.
+                body="" if "body" in fields and payload.body is None else payload.body,
                 priority=payload.priority,
+                board=slug,
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

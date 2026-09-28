@@ -513,6 +513,8 @@ When E2EE is enabled, Hermes:
 
 The `matrix_read` tool, in the `matrix_read` toolset, reads recent messages in the current room, one thread, or one event, and returns at most 50 events. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session. Each message in the result lists its reactions with their sender and target event.
 
+Optional reaction menus give the agent a structured way to offer choices.
+
 The `matrix_image_packs` toolset lists and sends image-pack stickers, as described in the Image-pack stickers section below.
 
 The `matrix_reaction` tool, in the `matrix_reaction` toolset, adds an emoji reaction to a message or removes the reactions that the agent added. A reaction targets the current inbound message unless the agent supplies a Matrix event ID. The gateway records agent reactions in memory for the 1,000 most recently used messages, so the agent can remove only reactions that it added since the gateway process started. `MATRIX_REACTIONS=false` disables automatic processing reactions but does not block an agent-requested reaction.
@@ -590,6 +592,24 @@ Reaction controls use:
 - number reactions for `/model` choices
 
 Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
+
+#### Agent reaction menus
+
+Enable **Reaction Menus** through `hermes tools`, or add `reaction_menu` to
+`platform_toolsets.matrix` in `config.yaml`. The toolset is disabled by default
+and is available only in Matrix sessions. Restart the gateway or start a new
+session after changing toolsets.
+
+The agent can call `present_menu` with a question and one to five choices. Each
+choice has a distinct emoji, visible label and payload for the next turn. The
+menu arrives in the current room or thread. Only the person who requested the
+menu can select a choice, and that person must still pass the gateway's user
+policy. The first valid selection starts one follow-up in the original session.
+
+Menus expire after five minutes. A new menu replaces the previous menu in the
+same session. Menus are local to the running gateway and disappear on restart;
+ask the agent for another menu if a choice is no longer active. Approval and
+picker controls are processed before menu selections.
 
 ### Image-pack stickers
 

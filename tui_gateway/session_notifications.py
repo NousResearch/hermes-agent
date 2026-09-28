@@ -460,7 +460,7 @@ def _background_notifications_off(session: dict) -> bool:
     """Whether the owning profile set ``display.background_process_notifications: off``. Same
     gate the messaging gateway applies to its process-event injection; only ``off`` matters
     here (the other modes shape gateway chat receipts, not agent wakes)."""
-    with _session_profile_runtime_scope(session):
+    with _session_profile_runtime_scope(session, hydrate_secrets=False):
         raw = (_load_cfg().get("display") or {}).get("background_process_notifications")
     return raw is False or str(raw or "").strip().lower() == "off"
 

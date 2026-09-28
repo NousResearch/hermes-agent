@@ -1914,9 +1914,11 @@ display:
   # Toggle at runtime with /busy <interrupt|queue|steer>.
   busy_input_mode: interrupt
 
-  # Background process notifications (gateway/messaging only).
-  # Controls how chatty the process watcher is when you use
-  # terminal(background=true, notify_on_complete=true) from Telegram/Discord/etc.
+  # Background process notifications.
+  # On Telegram/Discord/etc., controls process-watcher receipt shaping for
+  # terminal(background=true, notify_on_complete=true). The 'off' mode is also
+  # honored by CLI, TUI and Desktop: process completions and heartbeats do not
+  # wake the agent, while subagent/delegation results still land.
   #   concise: One-line status message on completion; failures include a short
   #            output tail (default)
   #   off:     No watcher messages at all

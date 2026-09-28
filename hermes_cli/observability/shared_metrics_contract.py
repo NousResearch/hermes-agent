@@ -289,7 +289,6 @@ DESKTOP_UPDATE_STAGES = frozenset({"apply", "download", "restart", "verify"})
 UPDATE_FAILED_STAGES = UPDATE_STAGES | DESKTOP_UPDATE_STAGES | {"none", "other"}
 UPDATE_STAGE_OUTCOMES = frozenset({"failed", "skipped", "success"})
 UPDATE_DURATION_BUCKETS = frozenset({"lt_30s", "30s_to_2m", "2m_to_5m", "5m_to_15m", "gte_15m"})
-VERSION_AGE_BUCKETS = frozenset({"lt_7d", "7d_to_30d", "30d_to_90d", "gte_90d", "unknown"})
 # package = an OS/app-store style installer applied the update (Desktop packaged builds).
 UPDATE_APPLY_MODES = frozenset({"external", "git", "package", "unknown", "zip"})
 PROCESS_KINDS = frozenset({"cli", "cron", "gateway", "other", "serve", "tui"})

@@ -560,6 +560,7 @@ import {
 import { startRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
+import { registerUpdateMetricsIpc, UpdateRunRecorder } from './updater/update-metrics'
 import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
@@ -3352,6 +3353,7 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
 function emitUpdateProgress(payload) {
   const merged = { stage: 'idle', message: '', percent: null, error: null, ...payload, at: Date.now() }
   rememberLog(`[updates] ${merged.stage}: ${merged.message || merged.error || ''}`)
+  updateRunRecorder.noteProgress(merged.stage)
 
   for (const window of BrowserWindow.getAllWindows()) {
     window.webContents.send('hermes:updates:progress', merged)
@@ -3393,6 +3395,16 @@ let updateInFlight = false
  * Its identity comes from the packaged app, not its optional Python payload.
  */
 const updateOperation: UpdateOperation = new UpdateOperation(createPackagedUpdateStrategy)
+
+const updateRunRecorder: UpdateRunRecorder = new UpdateRunRecorder({
+  dir: () => app.getPath('userData'),
+  appVersion: () => app.getVersion(),
+  onRecorded: () => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.webContents.send('hermes:updates:metric:pending')
+    }
+  }
+})
 
 function resolvePackagedUpdateStrategy(): Promise<UpdaterStrategy | null> {
   return updateOperation.resolve()
@@ -4434,8 +4446,16 @@ async function applyUpdates(): Promise<UpdaterApplyResultWire> {
     let handedOff: boolean = false
 
     try {
-      const strategy: UpdaterStrategy = (await resolvePackagedUpdateStrategy()) ?? resolveCheckoutUpdateStrategy()
-      const result: UpdaterApplyResultWire = await strategy.apply()
+      const packaged: UpdaterStrategy | null = await resolvePackagedUpdateStrategy()
+      const strategy: UpdaterStrategy = packaged ?? resolveCheckoutUpdateStrategy()
+
+      // Only packaged runs: a checkout hand-off is counted by `hermes update`'s receipt.
+      const result: UpdaterApplyResultWire = await updateRunRecorder.track(
+        packaged?.mechanism,
+        INSTALL_STAMP?.commitDate,
+        () => strategy.apply()
+      )
+
       handedOff = result.handedOff === true
 
       return result
@@ -18125,6 +18145,8 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
     message: error?.message || String(error)
   }))
 )
+
+registerUpdateMetricsIpc(ipcMain, updateRunRecorder)
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 

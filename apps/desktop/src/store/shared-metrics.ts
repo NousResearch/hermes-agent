@@ -76,3 +76,31 @@ export async function answerSharedMetricsOffer(
   $sharedMetricsConsent.set(await saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES[choice], { firstRun: true }))
   $sharedMetricsDetailsOpen.set(false)
 }
+
+/**
+ * Send the packaged self-update run main persisted (it survives the restart
+ * that applied it). Main keeps the record until the RPC resolves, and its claim
+ * makes concurrent callers a no-op. Fire-and-forget: errors are swallowed.
+ */
+export async function reportPendingUpdateRun(request: SharedMetricsRequester): Promise<void> {
+  const updates = window.hermesDesktop?.updates
+
+  try {
+    const run = await updates?.takePendingRun?.()
+
+    if (!run) {
+      return
+    }
+
+    let sent = false
+
+    try {
+      await request('shared_metrics.update_run', { ...run })
+      sent = true
+    } finally {
+      await updates?.ackPendingRun?.(sent)
+    }
+  } catch {
+    // Telemetry never surfaces; an unsent record retries on the next attach.
+  }
+}

@@ -630,6 +630,14 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:updates:progress', listener)
 
       return () => ipcRenderer.removeListener('hermes:updates:progress', listener)
+    },
+    takePendingRun: () => ipcRenderer.invoke('hermes:updates:metric:take'),
+    ackPendingRun: sent => ipcRenderer.invoke('hermes:updates:metric:ack', sent),
+    onPendingRun: callback => {
+      const listener = () => callback()
+      ipcRenderer.on('hermes:updates:metric:pending', listener)
+
+      return () => ipcRenderer.removeListener('hermes:updates:metric:pending', listener)
     }
   },
   themes: {

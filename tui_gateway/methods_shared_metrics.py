@@ -111,5 +111,22 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"ok": True})
 
 
+# ---- v4 reliability ----
+@method("shared_metrics.update_run")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Desktop reports each packaged self-update once (a pending record survives the restart that
+    applies it and is sent on the next backend attach). Always ``{ok: true}``."""
+    from hermes_cli.observability.shared_metrics_update import record_desktop_update
+
+    record_desktop_update(
+        outcome=params.get("outcome"), failed_stage=params.get("failed_stage"),
+        duration_ms=params.get("duration_ms"), mechanism=params.get("mechanism"),
+        from_commit_date=params.get("from_commit_date"),
+    )
+    return _ok(rid, {"ok": True})
+# ---- end v4 reliability ----
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

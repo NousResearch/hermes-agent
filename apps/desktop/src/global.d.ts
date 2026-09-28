@@ -7,6 +7,7 @@ import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
+import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { GrowRequest } from '../electron/window-growth'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
@@ -598,6 +599,11 @@ declare global {
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
+        /** Claim the pending packaged self-update run (null when none or already claimed). */
+        takePendingRun?: () => Promise<UpdateRunReport | null>
+        /** `sent` deletes the claimed record; false keeps it for the next attach. */
+        ackPendingRun?: (sent: boolean) => Promise<void>
+        onPendingRun?: (callback: () => void) => () => void
       }
       uninstall: {
         summary: () => Promise<DesktopUninstallSummary>

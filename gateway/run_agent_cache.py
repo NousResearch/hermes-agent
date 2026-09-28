@@ -744,10 +744,12 @@ class GatewayAgentCacheMixin:
         """``(channel_prompt, source)`` for this turn's agent run.
 
         The ephemeral system prompt also appends ``channel_prompt`` and the ``channel_overrides``
-        prompt (looked up by chat/thread/``parent_chat_id``). Internal events carry
-        ``channel_prompt=None`` and a source without ``parent_chat_id``, so they dropped both and
-        toggled the system prompt like the context pin did. Human turns record their inputs;
-        internal turns reuse them (``_rehydrate_prompt_pins`` restores both after a restart)."""
+        prompt (looked up by chat/thread/``parent_chat_id``). Events with no channel inputs of
+        their own (internal events, and synthetic goal/heartbeat/resume turns — see
+        ``MessageEvent.inherit_channel_pin``) carry ``channel_prompt=None`` and a source without
+        ``parent_chat_id``, so they dropped both and toggled the system prompt like the context pin
+        did. Human turns record their inputs; turns that ask to reuse the pin get them back
+        (``_rehydrate_prompt_pins`` restores both after a restart)."""
         if not session_key:
             return channel_prompt, source
         if not internal:

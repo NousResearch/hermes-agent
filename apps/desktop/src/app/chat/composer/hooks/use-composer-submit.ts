@@ -225,12 +225,14 @@ export function useComposerSubmit({
     // (default 5 min) — the message looks sent and nothing happens. Typing a
     // real message instead of picking an option IS the answer "none of these":
     // skip the question so the tool returns, then route the words normally.
+    // /btw is a side question, not a reply to clarify.
     //
     // Fire-and-forget, not awaited: the skip clears the card synchronously and
     // both RPCs ride the same socket in call order, so the gateway resolves the
-    // clarify before it sees the follow-up. Awaiting first would leave the draft
+    // clarify before it sees the follow-up. /btw takes the separate slash path.
+    // Awaiting first would leave the draft
     // live for a tick — long enough for a second Enter to send it twice.
-    if (payloadPresent && !queueEdit && hasClarifyRequest(sessionId)) {
+    if (payloadPresent && !queueEdit && !/^\/btw(?:\s|$)/i.test(text.trim()) && hasClarifyRequest(sessionId)) {
       void skipClarifyRequest(sessionId)
     }
 

@@ -130,6 +130,8 @@ class OnePasswordLoginBackend(LoginBackend):
         if not vault_id and self._service_token:
             self.list_items()
             vault_id = self._vault_by_item.get(item_id)
+            if not vault_id:
+                raise RuntimeError("1Password item has no accessible vault metadata; cannot perform a scoped read")
         return ["--vault", vault_id] if vault_id else []
 
     def resolve_password(self, handle: str) -> str:

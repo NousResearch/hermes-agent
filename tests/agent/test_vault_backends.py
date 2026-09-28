@@ -297,3 +297,28 @@ def test_onepassword_service_account_resolves_an_item_it_has_not_listed(fake_op)
     backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
 
     assert backend.resolve_password("op:itemA") == "correct horse battery staple"
+
+
+def test_onepassword_service_account_missing_vault_metadata_fails_closed(fake_op):
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe, log = fake_op
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+    message = "1Password item has no accessible vault metadata; cannot perform a scoped read"
+
+    with pytest.raises(RuntimeError, match=message):
+        backend.resolve_password("op:missing")
+    assert backend.resolve_otp("op:missing") is None
+
+    calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert not [argv for argv in calls if argv[:2] == ["item", "get"]]
+
+
+def test_onepassword_unknown_vault_stays_unscoped_without_service_account(fake_op, monkeypatch):
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    exe, _log = fake_op
+    monkeypatch.delenv("OP_SERVICE_ACCOUNT_TOKEN")
+    backend = OnePasswordLoginBackend({"enabled": True, "binary_path": str(exe)})
+
+    assert backend._item_args("missing") == []

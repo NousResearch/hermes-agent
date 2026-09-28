@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, cast
@@ -13,7 +14,11 @@ from gateway.platforms.event import MessageEvent
 from gateway.run_turn import GatewayTurnMixin
 from gateway.session import Platform, SessionSource
 from hermes_cli import kanban_db_connect as kbc
-from hermes_cli.kanban_db_session_mirror import list_mirrors
+from hermes_cli.kanban_db_session_mirror import (
+    create_or_get_mirror,
+    finish_mirror,
+    list_mirrors,
+)
 
 
 @pytest.fixture
@@ -234,4 +239,49 @@ def test_followup_mirror_uses_queued_event_identity(mirror_home, monkeypatch):
         assert {row["message_id"] for row in rows} == {"opening-id", "queued-id"}
         assert runner.model_calls == 2
 
+
+def test_retention_sweeps_even_while_mirroring_is_disabled(mirror_home, monkeypatch):
+    """Switching mirroring off stops collection; it must not freeze expiry.
+
+    The prune used to sit behind the same `enabled` gate as collection, and this
+    call site is the only path that reaches it. So an install that turned the
+    feature off — the reason a user turns it off is to stop being recorded — kept
+    every row it had already collected, chat ids, session ids and message ids
+    included, forever. That voids the retention bound the docs promise and turns
+    the off switch into a freeze.
+    """
+    import gateway.run
+    import gateway.session_mirror as session_mirror
+
+    # A row collected while the feature was on, now far past a 30-day window.
+    long_ago = int(time.time()) - 400 * 86_400
+    with kbc.connect_closing(board="default") as conn:
+        mirror_id, _ = create_or_get_mirror(
+            conn, profile="default", platform="telegram", chat_id="chat-1", thread_id=None,
+            session_id="session-old", message_id="msg-old", now=long_ago,
+        )
+        finish_mirror(conn, mirror_id, "completed", now=long_ago)
+
+    disabled = _enabled_config()
+    disabled["kanban"]["session_mirror"]["enabled"] = False
+    monkeypatch.setattr(gateway.run, "_load_gateway_config", lambda: disabled)
+    # The throttle is process state, so a sweep registered by an earlier test would
+    # otherwise suppress this one. Zero interval plus a clean map makes it always due.
+    monkeypatch.setattr(session_mirror, "_SWEEP_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(session_mirror, "_sweep_next_at", {})
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="chat-1", profile="default")
+
+    async def run(_message, _source, _session_id):
+        return {"completed": True}
+
+    async def scenario():
+        runner = _Runner(run)
+        event = MessageEvent(text="private", source=source, message_id="msg-new")
+        assert await _execute(runner, source, event, "private") == {"completed": True}
+
     asyncio.run(scenario())
+
+    with kbc.connect_closing(board="default") as conn:
+        rows = list_mirrors(conn, include_archived=True)
+    assert rows == [], "a disabled mirror must still expire the rows it collected earlier"

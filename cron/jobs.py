@@ -1655,7 +1655,7 @@ def _save_jobs_unlocked(
 def validate_jobs_store() -> None:
     """Startup preflight: preserve malformed bytes and stop scheduling from an unknown store."""
     with _jobs_lock():
-        path = _current_cron_store().jobs_file
+        path = Path(os.path.realpath(_current_cron_store().jobs_file))
         if not path.exists():
             return
         try:

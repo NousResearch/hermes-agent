@@ -91,6 +91,11 @@ def test_symlinked_store_stages_and_renames_beside_resolved_target(tmp_path, mon
     assert [item["id"] for item in jobs.load_jobs()] == ["kept"]
     assert json.loads((target_dir / "jobs.json.good").read_text())["jobs"][0]["id"] == "kept"
     assert not list(link_dir.glob(".jobs_*.tmp"))
+    target.write_bytes(b'{"jobs": [')
+    with pytest.raises(RuntimeError, match="Forensic copy"):
+        jobs.validate_jobs_store()
+    assert len(list(target_dir.glob("jobs.json.corrupt-*"))) == 1
+    assert not list(link_dir.glob("jobs.json.corrupt-*"))
 
 
 def test_corrupt_primary_is_preserved_and_recovery_is_explicit(store):

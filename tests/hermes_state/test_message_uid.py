@@ -11,6 +11,7 @@ clone, kept by every re-insert of the same dict and left alone by row-addressed 
 from __future__ import annotations
 
 import copy
+import json
 import re
 
 import pytest
@@ -87,9 +88,10 @@ class TestMintAndRestore:
         first = SessionDB(db_path=path)
         try:
             _seed(first, "s")
-            # Rows written by a build that predates the column: NULL uid, schema behind v31.
+            # Rows written by a build that predates the column: NULL uid, schema behind v31, no marker.
             first._conn.execute("UPDATE messages SET message_uid = NULL")
             first._conn.execute("UPDATE schema_version SET version = 30")
+            first._conn.execute("DELETE FROM state_meta WHERE key = 'message_uid_backfill'")
             first._conn.commit()
         finally:
             first.close()
@@ -99,6 +101,7 @@ class TestMintAndRestore:
             assert all(u and UID_RE.match(u) for u in uids)
             assert len(set(uids)) == len(uids)
             assert second._conn.execute("SELECT version FROM schema_version").fetchone()[0] >= 31
+            assert second.get_meta("message_uid_backfill") == "1"
             # Idempotent: a second open keeps the backfilled values.
             second.close()
             third = SessionDB(db_path=path)
@@ -108,6 +111,35 @@ class TestMintAndRestore:
                 third.close()
         finally:
             second.close()
+
+    def test_the_backfill_marker_gates_the_scan_when_the_version_cannot_advance(self, tmp_path):
+        """A store whose schema_version stays behind (no FTS5) must not rescan on every open: the marker,
+        not the version, says the one-time backfill ran."""
+        path = tmp_path / "marked.db"
+        first = SessionDB(db_path=path)
+        try:
+            _seed(first, "s")
+            first._conn.execute("UPDATE messages SET message_uid = NULL")
+            first._conn.execute("UPDATE schema_version SET version = 30")
+            first.set_meta("message_uid_backfill", "1")
+        finally:
+            first.close()
+        second = SessionDB(db_path=path)
+        try:
+            assert [r["message_uid"] for r in _rows(second, "s")] == [None] * 4
+        finally:
+            second.close()
+
+    def test_a_row_inserted_without_a_uid_by_an_older_writer_gets_one(self, db):
+        """The store mints for a build that predates the column (its INSERT binds no uid)."""
+        db.create_session("s", "cli", model="test/model")
+        db._conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES ('s', 'user', 'old writer', 1.0)"
+        )
+        db._conn.commit()
+        uid = db._conn.execute("SELECT message_uid FROM messages WHERE content = 'old writer'").fetchone()[0]
+        assert uid and UID_RE.match(uid)
+        assert db.get_messages_as_conversation("s")[0]["message_uid"] == uid
 
 
 class TestCopyPathsKeepTheUid:
@@ -292,6 +324,111 @@ class TestPersistedMergeWitness:
             assert imported[1]["_tool_call_uids"] == {"call_1": uid} and imported[2]["_tool_call_uid"] == uid
         finally:
             other.close()
+
+    def test_a_reused_provider_id_pairs_with_the_nearest_call_only(self, db):
+        """Provider ids repeat: on restore a result binds to the NEAREST preceding call; a legacy call row
+        without a map (an older writer's) leaves its result unpaired instead of inheriting an older uid, and
+        nothing pairs across a user turn."""
+        sid = "s"
+        db.create_session(sid, "cli", model="m")
+        call = [{"id": "call_x", "type": "function", "function": {"name": "t", "arguments": "{}"}}]
+        db.append_message(session_id=sid, role="user", content="q1")
+        db.append_message(session_id=sid, role="assistant", content="", tool_calls=call)
+        db.append_message(session_id=sid, role="tool", content="r1", tool_call_id="call_x", tool_name="t")
+        db.append_message(session_id=sid, role="user", content="q2")
+        # An older writer's rows: same provider id, no uid map on the call, no uid on the result.
+        db._conn.execute(
+            "INSERT INTO messages (session_id, role, content, tool_calls, timestamp) VALUES (?, 'assistant', '', ?, 5.0)",
+            (sid, json.dumps(call)))
+        db._conn.execute(
+            "INSERT INTO messages (session_id, role, content, tool_call_id, tool_name, timestamp) "
+            "VALUES (?, 'tool', 'r2', 'call_x', 't', 6.0)", (sid,))
+        db._conn.commit()
+        db.append_message(session_id=sid, role="user", content="q3")
+        db.append_message(session_id=sid, role="assistant", content="", tool_calls=call)
+        db.append_message(session_id=sid, role="tool", content="r3", tool_call_id="call_x", tool_name="t")
+        db.append_message(session_id=sid, role="user", content="q4")
+        db.append_message(session_id=sid, role="tool", content="stray", tool_call_id="call_x", tool_name="t")
+
+        restored = db.get_messages_as_conversation(sid, repair_alternation=False)
+        by_content = {m["content"]: m for m in restored}
+        uid1 = by_content["r1"]["_tool_call_uid"]
+        uid3 = by_content["r3"]["_tool_call_uid"]
+        assert UID_RE.match(uid1) and UID_RE.match(uid3) and uid1 != uid3
+        assert "_tool_call_uid" not in by_content["r2"]
+        assert "_tool_call_uid" not in by_content["stray"]
+        # The same rule at batch insert: a result after a user turn pairs with nothing.
+        assert db._conn.execute(
+            "SELECT tool_call_uid FROM messages WHERE content = 'stray'").fetchone()[0] is None
+
+    def test_a_composite_rewind_reports_the_replacement_rows_uid(self, db):
+        from agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
+
+        sid = "s"
+        db.create_session(sid, "cli", model="m")
+        db.append_message(session_id=sid, role="user", content="older ask")
+        db.append_message(session_id=sid, role="assistant", content="done")
+        carrier = f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n{_SUMMARY_END_MARKER}\n\nREAL ASK"
+        target_id = db.append_message(session_id=sid, role="user", content=carrier)
+        db.append_message(session_id=sid, role="assistant", content="failed")
+
+        result = db.rewind_to_message(sid, target_id, preserve_compaction_handoff=True,
+                                      expected_target_content="REAL ASK")
+
+        head = db.get_messages_as_conversation(sid, include_row_ids=True)[-1]
+        assert head["_row_id"] == result["replacement_message_id"]
+        assert result["replacement_message_uid"] == head["message_uid"]
+        assert UID_RE.match(head["message_uid"])
+
+    def test_a_live_undo_of_a_composite_turn_installs_the_replacement_rows_identity(self, db):
+        """The CLI/TUI/gateway undo path (``rewind_user_turn``) installs the hidden scaffold as the live head:
+        it must carry the replacement row's uid, not wait for a restart to learn it."""
+        from agent.context_compressor import HISTORICAL_TASK_HEADING, SUMMARY_PREFIX, _SUMMARY_END_MARKER
+
+        sid = "s"
+        db.create_session(sid, "cli", model="m")
+        db.append_message(session_id=sid, role="user", content="q1")
+        db.append_message(session_id=sid, role="assistant", content="a1")
+        carrier = f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n{_SUMMARY_END_MARKER}\n\nREAL ASK"
+        db.append_message(session_id=sid, role="user", content=carrier)
+        db.append_message(session_id=sid, role="assistant", content="failed")
+        warm = db.get_resume_conversations(sid)[0]
+
+        outcome = db.rewind_user_turn(sid, 1, warm_history=warm)
+
+        head = db.get_messages_as_conversation(sid, include_row_ids=True)[-1]
+        assert head["display_kind"] == "hidden" and SUMMARY_PREFIX in head["content"]
+        assert outcome.prefix[-1]["_row_id"] == head["_row_id"]
+        assert outcome.prefix[-1]["message_uid"] == head["message_uid"]
+        assert UID_RE.match(head["message_uid"])
+
+    def test_foreign_history_import_mints_uids_and_keeps_supplied_ones(self, db):
+        origin = {"tool": "other-agent", "path": "/x/y.jsonl"}
+        supplied = "f" * 32
+        result = db.import_foreign_history(
+            origin, [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello", "message_uid": supplied}],
+            title="imported", cwd="/tmp", profile="default")
+        rows = _rows(db, result["session_id"])
+        assert [r["content"] for r in rows] == ["hi", "hello"]
+        assert UID_RE.match(rows[0]["message_uid"]) and rows[1]["message_uid"] == supplied
+        assert [m["message_uid"] for m in db.get_messages_as_conversation(result["session_id"])] == [
+            rows[0]["message_uid"], supplied]
+
+    def test_a_restore_time_merge_records_the_witness(self, db):
+        """Two stored user rows in a row (a turn that never got an answer) are merged while restoring with
+        ``repair_alternation=True``; the survivor names the absorbed row by uid, on every restore shape."""
+        db.create_session("s", "cli", model="m")
+        db.append_message(session_id="s", role="user", content="first ask")
+        db.append_message(session_id="s", role="user", content="second ask")
+        db.append_message(session_id="s", role="assistant", content="answer")
+        first, second = [r["message_uid"] for r in _rows(db, "s")][:2]
+        for kwargs in ({}, {"include_row_ids": True}):
+            restored = db.get_messages_as_conversation("s", repair_alternation=True, **kwargs)
+            assert [m["role"] for m in restored] == ["user", "assistant"]
+            assert restored[0]["content"] == "first ask\n\nsecond ask"
+            assert restored[0]["message_uid"] == first
+            assert restored[0]["_absorbed_message_uids"] == [second]
+        assert db.get_resume_conversations("s")[0][0]["_absorbed_message_uids"] == [second]
 
     def test_a_row_rewrite_keeps_the_tool_call_uids(self, db):
         db.create_session("s", "cli")

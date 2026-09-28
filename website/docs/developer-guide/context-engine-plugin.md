@@ -160,16 +160,29 @@ What the host guarantees:
   sanitizer's row-addressed rewrite, the interrupted-stream fill. Treat
   `(message_uid, content)` as a *version* of the message; never fail closed on
   a content change under a known uid.
-- **Merges keep the first constituent's uid and record the rest.** When
-  alternation repair merges consecutive user turns, the survivor keeps its own
-  uid and records the absorbed rows' uids in `_absorbed_message_uids` (in
-  absorption order). The list is persisted on the survivor's row
-  (`messages.absorbed_message_uids`) and restored with it, so after a restart an
-  engine still sees that `A\n\nB` is the host's fold of `A` and `B` rather
-  than a new message.
+- **Merges keep the first constituent's uid and record the rest.** Whenever
+  the host folds one durable message into another (alternation repair's
+  consecutive-user and consecutive-assistant merges, the compressor restating
+  an in-flight task onto its summary carrier, the real user anchor folded into
+  a trailing scaffolding turn, micro-compaction's adjacent-user merge), the
+  composite keeps the uid of the constituent whose text comes first and
+  records the others in `_absorbed_message_uids` (text order). The list is
+  persisted on the survivor's row (`messages.absorbed_message_uids`) and
+  restored with it, so after a restart an engine still sees that `A\n\nB` is
+  the host's fold of `A` and `B` rather than a new message. Merges made while
+  restoring a history (`repair_alternation=True`) record the witness the same
+  way.
 - **Engine-authored rows keep the uid the engine sets.** If your `compress()`
-  output pre-stamps `message_uid` on a summary carrier, the host writes that
-  value; rows without one are minted at insert.
+  output pre-stamps `message_uid` on a summary carrier (or any row it emits),
+  the host writes that value through the commit, both in place and on
+  rotation, and every later restore and copy returns it; rows without one are
+  minted at insert. An engine can therefore recognise its own rows by uid.
+- **A uid names one logical message, not one row.** Copies of a message share
+  it by design, and a host path that re-appends an edited or merged message
+  next to a still-active earlier row (a persist override on a restored list,
+  a merged survivor flushed as a new row) leaves two active rows with one uid.
+  Never assume per-row uniqueness in the active set; key your own state on
+  the uid and treat the later row as the current version.
 - **Tool calls get per-occurrence ids too.** Provider tool-call ids repeat
   (Hermes mints deterministic `call_<12hex>` ids for identical calls, and models
   reuse ids), so an assistant message carries `_tool_call_uids`, a
@@ -189,8 +202,9 @@ What the host guarantees:
 - **Absent only before the row exists.** The current turn's user message has
   no uid during a preflight `compress()` that runs before the turn-start
   flush; the same dict object receives it at that flush. Stores upgraded from
-  an older schema backfill a uid onto every existing row once (schema v31);
-  rows written afterwards by an older build stay `NULL` until re-inserted.
+  an older schema backfill a uid onto every existing row once (schema v31),
+  and an insert trigger mints one for any row an older build writes into a
+  v31 store afterwards (that build's live dicts still lack it until restored).
 
 ### When to use these hooks — and when NOT to
 

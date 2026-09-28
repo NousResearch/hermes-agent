@@ -111,7 +111,10 @@ class SessionRewindMixin:
             replacement_id = result.get("replacement_message_id")
             if not isinstance(replacement_id, int) or not durable_prefix:
                 raise RuntimeError("rewind did not retain its compaction handoff")
+            # The installed scaffold IS the replacement row: carry its identity, not just its row id.
             durable_prefix[-1].update({"_row_id": replacement_id, _DB_PERSISTED_MARKER: True})
+            if isinstance(replacement_uid := result.get("replacement_message_uid"), str) and replacement_uid:
+                durable_prefix[-1]["message_uid"] = replacement_uid
             prefix[-1] = durable_prefix[-1]
         if adopt_row_ids and prefix is not durable_prefix and len(prefix) == len(durable_prefix) and all(
             warm.get("role") == durable_message.get("role")
@@ -123,6 +126,8 @@ class SessionRewindMixin:
             for warm, durable_message in zip(prefix, durable_prefix):
                 if isinstance(row_id := durable_message.get("_row_id"), int):
                     warm["_row_id"] = row_id
+                if isinstance(uid := durable_message.get("message_uid"), str) and uid:
+                    warm["message_uid"] = uid
         return RewindOutcome(
             prefix=prefix, live_view=live_view,
             live_text=live_text if live_text is not None else flatten_message_text(live_view.get("content")),

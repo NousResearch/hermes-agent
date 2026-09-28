@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
-from agent.message_metadata import append_message
+from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, _estimate_tools_tokens_rough
 from agent.process_bootstrap import _install_safe_stdio
@@ -1316,7 +1316,16 @@ def _apply_context_engine_selection(
     # Require a NON-EMPTY list of dicts: ``all([])`` is ``True``, so a ``[]`` from a
     # buggy engine would otherwise replace the request instead of failing open.
     if isinstance(selected, list) and selected and all(isinstance(m, dict) for m in selected):
-        return selected
+        # The engine may hand back the ``conversation_messages`` clones (or its own dicts) that still
+        # carry persistence-only fields; the request copy was stripped BEFORE this hook, so strip the
+        # selection too or those fields reach the provider. Dicts without them pass through as-is.
+        if not any(key in m for m in selected for key in PERSISTENCE_ONLY_MESSAGE_FIELDS):
+            return selected
+        return [
+            {k: v for k, v in m.items() if k not in PERSISTENCE_ONLY_MESSAGE_FIELDS}
+            if any(key in m for key in PERSISTENCE_ONLY_MESSAGE_FIELDS) else m
+            for m in selected
+        ]
     logger.warning(
         "Context engine select_context returned an invalid value "
         "(not a non-empty list of dicts); ignoring (session=%s)", session_label,

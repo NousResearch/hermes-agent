@@ -353,7 +353,9 @@ class SessionMessagesMixin:
                     uids[call_id] = uuid.uuid4().hex
             if uids:
                 msg[TOOL_CALL_UIDS] = uids
-                index_tool_call_uids(batch_index, msg)
+            index_tool_call_uids(batch_index, msg)  # this row's ids shadow any earlier occurrence's
+        elif role == "user":
+            batch_index.clear()  # a result never pairs across a user turn
         elif role == "tool" and _tool_call_uid_or_none(msg) is None:
             uid = resolve_tool_call_uid(batch_index, msg.get("tool_call_id"))
             if uid:
@@ -1665,7 +1667,12 @@ class SessionMessagesMixin:
                     for col in ("reasoning_details", "codex_reasoning_items", "codex_message_items") if row[col])
                 if row["tool_call_uids"] and (tool_uids := _uid_map(row["tool_call_uids"])):
                     msg[TOOL_CALL_UIDS] = tool_uids
+                if msg.get("tool_calls"):
+                    # Provider ids repeat: this row's calls shadow an earlier occurrence's entries, and a
+                    # row without a map (an older writer's) leaves its results unpaired rather than mispaired.
                     index_tool_call_uids(tool_uid_index, msg)
+            elif row["role"] == "user":
+                tool_uid_index.clear()  # a result never pairs across a user turn
             elif row["role"] == "tool":
                 # The stored uid, else the one its assistant row named (a result appended by an older build
                 # or a lone append): rows are read in id order, so the call always precedes its result.
@@ -1872,7 +1879,7 @@ class SessionMessagesMixin:
             if target_row.get("role") != "user":
                 raise ValueError(
                     f"rewind target must be a 'user' message (got role={target_row.get('role')!r}, id={target_message_id})")
-            replacement_message_id = replacement = None
+            replacement_message_id = replacement_message_uid = replacement = None
             if preserve_compaction_handoff or expected_target_content is not None:
                 replacement = self._split_rewind_target(target_row, expected_target_content, preserve_compaction_handoff)
             ids = [r[0] for r in conn.execute("SELECT id FROM messages WHERE session_id = ? AND id >= ? AND active = 1",
@@ -1882,18 +1889,20 @@ class SessionMessagesMixin:
             if replacement is not None:
                 self._insert_message_rows(conn, session_id, [replacement])
                 replacement_message_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+                replacement_message_uid = _message_uid_or_none(replacement)  # stamped by the insert
             conn.execute(
                 "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 WHERE id = ?", (session_id,))
             message_count, tool_call_count = self._active_transcript_counts(conn, session_id)
             conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
             head_id = conn.execute(
                 "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1", (session_id,)).fetchone()[0]
-            return target_row, ids, head_id, replacement_message_id
-        target_row, rewound, new_head_id, replacement_message_id = self._execute_write(_do)
+            return target_row, ids, head_id, replacement_message_id, replacement_message_uid
+        target_row, rewound, new_head_id, replacement_message_id, replacement_message_uid = self._execute_write(_do)
         # Decode for the prompt-buffer prefill without a second fallible DB operation.
         target_row["content"] = self._decode_content(target_row.get("content"))
         return {"rewound_count": len(rewound), "target_message": target_row, "new_head_id": new_head_id,
-                **({"replacement_message_id": replacement_message_id} if preserve_compaction_handoff else {})}
+                **({"replacement_message_id": replacement_message_id,
+                    "replacement_message_uid": replacement_message_uid} if preserve_compaction_handoff else {})}
 
     def message_count(self, session_id: str = None) -> int:
         """Count messages, optionally for a specific session."""

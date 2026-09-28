@@ -623,6 +623,14 @@ CREATE INDEX IF NOT EXISTS idx_messages_display_backfill
 CREATE INDEX IF NOT EXISTS idx_messages_display_identity
     ON messages(session_id, display_identity, display_order)
     WHERE display_identity IS NOT NULL AND (active = 1 OR compacted = 1);
+-- Every row carries a message_uid, whoever wrote it: a build that predates the column inserts NULL, so the
+-- store mints one on its behalf (the current build always binds a uid, so this never fires for it).
+DROP TRIGGER IF EXISTS messages_message_uid_insert;
+CREATE TRIGGER IF NOT EXISTS messages_message_uid_insert
+AFTER INSERT ON messages WHEN new.message_uid IS NULL
+BEGIN
+    UPDATE messages SET message_uid = lower(hex(randomblob(16))) WHERE id = new.id;
+END;
 DROP TRIGGER IF EXISTS messages_display_order_insert;
 CREATE TRIGGER IF NOT EXISTS messages_display_order_insert
 AFTER INSERT ON messages WHEN new.display_order IS NULL

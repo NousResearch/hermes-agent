@@ -30,9 +30,11 @@ def _json_map(text: Any) -> Dict[str, str]:
 
 # Durable payload columns a row-addressed rewrite may change: every INSERT column except row identity,
 # role, active flag and the ones owned by the display index / timestamp / session linkage. ``message_uid``
-# is identity too: a rewrite changes the message's content, never which logical message the row is.
+# and a result row's ``tool_call_uid`` are identity too: a rewrite changes the message's content, never
+# which logical message (or which call occurrence) the row is. ``tool_call_uids`` IS payload: it follows
+# ``tool_calls`` (an assistant merge unions both), so it is rewritten with the row.
 _NON_PAYLOAD_COLUMNS = frozenset(
-    {"session_id", "role", "timestamp", "active", "display_identity", MESSAGE_UID, "tool_call_uids", "tool_call_uid"})
+    {"session_id", "role", "timestamp", "active", "display_identity", MESSAGE_UID, "tool_call_uid"})
 _REPAIR_COLUMNS = tuple(c for c in _MESSAGE_WRITE_COLUMNS if c not in _NON_PAYLOAD_COLUMNS)
 # Columns same-process writers update after our flush (reactions / display-kind stamps, api_content
 # backfill, codex reasoning backfill + checkpoint pruning, platform message ids). They are not part of the
@@ -170,8 +172,10 @@ def resolve_and_repair_transcript_batch(
         # carried (a restored dict without one, or a dict stamped before a rolled-back insert).
         if final_row[MESSAGE_UID]:
             msg[MESSAGE_UID] = final_row[MESSAGE_UID]
-        if final_row["tool_call_uids"]:
-            msg[TOOL_CALL_UIDS] = _json_map(final_row["tool_call_uids"])
+        if stored_tool_uids := _json_map(final_row["tool_call_uids"]):
+            # Stored pairings win; pairings only the live list knows (an un-persisted merge's union) stay.
+            live_tool_uids = msg.get(TOOL_CALL_UIDS)
+            msg[TOOL_CALL_UIDS] = {**(live_tool_uids if isinstance(live_tool_uids, dict) else {}), **stored_tool_uids}
         if final_row["tool_call_uid"]:
             msg[TOOL_CALL_UID] = final_row["tool_call_uid"]
         msg[DB_ROW_SNAPSHOT] = transcript_row_snapshot(final_row)

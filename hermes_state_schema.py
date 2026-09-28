@@ -1051,14 +1051,19 @@ class SessionSchemaMixin:
         if current_version < 25:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
-        if current_version < 31:
+        if current_version < 31 and cursor.execute(
+            "SELECT 1 FROM state_meta WHERE key = 'message_uid_backfill' LIMIT 1"
+        ).fetchone() is None:
             # v31: ``messages.message_uid`` — the durable per-message id. New rows are minted at insert
-            # (``_insert_message_rows``); rows written before the column existed get theirs here, once, so
-            # every row a v31 store hands to a consumer carries one. Non-deterministic per row: two rows
-            # never share a backfilled uid.
+            # (``_insert_message_rows``, or the ``messages_message_uid_insert`` trigger for an older
+            # writer); rows written before the column existed get theirs here, once, so every row a v31
+            # store hands to a consumer carries one. Non-deterministic per row: two rows never share a
+            # backfilled uid. Its own marker: a store whose schema_version cannot advance (no FTS5) must
+            # not repeat the full-table scan on every open.
             cursor.execute(
                 "UPDATE messages SET message_uid = lower(hex(randomblob(16))) WHERE message_uid IS NULL"
             )
+            self.set_meta("message_uid_backfill", "1", cursor=cursor)
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:
             # v29: cron sessions leave the trigram substring index (they stay in the word index);

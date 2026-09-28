@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from time import time as wall_time
-from typing import Any, MutableMapping, Optional, TypeVar
+from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
 
 
 # These fields describe Hermes' durable record and timeline display, not
@@ -41,11 +41,60 @@ PERSISTENCE_ONLY_MESSAGE_FIELDS = frozenset(
 ) | REPAIR_BOOKKEEPING_FIELDS
 
 
+def _uid_or_none(msg: Mapping[str, Any]) -> Optional[str]:
+    uid = msg.get(MESSAGE_UID)
+    return uid if isinstance(uid, str) and uid else None
+
+
+def _absorbed_uids(msg: Mapping[str, Any]) -> List[str]:
+    return [u for u in (msg.get(ABSORBED_MESSAGE_UIDS) or ()) if isinstance(u, str) and u]
+
+
+def record_absorbed_message(
+    survivor: MutableMapping[str, Any], dropped: Mapping[str, Any], *, dropped_leads: bool = False,
+) -> None:
+    """Merge-witness bookkeeping for every host fold of *dropped* into *survivor*.
+
+    The composite keeps the uid of the constituent whose text comes first and records every other
+    constituent's uid in ``_absorbed_message_uids`` (text order, no repeats). By default the survivor's
+    text leads; with *dropped_leads* the dropped dict's text was put first (the real user anchor folded
+    into a scaffolding turn), so its uid becomes the survivor's and the survivor's former uid is recorded.
+    A dict without a uid (unflushed, scaffolding, engine-authored) contributes nothing; an empty result
+    leaves the survivor untouched.
+    """
+    survivor_uid = _uid_or_none(survivor)
+    dropped_uid = _uid_or_none(dropped)
+    if dropped_leads and dropped_uid:
+        survivor[MESSAGE_UID] = dropped_uid
+        ordered = _absorbed_uids(dropped) + ([survivor_uid] if survivor_uid else []) + _absorbed_uids(survivor)
+    else:
+        ordered = _absorbed_uids(survivor) + ([dropped_uid] if dropped_uid else []) + _absorbed_uids(dropped)
+    absorbed: List[str] = []
+    for uid in ordered:
+        if uid != survivor.get(MESSAGE_UID) and uid not in absorbed:
+            absorbed.append(uid)
+    if absorbed:
+        survivor[ABSORBED_MESSAGE_UIDS] = absorbed
+
+
+def _named_tool_call_variants(assistant: Any) -> List[str]:
+    """Every pairing-id variant of every tool call an assistant dict names."""
+    from agent.message_sanitization import tool_call_id_variants
+
+    if not isinstance(assistant, dict):
+        return []
+    return [variant for tc in assistant.get("tool_calls") or () for variant in tool_call_id_variants(tc)]
+
+
 def index_tool_call_uids(index: MutableMapping[str, str], assistant: Any) -> None:
     """Register an assistant dict's ``_tool_call_uids`` under every pairing-id variant of its tool calls, so a
-    later tool-result row can be resolved by any spelling of its ``tool_call_id``."""
+    later tool-result row can be resolved by any spelling of its ``tool_call_id``. Provider ids repeat, so
+    every id this assistant names first shadows an earlier occurrence's entry: a result pairs with the
+    NEAREST preceding call, and a call without a uid (a legacy row) pairs its result with nothing."""
     from agent.message_sanitization import coalesce_tool_call_id, tool_call_id_variants
 
+    for variant in _named_tool_call_variants(assistant):
+        index.pop(variant, None)
     uids = assistant.get(TOOL_CALL_UIDS) if isinstance(assistant, dict) else None
     if not isinstance(uids, dict) or not uids:
         return
@@ -78,15 +127,20 @@ def tool_call_uid_from_history(messages: Any, tool_index: int) -> Optional[str]:
     tool_call_id = tool_msg.get("tool_call_id") if isinstance(tool_msg, dict) else None
     if not isinstance(tool_call_id, str) or not tool_call_id:
         return None
+    from agent.message_sanitization import tool_result_id_variants
+
+    result_variants = set(tool_result_id_variants(tool_call_id))
     for prior in reversed(messages[:tool_index]):
-        if isinstance(prior, dict) and prior.get("role") == "assistant" and prior.get(TOOL_CALL_UIDS):
-            index: dict = {}
-            index_tool_call_uids(index, prior)
-            uid = resolve_tool_call_uid(index, tool_call_id)
-            if uid:
-                return uid
-        elif isinstance(prior, dict) and prior.get("role") == "user":
+        if not isinstance(prior, dict):
+            continue
+        if prior.get("role") == "user":
             return None  # a tool result never pairs across a user turn
+        if prior.get("role") != "assistant" or result_variants.isdisjoint(_named_tool_call_variants(prior)):
+            continue
+        # The nearest assistant naming this id owns the result: its uid, or none if it has no map (legacy).
+        index: dict = {}
+        index_tool_call_uids(index, prior)
+        return resolve_tool_call_uid(index, tool_call_id)
     return None
 
 _Message = TypeVar("_Message", bound=MutableMapping[str, Any])

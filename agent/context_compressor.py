@@ -4869,6 +4869,10 @@ Write only the summary body. Do not include any preamble or prefix."""
                 "\n\n" + _INFLIGHT_TASK_REPLAY_HEADER + "\n" + task_text,
             )
             drop_stale_api_content(carrier)
+            # The carrier absorbed a durable user turn: record its uid (merge witness).
+            from agent.message_metadata import record_absorbed_message
+
+            record_absorbed_message(carrier, inflight)
             return compressed
 
         compressed.append(replay)

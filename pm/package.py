@@ -39,8 +39,11 @@ def compose_env(diffs: list[dict], base: Optional[dict] = None) -> dict[str, str
     if path_dirs:
         key = next((k for k in env if k.upper() == "PATH"), "PATH")
         existing = env.get(key, "")
-        prefix = os.pathsep.join(path_dirs)
-        env[key] = f"{prefix}{os.pathsep}{existing}" if existing else prefix
+        # Re-composing an activated environment must move managed dirs, not
+        # append another copy on every hop (cmd drops PATH above 8191 chars).
+        # Leave unrelated user entries, including empty/relative ones, intact.
+        rest = [entry for entry in existing.split(os.pathsep) if entry not in path_dirs] if existing else []
+        env[key] = os.pathsep.join([*path_dirs, *rest])
     return env
 
 

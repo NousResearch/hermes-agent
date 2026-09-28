@@ -573,11 +573,10 @@ DEFAULT_CONFIG = {
         # are floored at 0.75 (raise-only) so compaction doesn't fire with half the window free; set
         # above 0.75 to override the floor.
         "threshold": 0.50,
-        # threshold_tokens: absolute token cap — compression triggers at the lower of the ratio
-        # threshold and this count. Clamped to the model's context length. 256K bounds 1M-window
-        # models (their 50% trigger sat at 500K, so compaction never fired) while every lower
-        # ratio trigger still wins; null = ratio-only.
-        "threshold_tokens": 256_000,
+        # threshold_tokens: optional absolute token cap — when set, compression triggers at the
+        # lower of the ratio threshold and this count. Clamped to the model's context length.
+        # Off by default: no single count suits windows from 64K to 1M+, so the ratio decides.
+        "threshold_tokens": None,
         # "progress_notices": False,    # opt-in (#52995): when True, routine compression
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         # tail_mode: "lean" = clamped 2.5%-of-window tail (10K floor / 25K cap) plus chunked
@@ -2681,7 +2680,7 @@ DEFAULT_CONFIG = {
         # Extra ports detection probes for an external llama-server (besides 8080).
         "detect_ports": [],
     },
-    "_config_version": 46,  # Config schema version - bump this when adding new required fields
+    "_config_version": 47,  # Config schema version - bump this when adding new required fields
 }
 
 

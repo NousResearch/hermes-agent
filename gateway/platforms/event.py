@@ -125,6 +125,8 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Latest native input covered by this turn; independent of its reply anchor and ledger id.
+    read_receipt_message_id: Optional[str] = None
     # Deliver this external event as a new turn when its session is busy.
     defer_until_idle: bool = False
     # Snapshot from ``BasePlatformAdapter.prepare_turn_context``. The user transcript row saves it,
@@ -174,6 +176,12 @@ class MessageEvent:
         self.merged_message_ids.extend(
             message_id for message_id in (other.message_id, *other.merged_message_ids) if message_id
         )
+
+    def absorb_turn_input(self, other: "MessageEvent") -> None:
+        self.absorb_reply_expected(other)
+        receipt_id = other.read_receipt_message_id or other.message_id
+        if receipt_id:
+            self.read_receipt_message_id = receipt_id
 
     def _command_text(self) -> str:
         """Return the message text with leading Desktop attachment refs stripped.

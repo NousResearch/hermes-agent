@@ -64,6 +64,7 @@ class ObservedFeedback:
     reactions: list[str] = field(default_factory=list)
     replies: list[tuple[str, str]] = field(default_factory=list)
     typing: bool = False
+    redirected: bool = False
 
 
 def test_feedback_visibility(
@@ -110,7 +111,10 @@ def test_feedback_visibility(
                             ):
                                 seen.reactions.append(event.key)
                             if isinstance(event, RoomMessageText):
-                                seen.replies.append((event.sender, event.body))
+                                if event.body.startswith("↪ Redirected current run"):
+                                    seen.redirected = True
+                                else:
+                                    seen.replies.append((event.sender, event.body))
                         for event in joined.ephemeral:
                             if isinstance(event, ReceiptEvent):
                                 seen.receipts.update(
@@ -142,6 +146,33 @@ def test_feedback_visibility(
                 typing=True,
             )
 
+            correction = await client.room_send(
+                live_room.room_id,
+                "m.room.message",
+                {
+                    "msgtype": "m.text",
+                    "body": "Please answer this correction [in:feedback-correction]",
+                },
+            )
+            assert isinstance(correction, RoomSendResponse), correction
+            await observe_until(
+                lambda: (
+                    seen.redirected
+                    and (
+                        matrix_feedback.read_receipts != "immediate"
+                        or correction.event_id in seen.receipts
+                    )
+                )
+            )
+            assert seen == ObservedFeedback(
+                receipts={sent.event_id, correction.event_id}
+                if matrix_feedback.read_receipts == "immediate"
+                else set(),
+                reactions=["👀"] if matrix_feedback.reactions else [],
+                typing=True,
+                redirected=True,
+            )
+
             release.set()
             await observe_until(
                 lambda: (
@@ -150,16 +181,19 @@ def test_feedback_visibility(
                     and (not matrix_feedback.reactions or "✅" in seen.reactions)
                     and (
                         matrix_feedback.read_receipts == "disabled"
-                        or sent.event_id in seen.receipts
+                        or correction.event_id in seen.receipts
                     )
                 )
             )
             assert seen == ObservedFeedback(
-                receipts=set()
-                if matrix_feedback.read_receipts == "disabled"
-                else {sent.event_id},
+                receipts={
+                    "immediate": {sent.event_id, correction.event_id},
+                    "after_processing": {correction.event_id},
+                    "disabled": set(),
+                }[matrix_feedback.read_receipts],
                 reactions=["👀", "✅"] if matrix_feedback.reactions else [],
                 replies=[(live_room.bot.user_id, "Matrix live reply")],
+                redirected=True,
             )
         except TimeoutError:
             pytest.fail(

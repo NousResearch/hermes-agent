@@ -35,7 +35,7 @@ def _absorb_pending_media(existing: MessageEvent, event: MessageEvent) -> None:
         existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
     existing.absorb_message_ids(event)
     existing.absorb_reply_context(event)
-    existing.absorb_reply_expected(event)
+    existing.absorb_turn_input(event)
     if existing_is_photo or incoming_is_photo:
         existing.message_type = MessageType.PHOTO
     elif existing_type == MessageType.TEXT and event.message_type != MessageType.TEXT:
@@ -52,7 +52,7 @@ def _absorb_pending_text(existing: MessageEvent, event: MessageEvent) -> None:
         existing.text = _append_text(existing.text, event.text)
     existing.absorb_message_ids(event)
     existing.absorb_reply_context(event)
-    existing.absorb_reply_expected(event)
+    existing.absorb_turn_input(event)
 
 
 def _append_batched_text(existing: MessageEvent, event: MessageEvent) -> None:
@@ -64,7 +64,7 @@ def _append_batched_text(existing: MessageEvent, event: MessageEvent) -> None:
         existing.absorb_media(event)
     existing.absorb_message_ids(event)
     existing.absorb_reply_context(event)
-    existing.absorb_reply_expected(event)
+    existing.absorb_turn_input(event)
 
 
 def _append_debounced_text(existing: MessageEvent, event: MessageEvent) -> None:
@@ -75,7 +75,7 @@ def _append_debounced_text(existing: MessageEvent, event: MessageEvent) -> None:
     if event.media_urls:
         existing.absorb_media(event)
     existing.absorb_reply_context(event)
-    existing.absorb_reply_expected(event)
+    existing.absorb_turn_input(event)
     latest_message_id = getattr(event, "message_id", None)
     if latest_message_id is not None:
         existing.merged_message_ids.extend(

@@ -204,6 +204,40 @@ def test_cli_flow_classifies_landed_backed_out_failed_and_raised(marks, monkeypa
     setup_metrics.note_provider_setup_saved()  # outside a flow: inert
 
 
+def test_cli_setup_navigation_esc_cancels_and_back_resumes_one_flow(marks, monkeypatch):
+    from hermes_cli.setup import _SetupCancelled, _SetupGoBack
+
+    monkeypatch.setattr(setup_metrics, "_model_route", lambda: ("openrouter", "a", None))
+
+    def attempt(provider, exc=None):
+        with setup_metrics.cli_provider_setup(provider):
+            if exc is not None:
+                raise exc
+            setup_metrics.note_provider_setup_saved()
+
+    with setup_metrics.provider_setup_surface("cli_model"):
+        with pytest.raises(_SetupCancelled):
+            attempt("xai", _SetupCancelled())  # Esc
+        with pytest.raises(_SetupGoBack):
+            attempt("anthropic", _SetupGoBack(1))  # Back to the provider menu, then the same provider
+        attempt("anthropic")
+        with pytest.raises(_SetupGoBack):
+            attempt("nous", _SetupGoBack(1))  # Back, then another provider
+        attempt("gemini")
+    with pytest.raises(_SetupGoBack):  # a wizard section replay keeps the flow open across the surface
+        with setup_metrics.provider_setup_surface("cli_setup"):
+            attempt("xai", _SetupGoBack(0))
+    with setup_metrics.provider_setup_surface("cli_setup"):
+        pass  # ...and leaving the entry point without resuming it ends it
+    assert _setup_rows(marks.rows) == [
+        ("cli_model", "xai", "started", "none"), ("cli_model", "xai", "failed", "cancelled"),
+        ("cli_model", "anthropic", "started", "none"), ("cli_model", "anthropic", "completed", "none"),
+        ("cli_model", "nous", "started", "none"), ("cli_model", "nous", "failed", "cancelled"),
+        ("cli_model", "gemini", "started", "none"), ("cli_model", "gemini", "completed", "none"),
+        ("cli_setup", "xai", "started", "none"), ("cli_setup", "xai", "failed", "cancelled"),
+    ]
+
+
 @pytest.mark.parametrize(("sess", "ending"), [
     ({"status": "approved"}, ("completed", "none")),
     ({"status": "expired"}, ("abandoned", "none")),

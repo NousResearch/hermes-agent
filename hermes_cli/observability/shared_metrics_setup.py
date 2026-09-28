@@ -105,11 +105,12 @@ def setup_failure_class(exc: BaseException) -> str:
     """Closed class for an exception that ended a setup flow; inert (type checks only)."""
     from hermes_cli.auth_error_copy import is_cancelled, is_network_error
 
-    if is_cancelled(exc):
+    names = {cls.__name__ for cls in type(exc).__mro__}
+    if is_cancelled(exc) or "_SetupCancelled" in names:  # Esc in the setup menus
         return "cancelled"
     if is_network_error(exc):
         return "network"
-    if {cls.__name__ for cls in type(exc).__mro__} & _AUTH_ERROR_TYPES:
+    if names & _AUTH_ERROR_TYPES:
         return "auth"
     return "other"
 
@@ -312,8 +313,34 @@ def provider_setup_surface(surface: str) -> Iterator[None]:
     _cli.surface = surface
     try:
         yield
+    except BaseException as exc:
+        if not _is_go_back(exc):  # a Back replays the wizard section: its flow may resume there
+            _close_backed_out()
+        raise
+    else:
+        _close_backed_out()
     finally:
         _cli.surface = previous
+
+
+def _is_go_back(exc: BaseException) -> bool:
+    return any(cls.__name__ == "_SetupGoBack" for cls in type(exc).__mro__)
+
+
+def _close_backed_out() -> None:
+    """The user went Back out of a provider flow and never resumed it: it ends as ``cancelled``."""
+    pending, _cli.backed_out = getattr(_cli, "backed_out", None), None
+    if pending is not None:
+        finish_provider_setup(pending[0], "failed", "cancelled")
+
+
+def _resumes(flow: SetupFlow, surface: Any, provider: Any) -> bool:
+    try:
+        from .shared_metrics_catalog import provider_metric_name
+
+        return provider not in _NOT_A_PROVIDER and (flow.surface, flow.provider) == (surface, provider_metric_name(provider))
+    except Exception:
+        return False
 
 
 @contextlib.contextmanager
@@ -322,23 +349,32 @@ def cli_provider_setup(provider: Any) -> Iterator[None]:
     tests driving the picker directly) nothing is tracked.
 
     Completed when the flow saved a choice or changed the model route; a flow that returns without
-    either failed with the class it reported, else the user backed out (``cancelled``).
+    either failed with the class it reported, else the user backed out (``cancelled``). Back (Left
+    arrow) leaves the flow open: the replayed picker re-entering the same provider continues it (one
+    ``started``); picking another provider, or leaving the entry point, ends it ``cancelled``.
     """
     surface = getattr(_cli, "surface", None)
-    flow = begin_provider_setup(surface, provider) if surface else None
+    pending, _cli.backed_out = getattr(_cli, "backed_out", None), None
+    if pending is not None and not _resumes(pending[0], surface, provider):
+        finish_provider_setup(pending[0], "failed", "cancelled")
+        pending = None
+    flow, before = pending or (begin_provider_setup(surface, provider) if surface else None, None)
     if flow is None:
         yield
         return
-    before = None
-    with contextlib.suppress(Exception):
-        before = _model_route()
+    if pending is None:
+        with contextlib.suppress(Exception):
+            before = _model_route()
     hints: dict[str, Any] = {"saved": False, "failure": None}
     _cli.hints = hints
     try:
         yield
     except BaseException as exc:
         _cli.hints = None
-        finish_provider_setup(flow, "failed", setup_failure_class(exc))
+        if _is_go_back(exc):
+            _cli.backed_out = (flow, before)
+        else:
+            finish_provider_setup(flow, "failed", setup_failure_class(exc))
         raise
     _cli.hints = None
     landed = hints["saved"]

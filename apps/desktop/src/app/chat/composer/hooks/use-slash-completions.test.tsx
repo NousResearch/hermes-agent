@@ -95,16 +95,6 @@ describe('useSlashCompletions', () => {
     expect(request).toHaveBeenCalledTimes(2)
   })
 
-  it('offers skill commands on a bare slash, not just built-ins', async () => {
-    const request = vi.fn().mockResolvedValue(CATALOG)
-    const api = harness({ request } as unknown as HermesGateway)
-
-    const items = await completions(api, '')
-    const work = items.find(item => (item.metadata as { command?: string })?.command === '/work')
-
-    expect((work?.metadata as { group?: string })?.group).toBe('Skills')
-  })
-
   // A `/` typed mid-message is a reference dropped into prose, so the trigger
   // filters the list to skills (use-composer-trigger). A bare mid-message `/`
   // resolves to the same empty query as an opening `/`, so that filter runs

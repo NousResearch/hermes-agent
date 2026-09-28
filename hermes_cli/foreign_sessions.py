@@ -47,14 +47,20 @@ class ForeignSession:
 
 def _read_json_lines(path: Path):
     """Yield parsed JSON objects, silently skipping unparseable lines."""
-    with contextlib.suppress(OSError), open(path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(obj, dict):
-                yield obj
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if isinstance(obj, dict):
+                    yield obj
+    except OSError:
+        return
 
 
 def _block_text(block: Any) -> str:
@@ -242,8 +248,8 @@ def import_foreign_session(source: str, path, db=None) -> str:
     tool = _SOURCE_DB_NAMES[source]
     owns_db = db is None
     if owns_db:
-        from hermes_state import SessionDB
-        db = SessionDB()
+        from hermes_state_registry import acquire
+        db = acquire()  # the CLI resume that follows acquires this same handle
     try:
         session_id = new_session_id()
         origin = {"imported_from": {"tool": tool, "path": str(path), "foreign_session_id": parsed.get("session_id")}}

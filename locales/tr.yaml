@@ -11,7 +11,7 @@ approval:
   prompt_smart_deny: "      Seçim [b/R]: "
   smart_deny_once_inputs: "b,bir kez"
   smart_deny_deny_inputs: "r,reddet"
-  timeout:         "      ⏱ Zaman aşımı — komut reddedildi"
+  timeout:         "      ⏱ {waited} içinde yanıt gelmedi — komut çalıştırılmadı. Yeniden denemek için tekrar isteyin veya sınırı yükseltin: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ Bir kez izin verildi"
   allowed_session: "      ✓ Bu oturum için izin verildi"
   allowed_always:  "      ✓ Kalıcı izin listesine eklendi"
@@ -86,6 +86,9 @@ gateway:
     switch_failed:         "Dal oluşturuldu ancak ona geçilemedi."
     branched_one:          "⑂ **{title}** dalına geçildi ({count} mesaj kopyalandı)\nOrijinal: `{parent}`\nDal: `{new}`\nOrijinale geri dönmek için `/resume` kullanın."
     branched_many:         "⑂ **{title}** dalına geçildi ({count} mesaj kopyalandı)\nOrijinal: `{parent}`\nDal: `{new}`\nOrijinale geri dönmek için `/resume` kullanın."
+    branched_thread_one:   "⑂ **{title}** yeni bir konuya dallandı ({count} mesaj kopyalandı)\nKonu: {thread}\nOrijinal: `{parent}` — bu sohbet onda kalır\nDal: `{new}`\nBu sohbette dallanmak için `/branch --here` kullanın."
+    branched_thread_many:  "⑂ **{title}** yeni bir konuya dallandı ({count} mesaj kopyalandı)\nKonu: {thread}\nOrijinal: `{parent}` — bu sohbet onda kalır\nDal: `{new}`\nBu sohbette dallanmak için `/branch --here` kullanın."
+    thread_fallback:       "Burada konu oluşturulamadı, bu yüzden dal bu sohbetin oturumunun yerini aldı."
 
   commands:
     usage:                 "Kullanım: `/commands [page]`"
@@ -179,7 +182,7 @@ gateway:
       blocked:             "blocked; needs attention"
       review_requested:    "handed off for review; the implementation is done"
       changes_requested:   "review requested changes (BLOCK); implementation is not approved"
-      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
+      block_loop_detected: "routed to triage after repeated blocks; orchestration attention needed"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."

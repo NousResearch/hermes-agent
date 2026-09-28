@@ -126,19 +126,27 @@ def _profile_author() -> str:
     return _specify_author("decomposer")
 
 
-def _resolve_profile_from_cfg(cfg: dict, key: str) -> str:
-    """``kanban.<key>`` if it names an existing profile, else the active
-    default profile — so a task is never stranded for lack of an owner.
+def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = None) -> str:
+    """``kanban.<key>`` if it names an existing profile, else ``fallback``
+    (the root task's own assignee) if that does, else the active default
+    profile — so a task is never stranded for lack of an owner.
     ``orchestrator_profile`` owns the root after fan-out; ``default_assignee``
-    catches children the decomposer can't route."""
+    catches children the decomposer can't route.
+
+    The root's assignee sits before the active profile because the decomposer
+    runs inside whatever profile hosts the dispatcher — an operator's
+    credential-less incognito profile, say — and that profile must never
+    silently become the owner of work the card was assigned away from (#114294).
+    """
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     explicit = (kanban_cfg.get(key) or "").strip()
-    if explicit:
-        try:
-            if profiles_mod.profile_exists(explicit):
-                return explicit
-        except Exception:
-            pass
+    for candidate in (explicit, (fallback or "").strip()):
+        if candidate:
+            try:
+                if profiles_mod.profile_exists(candidate):
+                    return candidate
+            except Exception:
+                pass
     try:
         return profiles_mod.get_active_profile_name() or "default"
     except Exception:
@@ -193,7 +201,7 @@ class _Routing:
     valid_names: set[str]
 
 
-def _load_routing() -> _Routing:
+def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
     from hermes_cli.config import load_config_readonly
     try:
         cfg = load_config_readonly()
@@ -202,8 +210,8 @@ def _load_routing() -> _Routing:
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     roster, valid_names = _build_roster()
     return _Routing(
-        orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile"),
-        default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee"),
+        orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee),
+        default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee),
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,
@@ -305,7 +313,7 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
-    routing = _load_routing()
+    routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(

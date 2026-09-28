@@ -13,13 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Sequence
 
+from hermes_cli.gateway_multiplex_s6 import AUTOSTART_STATES as _AUTOSTART_STATES, fold_named_slot_intent
+
 log = logging.getLogger(__name__)
 
-# Only this desired state auto-restarts; everything else (startup_failed, starting, stopped,
-# missing) registers the slot down and waits for the user — no crash-loop of a broken gateway
-# across `docker restart`. Older installs only have gateway_state; newer lifecycle commands
-# persist desired_state separately so a transient runtime state can't erase operator intent.
-_AUTOSTART_STATES = frozenset({"running"})
+# Older installs only have gateway_state; newer lifecycle commands persist desired_state separately
+# so a transient runtime state can't erase operator intent.
 # Transient sub-states of a RUNNING gateway (not an operator stop, not a failed boot). A gateway
 # hard-killed in one of them with no `desired_state` would otherwise stay DOWN on every later boot
 # (observed: staging stranded at `draining`); map them to `running`, mirroring gateway/run.py.
@@ -54,13 +53,35 @@ class ReconcileAction:
     # "clean" / "unclean" (sentinel still says running — SIGKILL/OOM/VM death) / "unknown". Boot
     # is the one place that can stamp a violent death into the volume-persisted log.
     prior_exit: str = "unknown"
+    #: A named slot whose autostart intent was inherited by the root slot (multiplex-only), or —
+    #: on the root slot — True when it is starting because of one.
+    folded_into_root: bool = False
 
 
-def _slot_action(
-    profile: str, profile_dir: Path, prior_state: str | None, start: bool) -> ReconcileAction:
+def _slot_action(profile: str, profile_dir: Path, prior_state: str | None, start: bool,
+                 *, folded_into_root: bool = False) -> ReconcileAction:
     return ReconcileAction(profile=profile, prior_state=prior_state,
                            action="started" if start else "registered",
-                           prior_exit=_read_prior_exit_label(profile_dir))
+                           prior_exit=_read_prior_exit_label(profile_dir),
+                           folded_into_root=folded_into_root)
+
+
+def _named_profile_dirs(hermes_home: Path) -> list[tuple[str, Path]]:
+    """Every real named profile under ``$HERMES_HOME/profiles`` (``SOUL.md`` is the marker)."""
+    profiles_root = hermes_home / "profiles"
+    if not profiles_root.is_dir():
+        return []
+    found: list[tuple[str, Path]] = []
+    for entry in sorted(profiles_root.iterdir()):
+        if not entry.is_dir() or not (entry / "SOUL.md").exists():
+            continue
+        # "default" is reserved for the root profile slot.
+        if entry.name == "default":
+            log.warning("profiles/default/ exists — skipping to avoid colliding with the "
+                        "reserved root-profile s6 slot")
+            continue
+        found.append((entry.name, entry))
+    return found
 
 
 def reconcile_profile_gateways(
@@ -77,48 +98,54 @@ def reconcile_profile_gateways(
     review).
     """
     actions: list[ReconcileAction] = []
-    # Under a multiplexing root gateway named slots are still registered but must not boot from
-    # their persisted run intent, or they would become additional multiplex owners.
-    from gateway.config import load_gateway_config
-    from utils import is_truthy_value
-    try:
-        multiplex_profiles = load_gateway_config().multiplex_profiles
-    except Exception:
-        log.warning("Unable to load gateway configuration during container boot; using the "
-                    "GATEWAY_MULTIPLEX_PROFILES override if set.", exc_info=True)
-        multiplex_profiles = is_truthy_value(os.environ.get("GATEWAY_MULTIPLEX_PROFILES"))
+    # ONE gateway per container: named slots are registered (so `hermes -p X gateway start` has a
+    # target and `s6-svstat` can report them) but are NEVER booted from their persisted run intent.
+    # This is the s6 leg of the multiplex-only convergence: an image upgraded from a release that
+    # booted N per-profile slots comes back up with one multiplexing root gateway and no manual
+    # step, instead of N processes fighting over the same profiles.
+    #
+    # It used to be gated on `gateway.multiplex_profiles`, which made the UNSET default (on) boot
+    # the slots anyway — the container shipped the opt-out topology by accident. The key is retired
+    # as a topology switch (hermes_cli/gateway_multiplex_mode.py), so there is nothing to read.
+    named = [(name, entry, _read_desired_state(entry)) for name, entry in _named_profile_dirs(hermes_home)]
 
     # A legacy `gateway run` container with no state yet seeds `running` (pre-s6 behavior).
     legacy_default_state = _maybe_migrate_legacy_gateway_run_state(
         hermes_home, container_argv=container_argv, dry_run=dry_run)
     default_prior_state = legacy_default_state or _read_desired_state(hermes_home)
-    default_should_start = default_prior_state in _AUTOSTART_STATES
+    # The root slot INHERITS every named slot's autostart intent, because it is the one process
+    # that serves them. Without this an image only ever driven as `hermes -p coder gateway start`
+    # booted with ZERO gateways: it has no root state (or "stopped"), every named slot is now
+    # registered down unconditionally, and every action reported "registered" — a container that
+    # looks healthy while nothing is listening.
+    fold = fold_named_slot_intent(default_prior_state, ((name, prior) for name, _dir, prior in named))
+    folded, default_should_start = list(fold.folded), fold.root_should_start
+    if folded and default_prior_state not in _AUTOSTART_STATES:
+        log.warning("%s", boot_notice(folded))
     if not dry_run:
         _cleanup_stale_runtime_files(hermes_home)
         _register_service(scandir, "default", start=default_should_start)
-    actions.append(_slot_action("default", hermes_home, default_prior_state, default_should_start))
+    actions.append(_slot_action("default", hermes_home, default_prior_state, default_should_start,
+                                folded_into_root=bool(folded)))
 
-    profiles_root = hermes_home / "profiles"
-    if profiles_root.is_dir():
-        for entry in sorted(profiles_root.iterdir()):
-            # SOUL.md (seeded by `hermes profile create`) is the "real profile" marker.
-            if not entry.is_dir() or not (entry / "SOUL.md").exists():
-                continue
-            # "default" is reserved for the root profile slot above.
-            if entry.name == "default":
-                log.warning("profiles/default/ exists — skipping to avoid colliding with the "
-                            "reserved root-profile s6 slot")
-                continue
-
-            prior_state = _read_desired_state(entry)
-            should_start = not multiplex_profiles and prior_state in _AUTOSTART_STATES
-            if not dry_run:
-                _cleanup_stale_runtime_files(entry)
-                _register_service(scandir, entry.name, start=should_start)
-            actions.append(_slot_action(entry.name, entry, prior_state, should_start))
+    for name, entry, prior_state in named:
+        # Registered down, always: a started named slot IS a second gateway on this host.
+        should_start = False
+        if not dry_run:
+            _cleanup_stale_runtime_files(entry)
+            _register_service(scandir, name, start=should_start)
+        actions.append(_slot_action(name, entry, prior_state, should_start,
+                                    folded_into_root=name in folded))
     if not dry_run:
         _write_reconcile_log(hermes_home, actions)
     return actions
+
+
+def boot_notice(folded: Sequence[str]) -> str:
+    """One line naming the profiles whose autostart intent the root slot took over."""
+    return ("reconcile: profile gateway(s) " + ", ".join(sorted(folded)) +
+            " asked to autostart; one gateway per container serves every profile, so the ROOT "
+            "slot (gateway-default) was started instead and multiplexes them.")
 
 
 def _maybe_migrate_legacy_gateway_run_state(
@@ -211,7 +238,7 @@ def _read_desired_state(profile_dir: Path) -> str | None:
     if not state_file.exists():
         return None
     try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
+        data = json.loads(state_file.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         log.warning("could not read %s; treating as no prior state", state_file)
         return None
@@ -315,7 +342,8 @@ def _write_reconcile_log(hermes_home: Path, actions: list[ReconcileAction]) -> N
     with log_path.open("a", encoding="utf-8") as f:
         for a in actions:
             f.write(f"{ts} profile={a.profile} prior_state={a.prior_state} "
-                    f"action={a.action} prior_exit={a.prior_exit}\n")
+                    f"action={a.action} prior_exit={a.prior_exit} "
+                    f"folded_into_root={a.folded_into_root}\n")
 
 
 def main() -> int:
@@ -330,6 +358,9 @@ def main() -> int:
     hermes_home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
     scandir = Path(os.environ.get("S6_PROFILE_GATEWAY_SCANDIR", "/run/service"))
     actions = reconcile_profile_gateways(hermes_home=hermes_home, scandir=scandir)
+    folded = [a.profile for a in actions if a.profile != "default" and a.folded_into_root]
+    if folded:
+        print(boot_notice(folded))
     for a in actions:
         print(f"reconcile: profile={a.profile} prior_state={a.prior_state} action={a.action}")
     return 0

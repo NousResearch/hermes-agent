@@ -114,6 +114,7 @@ export function pendingNotice(hermesHome: string, userData: string): PendingNoti
   }
 
   const names = Object.keys(report.plugins).sort()
+  const nameList = names.join(', ')
 
   const list = names
     .map(n => {
@@ -124,15 +125,19 @@ export function pendingNotice(hermesHome: string, userData: string): PendingNoti
     })
     .join('\n')
 
-  const title = report.in_effect ? 'Some plugins were not loaded' : 'Plugins need an update'
+  // User copy: what happened, what it means for them, what to do. Config keys
+  // and CLI commands stay out; the per-plugin list is for the plugin author.
+  const copy = report.in_effect
+    ? {
+        title: 'Some plugins were turned off',
+        message: `These plugins were built for an older Hermes and were turned off: ${nameList}. Hermes works normally without them.`,
+        detail: `Look for an updated version of each plugin or ask its author.\n\n${list}`
+      }
+    : {
+        title: 'Some plugins need an update',
+        message: `These plugins were built for an older Hermes and will stop working on ${report.removal_date}: ${nameList}.`,
+        detail: `Look for an updated version or ask the plugin's author before then.\n\n${list}`
+      }
 
-  const message = report.in_effect
-    ? `${names.length} plugin${names.length === 1 ? '' : 's'} import${names.length === 1 ? 's' : ''} module paths that were removed on ${report.removal_date} and ${names.length === 1 ? 'was' : 'were'} not loaded.`
-    : `${names.length} plugin${names.length === 1 ? '' : 's'} import${names.length === 1 ? 's' : ''} module paths that stop working on ${report.removal_date}.`
-
-  const detail = report.in_effect
-    ? `${list}\n\nUpdate the plugin(s), or force-load them with plugins.allow_deprecated_imports: true in config.yaml (they will still break once the compatibility layer is removed).\n\nFull list: hermes plugins compat`
-    : `${list}\n\nCheck for plugin updates or notify the author before ${report.removal_date}. After that date these plugins are not loaded.\n\nFull list: hermes plugins compat`
-
-  return { key, title, message, detail }
+  return { key, ...copy }
 }

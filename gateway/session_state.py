@@ -20,6 +20,10 @@ class TurnState:
     ``clear()``: ``_release_turn_lease`` owns it (release exactly once)."""
 
     agent: Any = None  # running AIAgent (or _AGENT_PENDING_SENTINEL); None = idle
+    # The MessageEvent that opened the running turn and the live TurnContext: a successful busy
+    # redirect re-anchors both to the redirecting message (#115001).
+    event: Any = None
+    ctx: Any = None
     started_ts: float = 0.0  # 0.0 = not running
     lease: Any = None  # cross-process active-session slot lease
     busy_ack_ts: float = 0.0  # debounce; 0.0 = never acked
@@ -30,7 +34,7 @@ class TurnState:
 
     def clear(self) -> None:
         """Reset the per-turn slot.  The caller pops ``lease`` first to release it."""
-        self.agent = self.lease = None
+        self.agent = self.lease = self.event = self.ctx = None
         self.started_ts = self.busy_ack_ts = 0.0
 
 
@@ -46,6 +50,8 @@ class ConversationState:
     queued_events: List[Any] = field(default_factory=list)  # /queue overflow FIFO (head in adapter)
     sidecar_notes: List[str] = field(default_factory=list)  # one-shot must-deliver notes
     ephemeral_pin: Optional[Tuple[Any, ...]] = None  # pinned session-context (change_key, text)
+    # (channel_prompt, parent_chat_id) of the last non-internal turn; internal events reuse it
+    channel_pin: Optional[Tuple[Optional[str], Optional[str]]] = None
     vc_last: Optional[str] = None  # last voice-channel context delivered
 
     def clear(self) -> None:

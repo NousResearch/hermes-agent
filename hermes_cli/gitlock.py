@@ -23,7 +23,8 @@ STALE_TMP_PACK_MIN_AGE_SECONDS = STALE_LOCK_MIN_AGE_SECONDS
 LOCK_NAMES = ("shallow.lock", "index.lock", "HEAD.lock", "MERGE_HEAD.lock")
 # Temp-file prefixes git writes into .git/objects/pack during a transfer and renames away on
 # success; anything left with these names after a fetch died is garbage by definition.
-_TMP_PACK_PREFIXES = ("tmp_pack_", "tmp_idx_", "tmp_rev_", "tmp_mtimes_")
+# ``.tmp-<pid>-pack*`` is the same thing from ``pack-objects`` (repack/gc) killed mid-write.
+_TMP_PACK_PREFIXES = ("tmp_pack_", "tmp_idx_", "tmp_rev_", "tmp_mtimes_", ".tmp-")
 
 
 def _git_proc_running() -> bool:
@@ -57,11 +58,21 @@ def _sweep_stale(directory: Path, candidates: Callable[[], Iterable[Path]], *, m
     for entry in candidates():
         try:
             if entry.is_file() and (st := entry.stat()).st_mtime < cutoff:
+                if os.name == "nt":
+                    # git renames its transfer temps into place read-only; Windows refuses to
+                    # unlink a read-only file (EACCES/13), so without clearing the write bit
+                    # this sweep silently removes nothing on real debris (#116384).
+                    try:
+                        os.chmod(entry, 0o666)
+                    except OSError:
+                        pass
                 entry.unlink()
                 removed.append(str(entry))
                 log_removed(entry, st.st_size)
-        except OSError:
-            logger.debug("Could not clear %s (skipping)", entry, exc_info=True)
+        except OSError as exc:
+            # A cleaner that fails silently is worse than none: debug-level skips hid the
+            # Windows read-only unlink failure for months while debris grew to gigabytes.
+            logger.warning("Could not clear %s (skipping): %s", entry, exc)
     return removed
 
 
@@ -81,8 +92,12 @@ def clear_stale_git_locks(repo_root: Path, *, min_age_seconds: Optional[int] = N
 
 
 def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
-    """Remove aborted-fetch temp pack files under ``.git/objects/pack``; same contract as clear_stale_git_locks."""
-    pack_dir = Path(repo_root) / ".git" / "objects" / "pack"
+    """Remove aborted-transfer temp pack files; same contract as clear_stale_git_locks.
+
+    Resolves ``.git/objects/pack`` for a checkout and ``objects/pack`` for a bare repo such as
+    the checkpoint store — a ``git gc`` killed by a timeout strands the same debris there."""
+    git_dir = Path(repo_root) / ".git"
+    pack_dir = (git_dir if git_dir.is_dir() else Path(repo_root)) / "objects" / "pack"
 
     def _candidates():
         try:
@@ -119,7 +134,7 @@ def is_ancestor_of_head(repo_root: Path, rev: str) -> bool:
         result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", rev, "HEAD"],
             cwd=str(repo_root),
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         return result.returncode == 0
     except Exception:
@@ -133,7 +148,7 @@ def _git_stdout_lines(repo_root: Path, args: List[str]) -> List[str]:
     try:
         result = subprocess.run(
             ["git", *args], cwd=str(repo_root),
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         if result.returncode != 0:
             return []
@@ -283,8 +298,9 @@ def repair_broken_shallow_boundaries(repo_root: Path) -> int:
         if probe.returncode == 0:
             return 0
         with _ShallowLock(shallow_path):
-            original = shallow_path.read_text(encoding="utf-8")
-            existing = {line for line in original.splitlines() if line}
+            # Keep the rollback image byte-exact, including BOM and line endings.
+            original = shallow_path.read_bytes()
+            existing = {line for line in original.decode("utf-8-sig").splitlines() if line}
             if not existing:
                 return 0
             # Boundary candidates: commits recorded as *fetch tips* in remote-tracking
@@ -314,7 +330,7 @@ def repair_broken_shallow_boundaries(repo_root: Path) -> int:
             # Self-check under the same lock hold (rev-list never takes
             # shallow.lock): the rollback cannot be defeated by lock contention.
             if not _git_stdout_lines(repo_root, ["rev-list", "--count", "--all", "--reflog"]):
-                shallow_path.write_text(original, encoding="utf-8")
+                shallow_path.write_bytes(original)
                 logger.debug("shallow boundary repair self-check failed; file restored")
                 return 0
         logger.info("Restored %d broken shallow boundary(ies) in %s", len(repaired), repo_root)
@@ -343,7 +359,9 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
         if shallow_path is None:
             return 0
         with _ShallowLock(shallow_path):
-            lines = [line for line in shallow_path.read_text(encoding="utf-8").splitlines() if line]
+            # Decode for pruning, but retain the same capture for a lossless rollback.
+            original = shallow_path.read_bytes()
+            lines = [line for line in original.decode("utf-8-sig").splitlines() if line]
             if not lines:
                 return 0
             keep = set(lines) & {
@@ -353,7 +371,6 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
             }
             if len(keep) == len(lines):
                 return 0
-            original = shallow_path.read_text(encoding="utf-8")
             _write_shallow(shallow_path, "\n".join(sorted(keep)) + "\n", suffix=".hermes-prune")
             # Fail-safe: if any reachable walk now crosses a boundary we wrongly
             # removed, put the grafts back — a growing file beats a broken repo.
@@ -363,7 +380,7 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
                 _git_stdout_lines(repo_root, ["rev-list", "--count", "--all"]) and \
                 _git_stdout_lines(repo_root, ["rev-list", "--count", "--all", "--reflog"])
             if not still_walks:
-                shallow_path.write_text(original, encoding="utf-8")
+                shallow_path.write_bytes(original)
                 logger.debug("shallow prune self-check failed; grafts restored")
                 return 0
         logger.info("Pruned %d stale shallow graft(s) in %s", len(lines) - len(keep), repo_root)
@@ -371,3 +388,21 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
     except Exception:
         logger.debug("shallow graft prune failed for %s", repo_root, exc_info=True)
         return 0
+
+
+def fetch_full_commit_graph(repo_root: Path, **run_kwargs) -> bool:
+    """Refresh release tags and fill shallow history before publishing identity.
+
+    A full commit graph does not imply current tags, especially after a --no-tags
+    clone. Fetch version tags explicitly without fetching every remote branch or
+    replacing existing tags. Trees and blobs stay on demand. Returns whether the
+    checkout was unshallowed; fetch failures raise subprocess errors.
+    """
+    shallow = _shallow_file_path(repo_root) is not None
+    subprocess.run(
+        ["git", "fetch", "--quiet", *(["--unshallow"] if shallow else []),
+         "--filter=tree:0", "--no-tags", "origin", "refs/tags/v*:refs/tags/v*"],
+        cwd=str(repo_root), check=True, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
+    )
+    return shallow

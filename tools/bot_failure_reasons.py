@@ -11,6 +11,7 @@ provider 401 bodies (e.g. Anthropic) say "invalid, blocked or out of funds".
 from __future__ import annotations
 
 import re
+from typing import Any
 
 # platform-side
 RUNTIME_OFFLINE = "runtime_offline"
@@ -72,12 +73,42 @@ _RULES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         (rf"authentication_error|invalid api key|{_STATUS}(?:401|403)\b", PROVIDER_AUTH_OR_ACCESS),
         (rf"{_STATUS}402\b|out of funds|quota|balance", PROVIDER_QUOTA_LIMIT),
         (rf"{_STATUS}429\b|rate.?limit", PROVIDER_RATE_LIMIT),
-        (rf"{_STATUS}5\d{{2}}\b|server error|overloaded", PROVIDER_SERVER_ERROR),
+        # ``server[ _]?error`` / ``overloaded_error`` are the providers' own JSON spellings of the
+        # agent's typed ``server_error`` / ``overloaded`` verdicts (FailoverReason), which the
+        # in-process lanes classify from ``failure_reason`` rather than a status number.
+        (rf"{_STATUS}5\d{{2}}\b|server[ _]?error|overloaded", PROVIDER_SERVER_ERROR),
         (r"context length|context_overflow|maximum context", CONTEXT_OVERFLOW),
         (r"no llm provider configured|missing config|no access token", MISSING_CONFIG),
         (r"model .*(not found|does not exist)|model_not_found", MODEL_UNAVAILABLE),
     )
 )
+
+
+def turn_failure_text(stdout: str | None, stderr: str | None) -> str:
+    """The error text of a failed ``hermes … -Q`` delivery turn: both streams, in the order the CLI
+    writes them. The provider prose is the turn's final_response and lands on STDOUT; stderr carries
+    session bookkeeping (``session_id: …``) on every run, so ``stderr or stdout`` only ever saw the
+    banner and every transient failure classified as ``unknown``.
+
+    The in-process lanes hand over the same two pieces of prose as an agent result dict
+    (``error`` + ``failure_reason``); ``result_retry_action`` joins them here too, so one classifier
+    sees every lane's failure text."""
+    return "\n".join(text.strip() for text in (stdout, stderr) if text and text.strip())
+
+
+def result_retry_action(result: Any) -> str:
+    """The retry action for a finished IN-PROCESS turn (an ``_run_agent`` result dict).
+
+    The transport-agnostic twin of the child-process lanes' ``retry_action(classify_agent_error(
+    turn_failure_text(stdout, stderr)))``: same policy, the failure text just arrives as result fields
+    instead of two streams — ``error`` carries the raw provider summary (status codes included) and
+    ``failure_reason`` the turn loop's own typed verdict, which is what names an overflow the copy only
+    describes in prose. ``RETRY_NONE`` for anything that did not fail (and for a non-dict result), so a
+    successful turn whose text happens to mention 429 is never re-run."""
+    if not isinstance(result, dict) or not result.get("failed"):
+        return RETRY_NONE
+    return retry_action(classify_agent_error(
+        turn_failure_text(result.get("error"), result.get("failure_reason"))))
 
 
 def classify_agent_error(text: str) -> str:
@@ -88,3 +119,19 @@ def classify_agent_error(text: str) -> str:
             if pattern.search(raw):
                 return code
     return UNKNOWN
+
+
+def delivery_failure_reason(error: BaseException) -> str:
+    """The typed reason for a delivery refusal, kept inside the documented vocabulary.
+
+    An exception's own ``reason`` is trusted only when it names a real code: ``TurnBusyError``
+    carries ``target_busy``, but ``reason`` is also a stdlib attribute on ``ssl.SSLError`` and
+    ``urllib.error.URLError``, and forwarding one of those would put free text where consumers
+    expect a closed set. Anything else is classified like every other failure. Shared by the
+    relay lane (``bot_relay.deliver``) and the local runner (``bot_mode_dm --run-delivery``).
+    """
+    # 'target_busy' extends the structured refusal enum and predates ALL_REASONS.
+    supplied = str(getattr(error, "reason", "") or "").strip()
+    if supplied == "target_busy" or supplied in ALL_REASONS:
+        return supplied
+    return classify_agent_error(str(error))

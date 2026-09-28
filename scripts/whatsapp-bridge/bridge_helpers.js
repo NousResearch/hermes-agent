@@ -15,7 +15,11 @@ export const MIME_MAP = {
 
 export function normalizeWhatsAppId(value) {
   if (!value) return '';
-  return String(value).replace(':', '@');
+  // Baileys reports the bot's own ids device-qualified (`<user>:<device>@lid`), while
+  // inbound mentionedJid / contextInfo.participant are not. Drop the suffix so both
+  // forms compare equal; the old `':' -> '@'` swap produced `<user>@<device>@lid`,
+  // which never matched and silently broke @mention / reply-to-bot gating in groups.
+  return String(value).replace(/:\d+(?=@)/, '').replace(/:\d+$/, '');
 }
 
 function unwrapMessageEnvelopes(content) {
@@ -212,8 +216,15 @@ export function pollUpdateForAggregation({
   return null;
 }
 
-export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
-  const content = { text };
+export function addMentions(payload, mentions) {
+  if (payload && Array.isArray(mentions) && mentions.length > 0) {
+    payload.mentions = mentions;
+  }
+  return payload;
+}
+
+export function buildTextSendPayload(text, { replyTo, messageStore, mentions } = {}) {
+  const content = addMentions({ text }, mentions);
   const options = {};
   const quoted = messageStore?.get(replyTo);
   if (quoted?.key && quoted?.message) {

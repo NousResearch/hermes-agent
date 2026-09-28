@@ -26,6 +26,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent.proxy_bypass import is_loopback_host
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -356,7 +357,7 @@ def _last_used_profile(src: str) -> str:
     """Profile dir Chrome last used (``Local State`` → profile.last_used), else ``Default``. The
     signed-in session usually lives in the profile actually browsed (``Profile 6``), not Default."""
     try:
-        with open(os.path.join(src, "Local State"), encoding="utf-8", errors="replace") as fh:
+        with open(os.path.join(src, "Local State"), encoding="utf-8-sig", errors="replace") as fh:
             state = json.load(fh)
         last = ((state.get("profile") or {}).get("last_used")) or "Default"
     except (OSError, ValueError, AttributeError):
@@ -390,18 +391,34 @@ def _secure_snapshot(path: str, *, contents: bool = False) -> None:
 # exclusive lock, so a raw copy raises WinError 32 and a best-effort skip leaves the copy
 # signed-out. They are copied via SQLite's online-backup API instead. Matched by basename.
 _SQLITE_AUTH_DBS = frozenset({"Cookies", "Login Data", "Login Data For Account", "Web Data"})
+# Budget for one auth DB's online backup. A running browser holds Login Data / Login Data For
+# Account / Web Data with a hot write lock, so backup makes no progress and this deadline is
+# what fails — the reason users see, so it is a named constant rather than a bare string.
+_AUTH_BACKUP_DEADLINE_S = 5.0
+_AUTH_DB_LOCKED = ("SQLite backup made no progress within five seconds — "
+                   "a running browser holds a write lock on it")
 
 
-def _copy_auth_file(src_file: str, dst_file: str) -> bool:
-    """Copy auth state; refuse a DB that cannot be snapshotted consistently within five seconds."""
+def _copy_auth_file(src_file: str, dst_file: str) -> str | None:
+    """Copy auth state; returns None on success, else WHY the file could not be snapshotted.
+    A DB that cannot be backed up consistently within the deadline is refused, never raw-copied."""
     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
     try:
         if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + _AUTH_BACKUP_DEADLINE_S
+            last_remaining: list[int | None] = [None]
 
-            def check_deadline(_status: int, _remaining: int, _total: int) -> None:
+            def check_deadline(_status: int, remaining: int, total: int) -> None:
+                # A held write lock makes every step fail with ``remaining`` unchanged; a
+                # large DB on a slow disk keeps shrinking it. Only the former is "locked" —
+                # the all-locked message tells the user to quit the browser.
+                before = total if last_remaining[0] is None else last_remaining[0]
+                last_remaining[0] = remaining
                 if _status != sqlite3.SQLITE_DONE and time.monotonic() >= deadline:
-                    raise TimeoutError("auth database backup exceeded five seconds")
+                    if remaining < before:
+                        raise TimeoutError(f"SQLite backup exceeded {_AUTH_BACKUP_DEADLINE_S:g}s "
+                                           "while still making progress")
+                    raise TimeoutError(_AUTH_DB_LOCKED)
 
             # SQLite must coordinate both ends: immutable ignores committed source WAL,
             # while replacing only the destination file can replay its abandoned WAL.
@@ -412,22 +429,42 @@ def _copy_auth_file(src_file: str, dst_file: str) -> bool:
                     source.backup(out, pages=256, progress=check_deadline, sleep=0.1)
         else:
             shutil.copy2(src_file, dst_file)
-        return True
+        return None
     except (OSError, sqlite3.Error) as e:
         # A raw DB copy can lose committed WAL or overwrite a locked destination.
         logger.debug("real-profile: could not copy %s: %s", src_file, e)
-        return False
+        return str(e) or type(e).__name__
 
 
-def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> int:
+def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> dict[str, str]:
     """Mirror ``source_profile``'s auth files into the copy's ``Default`` (agent-browser opens it);
-    returns the number of DB auth files that could NOT be copied (0 = clean)."""
-    failed_dbs = 0
+    returns ``{relative name: reason}`` for the DB auth files that could NOT be copied ({} = clean)."""
+    failed: dict[str, str] = {}
     for rel in _AUTH_REFRESH_PROFILE_FILES:
         s = os.path.join(src, source_profile, rel)
-        if os.path.isfile(s) and not _copy_auth_file(s, os.path.join(dst, "Default", rel)):
-            failed_dbs += os.path.basename(rel) in _SQLITE_AUTH_DBS
-    return failed_dbs
+        if not os.path.isfile(s):
+            continue
+        reason = _copy_auth_file(s, os.path.join(dst, "Default", rel))
+        if reason and os.path.basename(rel) in _SQLITE_AUTH_DBS:
+            failed[rel] = reason
+    return failed
+
+
+def _unavailable_auth_dbs_error(browser: str, failed: dict[str, str]) -> str:
+    """Fail-closed message naming WHICH auth databases could not be snapshotted and WHY. On
+    macOS/Linux a running browser typically lets Cookies back up but holds Login Data / Login Data
+    For Account / Web Data with a write lock, so the message must not read as "close the browser"
+    when the real cause is an unreadable file (and vice versa)."""
+    names = ", ".join(failed)
+    if all(reason == _AUTH_DB_LOCKED for reason in failed.values()):
+        return (f"{browser} is running and holds the profile's {names} with a write lock, so their "
+                "SQLite backup made no progress within five seconds. Hermes does not fall back to a "
+                "raw file copy (it could lose committed logins). Fully quit "
+                f"{browser} (including any background instance) and retry, or turn "
+                "browser.use_real_profile off.")
+    details = "; ".join(f"{name}: {reason}" for name, reason in failed.items())
+    return (f"could not read the '{browser}' profile's login data ({details}). "
+            f"Close {browser} and retry, or turn browser.use_real_profile off.")
 
 
 _SNAPSHOT_DONE_MARKER = ".hermes-snapshot-complete"
@@ -569,7 +606,7 @@ def _sync_local_state(src: str, dst: str, source_profile: str) -> None:
         except OSError as e:
             logger.debug("real-profile snapshot: skipped Local State: %s", e)
     try:
-        with open(ls_dst, encoding="utf-8") as fh:
+        with open(ls_dst, encoding="utf-8-sig") as fh:
             state = json.load(fh)
         prof = state.get("profile")
         if isinstance(prof, dict):
@@ -641,7 +678,8 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         return None, resolve_err
     dst = real_profile_copy_dir(browser)
     # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
-    # hang the launch for minutes. Never trips on POSIX, so copy-while-running still works.
+    # hang the launch for minutes. Never trips on POSIX; there a running browser surfaces later as
+    # auth DB backups that miss their deadline (``_unavailable_auth_dbs_error``).
     if _profile_is_locked(src, source_profile):
         return None, _locked_profile_error(browser)
     marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
@@ -660,9 +698,7 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
         # Both paths: lock-aware auth DB copy into Default — also the per-launch re-sync.
         failed_dbs = _mirror_profile_auth(src, dst, source_profile)
         if failed_dbs:  # even online-backup failed: never launch a silently signed-out session
-            return None, (f"could not read the '{browser}' profile's login data ({failed_dbs} "
-                          f"database(s) unavailable). Close {browser} and retry, or turn "
-                          "browser.use_real_profile off.")
+            return None, _unavailable_auth_dbs_error(browser, failed_dbs)
         # Never carry live-instance leftovers into the copy.
         for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
             with contextlib.suppress(OSError):
@@ -751,9 +787,12 @@ def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
     if scheme not in {"http", "https"} or not parsed.netloc:
         return False
     root = f"{scheme}://{parsed.netloc}".rstrip("/")
+    # Loopback readiness must not route through getproxies() (env or macOS system proxy, #110565).
+    handlers = [urllib.request.ProxyHandler({})] if is_loopback_host(parsed.hostname) else []
+    opener = urllib.request.build_opener(*handlers)
     for probe in (f"{root}/json/version", f"{root}/json"):
         try:
-            with urllib.request.urlopen(probe, timeout=timeout) as resp:
+            with opener.open(probe, timeout=timeout) as resp:
                 if 200 <= getattr(resp, "status", 200) < 300:
                     return True
         except Exception:

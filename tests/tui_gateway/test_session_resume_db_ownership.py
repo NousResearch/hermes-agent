@@ -171,7 +171,9 @@ def test_resume_closes_profile_db_when_reopen_fails(profile_dbs, monkeypatch):
     resp = _resume(session_id="s1", profile="work")
 
     assert resp["error"]["code"] == 5000
-    assert "resume failed" in resp["error"]["message"]
+    # Plain "could not reopen" lead; the raw cause survives on the Details line.
+    assert "Could not reopen" in resp["error"]["message"]
+    assert "database is locked" in resp["error"]["message"]
     assert profile_dbs[0].closed == 1
 
 
@@ -201,7 +203,7 @@ def test_resume_closes_profile_db_on_live_session_fast_path(profile_dbs, monkeyp
     monkeypatch.setattr(
         server,
         "_live_session_payload",
-        lambda sid, session, **_kwargs: {"session_id": sid},
+        lambda sid, session, **_k: {"session_id": sid, "message_count": 0, "messages": [], "info": {}},
     )
     monkeypatch.setattr(server, "_child_run_active", lambda _key: False)
 
@@ -303,7 +305,7 @@ def test_resume_keeps_profile_db_open_after_ownership_transfer(profile_dbs, monk
     monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     monkeypatch.setattr(server, "_init_session", _fake_init_session)
-    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda _target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
     monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": "test"})
@@ -350,7 +352,7 @@ def test_resume_drops_half_built_session_when_init_session_raises(
         server, "_make_agent", lambda *a, **k: types.SimpleNamespace(model="test")
     )
     monkeypatch.setattr(server, "_init_session", _fake_init_session)
-    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda _target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
 
@@ -394,7 +396,7 @@ def test_resume_eager_never_transfers_shared_launch_db(profile_dbs, monkeypatch)
 
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     monkeypatch.setattr(server, "_init_session", _fake_init_session)
-    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda _target, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
     monkeypatch.setattr(
         server, "_stored_session_runtime_overrides", lambda _found: {}

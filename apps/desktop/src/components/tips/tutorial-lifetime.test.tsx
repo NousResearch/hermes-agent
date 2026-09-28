@@ -15,6 +15,7 @@ vi.mock('@/store/session', async () => {
 })
 vi.mock('react-router', () => ({ useNavigate: () => vi.fn() }))
 vi.mock('./local-setup-offer', () => ({ offerLocalSetupTip: () => false }))
+vi.mock('./local-runtime-update-offer', () => ({ offerLocalRuntimeUpdateTip: () => false }))
 
 import { en } from '@/i18n/en'
 

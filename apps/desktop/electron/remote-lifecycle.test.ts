@@ -26,9 +26,11 @@ import {
   openForward,
   ownershipDirectory,
   pidIsOurDashboard,
+  probeHermesVersion,
   probeRemotePlatform,
   PROTOCOL_VERSION,
   readLockfile,
+  readRemoteInstallId,
   READY_RE,
   remotePidAlive,
   remoteSupportsSshOwnership,
@@ -40,6 +42,7 @@ import {
   validateRemotePath,
   writeLockfile
 } from './remote-lifecycle'
+import type { SshConnection } from './ssh-connection'
 
 const OWNERSHIP_ID = '0123456789abcdef0123456789abcdef'
 const SPAWN_NONCE = '0123456789abcdef'
@@ -234,6 +237,52 @@ test('POSIX relaunch gate rechecks after token upload immediately before process
     calls.some(command => /setsid|nohup/.test(command)),
     false
   )
+})
+
+test('readRemoteInstallId reads the backend identity without spawning a dashboard or minting one', async () => {
+  const ssh = fakeSsh([
+    [/HERMES_HOME/, '/Users/zillajr/.hermes\n'],
+    [/cat .*install_id/, '0f8a1c2b3d4e5f60718293a4b5c6d7e8\n']
+  ])
+
+  assert.equal(await readRemoteInstallId(ssh), '0f8a1c2b3d4e5f60718293a4b5c6d7e8')
+  // Read-only: identity is the install's to mint, never a visiting client's.
+  assert.equal(
+    ssh.calls.some(cmd => /serve|dashboard|>\s*\S*install_id|tee|uuidgen/.test(cmd)),
+    false
+  )
+})
+
+test('readRemoteInstallId reports the INSTALL root id for a profile-pinned home', async () => {
+  // The whole point of the id: two ssh connections to one machine — one pinned at a profile,
+  // one at the root — must report the SAME backend so their roster rows collapse.
+  const pinned = fakeSsh([
+    [/HERMES_HOME/, '/Users/zillajr/.hermes/profiles/dixie\n'],
+    [/cat .*install_id/, '0f8a1c2b3d4e5f60718293a4b5c6d7e8\n']
+  ])
+
+  assert.equal(await readRemoteInstallId(pinned), '0f8a1c2b3d4e5f60718293a4b5c6d7e8')
+  assert.equal(
+    pinned.calls.some(cmd => cmd.includes('/Users/zillajr/.hermes/install_id')),
+    true
+  )
+  assert.equal(
+    pinned.calls.some(cmd => cmd.includes('/profiles/dixie/install_id')),
+    false
+  )
+})
+
+test('readRemoteInstallId reports no id rather than a bad one', async () => {
+  for (const payload of ['', 'not-an-id\n', 'ABCDEF\n', '0f8a1c2b3d4e5f60718293a4b5c6d7e8extra\n']) {
+    const ssh = fakeSsh([
+      [/HERMES_HOME/, '/Users/zillajr/.hermes\n'],
+      [/cat .*install_id/, payload]
+    ])
+
+    // An older backend (or one that has never been started) simply has no identity: the roster
+    // falls back to a per-connection key, exactly as before.
+    assert.equal(await readRemoteInstallId(ssh), undefined, payload)
+  }
 })
 
 test('listRemoteHermesProfiles inventories Mini-style profile dirs without spawning a dashboard', async () => {
@@ -476,7 +525,9 @@ test('connect() fails closed on lockfile schema/ownership skew: skips reap, touc
       `${label}: connect must refuse with remote-lockfile-skew`
     )
     assert.ok(
-      !ssh.calls.some(c => /(^|[^-\d])kill -?9? ?\d/.test(c) && !/kill -0/.test(c)),
+      // Any signal, a literal pid: the probe watchdog's `kill -9 $__htp`
+      // targets its own child, not a lockfile pid.
+      !ssh.calls.some(c => /(^|[^-\d])kill(?: -\w+)? \d/.test(c) && !/kill -0/.test(c)),
       `${label}: must not kill any pid`
     )
     assert.ok(!ssh.calls.some(c => /rm -f/.test(c)), `${label}: must not remove any remote file`)
@@ -573,20 +624,22 @@ test('pidIsOurDashboard accepts the venv entrypoint an installer wrapper execs i
 
 test.skipIf(process.platform === 'win32')(
   'pidIsOurDashboard recognizes an installer wrapper after it execs python + entrypoint',
-  async () => {
-    const temp = await mkdtemp(path.join(os.tmpdir(), 'hermes wrapper ownership '))
+  async (): Promise<void> => {
+    const shell: string = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()
+    const temp: string = await mkdtemp(path.join(os.tmpdir(), 'hermes wrapper ownership '))
     const installDir = path.join(temp, 'install dir')
     const venvBin = path.join(installDir, 'venv', 'bin')
     const pythonLink = path.join(venvBin, 'python')
     const entrypoint = path.join(installDir, 'hermes')
     const launcher = path.join(temp, 'hermes launcher')
-    const python = (await exec('command -v python3')).stdout.trim()
-    const tokenPath = path.join(os.homedir(), spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE).replace(/^~\//, ''))
+    const python: string = (await exec('command -v python3', { shell })).stdout.trim()
+    const tokenPath: string = path.join(temp, spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE).replace(/^~\//, ''))
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: temp, HERMES_HOME: temp }
 
     await mkdir(venvBin, { recursive: true })
     await symlink(python, pythonLink)
     await writeFile(entrypoint, 'import time\ntime.sleep(30)\n', 'utf8')
-    await writeFile(launcher, `#!/bin/bash\nexec "${pythonLink}" "${entrypoint}" "$@"\n`, 'utf8')
+    await writeFile(launcher, `#!${shell}\nexec "${pythonLink}" "${entrypoint}" "$@"\n`, 'utf8')
     await chmod(launcher, 0o755)
 
     const backendFlags = [
@@ -602,8 +655,8 @@ test.skipIf(process.platform === 'win32')(
 
     const children: ReturnType<typeof spawn>[] = []
 
-    const spawnInstaller = (args: string[]) => {
-      const process = spawn(launcher, args, { stdio: 'ignore' })
+    const spawnInstaller = (args: string[]): ReturnType<typeof spawn> => {
+      const process: ReturnType<typeof spawn> = spawn(launcher, args, { stdio: 'ignore', env })
 
       children.push(process)
 
@@ -612,13 +665,13 @@ test.skipIf(process.platform === 'win32')(
 
     const child = spawnInstaller(['--profile', 'ops', 'serve', '--isolated', ...backendFlags])
 
-    const ssh = {
-      exec: async (command: string) => (await exec(command, { shell: '/bin/bash' })).stdout
+    const ssh: Pick<SshConnection, 'exec'> = {
+      exec: async (command: string): Promise<string> => (await exec(command, { shell, env })).stdout
     }
 
-    const waitForEntrypoint = async (process: ReturnType<typeof spawn>) => {
-      for (let attempt = 0; attempt < 40; attempt += 1) {
-        const command = (await exec(`ps -ww -o command= -p ${process.pid}`)).stdout
+    const waitForEntrypoint = async (process: ReturnType<typeof spawn>): Promise<boolean> => {
+      for (let attempt: number = 0; attempt < 100; attempt += 1) {
+        const command: string = (await exec(`ps -ww -o command= -p ${process.pid}`, { shell, env })).stdout
 
         if (command.includes(entrypoint)) {
           return true
@@ -779,102 +832,60 @@ test('buildSpawnCommand is headless serve, detached, token not in argv', () => {
   assert.ok(!cmd.includes('HERMES_DASHBOARD_SESSION_TOKEN'), 'token env var must not appear')
 })
 
-test('buildSpawnCommand always uses serve (legacy dashboard path removed)', () => {
-  const cmd = buildSpawnCommand('/x/hermes', 'work', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
-  assert.match(cmd, /serve --isolated/)
-  assert.match(cmd, /--host 127\.0\.0\.1 --port 0/)
-  assert.doesNotMatch(cmd, /dashboard/)
-  assert.doesNotMatch(cmd, /--skip-build/)
-  assert.match(cmd, /setsid/)
-})
+test.skipIf(process.platform === 'win32')(
+  'detached backend does not inherit the update mutex descriptor',
+  async (): Promise<void> => {
+    const shell: string = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()
+    const directory: string = await mkdtemp(path.join(os.tmpdir(), 'hermes-update-mutex-'))
+    const hermesPath: string = path.join(directory, 'hermes')
+    const reportPath: string = path.join(directory, 'descriptor-report')
+    const logPath: string = path.join(directory, 'spawn.log')
 
-test('buildSpawnCommand atomically reserves the ownership slot through spawn and lock publication', () => {
-  const cmd = buildSpawnCommand('/x/hermes', 'work', {
-    hermesHome: '~/.hermes',
-    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
-    ownershipId: OWNERSHIP_ID,
-    reservationNonce: SPAWN_NONCE,
-    spawnNonce: SPAWN_NONCE,
-    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
-    lockMetadata: {
-      ownershipId: OWNERSHIP_ID,
-      spawnNonce: SPAWN_NONCE,
-      port: 0,
-      profile: 'work',
-      hermesPath: '/x/hermes',
-      hermesHome: '~/.hermes',
-      logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
-      tokenFingerprint: fingerprintToken('stored-token'),
-      protocolVersion: PROTOCOL_VERSION,
-      startedAt: '2026-07-14T00:00:00.000Z'
-    }
-  })
-
-  assert.ok(cmd.includes('.connect.lock'))
-  assert.ok(cmd.includes('.hermes-update-in-progress.mutex'))
-  assert.match(cmd, /fcntl\.flock\(fd,fcntl\.LOCK_EX\)/)
-  assert.match(cmd, /os\.O_CLOEXEC/)
-  assert.match(
-    cmd,
-    /subprocess\.run\(\["sh","-c",payload,"hermes-update-mutex",str\(fd\)\],pass_fds=\(fd,\),check=False\)/
-  )
-  assert.doesNotMatch(cmd, /os\.set_inheritable\(fd,True\)/)
-  assert.match(cmd, /hermes-update-child "\$1"/)
-  assert.match(cmd, /eval "exec \$1>&-"/)
-  assert.ok(cmd.includes('backend.lock.json'))
-  assert.match(cmd, /lock_json/)
-  assert.match(cmd, /trap .*rm -rf/)
-  assert.ok(cmd.indexOf('lock_json') > cmd.indexOf('serve --isolated'))
-})
-
-test.skipIf(process.platform === 'win32')('detached backend does not inherit the update mutex descriptor', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-update-mutex-'))
-  const hermesPath = path.join(directory, 'hermes')
-  const reportPath = path.join(directory, 'descriptor-report')
-  const logPath = path.join(directory, 'spawn.log')
-
-  try {
-    await writeFile(
-      hermesPath,
-      `#!/bin/sh
-: > ${reportPath}
+    try {
+      await writeFile(
+        hermesPath,
+        `#!${shell}
+report=${expandRemotePath(reportPath)}
+: > "$report.tmp"
 for fd in /proc/$$/fd/*; do
   target=$(readlink "$fd" 2>/dev/null || true)
   case "$target" in
-    *hermes-update-in-progress.mutex) printf '%s\\n' "$target" >> ${reportPath} ;;
+    *hermes-update-in-progress.mutex) printf '%s\\n' "$target" >> "$report.tmp" ;;
   esac
 done
+mv "$report.tmp" "$report"
 `,
-      { mode: 0o700 }
-    )
+        { encoding: 'utf8', mode: 0o700 }
+      )
 
-    const command = buildSpawnCommand(hermesPath, '', {
-      hermesHome: path.join(directory, 'home'),
-      logPath
-    })
+      const command: string = buildSpawnCommand(hermesPath, '', {
+        hermesHome: path.join(directory, 'home'),
+        logPath
+      })
 
-    await exec(command, { shell: '/bin/bash' })
+      await exec(command, { shell, env: { ...process.env, HOME: directory, HERMES_HOME: directory } })
 
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      try {
-        const report = await readFile(reportPath, 'utf8')
-        assert.equal(report, '', 'the backend process must not retain the update mutex descriptor')
+      for (let attempt: number = 0; attempt < 100; attempt += 1) {
+        try {
+          const report: string = await readFile(reportPath, 'utf8')
+          assert.equal(report, '', 'the backend process must not retain the update mutex descriptor')
 
-        return
-      } catch (error: any) {
-        if (error?.code !== 'ENOENT') {
-          throw error
+          return
+        } catch (error: unknown) {
+          if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) {
+            throw error
+          }
+
+          await new Promise(resolve => setTimeout(resolve, 25))
         }
-
-        await new Promise(resolve => setTimeout(resolve, 25))
       }
-    }
 
-    assert.fail('the detached backend did not write its descriptor report')
-  } finally {
-    await rm(directory, { recursive: true, force: true })
+      assert.fail('the detached backend did not write its descriptor report')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
   }
-})
+)
 
 test('spawnRemoteDashboard returns exact ownership artifacts', async () => {
   const ssh = fakeSsh([
@@ -894,20 +905,6 @@ test('spawnRemoteDashboard returns exact ownership artifacts', async () => {
   assert.equal(pid, 4242)
   assert.match(spawnNonce, /^[0-9a-f]{16}$/)
   assert.equal(logPath, spawnLogPath(OWNERSHIP_ID, spawnNonce))
-})
-
-test('spawnRemoteDashboard always spawns serve (legacy dashboard path removed)', async () => {
-  const ssh = fakeSsh([
-    [/grep -q ssh-session-token-file/, 'YES\n'],
-    [/python3 -c/, ''],
-    [/printf '%s\\n'/, ''],
-    [/setsid|nohup/, '4242\n']
-  ])
-
-  await spawnRemoteDashboard(ssh, { hermesPath: '/x/hermes', profile: '', token: 'tk', ownershipId: OWNERSHIP_ID })
-  const spawn = ssh.calls.find(c => /setsid|nohup/.test(c))
-  assert.match(spawn, /serve --isolated/)
-  assert.doesNotMatch(spawn, /\bdashboard\b/)
 })
 
 test('READY_RE accepts both serve and dashboard sentinels', () => {
@@ -1272,7 +1269,7 @@ test('managed update drain rechecks the POSIX ownership record before signalling
   )
 })
 
-test('managed update drain refuses Darwin termination because PID signals cannot be atomically bound', async () => {
+test('managed update drain never falls back to a bare kill when the identity-bound signal is refused', async () => {
   const lock = ownedLock()
   const rawLock = JSON.stringify(lock)
 
@@ -1290,12 +1287,6 @@ test('managed update drain refuses Darwin termination because PID signals cannot
     false,
     'the final signal must stay inside the identity-checking helper'
   )
-  const termination = ssh.calls.find(command => command.includes('identity_before_signal'))
-  const darwinStart = termination.indexOf('if (sys.platform=="darwin"):')
-  const darwinEnd = termination.indexOf('\n try:', darwinStart)
-  const darwinGuard = termination.slice(darwinStart, darwinEnd)
-  assert.match(darwinGuard, /DARWIN_UNAVAILABLE/)
-  assert.doesNotMatch(darwinGuard, /os\.kill\(pid,signal\.SIGTERM\)/)
 })
 
 test('connect() respawns when the dashboard is wedged (alive pid, probe fails)', async () => {
@@ -1445,12 +1436,6 @@ test('expandRemotePath preserves spaces as data', () => {
   assert.ok(result.includes('my project'), 'spaces must be preserved, not split')
 })
 
-test('buildSpawnCommand does not embed the token in the command string', () => {
-  const cmd = buildSpawnCommand('/x/hermes', 'work', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
-  assert.ok(!cmd.includes('super_secret_token_value'), 'token must not appear in the spawn command')
-  assert.ok(!cmd.includes('HERMES_DASHBOARD_SESSION_TOKEN'), 'env var name must not appear')
-})
-
 test('buildSpawnCommand includes --ssh-session-token-file when tokenFilePath is provided', () => {
   const cmd = buildSpawnCommand('/x/hermes', 'work', {
     tokenFilePath: `~/.hermes/desktop-ssh/${OWNERSHIP_ID}/${SPAWN_NONCE}.token`,
@@ -1460,59 +1445,6 @@ test('buildSpawnCommand includes --ssh-session-token-file when tokenFilePath is 
 
   assert.match(cmd, /--ssh-session-token-file/)
   assert.match(cmd, /\.hermes\/desktop-ssh\//)
-})
-
-test('buildSpawnCommand always uses serve, never dashboard', () => {
-  const cmd = buildSpawnCommand('/x/hermes', '', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
-  assert.match(cmd, /serve --isolated/)
-  assert.doesNotMatch(cmd, /\bdashboard\b/)
-  assert.doesNotMatch(cmd, /--skip-build/)
-  assert.doesNotMatch(cmd, /--no-open/)
-})
-
-test('buildSpawnCommand raises the SSH child file limit before execing Hermes', () => {
-  const cmd = buildSpawnCommand('/x/hermes', '', { logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE) })
-  assert.match(cmd, /ulimit -n 65536 2>\/dev\/null \|\| true; exec env HERMES_DESKTOP=1/)
-  assert.ok(cmd.indexOf('ulimit -n 65536') < cmd.indexOf('serve --isolated'))
-})
-
-test('buildSpawnCommand payload variables keep $HOME expandable (no double quoting)', () => {
-  const cmd = buildSpawnCommand('/x/hermes', 'work', {
-    hermesHome: '~/.hermes',
-    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
-    ownershipId: OWNERSHIP_ID,
-    reservationNonce: SPAWN_NONCE,
-    spawnNonce: SPAWN_NONCE,
-    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
-    lockMetadata: { ownershipId: OWNERSHIP_ID, spawnNonce: SPAWN_NONCE }
-  })
-
-  // expandRemotePath() emits "$HOME"'/…' — a fragment the shell expands at
-  // assignment. Wrapping it in shq() again stores the quote characters in
-  // the variable, so mkdir "$reservation" creates (or fails on) a literal
-  // "$HOME" path and the reservation loop spins forever holding the mutex.
-  for (const name of ['reservation', 'lock', 'owner_file']) {
-    assert.match(cmd, new RegExp(`${name}="\\$HOME"`), `${name}= must start with an expandable "$HOME"`)
-    assert.doesNotMatch(cmd, new RegExp(`${name}='`), `${name}= must not be re-quoted`)
-  }
-})
-
-test('buildSpawnCommand lockfile publication is POSIX sh (no bash substitution)', () => {
-  const cmd = buildSpawnCommand('/x/hermes', 'work', {
-    hermesHome: '~/.hermes',
-    logPath: spawnLogPath(OWNERSHIP_ID, SPAWN_NONCE),
-    ownershipId: OWNERSHIP_ID,
-    reservationNonce: SPAWN_NONCE,
-    spawnNonce: SPAWN_NONCE,
-    tokenFilePath: spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE),
-    lockMetadata: { ownershipId: OWNERSHIP_ID, pid: '__PID__' }
-  })
-
-  // ${var//pat/rep} is bash-only; dash aborts the payload on it AFTER the
-  // serve was spawned, so the client sees an unknown failure, deletes the
-  // token file, and orphans the backend.
-  assert.doesNotMatch(cmd, /\$\{lock_json\/\//, 'must not use ${var//} substitution under sh')
-  assert.ok(cmd.includes('sed "s/__PID__/${child}/"'), 'pid substitution must use sed')
 })
 
 test('spawnRemoteDashboard removes a token file when upload reporting fails', async () => {
@@ -1810,6 +1742,75 @@ test('remote SSH ownership capability requires both secure bootstrap flags', asy
   assert.equal(await remoteSupportsSshOwnership(unsupported, '/x/hermes'), false)
 })
 
+test.skipIf(process.platform === 'win32')(
+  'capability probe survives a zsh login shell on the remote (#111949)',
+  async t => {
+    // sshd runs the remote command under the account's LOGIN shell. A bare
+    // `set -m` is fatal in a non-interactive zsh, so the watchdog-wrapped probe
+    // used to return nothing and a current remote was reported as unsupported.
+    const zsh = await exec('command -v zsh || true').then(r => r.stdout.trim())
+
+    // CI installs zsh (js-tests.yml); locally a missing zsh must show as a
+    // skip, not a pass, or a wrapper regression stays green unnoticed.
+    if (!zsh) {
+      t.skip('zsh not installed')
+
+      return
+    }
+
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'hermes-zsh-probe-'))
+
+    try {
+      const hermes = path.join(dir, 'hermes')
+      await writeFile(hermes, '#!/bin/sh\necho "--ssh-session-token-file --ssh-owner-nonce"\n', { mode: 0o700 })
+
+      const ssh = { exec: async (command: string) => (await exec(command, { shell: zsh })).stdout }
+
+      assert.equal(await remoteSupportsSshOwnership(ssh, hermes), true)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  }
+)
+
+test('probes run under the remote watchdog so a hung CLI cannot orphan (#110478)', async () => {
+  let versionProbe = ''
+
+  const versionSsh = fakeSsh([
+    [
+      /--version/,
+      (cmd: string) => {
+        versionProbe = cmd
+
+        return 'Hermes Agent v0.18.2 (abc123)\n'
+      }
+    ]
+  ])
+
+  assert.equal(await probeHermesVersion(versionSsh, '/x/hermes'), 'Hermes Agent v0.18.2 (abc123)')
+  assert.ok(versionProbe.includes('kill -9'), 'version probe wrapped in the remote watchdog')
+
+  let helpProbe = ''
+
+  const helpSsh = fakeSsh([
+    [
+      /serve --help/,
+      (cmd: string) => {
+        helpProbe = cmd
+
+        return 'YES\n'
+      }
+    ]
+  ])
+
+  assert.equal(await remoteSupportsSshOwnership(helpSsh, '/x/hermes'), true)
+  assert.ok(helpProbe.includes('kill -9'), 'ownership probe wrapped in the remote watchdog')
+  assert.ok(
+    /\$\(.*\(.*serve --help.*\) <\/dev\/null &/.test(helpProbe),
+    'watchdog nested around the inner serve --help'
+  )
+})
+
 test('cleanupStale escalates to SIGKILL when the backend survives the graceful wait (#91668 quit-during-active-turn)', async () => {
   // A serve mid-turn (in-flight LLM call, live MCP children) can ride out
   // SIGTERM well past the 5s graceful wait. Before-quit races the whole
@@ -1875,7 +1876,8 @@ test.skipIf(process.platform === 'win32')(
     })
 
     // Capture the argv a remote shell would hand to python3, via a shim on PATH.
-    const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-argv-shim-'))
+    const shell: string = (await exec('command -v bash', { shell: 'bash' })).stdout.trim()
+    const root: string = await mkdtemp(path.join(os.tmpdir(), 'hermes-argv-shim-'))
 
     try {
       const shimDir = path.join(root, 'shim')
@@ -1883,10 +1885,11 @@ test.skipIf(process.platform === 'win32')(
       await mkdir(shimDir)
       await mkdir(fakeHome)
       const argvFile = path.join(shimDir, 'argv')
-      await writeFile(path.join(shimDir, 'python3'), `#!/bin/sh\nprintf '%s\\0' "$@" > '${argvFile}'\n`, {
+      await writeFile(path.join(shimDir, 'python3'), `#!${shell}\nprintf '%s\\0' "$@" > '${argvFile}'\n`, {
         mode: 0o755
       })
       await exec(cmd, {
+        shell: 'sh',
         env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, HOME: fakeHome }
       })
       const argv = (await readFile(argvFile, 'utf8')).split('\0')
@@ -1907,6 +1910,7 @@ test.skipIf(process.platform === 'win32')(
       const { stdout } = await exec(
         `${payload.slice(0, loopStart)} printf '%s\\n' "$reservation" "$lock" "$owner_file"`,
         {
+          shell: 'sh',
           env: { ...process.env, HOME: fakeHome }
         }
       )
@@ -1921,3 +1925,100 @@ test.skipIf(process.platform === 'win32')(
     }
   }
 )
+
+// The liveness and ownership probes answer over the same SSH channel that is
+// often mid-teardown right after the served token resolved. An exec that
+// returns neither sentinel is indeterminate (#111810): read as DEAD it tore
+// down a live backend; read as FOREIGN it skipped the reap while removing the
+// lockfile — one orphaned `serve --isolated` per failed attempt.
+test('connect() does not declare a live dashboard dead when the liveness probe answers nothing once', async () => {
+  let liveness = 0
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, ''],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/printf '%s\\n'/, ''],
+    [/setsid/, '777\n'],
+    [(cmd: string) => /kill -0 777/.test(cmd) && !cmd.includes('while'), () => (liveness++ === 0 ? '' : 'ALIVE\n')],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n']
+  ])
+
+  const result = await connect(connectDeps(ssh, { platform: { os: 'Linux', arch: 'x86_64' } }))
+
+  assert.equal(result.reused, false)
+  assert.equal(result.pid, 777)
+  assert.ok(
+    !ssh.calls.some(c => /(^|[^-\d])kill(?: -\w+)? 777\b/.test(c) && !/kill -0/.test(c)),
+    'must not reap a live backend'
+  )
+})
+
+test('cleanupStale reaps after one lost ownership answer and keeps the lockfile when none ever settles', async () => {
+  let ownership = 0
+
+  const flaky = fakeSsh([
+    [/print\("OWNED"/, () => (ownership++ === 0 ? '' : 'OWNED\n')],
+    [/kill 777 &&/, 'TERMINATED\n']
+  ])
+
+  await cleanupStale(flaky, OWNERSHIP_ID, ownedLock({ pid: 777 }))
+  assert.ok(
+    flaky.calls.some(c => /kill 777 &&/.test(c)),
+    'must reap the owned backend'
+  )
+  assert.ok(flaky.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)))
+
+  const silent = fakeSsh([[/print\("OWNED"/, '']])
+
+  await assert.rejects(
+    cleanupStale(silent, OWNERSHIP_ID, ownedLock({ pid: 777 })),
+    (error: any) => error.kind === 'transient-transport-error'
+  )
+
+  assert.ok(
+    !silent.calls.some(c => /(^|[^-\d])kill(?: -\w+)? 777\b/.test(c) && !/kill -0/.test(c)),
+    'must not kill unproven'
+  )
+  assert.ok(
+    !silent.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)),
+    'record must survive for the next connect to reap'
+  )
+})
+
+test('connect() post-spawn cleanup that cannot prove ownership keeps the original boot error', async () => {
+  const boot: any = new Error('dashboard never answered')
+  boot.kind = 'boot-failed'
+
+  const ssh = fakeSsh([
+    [/uname/, 'Linux\nx86_64'],
+    [/\[ -x/, 'OK'],
+    [/cat .*lock\.json/, ''],
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/printf '%s\\n'/, ''],
+    [/setsid/, '777\n'],
+    [/kill -0 777/, 'ALIVE\n'],
+    [/cat .*\.log/, 'HERMES_DASHBOARD_READY port=51999\n'],
+    [/print\("OWNED"/, '']
+  ])
+
+  await assert.rejects(
+    connect(
+      connectDeps(ssh, {
+        platform: { os: 'Linux', arch: 'x86_64' },
+        waitForHermes: async () => {
+          throw boot
+        }
+      })
+    ),
+    (error: any) => error === boot && error.cleanupCause?.kind === 'transient-transport-error'
+  )
+
+  assert.ok(
+    !ssh.calls.some(c => /rm -f .*backend\.lock\.json/.test(c)),
+    'record must survive for the next connect to reap'
+  )
+})

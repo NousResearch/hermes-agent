@@ -10,6 +10,7 @@ import {
   toggleOverlaySection
 } from '../app/delegationStore.js'
 import { patchOverlayState } from '../app/overlayStore.js'
+import { type ProcessRow, useProcessRows } from '../app/processRoster.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
 import { $uiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -35,6 +36,7 @@ import type { Theme } from '../theme.js'
 import type { SubagentNode, SubagentProgress } from '../types.js'
 
 import { AgentLiveTail, AgentSteerForm, rosterViewport } from './agentControls.js'
+import { buildProcessBlock, ProcessRowLine, processSummary } from './agentsPanel.js'
 import { listRowStyle } from './overlayPrimitives.js'
 import { OverlayScrollbar } from './overlayScrollbar.js'
 
@@ -291,6 +293,27 @@ function OverlaySection({
       </Box>
 
       {open ? <Box flexDirection="column">{children}</Box> : null}
+    </Box>
+  )
+}
+
+/** Background processes owned by this session, listed under the spawn tree. They are
+ * not part of the cursor roster (no per-row steer/tail); `/stop` ends them all. */
+function ProcessesSection({ cols, rows, t }: { cols: number; rows: readonly ProcessRow[]; t: Theme }) {
+  if (rows.length === 0) {
+    return null
+  }
+
+  const block = buildProcessBlock(rows, 0)
+
+  return (
+    <Box flexDirection="column" flexShrink={0} marginTop={1}>
+      <Text bold color={t.color.accent} wrap="truncate-end">
+        {`Processes · ${processSummary(block)}`}
+      </Text>
+      {block.rows.map(row => (
+        <ProcessRowLine cols={cols} key={row.id} row={row} t={t} />
+      ))}
     </Box>
   )
 }
@@ -604,6 +627,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   // scrollable pane.  Two panes side-by-side in Ink fought Yoga flex.
   const [mode, setMode] = useState<'detail' | 'list' | 'steer' | 'tail'>('list')
   const { sid } = useStore($uiState)
+  const processRows = useProcessRows(now)
 
   const detailScrollRef = useRef<null | ScrollBoxHandle>(null)
   const prevLiveCountRef = useRef(liveSubagents.length)
@@ -938,6 +962,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
       ) : rows.length === 0 ? (
         <Box flexDirection="column" flexGrow={1}>
           <Text color={t.color.muted}>No subagents this turn. Trigger delegate_task to populate the tree.</Text>
+          <ProcessesSection cols={cols - 2} rows={processRows} t={t} />
         </Box>
       ) : mode === 'list' ? (
         <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
@@ -958,6 +983,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
               />
             ))}
           </Box>
+          <ProcessesSection cols={cols - 2} rows={processRows} t={t} />
         </Box>
       ) : (
         <Box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0}>

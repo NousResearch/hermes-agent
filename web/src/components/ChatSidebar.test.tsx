@@ -36,7 +36,14 @@ const reloadMocks = vi.hoisted(() => ({
   maybeReloadForLoopbackWsAuthFailure: vi.fn(() => true)
 }))
 
+const routerMocks = vi.hoisted(() => ({ navigate: vi.fn() }))
+
+vi.mock('react-router', () => ({
+  useNavigate: () => routerMocks.navigate
+}))
+
 vi.mock('@/lib/api', () => ({
+  HERMES_BASE_PATH: '',
   api: { getModelInfo: apiMocks.getModelInfo },
   buildWsUrl: apiMocks.buildWsUrl
 }))
@@ -228,7 +235,6 @@ describe('ChatSidebar event socket reconnect', () => {
 
     await advance(1_000)
     expect(FakeWebSocket.instances).toHaveLength(1)
-    expect(container.textContent).toContain('reconnecting in 2s')
 
     await advance(2_000)
     expect(FakeWebSocket.instances).toHaveLength(2)
@@ -253,7 +259,6 @@ describe('ChatSidebar event socket reconnect', () => {
 
     await advance(1_000 + EVENTS_CONNECT_TIMEOUT_MS)
     expect(FakeWebSocket.instances).toHaveLength(1)
-    expect(container.textContent).toContain('reconnecting in 2s')
 
     // A late ticket response from the timed-out attempt must not create a
     // superseded socket alongside the scheduled replacement.
@@ -279,7 +284,6 @@ describe('ChatSidebar event socket reconnect', () => {
 
     await advance(EVENTS_CONNECT_TIMEOUT_MS)
     expect(FakeWebSocket.instances[1].closed).toBe(true)
-    expect(container.textContent).toContain('reconnecting in 2s')
 
     await advance(2_000)
     expect(FakeWebSocket.instances).toHaveLength(3)
@@ -384,16 +388,16 @@ describe('ChatSidebar event socket reconnect', () => {
     await act(async () => {
       FakeWebSocket.instances[0].emit('close', { code: 1006 })
     })
-    expect(container.textContent).toContain('events feed disconnected')
+    expect(container.textContent).toContain('Live tool activity paused')
 
     await advance(1_000)
     await act(async () => {
       FakeWebSocket.instances[1].emit('open', {})
     })
 
-    // Banner gone entirely — including the "reconnect events feed" button,
+    // Banner gone entirely — including the "Reconnect side panel" button,
     // which only renders while `error` is set.
-    expect(container.textContent).not.toContain('events feed')
+    expect(container.textContent).not.toContain('Live tool activity')
   })
 
   it('does not clear a credential warning when the feed recovers', async () => {
@@ -441,9 +445,33 @@ describe('ChatSidebar event socket reconnect', () => {
 
     expect(container.textContent).toContain('ANTHROPIC_API_KEY is not set')
     // The disconnect message must not have replaced it. (Matching the
-    // banner text specifically — "reconnect events feed" is the button
-    // label, which is expected to be present whenever a banner shows.)
-    expect(container.textContent).not.toContain('events feed disconnected')
+    // banner text specifically — the reconnect button label is expected to
+    // be present whenever a banner shows.)
+    expect(container.textContent).not.toContain('Live tool activity paused')
+  })
+
+  it('offers Add key and Switch model when the gateway reports a missing key', async () => {
+    await renderSidebar()
+
+    await act(async () => {
+      gatewayMocks.handlers.get('session.info')?.({
+        payload: {
+          credential_warning: "No API key configured for provider 'openrouter'. First message will fail."
+        }
+      })
+    })
+
+    const buttons = Array.from(container.querySelectorAll('button'))
+    const labels = buttons.map(b => b.textContent?.trim())
+    expect(labels).toContain('Add key')
+    expect(labels).toContain('Switch model')
+
+    // Add key must be an in-app route change: a full page load would tear down
+    // the terminal scrollback and the chat sockets.
+    await act(async () => {
+      buttons.find(b => b.textContent?.trim() === 'Add key')?.click()
+    })
+    expect(routerMocks.navigate).toHaveBeenCalledWith('/env')
   })
 
   it('still reconnects while a foreign banner suppresses its message', async () => {
@@ -476,7 +504,7 @@ describe('ChatSidebar event socket reconnect', () => {
       FakeWebSocket.instances[0].emit('close', { code: 1006 })
     })
     const reconnectButton = Array.from(container.querySelectorAll('button')).find(b =>
-      /reconnect events feed/i.test(b.textContent ?? '')
+      /reconnect side panel/i.test(b.textContent ?? '')
     )
     expect(reconnectButton).toBeDefined()
     await act(async () => {

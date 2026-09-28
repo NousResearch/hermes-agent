@@ -48,7 +48,7 @@ incoming `MessageEvent` and used for routing, isolation, and context injection.
 | `is_bot` | `bool` | `False` | True when the message author is a bot or webhook (Discord bots). |
 | `guild_id` | `Optional[str]` | `None` | Discord guild / Slack workspace / Matrix server scope identifier. |
 | `parent_chat_id` | `Optional[str]` | `None` | Parent channel when `chat_id` refers to a thread. |
-| `message_id` | `Optional[str]` | `None` | ID of the triggering message. Used for pin/reply/react operations and Discord ID injection. |
+| `message_id` | `Optional[str]` | `None` | ID of the triggering message. Used for pin/reply/react operations and Discord ID injection (the injected `[Triggering message id: …]` note rides the API-bound message only; the persisted user row keeps the authored text). |
 | `role_authorized` | `bool` | `False` | True when adapter granted access via a platform role (not individual user ID). |
 
 ### Key Methods
@@ -98,7 +98,7 @@ behavior on the next access.
 | `is_fresh_reset` | `bool` | `False` | Set by explicit `/new` or `/reset`. Triggers topic/channel skill re-injection on first message. Distinguished from `was_auto_reset` to avoid misleading "session expired" notices. |
 | `expiry_finalized` | `bool` | `False` | Historical finalization fence retained for recovery; no timer writes it. |
 | `suspended` | `bool` | `False` | Hard force-wipe signal. Set by `/stop` or stuck-loop escalation (3+ consecutive restart failures). On next `get_or_create_session()`, forces a new `session_id` regardless of `resume_pending`. |
-| `resume_pending` | `bool` | `False` | Soft recovery marker. Set by `suspend_recently_active()` (crash recovery) or drain timeout. On next access, preserves the existing `session_id` — the user continues on the same transcript. Cleared after the next successful turn completes. |
+| `resume_pending` | `bool` | `False` | Soft recovery marker. Set by `recover_interrupted_turns()` (crash recovery of a marked, unreplied turn) or drain timeout. On next access, preserves the existing `session_id` — the user continues on the same transcript. Cleared after the next successful turn completes. |
 | `resume_reason` | `Optional[str]` | `None` | Why resume was marked: `"restart_timeout"`, `"shutdown_timeout"`, `"restart_interrupted"`. |
 | `last_resume_marked_at` | `Optional[datetime]` | `None` | Timestamp of the last resume-pending marking. |
 
@@ -170,11 +170,11 @@ SessionStore(sessions_dir: Path, config: GatewayConfig, has_active_processes_fn=
 | `get_or_create_session(source, force_new=False)` | Core entry point. Returns existing or creates new `SessionEntry`. Evaluates explicit suspension and restart recovery state. Creates/ends SQLite records. |
 | `update_session(session_key, last_prompt_tokens=None)` | Lightweight metadata update after an interaction. Bumps `updated_at`, optionally records `last_prompt_tokens`. |
 | `reset_session(session_key, display_name=None)` | Explicit reset (from `/new` or `/reset`). Creates new `session_id`, sets `is_fresh_reset=True`. Ends old SQLite session, creates new one. |
-| `switch_session(session_key, target_session_id)` | Switch to a different existing session ID (from `/resume`). Ends current SQLite session, reopens target. |
+| `switch_session(session_key, target_session_id, *, expected_session_id=None)` | Switch to a different existing session ID (from `/resume`). Ends current SQLite session, reopens target. With `expected_session_id=` the repoint is a compare-and-swap: returns `None` without switching when the key no longer points at that session, so a caller that resolved against a snapshot across an `await` (async-delegation re-pin, Telegram topic-binding heal) cannot overwrite a concurrent `/new` or `/resume`. |
 | `suspend_session(session_key)` | Mark session as `suspended=True` (from `/stop`). Forces auto-reset on next access. |
 | `mark_resume_pending(session_key, reason)` | Mark session as `resume_pending=True` (from drain timeout). Preserves session_id on next access. Will NOT override `suspended=True`. |
 | `clear_resume_pending(session_key)` | Clear `resume_pending` after a successful resumed turn. Called from gateway after `run_conversation()` returns. |
-| `suspend_recently_active(max_age_seconds=120)` | Crash recovery: mark recently-active sessions as `resume_pending=True`. Skips already-pending and already-suspended entries. Called on startup after unclean shutdown. |
+| `recover_interrupted_turns(max_age_seconds)` | Crash recovery: promote durable active-turn markers the dead process left behind to `resume_pending=True` (`restart_interrupted`). Sessions without a marker finished their turn and are left alone. Called on startup after unclean shutdown. |
 | `prune_old_entries(max_age_days)` | Drop entries older than `max_age_days` (based on `updated_at`). Skips `suspended` entries and sessions with active processes. |
 | `list_sessions(active_minutes=None)` | Return all sessions, optionally filtered by recent activity. Sorted by `updated_at` descending. |
 | `lookup_by_session_id(session_id)` | Find the active `SessionEntry` for a persisted session ID. |
@@ -324,8 +324,10 @@ Gateway starts
        │ Missing
        ▼
 ┌───────────────────────────────┐
-│ session_store                 │── Marks sessions updated within
-│ .suspend_recently_active()    │   last 120 seconds as resume_pending
+│ _recover_unclean_sessions()   │── Marked turn with a persisted reply
+│                               │   → delivery ledger (sent, marked);
+│                               │   marked turn without one →
+│                               │   resume_pending (once)
 └───────────────────────────────┘
        │
        ▼
@@ -351,15 +353,34 @@ Gateway starts
 └───────────────────────────────┘
 ```
 
-### suspend_recently_active(max_age_seconds=120)
+### Crash recovery (`_recover_unclean_sessions`)
 
-Called on gateway startup when no `.clean_shutdown` marker exists (indicating a crash or
-unexpected exit). For each session updated within the last 120 seconds:
+Called on gateway startup when no `.clean_shutdown` marker exists (a crash or unexpected
+exit). It acts only on durable active-turn markers, never on recency: a chat that was merely
+active shortly before the crash finished its turn and is not answered again.
 
-- Sets `resume_pending=True`, `resume_reason="restart_interrupted"`,
-  `last_resume_marked_at=now`.
-- Skips entries already `resume_pending=True` (no double-mark).
-- Skips entries explicitly `suspended=True` (hard wipe should stay).
+The marker is set when a turn starts and is held until the final reply is in the delivery
+ledger (the adapter releases it right after `record_delivery_obligation`), or until nothing
+more is owed (streamed reply, suppressed or empty response). So a marker left at startup means
+one of two things:
+
+- **The reply was persisted but never ledgered.** The stored transcript reply is recorded as
+  an unowned ledger row and the marker is cleared; the boot sweep delivers it once with the
+  "Recovered reply" notice. The turn is not regenerated. The reply is judged the way live
+  delivery would have judged it: a bare silence marker (`[SILENT]`, `NO_REPLY`, ...) on an
+  internal turn, or the reply to a diagnostic wake the chat's policy mutes, is owed nothing
+  (the marker is cleared, nothing is sent or resumed). A human turn's bare silence marker
+  becomes the same "returned only a silence marker" notice the live path sends.
+- **No reply was persisted.** `recover_interrupted_turns()` sets `resume_pending=True`,
+  `resume_reason="restart_interrupted"`, and the turn auto-resumes once.
+
+The marker's start time is stored as aware UTC and compared as epoch seconds, so a restart
+in a different local zone (DST change, container vs. unit `TZ`) neither drops a fresh marker
+as stale nor adopts the previous turn's reply as this one's. A marker written by an older
+build (naive local time) is read as host-local time.
+
+A turn already in the ledger is redelivered by the ledger sweep, which also clears any
+`resume_pending` for that session, so it is never both delivered and re-answered.
 
 ### Stuck-Loop Detection (`_suspend_stuck_loop_sessions`)
 
@@ -374,7 +395,7 @@ session that was mid-turn when the drain timeout fired. Reasons:
 
 - `"restart_timeout"` — killed during restart drain
 - `"shutdown_timeout"` — killed during shutdown drain
-- `"restart_interrupted"` — crash recovery (from `suspend_recently_active`)
+- `"restart_interrupted"` — crash recovery of a marked, unreplied turn (from `recover_interrupted_turns`)
 
 All three reasons are in `_AUTO_RESUME_REASONS` and eligible for startup auto-resume.
 
@@ -395,8 +416,8 @@ When `get_or_create_session()` encounters `resume_pending=True`:
 
 Written at the end of a graceful shutdown. On next startup:
 
-- If present: skip `suspend_recently_active()` entirely. Active agents were already
-  drained, so no sessions are stuck.
+- If present: skip crash recovery entirely and discard orphan turn markers. Active agents
+  were already drained, so no sessions are stuck.
 - Then delete the marker.
 
 This prevents unwanted auto-resets after `hermes update`, `hermes gateway restart`,
@@ -455,6 +476,24 @@ Called at the drain site after the slot was consumed. If there's an overflow ite
 ### Clearing
 
 Queued events for a session are cleared on `/new` and `/reset` (via `_handle_reset_command`).
+`/stop` drops the single-slot follow-up the user sent during the interrupted turn. An
+**internal** wake parked in either store (an async-delegation completion notice, a kanban/cron
+`notify+wake`) survives all three commands: `_interrupt_and_clear_session` leaves it in the slot
+(promoting it out of the overflow when a discarded human follow-up held the slot) so the
+post-command drain starts it right away instead of the session idling until the next user
+message. Whether a wake pinned to a session that `/new` just closed may still run is decided at
+processing time (`_resolve_async_delegation_session`, fail-closed).
+
+Both commands also end the session's **background delegations** (`tools.async_delegation.
+interrupt_for_session`, selected by routing key and by the spawner's durable session id):
+`_interrupt_and_clear_session` fans the stop out for the busy path, and `_handle_stop_command`
+does the same for an idle session whose dispatching turn already ended (replying "Stopped" rather
+than "No active task to stop"). The turn's own hard interrupt never reaches those units — they are
+detached from `_active_children` at dispatch — so without the fan-out they run to completion and wake
+the chat minutes later. Each stopped unit still finalizes normally and re-enters as its completion
+notice with `status="interrupted"` and the child's partial output. `/new` and `/reset` already did this
+in `_handle_reset_command`; the shared helper's earlier call is idempotent there (a hard interrupt
+requested twice is one stop).
 
 ### FIFO Invariant
 
@@ -538,8 +577,10 @@ resident (agents that took a turn within the TTL are never idle-swept), so RSS c
 the cgroup throttles and SIGTERM can no longer flush inside systemd's stop timeout
 (#80764).
 
-`_sweep_agent_cache_under_pressure()` is the valve. Each watcher tick it compares the
-process's anonymous RSS against `memory_high_mb`; over budget, it evicts LRU agents
+`_sweep_agent_cache_under_pressure()` is the valve. Each watcher tick it compares anonymous
+memory against `memory_high_mb` — the cgroup's own `memory.stat` `anon` when the gateway runs
+under a cgroup limit (the scope the budget is charged against, so same-unit children such as
+`execute_code` kernels count; #110549), otherwise the process's own anonymous RSS; over budget, it evicts LRU agents
 through the same soft path the cap enforcer uses (`_commit_then_release_soft`), then
 runs `malloc_trim` so the freed arenas actually return to the OS. Evicted sessions
 rebuild their transcript from the persisted session on the next turn.

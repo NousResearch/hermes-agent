@@ -175,18 +175,17 @@ def _eager_reconcile_own_session_db() -> None:
     The dashboard is a view layer; the gateway owns the writer. A healthy store
     must never see a second writable ``SessionDB`` from this process (its
     close-time checkpoint and a possible FTS rebuild in ``_init_fts`` are the
-    two-writer corruption vector, #107688 / #100896). The read-only path still
-    bootstraps a missing store and heals a stale/malformed schema through ONE
-    writable open, so the #79531 contract holds. Never raises: an unfixable
-    store still gets the per-poll read-probe heal.
+    two-writer corruption vector, #107688 / #100896). Access-mode semantics
+    (bootstrap of a missing store, ONE writable heal of a stale schema, so the
+    #79531 contract holds) live in the routers' own-store opener,
+    :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never
+    raises: an unfixable store still gets the per-poll read-probe heal.
     """
     try:
-        from hermes_state import _default_db_path
+        from hermes_cli.web_server_sessions import _open_session_db_for_profile
+        from hermes_state_registry import release_or_close
 
-        from hermes_cli.web_server_sessions import _open_session_db_at_path
-
-        db = _open_session_db_at_path(Path(_default_db_path()), read_only=True)
-        db.close()
+        release_or_close(_open_session_db_for_profile(None, read_only=True))
     except Exception as exc:
         _log.warning(
             "startup schema reconcile of state.db failed (%s); session "
@@ -339,6 +338,12 @@ def _start_parent_death_watchdog() -> None:
                 desktop_pid,
                 start_marker,
             )
+        except Exception:
+            pass
+        # os._exit skips every cleanup: a foreground command in its own process group would outlive us.
+        try:
+            from tools.environments.base import kill_live_foreground_processes
+            kill_live_foreground_processes(now=True)
         except Exception:
             pass
         os._exit(0)

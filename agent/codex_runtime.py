@@ -259,7 +259,7 @@ def _record_codex_app_server_compaction(agent, turn, *, approx_tokens: int | Non
 # into the callbacks the standard runtime fires (tool_progress_callback, _fire_stream_delta, ...).
 
 # Item types that project to a Hermes tool_call (keep in sync with agent/transports/codex_event_projector.py
-# so UI names match recorded names). webSearch is codex's built-in tool: no projector entry, still gets a bubble.
+# so UI names match recorded names). webSearch is codex's built-in tool; the projector records it under the same id.
 _CODEX_TOOL_ITEM_TYPES = frozenset({"commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch"})
 # Text-delta notifications → the agent stream hook each one feeds. Single source for both the display
 # handlers and the liveness set below, so a new delta method can't stream without refreshing activity (#118410).

@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from 'rea
 import { useNavigate } from 'react-router'
 
 import { NEW_CHAT_ROUTE } from '@/app/routes'
+import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
@@ -160,7 +161,19 @@ function ResultHeader({
         // The result is the headline. Its "done" state is already on the
         // status strip above — repeating it here would say the same thing
         // twice on one screen.
-        <h1 className="text-xl font-semibold leading-7 text-(--ui-text-primary)">{title}</h1>
+        //
+        // The gateway hands this field the WHOLE answer (`message.complete`
+        // → `task.verified`, see use-message-stream/gateway-event/jarvis.ts),
+        // so a bare `<h1 className="text-xl …">{title}</h1>` printed the raw
+        // markdown source (`**bold**`, `|---|` tables) at display size, with
+        // no panel, straight over the wallpaper behind the orb — the wall of
+        // text reported in Live mode. It renders as rich text on the reader
+        // pane instead: `[data-jarvis-result-pane]` (styles.css) gives it a
+        // near-opaque glass fill at conversation scale, and the height cap
+        // keeps the orb owning the surface.
+        <div aria-level={1} className="jarvis-result-pane" data-jarvis-result-pane="" role="heading">
+          <MarkdownTextContent isRunning={false} previewOnly text={title} />
+        </div>
       ) : (
         <p className="text-sm font-medium text-(--ui-text-secondary)">{greeting(copy, profileDisplayName)}</p>
       )}

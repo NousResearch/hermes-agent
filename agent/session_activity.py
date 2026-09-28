@@ -28,6 +28,8 @@ class ActivityProvenance(str, Enum):
     AGENT_COMPRESSION_TIMEOUT = "agent.compression_timeout"
     AGENT_COMPRESSION_COOLDOWN = "agent.compression_cooldown"
     AGENT_COMPRESSION_TURNHOLD = "agent.compression_turnhold"
+    # Bounded cross-process admission wait, before the agent turn starts.
+    SESSION_TURN_LEASE_WAIT = "session.turn_lease_wait"
 
 
 def bound_activity_description(description: Optional[str]) -> str:

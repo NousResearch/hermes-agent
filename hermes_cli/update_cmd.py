@@ -682,7 +682,10 @@ def _complete_source_update(request: dict | None) -> None:
     current = _completion_receipt._current.get()
     if current is not None:
         request["receipt"] = deepcopy(current.data)
-    _write_fleet_restart_pending_marker(expected_sha=request.get("expected_sha") or "")
+    _write_fleet_restart_pending_marker(
+        expected_sha=request.get("expected_sha")
+        or _completion_receipt._receipt_post_update_sha(request["receipt"])
+    )
     result = run_completion(request)
     _accept_completion_pm_receipt(result.get("pm_receipt"), request["receipt"]["update_id"])
     token = request["windows_resume"]

@@ -1068,3 +1068,101 @@ def test_second_profile_attaches_to_completed_host_restart(monkeypatch):
     # A stamp for other code proves nothing about this checkout.
     host_obligation.mark_host_restart_completed("def456")
     assert update_cmd_fleet._fleet_restart_skip_reason(None) is None
+
+
+# ── SHA-less inventory-less obligations discharge on live-fleet evidence (#125952) ──
+#
+# A no-op update whose head capture failed armed the host record with expected_sha=""
+# and no inventory. The reader bailed out on the empty SHA before the fleet check, so
+# the warning could never clear even with every live gateway current on the checkout.
+
+
+def _write_sha_less_obligation(pid: int = 424242) -> None:
+    """Arm the poisoned shape verbatim: no SHA, no inventory, a known arming pid."""
+    path = host_obligation.host_obligation_path()
+    assert path is not None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "version": 1, "started": 0.0, "pid": pid, "armed_by_profile": "default",
+        "expected_sha": "",
+    }), encoding="utf-8")
+
+
+def _patch_armer_liveness(monkeypatch, alive_pids: set[int]) -> None:
+    monkeypatch.setattr(
+        "hermes_cli._subprocess_compat.pid_exists_stdlib", lambda pid: int(pid) in alive_pids
+    )
+
+
+def test_startup_warn_discharged_when_sha_less_marker_fleet_current(monkeypatch, capsys):
+    checkout = "e" * 40
+    _write_sha_less_obligation()
+    _patch_armer_liveness(monkeypatch, set())  # the update that armed it is gone
+    _patch_marker_sha(monkeypatch, checkout)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": checkout, "code_version": "0.21.5", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_startup_warn_kept_when_sha_less_marker_armer_still_alive(monkeypatch, capsys):
+    """A status call must not discharge an update that is still mid-restart-phase."""
+    checkout = "e" * 40
+    _write_sha_less_obligation()
+    _patch_armer_liveness(monkeypatch, {424242})  # the arming update is still running
+    _patch_marker_sha(monkeypatch, checkout)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": checkout, "code_version": "0.21.5", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_startup_warn_kept_when_sha_less_marker_fleet_stale(monkeypatch, capsys):
+    checkout = "e" * 40
+    _write_sha_less_obligation()
+    _patch_armer_liveness(monkeypatch, set())
+    _patch_marker_sha(monkeypatch, checkout)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_startup_warn_kept_when_inventory_present_but_sha_less(monkeypatch, capsys):
+    """An inventoried obligation without its SHA can never be proven: fail closed."""
+    checkout = "e" * 40
+    _write_sha_less_obligation()
+    host_obligation.amend_host_obligation(inventory={"version": 1, "runtimes": [{"kind": "gateway", "profile": "default"}]})
+    _patch_marker_sha(monkeypatch, checkout)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": checkout, "code_version": "0.21.5", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd_fleet._fleet_restart_obligation_armed()

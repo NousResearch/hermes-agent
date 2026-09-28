@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import {
   Activity,
   Brain,
@@ -24,6 +24,7 @@ import {
   Stethoscope,
   Terminal,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -31,6 +32,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { Card, CardContent } from "@nous-research/ui/ui/components/card";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -40,11 +42,23 @@ import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
+import { HermesConsoleModal } from "@/components/HermesConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
+import {
+  gatewayStateNeedsLogs,
+  gatewayStateDescription,
+  gatewayActionFailedMessage,
+  servedProfileRefusal,
+  sharedGatewayProfiles,
+  sharedGatewayRestartDescription,
+  sharedGatewayRestartedMessage,
+} from "@/lib/shared-gateway";
 import type {
   StatusResponse,
   MemoryStatus,
+  MemoryProviderInfo,
   CredentialPoolProvider,
   CheckpointsResponse,
   HooksResponse,
@@ -54,7 +68,9 @@ import type {
   CuratorStatus,
   PortalStatus,
   DebugShareResponse,
+  GatewayMigratePlan,
 } from "@/lib/api";
+import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -72,6 +88,20 @@ function formatDuration(seconds: number): string {
   return `${m}m`;
 }
 
+type BackupImportTarget =
+  | { kind: "upload"; file: File }
+  | { kind: "path"; path: string };
+
+function backupImportLabel(target: BackupImportTarget | null): string {
+  if (!target) return "the archive";
+  return target.kind === "upload" ? target.file.name : target.path;
+}
+
+function backupFileName(path: string | null): string {
+  if (!path) return "No backup created yet";
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 /**
  * Live action-log viewer for the spawn-based admin actions (doctor, audit,
  * backup, import, skills update, checkpoints prune, gateway start/stop).
@@ -80,17 +110,21 @@ function formatDuration(seconds: number): string {
 function ActionLogViewer({
   action,
   onClose,
+  onComplete,
 }: {
   action: string;
   onClose: () => void;
+  onComplete?: (action: string, exitCode: number | null) => void;
 }) {
   const [lines, setLines] = useState<string[]>([]);
   const [running, setRunning] = useState(true);
   const [exitCode, setExitCode] = useState<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const completeRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
+    completeRef.current = false;
     const poll = async () => {
       try {
         const st = await api.getActionStatus(action, 400);
@@ -98,6 +132,10 @@ function ActionLogViewer({
         setLines(st.lines);
         setRunning(st.running);
         setExitCode(st.exit_code);
+        if (!st.running && !completeRef.current) {
+          completeRef.current = true;
+          onComplete?.(action, st.exit_code);
+        }
         if (st.running) timer.current = setTimeout(poll, 1200);
       } catch {
         if (!cancelled) setRunning(false);
@@ -108,7 +146,7 @@ function ActionLogViewer({
       cancelled = true;
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [action]);
+  }, [action, onComplete]);
 
   return (
     <Card>
@@ -146,6 +184,23 @@ const HOOK_EVENTS_FALLBACK = [
   "on_session_end",
 ];
 
+const MEMORY_STATUS_LABEL: Record<MemoryProviderInfo["status"], string> = {
+  ready: "ready",
+  needs_config: "needs setup",
+  unavailable: "unavailable",
+  missing: "missing",
+};
+
+const MEMORY_STATUS_TONE: Record<
+  MemoryProviderInfo["status"],
+  "success" | "warning" | "destructive" | "secondary"
+> = {
+  ready: "success",
+  needs_config: "warning",
+  unavailable: "destructive",
+  missing: "destructive",
+};
+
 export default function SystemPage() {
   const { toast, showToast } = useToast();
 
@@ -162,6 +217,8 @@ export default function SystemPage() {
   const [loading, setLoading] = useState(true);
 
   const [activeAction, setActiveAction] = useState<string | null>(null);
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  const [migratePlan, setMigratePlan] = useState<GatewayMigratePlan | null>(null);
 
   // Add-credential form.
   const [credProvider, setCredProvider] = useState("openrouter");
@@ -169,12 +226,23 @@ export default function SystemPage() {
   const [credLabel, setCredLabel] = useState("");
   const [addingCred, setAddingCred] = useState(false);
 
+  const [pendingBackupArchive, setPendingBackupArchive] = useState<string | null>(
+    null,
+  );
+  const [downloadableBackupArchive, setDownloadableBackupArchive] = useState<
+    string | null
+  >(null);
+  const [downloadingBackup, setDownloadingBackup] = useState(false);
+  const importUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const [importFile, setImportFile] = useState<File | null>(null);
   const [importPath, setImportPath] = useState("");
   // Restore-from-backup is destructive (overwrites the live config) and the
   // spawned `hermes import` runs non-interactively (stdin is /dev/null), so
   // its CLI "Continue? [y/N]" prompt would auto-abort. The dashboard owns the
   // consent: confirm here, then call the endpoint with force=true.
-  const [importConfirmOpen, setImportConfirmOpen] = useState(false);
+  const [importingBackup, setImportingBackup] = useState(false);
+  const [importConfirmTarget, setImportConfirmTarget] =
+    useState<BackupImportTarget | null>(null);
 
   // Create-hook modal.
   const [hookModalOpen, setHookModalOpen] = useState(false);
@@ -210,8 +278,9 @@ export default function SystemPage() {
       // Cached (non-forced) check so the version row shows update status on
       // load without a separate effect / a forced network round-trip.
       api.checkHermesUpdate(false),
+      api.getGatewayMigratePlan(),
     ])
-      .then(([s, st, m, p, c, h, cur, prt, upd]) => {
+      .then(([s, st, m, p, c, h, cur, prt, upd, mig]) => {
         if (s.status === "fulfilled") setStatus(s.value);
         if (st.status === "fulfilled") setStats(st.value);
         if (m.status === "fulfilled") setMemory(m.value);
@@ -221,6 +290,7 @@ export default function SystemPage() {
         if (cur.status === "fulfilled") setCurator(cur.value);
         if (prt.status === "fulfilled") setPortal(prt.value);
         if (upd.status === "fulfilled") setUpdateInfo(upd.value);
+        if (mig.status === "fulfilled") setMigratePlan(mig.value);
       })
       .finally(() => setLoading(false));
   }, []);
@@ -230,7 +300,14 @@ export default function SystemPage() {
   }, [loadAll]);
 
   // ── Gateway lifecycle ──────────────────────────────────────────────
-  const runGateway = async (verb: "start" | "stop" | "restart") => {
+  // A profile served by the shared multiplexer has no gateway of its own: Restart restarts
+  // the ONE process every bot on this device runs in, so confirm first and say so after;
+  // Start/Stop answer 409 with an explanation that belongs in a notice, not a raw error.
+  const sharedGateway = sharedGatewayProfiles(status);
+  const [sharedRestartOpen, setSharedRestartOpen] = useState(false);
+  const [servedNotice, setServedNotice] = useState<string | null>(null);
+  const runGateway = async (verb: "start" | "stop" | "restart"): Promise<boolean> => {
+    setServedNotice(null);
     try {
       if (verb === "start") {
         await api.startGateway();
@@ -244,8 +321,50 @@ export default function SystemPage() {
       }
       showToast(`Gateway ${verb} started`, "success");
       setTimeout(loadAll, 3000);
+      return true;
     } catch (e) {
-      showToast(`Gateway ${verb} failed: ${e}`, "error");
+      const refusal = servedProfileRefusal(e);
+      if (refusal) {
+        setServedNotice(refusal);
+        return false;
+      }
+      showToast(gatewayActionFailedMessage(verb, errorMessage(e), e), "error");
+      return false;
+    }
+  };
+  const requestRestart = () => {
+    if (sharedGateway) {
+      setSharedRestartOpen(true);
+      return;
+    }
+    void runGateway("restart");
+  };
+  // Same completion rule as the Desktop: the restart child exiting 0, or still running when the
+  // bounded poll ends (in a no-service install it BECOMES the gateway and never exits), is
+  // success — then the "(N bots)" toast; a non-zero exit is the action log's failure to show.
+  const restartShared = async () => {
+    const bots = sharedGateway?.length ?? 0;
+    const started = await runGateway("restart");
+    if (!started) return;
+    for (let attempt = 0; attempt < 18; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 1200));
+      const st = await api.getActionStatus("gateway-restart", 1).catch(() => null);
+      if (st && !st.running) {
+        if (st.exit_code != null && st.exit_code !== 0) return;
+        break;
+      }
+    }
+    showToast(sharedGatewayRestartedMessage(bots), "success");
+  };
+
+  const migrateToMultiplex = async () => {
+    try {
+      await api.migrateGatewayToMultiplex();
+      setActiveAction("gateway-migrate");
+      showToast("Migrating to a single multiplexed gateway", "success");
+      setTimeout(loadAll, 5000);
+    } catch (e) {
+      showToast(`Gateway migration failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -257,7 +376,7 @@ export default function SystemPage() {
       showToast(curator.paused ? "Curator resumed" : "Curator paused", "success");
       loadAll();
     } catch (e) {
-      showToast(`Curator toggle failed: ${e}`, "error");
+      showToast(`Curator toggle failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -275,7 +394,7 @@ export default function SystemPage() {
           showToast(`Reset: ${res.deleted.join(", ") || "nothing"}`, "success");
           loadAll();
         } catch (e) {
-          showToast(`Reset failed: ${e}`, "error");
+          showToast(`Reset failed: ${errorMessage(e)}`, "error");
           throw e;
         }
       },
@@ -301,7 +420,7 @@ export default function SystemPage() {
       setCredLabel("");
       loadAll();
     } catch (e) {
-      showToast(`Failed to add credential: ${e}`, "error");
+      showToast(`Failed to add credential: ${errorMessage(e)}`, "error");
     } finally {
       setAddingCred(false);
     }
@@ -316,7 +435,7 @@ export default function SystemPage() {
           showToast("Credential removed", "success");
           loadAll();
         } catch (e) {
-          showToast(`Failed to remove: ${e}`, "error");
+          showToast(`Failed to remove: ${errorMessage(e)}`, "error");
           throw e;
         }
       },
@@ -331,7 +450,80 @@ export default function SystemPage() {
       setActiveAction(res.name);
       showToast(`${label} started`, "success");
     } catch (e) {
-      showToast(`${label} failed: ${e}`, "error");
+      showToast(`${label} failed: ${errorMessage(e)}`, "error");
+    }
+  };
+
+  const runDashboardBackup = async () => {
+    try {
+      const res = await api.runBackup();
+      setActiveAction(res.name);
+      setPendingBackupArchive(res.archive ?? null);
+      setDownloadableBackupArchive(null);
+      showToast("Backup started", "success");
+    } catch (e) {
+      showToast(`Backup failed: ${errorMessage(e)}`, "error");
+    }
+  };
+
+  const handleActionComplete = useCallback(
+    (action: string, exitCode: number | null) => {
+      if (action === "backup" && pendingBackupArchive) {
+        if (exitCode === 0) {
+          setDownloadableBackupArchive(pendingBackupArchive);
+          showToast("Backup ready to download", "success");
+        } else {
+          setPendingBackupArchive(null);
+        }
+      }
+    },
+    [pendingBackupArchive, showToast],
+  );
+
+  const downloadBackup = async () => {
+    const archive = downloadableBackupArchive;
+    if (!archive) return;
+    setDownloadingBackup(true);
+    try {
+      const res = await api.downloadBackup(archive);
+      if (!res.ok) {
+        throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), res.url);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = backupFileName(archive);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showToast(`Download failed: ${errorMessage(e)}`, "error");
+    } finally {
+      setDownloadingBackup(false);
+    }
+  };
+
+  const clearImportFile = () => {
+    setImportFile(null);
+    if (importUploadInputRef.current) importUploadInputRef.current.value = "";
+  };
+
+  const runBackupImport = async (target: BackupImportTarget) => {
+    setImportingBackup(true);
+    try {
+      const res =
+        target.kind === "upload"
+          ? await api.runImportUpload(target.file, true)
+          : await api.runImport(target.path, true);
+      setActiveAction(res.name);
+      showToast("Import started", "success");
+      if (target.kind === "upload") clearImportFile();
+    } catch (e) {
+      showToast(`Import failed: ${errorMessage(e)}`, "error");
+    } finally {
+      setImportingBackup(false);
     }
   };
 
@@ -348,14 +540,13 @@ export default function SystemPage() {
 
   const copyToClipboard = useCallback(
     async (text: string, label: string) => {
-      try {
-        await navigator.clipboard.writeText(text);
+      if (await copyTextToClipboard(text)) {
         setCopiedLabel(label);
         setTimeout(
           () => setCopiedLabel((cur) => (cur === label ? null : cur)),
           1500,
         );
-      } catch {
+      } else {
         showToast("Couldn't copy to clipboard", "error");
       }
     },
@@ -376,7 +567,7 @@ export default function SystemPage() {
         "success",
       );
     } catch (e) {
-      showToast(`Debug share failed: ${e}`, "error");
+      showToast(`Debug share failed: ${errorMessage(e)}`, "error");
     } finally {
       setSharing(false);
     }
@@ -386,6 +577,7 @@ export default function SystemPage() {
   // ── Update check / apply ───────────────────────────────────────────
   const checkForUpdate = useCallback(
     async (force = false) => {
+      if (status?.can_update_hermes === false) return;
       setCheckingUpdate(true);
       try {
         const info = await api.checkHermesUpdate(force);
@@ -405,32 +597,39 @@ export default function SystemPage() {
           }
         }
       } catch (e) {
-        showToast(`Update check failed: ${e}`, "error");
+        showToast(`Update check failed: ${errorMessage(e)}`, "error");
       } finally {
         setCheckingUpdate(false);
       }
     },
-    [showToast],
+    [showToast, status?.can_update_hermes],
   );
 
   // Auto-check (cached) runs inside loadAll on mount; this is the
   // user-triggered forced re-check from the "Check for updates" button.
   const applyUpdate = async () => {
     setUpdateConfirmOpen(false);
+    if (status?.can_update_hermes === false) {
+      showToast(
+        "Hermes updates are managed outside this dashboard.",
+        "success",
+      );
+      return;
+    }
     try {
       const resp = await api.updateHermes();
-      if (!resp.ok && resp.error === "docker_update_unsupported") {
+      if (!resp.ok) {
         showToast(
           resp.message ??
-            "Updates don't apply inside Docker — re-pull the image instead.",
-          "error",
+            "Updates don't apply from this dashboard.",
+          "success",
         );
         return;
       }
       setActiveAction(resp.name ?? "hermes-update");
       showToast("Update started", "success");
     } catch (e) {
-      showToast(`Update failed: ${e}`, "error");
+      showToast(`Update failed: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -441,7 +640,7 @@ export default function SystemPage() {
         setActiveAction(res.name);
         showToast("Checkpoint prune started", "success");
       } catch (e) {
-        showToast(`Prune failed: ${e}`, "error");
+        showToast(`Prune failed: ${errorMessage(e)}`, "error");
         throw e;
       }
     }, [showToast]),
@@ -469,7 +668,7 @@ export default function SystemPage() {
       setHookModalOpen(false);
       loadAll();
     } catch (e) {
-      showToast(`Failed to create hook: ${e}`, "error");
+      showToast(`Failed to create hook: ${errorMessage(e)}`, "error");
     } finally {
       setCreatingHook(false);
     }
@@ -486,7 +685,7 @@ export default function SystemPage() {
           showToast("Hook removed", "success");
           loadAll();
         } catch (e) {
-          showToast(`Failed to remove hook: ${e}`, "error");
+          showToast(`Failed to remove hook: ${errorMessage(e)}`, "error");
           throw e;
         }
       },
@@ -503,6 +702,10 @@ export default function SystemPage() {
   }
 
   const gatewayRunning = status?.gateway_running;
+  const canUpdateHermes = status?.can_update_hermes !== false;
+  const activeMemoryProvider = memory?.active
+    ? memory.providers.find((provider) => provider.name === memory.active)
+    : null;
   const validEvents = hooks?.valid_events?.length
     ? hooks.valid_events
     : HOOK_EVENTS_FALLBACK;
@@ -510,9 +713,30 @@ export default function SystemPage() {
   return (
     <div className="flex flex-col gap-8">
       <Toast toast={toast} />
+      <input
+        ref={importUploadInputRef}
+        type="file"
+        accept=".zip,application/zip,application/x-zip-compressed"
+        className="hidden"
+        onChange={(event) => {
+          setImportFile(event.currentTarget.files?.[0] ?? null);
+        }}
+      />
 
       <ConfirmDialog
-        open={updateConfirmOpen}
+        open={sharedRestartOpen}
+        onCancel={() => setSharedRestartOpen(false)}
+        onConfirm={() => {
+          setSharedRestartOpen(false);
+          void restartShared();
+        }}
+        title="Restart the shared gateway?"
+        description={sharedGatewayRestartDescription(sharedGateway ?? [])}
+        confirmLabel="Restart all"
+      />
+
+      <ConfirmDialog
+        open={canUpdateHermes && updateConfirmOpen}
         onCancel={() => setUpdateConfirmOpen(false)}
         onConfirm={() => void applyUpdate()}
         title="Update Hermes?"
@@ -556,12 +780,16 @@ export default function SystemPage() {
         description="Remove this hook from config and revoke its consent? It stops firing on the next restart."
         loading={hookDelete.isDeleting}
       />
+      <HermesConsoleModal
+        open={consoleOpen}
+        onClose={() => setConsoleOpen(false)}
+      />
 
       {/* Create-hook modal */}
       {hookModalOpen && (
         <div
           ref={hookModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
           onClick={(e) => e.target === e.currentTarget && setHookModalOpen(false)}
           role="dialog"
           aria-modal="true"
@@ -626,15 +854,21 @@ export default function SystemPage() {
                   />
                 </div>
               </div>
-              <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                <input
-                  type="checkbox"
+              <div className="flex items-center gap-2.5">
+                <Checkbox
                   checked={hookApprove}
-                  onChange={(e) => setHookApprove(e.target.checked)}
+                  id="hook-approve"
+                  onCheckedChange={(checked) => setHookApprove(checked === true)}
                 />
-                Approve now (grant consent so it fires; otherwise it stays
-                configured but inactive)
-              </label>
+
+                <Label
+                  className="cursor-pointer text-sm font-normal normal-case tracking-normal text-muted-foreground"
+                  htmlFor="hook-approve"
+                >
+                  Approve now (grant consent so it fires; otherwise it stays
+                  configured but inactive)
+                </Label>
+              </div>
               <p className="text-xs text-warning">
                 Shell hooks run arbitrary commands on this host. Only add scripts
                 you trust. Takes effect on the next gateway/session restart.
@@ -659,6 +893,7 @@ export default function SystemPage() {
       {activeAction && (
         <ActionLogViewer
           action={activeAction}
+          onComplete={handleActionComplete}
           onClose={() => setActiveAction(null)}
         />
       )}
@@ -691,7 +926,8 @@ export default function SystemPage() {
                 <div className="text-xs uppercase tracking-wider text-muted-foreground">Hermes</div>
                 <div className="flex items-center gap-2">
                   <span>v{stats?.hermes_version}</span>
-                  {updateInfo &&
+                  {canUpdateHermes &&
+                    updateInfo &&
                     (updateInfo.update_available ? (
                       <Badge tone="warning">
                         {updateInfo.behind && updateInfo.behind > 0
@@ -751,45 +987,47 @@ export default function SystemPage() {
                 CPU / memory / disk metrics.
               </p>
             )}
-            <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
-              <Button
-                size="sm"
-                ghost
-                disabled={checkingUpdate}
-                prefix={
-                  checkingUpdate ? (
-                    <Spinner className="h-3.5 w-3.5" />
-                  ) : (
-                    <RotateCw className="h-3.5 w-3.5" />
-                  )
-                }
-                onClick={() => void checkForUpdate(true)}
-              >
-                Check for updates
-              </Button>
-              {updateInfo?.update_available && updateInfo.can_apply && (
+            {canUpdateHermes && (
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
                 <Button
                   size="sm"
-                  prefix={<Download className="h-3.5 w-3.5" />}
-                  onClick={() => setUpdateConfirmOpen(true)}
+                  ghost
+                  disabled={checkingUpdate}
+                  prefix={
+                    checkingUpdate ? (
+                      <Spinner className="h-3.5 w-3.5" />
+                    ) : (
+                      <RotateCw className="h-3.5 w-3.5" />
+                    )
+                  }
+                  onClick={() => void checkForUpdate(true)}
                 >
-                  Update now
+                  Check for updates
                 </Button>
-              )}
-              {updateInfo &&
-                !updateInfo.can_apply &&
-                updateInfo.update_available && (
+                {updateInfo?.update_available && updateInfo.can_apply && (
+                  <Button
+                    size="sm"
+                    prefix={<Download className="h-3.5 w-3.5" />}
+                    onClick={() => setUpdateConfirmOpen(true)}
+                  >
+                    Update now
+                  </Button>
+                )}
+                {updateInfo &&
+                  !updateInfo.can_apply &&
+                  updateInfo.update_available && (
+                    <span className="text-xs text-muted-foreground">
+                      Update with{" "}
+                      <span className="font-mono">{updateInfo.update_command}</span>
+                    </span>
+                  )}
+                {updateInfo?.message && !updateInfo.update_available && (
                   <span className="text-xs text-muted-foreground">
-                    Update with{" "}
-                    <span className="font-mono">{updateInfo.update_command}</span>
+                    {updateInfo.message}
                   </span>
                 )}
-              {updateInfo?.message && !updateInfo.update_available && (
-                <span className="text-xs text-muted-foreground">
-                  {updateInfo.message}
-                </span>
-              )}
-            </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       </section>
@@ -886,9 +1124,13 @@ export default function SystemPage() {
                 {gatewayRunning ? "running" : "stopped"}
               </Badge>
               <span className="text-sm text-muted-foreground">
-                {status?.gateway_state ?? "—"}
-                {status?.gateway_pid ? ` · pid ${status.gateway_pid}` : ""}
+                {gatewayStateDescription(status?.gateway_state, gatewayRunning)}
               </span>
+              {gatewayStateNeedsLogs(status?.gateway_state) && (
+                <Link to="/logs?file=gateway" className="text-sm underline">
+                  Open logs
+                </Link>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <Button
@@ -903,7 +1145,7 @@ export default function SystemPage() {
               <Button
                 size="sm"
                 className="uppercase"
-                onClick={() => runGateway("restart")}
+                onClick={requestRestart}
                 prefix={<RotateCw className="h-3.5 w-3.5" />}
               >
                 Restart
@@ -920,6 +1162,34 @@ export default function SystemPage() {
               </Button>
             </div>
           </CardContent>
+          {(sharedGateway || servedNotice) && (
+            <CardContent className="border-t border-current/10 py-3 text-xs text-muted-foreground" data-slot="shared-gateway-notice">
+              {servedNotice ?? `Served by the shared gateway with ${sharedGateway!.join(", ")}.`}
+            </CardContent>
+          )}
+          {migratePlan && !migratePlan.already_multiplexed && migratePlan.profiles.length > 1 && (
+            migratePlan.eligible || migratePlan.blockers.length > 0
+          ) && (
+            <CardContent className="flex flex-col gap-2 border-t border-border py-4 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">
+                  Your profiles each run their own gateway. One multiplexed gateway serves every profile from a single process.
+                </span>
+                <Button
+                  size="sm"
+                  className="uppercase"
+                  onClick={migrateToMultiplex}
+                  disabled={!migratePlan.eligible}
+                  title={migratePlan.eligible ? undefined : "Fix the blockers below first"}
+                >
+                  Migrate to a single multiplexed gateway
+                </Button>
+              </div>
+              {migratePlan.blockers.map((b) => (
+                <div key={b} className="text-warning">• {b}</div>
+              ))}
+            </CardContent>
+          )}
         </Card>
       </section>
 
@@ -937,14 +1207,27 @@ export default function SystemPage() {
                   {memory?.active || "built-in only"}
                 </span>
               </span>
+              {activeMemoryProvider && (
+                <Badge tone={MEMORY_STATUS_TONE[activeMemoryProvider.status]}>
+                  {MEMORY_STATUS_LABEL[activeMemoryProvider.status]}
+                </Badge>
+              )}
               <Link to="/plugins" className="underline">
                 Change in Plugins →
               </Link>
               <span className="ml-auto">
-                New credentials:{" "}
-                <span className="font-mono">hermes memory setup</span>
+                Provider setup:{" "}
+                <Link to="/plugins" className="underline">
+                  configure in Plugins
+                </Link>
               </span>
             </div>
+
+            {activeMemoryProvider?.status === "missing" && (
+              <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
+                The configured provider is no longer installed. Switch to built-in memory or configure another provider in Plugins.
+              </p>
+            )}
 
             <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
               <span className="text-xs text-muted-foreground">
@@ -1028,14 +1311,14 @@ export default function SystemPage() {
         </H2>
         <Card>
           <CardContent className="flex flex-wrap gap-2 py-4">
+            <Button size="sm" ghost prefix={<Terminal className="h-3.5 w-3.5" />} onClick={() => setConsoleOpen(true)}>
+              Open console
+            </Button>
             <Button size="sm" ghost prefix={<Stethoscope className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDoctor, "Doctor")}>
               Run doctor
             </Button>
             <Button size="sm" ghost prefix={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => runOp(api.runSecurityAudit, "Security audit")}>
               Security audit
-            </Button>
-            <Button size="sm" ghost prefix={<Database className="h-3.5 w-3.5" />} onClick={() => runOp(() => api.runBackup(), "Backup")}>
-              Create backup
             </Button>
             <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.updateSkillsFromHub, "Skills update")}>
               Update skills
@@ -1049,6 +1332,122 @@ export default function SystemPage() {
             <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.runConfigMigrate, "Config migrate")}>
               Migrate config
             </Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="flex flex-col gap-4 py-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+              <div className="grid min-w-0 flex-1 gap-2">
+                <Label>Full backup</Label>
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+                  <Button
+                    size="sm"
+                    ghost
+                    prefix={<Database className="h-3.5 w-3.5" />}
+                    onClick={() => void runDashboardBackup()}
+                  >
+                    Create backup
+                  </Button>
+                  <Button
+                    size="sm"
+                    ghost
+                    disabled={!downloadableBackupArchive || downloadingBackup}
+                    prefix={
+                      downloadingBackup ? (
+                        <Spinner className="h-3.5 w-3.5" />
+                      ) : (
+                        <Download className="h-3.5 w-3.5" />
+                      )
+                    }
+                    onClick={() => void downloadBackup()}
+                  >
+                    Download backup
+                  </Button>
+                  <span
+                    className="min-w-0 truncate text-xs text-muted-foreground"
+                    title={pendingBackupArchive ?? "No backup created yet"}
+                  >
+                    {backupFileName(pendingBackupArchive)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
+              <div className="grid min-w-0 flex-1 gap-2">
+                <Label>Restore from backup upload</Label>
+                <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+                  <Button
+                    type="button"
+                    size="sm"
+                    ghost
+                    disabled={importingBackup}
+                    prefix={<Upload className="h-3.5 w-3.5" />}
+                    onClick={() => importUploadInputRef.current?.click()}
+                  >
+                    Choose restore zip
+                  </Button>
+                  <span
+                    className="min-w-0 truncate text-xs text-muted-foreground"
+                    title={importFile?.name ?? "No backup archive selected"}
+                  >
+                    {importFile?.name ?? "No backup archive selected"}
+                  </span>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                ghost
+                disabled={!importFile || importingBackup}
+                prefix={importingBackup ? <Spinner /> : undefined}
+                onClick={() => {
+                  if (!importFile) return;
+                  setImportConfirmTarget({ kind: "upload", file: importFile });
+                }}
+              >
+                Restore upload
+              </Button>
+            </div>
+
+            <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
+              <div className="grid min-w-0 flex-1 gap-2">
+                <Label htmlFor="import-path">Restore from backups path</Label>
+                <Input
+                  id="import-path"
+                  value={importPath}
+                  onChange={(e) => setImportPath(e.target.value)}
+                  placeholder="$HERMES_HOME/backups/hermes-backup.zip"
+                />
+              </div>
+              <Button
+                size="sm"
+                ghost
+                disabled={!importPath.trim() || importingBackup}
+                prefix={importingBackup ? <Spinner /> : undefined}
+                onClick={() => {
+                  const path = importPath.trim();
+                  if (!path) return;
+                  setImportConfirmTarget({ kind: "path", path });
+                }}
+              >
+                Restore path
+              </Button>
+            </div>
+            <ConfirmDialog
+              open={!!importConfirmTarget}
+              title="Restore full Hermes backup?"
+              description={`This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of ${backupImportLabel(importConfirmTarget)}. This cannot be undone.`}
+              destructive
+              confirmLabel="Restore"
+              cancelLabel="Cancel"
+              onCancel={() => setImportConfirmTarget(null)}
+              onConfirm={() => {
+                const target = importConfirmTarget;
+                setImportConfirmTarget(null);
+                if (target) void runBackupImport(target);
+              }}
+            />
           </CardContent>
         </Card>
 
@@ -1085,16 +1484,21 @@ export default function SystemPage() {
               </Button>
             </div>
 
-            <label className="flex items-center gap-2 text-xs text-muted-foreground select-none">
-              <input
-                type="checkbox"
-                className="accent-current"
+            <div className="flex items-center gap-2.5">
+              <Checkbox
                 checked={shareRedact}
                 disabled={sharing}
-                onChange={(e) => setShareRedact(e.target.checked)}
+                id="share-redact"
+                onCheckedChange={(checked) => setShareRedact(checked === true)}
               />
-              Redact credential-shaped tokens before upload (recommended)
-            </label>
+
+              <Label
+                className="cursor-pointer select-none text-xs font-normal normal-case tracking-normal text-muted-foreground"
+                htmlFor="share-redact"
+              >
+                Redact credential-shaped tokens before upload (recommended)
+              </Label>
+            </div>
 
             {shareResult && (
               <div className="flex flex-col gap-2 border-t border-border pt-3">
@@ -1172,38 +1576,6 @@ export default function SystemPage() {
                 )}
               </div>
             )}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-end">
-            <div className="grid gap-2 flex-1">
-              <Label htmlFor="import-path">Restore from backup archive</Label>
-              <Input id="import-path" value={importPath} onChange={(e) => setImportPath(e.target.value)} placeholder="/path/to/hermes-backup.zip" />
-            </div>
-            <Button
-              size="sm"
-              ghost
-              disabled={!importPath.trim()}
-              onClick={() => {
-                if (!importPath.trim()) return;
-                setImportConfirmOpen(true);
-              }}
-            >
-              Import
-            </Button>
-            <ConfirmDialog
-              open={importConfirmOpen}
-              title="Restore from backup?"
-              description={`This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of ${importPath.trim() || "the archive"}. This cannot be undone.`}
-              destructive
-              confirmLabel="Restore"
-              cancelLabel="Cancel"
-              onCancel={() => setImportConfirmOpen(false)}
-              onConfirm={() => {
-                setImportConfirmOpen(false);
-                runOp(() => api.runImport(importPath.trim(), true), "Import");
-              }}
-            />
           </CardContent>
         </Card>
       </section>

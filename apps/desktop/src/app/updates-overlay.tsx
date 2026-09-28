@@ -2,21 +2,38 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { BrandMark } from '@/components/brand-mark'
+import { SyncStatusCard } from '@/components/sync-status-card'
 import { Button } from '@/components/ui/button'
 import { writeClipboardText } from '@/components/ui/copy-button'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+  preventCloseButtonAutoFocus
+} from '@/components/ui/dialog'
 import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
-import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
+import { Progress } from '@/components/ui/progress'
+import { UpdateStatusCard, VersionHero } from '@/components/update-status'
+import { VersionDetails } from '@/components/version-details'
+import type {
+  DesktopUpdateCommit,
+  DesktopUpdateStage,
+  DesktopUpdateStatus,
+  DesktopVersionInfo,
+  UpdaterMechanismClient
+} from '@/global'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
-import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
-import { cn } from '@/lib/utils'
+import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
   $backendUpdateStatus,
+  $desktopVersion,
   $updateApply,
   $updateChecking,
   $updateOverlayOpen,
@@ -26,10 +43,13 @@ import {
   applyUpdates,
   checkBackendUpdates,
   checkUpdates,
+  dismissDiscontinuedNotice,
   resetUpdateApplyState,
   setUpdateOverlayOpen,
   type UpdateApplyState
 } from '@/store/updates'
+
+import { DiscontinuedNotice } from './retirement-view'
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
@@ -45,6 +65,7 @@ export function UpdatesOverlay() {
   const backendStatus = useStore($backendUpdateStatus)
   const backendChecking = useStore($backendUpdateChecking)
   const backendApply = useStore($backendUpdateApply)
+  const desktopVersion = useStore($desktopVersion)
 
   const isBackend = target === 'backend'
   const status = isBackend ? backendStatus : clientStatus
@@ -60,15 +81,18 @@ export function UpdatesOverlay() {
   }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
+  const updateAvailable = status?.updateAvailable || behind > 0
 
-  const phase: 'idle' | 'applying' | 'manual' | 'error' =
+  const phase: 'idle' | 'applying' | 'manual' | 'guiSkew' | 'error' =
     apply.stage === 'manual'
       ? 'manual'
-      : apply.applying || apply.stage === 'restart'
-        ? 'applying'
-        : apply.stage === 'error'
-          ? 'error'
-          : 'idle'
+      : apply.stage === 'guiSkew'
+        ? 'guiSkew'
+        : apply.applying || apply.stage === 'restart'
+          ? 'applying'
+          : apply.stage === 'error'
+            ? 'error'
+            : 'idle'
 
   const handleClose = (next: boolean) => {
     if (phase === 'applying') {
@@ -77,7 +101,10 @@ export function UpdatesOverlay() {
 
     setUpdateOverlayOpen(next)
 
-    if (!next && (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual')) {
+    if (
+      !next &&
+      (apply.stage === 'error' || apply.stage === 'restart' || apply.stage === 'manual' || apply.stage === 'guiSkew')
+    ) {
       resetUpdateApplyState()
     }
   }
@@ -88,21 +115,43 @@ export function UpdatesOverlay() {
 
   return (
     <Dialog onOpenChange={handleClose} open={open}>
+      {/* This dialog has no inputs, so Radix's default autofocus would land on
+          the close button and trigger its tooltip immediately on open. */}
       <DialogContent
-        className="max-w-sm overflow-hidden border-border/70 p-0 gap-0"
+        bodyClassName="overflow-hidden p-0 gap-0"
+        className="max-w-sm"
+        onOpenAutoFocus={preventCloseButtonAutoFocus}
         showCloseButton={phase !== 'applying'}
       >
-        {phase === 'applying' && <ApplyingView apply={apply} isBackend={isBackend} />}
+        {phase === 'applying' && (
+          <ApplyingView apply={apply} isBackend={isBackend} statusMechanism={status?.mechanism} />
+        )}
 
         {phase === 'manual' && (
-          <ManualView command={apply.command ?? 'hermes update'} onDone={() => handleClose(false)} />
+          <ManualView
+            command={apply.command ?? null}
+            isBackend={isBackend}
+            message={apply.message}
+            onDone={() => handleClose(false)}
+          />
         )}
 
-        {phase === 'error' && (
+        {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
+
+        {phase === 'error' ? (
           <ErrorView message={apply.message} onDismiss={() => handleClose(false)} onRetry={handleInstall} />
-        )}
+        ) : null}
 
-        {phase === 'idle' && (
+        {phase === 'idle' && !isBackend && status?.retirement?.state === 'discontinued' && (
+          <DiscontinuedNotice
+            onDismiss={() => {
+              dismissDiscontinuedNotice(status.retirement!)
+              handleClose(false)
+            }}
+            retirement={status.retirement}
+          />
+        )}
+        {phase === 'idle' && (isBackend || !status?.retirement) && (
           <IdleView
             behind={behind}
             checking={checking}
@@ -112,6 +161,8 @@ export function UpdatesOverlay() {
             onRetryCheck={() => void check()}
             status={status}
             target={target}
+            updateAvailable={updateAvailable}
+            version={desktopVersion}
           />
         )}
       </DialogContent>
@@ -127,7 +178,9 @@ function IdleView({
   onLater,
   onRetryCheck,
   status,
-  target
+  target,
+  updateAvailable,
+  version
 }: {
   behind: number
   checking: boolean
@@ -137,13 +190,18 @@ function IdleView({
   onRetryCheck: () => void
   status: DesktopUpdateStatus | null
   target: UpdateTarget
+  updateAvailable: boolean
+  version: DesktopVersionInfo | null
 }) {
   const { t } = useI18n()
   const u = t.updates
 
   if (!status && checking) {
     return (
-      <CenteredStatus icon={<Loader className="size-12" label={u.checking} type="lemniscate-bloom" />} title={u.checking} />
+      <CenteredStatus
+        icon={<Loader className="size-12" label={u.checking} type="lemniscate-bloom" />}
+        title={u.checking}
+      />
     )
   }
 
@@ -161,50 +219,81 @@ function IdleView({
     )
   }
 
-  if (!status.supported) {
+  const details = version ? <VersionDetails version={version} /> : null
+
+  // App-installer check-unknown (OS checker unavailable): NOT "no updates"
+  // and NOT a generic error — the OS also installs updates automatically on
+  // restart (it re-reads the .appinstaller feed on every launch), so the
+  // honest view names that path. Only this mechanism gets it.
+  if (status.mechanism === 'app-installer' && status.error && !status.updateAvailable) {
     return (
-      <CenteredStatus
-        body={status.message ?? u.unsupportedMessage}
-        icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title={u.notAvailableTitle}
-      />
+      <div className="grid gap-4 px-6 pb-6 pt-1 pr-8">
+        <VersionHero
+          renderHeading={heading => (
+            <DialogTitle className="text-lg font-semibold tracking-tight">{heading}</DialogTitle>
+          )}
+          version={version}
+        />
+        <div className="flex flex-col items-center gap-2 text-center">
+          <AlertCircle className="size-6 text-muted-foreground" />
+          <p className="text-sm font-medium">{u.checkUnknownTitleAppInstaller}</p>
+          <p className="max-w-prose text-sm leading-5 text-muted-foreground">{u.checkUnknownBodyAppInstaller}</p>
+        </div>
+        <Button onClick={onRetryCheck} size="sm">
+          {u.tryAgain}
+        </Button>
+        {details}
+      </div>
     )
   }
 
-  if (status.error) {
+  // Everything that is NOT the install pitch — unsupported, check error, and
+  // already-latest — is exactly the About page's state: render the shared
+  // hero + status card so the two surfaces cannot drift. The card owns the
+  // check/retry actions (its "Check now" covers the old Try-again button).
+  if (!status.supported || status.error || !updateAvailable) {
     return (
-      <CenteredStatus
-        action={
-          <Button disabled={checking} onClick={onRetryCheck} size="sm">
-            {u.tryAgain}
-          </Button>
-        }
-        body={u.connectionRetry}
-        icon={<ErrorIcon />}
-        title={u.checkFailedTitle}
-      />
+      <div className="grid gap-4 px-6 pb-6 pt-1 pr-8">
+        <VersionHero
+          renderHeading={heading => (
+            <DialogTitle className="text-lg font-semibold tracking-tight">{heading}</DialogTitle>
+          )}
+          version={version}
+        />
+        <UpdateStatusCard target={target} />
+        <SyncStatusCard />
+        {details}
+      </div>
     )
   }
 
-  if (behind === 0) {
-    return (
-      <CenteredStatus
-        body={target === 'backend' ? u.latestBodyBackend : u.latestBody}
-        icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
-        title={u.allSetTitle}
-      />
-    )
-  }
+  const groups = buildCommitChangelog(commits, {
+    labels: {
+      new: u.changeLogNew,
+      fixed: u.changeLogFixed,
+      faster: u.changeLogFaster,
+      improved: u.changeLogImproved,
+      other: u.changeLogOther
+    },
+    fallback: { label: u.changeLogFallbackLabel, item: u.changeLogFallbackItem }
+  })
 
-  const groups = buildCommitChangelog(commits)
   const shownItems = totalItems(groups)
   const remaining = Math.max(0, behind - shownItems)
 
   // Name what's being updated. In remote mode the overlay acts on the connected
   // backend, not the local client — say so. When there are no commit rows to
   // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
-  // instead of generic filler.
-  const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
+  // instead of generic filler. On a release-feed channel (stable), name the
+  // release tag instead of commit vocabulary.
+  const { title, body } = resolveUpdateCopy({
+    target,
+    shownItems,
+    channel: status?.channel === 'stable' ? 'stable' : 'main',
+    latestTag: status?.latestTag ?? null,
+    mechanism: status?.mechanism,
+    copy: u
+  })
 
   return (
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
@@ -212,15 +301,13 @@ function IdleView({
         <BrandMark className="size-16" />
 
         <DialogTitle className="text-center text-xl">{title}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {body}
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{body}</DialogDescription>
       </div>
 
-      <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
+      <div className="grid gap-3">
         {groups.map(group => (
           <div key={group.id}>
-            <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
+            <p className="text-[0.625rem] font-semibold text-muted-foreground">{group.label}</p>
             <ul className="mt-1.5 grid gap-1.5 text-xs text-foreground">
               {group.items.map(item => (
                 <li className="flex items-start gap-2" key={item}>
@@ -242,25 +329,59 @@ function IdleView({
         </Button>
       </div>
 
-      {remaining > 0 && (
-        <p className="text-center text-xs text-muted-foreground">
-          {u.moreChanges(remaining)}
-        </p>
-      )}
+      {remaining > 0 && <p className="text-center text-xs text-muted-foreground">{u.moreChanges(remaining)}</p>}
+
+      <SyncStatusCard />
     </div>
   )
 }
 
-function ManualView({ command, onDone }: { command: string; onDone: () => void }) {
+function ManualView({
+  command,
+  isBackend,
+  message,
+  onDone
+}: {
+  command: string | null
+  isBackend: boolean
+  message?: string
+  onDone: () => void
+}) {
   const { t } = useI18n()
   const u = t.updates
   const [copied, setCopied] = useState(false)
+  const guidance: string | undefined = message && message !== command ? message : undefined
 
   const handleCopy = () => {
+    if (!command) {
+      return
+    }
+
     void writeClipboardText(command).then(() => {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1800)
     })
+  }
+
+  // No command (e.g. the Linux sandbox-blocked relaunch): render the explanatory
+  // message + a Done button, not a copy-a-command box.
+  if (!command) {
+    return (
+      <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <Terminal className="size-8 text-primary" />
+
+          <DialogTitle className="text-center text-xl">
+            {isBackend ? u.manualUnavailableTitle : u.manualTitle}
+          </DialogTitle>
+          <DialogDescription className="text-center text-sm">{message || u.manualPickedUp}</DialogDescription>
+        </div>
+
+        <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
+          {u.done}
+        </Button>
+      </div>
+    )
   }
 
   return (
@@ -270,37 +391,38 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
 
         <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
         <DialogDescription className="text-center text-sm">
-          {u.manualBody}
+          {guidance ?? (isBackend ? u.manualBodyBackend : u.manualBody)}
         </DialogDescription>
       </div>
 
       <button
-        className="group flex w-full items-center justify-between gap-3 rounded-xl border border-border/70 bg-muted/30 px-4 py-3 text-left transition-colors hover:border-border hover:bg-muted/50"
+        className={cn(
+          'group flex w-full items-center justify-between gap-3 rounded-md border px-4 py-3 text-left transition-colors',
+          copied ? 'border-primary/50' : 'border-(--stroke-nous) hover:border-(--ui-stroke-secondary)'
+        )}
         onClick={handleCopy}
         type="button"
       >
-        <code className="select-all font-mono text-sm text-foreground">
-          <span className="text-muted-foreground">$ </span>
+        <code className="min-w-0 flex-1 truncate select-all font-mono text-sm text-foreground">
+          <span className="select-none text-muted-foreground">$ </span>
           {command}
         </code>
-        <span className="flex shrink-0 items-center gap-1 text-xs font-medium text-muted-foreground transition-colors group-hover:text-foreground">
-          {copied ? (
-            <>
-              <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-              {u.copied}
-            </>
-          ) : (
-            <>
-              <Copy className="size-3.5" />
-              {u.copy}
-            </>
+        <span
+          className={cn(
+            'flex shrink-0 items-center gap-1 text-xs font-medium transition-colors',
+            copied ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'
           )}
+        >
+          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          {copied ? u.copied : u.copy}
         </span>
       </button>
 
-      <p className="text-center text-xs text-muted-foreground">
-        {u.manualPickedUp}
-      </p>
+      {!guidance && (
+        <p className="text-center text-xs text-muted-foreground">
+          {isBackend ? u.manualPickedUpBackend : u.manualPickedUp}
+        </p>
+      )}
 
       <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}
@@ -309,11 +431,50 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
   )
 }
 
-function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend: boolean }) {
+// Linux GUI/backend skew (#45205): backend updated, but the running desktop app
+// package (AppImage/.deb/.rpm) was NOT changed. Closeable terminal state that
+// tells the user to update/reinstall the desktop app — never claims the GUI was
+// updated.
+function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void }) {
+  const { t } = useI18n()
+  const u = t.updates
+
+  return (
+    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <AlertCircle className="size-8 text-amber-500" />
+
+        <DialogTitle className="text-center text-xl">{u.guiSkewTitle}</DialogTitle>
+        <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
+          {message || u.guiSkewBody}
+        </DialogDescription>
+      </div>
+
+      <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
+        {u.done}
+      </Button>
+    </div>
+  )
+}
+
+function ApplyingView({
+  apply,
+  isBackend,
+  statusMechanism
+}: {
+  apply: UpdateApplyState
+  isBackend: boolean
+  statusMechanism?: UpdaterMechanismClient
+}) {
   const { t } = useI18n()
   const u = t.updates
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
-  const body = isBackend ? u.applyingBodyBackend : u.applyingBody
+  const isWindowsPackage = statusMechanism === 'app-installer' || statusMechanism === 'microsoft-store'
+
+  const body = isWindowsPackage ? u.applyingBodyAppInstaller : isBackend ? u.applyingBodyBackend : u.applyingBody
+
+  const currentMessage = apply.message.trim()
+  const recentLog = apply.log.slice(-4)
 
   const percent =
     typeof apply.percent === 'number' && Number.isFinite(apply.percent)
@@ -326,20 +487,29 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
         <Loader className="size-16" label={label} type="lemniscate-bloom" />
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          {body}
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{body}</DialogDescription>
+
+        {currentMessage ? (
+          <p className="max-w-lg break-words text-center text-xs leading-5 text-muted-foreground">{currentMessage}</p>
+        ) : null}
       </div>
 
-      <div className="h-2 overflow-hidden rounded-full bg-muted">
-        <div
-          className={cn(
-            'h-full rounded-full bg-primary transition-[width] duration-300 ease-out',
-            percent === null && 'w-1/3 animate-pulse'
-          )}
-          style={percent !== null ? { width: `${percent}%` } : undefined}
-        />
-      </div>
+      <Progress
+        aria-label={label}
+        indeterminate={percent === null}
+        size="lg"
+        value={percent === null ? 0 : percent / 100}
+      />
+
+      {recentLog.length > 1 ? (
+        <div className="max-h-24 overflow-hidden rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground">
+          {recentLog.map((entry, index) => (
+            <div className="truncate" key={`${entry.at}-${index}`}>
+              {entry.message}
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
     </div>
@@ -358,9 +528,7 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
           {message || u.errorBody}
         </DialogDescription>
       }
-      title={
-        <DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>
-      }
+      title={<DialogTitle className="text-center text-xl font-semibold tracking-tight">{u.errorTitle}</DialogTitle>}
     >
       <Button className="font-semibold" onClick={onRetry} size="lg">
         {u.tryAgain}

@@ -1,0 +1,78 @@
+name: Infographic Check
+
+# Rejects PRs that commit PR-infographic images into the repo.
+#
+# PR infographics are rendered to an image-provider URL (fal.media) and
+# embedded in the PR *description*.  The PR body is the archive; the binary
+# never belongs in git history.
+#
+# This has now leaked twice.  PR #48261 removed the first batch, PR #54564
+# removed a second batch and added `infographic/` to `.gitignore` — but
+# `.gitignore` only stops *accidental* `git add`.  It does nothing against
+# `git add -f`, and it does nothing for a path that does not literally match
+# the ignore pattern.  Nine more PNGs (~14MB) were committed in the four
+# weeks AFTER that rule landed, plus PR #70552 caught an `infograficos/`
+# spelling that sidestepped the pattern entirely.
+#
+# A passive ignore rule cannot enforce a policy.  This check can.
+
+on:
+  workflow_call:
+    outputs:
+      review_status:
+        description: "JSON array of review_status objects for the synthesizer."
+        value: ${{ jobs.check-no-committed-infographics.outputs.review_status }}
+
+permissions:
+  contents: read
+
+jobs:
+  check-no-committed-infographics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      review_status: ${{ steps.infographic-check.outputs.review_status }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: infographic-check
+        name: Reject committed PR-infographic images
+        run: |
+          # Match on the IMAGE, not on a directory name.  Keying this to
+          # `infographic/` is what let `infograficos/` through in #70552 —
+          # any localized or typo'd directory would sidestep it again.
+          # Instead: find tracked raster images whose path contains an
+          # infographic-ish segment, in any spelling, at any depth.
+          #
+          # `docs/assets` and `website/` legitimately hold product imagery
+          # and are excluded; those are referenced from shipped docs pages.
+          OFFENDERS=$(git ls-files -z \
+            | tr '\0' '\n' \
+            | grep -iE '(^|/)(infograph|infograf)[^/]*/' \
+            | grep -iE '\.(png|jpe?g|webp|gif)$' \
+            || true)
+
+          if [ -n "$OFFENDERS" ]; then
+            COUNT=$(printf '%s\n' "$OFFENDERS" | wc -l | tr -d ' ')
+            STATUS='[{"source":"committed infographics","results":[{"kind":"action_required","title":"PR infographic committed to the repo","summary":"Infographic images belong in the PR description, never in git.","detail":"","how_to_fix":"Untrack the image and reference the provider URL from the PR body instead:\n```\ngit rm --cached <path-to-image>\n```\nThen put it in the PR description:\n```\n## Infographic\n\n![slug](https://<provider-url>)\n```\n"}]}]'
+            echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
+            echo ""
+            echo "::error::${COUNT} PR-infographic image(s) are tracked in git."
+            echo ""
+            printf '%s\n' "$OFFENDERS" | sed 's/^/  /'
+            echo ""
+            echo "PR infographics are rendered to an image-provider URL and"
+            echo "embedded in the PR DESCRIPTION.  The PR body is the archive —"
+            echo "the binary never enters git history."
+            echo ""
+            echo "This rule has been re-established twice already (#48261,"
+            echo "#54564) and leaked both times, because .gitignore cannot stop"
+            echo "'git add -f' or a differently-spelled directory (#70552)."
+            echo ""
+            echo "To fix:"
+            echo "  git rm --cached <path>   # keeps your local copy"
+            echo "  # then embed the provider URL in the PR description"
+            exit 1
+          fi
+          echo "::notice::No committed PR-infographic images."
+          echo "review_status=[]" >> "$GITHUB_OUTPUT"

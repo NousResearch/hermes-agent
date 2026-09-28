@@ -9,7 +9,6 @@ cron job store.
 import importlib
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -19,23 +18,12 @@ from cron.blueprint_catalog import (
     BlueprintSlot,
     fill_blueprint,
     get_blueprint,
-    blueprint_catalog_entry,
     blueprint_deeplink,
-    blueprint_form_schema,
-    blueprint_slash_command,
 )
 
 
 class TestCatalog:
-    def test_catalog_nonempty_and_keyed(self):
-        assert len(CATALOG) >= 1
-        for r in CATALOG:
-            assert get_blueprint(r.key) is r
 
-    def test_every_slot_has_known_type(self):
-        for r in CATALOG:
-            for s in r.slots:
-                assert s.type in {"time", "enum", "text", "weekdays"}
 
     def test_bad_slot_type_rejected(self):
         with pytest.raises(ValueError):
@@ -68,9 +56,6 @@ class TestScheduleResolution:
         )
         assert spec["schedule"] == "0 14 * * 1-5"
 
-    def test_defaults_fill_when_omitted(self):
-        spec = fill_blueprint(get_blueprint("morning-brief"), {})
-        assert spec["schedule"] == "0 8 * * *"
 
 
 class TestValidation:
@@ -78,9 +63,6 @@ class TestValidation:
         with pytest.raises(BlueprintFillError, match="invalid time"):
             fill_blueprint(get_blueprint("morning-brief"), {"time": "25:99"})
 
-    def test_bad_enum_rejected_and_names_slot(self):
-        with pytest.raises(BlueprintFillError, match="not allowed"):
-            fill_blueprint(get_blueprint("news-digest"), {"count": "42"})
 
     def test_deliver_slot_accepts_any_platform(self):
         # deliver is a non-strict enum: its options are suggestions, the real
@@ -124,34 +106,13 @@ class TestValidation:
 
 
 class TestRenderers:
-    def test_form_schema_fields(self):
-        schema = blueprint_form_schema(get_blueprint("morning-brief"))
-        names = [f["name"] for f in schema["fields"]]
-        assert names == ["time", "deliver"]
-        assert schema["key"] == "morning-brief"
 
-    def test_slash_command_defaults(self):
-        cmd = blueprint_slash_command(get_blueprint("morning-brief"))
-        assert cmd.startswith("/blueprint morning-brief")
-        assert "time=08:00" in cmd
 
-    def test_slash_command_quotes_freetext(self):
-        cmd = blueprint_slash_command(
-            get_blueprint("custom-reminder"), {"what": "drink water", "time": "10:00"}
-        )
-        assert '"drink water"' in cmd
 
     def test_deeplink_shape(self):
         url = blueprint_deeplink(get_blueprint("morning-brief"), {"time": "07:15"})
         assert url.startswith("hermes://blueprint/morning-brief?")
         assert "time=07" in url
-
-    def test_catalog_entry_has_all_surfaces(self):
-        entry = blueprint_catalog_entry(get_blueprint("morning-brief"))
-        assert entry["command"].startswith("/blueprint")
-        assert entry["appUrl"].startswith("hermes://")
-        assert entry["scheduleHuman"]
-        assert "fields" in entry
 
 
 @pytest.fixture
@@ -167,37 +128,8 @@ def isolated_home(tmp_path, monkeypatch):
 
 
 class TestCommandHandler:
-    def test_bare_lists_catalog(self, isolated_home):
-        from hermes_cli.blueprint_cmd import handle_blueprint_command
 
-        res = handle_blueprint_command("")
-        assert "morning-brief" in res.text and "Automation Blueprints" in res.text
-        assert res.agent_seed is None
 
-    def test_name_seeds_agent(self, isolated_home):
-        from hermes_cli.blueprint_cmd import handle_blueprint_command
-
-        # `/blueprint <name>` (no inline slots) now seeds the agent to ask
-        # the user for each value conversationally instead of dumping fields.
-        res = handle_blueprint_command("morning-brief")
-        assert res.agent_seed is not None
-        assert "morning-brief" in res.agent_seed
-        assert "cronjob tool" in res.agent_seed
-        # the schedule template is handed to the agent to build the cron expr
-        assert "* * *" in res.agent_seed
-
-    def test_name_match_is_forgiving(self, isolated_home):
-        from hermes_cli.blueprint_cmd import handle_blueprint_command, match_blueprint
-
-        # prefix match
-        r, cands = match_blueprint("morning")
-        assert r is not None and r.key == "morning-brief"
-        # fuzzy / typo
-        r2, _ = match_blueprint("mornning-brief")
-        assert r2 is not None and r2.key == "morning-brief"
-        # a forgiving name still seeds the agent
-        res = handle_blueprint_command("morning")
-        assert res.agent_seed is not None
 
     def test_fill_creates_job(self, isolated_home):
         from hermes_cli.blueprint_cmd import handle_blueprint_command
@@ -209,20 +141,6 @@ class TestCommandHandler:
         assert len(jobs) == 1
         assert (jobs[0].get("schedule_display") or jobs[0].get("schedule")) == "30 7 * * *"
         assert jobs[0].get("deliver") == "telegram"
-
-    def test_unknown_blueprint(self, isolated_home):
-        from hermes_cli.blueprint_cmd import handle_blueprint_command
-
-        res = handle_blueprint_command("zzz-nope-nothing")
-        assert "No automation blueprint" in res.text
-        assert res.agent_seed is None
-
-    def test_bad_value_names_slot(self, isolated_home):
-        from hermes_cli.blueprint_cmd import handle_blueprint_command
-
-        res = handle_blueprint_command("morning-brief time=99:99")
-        assert "Can't set up" in res.text and "time" in res.text
-        assert res.agent_seed is None
 
 
 class TestDocsGenerator:

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useMemo, useCallback } from "react";
+import { useNavigate } from "react-router";
 import {
   Package,
   Search,
@@ -41,6 +42,7 @@ import type {
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";
+import { LoadErrorNotice } from "@/components/LoadErrorNotice";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -59,8 +61,10 @@ import {
 import { cn } from "@/lib/utils";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { errorMessage } from "@/lib/api-error";
 
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
@@ -128,6 +132,10 @@ export default function SkillsPage() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [loading, setLoading] = useState(true);
+  // Humanized error from the last skills/toolsets load; drives a persistent
+  // Retry notice. `loadNonce` re-runs the load effect on Retry.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadNonce, setLoadNonce] = useState(0);
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"skills" | "toolsets" | "hub">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
@@ -164,13 +172,14 @@ export default function SkillsPage() {
         if (cancelled) return;
         setSkills(s);
         setToolsets(tsets);
+        setLoadError(null);
       })
-      .catch(() => !cancelled && showToast(t.common.loading, "error"))
+      .catch((e: unknown) => !cancelled && setLoadError(errorMessage(e)))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [selectedProfile]);
+  }, [selectedProfile, loadNonce]);
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
@@ -200,7 +209,7 @@ export default function SkillsPage() {
   /* ---- Refresh toolsets after a config change ---- */
   const refreshToolsets = async () => {
     try {
-      const tsets = await api.getToolsets();
+      const tsets = await api.getToolsets(selectedProfile || undefined);
       setToolsets(tsets);
     } catch {
       /* non-fatal: the drawer already toasted on the failing write */
@@ -212,6 +221,37 @@ export default function SkillsPage() {
     setEditorSkill(null);
     setEditorOpen(true);
   }, []);
+  // ── "Learn a skill" panel ──────────────────────────────────────────────
+  // Open-ended: dir + URL + free-text inputs are composed into a single-line
+  // /learn command and handed to the chat. /learn resolves to a normal agent
+  // turn (command.dispatch → send), so the live agent gathers the sources
+  // with its own tools and authors the skill via skill_manage. No backend
+  // distill endpoint — one code path with the CLI/TUI/gateway /learn.
+  const navigate = useNavigate();
+  const [learnOpen, setLearnOpen] = useState(false);
+  const [learnDir, setLearnDir] = useState("");
+  const [learnUrl, setLearnUrl] = useState("");
+  const [learnText, setLearnText] = useState("");
+  const openLearn = useCallback(() => {
+    setLearnDir("");
+    setLearnUrl("");
+    setLearnText("");
+    setLearnOpen(true);
+  }, []);
+  const submitLearn = useCallback(() => {
+    const segs: string[] = [];
+    const dir = learnDir.trim();
+    const url = learnUrl.trim();
+    const text = learnText.trim();
+    if (dir) segs.push(`local source: ${dir}`);
+    if (url) segs.push(`URL: ${url}`);
+    if (text) segs.push(text);
+    // Flatten to a single line — the chat composer submits on the first Enter.
+    const composed = segs.join("; ").replace(/\s*\n\s*/g, " ").trim();
+    if (!composed) return;
+    setLearnOpen(false);
+    navigate(`/chat?learn=${encodeURIComponent(composed)}`);
+  }, [learnDir, learnUrl, learnText, navigate]);
   const openEditEditor = useCallback((skillName: string) => {
     setEditorSkill(skillName);
     setEditorOpen(true);
@@ -349,6 +389,17 @@ export default function SkillsPage() {
     <div className="flex flex-col gap-4">
       <PluginSlot name="skills:top" />
       <Toast toast={toast} />
+
+      {loadError && (
+        <LoadErrorNotice
+          what={t.skills.loadWhat ?? en.skills.loadWhat!}
+          detail={loadError}
+          onRetry={() => {
+            setLoading(true);
+            setLoadNonce((n) => n + 1);
+          }}
+        />
+      )}
 
       <div className="flex flex-col sm:flex-row sm:items-start gap-4">
         <aside aria-label={t.skills.title} className="sm:w-56 sm:shrink-0">
@@ -493,9 +544,16 @@ export default function SkillsPage() {
                         .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
                     </Badge>
                     <Button
-                      size="xs"
+                      size="sm"
                       outlined
-                      className="uppercase"
+                      onClick={openLearn}
+                      prefix={<Sparkles />}
+                    >
+                      Learn a skill
+                    </Button>
+                    <Button
+                      size="sm"
+                      outlined
                       onClick={openCreateEditor}
                       prefix={<Plus />}
                     >
@@ -505,12 +563,24 @@ export default function SkillsPage() {
                 </div>
               </CardHeader>
               <CardContent className="px-4 pb-4">
-                {activeSkills.length === 0 ? (
-                  <p className="text-sm text-muted-foreground text-center py-8">
-                    {skills.length === 0
-                      ? t.skills.noSkills
-                      : t.skills.noSkillsMatch}
-                  </p>
+                {loadError ? null : activeSkills.length === 0 ? (
+                  <div className="flex flex-col items-center gap-3 py-8 text-center">
+                    <p className="text-sm text-muted-foreground">
+                      {skills.length === 0
+                        ? t.skills.noSkills
+                        : t.skills.noSkillsMatch}
+                    </p>
+                    {skills.length === 0 && (
+                      <div className="flex flex-wrap justify-center gap-2">
+                        <Button size="sm" onClick={() => setView("hub")}>
+                          {t.skills.browseHub ?? en.skills.browseHub}
+                        </Button>
+                        <Button size="sm" outlined onClick={openCreateEditor}>
+                          {t.skills.createSkill ?? en.skills.createSkill}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div className="grid gap-1">
                     {activeSkills.map((skill) => (
@@ -594,11 +664,11 @@ export default function SkillsPage() {
                               )}
                               <div className="mt-3">
                                 <Button
-                                  size="xs"
+                                  size="sm"
                                   outlined
                                   onClick={() => setConfigToolset(ts)}
+                                  prefix={<Wrench />}
                                 >
-                                  <Wrench className="h-3 w-3 mr-1" />
                                   Configure
                                 </Button>
                               </div>
@@ -631,6 +701,64 @@ export default function SkillsPage() {
         onClose={() => setEditorOpen(false)}
         onSaved={handleEditorSaved}
       />
+      <Dialog open={learnOpen} onOpenChange={setLearnOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Learn a skill</DialogTitle>
+            <DialogDescription>
+              Point Hermes at anything and it will distill a reusable skill —
+              following the house authoring standards. Fill in any combination
+              below; the agent gathers the sources and writes the skill in chat.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 py-2">
+            <div className="grid gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Local file or directory
+              </label>
+              <Input
+                placeholder="~/projects/some-sdk  (read with read_file / search_files)"
+                value={learnDir}
+                onChange={(e) => setLearnDir(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                URL
+              </label>
+              <Input
+                placeholder="https://docs.example.com/api  (fetched with web_extract)"
+                value={learnUrl}
+                onChange={(e) => setLearnUrl(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                Anything else — describe the workflow, paste notes, or say
+                "what we just did"
+              </label>
+              <textarea
+                className="min-h-[90px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                placeholder="e.g. how I file an expense report: open the portal, …"
+                value={learnText}
+                onChange={(e) => setLearnText(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <Button ghost onClick={() => setLearnOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={submitLearn}
+              prefix={<Sparkles />}
+              disabled={!learnDir.trim() && !learnUrl.trim() && !learnText.trim()}
+            >
+              Learn it
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <PluginSlot name="skills:bottom" />
     </div>
   );
@@ -826,7 +954,7 @@ function HubBrowser({
       setTimedOut(r.timed_out || []);
       setInstalled((prev) => ({ ...prev, ...(r.installed || {}) }));
     } catch (e) {
-      showToast(`Hub search failed: ${e}`, "error");
+      showToast(`Hub search failed: ${errorMessage(e)}`, "error");
       setResults([]);
       setSourceCounts({});
       setTimedOut([]);
@@ -877,7 +1005,7 @@ function HubBrowser({
         setAction(res.name);
         setDetail(null);
       } catch (e) {
-        showToast(`Install failed: ${e}`, "error");
+        showToast(`Install failed: ${errorMessage(e)}`, "error");
       }
     },
     [showToast, profile],
@@ -891,7 +1019,7 @@ function HubBrowser({
       setActionRunning(true);
       setAction(res.name);
     } catch (e) {
-      showToast(`Update failed: ${e}`, "error");
+      showToast(`Update failed: ${errorMessage(e)}`, "error");
     }
   }, [showToast, profile]);
 
@@ -1265,7 +1393,7 @@ function SkillDetailDialog({
       .previewSkillFromHub(result.identifier)
       .then((p) => !cancelled && setPreview(p))
       .catch((e) => {
-        if (!cancelled) showToast(`Preview failed: ${e}`, "error");
+        if (!cancelled) showToast(`Preview failed: ${errorMessage(e)}`, "error");
       })
       .finally(() => !cancelled && setPreviewLoading(false));
     return () => {
@@ -1280,7 +1408,7 @@ function SkillDetailDialog({
       const s = await api.scanSkillFromHub(result.identifier);
       setScan(s);
     } catch (e) {
-      showToast(`Scan failed: ${e}`, "error");
+      showToast(`Scan failed: ${errorMessage(e)}`, "error");
     } finally {
       setScanning(false);
     }

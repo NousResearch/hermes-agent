@@ -24,17 +24,19 @@ platforms:
   webhook:
     enabled: true
     extra:
-      host: "0.0.0.0"
       port: 8644
-      secret: "generate-a-strong-secret-here"
+      secret: "your-webhook-secret-here"
 ```
+
+Omitting `host` uses the dual-stack default and listens on both IPv4 and IPv6.
+Set a specific address only when you intentionally want to restrict the bind.
 
 ### Option 3: Environment variables
 Add to `${HERMES_HOME:-~/.hermes}/.env`:
 ```bash
 WEBHOOK_ENABLED=true
 WEBHOOK_PORT=8644
-WEBHOOK_SECRET=generate-a-strong-secret-here
+WEBHOOK_SECRET=your-webhook-secret-here
 ```
 
 After configuration, start (or restart) the gateway:
@@ -66,6 +68,22 @@ hermes webhook subscribe <name> \
 ```
 
 Returns the webhook URL and HMAC secret. The user configures their service to POST to that URL.
+
+### Filter or transform payloads before the agent runs
+
+Two mechanisms narrow broad event streams (e.g. Todoist/GitHub fire on every update) so only relevant payloads wake the agent:
+
+- **Declarative `filters`** (config.yaml routes only): list of conditions on payload fields, event type, or headers — operators `equals`, `not_equals`, `contains`, `exists`, `missing`, `in`, `in_file`, `regex`, with `all`/`any`/`not` grouping. Non-matching events are ignored with HTTP 200.
+- **Route scripts** (`--script` on subscribe, or `script:` on a config route): a script under `~/.hermes/scripts/` receives the payload as JSON on stdin. JSON stdout replaces the payload before prompt templating; empty stdout, `[SILENT]`, or a nonzero exit ignores the webhook. `.sh`/`.bash` run with bash, everything else with Python. Scripts cannot live outside `~/.hermes/scripts/` (path traversal is blocked).
+
+```bash
+hermes webhook subscribe todoist-hermes \
+  --prompt "Task changed: {payload.content}" \
+  --script "todoist-hermes-label.py" \
+  --deliver telegram --deliver-chat-id "12345"
+```
+
+Full filter syntax: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks#payload-filters
 
 ### List subscriptions
 ```bash
@@ -167,6 +185,10 @@ hermes webhook subscribe antenna-matches \
 The POST returns `200 OK` on successful delivery, `502` on target failure — so upstream services can retry intelligently. HMAC auth, rate limits, and idempotency still apply.
 
 Requires `--deliver` to be a real target (telegram, discord, slack, github_comment, etc.) — `--deliver log` is rejected because log-only direct delivery is pointless.
+
+### Let the user reply to a delivery
+
+Each event runs in its own session, so by default the agent in the target chat has no record of what a route delivered ("what are you referring to?"). Add `--mirror-to-session` and each delivered message is also written into that chat's session as `[Webhook delivery: <route>]` + the text. Off by default: the text enters the conversation as if the user had sent it (on `--deliver-only` routes it is the raw payload), so only use it for sources the user trusts. Skipped when the chat has no session yet.
 
 ## Security
 

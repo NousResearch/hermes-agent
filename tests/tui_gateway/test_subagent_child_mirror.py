@@ -17,6 +17,8 @@ import pytest
 
 @pytest.fixture()
 def server():
+    # Mocks are scoped to the initial import only (see
+    # tests/tui_gateway/test_protocol.py for the rationale).
     with patch.dict(
         "sys.modules",
         {
@@ -31,12 +33,12 @@ def server():
         import importlib
 
         mod = importlib.import_module("tui_gateway.server")
-        yield mod
-        mod._sessions.clear()
-        mod._pending.clear()
-        mod._answers.clear()
-        mod._child_mirrors.clear()
-        mod._active_child_runs.clear()
+
+    yield mod
+    mod._sessions.clear()
+    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
+    mod._child_mirrors.clear()
+    mod._active_child_runs.clear()
 
 
 @pytest.fixture()
@@ -201,9 +203,13 @@ def test_active_child_runs_registry_tracks_liveness(server, emits):
     assert "child-1" not in server._active_child_runs
 
 
-def test_start_and_progress_mirror_as_immediate_text_activity(server, emits):
+def test_start_mirrors_as_immediate_header_line(server, emits):
     server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
 
+    # subagent.start emits a one-time header (the goal) so a freshly opened
+    # window shows context immediately. subagent.progress (batched tool-name
+    # rollups) no longer pollutes the message body — tools mirror natively via
+    # tool.start and the reply streams via subagent.text.
     _relay(server, "subagent.start", preview="starting child branch", child_session_id="child-1")
     _relay(server, "subagent.progress", preview="step 1/3", child_session_id="child-1")
 
@@ -211,5 +217,23 @@ def test_start_and_progress_mirror_as_immediate_text_activity(server, emits):
     assert child == [
         ("message.start", None),
         ("message.delta", {"text": "starting child branch\n"}),
-        ("message.delta", {"text": "step 1/3\n"}),
     ]
+
+
+def test_text_mirrors_as_message_delta(server, emits):
+    """The child's streamed reply (subagent.text) becomes a native
+    message.delta on the live child sid — the watch window streams it as the
+    agent 'talking', the piece that was previously missing entirely."""
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
+
+    _relay(server, "subagent.text", preview="Here is ", child_session_id="child-1")
+    _relay(server, "subagent.text", preview="the answer.", child_session_id="child-1")
+
+    child = [(e, p) for e, s, p in emits if s == "live-1"]
+    assert child == [
+        ("message.start", None),
+        ("message.delta", {"text": "Here is "}),
+        ("message.delta", {"text": "the answer."}),
+    ]
+
+

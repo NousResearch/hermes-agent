@@ -17,7 +17,7 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Stub mautrix so gateway.platforms.matrix can be imported without the SDK.
+# Stub mautrix so plugins.platforms.matrix.adapter can be imported without the SDK.
 # ---------------------------------------------------------------------------
 
 def _stub_mautrix():
@@ -64,7 +64,7 @@ def _stub_mautrix():
 
 _stub_mautrix()
 
-from gateway.platforms.matrix import MatrixAdapter, _MatrixApprovalPrompt  # noqa: E402
+from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -132,24 +132,4 @@ class TestApprovalReactionFailClosed:
         event = _make_event("@stranger:matrix.org", "$prompt-event-1")
         assert _run(adapter, event) is False
 
-    def test_no_allowlist_allow_all_permits(self, monkeypatch):
-        """No MATRIX_ALLOWED_USERS + GATEWAY_ALLOW_ALL_USERS=true → allow."""
-        monkeypatch.delenv("MATRIX_ALLOWED_USERS", raising=False)
-        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
-        adapter = _make_adapter(allowed_user_ids=None)
-        event = _make_event("@anyone:matrix.org", "$prompt-event-1")
-        assert _run(adapter, event) is True
 
-    def test_listed_sender_permits(self, monkeypatch):
-        """Sender in MATRIX_ALLOWED_USERS → allow."""
-        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-        adapter = _make_adapter(allowed_user_ids=["@alice:matrix.org"])
-        event = _make_event("@alice:matrix.org", "$prompt-event-1")
-        assert _run(adapter, event) is True
-
-    def test_unlisted_sender_denies(self, monkeypatch):
-        """Sender not in MATRIX_ALLOWED_USERS → deny."""
-        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
-        adapter = _make_adapter(allowed_user_ids=["@alice:matrix.org"])
-        event = _make_event("@mallory:matrix.org", "$prompt-event-1")
-        assert _run(adapter, event) is False

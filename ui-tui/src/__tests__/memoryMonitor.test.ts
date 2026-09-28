@@ -71,7 +71,13 @@ describe('startMemoryMonitor thresholds (#34095)', () => {
     await vi.advanceTimersByTimeAsync(2) // seed lastHeap at 100MB, below floor
     expect(onWarn).not.toHaveBeenCalled()
 
-    spy.mockReturnValue({ arrayBuffers: 0, external: 0, heapTotal: 800 * MB, heapUsed: 800 * MB, rss: 800 * MB } as NodeJS.MemoryUsage)
+    spy.mockReturnValue({
+      arrayBuffers: 0,
+      external: 0,
+      heapTotal: 800 * MB,
+      heapUsed: 800 * MB,
+      rss: 800 * MB
+    } as NodeJS.MemoryUsage)
     await vi.advanceTimersByTimeAsync(2) // jumped 700MB → above floor + steep
     expect(onWarn).toHaveBeenCalledTimes(1)
 
@@ -80,9 +86,21 @@ describe('startMemoryMonitor thresholds (#34095)', () => {
     expect(onWarn).toHaveBeenCalledTimes(1)
 
     // Falls back below the floor → re-armed, then climbs again → fires again.
-    spy.mockReturnValue({ arrayBuffers: 0, external: 0, heapTotal: 100 * MB, heapUsed: 100 * MB, rss: 100 * MB } as NodeJS.MemoryUsage)
+    spy.mockReturnValue({
+      arrayBuffers: 0,
+      external: 0,
+      heapTotal: 100 * MB,
+      heapUsed: 100 * MB,
+      rss: 100 * MB
+    } as NodeJS.MemoryUsage)
     await vi.advanceTimersByTimeAsync(2)
-    spy.mockReturnValue({ arrayBuffers: 0, external: 0, heapTotal: 800 * MB, heapUsed: 800 * MB, rss: 800 * MB } as NodeJS.MemoryUsage)
+    spy.mockReturnValue({
+      arrayBuffers: 0,
+      external: 0,
+      heapTotal: 800 * MB,
+      heapUsed: 800 * MB,
+      rss: 800 * MB
+    } as NodeJS.MemoryUsage)
     await vi.advanceTimersByTimeAsync(2)
     expect(onWarn).toHaveBeenCalledTimes(2)
   })
@@ -94,7 +112,13 @@ describe('startMemoryMonitor thresholds (#34095)', () => {
 
     await vi.advanceTimersByTimeAsync(2)
     // +50MB per tick — above the floor but gentle, not a render-tree blowup.
-    spy.mockReturnValue({ arrayBuffers: 0, external: 0, heapTotal: 700 * MB, heapUsed: 700 * MB, rss: 700 * MB } as NodeJS.MemoryUsage)
+    spy.mockReturnValue({
+      arrayBuffers: 0,
+      external: 0,
+      heapTotal: 700 * MB,
+      heapUsed: 700 * MB,
+      rss: 700 * MB
+    } as NodeJS.MemoryUsage)
     await vi.advanceTimersByTimeAsync(2)
 
     expect(onWarn).not.toHaveBeenCalled()

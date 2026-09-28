@@ -77,6 +77,19 @@ pub fn installer_dest() -> PathBuf {
     hermes_home().join(name)
 }
 
+/// Marker the updater writes for the duration of an in-app update and removes
+/// when it finishes (see update.rs `UpdateMarkerGuard`). A freshly-launched
+/// desktop checks this before spawning its own local backend: spawning one
+/// mid-update re-locks the venv shim and triggers `force_kill_other_hermes`,
+/// which then kills that legitimate backend in a respawn loop (#50238).
+///
+/// Lives directly under HERMES_HOME (same rationale as `installer_dest`) so the
+/// Electron desktop — which resolves HERMES_HOME identically and pins it into
+/// the updater's env — agrees on the exact path.
+pub fn update_in_progress_marker() -> PathBuf {
+    hermes_home().join(".hermes-update-in-progress")
+}
+
 /// Copy the currently-running installer binary to `installer_dest()` so it's
 /// available for future `--update` runs and shortcut launches.
 ///
@@ -85,6 +98,12 @@ pub fn installer_dest() -> PathBuf {
 /// that path), where copying onto ourselves would be a Windows sharing
 /// violation. Best-effort: a failure here must not fail the install, so the
 /// caller logs and continues.
+///
+/// NOTE: because of that no-op, a user's staged installer is only ever written
+/// by a full install/repair. Every later `--update` runs the ORIGINAL binary,
+/// so an installer-protocol change can strand the whole installed base on a
+/// binary that predates it (see `restage_from_checkout`, which repairs this
+/// from the freshly-updated checkout).
 pub fn copy_self_to_hermes_home() -> std::io::Result<()> {
     let src = std::env::current_exe()?;
     let dest = installer_dest();
@@ -136,8 +155,8 @@ fn repair_macos_installer_helper(path: &Path) {
 #[cfg(not(target_os = "macos"))]
 fn repair_macos_installer_helper(_path: &Path) {}
 
-/// Where install.ps1 writes the bootstrap-complete marker (existence-only file
-/// the Electron app also checks). Per main.cjs:
+/// Where the bootstrap-complete marker lives (existence-only for the Rust
+/// installer fast path; JSON schema-checked by the Electron app). Per main.ts:
 ///   const BOOTSTRAP_COMPLETE_MARKER = path.join(ACTIVE_HERMES_ROOT, '.hermes-bootstrap-complete')
 /// We don't always know ACTIVE_HERMES_ROOT until install.ps1 reports it, so
 /// this is a probe helper, not a definitive path.

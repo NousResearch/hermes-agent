@@ -6,7 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import {
   AlignLeft,
   Check,
@@ -25,6 +26,7 @@ import spinners from "unicode-animations";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
@@ -35,14 +37,15 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
-import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import {
   Select,
   SelectOption,
 } from "@nous-research/ui/ui/components/select";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { errorMessage } from "@/lib/api-error";
 
 // Mirrors hermes_cli/profiles.py::_PROFILE_ID_RE so we can reject obviously
 // invalid names (uppercase, spaces, …) before round-tripping a doomed POST.
@@ -259,6 +262,7 @@ export default function ProfilesPage() {
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
+  const { setProfile } = useProfileScope();
 
   // Locale strings with English fallbacks. The enriched keys are optional in
   // the i18n type so untranslated locales don't break the build — they render
@@ -297,7 +301,7 @@ export default function ProfilesPage() {
       modelInherit: p.modelInherit ?? "Inherit from clone / default",
       modelLoading: p.modelLoading ?? "Loading models…",
       modelNone:
-        p.modelNone ?? "No authenticated providers — set a key first",
+        p.modelNone ?? "No model providers are set up yet. Add an API key under Keys or sign in to a provider under Models.",
       editModel: p.editModel ?? "Change model",
       modelSaved: p.modelSaved ?? "Model updated",
       modelSelect: p.modelSelect ?? "Select a model",
@@ -305,14 +309,14 @@ export default function ProfilesPage() {
       manageSkills: p.manageSkills ?? "Manage skills & tools",
       activeSetHint:
         p.activeSetHint ??
-        "Applies to new CLI/gateway runs. This dashboard still manages its own profile — use “Manage skills & tools” to edit {name}.",
+        "Dashboard switched to manage {name}. New CLI/gateway runs will use this profile too.",
     };
   }, [t.profiles]);
 
   // Create modal
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [newName, setNewName] = useState("");
-  const [cloneFromDefault, setCloneFromDefault] = useState(true);
+  const [cloneFrom, setCloneFrom] = useState<string | null>("default");
   const [cloneAll, setCloneAll] = useState(false);
   const [noSkills, setNoSkills] = useState(false);
   const [newDescription, setNewDescription] = useState("");
@@ -396,7 +400,7 @@ export default function ProfilesPage() {
         setProfiles(res.profiles);
         setActiveInfo(active);
       })
-      .catch((e) => showToast(`${t.status.error}: ${e}`, "error"))
+      .catch((e) => showToast(`${t.status.error}: ${errorMessage(e)}`, "error"))
       .finally(() => setLoading(false));
   }, [showToast, t.status.error]);
 
@@ -429,7 +433,7 @@ export default function ProfilesPage() {
     }
     setCreating(true);
     try {
-      const cloning = cloneAll || cloneFromDefault;
+      const cloning = cloneFrom !== null;
       const picked = modelChoice
         ? modelChoices?.find(
             (c) => `${c.provider}\u0000${c.model}` === modelChoice,
@@ -437,8 +441,8 @@ export default function ProfilesPage() {
         : undefined;
       const res = await api.createProfile({
         name,
-        clone_from_default: cloneAll ? false : cloneFromDefault,
-        clone_all: cloneAll,
+        clone_from: cloneFrom,
+        clone_all: cloning && cloneAll,
         no_skills: cloning ? false : noSkills,
         description: newDescription.trim() || undefined,
         provider: picked?.provider,
@@ -455,12 +459,12 @@ export default function ProfilesPage() {
       setNewDescription("");
       setNoSkills(false);
       setCloneAll(false);
-      setCloneFromDefault(true);
+      setCloneFrom("default");
       setModelChoice("");
       setCreateModalOpen(false);
       load();
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     } finally {
       setCreating(false);
     }
@@ -485,7 +489,7 @@ export default function ProfilesPage() {
       setRenameTo("");
       load();
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     }
   };
 
@@ -495,10 +499,7 @@ export default function ProfilesPage() {
       // The backend normalizes/validates the name; trust the canonical
       // value it returns rather than the raw input.
       const { active } = await api.setActiveProfile(name);
-      // "Set as active" only flips the sticky default for FUTURE CLI/gateway
-      // invocations — it does NOT retarget this running dashboard. Say so,
-      // or users assume skill/tool toggles now apply to the activated
-      // profile (they don't — that's what "Manage skills & tools" is for).
+      setProfile(active);
       showToast(
         `${L.activeSet}: ${active} — ${L.activeSetHint.replace("{name}", active)}`,
         "success",
@@ -507,7 +508,7 @@ export default function ProfilesPage() {
         prev ? { ...prev, active } : { active, current: active },
       );
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     } finally {
       setSettingActive(null);
     }
@@ -542,7 +543,7 @@ export default function ProfilesPage() {
         }
       } catch (e) {
         if (activeSoulRequest.current === name) {
-          showToast(`${t.status.error}: ${e}`, "error");
+          showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
         }
       }
     },
@@ -557,7 +558,7 @@ export default function ProfilesPage() {
       activeSoulRequest.current = null;
       setEditingSoulFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     } finally {
       setSoulSaving(false);
     }
@@ -603,7 +604,7 @@ export default function ProfilesPage() {
       }
     } catch (e) {
       if (activeDescRequest.current === name) {
-        showToast(`${t.status.error}: ${e}`, "error");
+        showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
       }
     } finally {
       descSavingCount.current -= 1;
@@ -637,7 +638,7 @@ export default function ProfilesPage() {
       }
     } catch (e) {
       if (activeDescRequest.current === name) {
-        showToast(`${t.status.error}: ${e}`, "error");
+        showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
       }
     } finally {
       describingCount.current -= 1;
@@ -680,7 +681,7 @@ export default function ProfilesPage() {
       );
       setEditingModelFor(null);
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
     } finally {
       setModelSaving(false);
     }
@@ -707,13 +708,12 @@ export default function ProfilesPage() {
       const res = await api.getProfileSetupCommand(name);
       cmd = res.command;
     } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
+      showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
       return;
     }
-    try {
-      await navigator.clipboard.writeText(cmd);
+    if (await copyTextToClipboard(cmd)) {
       showToast(`${t.profiles.commandCopied}: ${cmd}`, "success");
-    } catch {
+    } else {
       showToast(`${t.profiles.copyFailed}: ${cmd}`, "error");
     }
   };
@@ -726,7 +726,7 @@ export default function ProfilesPage() {
           showToast(`${t.profiles.deleted}: ${name}`, "success");
           load();
         } catch (e) {
-          showToast(`${t.status.error}: ${e}`, "error");
+          showToast(`${t.status.error}: ${errorMessage(e)}`, "error");
           throw e;
         }
       },
@@ -772,7 +772,7 @@ export default function ProfilesPage() {
     };
   }, [setEnd, t.common.create, loading, navigate]);
 
-  const cloning = cloneAll || cloneFromDefault;
+  const cloning = cloneFrom !== null;
 
   if (loading) {
     return (
@@ -805,7 +805,7 @@ export default function ProfilesPage() {
       {createModalOpen && (
         <div
           ref={createModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
           onClick={(e) =>
             e.target === e.currentTarget && setCreateModalOpen(false)
           }
@@ -863,6 +863,26 @@ export default function ProfilesPage() {
               </div>
 
               <div className="grid gap-2">
+                <Label htmlFor="clone-from">{t.profiles.cloneFrom}</Label>
+                <Select
+                  id="clone-from"
+                  value={cloneFrom ?? ""}
+                  onValueChange={(v) => {
+                    const next = v || null;
+                    setCloneFrom(next);
+                    if (next === null) setCloneAll(false);
+                  }}
+                >
+                  <SelectOption value="">{t.profiles.cloneFromNone}</SelectOption>
+                  {profiles.map((profile) => (
+                    <SelectOption key={profile.name} value={profile.name}>
+                      {profile.name}
+                    </SelectOption>
+                  ))}
+                </Select>
+              </div>
+
+              <div className="grid gap-2">
                 <Label htmlFor="profile-description">
                   {L.descriptionOptional}
                 </Label>
@@ -911,31 +931,17 @@ export default function ProfilesPage() {
 
                 <div className="flex items-center gap-2.5">
                   <Checkbox
-                    checked={cloneFromDefault}
-                    id="clone-from-default"
-                    disabled={cloneAll}
-                    onCheckedChange={(checked) =>
-                      setCloneFromDefault(checked === true)
-                    }
-                  />
-
-                  <Label
-                    className="font-mondwest normal-case tracking-normal text-sm cursor-pointer"
-                    htmlFor="clone-from-default"
-                  >
-                    {t.profiles.cloneFromDefault}
-                  </Label>
-                </div>
-
-                <div className="flex items-center gap-2.5">
-                  <Checkbox
                     checked={cloneAll}
+                    disabled={!cloning}
                     id="clone-all"
                     onCheckedChange={(checked) => setCloneAll(checked === true)}
                   />
 
                   <Label
-                    className="font-mondwest normal-case tracking-normal text-sm cursor-pointer"
+                    className={cn(
+                      "font-mondwest normal-case tracking-normal text-sm cursor-pointer",
+                      !cloning && "opacity-50",
+                    )}
                     htmlFor="clone-all"
                   >
                     {L.cloneAll}
@@ -1087,7 +1093,7 @@ export default function ProfilesPage() {
                       <div className="flex items-start gap-2">
                         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
                           <span className="font-medium text-sm truncate">
-                            {p.name}
+                            {p.display_name?.trim() ? `${p.display_name.trim()} (${p.name})` : p.name}
                           </span>
 
                           {active && (
@@ -1226,7 +1232,7 @@ export default function ProfilesPage() {
       {editorName && (
         <div
           ref={editorModalRef}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 backdrop-blur-sm p-4"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
           onClick={(e) => e.target === e.currentTarget && closeEditor()}
           role="dialog"
           aria-modal="true"

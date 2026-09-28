@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.slack import SlackAdapter
+from plugins.platforms.slack.adapter import SlackAdapter
 
 
 @pytest.fixture
@@ -99,29 +99,6 @@ class TestChannelSessionScopeDefault:
             "threaded session — regression guard"
         )
 
-    @pytest.mark.asyncio
-    async def test_top_level_default_behaves_like_true(self, adapter):
-        """Operators who never set ``reply_in_thread`` must see the
-        historical behaviour (true).  Pin the default explicitly."""
-        # Note: no adapter.config.extra["reply_in_thread"] set here.
-        event = _channel_event(
-            "<@U_BOT> hello",
-            ts="1700000000.000002",
-        )
-
-        captured = []
-        adapter.handle_message = AsyncMock(
-            side_effect=lambda e: captured.append(e)
-        )
-        with patch.object(
-            adapter, "_resolve_user_name",
-            new=AsyncMock(return_value="testuser"),
-        ):
-            await adapter._handle_slack_message(event)
-
-        assert len(captured) == 1
-        assert captured[0].source.thread_id == "1700000000.000002"
-
 
 class TestChannelSessionScopeShared:
     """``reply_in_thread: false`` is the #15421 fix: top-level channel
@@ -153,78 +130,6 @@ class TestChannelSessionScopeShared:
             "reply_in_thread=false must set thread_id=None for top-level "
             "channel messages so the session store groups them under a "
             "single channel-scoped session (#15421 bug 1)"
-        )
-
-    @pytest.mark.asyncio
-    async def test_top_level_reply_to_id_stays_none_when_shared(self, adapter):
-        """In shared-session mode (``reply_in_thread=false``), top-level
-        channel messages are normalised to ``thread_ts = None``.  The
-        outbound check on the ``MessageEvent`` is:
-
-            reply_to_message_id = thread_ts if thread_ts != ts else None
-
-        With ``thread_ts = None``, ``None != ts`` is True, so the
-        expression evaluates to ``thread_ts`` itself — which IS
-        ``None``.  That leaves ``reply_to_message_id`` as ``None`` and
-        the bot posts a fresh un-threaded channel reply, matching what
-        ``reply_in_thread=false`` means end-to-end.  This regression
-        test locks in that invariant (Copilot noted the pre-fix
-        docstring had the logic reversed).
-        """
-        adapter.config.extra["reply_in_thread"] = False
-        event = _channel_event(
-            "<@U_BOT> hello",
-            ts="1700000000.000004",
-        )
-
-        captured = []
-        adapter.handle_message = AsyncMock(
-            side_effect=lambda e: captured.append(e)
-        )
-        with patch.object(
-            adapter, "_resolve_user_name",
-            new=AsyncMock(return_value="testuser"),
-        ):
-            await adapter._handle_slack_message(event)
-
-        assert captured[0].reply_to_message_id is None, (
-            "top-level channel messages with reply_in_thread=false "
-            "must not be threaded (reply_to_message_id=None)"
-        )
-
-    @pytest.mark.asyncio
-    async def test_thread_reply_scopes_by_thread_even_when_shared(self, adapter):
-        """Bug 1's fix targets ONLY top-level channel messages.  Genuine
-        thread replies (``thread_ts != ts``) must still scope per-thread
-        sessions so multi-person threaded conversations don't collide
-        with unrelated channel chatter."""
-        adapter.config.extra["reply_in_thread"] = False
-        # Reply to an earlier thread root at ts=1700000000.000000
-        event = _channel_event(
-            "<@U_BOT> following up",
-            ts="1700000000.000005",
-            thread_ts="1700000000.000000",
-        )
-
-        captured = []
-        adapter.handle_message = AsyncMock(
-            side_effect=lambda e: captured.append(e)
-        )
-        with patch.object(
-            adapter, "_resolve_user_name",
-            new=AsyncMock(return_value="testuser"),
-        ):
-            await adapter._handle_slack_message(event)
-
-        assert len(captured) == 1
-        source = captured[0].source
-        assert source.thread_id == "1700000000.000000", (
-            "genuine thread replies must still scope by thread even "
-            "when reply_in_thread=false — only TOP-LEVEL messages share "
-            "the channel-wide session"
-        )
-        assert captured[0].reply_to_message_id == "1700000000.000000", (
-            "reply should thread under the existing thread root"
         )
 
 

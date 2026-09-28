@@ -17,6 +17,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _posix_hermes_env(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
 def _run_apply_profile_override(
     tmp_path, monkeypatch, *, hermes_home: str | None, active_profile: str | None,
     argv: list[str] | None = None,
@@ -106,9 +114,10 @@ class TestApplyProfileOverrideHermesHomeGuard:
         monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "elias", "gateway", "install", "--system"])
 
-        import pwd
-
-        monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_dir=str(user_home)))
+        import types
+        pwd = sys.modules.get("pwd") or types.ModuleType("pwd")
+        monkeypatch.setitem(sys.modules, "pwd", pwd)
+        monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_dir=str(user_home)), raising=False)
 
         from hermes_cli.main import _apply_profile_override
         _apply_profile_override()
@@ -219,6 +228,58 @@ class TestDoubleImportIdempotenceGuard:
         assert os.environ["HERMES_HOME"] == str(hermes_root), (
             "second module execution must not re-home onto active_profile"
         )
+
+    def test_real_import_path_main_then_canonical_import(self, tmp_path):
+        """Execute the real __main__ -> canonical-import seam for issue #76704:
+        run hermes_cli.main as __main__ with -p default, then canonically import
+        hermes_cli.main with a decoy sticky active_profile present in an isolated process.
+        Assert root home remains selected and is not overwritten by active_profile."""
+        import subprocess
+
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "active_profile").write_text("briefer")
+        (hermes_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
+
+        env = os.environ.copy()
+        env["HOME"] = str(tmp_path)
+        env["USERPROFILE"] = str(tmp_path)
+        env.pop("HERMES_HOME", None)
+        env.pop("HERMES_PROFILE_OVERRIDE_APPLIED", None)
+
+        env["PYTHONPATH"] = os.pathsep.join(sys.path)
+
+        script = (
+            "import os, sys, types, importlib.util\n"
+            "sys.platform = 'linux'\n"
+            "from pathlib import Path\n"
+            "hermes_root = sys.argv[1]\n"
+            "# 1. Run module scope as __main__ with -p default\n"
+            "sys.argv = ['hermes', '-p', 'default']\n"
+            "spec = importlib.util.find_spec('hermes_cli.main')\n"
+            "main_mod = types.ModuleType('__main__')\n"
+            "main_mod.__file__ = spec.origin\n"
+            "sys.modules['__main__'] = main_mod\n"
+            "with open(spec.origin, 'r', encoding='utf-8') as f:\n"
+            "    src = f.read()\n"
+            "src = src.replace('if __name__ == \"__main__\":', 'if False:')\n"
+            "code_obj = compile(src, spec.origin, 'exec')\n"
+            "exec(code_obj, main_mod.__dict__)\n"
+            "assert os.environ.get('HERMES_HOME') == hermes_root, f'step 1 failed: {os.environ.get(\"HERMES_HOME\")}'\n"
+            "# 2. Canonically import hermes_cli.main (re-executes module scope under real name)\n"
+            "import hermes_cli.main\n"
+            "assert os.environ.get('HERMES_HOME') == hermes_root, f'step 2 failed: {os.environ.get(\"HERMES_HOME\")}'\n"
+            "print('SUCCESS')\n"
+        )
+
+        res = subprocess.run(
+            [sys.executable, "-c", script, str(hermes_root)],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert res.returncode == 0, f"Subprocess failed:\nstdout: {res.stdout}\nstderr: {res.stderr}"
+        assert "SUCCESS" in res.stdout
 
     def test_sticky_fallback_still_applies_on_first_run(self, tmp_path, monkeypatch):
         """A fresh process (no -p, no env flag) must still follow the sticky

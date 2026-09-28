@@ -32,20 +32,64 @@ export function reasoningTextFromDetails(details: unknown): string {
 
   const text: string[] = []
 
+  const push = (value: unknown) => {
+    if (typeof value !== 'string') return
+
+    const prose = value.trim()
+
+    if (prose && !text.includes(prose)) text.push(prose)
+  }
+
+  // Nested carrier internals: only genuinely readable reasoning kinds. A
+  // native `.native_assistant` carrier wraps signed thinking plus the public
+  // answer inside `messages[].content[]`; its `text` blocks are the answer, not
+  // reasoning, and signatures/projections/data are opaque replay fields.
+  const walkNested = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walkNested(item)
+      return
+    }
+
+    if (!node || typeof node !== 'object') return
+
+    const record = node as Record<string, unknown>
+    const kind = typeof record.type === 'string' ? record.type : ''
+
+    if (kind === 'reasoning.summary') {
+      push(record.summary)
+    } else if (kind === 'reasoning.text') {
+      push(record.text)
+    } else if (typeof record.thinking === 'string') {
+      push(record.thinking)
+    }
+
+    for (const [key, value] of Object.entries(record)) {
+      if (key === 'signature' || key === 'projection' || key === 'data' || key === 'type') continue
+
+      if (value && typeof value === 'object') walkNested(value)
+    }
+  }
+
   for (const block of Array.isArray(blocks) ? blocks : [blocks]) {
     if (typeof block === 'string') {
-      if (block.trim()) text.push(block)
+      push(block)
       continue
     }
 
     if (!block || typeof block !== 'object') continue
 
+    // Top-level blocks are provider reasoning-detail entries; recognized
+    // prose fields (summary, thinking, content, text) are display text.
     const record = block as Record<string, unknown>
     const value = [record.summary, record.thinking, record.content, record.text].find(
       candidate => typeof candidate === 'string' && candidate.trim()
     )
 
-    if (typeof value === 'string') text.push(value)
+    push(value)
+
+    // A provider-native replay carrier keeps readable reasoning only in
+    // nested blocks, never in its own opaque fields.
+    walkNested(block)
   }
 
   return text.join('\n\n').trim()

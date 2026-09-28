@@ -1648,12 +1648,12 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
 
 
 def _recover_pending_flushes(runner) -> int:
-    """Replay the boot-time ``pending_messages`` spool into state.db; returns the count recovered.
+    """Replay every ``pending_messages`` spool this gateway owns into state.db; return the count.
 
     ``_get_flush_dir`` follows the active HERMES_HOME, so a routed turn on a multiplexed gateway spools
-    its stalled transcript backlog under its own profile home. The launch home's spool is replayed
-    first; then each served profile's, inside that profile's HERMES_HOME so the replay also lands in
-    that profile's state.db. After a restart nothing else reads those files.
+    its stalled transcript backlog under ``profiles/<name>/`` and the runtime drain forgets it on
+    restart. After the launch home, replay each served profile inside its own home so the default
+    store ``recover_pending_to_db`` opens is that profile's state.db (#123584).
     """
     from gateway.shutdown_flush import recover_pending_to_db
     from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
@@ -1664,14 +1664,12 @@ def _recover_pending_flushes(runner) -> int:
         return recovered
     launch_home = Path(get_hermes_home()).resolve()
     for name, home in _multiplex_profile_homes(runner.config):
-        home = Path(home)
-        if home.resolve() == launch_home or not (home / "pending_messages").is_dir():
+        if Path(home).resolve() == launch_home or not (Path(home) / "pending_messages").is_dir():
             continue
         token = set_hermes_home_override(str(home))
         try:
             recovered += recover_pending_to_db(session_resolver=resolver)
-        except Exception:
-            # One profile's unreadable spool must not keep the others' backlog out of state.db.
+        except Exception:  # one profile's unreadable spool must not strand the others'
             logger.warning("Pending-message recovery failed for profile %s", name, exc_info=True)
         finally:
             reset_hermes_home_override(token)

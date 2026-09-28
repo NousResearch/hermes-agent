@@ -346,13 +346,14 @@ def _capture_default_log_snapshots(
         for name in _REPORT_LOGS}
 
 
-def _capture_dump() -> str:
-    """Run ``hermes dump`` and return its stdout as a string."""
+def _capture_dump(redact: bool = True) -> str:
+    """Run ``hermes dump`` and return its stdout, force-redacted like the logs unless *redact* is
+    False: the dump is upload-bound and quotes config values (e.g. ``fallback_providers``)."""
     from hermes_cli.dump import run_dump
     capture = io.StringIO()
     with contextlib.redirect_stdout(capture), contextlib.suppress(SystemExit):
         run_dump(SimpleNamespace(show_keys=False))
-    return capture.getvalue()
+    return _redact_log_text(capture.getvalue()) if redact else capture.getvalue()
 
 
 def collect_debug_report(
@@ -394,7 +395,7 @@ def collect_share_bundle(log_lines: int = 200, redact: bool = True) -> dict[str,
     The dump header is prepended to each full log so every file is self-contained, and the
     redaction banner is prepended when ``redact`` is True.
     """
-    dump_text = _capture_dump()
+    dump_text = _capture_dump(redact=redact)
     log_snapshots = _capture_default_log_snapshots(log_lines, redact=redact)
     report = collect_debug_report(log_lines=log_lines, dump_text=dump_text,
                                   log_snapshots=log_snapshots)

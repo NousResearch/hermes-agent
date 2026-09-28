@@ -38,6 +38,10 @@ export function abortPreviewTyping(requestId: string, reason = 'interrupted'): v
 
 /** Drop the controller once the action has settled, so a late cancel is a no-op
  *  rather than aborting a controller the next action might reuse. */
-export function releasePreviewTyping(requestId: string): void {
-  controllers.delete(requestId)
+export function releasePreviewTyping(requestId: string, signal: AbortSignal): void {
+  // A replay replaces the controller before the aborted action's finally runs.
+  // Only the action that still owns this request may release its cancellation.
+  if (controllers.get(requestId)?.signal === signal) {
+    controllers.delete(requestId)
+  }
 }

@@ -95,7 +95,9 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
-    r"|retrying\s+in\s+\d"
+    # The empty-response retry gained a counter ("retrying (1/3) in 8s", agent/turn_empty_response.py);
+    # the bare "retrying in 8s" form is still emitted elsewhere, so both are covered. See #101138.
+    r"|retrying\s+(?:\(\d+/\d+\)\s+)?in\s+\d"
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"

@@ -169,6 +169,31 @@ class TestGatewayPidState:
         monkeypatch.setenv("HERMES_HOME", str(process_home))
         (process_home / "gateway.pid").unlink(missing_ok=True)
 
+    def test_unscoped_live_identity_mismatch_never_unlinks_active_files(
+        self, tmp_path, monkeypatch
+    ):
+        """A live PID behind a HELD lock is not stale-cleanup authority, even unscoped: an
+        identity rejection (a matcher lagging a launcher shape) must not unlink the live
+        gateway's gateway.pid/gateway.lock (#125610, #123109)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        record = {
+            "pid": 4242, "kind": "hermes-gateway", "start_time": 123,
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "hermes_home": str(tmp_path.resolve()),
+        }
+        pid_path = tmp_path / "gateway.pid"
+        lock_path = tmp_path / "gateway.lock"
+        pid_path.write_text(json.dumps(record), encoding="utf-8")
+        lock_path.write_text(json.dumps(record), encoding="utf-8")
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda _path=None: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: "python -m hermes_cli.main chat")
+        monkeypatch.setattr(status, "get_runtime_status_running_pid", lambda: None)
+
+        assert status.get_running_pid() is None
+        assert pid_path.exists() and lock_path.exists()
+
 
 class TestScopedGatewayPidQuery:
     """get_running_pid(pid_path) is a scoped query into another home's identity files (#106406):

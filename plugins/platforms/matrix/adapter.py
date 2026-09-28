@@ -2156,7 +2156,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if source_content.get("msgtype") == "m.location":
             location_content = source_content
             if relates_to.get("m.in_reply_to") and isinstance(body, str):
-                location_content = {**source_content, "body": _strip_reply_fallback(body)}
+                _, location_body = _split_reply_fallback(body)
+                location_content = {**source_content, "body": location_body}
             location_text = format_location_content(location_content)
             if location_text is None:
                 return

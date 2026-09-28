@@ -135,6 +135,11 @@ class HomeIOGuard:
         )
 
     def install(self, monkeypatch):
+        # CPython's capability set stores function objects, not operation names.
+        # Keep it aligned with the wrapped functions so secure dir_fd callers can
+        # still detect host support while the guard enforces the real-home boundary.
+        supports_dir_fd = set(os.supports_dir_fd)
+
         def wrap(module, name, parameters, *, metadata=False):
             original = getattr(module, name)
 
@@ -146,6 +151,8 @@ class HomeIOGuard:
                 return original(*args, **kwargs)
 
             monkeypatch.setattr(module, name, guarded)
+            if module is os and original in supports_dir_fd:
+                supports_dir_fd.add(guarded)
 
         for module in (builtins, io):
             wrap(module, "open", (("file", None),))
@@ -180,4 +187,7 @@ class HomeIOGuard:
             return original_close(fd)
 
         monkeypatch.setattr(os, "open", guarded_open)
+        if original_open in supports_dir_fd:
+            supports_dir_fd.add(guarded_open)
+        monkeypatch.setattr(os, "supports_dir_fd", supports_dir_fd)
         monkeypatch.setattr(os, "close", guarded_close)

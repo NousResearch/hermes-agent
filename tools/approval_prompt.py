@@ -20,7 +20,7 @@ logger = logging.getLogger("tools.approval")
 def prompt_dangerous_approval(command: str, description: str, timeout_seconds: int | None = None,
                               allow_permanent: bool = True, approval_callback=None,
                               *, allow_session: bool = True, smart_denied: bool = False,
-                              title: str | None = None) -> str:
+                              surface: str | None = None, title: str | None = None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     allow_permanent=False hides [a]lways (tirith warnings present: broad permanent
@@ -50,7 +50,7 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     # See #79719.
     with human_wait_window():
         return _ask_human(command, description, timeout_seconds, allow_permanent,
-                          approval_callback, allow_session, smart_denied, title=title)
+                          approval_callback, allow_session, smart_denied, surface=surface, title=title)
 
 
 class Unanswered(str):
@@ -107,7 +107,8 @@ def callback_accepts(callback, keyword: str) -> bool:
 
 
 def _ask_human(command: str, description: str, timeout_seconds: int, allow_permanent: bool,
-               approval_callback, allow_session: bool, smart_denied: bool, title: str | None = None) -> str:
+               approval_callback, allow_session: bool, smart_denied: bool,
+               surface: str | None = None, title: str | None = None) -> str:
     # Redact before any user-visible rendering; the original `command` still executes after approval. Same redactor as
     # memory/log sanitization so tokens mask consistently across surfaces.
     from agent.redact import redact_sensitive_text
@@ -122,6 +123,7 @@ def _ask_human(command: str, description: str, timeout_seconds: int, allow_perma
             callback_kwargs = {"allow_permanent": allow_permanent,
                                **({"allow_session": False} if not allow_session else {}),
                                **({"smart_denied": True} if smart_denied else {}),
+                               **({"surface": surface} if surface and callback_accepts(approval_callback, "surface") else {}),
                                **({"title": title} if title and callback_accepts(approval_callback, "title") else {})}
             return approval_callback(display_command, display_description, **callback_kwargs)
         except Exception as e:
@@ -328,8 +330,9 @@ def request_elicitation_consent(message: str, description: str, *,
 
     # allow_permanent=False: elicitation is a per-call confirmation — no pattern to remember.
     try:
-        choice = prompt_dangerous_approval(message, description, timeout_seconds=timeout_seconds,
-                                           allow_permanent=False, title=title)
+        choice = prompt_dangerous_approval(
+            message, description, timeout_seconds=timeout_seconds, allow_permanent=False,
+            approval_callback=_ctx._resolve_cli_approval_callback(), surface=surface, title=title)
     except Exception as exc:
         logger.error("Elicitation CLI prompt failed: %s", exc, exc_info=True)
         return "decline"

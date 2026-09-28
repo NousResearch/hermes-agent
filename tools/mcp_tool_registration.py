@@ -469,6 +469,11 @@ def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False
     default cwd resolves in the connection task's own context, never per session."""
     if _connection_identity(getattr(server, "_config", {}) or {}) != _connection_identity(config):
         return False
+    # Skills catalogs and their authorization pins belong to the owning home,
+    # even when ordinary tool transports could otherwise share credentials.
+    from tools.mcp_skills_protocol import skills_opted_in
+    if cross_profile and (skills_opted_in(config) or skills_opted_in(getattr(server, "_config", {}) or {})):
+        return False
     if not cross_profile:
         return True
     # Identities match, so both sides carry the same normalised auth type.

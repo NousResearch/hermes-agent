@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,7 +25,9 @@ def _stored_prompt(model: str, provider: str) -> str:
 @pytest.fixture()
 def db(tmp_path, monkeypatch):
     """Real SessionDB on a temp state.db, isolated from the live HERMES_HOME."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
     session_db = SessionDB(db_path=tmp_path / "state.db")
     yield session_db
     session_db.close()
@@ -81,6 +85,7 @@ def test_compression_tip_adoption_applies_the_identity_check(db):
 
     def _adopt(model: str, provider: str) -> MagicMock:
         agent = MagicMock()
+        agent._hermes_home = Path(os.environ["HERMES_HOME"])
         agent._cached_system_prompt = parent_prompt
         agent.session_id = "parent"
         agent.model, agent.provider = model, provider

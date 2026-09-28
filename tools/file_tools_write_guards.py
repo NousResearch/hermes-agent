@@ -468,11 +468,29 @@ def _target_regular_file_state(filepath: str, task_id: str = "default") -> str:
     return "unavailable"
 
 
-def _is_container_document_file(filepath: str, task_id: str) -> bool:
-    """True when the file at ``filepath`` starts with a document-container signature
-    (OLE compound document or ZIP package, ``CONTAINER_DOCUMENT_MAGICS``), or exists but
-    cannot be read: a file the guard cannot verify is refused, not waved through. A
-    missing or plain-text file is not a container."""
+def _ambiguous_document_verdict(filepath: str, task_id: str) -> str:
+    """Decide a write to an ambiguous suffix (``.pot``) from the file the write will hit.
+
+    ``"container"``: refuse — the file starts with a document-container signature
+    (OLE compound document or ZIP package, ``CONTAINER_DOCUMENT_MAGICS``), or it exists
+    but its bytes cannot be checked. ``"text"``: a missing file or a plain-text template.
+    ``"unavailable"``: the backend could not say whether the file exists (#122662).
+
+    Presence is asked of the filesystem the write executes on, via
+    ``_target_regular_file_state``. The bytes are readable only on a host-backed task;
+    an existing file on any other backend is refused unverified, exactly as every
+    ``.pot`` was before the sniff.
+    """
+    state = _target_regular_file_state(filepath, task_id)
+    if state != "exists":
+        return "unavailable" if state == "unavailable" else "text"
+    from tools.file_tools import _file_ops_uses_host_paths, _get_file_ops
+    try:
+        host = _file_ops_uses_host_paths(_get_file_ops(task_id))
+    except Exception:
+        host = False
+    if not host:
+        return "container"
     try:
         resolved = Path(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
@@ -480,11 +498,19 @@ def _is_container_document_file(filepath: str, task_id: str) -> bool:
     try:
         with resolved.open("rb") as fh:
             head = fh.read(max(len(magic) for magic in CONTAINER_DOCUMENT_MAGICS))
-    except (FileNotFoundError, NotADirectoryError):
-        return False
     except OSError:
-        return True
-    return any(head.startswith(magic) for magic in CONTAINER_DOCUMENT_MAGICS)
+        return "container"
+    return "container" if any(head.startswith(m) for m in CONTAINER_DOCUMENT_MAGICS) else "text"
+
+
+def _unverifiable_target_message(filepath: str) -> str:
+    """Fail-closed refusal when the backend cannot say whether *filepath* exists (#122662)."""
+    return (
+        f"Refusing to write to '{filepath}': could not establish whether "
+        "the target file already exists where this write would execute "
+        "(the terminal environment may be starting, unreachable, or was "
+        "removed). The file was NOT modified — retry once the environment "
+        "is reachable.")
 
 
 def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:
@@ -501,12 +527,14 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     write_file/patch. A plain-text write can never produce a valid OOXML/OLE/ODF container, so that write
     silently destroys the document (port of nearai/ironclaw#7109).
 
-    ``.pot`` is refused only when the existing file carries a container signature (OLE or
-    ZIP): the same suffix is the gettext PO template, a plain-text format (#92131).
+    ``.pot`` is refused when the existing file carries a container signature (OLE or ZIP)
+    or cannot be verified where the write executes; a new or plain-text ``.pot`` is the
+    gettext PO template (#92131), see ``_ambiguous_document_verdict``.
     """
     ext = os.path.splitext(filepath)[1].lower()
-    if has_opaque_document_extension(filepath) or (
-            has_ambiguous_document_extension(filepath) and _is_container_document_file(filepath, task_id)):
+    ambiguous = (_ambiguous_document_verdict(filepath, task_id)
+                 if has_ambiguous_document_extension(filepath) else "text")
+    if has_opaque_document_extension(filepath) or ambiguous == "container":
         return (
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "
@@ -514,6 +542,8 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
             "bytes). Use the docx/xlsx/powerpoint skills or a library like "
             "python-docx/openpyxl/python-pptx via the terminal to create or edit "
             "this document.")
+    if ambiguous == "unavailable":
+        return _unverifiable_target_message(filepath)
     # A -wal/-shm/-journal path is never a legitimate text target, even when
     # no sidecar exists yet: a checkpointed db has none on disk, and a garbage
     # WAL dropped next to a live database is picked up on the next open.
@@ -549,12 +579,7 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
         if state == "unavailable":
             # Fail closed: absence not proven on the filesystem the write would
             # hit, so proceeding could destroy a binary the guard never saw.
-            return (
-                f"Refusing to write to '{filepath}': could not establish whether "
-                "the target file already exists where this write would execute "
-                "(the terminal environment may be starting, unreachable, or was "
-                "removed). The file was NOT modified — retry once the environment "
-                "is reachable.")
+            return _unverifiable_target_message(filepath)
     return None
 
 

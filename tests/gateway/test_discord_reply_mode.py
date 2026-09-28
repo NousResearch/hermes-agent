@@ -325,30 +325,66 @@ except (AttributeError, TypeError):
     _ThreadBase = object
 
 
+def _ensure_channel_type(name: str):
+    """The guard also isinstance()s the thread's parent against discord.TextChannel,
+    but the conftest mock only provides Thread/ForumChannel — a MagicMock
+    auto-attribute there would make isinstance() raise. Guarantee a real type on
+    the adapter's discord module (the same object the guard reads) either way."""
+    resolved = getattr(_discord_adapter_mod.discord, name, None)
+    if not isinstance(resolved, type):
+        resolved = type(name, (), {})
+        setattr(_discord_adapter_mod.discord, name, resolved)
+    return resolved
+
+
+_TextChannelType = _ensure_channel_type("TextChannel")
+_ForumChannelType = _ensure_channel_type("ForumChannel")
+
+
 class FakeThread(_ThreadBase):
     """Minimal thread stub. For a text/announcement thread the thread id equals
     its starter message's id (Discord derives one from the other)."""
-    def __init__(self, thread_id: int = 300):
+    # Shadow the real Thread.parent property (it has no setter, so assigning
+    # self.parent would raise) so tests can place the thread under any parent.
+    parent = None
+
+    def __init__(self, thread_id: int = 300, parent=None):
         # Do NOT call super().__init__() — real Thread requires (data, guild, state)
         self.id = thread_id
+        self.parent = parent
 
 
 class TestAutoThreadStarterReference:
     """#126621: the first auto-thread reply referenced the parent-channel question
     with the thread's channel id, so Discord showed "Message could not be loaded"."""
 
-    def test_thread_starter_reference_is_skipped(self, adapter_factory):
+    def test_text_thread_starter_reference_is_skipped(self, adapter_factory):
         """reply_to == thread id means the anchor is the thread's starter message,
-        which lives in the parent channel — the reference must be dropped."""
+        which lives in the text/announcement parent channel — the reference must
+        be dropped (discord.py models announcement parents as TextChannel too)."""
         adapter = adapter_factory("first")
-        thread = FakeThread(300)
+        thread = FakeThread(300, parent=_TextChannelType())
         assert adapter._reply_reference_for_send("300", thread) is None
+
+    def test_forum_thread_starter_reference_is_kept(self, adapter_factory):
+        """Forum/media starters live inside the thread, so the same-id reference
+        is valid there and must be kept (guard per good-augustine's #126647)."""
+        adapter = adapter_factory("first")
+        thread = FakeThread(300, parent=_ForumChannelType())
+        assert adapter._reply_reference_for_send("300", thread) is not None
+
+    def test_uncached_parent_thread_starter_reference_is_kept(self, adapter_factory):
+        """An uncached parent (None) can't prove the starter sits outside the
+        thread, so the guard fails open and keeps the reference."""
+        adapter = adapter_factory("first")
+        thread = FakeThread(300, parent=None)
+        assert adapter._reply_reference_for_send("300", thread) is not None
 
     def test_in_thread_reply_keeps_reference(self, adapter_factory):
         """A follow-up question inside the thread (message id != thread id) keeps
         its reference so in-thread reply previews stay intact."""
         adapter = adapter_factory("first")
-        thread = FakeThread(300)
+        thread = FakeThread(300, parent=_TextChannelType())
         assert adapter._reply_reference_for_send("999", thread) is not None
 
     def test_parent_channel_reply_keeps_reference(self, adapter_factory):
@@ -366,7 +402,7 @@ class TestAutoThreadStarterReference:
         """End-to-end send(): the first reply in an auto-created thread must not
         carry a reference that points the parent-channel starter at the thread."""
         adapter, _, _ = _make_discord_adapter("first")
-        thread = FakeThread(300)
+        thread = FakeThread(300, parent=_TextChannelType())
         sent_msg = MagicMock()
         sent_msg.id = 42
         thread.send = AsyncMock(return_value=sent_msg)

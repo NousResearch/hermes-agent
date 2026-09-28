@@ -2975,9 +2975,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         try:
             # Text/announcement thread ids equal their starter message's id, and that starter
             # lives in the parent channel — an ids-built reference would claim it sits inside
-            # the thread, so Discord renders "Message could not be loaded" (#126621). Skip it;
-            # in-thread messages (id != thread id) and forum starters (in-thread) stay valid.
-            if isinstance(channel, discord.Thread) and int(reply_to) == channel.id:
+            # the thread, so Discord renders "Message could not be loaded" (#126621). Drop it
+            # only for text/announcement parents: forum/media starters live inside the thread
+            # and stay valid anchors, and an uncached parent (None) keeps the reference too
+            # (discord.py models announcement channels as TextChannel, so both share the class).
+            if (isinstance(channel, discord.Thread) and int(reply_to) == channel.id
+                    and isinstance(getattr(channel, "parent", None), discord.TextChannel)):
                 return None
             return self._message_reference_from_ids(reply_to, channel)
         except (ValueError, TypeError) as e:

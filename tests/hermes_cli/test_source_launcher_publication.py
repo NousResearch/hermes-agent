@@ -317,8 +317,12 @@ def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
     assert collect_generations(repo, min_age_seconds=0) == [selected.parent.parent / "old"]
     result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30, encoding="utf-8")
     assert result.returncode == 7, result.stderr
-    assert json.loads(result.stdout)["value"] == "new"
-    assert json.loads(result.stdout)["argv"] == args
+    receipt = result.stdout
+    if surface == "launchd":
+        # stderr_timestamp stamps the child's stdout lines ("YYYY-MM-DD HH:MM:SS,mmm ").
+        receipt = receipt.split(" ", 2)[2]
+    assert json.loads(receipt)["value"] == "new"
+    assert json.loads(receipt)["argv"] == args
 
 
 @pytest.mark.parametrize("surface", ["published", "systemd", "launchd", "ssh", "legacy"])

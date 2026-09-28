@@ -856,6 +856,7 @@ from tools.terminal_tool_guards import (
 )
 from tools.terminal_tool_background import _YIELDED_NOTE, spawn_background_process, yield_to_background_handler
 from tools.terminal_tool_result import finalize_foreground_result
+from tools.terminal_tool_sudo import _expand_tilde_after_equals
 
 
 def _resolve_notification_flag_conflict(*, notify_on_complete: bool, watch_patterns, background: bool) -> tuple:
@@ -1441,6 +1442,9 @@ def terminal_tool(
         # Pre-exec security checks (tirith + dangerous command detection);
         # force=True means the user already confirmed.
         verdict = _run_approval_guards(command, env_type, plan.config, force=force)
+        # Guards judged the command as written; bash leaves ``--flag=~/x`` literal, so the
+        # executed copy expands it.
+        command = _expand_tilde_after_equals(command)
 
         pty_disabled = pty and _command_requires_pipe_stdin(command)
         if plan.promoted_from_foreground_timeout is not None:

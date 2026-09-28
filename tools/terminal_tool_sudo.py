@@ -374,6 +374,113 @@ def _count_real_sudo_invocations(command: str) -> int:
     return _rewrite_real_sudo_invocations(command)[1]
 
 
+_HOME_REFERENCE = '"$HOME"'
+# A flag (``--output``, ``-o``) or a dotted/dashed key (``core.hooksPath``).
+# URLs, ``$vars``, subscripts and arithmetic never match.
+_TILDE_VALUE_PREFIX = re.compile(r"^(?:-[A-Za-z0-9_.-]*|[A-Za-z_][A-Za-z0-9_.-]*)$")
+_ASSIGNMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _expand_word_tilde_after_equals(word: str) -> str:
+    """Expand ``~`` right after a word's first ``=`` when bash would not.
+
+    Bash expands ``~`` only at the start of a word or after ``=`` in a word shaped like a
+    variable assignment, so ``--output=~/chart.png`` reaches the program as a literal
+    ``~/chart.png`` and lands in a directory named ``~`` under the cwd. zsh's
+    MAGIC_EQUAL_SUBST expands it; this applies the same rule to the unquoted ``~`` directly
+    after the first unquoted ``=`` when the text before it is a flag or a key but not an
+    assignment name (bash already expands those), and only for ``~`` alone or ``~/``, never
+    ``~user``. ``"$HOME"`` is quoted because tilde expansion never word-splits.
+    """
+    i, n = 0, len(word)
+    while i < n:
+        ch = word[i]
+        if ch == "\\":
+            i += 2
+        elif ch == "'":
+            end = word.find("'", i + 1)
+            if end == -1:
+                return word
+            i = end + 1
+        elif ch == '"':
+            i += 1
+            while i < n and word[i] != '"':
+                i += 2 if word[i] == "\\" else 1
+            i += 1
+        elif ch == "=":
+            prefix = word[:i]
+            if not _TILDE_VALUE_PREFIX.match(prefix) or _ASSIGNMENT_NAME.match(prefix):
+                return word
+            if i + 1 < n and word[i + 1] == "~" and (i + 2 == n or word[i + 2] == "/"):
+                return word[: i + 1] + _HOME_REFERENCE + word[i + 2 :]
+            return word
+        else:
+            i += 1
+    return word
+
+
+def _heredoc_delimiter(word: str) -> tuple[str, bool] | None:
+    """Return a ``<<`` redirection's delimiter and whether it strips tabs; ``None`` otherwise."""
+    word = word.lstrip("0123456789")
+    if not word.startswith("<<") or word.startswith("<<<"):
+        return None
+    strip_tabs = word.startswith("<<-")
+    return re.sub(r"[\"'\\]", "", word[3:] if strip_tabs else word[2:]), strip_tabs
+
+
+def _heredoc_body_end(command: str, start: int, delimiter: str, strip_tabs: bool) -> int:
+    """Index just past the line that closes a heredoc whose body starts at *start*."""
+    i, n = start, len(command)
+    while i < n:
+        end = command.find("\n", i)
+        line_end = n if end == -1 else end + 1
+        line = command[i:line_end].rstrip("\n")
+        i = line_end
+        if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+            break
+    return i
+
+
+def _expand_tilde_after_equals(command: str) -> str:
+    """Apply :func:`_expand_word_tilde_after_equals` to every shell word of *command*.
+
+    Comments and heredoc bodies are copied untouched: they are text, not words the shell
+    expands.
+    """
+    out: list[str] = []
+    pending: list[tuple[str, bool]] = []
+    awaiting: bool | None = None
+    skip_until = 0
+    for kind, start, end, _at_start in _scan_shell(command):
+        if start < skip_until:
+            continue
+        text = command[start:end]
+        if kind == "ws" and text == "\n" and pending:
+            body_end = end
+            for delimiter, strip_tabs in pending:
+                body_end = _heredoc_body_end(command, body_end, delimiter, strip_tabs)
+            out.append(command[start:body_end])
+            pending, skip_until = [], body_end
+            continue
+        if kind != "word":
+            out.append(text)
+            continue
+        if awaiting is not None:
+            pending.append((re.sub(r"[\"'\\]", "", text), awaiting))
+            awaiting = None
+            out.append(text)
+        elif (heredoc := _heredoc_delimiter(text)) is not None:
+            delimiter, strip_tabs = heredoc
+            if delimiter:
+                pending.append((delimiter, strip_tabs))
+            else:
+                awaiting = strip_tabs
+            out.append(text)
+        else:
+            out.append(_expand_word_tilde_after_equals(text))
+    return "".join(out)
+
+
 def _rewrite_compound_background(command: str) -> str:
     """Wrap `A && B &` (or `A || B &`) to `A && { B & }` at depth 0. Bash binds `&&` tighter
     than `&`, so `A && B &` backgrounds a subshell that runs B in the foreground and waits for

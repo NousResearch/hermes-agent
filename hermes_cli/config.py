@@ -2289,8 +2289,9 @@ _MEMORY_SCHEMA_KEYS = frozenset((DEFAULT_CONFIG.get("memory") or {}).keys())
 
 def _unsupported_memory_keys(user_config: Dict[str, Any]) -> List[str]:
     """#124038: schema-undeclared ``memory.<key>`` segments (e.g. ``memory.hindsight``) are
-    ignored by Hermes — memory-provider plugins (catalog-installed ones like hindsight) read
-    their OWN configuration (e.g. ``$HERMES_HOME/hindsight/config.json``), never config.yaml.
+    copied into the loaded config but never read by any built-in memory setting — memory-provider
+    plugins (catalog-installed ones like hindsight) read their OWN configuration (e.g.
+    ``$HERMES_HOME/hindsight/config.json``), never config.yaml.
     Returns the offending dotted keys so the loader can warn once per load instead of leaving
     the user's edit silently ineffective."""
     mem = user_config.get("memory")
@@ -2345,11 +2346,14 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
                 _unsupported = _unsupported_memory_keys(user_config)
                 if _unsupported:
-                    # #124038: warn once per (re)load — the merged config silently
-                    # drops these keys and provider plugins read their own config,
-                    # so the user's edit would otherwise be silently ineffective.
+                    # #124038: warn once per (re)load — these schema-undeclared memory keys are
+                    # copied straight through config.yaml into the loaded config but are NOT read
+                    # by any built-in memory setting (they are not this memory-provider plugin's
+                    # config either — the plugin reads its own file), so the user's edit would
+                    # otherwise be silently ineffective.
                     logger.warning(
-                        "config.yaml keys are not Hermes memory settings and will be ignored: %s "
+                        "config.yaml memory keys are not read by any built-in Hermes memory setting "
+                        "and are not the memory provider's config — no built-in setting consumes them: %s "
                         "(memory-provider plugins like hindsight read their own configuration, e.g. "
                         "$HERMES_HOME/hindsight/config.json, not config.yaml)",
                         ", ".join(_unsupported))

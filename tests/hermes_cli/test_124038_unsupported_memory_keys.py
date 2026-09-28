@@ -80,9 +80,13 @@ memory:
     mode: local_external
 """)
         with caplog.at_level("WARNING", logger="hermes_cli.config"):
-            cfg.load_config()
+            loaded = cfg.load_config()
         joined = "\n".join(r.getMessage() for r in caplog.records)
         assert "memory.hindsight" in joined
+        # The key is warned about, not dropped: it still rides the merged config,
+        # it just is not read by any built-in memory setting.
+        assert "will be ignored" not in joined and "silently drops" not in joined
+        assert loaded["memory"]["hindsight"] == {"mode": "local_external"}
 
     def test_load_config_silent_for_schema_keys(self, homes, caplog):
         _write(homes, """

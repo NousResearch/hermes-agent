@@ -58,6 +58,7 @@ import {
   ensureGatewayProfile,
   isLegacyNewChatProfile,
   normalizeProfileKey,
+  resolveActiveSourceOwnerRoute,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
 import { $projectScope } from '@/store/project-scope'
@@ -884,8 +885,10 @@ export function useSessionActions({
         // path instead, where a stale $newChatProfile pin would otherwise win
         // and land the session in the wrong profile (#124265). All-profiles
         // view has no owner and keeps the ordinary fallback.
-        const optionProfile =
-          options?.profile ?? (typeof options?.cwd === 'string' ? (projectProfile() ?? undefined) : undefined)
+        const projectOwnerProfile =
+          options?.profile === undefined && typeof options?.cwd === 'string' ? (projectProfile() ?? undefined) : undefined
+
+        const optionProfile = options?.profile ?? projectOwnerProfile
 
         // Fresh tile → the caller's workspace when one was named (the sidebar
         // "+" on a project/worktree lane), explicit null means Home/detached,
@@ -898,11 +901,18 @@ export function useSessionActions({
 
         const defaultTarget = options?.route === undefined && !explicitTarget ? defaultNewSessionTarget() : null
 
+        // The project tree is rendered by the ACTIVE source: its profile pairs
+        // with that source, never with the source a stale new-chat pin captured
+        // on another connection (right profile, wrong host).
         const capturedRoute =
           options?.route !== undefined
             ? options.route
             : (options?.workspaceScope?.ownerRoute ??
-              (defaultTarget ? defaultTarget.route : resolveNewChatOwnerRoute(optionProfile)))
+              (defaultTarget
+                ? defaultTarget.route
+                : projectOwnerProfile
+                  ? resolveActiveSourceOwnerRoute(projectOwnerProfile)
+                  : resolveNewChatOwnerRoute(optionProfile)))
 
         // A named local profile uses the legacy profile-only transport (no
         // connectionId). Tab-strip "+" omits `options.profile`; the draft or

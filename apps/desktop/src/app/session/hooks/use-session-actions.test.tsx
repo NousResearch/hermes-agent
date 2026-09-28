@@ -23,10 +23,11 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForAgent } from '@/store/gateway'
+import { activeGatewayConnectionId, requestGatewayForAgent, requestGatewayForProfile, retainGatewayForAgent } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
 import {
   $activeGatewayProfile,
+  $newChatConnectionId,
   $newChatProfile,
   $newChatRoute,
   $profiles,
@@ -123,12 +124,18 @@ vi.mock('@/store/profile', async importOriginal => ({
   ensureGatewayProfile: vi.fn().mockResolvedValue(undefined)
 }))
 
-vi.mock('@/store/gateway', async importOriginal => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  requestGatewayForAgent: vi.fn(),
-  requestGatewayForProfile: vi.fn(),
-  retainGatewayForAgent: vi.fn(async () => () => undefined)
-}))
+vi.mock('@/store/gateway', async importOriginal => {
+  const original = await importOriginal<Record<string, unknown>>()
+
+  return {
+    ...original,
+    // Default-preserving spy: tests that route by the active source override it.
+    activeGatewayConnectionId: vi.fn(original.activeGatewayConnectionId as () => null | string),
+    requestGatewayForAgent: vi.fn(),
+    requestGatewayForProfile: vi.fn(),
+    retainGatewayForAgent: vi.fn(async () => () => undefined)
+  }
+})
 
 vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -5109,6 +5116,8 @@ describe('openNewSessionTile workspace target', () => {
     cleanup()
     $profiles.set([])
     $newChatProfile.set(null)
+    $newChatConnectionId.set(null)
+    vi.mocked(activeGatewayConnectionId).mockReset()
     $activeGatewayProfile.set('default')
     $projectScope.set(ALL_PROJECTS)
     $projectTree.set([])
@@ -5344,6 +5353,55 @@ describe('openNewSessionTile workspace target', () => {
     expect(createParams).toMatchObject({ cwd: '/repo/work', profile: 'work' })
     expect($sessionTiles.get()).toContainEqual(expect.objectContaining({ ownerProfile: 'work', storedSessionId }))
     expect(knownOwnerForSession(storedSessionId)).toBe('work')
+  })
+
+  // Review of #124265: the stale pin may also have captured ANOTHER connection
+  // ($newChatConnectionId). The project tree is rendered by the active source,
+  // so the tile must pair the project profile with that source — not with the
+  // pin's host (right profile, wrong host).
+  it('pairs the project profile with the active source, not a stale pin captured on another connection', async () => {
+    const storedSessionId = 'stored-project-tile-remote-work'
+    setConnection({ mode: 'remote' } as never)
+    $profiles.set([{ name: 'default' }, { name: 'work' }] as never)
+    $activeGatewayProfile.set('work')
+    $newChatProfile.set('work')
+    $newChatConnectionId.set('homelab')
+    vi.mocked(activeGatewayConnectionId).mockReturnValue('ssh-vps')
+
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (connectionId, profile, method) => {
+      if (connectionId === 'ssh-vps' && profile === 'work' && method === 'session.create') {
+        return {
+          info: { cwd: '/repo/work', model: 'test-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: storedSessionId
+        } as never
+      }
+
+      throw new Error(`Session create on the wrong host: ${connectionId}::${profile} (${method})`)
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      throw new Error(`Unexpected ambient RPC: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', { cwd: '/repo/work', listed: false })
+    })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'ssh-vps',
+      'work',
+      'session.create',
+      expect.objectContaining({ cwd: '/repo/work' }),
+      undefined,
+      undefined,
+      expect.anything()
+    )
+    expect(getSessionOwnerHint(storedSessionId)).toMatchObject({ connectionId: 'ssh-vps', profile: 'work' })
   })
 })
 

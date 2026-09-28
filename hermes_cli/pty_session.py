@@ -219,6 +219,10 @@ class PtySessionRegistry:
             for key in keys:
                 session = self._sessions.pop(key, None)
                 if session is not None:
+                    # A sibling tab sharing the attach token may still be viewing this
+                    # PTY: supersede it explicitly (4409) instead of leaving it silent
+                    # until its next keystroke fails with 1013.
+                    await _close_ws(session._ws, WS_CLOSE_SUPERSEDED)
                     await session.close()
 
     def detach(self, key: str, ws) -> None:

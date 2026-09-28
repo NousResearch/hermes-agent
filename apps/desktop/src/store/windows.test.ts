@@ -88,9 +88,12 @@ describe('openSessionInNewWindow', () => {
 
     await openSessionInNewWindow('s1')
     await openSessionInNewWindow('child-not-listed-yet', { watch: true, parentSessionId: 's1' })
+    // No parent hint and not listed anywhere: falls back to the viewed profile.
+    await openSessionInNewWindow('orphan-not-listed-yet', { watch: true })
 
     expect(open).toHaveBeenCalledWith('s1', { profile: 'research', connectionId: 'remote-a', watch: undefined })
     expect(open).toHaveBeenCalledWith('child-not-listed-yet', { profile: 'research', connectionId: 'remote-a', watch: true })
+    expect(open).toHaveBeenCalledWith('orphan-not-listed-yet', { profile: 'work', connectionId: null, watch: true })
     expect(notifyError).not.toHaveBeenCalled()
     // The owner resolver's lazy import is the heavy session-actions module.
   }, 60_000)

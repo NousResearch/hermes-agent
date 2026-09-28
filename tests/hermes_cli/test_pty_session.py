@@ -431,7 +431,7 @@ async def test_close_all_survives_key_popped_by_concurrent_reap():
 
 @pytest.mark.asyncio
 async def test_close_other_sessions_removes_old_profile_session():
-    from hermes_cli.pty_session import PtySession
+    from hermes_cli.pty_session import WS_CLOSE_SUPERSEDED, PtySession
 
     reg = make_registry()
     old_bridge = FakeBridge([b""])
@@ -440,7 +440,9 @@ async def test_close_other_sessions_removes_old_profile_session():
     current = PtySession("token\0beta\0session-b", current_bridge, buffer_cap=1024, read_timeout=0.01)
     await old.start()
     await current.start()
-    old.detach(None)
+    # A sibling tab (same attach token, other profile) is still viewing the old PTY.
+    old_ws = FakeWS()
+    assert await old.attach(old_ws)
     reg._sessions[old.key] = old
     reg._sessions[current.key] = current
 
@@ -449,4 +451,6 @@ async def test_close_other_sessions_removes_old_profile_session():
     assert old_bridge.closed
     assert old.key not in reg._sessions
     assert reg._sessions[current.key] is current
+    # The displaced viewer gets the documented supersede code rather than going silent.
+    assert old_ws.close_code == WS_CLOSE_SUPERSEDED
     await reg.close_all()

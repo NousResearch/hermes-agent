@@ -51,6 +51,8 @@ export interface SessionPreview {
   /** Unix seconds, not milliseconds. */
   last_active?: number
   message_count?: number
+  /** Rows a stored-transcript read can paint; absent on older gateways. */
+  live_message_count?: number
   preview?: string
   title?: string
 }

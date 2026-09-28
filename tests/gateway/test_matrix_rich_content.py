@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.base import merge_pending_message_event
 from gateway.platforms.event import MessageType
 from gateway.run import GatewayRunner
 from gateway.run_turn_runner import TurnRunner
@@ -436,3 +438,128 @@ async def test_native_content_has_consistent_effective_reads_history_and_reply_p
     assert bool(snapshot.reply_image_paths()) is (
         kind == "sticker" and scenario not in {"withdrawn", "oversize"}
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,kinds",
+    [
+        ("queued", ("sticker", "sticker")),
+        ("queued-duplicate", ("sticker", "sticker")),
+        ("queued", ("text", "sticker")),
+        ("queued", ("sticker", "emote")),
+        ("queued-text", ("emote", "emote")),
+        ("debounce", ("emote", "emote")),
+        ("debounce-duplicate", ("emote", "emote")),
+        ("debounce", ("text", "emote")),
+        ("busy-debounce", ("emote", "emote")),
+    ],
+)
+@pytest.mark.parametrize("withdrawn", [0, 1])
+async def test_coalesced_native_content_revalidates_each_authored_event(
+    monkeypatch, method, kinds, withdrawn
+):
+    adapter, received = _adapter(monkeypatch)
+    duplicate = method.endswith("-duplicate")
+    method = method.removesuffix("-duplicate")
+    admitted = []
+    for index, kind in enumerate(kinds):
+        raw = _event(kind)
+        raw["event_id"] = f"$native{index}"
+        raw["content"]["body"] = f"Authored contribution {0 if duplicate else index}"
+        if kind == "text":
+            raw["type"] = "m.room.message"
+            raw["content"]["msgtype"] = "m.text"
+        incoming = pytest.importorskip("mautrix.types").Event.deserialize(deepcopy(raw))
+        await adapter._on_room_message(incoming)
+        admitted.append(received.await_args.args[0])
+    expected_text = [event.text for event in admitted]
+    expected_paths = [list(event.authored_media().media_urls) for event in admitted]
+    if method in {"debounce", "busy-debounce"}:
+        blocked = asyncio.Event()
+
+        async def pause_flush(*_args):
+            await blocked.wait()
+
+        if method == "debounce":
+            monkeypatch.setattr(adapter, "_flush_text_batch", pause_flush)
+            for event in admitted:
+                adapter._enqueue_text_event(event)
+            event = next(iter(adapter._pending_text_batches.values()))
+            tasks = tuple(adapter._pending_text_batch_tasks.values())
+        else:
+            monkeypatch.setattr(adapter, "_flush_text_debounce", pause_flush)
+            for event in admitted:
+                await adapter._queue_text_debounce("session", event)
+            state = adapter._text_debounce_store()["session"]
+            event = state.event
+            tasks = (state.task,)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    else:
+        pending = {}
+        for event in admitted:
+            merge_pending_message_event(
+                pending, "session", event, merge_text=method == "queued-text"
+            )
+        event = pending["session"]
+    await adapter._on_redaction(
+        SimpleNamespace(room_id=ROOM, redacts=f"$native{withdrawn}")
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {Platform.MATRIX: adapter}
+    monkeypatch.setattr(runner, "_decide_image_input_mode", lambda **_kwargs: "native")
+    prepared = await runner._prepare_inbound_message_text(
+        event=event, source=event.source, history=[{}], session_key="session"
+    )
+    removed = kinds[withdrawn] != "text"
+    assert {
+        "visible": [text in prepared for text in expected_text],
+        "paths": event._prepared_inbound.retained_image_paths([
+            path for paths in expected_paths for path in paths
+        ]),
+        "redacted": "[redacted]" in prepared,
+    } == {
+        "visible": [
+            duplicate or index != withdrawn or not removed for index in range(2)
+        ],
+        "paths": [
+            path
+            for index, paths in enumerate(expected_paths)
+            if index != withdrawn or not removed
+            for path in paths
+        ],
+        "redacted": removed,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["emote", "sticker"])
+async def test_unchanged_effective_read_preserves_mention_stripped_native_input(
+    monkeypatch, kind
+):
+    adapter, received = _adapter(monkeypatch)
+    adapter._require_mention = True
+    raw = _event(kind)
+    raw["content"].update(
+        body="@hermes:example.org Friendly fox",
+        **{"m.mentions": {"user_ids": ["@hermes:example.org"]}},
+    )
+    incoming = pytest.importorskip("mautrix.types").Event.deserialize(deepcopy(raw))
+    await adapter._on_room_message(incoming)
+    event = received.await_args.args[0]
+    original = {"text": event.text, "paths": list(event.authored_media().media_urls)}
+
+    async def request(_method, path, **_kwargs):
+        return raw if "/event/" in path else {"chunk": []}
+
+    adapter._client.api.request.side_effect = request
+    await read_matrix_context(adapter, "event", ROOM, "$native", 1, requester=SENDER)
+    snapshot = await adapter.fetch_inbound_context(event, include_thread_history=False)
+    await snapshot.refresh()
+    assert {
+        "text": snapshot.prepend_history(event.text),
+        "paths": snapshot.media_event(event).media_urls,
+    } == original

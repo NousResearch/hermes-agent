@@ -9,6 +9,8 @@ from gateway.platforms.event import MessageEvent
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext,
     MatrixEventContextCache,
+    _label_body,
+    _own_text,
 )
 from plugins.platforms.matrix.turn_context import MatrixTurnContext
 
@@ -38,78 +40,125 @@ def inbound_event(event: Any) -> Any:
 
 
 @dataclass
-class MatrixRichContentSnapshot:
-    context: MatrixTurnContext
+class _MatrixAuthoredContent:
     authored: MatrixEventContext
     original_text: str
+    original_content_text: str
     original_media_identity: str
+    media_paths: tuple[str, ...]
+
+    def current(self, context: MatrixTurnContext) -> MatrixEventContext:
+        return context.adapter._event_context_cache.recheck(
+            context.room_id, self.authored
+        )
+
+    def text(self, context: MatrixTurnContext) -> str:
+        current = self.current(context)
+        if current.redacted:
+            return "[redacted]"
+        if current.state_error:
+            return "[event content unavailable]"
+        return (
+            self.original_text
+            if current.text == self.original_content_text
+            else current.text
+        )
+
+    def media_available(self, context: MatrixTurnContext) -> bool:
+        current = self.current(context)
+        return (
+            not current.redacted
+            and not current.state_error
+            and current.attachment_identity == self.original_media_identity
+        )
+
+
+@dataclass
+class MatrixRichContentSnapshot:
+    context: MatrixTurnContext
+    contributions: tuple[_MatrixAuthoredContent, ...]
 
     @classmethod
     async def prepare(
         cls, adapter: Any, event: MessageEvent, *, include_thread_history: bool
     ) -> MatrixRichContentSnapshot:
-        previous = next(
-            (
-                snapshot
-                for snapshot in event._inbound_context_dependencies
-                if isinstance(snapshot, cls) and snapshot.context.adapter is adapter
-            ),
-            None,
+        contributions = tuple(
+            contribution
+            for snapshot in event._inbound_context_dependencies
+            if isinstance(snapshot, cls) and snapshot.context.adapter is adapter
+            for contribution in snapshot.contributions
         )
         context = await MatrixTurnContext.prepare(
             adapter, event, include_thread_history=include_thread_history
         )
-        authored = (
-            previous.authored
-            if previous is not None
-            else adapter._event_context_cache.retain(
-                event.source.chat_id,
-                event.message_id,
-            )
-        )
-        return cls(
-            context,
-            authored,
-            previous.original_text if previous is not None else event.text,
-            previous.original_media_identity
-            if previous is not None
-            else authored.attachment_identity,
-        )
+        return cls(context, contributions)
 
     async def refresh(self) -> None:
         await self.context.refresh()
-        self.authored = await self.context.adapter._event_context_cache.refresh(
-            self.context.adapter._client,
-            self.context.room_id,
-            self.authored,
-        )
-
-    def _current(self) -> MatrixEventContext:
-        return self.context.adapter._event_context_cache.recheck(
-            self.context.room_id, self.authored
-        )
+        for contribution in self.contributions:
+            contribution.authored = (
+                await self.context.adapter._event_context_cache.refresh(
+                    self.context.adapter._client,
+                    self.context.room_id,
+                    contribution.authored,
+                )
+            )
 
     def media_event(self, event: MessageEvent) -> MessageEvent:
         authored = event.authored_media()
-        current = self._current()
-        if (
-            current.redacted
-            or current.state_error
-            or current.attachment_identity != self.original_media_identity
-        ):
-            return replace(authored, media_urls=[], media_types=[])
-        return authored
+        withdrawn = {
+            path
+            for contribution in self.contributions
+            if not contribution.media_available(self.context)
+            for path in contribution.media_paths
+        }
+        indices = [
+            index
+            for index, path in enumerate(authored.media_urls)
+            if path not in withdrawn
+        ]
+        return replace(
+            authored,
+            media_urls=[authored.media_urls[index] for index in indices],
+            media_types=[
+                authored.media_types[index]
+                for index in indices
+                if index < len(authored.media_types)
+            ],
+            media_text_inlined=[
+                authored.media_text_inlined[index] for index in indices
+            ],
+        )
 
     def prepend_history(self, text: str) -> str:
-        current = self._current()
-        if current.redacted or current.state_error:
-            updated = (
-                "[redacted]" if current.redacted else "[event content unavailable]"
-            )
-        else:
-            updated = current.text
-        if self.original_text and updated != self.original_text:
-            text = text.replace(self.original_text, updated, 1)
+        groups: dict[str, list[_MatrixAuthoredContent]] = {}
+        for contribution in self.contributions:
+            groups.setdefault(contribution.original_text, []).append(contribution)
+        collapsed = {
+            original
+            for original, contributions in groups.items()
+            if original and self.context.reply.text.count(original) < len(contributions)
+        }
+        processed: set[str] = set()
+        offset = 0
+        for contribution in self.contributions:
+            original = contribution.original_text
+            if not original or original in processed:
+                continue
+            start = text.find(original, offset)
+            if start < 0:
+                continue
+            if original in collapsed:
+                updated = "\n\n".join(
+                    dict.fromkeys(
+                        entry.text(self.context) for entry in groups[original]
+                    )
+                )
+                processed.add(original)
+            else:
+                updated = contribution.text(self.context)
+            text = text[:start] + updated + text[start + len(original) :]
+            offset = start + len(updated)
         return self.context.prepend_history(text)
 
     def reply_event(self, event: MessageEvent) -> MessageEvent:
@@ -162,7 +211,11 @@ class MatrixRichContentMixin:
         media = event.authored_media()
         authored = MatrixEventContext(
             sender,
-            event.text,
+            _label_body(
+                str(content.get("msgtype") or ""),
+                _own_text(str(content.get("body") or "").strip()),
+                sender,
+            ),
             media_path=media.media_urls[0] if media.media_urls else None,
             media_type=media.media_types[0] if media.media_types else None,
             is_image=content.get("msgtype") == "m.sticker",
@@ -177,6 +230,15 @@ class MatrixRichContentMixin:
             *event._inbound_context_dependencies,
             context,
             MatrixRichContentSnapshot(
-                context, entry, event.text, authored.attachment_identity
+                context,
+                (
+                    _MatrixAuthoredContent(
+                        entry,
+                        event.text,
+                        authored.text,
+                        authored.attachment_identity,
+                        tuple(media.media_urls),
+                    ),
+                ),
             ),
         )

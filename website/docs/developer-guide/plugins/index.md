@@ -985,7 +985,31 @@ Both serialize concurrent first calls with double-checked locking and run the fa
 
 > Rule of thumb: any time you write `global _something` followed by a `is None` check and a build, reach for one of these instead.
 
+### Background threads keep the profile scope
 
+A plugin that owns a worker — a poller, a watcher, a delivery queue — usually starts a thread from `register(ctx)`. Under a [multiplexed gateway](../../user-guide/multi-profile-gateways.md#what-is-isolated-per-profile) one process serves several profiles, and the profile a piece of code acts for travels in `contextvars`: the `HERMES_HOME` override and the per-profile secret scope. The gateway loads each served profile's plugins inside that profile's scope, so `register(ctx)` sees the right profile.
+
+A bare `threading.Thread` does not inherit contextvars. It starts with an empty context, and everything it resolves falls back to the **launch** profile: `get_hermes_home()`, `ctx.get_config()`, `ctx.profile_name`, the `allow_gateway_injection` gate behind `ctx.inject_message()`, and secret lookups (which fail closed). The plugin works on a single-profile install and silently reads and writes another profile's config and state as soon as a second profile is served.
+
+Capture the context where the scope is right and run the thread inside it:
+
+```python
+import contextvars
+import threading
+
+def register(ctx):
+    stop = threading.Event()
+
+    def watch():
+        while not stop.wait(30):
+            poll(ctx.get_config("target"))  # this profile's setting, not the launch profile's
+
+    context = contextvars.copy_context()  # inside register(): the owning profile's scope
+    threading.Thread(target=context.run, args=(watch,), name="my-plugin-watch", daemon=True).start()
+    ctx.on_unload(stop.set)
+```
+
+The same applies to work handed to another thread later: `asyncio.to_thread()` and tasks from `ctx.spawn_task()` carry the caller's context, while `loop.run_in_executor()` and `concurrent.futures` executors do not. Memory providers use `agent.memory_provider.spawn_context_thread`, which wraps this pattern (see the [threading contract](../memory-provider-plugin.md#threading-contract)).
 
 ### Conditional tool availability
 

@@ -11,6 +11,7 @@ and every isinstance(..., list) consumer silently drops them.
 import pytest
 
 from hermes_state import SessionDB
+from hermes_state_messages import _SHARED_REASONING
 
 
 REASONING_DETAILS = [
@@ -137,7 +138,7 @@ class TestSharedReasoningStoredOnce:
 
     def test_identical_text_is_stored_once(self, db):
         self._append(db, "s", reasoning=self.TEXT, reasoning_content=self.TEXT)
-        assert tuple(self._columns(db, "s")) == (None, self.TEXT)
+        assert tuple(self._columns(db, "s")) == (_SHARED_REASONING, self.TEXT)
 
     def test_both_fields_come_back_on_every_read_path(self, db):
         self._append(db, "s", reasoning=self.TEXT, reasoning_content=self.TEXT)
@@ -180,6 +181,6 @@ class TestSharedReasoningStoredOnce:
     def test_fork_keeps_one_copy(self, db):
         self._append(db, "src", reasoning=self.TEXT, reasoning_content=self.TEXT)
         _fork(db, "src", "fork")
-        assert tuple(self._columns(db, "fork")) == (None, self.TEXT)
+        assert tuple(self._columns(db, "fork")) == (_SHARED_REASONING, self.TEXT)
         msg = _assistant(db.get_messages_as_conversation("fork"))
         assert (msg["reasoning"], msg["reasoning_content"]) == (self.TEXT, self.TEXT)

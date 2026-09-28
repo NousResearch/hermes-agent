@@ -113,19 +113,22 @@ def _scrub_surrogates(value: Any) -> Any:
     return _sanitize_surrogates(value) if isinstance(value, str) else value
 
 
+# Stored in ``reasoning`` when it duplicates ``reasoning_content``. A NULL ``reasoning`` can't mark
+# this: turns that carry ``reasoning_content`` alone store NULL too. NUL cannot collide with text.
+_SHARED_REASONING = "\x00shared"
+
+
 def _reasoning_is_shared(role: Any, reasoning: Any, reasoning_content: Any) -> bool:
     """Assistant ``reasoning`` is built from ``reasoning_content`` (``extract_reasoning``), so for
-    reasoning-content providers the two are byte-identical. Blank pads (" ") never count: a pad
-    rides alone and must not grow a ``reasoning`` on read."""
+    reasoning-content providers the two are byte-identical. Blank pads (" ") are left alone."""
     return (role == "assistant" and isinstance(reasoning_content, str) and bool(reasoning_content.strip())
             and reasoning == reasoning_content)
 
 
 def _restore_shared_reasoning(msg: Dict[str, Any]) -> None:
-    """Read-side inverse of ``_reasoning_is_shared``: refill ``reasoning`` stored only as ``reasoning_content``."""
-    if msg.get("reasoning") is None and _reasoning_is_shared(
-            msg.get("role"), msg.get("reasoning_content"), msg.get("reasoning_content")):
-        msg["reasoning"] = msg["reasoning_content"]
+    """Read-side inverse of the write-side dedup: swap the marker back for ``reasoning_content``."""
+    if msg.get("reasoning") == _SHARED_REASONING:
+        msg["reasoning"] = msg.get("reasoning_content")
 
 
 def _stale_holder(row, now: float) -> bool:
@@ -286,7 +289,7 @@ class SessionMessagesMixin:
         reasoning = _scrub_surrogates(_reasoning("reasoning"))
         reasoning_content = _scrub_surrogates(_reasoning("reasoning_content"))
         if _reasoning_is_shared(role, reasoning, reasoning_content):
-            reasoning = None  # one copy on disk (#125273); _restore_shared_reasoning rebuilds it on read
+            reasoning = _SHARED_REASONING  # one copy on disk (#125273); _restore_shared_reasoning rebuilds it on read
         identity_row = {
             "role": role, "content": encoded_content, "timestamp": message_timestamp,
             "tool_call_id": msg.get("tool_call_id"), "tool_calls": encoded_tool_calls,

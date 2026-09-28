@@ -340,3 +340,17 @@ def test_picker_keeps_reseller_model_outside_catalog(provider):
     row = _make_provider(provider, models=["gpt-5.6"], is_current=True)
     result = model_switch_providers._finalize_picker_rows([row], {}, "claude-sonnet-6")[0]
     assert result["models"][0] == "claude-sonnet-6"
+
+
+def test_capped_multi_family_catalog_does_not_veto_valid_saved_model():
+    """A display cap can omit Copilot's Claude models without changing its support."""
+    row = _make_provider("copilot", models=["gpt-5.4"], is_current=True)
+    row["total_models"] = 17
+    result = model_switch_providers._finalize_picker_rows([row], {}, "claude-sonnet-5")[0]
+    assert result["models"][0] == "claude-sonnet-5"
+
+
+def test_uncapped_catalog_still_rejects_foreign_model():
+    row = _make_provider("openai-codex", models=["gpt-5.6"], is_current=True)
+    result = model_switch_providers._finalize_picker_rows([row], {}, "claude-sonnet-5")[0]
+    assert result["models"] == ["gpt-5.6"]

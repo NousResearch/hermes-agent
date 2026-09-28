@@ -1268,7 +1268,15 @@ def _picker_model_family_conflicts(row: dict, model: str) -> bool:
     saved_vendor = detect_vendor(model)
     if not saved_vendor:
         return False
-    catalog_vendors = {detect_vendor(str(item)) for item in row.get("models") or []}
+    models = row.get("models") or []
+    if row.get("total_models", len(models)) > len(models):
+        # This is a capped display slice, not the provider's full catalog.
+        # Missing vendors in the slice do not prove a family conflict.
+        return False
+    if not models and row.get("source") == "configured-current":
+        from hermes_cli.models import _PROVIDER_MODELS
+        models = _PROVIDER_MODELS.get(slug) or []
+    catalog_vendors = {detect_vendor(str(item)) for item in models}
     catalog_vendors.discard(None)
     return bool(catalog_vendors) and saved_vendor not in catalog_vendors
 

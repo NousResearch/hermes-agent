@@ -711,3 +711,22 @@ def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_pa
         for model in models[:3]
     }
     assert large_row["featured_models"] == models
+
+
+def test_unconfigured_current_skeleton_does_not_offer_foreign_saved_model():
+    from hermes_cli.inventory import _append_unconfigured_rows
+
+    ctx = _empty_ctx(provider="openai-codex")
+    ctx = ctx.with_overrides(current_model="claude-sonnet-5")
+    row = _append_unconfigured_rows([], ctx, current_only=True)[0]
+    assert row["slug"] == "openai-codex"
+    assert row["models"] == []
+
+
+def test_unconfigured_current_skeleton_keeps_same_family_model():
+    from hermes_cli.inventory import _append_unconfigured_rows
+
+    ctx = _empty_ctx(provider="openai-codex")
+    ctx = ctx.with_overrides(current_model="gpt-5.7-preview")
+    row = _append_unconfigured_rows([], ctx, current_only=True)[0]
+    assert row["models"] == ["gpt-5.7-preview"]

@@ -1,6 +1,8 @@
 import type { SharedMetricsConsentResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { recordOnboarding, setDesktopMetricsGate } from './desktop-metrics'
+
 /** Public page describing exactly what shared metrics contain and how consent windows work. */
 export const SHARED_METRICS_DOCS_URL = 'https://hermes-agent.nousresearch.com/docs/developer-guide/relay-shared-metrics'
 
@@ -73,7 +75,15 @@ export async function answerSharedMetricsOffer(
   request: SharedMetricsRequester,
   choice: SharedMetricsChoice
 ): Promise<void> {
-  $sharedMetricsConsent.set(await saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES[choice], { firstRun: true }))
+  const consent = await saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES[choice], { firstRun: true })
+
+  if (consent) {
+    // Gate first: the consent answer is itself a first-run step, counted only when it opted in.
+    setDesktopMetricsGate(consent.enabled ? 'on' : 'off')
+    recordOnboarding('consent', 'completed')
+  }
+
+  $sharedMetricsConsent.set(consent)
   $sharedMetricsDetailsOpen.set(false)
 }
 

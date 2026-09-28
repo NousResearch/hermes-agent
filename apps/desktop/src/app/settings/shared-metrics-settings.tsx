@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { DocsLink } from '@/components/onboarding/flow'
 import { useI18n } from '@/i18n'
 import { $activeConnectionId } from '@/store/connections'
+import { setDesktopMetricsGate } from '@/store/desktop-metrics'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $settingsScopeProfile } from '@/store/settings-scope'
@@ -60,7 +61,14 @@ export function SharedMetricsSettings() {
     setConsent({ ...flags, send: flags.enabled && flags.send, decided: true })
 
     try {
-      setConsent(await saveSharedMetricsConsent(request, flags))
+      const saved = await saveSharedMetricsConsent(request, flags)
+
+      setConsent(saved)
+
+      // This page applies to the focused profile: Desktop telemetry follows its switch at once.
+      if (saved && scopeProfile === null) {
+        setDesktopMetricsGate(saved.enabled ? 'on' : 'off')
+      }
     } catch (err) {
       setConsent(previous)
       notifyError(err, copy.saveFailed)

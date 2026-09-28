@@ -20,6 +20,7 @@ import {
   refreshDataUrlReadMaxMb,
   setDataUrlReadMaxMb
 } from '@/store/data-url-read-max'
+import { recordSettingsSaved } from '@/store/desktop-metrics'
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
 import { $alwaysExternalLinks, setAlwaysExternalLinks } from '@/store/external-links'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
@@ -232,6 +233,9 @@ function ConfigSettingsInner({
           // Mirror the saved record into the shared cache so MCP/model surfaces
           // reflect the edit without their own refetch.
           writeConfigCache(snapshot)
+          const savedScope = writeScope ?? scopeProfile
+
+          recordSettingsSaved(patch, typeof savedScope === 'string' ? savedScope : savedScope?.profile)
 
           if (saveVersionRef.current === v) {
             // The repo-discovery scan reads the ACTIVE profile's workspace

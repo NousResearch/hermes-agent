@@ -163,6 +163,7 @@ import {
   useBackgroundSync
 } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
+import { useDesktopMetrics } from './hooks/use-desktop-metrics'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
@@ -952,6 +953,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
     return window.hermesDesktop?.updates?.onPendingRun?.(report)
   }, [gatewayState, requestGateway])
+
+  useDesktopMetrics({
+    enabled: !isAuxiliaryWindow(),
+    gatewayOpen: gatewayState === 'open',
+    pathname: location.pathname,
+    profile: activeGatewayProfile,
+    requestGateway
+  })
 
   const activeIsMessaging =
     !!selectedStoredSessionId &&

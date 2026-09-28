@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: gondola
+description: Search hotels, flights, and rental cars; compare loyalty points vs cash rates; manage trips, loyalty accounts, rate alerts, and bookings.
+source: https://gondola.ai/mcp
+
+# Gondola ships a remote MCP server over Streamable HTTP with native OAuth 2.1
+# + Dynamic Client Registration. Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh — nothing to install locally.
+transport:
+  type: http
+  url: https://mcp.gondola.ai/mcp
+
+auth:
+  type: oauth
+  # No `provider:` — this is native MCP OAuth (case 1), not a third-party
+  # provider like Google. DCR lives at POST /api/oauth/register and the
+  # protected-resource metadata at /.well-known/oauth-protected-resource
+  # (RFC 9728). The MCP client triggers the browser flow on first connect.
+
+# Tool selection at install time:
+# Gondola's MCP server exposes ~31 tools. Search/discovery tools (search_hotels,
+# compare_rates, search_flights, search_vehicles, predict_price, etc.) work
+# anonymously. Trips, loyalty, payment-method, and rate-alert reads need the
+# mcp:read scope; booking and cancellation tools (book_hotel, book_vehicle,
+# cancel_vehicle_booking, create_rate_alert, delete_rate_alert) need mcp:book.
+# All of that is gated by OAuth scope server-side, so we leave `default_enabled`
+# unset — the install-time checklist starts with everything pre-checked and
+# users prune what they don't want.
+
+post_install: |
+  Gondola's hotel, flight, and rental-car search tools work without signing in.
+  To use trips, loyalty accounts, rate alerts, and booking, Hermes will open a
+  browser to authenticate with Gondola on first connection (scopes: mcp:read,
+  mcp:book). After auth, restart your Hermes session so the Gondola tools load.
+
+  You can re-run the tool checklist any time with:
+    hermes mcp configure gondola

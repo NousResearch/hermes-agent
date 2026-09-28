@@ -1,9 +1,9 @@
 # Hermes Agent - Development Guide
 
-Instructions for AI coding assistants and developers working on the hermes-agent codebase.
-This root file holds only what applies everywhere. Each area has its own `AGENTS.md` (aim for
-~8k chars; `agent/subdirectory_hints.py` delivers up to 32k and truncates head/tail with a warning
-past that); see the **routing table** at the end and read the area file before editing in that area.
+For AI coding assistants and developers on the hermes-agent codebase. This root file holds
+only what applies everywhere; each area has its own `AGENTS.md` (aim ~8k chars —
+`agent/subdirectory_hints.py` truncates past 32k with a warning). Read the area file from the
+**routing table** before editing in that area.
 
 **Never give up on the right solution.**
 
@@ -35,12 +35,10 @@ sweeper, which may only close on `implemented_on_main`, `cannot_reproduce`, or `
 Taste-based "out of scope" closes are a human maintainer's call; the sweeper's job is to
 recognize design intent and *avoid wrongly closing a legitimate contribution*.
 
-Read the balance right: Hermes ships a **lot**. Most merges are bug fixes to reported
-behavior, and the product surface (platforms, providers, models, desktop/TUI features)
-expands aggressively on purpose. The restraint below targets the **core agent + model tool
-schema**, the one place where every addition is paid for on every API call. "Smallest
-footprint" governs *how a capability is wired into the core*, not whether the product may
-grow: expansive at the edges, conservative at the waist.
+Read the balance right: the product surface expands aggressively on purpose; the restraint
+below targets the **core agent + model tool schema**, where every addition is paid for on
+every API call. "Smallest footprint" governs *how a capability is wired into the core*, not
+whether the product may grow: expansive at the edges, conservative at the waist.
 
 ### What we want
 
@@ -103,9 +101,8 @@ grow: expansive at the edges, conservative at the waist.
 
 ### Before you call it a bug — verify the premise (and when NOT to close)
 
-The most common reason a well-written PR is closed is a **wrong premise** or treating an
-**intentional design as a gap**. These patterns tell a reviewer what to scrutinize and tell
-the sweeper when a PR is NOT safe to close (when in doubt, leave it open for a human):
+A **wrong premise** or treating **intentional design as a gap** is the most common reason a
+well-written PR is closed; the sweeper must leave such PRs open for a human:
 
 - **"Intentional design, not a gap."** Ask whether the isolation IS the design. Profiles are
   independent islands on purpose: a PR adding live config inheritance from the default
@@ -151,41 +148,22 @@ Choose the highest (least-footprint) rung that correctly solves the problem:
    unreachable via terminal + file or an MCP server (terminal, read_file, web_search,
    browser_navigate).
 
-### Surface capability is a property of the SESSION, never of the process env
+### Surface capability is SESSION-scoped (not process env)
 
-A tool that works only because of *who is on the other end* (desktop panes, in-app browser,
-message reactions, Projects) must resolve availability from the **session's own source**, not
-from an env var on the backend. Client and backend are separate machines: the desktop app may
-drive a locally spawned backend, one over SSH, one behind URL + token, or Hermes Cloud, and
-only the first two carry `HERMES_DESKTOP=1`. An env-keyed gate is a silent no-op on the other
-topologies — the tool is stripped from the schema while the platform hint tells the model it
-is "inside the Hermes desktop app". The pattern:
-
-- **The toolset is the surface gate.** Keep such tools off `_HERMES_CORE_TOOLS` and in a named
-  toolset (`desktop_ui`, `project`); the GUI gateway's `_load_enabled_toolsets(platform)`
-  folds it in when the session's platform says GUI. One resolver, every topology.
-- **`check_fn` answers reachability or opt-in, not surface.** "Is the bridge wired?" — fine.
-  "Was I spawned by Electron?" — not. `check_fn` results are TTL-cached process-wide
-  (`tools/registry.py`); a per-session answer does not belong there.
-- **Ask which identity you mean.** `HERMES_DESKTOP=1` legitimately means "this backend was
-  spawned by the app" (cron ticker, web-dist handling). It does NOT mean "a GUI is watching";
-  the embedded terminal pane (`hermes --tui` against that backend) is the counterexample.
-
-Test: if the capability still makes sense with the client on another machine, it is
-session-scoped. Assert the GUI session gets the tool **with the env var absent**.
+Tools that exist because of *who is watching* (desktop panes, in-app browser, Projects) resolve
+availability from the session's own source via a named toolset folded in by the resolver —
+never an env var. Full rule set with the topology counterexamples: `agent/AGENTS.md` § Surface
+capability is a property of the SESSION.
 
 ## Development Environment
 
 ```bash
 source ./activate   # provisions/syncs PM tools + dependencies, then activates
 ```
-Select an isolated development `HERMES_HOME` and `HERMES_RUNTIME_DIR` first;
-see `website/docs/reference/package-management.md#developer-workflow`.
-PowerShell: `. .\activate.ps1`. `deactivate` restores the prior environment.
-For tests, use the independent test environment in `CONTRIBUTING.md` (or Nix);
-PM activation's `PYTHONPATH` does not survive the test runner's environment scrub.
-`scripts/run_tests.sh` probes `.venv`, then `venv`, then `$HOME/.hermes/hermes-agent/venv`
-(worktrees sharing the main checkout's venv).
+Isolated dev `HERMES_HOME`/`HERMES_RUNTIME_DIR`: see
+`website/docs/reference/package-management.md#developer-workflow`. PowerShell: `. .\activate.ps1`.
+Tests use the independent test env in `CONTRIBUTING.md` (PM's `PYTHONPATH` does not survive the
+runner's scrub). `scripts/run_tests.sh` probes `.venv`, `venv`, then the main checkout's venv.
 
 ## Project Structure
 
@@ -214,11 +192,7 @@ hermes-agent/
 ├── ui-tui/               # Ink (React) terminal UI — `hermes --tui`
 ├── tui_gateway/          # Python JSON-RPC backend for TUI + Desktop — server.py + methods_*.py
 ├── apps/desktop/         # Electron desktop app (+ apps/shared JSON-RPC client)   web/: dashboard SPA
-├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                 # jobs.py + scheduler.py (+ scheduler_*.py)
-├── evals/                # Offline benchmarks (codebase_navigability/, compaction/, ...)
-├── scripts/              # run_tests.sh, release.py, check_compat_pointers.py, ci/
-├── website/              # Docusaurus docs (developer-guide/ holds the long-form area docs)
 └── tests/                # Pytest suite (~39k tests / ~3.7k files, Sep 2026)
 ```
 
@@ -232,11 +206,10 @@ profile-aware via `get_hermes_home()`. Browse logs with `hermes logs [--follow] 
 ### Facade + siblings layout (Sep 2026 decomposition)
 
 Every former god file is a **facade** (public entry points + the names other packages import)
-plus **siblings** `<stem>_<topic>.py` in the same directory, each owning one topic. Largest
-families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15),
-`hermes_cli/kanban.py` (14), `hermes_cli/web_server.py` (13 + 24 routers), `hermes_cli/auth.py`
-(12), `tools/browser_tool.py` (11), `cli.py` (12 `hermes_cli/cli_*_mixin.py`), `run_agent.py`
-(`agent/turn_*.py`, `agent_init.py`, `conversation_loop.py`).
+plus **siblings** `<stem>_<topic>.py` in the same directory, each owning one topic — e.g.
+`hermes_state.py` + 20 siblings, `gateway/run.py` + 14, `cli.py` + 12 `hermes_cli/cli_*_mixin.py`,
+`run_agent.py` (`agent/turn_*.py`, `agent_init.py`, `conversation_loop.py`). Counts shift;
+`ls <dir>/<stem>_*.py` is canonical.
 
 - **Find code by topic, not by facade:** `grep -rn "def name" <dir>/<stem>_*.py`. Reading the
   facade first is the expensive way (`evals/codebase_navigability/`).
@@ -308,17 +281,14 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
 
 ### TypeScript style (desktop, TUI, website, future TS packages)
 
-Small nanostores over component state when state is shared or read by distant UI; each
-feature owns its atoms (chat near chat, shared in `src/store`); rendering components use
-`useStore`, non-rendering actions read `$atom.get()`; never thread state through three
-components when the leaf can subscribe; persistence sits beside the atom that owns it. Route
-roots stay thin (compose routes + shell, never controllers). No monolithic hooks — one narrow
-job each; colocated action modules over god hooks. Pure side-effect callbacks use the terse
-void form `onState={st => void setGatewayState(st)}`; async handlers make intent explicit
-`onClick={() => void save()}`. Interfaces for public props and shared object shapes (not
-`type X = {...}`); extend React primitives (`React.ComponentProps<'button'>`, `Omit`, `Pick`).
-Table-driven beats condition ladders for ids/routes/views. `src/app` owns routes/pages,
-`src/store` shared atoms, `src/lib` pure helpers.
+Small nanostores over component state when shared or read by distant UI; each feature owns its
+atoms (chat near chat, shared in `src/store`); components use `useStore`, non-rendering actions
+`$atom.get()`; persistence sits beside the owning atom. Route roots stay thin (compose, never
+control). No god hooks — one narrow job each, colocated action modules. Async handlers explicit:
+`onClick={() => void save()}`. Interfaces (not `type X`) for public props; extend React
+primitives (`React.ComponentProps<'button'>`, `Omit`, `Pick`). Table-driven beats condition
+ladders for ids/routes/views. `src/app` routes/pages, `src/store` shared atoms, `src/lib` pure
+helpers.
 
 ## Dependency Pinning Policy
 
@@ -396,114 +366,17 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
   asserting about `package.json`, `package-lock.json`, `tsconfig.json`, or `.ts/.tsx/.js/
   .mjs/.cjs` sources will not run on a JS-only PR (green on PR, red on `main` where the
   classifier fails open). Such tests belong in the vitest suite, not `tests/*.py`.
-- **Tests must not write to `~/.hermes/`.** The autouse `_isolate_hermes_home` fixture in
-  `tests/conftest.py` redirects `HERMES_HOME`; never hardcode `~/.hermes/` in tests. Profile
-  tests also mock `Path.home()` so `_get_profiles_root()` / `_get_default_hermes_home()` stay
-  in the temp dir (pattern: `tests/hermes_cli/test_profiles.py`):
-  ```python
-  @pytest.fixture
-  def profile_env(tmp_path, monkeypatch):
-      home = tmp_path / ".hermes"; home.mkdir()
-      monkeypatch.setattr(Path, "home", lambda: tmp_path)
-      monkeypatch.setenv("HERMES_HOME", str(home))
-      return home
-  ```
-  Tests that `patch.object(Path, "home", ...)` must ALSO set `HERMES_HOME` — code reads the
-  env var, not `Path.home()/.hermes`.
+- **Tests must not write to `~/.hermes/`** — `tests/conftest.py` autouse-redirects `HERMES_HOME`; the `Path.home()` mock pattern is in `tests/AGENTS.md`.
 
-### Don't fake the host OS
+### Detailed rules live in `tests/AGENTS.md`
 
-Behaviour that genuinely differs per host is tested ON that host with `@pytest.mark.platforms("linux")`
-/ `platforms("macos")` / `platforms("windows")`, never by patching `sys.platform`. Host-independent things stay
-unmarked: pure functions that take the platform as data (`hidden_windows_child_options(opts,
-is_windows=True)`) and declaration/packaging invariants ("pyproject declares `tzdata` with a
-`sys_platform == 'win32'` marker"). Setting a module-level `IS_WINDOWS` flag and calling
-`windows_detach_flags()` IS a fake. The line: **if the test needs the interpreter to believe it
-is on another OS to pass, it belongs on that OS.** A test that walks several platforms in
-sequence is split — host-native arm on Linux, other arms as their own marked tests.
-
-One marker per test, with any number of spec strings (any-of semantics) plus
-optional arch filters. To gate on several OSes, pass several specs to ONE
-marker — never stack several `platforms()` decorators on one test (the
-conftest rejects that at collection):
-
-```python
-@pytest.mark.platforms("linux", "macos")  # ONE marker, two specs: runs on either
-def test_posix_signal_path(): ...
-```
-
-Other single-marker forms (each is a complete marker on its own):
-`platforms("windows")` (native Windows only), `platforms("not macos")`
-(anywhere except macOS), `platforms("windows", arch="arm64")` (native Windows
-on arm64), `platforms("posix")` (Linux or macOS).
-
-Specs: `linux`, `macos`, `windows`, `posix`, `any`, and `not <spec>`.
-The historic `linux_only` / `macos_only` / `windows_only` markers have been
-fully replaced — `platforms` is the only host-gating marker in the tree.
-
-**Live Windows process-topology E2E: the `wine2e` lane.** For claims about
-real Windows process behavior that mocks cannot reproduce (venv-holder
-scans, process-tree parentage, launcher/worker chains, detach semantics),
-there is an on-demand workflow `windows-venv-e2e.yml` that runs
-`tests/hermes_cli/test_venv_holder_windows_live.py` on a real
-`windows-latest` runner — spawning actual processes and driving the real
-detection code, no mocked psutil. It fires ONLY on pushes to `wine2e/**`
-branches (inert on PRs and main; costs nothing on normal work). The proven
-workflow: write probes that pin CORRECT behavior, push to a `wine2e/`
-branch to reproduce the bugs live on unfixed code, build the fix, iterate
-until the lane is green, then open the PR — the live receipt on the exact
-head is the Windows proof reviewers ask for. Extend the live suite when
-touching that subsystem; assert against the gateway ANCESTOR found by
-argv, not the direct parent (the venv shim makes every spawn a
-launcher/worker chain).
-
-**Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py`
-decides which files an OS lane imports by resolving the quoted specs inside
-`platforms(...)` (`"posix"` reaches the macOS lane, `"not linux"` reaches
-both others), and the lane then selects with `-m platforms` while the
-conftest's per-test host skips do the actual gating. A test gated with
-`@pytest.mark.skipif(sys.platform != "win32")` therefore runs on no host at
-all, silently — it is never imported by the lane that would run it, and the
-full-suite lanes skip it. `skipif(sys.platform == "win32")` becomes
-`platforms("posix")`; a non-host condition (`os.geteuid() == 0`) stays a
-separate `skipif` beside the marker. A misspelt spec is a collection error,
-not a skip. Don't stack a module-level `pytestmark =
-platforms(...)` on a file whose tests carry their own host marker — the
-conftest hard-rejects tests carrying two `platforms()` markers (a test
-skipped on every host, reported green everywhere).
-Equally, don't `pytest.skip()` the non-host rows of a `@parametrize` over
-platforms — split it into one marked test per OS, or only the host's row ever
-executes.
-
-### Don't write change-detector tests
-
-A change-detector fails whenever data *expected to change* is updated — model catalogs,
-`_config_version`, enumeration counts, hardcoded model lists. It adds no coverage and taxes
-every routine update. Don't: `assert "gemini-2.5-pro" in _PROVIDER_MODELS["gemini"]`,
-`assert DEFAULT_CONFIG["_config_version"] == 21`, `assert len(models) == 8`. Do: `assert
-"gemini" in _PROVIDER_MODELS and len(_PROVIDER_MODELS["gemini"]) >= 1` (plumbing works);
-`assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]` (migration reaches
-latest); `assert not (set(moonshot_models) & coding_plan_only_models)` (no leak); every
-catalog model has a context-length entry (relationship). If it reads like a snapshot, delete
-it; if it reads like a contract between two pieces of data, keep it. Reviewers reject new
-change-detectors; authors convert them before re-review.
-
-### Never read source code in tests
-
-A test that reads a `.py`/`.ts`/`.tsx` file's text tests the *shape of the source*, not
-behavior — banned outright. It passes when the implementation is subtly broken (regex matches
-a mis-wired call site) and fails on correct refactors; it can't run against bundled/minified
-artifacts; it blocks structural cleanup; it gives false confidence. Don't
-`fs.readFileSync('main.ts')` + `assert.match(source, /spawn\(...hiddenWindowsChildOptions/)`.
-Do extract the logic into a pure/DI-testable function and call it:
-```ts
-export function hiddenWindowsChildOptions(options = {}, isWindows = process.platform === 'win32') {
-  if (!isWindows || 'windowsHide' in options) return options
-  return { ...options, windowsHide: true }
-}
-```
-If the logic lives inline in a god-file and extraction feels disruptive, that is the signal to
-extract, not to regex around it.
+Host-faking (`platforms()` markers, the `wine2e` live lane), change-detector tests, reading
+source text in tests, and `~/.hermes/` isolation each have a full rule set in
+`tests/AGENTS.md` — read it before writing or reviewing a test. The three-line versions:
+never patch `sys.platform` (use `platforms(...)` on the host that has the behaviour); a test
+that fails when data *expected to change* changes is a change-detector (delete it); a test
+that reads source text tests the shape of the source, not behaviour (extract and call the
+function instead).
 
 ## Routing Table — working in X → read X/AGENTS.md
 
@@ -519,6 +392,7 @@ extract, not to regex around it.
 | `apps/desktop/` | `apps/desktop/AGENTS.md`, `apps/desktop/src/AGENTS.md` | Desktop judgment guide; `serve` backend, slash palette curation, Bot Mode canonical chat |
 | `skills/`, `optional-skills/`, `agent/curator*.py` | `skills/AGENTS.md` | Frontmatter, HARDLINE authoring standards, curator |
 | `cron/`, kanban (`hermes_cli/kanban*.py`, `tools/kanban_tools.py`, `plugins/kanban/`) | `cron/AGENTS.md` | Scheduler invariants, job fields, kanban board/dispatcher |
+| `tests/`, `scripts/ci/` | `tests/AGENTS.md` | Home-dir isolation, `platforms()` markers, wine2e live lane, change-detector rule, never-read-source rule |
 | `gateway/platforms/` new adapter | `gateway/platforms/ADDING_A_PLATFORM.md` | Step-by-step adapter guide |
 | profiles / multiplex / secret scope (any area) | `gateway/AGENTS.md` § Profile scope, `website/docs/user-guide/multi-profile-gateways.md` § What is isolated per profile | which execution points bind scope, what is isolated per profile |
 

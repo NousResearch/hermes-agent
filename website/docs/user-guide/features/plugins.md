@@ -601,8 +601,8 @@ default**: every call re-checks the `gateway.platform_actions` capability
 (legacy key `plugins.entries.<id>.allow_platform_actions`), and an ungranted
 call returns a structured error instead of acting.
 
-v1 verbs (both `async`, both return a plain dict, and neither ever raises into
-hook dispatch):
+Verbs (all `async`, all return a plain dict, and none ever raises into hook
+dispatch):
 
 ```python
 result = await ctx.platform_actions.add_reaction(
@@ -610,6 +610,10 @@ result = await ctx.platform_actions.add_reaction(
 )
 result = await ctx.platform_actions.set_thread_title(
     platform="discord", chat_id="123", thread_id="456", title="New title",
+)
+result = await ctx.platform_actions.set_message_buttons(
+    platform="telegram", chat_id="-100123", message_id="456",
+    buttons=[{"label": "Apply", "data": "myplugin:apply:42"}],   # [] removes the buttons
 )
 if not result["ok"]:
     print(result["error"], result.get("detail"))
@@ -623,15 +627,28 @@ Success is `{"ok": True, "action": <verb>}`. Failures are
 target adapter exists and is connected before acting; a disconnected or
 missing adapter degrades to a structured error, never an exception.
 
-Platforms supported in v1: Telegram and Discord. Telegram's `add_reaction`
-*sets* the bot's reaction (the Bot API replaces a previous bot reaction rather
-than stacking). Every action — allowed or denied — is written to the log with
+Platforms: `add_reaction` and `set_thread_title` support Telegram and Discord;
+`set_message_buttons` supports Telegram (other platforms return
+`unsupported_platform_action`). Telegram's `add_reaction` *sets* the bot's
+reaction (the Bot API replaces a previous bot reaction rather than stacking).
+
+`set_message_buttons` replaces the inline keyboard under a message the bot
+sent — one button per row, at most 8. Each button is `{"label": str, "data": str}`;
+`data` (1–64 UTF-8 bytes) is the opaque payload Telegram returns on click.
+`data` may **not** start with a prefix the core callback dispatcher owns
+(`ea:`, `cl:`, `mp:`, … — see `CORE_CALLBACK_PREFIXES` in the Telegram adapter),
+so a plugin can never mint an exec-approval, clarify or model-picker button;
+such a call fails with `invalid_argument`. Clicks are not routed back through
+this facade: handle them with a pattern-scoped
+`ctx.register_telegram_handler` on your own `data` prefix (for example
+`^myplugin:`). The usual trigger is [`gateway_message_delivered`](hooks.md#gateway_message_delivered),
+which tells the plugin which message ids a delivery produced. Every action — allowed or denied — is written to the log with
 the plugin id, verb, platform, and outcome.
 
 :::warning Security note
 Platform actions are a **messaging-as-the-bot power**: a granted plugin can
-react and rename threads in any chat the gateway bot can reach, not just the
-chat that triggered the hook. Grant `gateway.platform_actions` only to plugins
+react, rename threads and put buttons under bot messages in any chat the
+gateway bot can reach, not just the chat that triggered the hook. Grant `gateway.platform_actions` only to plugins
 you trust, and prefer plugins that document exactly which actions they take.
 Raw platform SDK payload/handle access is deliberately **not** part of this
 surface — per the #64176 round-2 design correction it requires its own

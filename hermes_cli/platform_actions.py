@@ -7,7 +7,7 @@ Every verb returns a structured result dict — ``{"ok": True, ...}`` on success
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,48 @@ async def _telegram_set_thread_title(adapter, chat_id, thread_id, title):
     return _ok(action="set_thread_title")
 
 
+MAX_MESSAGE_BUTTONS = 8
+MAX_BUTTON_LABEL_CHARS = 64
+MAX_BUTTON_DATA_BYTES = 64  # Telegram's callback_data limit
+
+
+def _normalize_buttons(buttons: Any) -> Tuple[Optional[List[Dict[str, str]]], Optional[Dict[str, Any]]]:
+    """Validate ``[{"label": str, "data": str}, ...]`` → ``(normalized, None)`` or ``(None, error)``.
+
+    ``data`` is the opaque payload the platform returns on click; it must not start with a prefix the
+    core callback dispatcher owns, so a plugin can never mint an exec-approval, clarify or model-picker
+    button. ``[]`` is valid and removes the buttons.
+    """
+    if not isinstance(buttons, (list, tuple)):
+        return None, _err("invalid_argument", "buttons must be a list of {label, data} dicts")
+    if len(buttons) > MAX_MESSAGE_BUTTONS:
+        return None, _err("invalid_argument", f"at most {MAX_MESSAGE_BUTTONS} buttons")
+    try:
+        from plugins.platforms.telegram.adapter import CORE_CALLBACK_PREFIXES
+    except Exception:
+        # Fail closed: without the reserved-prefix list no button can be proven safe.
+        return None, _err("action_failed", "reserved callback prefixes unavailable")
+    normalized: List[Dict[str, str]] = []
+    for index, button in enumerate(buttons):
+        if not isinstance(button, dict):
+            return None, _err("invalid_argument", f"buttons[{index}] must be a dict")
+        label, data = button.get("label"), button.get("data")
+        if not isinstance(label, str) or not label.strip() or len(label) > MAX_BUTTON_LABEL_CHARS:
+            return None, _err("invalid_argument", f"buttons[{index}].label must be 1-{MAX_BUTTON_LABEL_CHARS} chars")
+        if not isinstance(data, str) or not data or len(data.encode("utf-8")) > MAX_BUTTON_DATA_BYTES:
+            return None, _err("invalid_argument", f"buttons[{index}].data must be 1-{MAX_BUTTON_DATA_BYTES} UTF-8 bytes")
+        if data.startswith(CORE_CALLBACK_PREFIXES):
+            return None, _err("invalid_argument", f"buttons[{index}].data uses a reserved core callback prefix")
+        normalized.append({"label": label.strip(), "data": data})
+    return normalized, None
+
+
+async def _telegram_set_message_buttons(adapter, chat_id, message_id, buttons):
+    if await adapter.set_message_buttons(chat_id, message_id, buttons):
+        return _ok(action="set_message_buttons", count=len(buttons))
+    return _err("action_failed", "telegram edit_message_reply_markup failed")
+
+
 async def _discord_set_thread_title(adapter, chat_id, thread_id, title):
     if await adapter.rename_thread(thread_id, title):
         return _ok(action="set_thread_title")
@@ -67,6 +109,7 @@ async def _discord_set_thread_title(adapter, chat_id, thread_id, title):
 _VERBS = {
     "add_reaction": {"telegram": _telegram_add_reaction, "discord": _discord_add_reaction},
     "set_thread_title": {"telegram": _telegram_set_thread_title, "discord": _discord_set_thread_title},
+    "set_message_buttons": {"telegram": _telegram_set_message_buttons},
 }
 
 
@@ -158,7 +201,7 @@ class PlatformActions:
                 return None, _err("invalid_argument", f"{name} must be a non-empty string")
         return self._resolve_adapter(platform)
 
-    async def _run(self, verb: str, platform: str, *args: str, **required: Any) -> Dict[str, Any]:
+    async def _run(self, verb: str, platform: str, *args: Any, **required: Any) -> Dict[str, Any]:
         """Gate, dispatch *verb* to the adapter's platform implementation, audit, return."""
         adapter, error = self._gate(platform, **required)
         if error is None and adapter is not None:
@@ -189,6 +232,26 @@ class PlatformActions:
         return await self._run(
             "set_thread_title", platform, chat_id, thread_id, title,
             chat_id=chat_id, thread_id=thread_id, title=title,
+        )
+
+    async def set_message_buttons(
+        self, platform: str, chat_id: str, message_id: str, buttons: List[Dict[str, str]],
+    ) -> Dict[str, Any]:
+        """Replace the inline buttons under a message the bot sent (``[]`` removes them).
+
+        ``buttons`` is ``[{"label": str, "data": str}, ...]`` (one button per row, at most
+        ``MAX_MESSAGE_BUTTONS``). Clicks are NOT routed back through this facade: handle them with a
+        pattern-scoped ``ctx.register_telegram_handler`` on the plugin's own ``data`` prefix.
+        """
+        normalized: List[Dict[str, str]] = []
+        if self._capability_granted():  # an ungranted call falls through to the gate's structured denial
+            normalized, error = _normalize_buttons(buttons)
+            if error is not None:
+                self._audit("set_message_buttons", platform, error)
+                return error
+        return await self._run(
+            "set_message_buttons", platform, chat_id, message_id, normalized,
+            chat_id=chat_id, message_id=message_id,
         )
 
     def _audit(self, verb: str, platform: str, result: Dict[str, Any]) -> None:

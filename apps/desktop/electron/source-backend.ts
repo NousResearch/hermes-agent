@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 
 import { buildDesktopBackendEnv } from './backend-env'
@@ -46,6 +46,28 @@ function probeFailureDetail(err: unknown): string {
   return parts.length > 0 ? parts.join(' / ') : 'unknown failure'
 }
 
+/**
+ * Did the desktop installer ever populate this root? A `.hermes-bootstrap-complete`
+ * marker attests a completed desktop first-run install; a `node_modules` dir with
+ * real entries attests at least a staged dependency install. A bare directory (or
+ * one never touched by the installer) is the ordinary "not installed yet" state
+ * and must stay quiet (#123921 review P2: the unconditional line fired on every
+ * first run and flooded the bounded ring).
+ */
+function rootHasInstallEvidence(root: string): boolean {
+  try {
+    if (existsSync(path.join(root, '.hermes-bootstrap-complete'))) {
+      return true
+    }
+
+    const nodeModules: string = path.join(root, 'node_modules')
+
+    return existsSync(nodeModules) && readdirSync(nodeModules).length > 0
+  } catch {
+    return false
+  }
+}
+
 /** Keep the validated command. PM owns interpreter and generation selection. */
 export async function resolveSourceInstallationBackend(
   root: string,
@@ -55,7 +77,18 @@ export async function resolveSourceInstallationBackend(
   const log: (message: string) => void = options.log ?? (() => {})
 
   if (!existsSync(path.join(root, 'hermes_cli', 'main.py'))) {
-    log(`Active install root ${root} has no hermes_cli/main.py; nothing usable to launch there.`)
+    // "Never installed" is the ordinary first-run outcome here (main.ts treats
+    // the null as the recoverable bootstrap-needed state), so it must stay
+    // quiet: this resolver runs on every launch, and a defect-worded line per
+    // run would flood the bounded rememberLog ring and evict the lines that
+    // explain a real failure. A root the desktop installer POPULATED but that
+    // lost hermes_cli/main.py is a torn install — that one is worth a line.
+    if (rootHasInstallEvidence(root)) {
+      log(
+        `Active install root ${root} was populated (desktop bootstrap marker or staged dependencies present) ` +
+          'but hermes_cli/main.py is missing; the install looks torn.'
+      )
+    }
 
     return null
   }
@@ -87,7 +120,7 @@ export async function resolveSourceInstallationBackend(
     })
   } catch (err) {
     const reason: string = isTimeoutError(err)
-      ? `timed out after ${PROBE_TIMEOUT_MS}ms per attempt (the one cold-start retry included)`
+      ? `timed out: each of the 2 attempts (one cold-start retry included) got ${PROBE_TIMEOUT_MS}ms, up to ${PROBE_TIMEOUT_MS * 2}ms total`
       : `failed (${probeFailureDetail(err)})`
 
     log(`${launcher} --version probe ${reason}; treating the install at ${root} as unusable.`)

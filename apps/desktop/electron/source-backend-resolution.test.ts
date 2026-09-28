@@ -74,6 +74,44 @@ test('a failing --version probe is logged with the launcher and its exit code', 
   }
 })
 
+test('a never-installed root stays quiet: the ordinary first-run path logs nothing', async (): Promise<void> => {
+  const root: string = makeTempRoot('desktop-resolution-')
+
+  try {
+    // No hermes_cli/, no bootstrap marker, no node_modules: this is the
+    // "not installed yet" state the GUI drives through bootstrap — logging
+    // it every launch would flood the bounded rememberLog ring (#123921 P2).
+    const lines: string[] = []
+    const backend: unknown = await resolveSourceInstallationBackend(root, [], { log: m => lines.push(m) })
+
+    assert.equal(backend, null)
+    assert.equal(lines.length, 0)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a populated root that lost hermes_cli/main.py is logged as a torn install', async (): Promise<void> => {
+  const root: string = makeTempRoot('desktop-resolution-')
+
+  try {
+    // Installer evidence exists (bootstrap marker + staged dependencies) but
+    // the tree lost its entry point: this is the failure worth a line.
+    fs.writeFileSync(path.join(root, '.hermes-bootstrap-complete'), '{}')
+    fs.mkdirSync(path.join(root, 'node_modules', 'some-dep'), { recursive: true })
+
+    const lines: string[] = []
+    const backend: unknown = await resolveSourceInstallationBackend(root, [], { log: m => lines.push(m) })
+
+    assert.equal(backend, null)
+    assert.equal(lines.length, 1)
+    assert.ok(lines[0].includes('main.py is missing'), lines[0])
+    assert.ok(lines[0].includes('torn'), lines[0])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('a probe timeout is logged as a timeout, naming the per-attempt budget', async (): Promise<void> => {
   vi.resetModules()
   vi.stubEnv('HERMES_PROBE_TIMEOUT_MS', '300')
@@ -100,7 +138,9 @@ test('a probe timeout is logged as a timeout, naming the per-attempt budget', as
       assert.equal(backend, null)
       assert.equal(lines.length, 1)
       assert.ok(lines[0].includes(launcher), lines[0])
-      assert.ok(lines[0].includes('timed out after 300ms'), lines[0])
+      assert.ok(lines[0].includes('timed out'), lines[0])
+      assert.ok(lines[0].includes('got 300ms'), lines[0])
+      assert.ok(lines[0].includes('600ms total'), lines[0])
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }

@@ -422,11 +422,18 @@ def test_parser_crash_fails_that_entry_not_the_loop(tmp_path, fixture):
 @pytest.mark.platforms("linux")
 def test_parser_imports_cannot_be_shadowed_by_checkout_files(tmp_path, fixture):
     """The parser runs with cwd = the PR checkout; without interpreter isolation a
-    PR-authored re.py (or shlex.py) shadows the stdlib import and neuters every
-    field check."""
+    PR-authored shlex.py shadows the stdlib import and can swallow the verdict.
+
+    shlex, not re: `re` is already imported during interpreter startup, so a cwd
+    re.py never shadows it and the guard would pass even without `-I`. shlex is
+    first imported by the parser itself, so it is the load-bearing vector."""
     origin, sha, tmpdir = fixture
-    (tmp_path / "re.py").write_text(
-        "def fullmatch(*a, **k):\n    return True\n", encoding="utf-8")
+    (tmp_path / "shlex.py").write_text(
+        "def quote(s):\n"
+        "    if s.startswith('repo must'):\n"
+        "        s = ''  # swallow the rejection so BAD evals empty\n"
+        "    return \"'\" + s.replace(\"'\", \"'\\\\''\") + \"'\"\n",
+        encoding="utf-8")
     entry = _write_entry(tmp_path, "evil.yaml",
                          repo=origin.as_uri(), sha=sha, subdir="plugin")
     res = _run_gate(_env(tmp_path, origin, entry, tmpdir), tmp_path)

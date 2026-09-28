@@ -147,6 +147,17 @@ def _model_provider_listing_lines(providers) -> list[str]:
     return lines
 
 
+def _in_profile_scope(profile_home, fn, /, *args, **kwargs):
+    """Run a ``/model`` listing call in the routed profile's runtime scope, like the picker's selection
+    callback: under multiplex the explicit-provider filter must read THAT profile's config and ``.env``
+    (an unscoped secret read raises). ``profile_home`` None (single profile) runs *fn* as-is."""
+    if profile_home is None:
+        return fn(*args, **kwargs)
+    from gateway.run import _profile_runtime_scope
+    with _profile_runtime_scope(profile_home):
+        return fn(*args, **kwargs)
+
+
 class GatewayModelCommandsMixin:
     """Model-route slash commands (/model, /codex-runtime, /reasoning, /fast, /personality)."""
 
@@ -430,12 +441,13 @@ class GatewayModelCommandsMixin:
                 persist_global=ctx.persist_global and global_error is None)
         return reply
 
-    async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
+    async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected, profile_home=None) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
         is session-key-normalized so the picker's thread metadata lands where the next turn reads."""
         from hermes_cli.model_switch_providers import list_picker_providers
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(
+                _in_profile_scope, profile_home,
                 list_picker_providers, max_models=50, include_moa=True, explicit_only=True, **listing_kwargs
             )
         except Exception:
@@ -484,15 +496,18 @@ class GatewayModelCommandsMixin:
                 with _profile_runtime_scope(profile_home):
                     return await _picker_switch(model_id, provider_slug)
 
-            if await self._send_model_picker(event, ctx.source, adapter, ctx.session_key, listing_kwargs, _on_model_selected):
+            if await self._send_model_picker(event, ctx.source, adapter, ctx.session_key, listing_kwargs, _on_model_selected, profile_home):
                 return None  # Picker sent — adapter handles the response
+
+        def _explicit_listing() -> list:
+            providers = list_authenticated_providers(max_models=_TEXT_LISTING_MODELS, **listing_kwargs)
+            # Same explicit-provider filter as the picker: ambient credentials aren't "connected".
+            return filter_explicit_picker_rows(providers, current_provider=ctx.current_provider)
 
         lines = [t("gateway.model.current_label", model=ctx.current_model or t("gateway.shared.unknown_value"),
                    provider=get_label(ctx.current_provider)), ""]
-        try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
-            providers = await asyncio.to_thread(list_authenticated_providers, max_models=_TEXT_LISTING_MODELS, **listing_kwargs)
-            # Same explicit-provider filter as the picker: ambient credentials aren't "connected".
-            providers = filter_explicit_picker_rows(providers, current_provider=ctx.current_provider)
+        try:  # off-loop: listing and filter read config/.env/disk cache synchronously (#41289)
+            providers = await asyncio.to_thread(_in_profile_scope, profile_home, _explicit_listing)
             lines.extend(_model_provider_listing_lines(providers))
         except Exception:
             pass

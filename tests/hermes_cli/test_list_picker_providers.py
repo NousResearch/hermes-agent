@@ -330,3 +330,28 @@ def test_explicit_only_hides_default_config_moa_row(monkeypatch):
     kept = model_switch_providers.list_picker_providers(
         current_provider="openai-codex", include_moa=True, explicit_only=True)
     assert [p["slug"] for p in kept] == ["moa", "openai-codex"]
+
+
+def test_explicit_filter_does_not_fail_open_on_unscoped_secret_read(monkeypatch):
+    """Under multiplex with no profile scope the explicit-config env check raises; swallowing it
+    would return every row, ambient Copilot included. The error must reach the caller instead."""
+    from agent import secret_scope
+
+    for var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr("hermes_cli.inventory._external_process_signed_in", lambda slug: False)
+    rows = [_make_provider("openai-codex", models=["gpt-5.4"], is_current=True),
+            _make_provider("copilot", models=["gpt-5.4"])]
+
+    secret_scope.set_multiplex_active(True)
+    try:
+        with pytest.raises(secret_scope.UnscopedSecretError):
+            model_switch_providers.filter_explicit_picker_rows(rows, current_provider="openai-codex")
+        token = secret_scope.set_secret_scope({})
+        try:
+            kept = model_switch_providers.filter_explicit_picker_rows(rows, current_provider="openai-codex")
+        finally:
+            secret_scope.reset_secret_scope(token)
+    finally:
+        secret_scope.set_multiplex_active(False)
+    assert [p["slug"] for p in kept] == ["openai-codex"]

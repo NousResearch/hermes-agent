@@ -159,3 +159,100 @@ async def test_text_listing_hides_ambient_providers(_isolated_config, monkeypatc
     reply = await _make_runner()._handle_model_command(_make_event())
     assert "OpenRouter" in reply
     assert "Copilot" not in reply
+
+
+_AMBIENT_COPILOT_ROWS = [
+    {"slug": "openrouter", "name": "OpenRouter", "is_current": True, "is_user_defined": False,
+     "models": ["gpt-x"], "total_models": 1, "source": "built-in"},
+    {"slug": "copilot", "name": "GitHub Copilot", "is_current": False, "is_user_defined": False,
+     "models": ["gpt-5.4"], "total_models": 1, "source": "built-in"},
+]
+
+
+@pytest.mark.asyncio
+async def test_text_listing_filters_off_the_event_loop(_isolated_config, monkeypatch):
+    """The filter reads config/.env/pool synchronously, so it runs in the listing's worker thread (#41289)."""
+    import threading
+
+    import hermes_cli.model_switch_providers as msp
+
+    loop_thread = threading.get_ident()
+    filter_threads: list[int] = []
+    real_filter = msp.filter_explicit_picker_rows
+
+    def _spy(providers, current_provider=""):
+        filter_threads.append(threading.get_ident())
+        return real_filter(providers, current_provider=current_provider)
+
+    monkeypatch.setattr(msp, "filter_explicit_picker_rows", _spy)
+    monkeypatch.setattr("hermes_cli.model_switch.list_authenticated_providers",
+                        lambda **kw: [dict(r) for r in _AMBIENT_COPILOT_ROWS])
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda slug: False)
+    monkeypatch.setattr("hermes_cli.inventory._external_process_signed_in", lambda slug: False)
+
+    reply = await _make_runner()._handle_model_command(_make_event())
+    assert "Copilot" not in reply
+    assert filter_threads and loop_thread not in filter_threads, "filter ran on the event loop"
+
+
+@pytest.fixture
+def _multiplexed_profile(_isolated_config, tmp_path, monkeypatch):
+    """A multiplexed gateway routing the chat to a profile with no provider keys in its ``.env``:
+    an unscoped secret read raises here, so the listing must bind the routed profile's scope."""
+    from agent import secret_scope
+
+    for var in ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    profile_home = tmp_path / "profiles" / "work"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text((_isolated_config / "config.yaml").read_text(encoding="utf-8"),
+                                              encoding="utf-8")
+    secret_scope.set_multiplex_active(True)
+    yield profile_home
+    secret_scope.set_multiplex_active(False)
+
+
+def _make_multiplex_runner(monkeypatch, profile_home):
+    import types
+
+    runner = _make_runner()
+    monkeypatch.setattr(runner, "config", types.SimpleNamespace(multiplex_profiles=True), raising=False)
+    monkeypatch.setattr(runner, "_resolve_profile_home_for_source", lambda source: profile_home, raising=False)
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_multiplexed_text_listing_filters_in_routed_profile_scope(_multiplexed_profile, monkeypatch):
+    """Unscoped, the real explicit-config check raises ``UnscopedSecretError``; the filter must neither
+    fail open (ambient Copilot back in the list) nor lose the listing — it runs in the profile's scope."""
+    monkeypatch.setattr("hermes_cli.model_switch.list_authenticated_providers",
+                        lambda **kw: [dict(r) for r in _AMBIENT_COPILOT_ROWS])
+    monkeypatch.setattr("hermes_cli.inventory._external_process_signed_in", lambda slug: False)
+
+    reply = await _make_multiplex_runner(monkeypatch, _multiplexed_profile)._handle_model_command(_make_event())
+    assert "OpenRouter" in reply
+    assert "Copilot" not in reply
+
+
+@pytest.mark.asyncio
+async def test_multiplexed_picker_lists_in_routed_profile_scope(_multiplexed_profile, monkeypatch):
+    """The picker listing (and its explicit-only filter) runs in the same profile scope as the
+    selection callback, so it judges the routed profile's config and ``.env``."""
+    from agent.secret_scope import current_secret_scope
+    from hermes_constants import get_hermes_home_override
+
+    seen: list[tuple] = []
+
+    def _fake_list_picker_providers(**kwargs):
+        seen.append((current_secret_scope() is not None, get_hermes_home_override()))
+        return [{"slug": "openrouter", "name": "OpenRouter", "is_current": True,
+                 "models": ["gpt-x"], "total_models": 1}]
+
+    monkeypatch.setattr("hermes_cli.model_switch_providers.list_picker_providers", _fake_list_picker_providers)
+    runner = _make_multiplex_runner(monkeypatch, _multiplexed_profile)
+    runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
+    monkeypatch.setattr(runner, "_thread_metadata_for_source", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(runner, "_reply_anchor_for_event", lambda *a, **k: None, raising=False)
+
+    assert await runner._handle_model_command(_make_event()) is None
+    assert seen == [(True, str(_multiplexed_profile))], seen

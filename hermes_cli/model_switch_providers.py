@@ -1322,12 +1322,16 @@ def _prepend_moa_picker_provider(providers: List[dict], current_provider: str = 
 
 def filter_explicit_picker_rows(providers: List[dict], current_provider: str = "") -> List[dict]:
     """Keep only rows the user explicitly configured — the same filter the Desktop chat picker uses
-    (``inventory._filter_explicit_provider_rows``). Fails open: a filter error keeps every row."""
+    (``inventory._filter_explicit_provider_rows``). Fails open: a filter error keeps every row, except
+    ``UnscopedSecretError`` — a multiplexed caller without a profile scope is a bug, not a missing key."""
+    from agent.secret_scope import UnscopedSecretError
     try:
         from hermes_cli.inventory import ConfigContext, _filter_explicit_provider_rows
         ctx = ConfigContext(current_provider=current_provider or "", current_model="", current_base_url="",
                             user_providers={}, custom_providers=[])
         return _filter_explicit_provider_rows(providers, ctx)
+    except UnscopedSecretError:
+        raise
     except Exception:
         return providers
 

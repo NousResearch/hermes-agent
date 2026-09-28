@@ -6,7 +6,7 @@ import type { Theme } from '../theme.js'
 const COMMON_COMMANDS: [string, string][] = [
   ['/help', 'full list of commands + hotkeys'],
   ['/clear', 'start a new session'],
-  ['/resume', 'resume a prior session'],
+  ['/resume', 'switch live or resume past sessions'],
   ['/details', 'control transcript detail level'],
   ['/copy', 'copy selection or last assistant message'],
   ['/quit', 'exit hermes']
@@ -14,16 +14,17 @@ const COMMON_COMMANDS: [string, string][] = [
 
 const HOTKEY_PREVIEW = HOTKEYS.slice(0, 8)
 
-export function HelpHint({ t }: { t: Theme }) {
-  const labelW = Math.max(
-    ...COMMON_COMMANDS.map(([k]) => k.length),
-    ...HOTKEY_PREVIEW.map(([k]) => k.length)
-  )
+export function HelpHint({ nativeMode = false, t }: { nativeMode?: boolean; t: Theme }) {
+  const labelW = Math.max(...COMMON_COMMANDS.map(([k]) => k.length), ...HOTKEY_PREVIEW.map(([k]) => k.length))
 
   const pad = (s: string) => s + ' '.repeat(Math.max(0, labelW - s.length + 2))
 
   return (
-    <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
+    <Box
+      alignItems="flex-start"
+      {...(nativeMode ? {} : { bottom: '100%', left: 0, position: 'absolute' as const, right: 0 })}
+      flexDirection="column"
+    >
       <Box
         alignSelf="flex-start"
         borderColor={t.color.primary}
@@ -37,9 +38,7 @@ export function HelpHint({ t }: { t: Theme }) {
           <Text bold color={t.color.primary}>
             ? quick help
           </Text>
-          <Text color={t.color.muted}>
-            {'  ·  type /help for the full panel  ·  backspace to dismiss'}
-          </Text>
+          <Text color={t.color.muted}>{'  ·  type /help for the full panel  ·  backspace to dismiss'}</Text>
         </Text>
 
         <Box marginTop={1}>

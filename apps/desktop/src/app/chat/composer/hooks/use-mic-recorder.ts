@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
+
 type BrowserAudioContext = typeof AudioContext
 
 export interface MicRecorderOptions {
   onLevel?: (level: number) => void
   onError?: (error: Error) => void
   onSilence?: () => void
+  /** The level meter died (AudioContext device/renderer error). Recording
+   *  goes on, but silence detection and `heardSpeech` are blind from here. */
+  onMeterFailure?: () => void
   silenceLevel?: number
   silenceMs?: number
   idleSilenceMs?: number
@@ -15,6 +20,19 @@ export interface MicRecording {
   audio: Blob
   durationMs: number
   heardSpeech: boolean
+  /** The level meter failed during this take, so `heardSpeech` is unknown
+   *  rather than false. */
+  meterFailed?: boolean
+}
+
+export interface MicRecorderErrorCopy {
+  microphoneAccessDenied: string
+  microphoneConstraintsUnsupported: string
+  microphoneInUse: string
+  microphonePermissionDenied: string
+  microphoneStartFailed: string
+  microphoneUnsupported: string
+  noMicrophone: string
 }
 
 interface MicRecorderHandle {
@@ -23,33 +41,45 @@ interface MicRecorderHandle {
   cancel: () => void
 }
 
-function micError(error: unknown): Error {
+/** Recorder + live-start mic failures → the same friendly copy: a DOMException
+ *  name is mapped, an unrecognized DOMException falls back to the generic start
+ *  copy, and anything else keeps its own message (non-mic failures must not be
+ *  mislabeled as microphone problems). */
+export function micError(error: unknown, copy: MicRecorderErrorCopy): Error {
   const name = error instanceof DOMException ? error.name : ''
 
   if (name === 'NotAllowedError' || name === 'SecurityError') {
-    return new Error('Microphone permission was denied.')
+    return new Error(copy.microphonePermissionDenied)
   }
 
   if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-    return new Error('No microphone was found.')
+    return new Error(copy.noMicrophone)
   }
 
   if (name === 'NotReadableError' || name === 'TrackStartError') {
-    return new Error('Microphone is already in use by another app.')
+    return new Error(copy.microphoneInUse)
   }
 
   if (name === 'OverconstrainedError') {
-    return new Error('Microphone constraints are not supported by this device.')
+    return new Error(copy.microphoneConstraintsUnsupported)
+  }
+
+  if (error instanceof DOMException) {
+    return new Error(copy.microphoneStartFailed)
   }
 
   if (error instanceof Error) {
     return error
   }
 
-  return new Error('Could not start microphone recording.')
+  return new Error(copy.microphoneStartFailed)
 }
 
-export function useMicRecorder(): { handle: MicRecorderHandle; level: number; recording: boolean } {
+export function useMicRecorder(copy: MicRecorderErrorCopy): {
+  handle: MicRecorderHandle
+  level: number
+  recording: boolean
+} {
   const [level, setLevel] = useState(0)
   const [recording, setRecording] = useState(false)
 
@@ -60,6 +90,7 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
   const animationRef = useRef<number | null>(null)
   const startedAtRef = useRef(0)
   const heardSpeechRef = useRef(false)
+  const meterFailedRef = useRef(false)
   const silenceTriggeredRef = useRef(false)
   const silenceStartedAtRef = useRef<number | null>(null)
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
@@ -70,8 +101,11 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
       animationRef.current = null
     }
 
-    void audioContextRef.current?.close()
+    // Null the ref before closing so the context's own 'closed' statechange
+    // isn't mistaken for a meter failure.
+    const audioContext = audioContextRef.current
     audioContextRef.current = null
+    closeMeterContext(audioContext)
     streamRef.current?.getTracks().forEach(track => track.stop())
     streamRef.current = null
     recorderRef.current = null
@@ -90,6 +124,28 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
       return
     }
 
+    const failMeter = () => {
+      if (meterFailedRef.current || !recorderRef.current) {
+        return
+      }
+
+      meterFailedRef.current = true
+
+      if (animationRef.current) {
+        window.cancelAnimationFrame(animationRef.current)
+        animationRef.current = null
+      }
+
+      setLevel(0)
+      // Deferred: a meter that fails while start() is still running must not
+      // re-enter the caller before start() has resolved.
+      window.setTimeout(() => {
+        if (recorderRef.current) {
+          options.onMeterFailure?.()
+        }
+      }, 0)
+    }
+
     try {
       const audioContext = new AudioContextCtor()
       const analyser = audioContext.createAnalyser()
@@ -100,6 +156,25 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
 
       source.connect(analyser)
       audioContextRef.current = audioContext
+
+      // A device or renderer error kills the context without throwing
+      // anywhere we'd see it; the analyser just goes flat. Watch for it.
+      const failIfCurrent = () => {
+        if (audioContextRef.current === audioContext) {
+          failMeter()
+        }
+      }
+
+      audioContext.addEventListener('error', failIfCurrent)
+      audioContext.addEventListener('statechange', () => {
+        if (audioContext.state === 'closed') {
+          failIfCurrent()
+        }
+      })
+
+      if (audioContext.state === 'suspended') {
+        audioContext.resume().catch(failIfCurrent)
+      }
 
       const tick = () => {
         analyser.getByteTimeDomainData(data)
@@ -148,7 +223,7 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
 
       tick()
     } catch {
-      setLevel(0)
+      failMeter()
     }
   }
 
@@ -158,14 +233,19 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
     }
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
-      throw new Error('This runtime does not support microphone recording.')
+      throw new Error(copy.microphoneUnsupported)
     }
 
     const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
 
     if (permitted === false) {
-      throw new Error('Microphone access denied.')
+      throw new Error(copy.microphoneAccessDenied)
     }
+
+    // The previous take's meter (or the barge monitor's) may still be
+    // closing; opening another context on top of it is what trips the
+    // AudioContext device error (#75329).
+    await meterContextsClosed()
 
     let stream: MediaStream
 
@@ -174,7 +254,7 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
         audio: { echoCancellation: true, noiseSuppression: true }
       })
     } catch (error) {
-      throw micError(error)
+      throw micError(error, copy)
     }
 
     const mimeType =
@@ -188,13 +268,14 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
       recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
     } catch (error) {
       stream.getTracks().forEach(track => track.stop())
-      throw micError(error)
+      throw micError(error, copy)
     }
 
     chunksRef.current = []
     streamRef.current = stream
     recorderRef.current = recorder
     heardSpeechRef.current = false
+    meterFailedRef.current = false
     silenceTriggeredRef.current = false
     silenceStartedAtRef.current = null
     startedAtRef.current = Date.now()
@@ -210,6 +291,7 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
       const recordingType = recorder.mimeType || mimeType || 'audio/webm'
       const durationMs = Date.now() - startedAtRef.current
       const heardSpeech = heardSpeechRef.current
+      const meterFailed = meterFailedRef.current
 
       chunksRef.current = []
       cleanup()
@@ -226,12 +308,13 @@ export function useMicRecorder(): { handle: MicRecorderHandle; level: number; re
       resolver?.({
         audio: new Blob(chunks, { type: recordingType }),
         durationMs,
-        heardSpeech
+        heardSpeech,
+        meterFailed
       })
     }
 
     recorder.onerror = event => {
-      const error = micError((event as Event & { error?: unknown }).error)
+      const error = micError((event as Event & { error?: unknown }).error, copy)
       const resolver = stopResolverRef.current
       stopResolverRef.current = null
       cleanup()

@@ -2,7 +2,7 @@ name: Docker / shell lint
 
 # Lints the container build inputs: Dockerfile (via hadolint) and any shell
 # scripts under docker/ (via shellcheck). These catch the class of regression
-# the behavioral docker-publish smoke test can't — unquoted variable
+# the behavioral docker smoke test can't — unquoted variable
 # expansions, silently-failing RUN commands, etc.
 #
 # Rules and ignores are documented in .hadolint.yaml at the repo root.
@@ -11,27 +11,14 @@ name: Docker / shell lint
 # activate script doesn't exist at lint time.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - Dockerfile
-      - docker/**
-      - .hadolint.yaml
-      - .github/workflows/docker-lint.yml
-  pull_request:
-    branches: [main]
-    paths:
-      - Dockerfile
-      - docker/**
-      - .hadolint.yaml
-      - .github/workflows/docker-lint.yml
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: docker-lint-${{ github.ref }}
-  cancel-in-progress: true
+  group: docker-lint-${{ github.ref_type == 'tag' && github.run_id || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   hadolint:
@@ -46,6 +33,13 @@ jobs:
         uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: Dockerfile
+          config: .hadolint.yaml
+          failure-threshold: warning
+
+      - name: hadolint (sandbox desktop image)
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+        with:
+          dockerfile: docker/sandbox-desktop.Dockerfile
           config: .hadolint.yaml
           failure-threshold: warning
 

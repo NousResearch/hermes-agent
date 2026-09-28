@@ -121,13 +121,13 @@ Hermes 已经可以通过自定义 provider 路径与任何 OpenAI 兼容的端�
 
 位于 `$HERMES_HOME/plugins/model-providers/<name>/` 的用户插件会覆盖同名的捆绑插件（`register_provider()` 中后写者获胜）——因此第三方可以在不编辑本仓库的情况下对任何内置 profile 进行 monkey-patch 或替换。
 
-参见 `plugins/model-providers/nvidia/` 或 `plugins/model-providers/gmi/` 作为模板，以及完整的 [Model Provider Plugin 指南](/developer-guide/model-provider-plugin)，了解字段参考、hook 用法和端到端示例。
+参见 `plugins/model-providers/nvidia/` 或 `plugins/model-providers/gmi/` 作为模板，以及完整的 [Model Provider Plugin 指南](./model-provider-plugin.md)，了解字段参考、hook 用法和端到端示例。
 
 ## 完整路径：OAuth 和复杂 provider
 
 当你的 provider 需要以下任何内容时，使用下面的完整清单：
 
-- OAuth 或 token 刷新（Nous Portal、Codex、Google Gemini、Qwen Portal、Copilot）
+- OAuth 或 token 刷新（Nous Portal、Codex、Qwen Portal、Copilot）
 - 需要新适配器的非 OpenAI API 格式（Anthropic Messages、Codex Responses）
 - 自定义端点检测或多区域探测（z.ai、Kimi）
 - 精选的静态模型目录或实时 `/models` 获取
@@ -338,35 +338,35 @@ Prompt（提示词）缓存和 provider 专属的调节项很容易出现回归�
 - `provider:model` 解析
 - 任何适配器专属的消息转换
 
-使用禁用 xdist 的方式运行测试：
+先准备[独立测试环境](./contributing.md#manual-development-and-test-environment)，
+再使用标准运行器；它会隔离每个测试文件并清除凭据环境变量：
 
 ```bash
-source venv/bin/activate
-python -m pytest tests/test_runtime_provider_resolution.py tests/test_cli_provider_resolution.py tests/test_cli_model_command.py tests/test_setup_model_selection.py -n0 -q
+scripts/run_tests.sh tests/hermes_cli/test_runtime_provider_resolution.py tests/cli/test_cli_provider_resolution.py tests/hermes_cli/test_setup_model_provider.py tests/run_agent/test_provider_parity.py -q
 ```
 
 对于更深层的修改，在推送前运行完整测试套件：
 
 ```bash
-source venv/bin/activate
-python -m pytest tests/ -n0 -q
+scripts/run_tests.sh tests/ -q
 ```
 
 ## 第 9 步：实时验证
 
-测试通过后，运行真实的冒烟测试。
+测试通过后，按照 [PM 开发流程](../reference/package-management.md#developer-workflow)
+使用独立开发数据目录，从源码检出运行真实冒烟测试。先退出测试 venv，再激活 PM。
 
 ```bash
-source venv/bin/activate
-python -m hermes_cli.main chat -q "Say hello" --provider your-provider --model your-model
+source ./activate
+python hermes chat -q "Say hello" --provider your-provider --model your-model
 ```
 
 如果你修改了菜单，也测试交互式流程：
 
 ```bash
-source venv/bin/activate
-python -m hermes_cli.main model
-python -m hermes_cli.main setup
+source ./activate
+python hermes model
+python hermes setup
 ```
 
 对于原生 provider，至少也验证一次工具调用，而不仅仅是纯文本响应。

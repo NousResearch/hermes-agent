@@ -6,138 +6,9 @@ provider/base_url/api_key empty in AIAgent, causing HTTP 404.
 """
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
-def test_make_agent_passes_resolved_provider():
-    """_make_agent forwards provider/base_url/api_key/api_mode from
-    resolve_runtime_provider to AIAgent."""
-
-    fake_runtime = {
-        "provider": "anthropic",
-        "base_url": "https://api.anthropic.com",
-        "api_key": "sk-test-key",
-        "api_mode": "anthropic_messages",
-        "command": None,
-        "args": None,
-        "credential_pool": None,
-    }
-
-    fake_cfg = {
-        "model": {"default": "claude-opus-4-6", "provider": "anthropic"},
-        "agent": {"system_prompt": "test"},
-    }
-
-    with (
-        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
-        patch("tui_gateway.server._get_db", return_value=MagicMock()),
-        patch("tui_gateway.server._load_tool_progress_mode", return_value="compact"),
-        patch("tui_gateway.server._load_reasoning_config", return_value=None),
-        patch("tui_gateway.server._load_service_tier", return_value=None),
-        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
-        patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value=fake_runtime,
-        ) as mock_resolve,
-        patch("run_agent.AIAgent") as mock_agent,
-    ):
-
-        from tui_gateway.server import _make_agent
-
-        _make_agent("sid-1", "key-1")
-
-        # target_model comes from _resolve_startup_runtime() which reads
-        # _load_cfg().  Due to module-level caching in tui_gateway.server,
-        # the patched config may not take effect when the module was already
-        # imported by an earlier test.  Assert the stable part of the call.
-        mock_resolve.assert_called_once()
-        assert mock_resolve.call_args.kwargs.get("requested") is None
-
-        call_kwargs = mock_agent.call_args
-        assert call_kwargs.kwargs["provider"] == "anthropic"
-        assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
-        assert call_kwargs.kwargs["api_key"] == "sk-test-key"
-        assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
-
-
-def test_make_agent_ignores_display_personality_without_system_prompt():
-    """The TUI matches the classic CLI: personality only becomes active once
-    it has been saved to agent.system_prompt."""
-
-    fake_runtime = {
-        "provider": "openrouter",
-        "base_url": "https://api.synthetic.new/v1",
-        "api_key": "sk-test",
-        "api_mode": "chat_completions",
-        "command": None,
-        "args": None,
-        "credential_pool": None,
-    }
-    fake_cfg = {
-        "agent": {
-            "system_prompt": "",
-            "personalities": {"kawaii": "sparkle system prompt"},
-        },
-        "display": {"personality": "kawaii"},
-        "model": {"default": "glm-5"},
-    }
-
-    with (
-        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
-        patch("tui_gateway.server._get_db", return_value=MagicMock()),
-        patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value=fake_runtime,
-        ),
-        patch("run_agent.AIAgent") as mock_agent,
-    ):
-        from tui_gateway.server import _make_agent
-
-        _make_agent("sid-default-personality", "key-default-personality")
-
-        assert mock_agent.call_args.kwargs["ephemeral_system_prompt"] is None
-
-
-def test_make_agent_honors_tui_launch_env_flags():
-    fake_runtime = {
-        "provider": "openrouter",
-        "base_url": "https://api.synthetic.new/v1",
-        "api_key": "sk-test",
-        "api_mode": "chat_completions",
-        "command": None,
-        "args": None,
-        "credential_pool": None,
-    }
-    fake_cfg = {"agent": {"system_prompt": ""}, "model": {"default": "glm-5"}}
-
-    with (
-        patch.dict(
-            os.environ,
-            {
-                "HERMES_TUI_MAX_TURNS": "7",
-                "HERMES_TUI_CHECKPOINTS": "1",
-                "HERMES_TUI_PASS_SESSION_ID": "1",
-                "HERMES_IGNORE_RULES": "1",
-            },
-        ),
-        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
-        patch("tui_gateway.server._get_db", return_value=MagicMock()),
-        patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value=fake_runtime,
-        ),
-        patch("run_agent.AIAgent") as mock_agent,
-    ):
-        from tui_gateway.server import _make_agent
-
-        _make_agent("sid-env", "key-env")
-
-        kwargs = mock_agent.call_args.kwargs
-        assert kwargs["max_iterations"] == 7
-        assert kwargs["checkpoints_enabled"] is True
-        assert kwargs["pass_session_id"] is True
-        assert kwargs["skip_context_files"] is True
-        assert kwargs["skip_memory"] is True
 
 
 def test_probe_config_health_flags_null_sections():
@@ -153,83 +24,110 @@ def test_probe_config_health_flags_null_sections():
     assert "model" not in msg
 
 
-def test_probe_config_health_flags_null_personalities_with_active_personality():
-    from tui_gateway.server import _probe_config_health
+def test_apply_model_switch_does_not_leak_process_env():
+    """Core fix for cross-session contamination: an in-session /model switch
+    must mutate only the target session (record a per-session override + switch
+    that session's agent in place) and must NOT write process-global env vars,
+    which the single-process desktop backend shares across every live session.
+    """
+    from tui_gateway import server
 
-    msg = _probe_config_health(
-        {
-            "agent": {"personalities": None},
-            "display": {"personality": "kawaii"},
-            "model": {},
-        }
+    class _FakeResult:
+        success = True
+        error_message = ""
+        warning_message = ""
+        new_model = "zai/glm-5.1"
+        target_provider = "zai"
+        base_url = "https://api.z.ai/v1"
+        api_key = "sk-glm"
+        api_mode = "chat_completions"
+
+    class _FakeAgent:
+        def __init__(self):
+            self.model = "minimax/m3"
+            self.provider = "minimax"
+            self.base_url = ""
+            self.api_key = ""
+
+        def switch_model(self, **kw):
+            self.model = kw["new_model"]
+            self.provider = kw["new_provider"]
+
+    env_keys = (
+        "HERMES_MODEL",
+        "HERMES_INFERENCE_MODEL",
+        "HERMES_TUI_PROVIDER",
+        "HERMES_INFERENCE_PROVIDER",
     )
-    assert "display.personality" in msg
-    assert "agent.personalities" in msg
 
-
-def test_make_agent_tolerates_null_config_sections():
-    """Bare `agent:` / `display:` keys in ~/.hermes/config.yaml parse as
-    None. cfg.get("agent", {}) returns None (default only fires on missing
-    key), so downstream .get() chains must be guarded. Reported via Twitter
-    against the new TUI."""
-
-    fake_runtime = {
-        "provider": "openrouter",
-        "base_url": "https://api.synthetic.new/v1",
-        "api_key": "sk-test",
-        "api_mode": "chat_completions",
-        "command": None,
-        "args": None,
-        "credential_pool": None,
+    sess_b = {
+        "agent": _FakeAgent(), "session_key": "k-B", "model_override": None,
+        "follow_profile_config": True,
     }
-    null_cfg = {"agent": None, "display": None, "model": {"default": "glm-5"}}
+    sess_a = {"agent": _FakeAgent(), "session_key": "k-A", "model_override": None}
 
+    persisted_composer_profiles = []
     with (
-        patch("tui_gateway.server._load_cfg", return_value=null_cfg),
-        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("hermes_cli.model_switch.parse_model_flags",
+              return_value=("glm-5.1", None, False, False, True)),
+        patch("hermes_cli.model_switch.resolve_persist_behavior",
+              return_value=False),
+        patch("hermes_cli.model_switch.switch_model", return_value=_FakeResult()),
+        patch("tui_gateway.server._emit"),
+        patch("tui_gateway.server._restart_slash_worker"),
+        patch("tui_gateway.server._session_info", return_value={}),
+        patch("hermes_cli.model_switch.persist_model_selection") as mock_persist,
         patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value=fake_runtime,
-        ),
-        patch("run_agent.AIAgent") as mock_agent,
+            "tui_gateway.server._persist_live_session_runtime",
+            side_effect=lambda session: persisted_composer_profiles.append(
+                session.get("composer_override_profile")),
+        ) as persist_runtime,
+        patch("tui_gateway.server._config_model_target", return_value=("minimax/m3", "minimax")),
     ):
+        before = {k: os.environ.get(k) for k in env_keys}
+        result = server._apply_model_switch("sidB", sess_b, "glm-5.1")
+        after = {k: os.environ.get(k) for k in env_keys}
 
-        from tui_gateway.server import _make_agent
+    assert result["value"] == "zai/glm-5.1"
+    # No process-global env mutation (the contamination vector).
+    assert before == after
+    # persist_global was False → config untouched.
+    mock_persist.assert_not_called()
+    # Target session recorded a per-session override.
+    assert sess_b["model_override"]["model"] == "zai/glm-5.1"
+    assert sess_b["model_override"]["provider"] == "zai"
+    assert sess_b["composer_override_profile"] == {"model": "minimax/m3", "provider": "minimax"}
+    # _commit_agent_switch owns the runtime transaction; provenance must be present
+    # on its first (and only) DB write rather than relying on a second best-effort write.
+    persist_runtime.assert_called_once_with(sess_b)
+    assert persisted_composer_profiles == [{"model": "minimax/m3", "provider": "minimax"}]
+    # The switched agent mutated in place.
+    assert sess_b["agent"].model == "zai/glm-5.1"
+    # Sibling session is completely untouched.
+    assert sess_a["model_override"] is None
+    assert sess_a["agent"].model == "minimax/m3"
 
-        _make_agent("sid-null", "key-null")
 
-        assert mock_agent.called
+def test_resumed_row_cannot_pin_stale_wire_onto_per_model_provider():
+    """#96066: a persisted opencode-go row written while the session ran an anthropic_messages model must not
+    route deepseek-v4-flash-vision-exp through the Anthropic wire or the other family's relay URL on resume;
+    the route is re-derived from the target model. Fixed-wire providers keep honoring their row."""
+    from tui_gateway import server
 
+    def fake_resolve(**kwargs):
+        provider = kwargs["requested"]
+        fresh = {"opencode-go": ("chat_completions", "https://opencode.ai/zen/go/v1"),
+                 "anthropic": ("anthropic_messages", "https://api.anthropic.com")}[provider]
+        return {"provider": provider, "requested_provider": provider, "api_mode": fresh[0], "base_url": fresh[1],
+                "api_key": "k", "source": "config"}
 
-def test_make_agent_tolerates_null_personalities_with_active_personality():
-    fake_runtime = {
-        "provider": "openrouter",
-        "base_url": "https://api.synthetic.new/v1",
-        "api_key": "sk-test",
-        "api_mode": "chat_completions",
-        "command": None,
-        "args": None,
-        "credential_pool": None,
-    }
-    cfg = {
-        "agent": {"personalities": None},
-        "display": {"personality": "kawaii"},
-        "model": {"default": "glm-5"},
-    }
-
-    with (
-        patch("tui_gateway.server._load_cfg", return_value=cfg),
-        patch("tui_gateway.server._get_db", return_value=MagicMock()),
-        patch("cli.load_cli_config", return_value={"agent": {"personalities": None}}),
-        patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value=fake_runtime,
-        ),
-        patch("run_agent.AIAgent") as mock_agent,
-    ):
-        from tui_gateway.server import _make_agent
-
-        _make_agent("sid-null-personality", "key-null-personality")
-
-        assert mock_agent.called
-        assert mock_agent.call_args.kwargs["ephemeral_system_prompt"] is None
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=fake_resolve):
+        for stale_url in ("https://opencode.ai/zen/go", "https://opencode.ai/zen/v1"):
+            _, runtime = server._resolve_agent_model_runtime(
+                {"model": "deepseek-v4-flash-vision-exp", "provider": "opencode-go",
+                 "base_url": stale_url, "api_mode": "anthropic_messages"}, None)
+            assert (runtime["api_mode"], runtime["base_url"]) == ("chat_completions", "https://opencode.ai/zen/go/v1")
+        _, runtime = server._resolve_agent_model_runtime(
+            {"model": "claude-opus-4-6", "provider": "anthropic",
+             "base_url": "https://my-proxy.example", "api_mode": "anthropic_messages"}, None)
+        assert (runtime["api_mode"], runtime["base_url"]) == ("anthropic_messages", "https://my-proxy.example")

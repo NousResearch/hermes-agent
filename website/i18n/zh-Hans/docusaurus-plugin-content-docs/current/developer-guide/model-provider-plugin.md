@@ -9,7 +9,7 @@ description: "如何为 Hermes Agent 构建模型提供商（推理后端）插�
 模型提供商插件声明一个推理后端——兼容 OpenAI 的端点、Anthropic Messages 服务器、Codex 风格的 Responses API，或 Bedrock 原生接口——Hermes 可通过这些后端路由 `AIAgent` 调用。每个内置提供商（OpenRouter、Anthropic、GMI、DeepSeek、Nvidia……）都以此类插件形式提供。第三方可通过在 `$HERMES_HOME/plugins/model-providers/` 下放置一个目录来添加自己的提供商，无需对仓库做任何修改。
 
 :::tip
-模型提供商插件是**提供商插件**的第三种类型。其他两种分别是 [Memory Provider 插件](/developer-guide/memory-provider-plugin)（跨会话知识）和 [Context Engine 插件](/developer-guide/context-engine-plugin)（上下文压缩策略）。三者均遵循相同的"放入目录、声明 profile、无需编辑仓库"模式。
+模型提供商插件是**提供商插件**的第三种类型。其他两种分别是 [Memory Provider 插件](./memory-provider-plugin.md)（跨会话知识）和 [Context Engine 插件](./context-engine-plugin.md)（上下文压缩策略）。三者均遵循相同的"放入目录、声明 profile、无需编辑仓库"模式。
 :::
 
 ## 发现机制
@@ -194,7 +194,7 @@ register_provider(ProviderProfile(
 |---|---|---|
 | `api_key` | 单个环境变量携带静态 API key | 大多数提供商 |
 | `oauth_device_code` | 设备码 OAuth 流程 | — |
-| `oauth_external` | 用户在其他地方登录，token 存入 `auth.json` | Anthropic OAuth、MiniMax OAuth、Gemini Cloud Code、Qwen Portal、Nous Portal |
+| `oauth_external` | 用户在其他地方登录，token 存入 `auth.json` | Anthropic OAuth、MiniMax OAuth、Qwen Portal、Nous Portal |
 | `copilot` | GitHub Copilot token 刷新周期 | 仅 `copilot` 插件 |
 | `aws_sdk` | AWS SDK 凭据链（IAM role、profile、env） | 仅 `bedrock` 插件 |
 | `external_process` | 认证由 agent 启动的子进程处理 | 仅 `copilot-acp` 插件 |
@@ -250,18 +250,18 @@ hermes -z "hello" --provider my-provider -m some-model
 与所有 Hermes 插件一样，模型提供商可以作为 pip 包发布。在你的 `pyproject.toml` 中添加入口点：
 
 ```toml
-[project.entry-points."hermes.plugins"]
+[project.entry-points."hermes_agent.plugins"]
 acme-inference = "acme_hermes_plugin:register"
 ```
 
 ……其中 `acme_hermes_plugin:register` 是一个调用 `register_provider(profile)` 的函数。通用 PluginManager 在 `discover_and_load()` 期间会拾取入口点插件。对于 `kind: model-provider` 的 pip 插件，你仍需在 manifest 中声明 kind（或依赖源码文本启发式检测）。
 
-完整的入口点设置请参阅 [构建 Hermes 插件](/guides/build-a-hermes-plugin#distribute-via-pip)。
+完整的入口点设置请参阅 [构建 Hermes 插件](./plugins/index.md#distribute-via-pip)。
 
 ## 相关页面
 
-- [Provider Runtime](/developer-guide/provider-runtime) — 解析优先级及各层读取 profile 的位置
-- [添加提供商](/developer-guide/adding-providers) — 新推理后端的端到端检查清单（涵盖快速插件路径和完整 CLI/auth 集成）
-- [Memory Provider 插件](/developer-guide/memory-provider-plugin)
-- [Context Engine 插件](/developer-guide/context-engine-plugin)
-- [构建 Hermes 插件](/guides/build-a-hermes-plugin) — 通用插件编写指南
+- [Provider Runtime](./provider-runtime.md) — 解析优先级及各层读取 profile 的位置
+- [添加提供商](./adding-providers.md) — 新推理后端的端到端检查清单（涵盖快速插件路径和完整 CLI/auth 集成）
+- [Memory Provider 插件](./memory-provider-plugin.md)
+- [Context Engine 插件](./context-engine-plugin.md)
+- [构建 Hermes 插件](./plugins/index.md) — 通用插件编写指南

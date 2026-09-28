@@ -8,7 +8,7 @@ description: "何时以及如何使用子代理委托——并行研究、代码
 
 Hermes 可以生成隔离的子代理来并行处理任务。每个子代理拥有独立的对话、终端会话和工具集。只有最终摘要会返回——中间工具调用不会进入你的上下文窗口。
 
-完整功能参考，请参阅[子代理委托](/user-guide/features/delegation)。
+完整功能参考，请参阅[子代理委托](../user-guide/features/delegation.md)。
 
 ---
 
@@ -25,7 +25,7 @@ Hermes 可以生成隔离的子代理来并行处理任务。每个子代理拥�
 - 步骤间有逻辑的机械性多步骤工作 → `execute_code`
 - 需要用户交互的任务 → 子代理无法使用 `clarify`
 - 快速文件编辑 → 直接操作
-- 必须在当前轮次结束后继续运行的持久性长任务 → `cronjob` 或 `terminal(background=True, notify_on_complete=True)`。`delegate_task` 是**同步**的：若父轮次被中断，活跃的子代理将被取消，其工作将被丢弃。
+- 必须在会话关闭或进程重启后继续运行的持久性长任务 → `cronjob` 或 `terminal(background=True, notify_on_complete=True)`。顶层委派是异步的，但仍依赖当前进程。
 
 ---
 
@@ -48,18 +48,15 @@ Hermes 可以生成隔离的子代理来并行处理任务。每个子代理拥�
 delegate_task(tasks=[
     {
         "goal": "Research WebAssembly outside the browser in 2025",
-        "context": "Focus on: runtimes (Wasmtime, Wasmer), cloud/edge use cases, WASI progress",
-        "toolsets": ["web"]
+        "context": "Focus on: runtimes (Wasmtime, Wasmer), cloud/edge use cases, WASI progress"
     },
     {
         "goal": "Research RISC-V server chip adoption",
-        "context": "Focus on: server chips shipping, cloud providers adopting, software ecosystem",
-        "toolsets": ["web"]
+        "context": "Focus on: server chips shipping, cloud providers adopting, software ecosystem"
     },
     {
         "goal": "Research practical quantum computing applications",
-        "context": "Focus on: error correction breakthroughs, real-world use cases, key companies",
-        "toolsets": ["web"]
+        "context": "Focus on: error correction breakthroughs, real-world use cases, key companies"
     }
 ])
 ```
@@ -87,8 +84,7 @@ delegate_task(
     Auth files: src/auth/login.py, src/auth/jwt.py, src/auth/middleware.py
     Test command: pytest tests/auth/ -v
     Focus on: SQL injection, JWT validation, password hashing, session management.
-    Fix issues found and verify tests pass.""",
-    toolsets=["terminal", "file"]
+    Fix issues found and verify tests pass."""
 )
 ```
 
@@ -129,8 +125,7 @@ delegate_task(tasks=[
         Old format: return {"data": result, "status": "ok"}
         New format: return APIResponse(data=result, status=200).to_dict()
         Import: from src.responses import APIResponse
-        Run tests after: pytest tests/handlers/ -v""",
-        "toolsets": ["terminal", "file"]
+        Run tests after: pytest tests/handlers/ -v"""
     },
     {
         "goal": "Update all client SDK methods to handle the new response format",
@@ -138,16 +133,14 @@ delegate_task(tasks=[
         Files: sdk/python/client.py, sdk/python/models.py
         Old parsing: result = response.json()["data"]
         New parsing: result = response.json()["data"] (same key, but add status code checking)
-        Also update sdk/python/tests/test_client.py""",
-        "toolsets": ["terminal", "file"]
+        Also update sdk/python/tests/test_client.py"""
     },
     {
         "goal": "Update API documentation to reflect the new response format",
         "context": """Project at /home/user/api-server.
         Docs at: docs/api/. Format: Markdown with code examples.
         Update all response examples from old format to new format.
-        Add a 'Response Format' section to docs/api/overview.md explaining the schema.""",
-        "toolsets": ["terminal", "file"]
+        Add a 'Response Format' section to docs/api/overview.md explaining the schema."""
     }
 ])
 ```
@@ -190,8 +183,7 @@ delegate_task(
     context="""Raw data at /tmp/ai-funding-data.json contains search results and
     extracted web pages about AI funding, acquisitions, and IPOs in Q1 2026.
     Write a structured market report: key deals, trends, notable players,
-    and outlook. Focus on deals over $100M.""",
-    toolsets=["terminal", "file"]
+    and outlook. Focus on deals over $100M."""
 )
 ```
 
@@ -199,18 +191,9 @@ delegate_task(
 
 ---
 
-## 工具集选择
+## 继承的工具访问权限
 
-根据子代理的需求选择工具集：
-
-| 任务类型 | 工具集 | 原因 |
-|-----------|----------|-----|
-| 网络研究 | `["web"]` | 仅 web_search + web_extract |
-| 代码工作 | `["terminal", "file"]` | Shell 访问 + 文件操作 |
-| 全栈 | `["terminal", "file", "web"]` | 除消息功能外的全部工具 |
-| 只读分析 | `["file"]` | 只能读取文件，无 Shell |
-
-限制工具集可使子代理保持专注，并防止意外副作用（例如研究子代理执行 Shell 命令）。
+子代理会继承父代理已启用的工具集。`delegate_task` 不接受面向模型的 `toolsets` 参数，因此委派任务无法自行授予父代理没有的能力。如果委派任务需要网络、终端、文件或其他访问权限，请在开始对话前配置父代理的工具。Hermes 仍会移除 `clarify`、`memory` 和 `execute_code` 等对子代理屏蔽的工具。
 
 ---
 
@@ -237,7 +220,7 @@ delegation:
 - **独立终端** — 每个子代理拥有独立的终端会话，具有独立的工作目录和状态
 - **无对话历史** — 子代理只能看到父代理调用 `delegate_task` 时传入的 `goal` 和 `context`
 - **默认 50 次迭代** — 对简单任务设置较低的 `max_iterations` 以节省成本
-- **非持久性** — `delegate_task` 是同步的，在父轮次内运行。若父轮次被中断（新用户消息、`/stop`、`/new`），所有活跃子代理将被取消（`status="interrupted"`），其工作将被丢弃。对于必须在当前轮次结束后继续运行的工作，请使用 `cronjob` 或 `terminal(background=True, notify_on_complete=True)`。
+- **非持久性** — 顶层委派会在后台运行并稍后发送结果，但仍依赖所属会话和 Hermes 进程。会话关闭、`/stop`、`/new` 或进程重启都可能取消或遗留正在执行的工作。对于必须跨越这些边界继续运行的任务，请使用 `cronjob` 或 `terminal(background=True, notify_on_complete=True)`。
 
 ---
 
@@ -253,4 +236,4 @@ delegation:
 
 ---
 
-*完整的委托参考——所有参数、ACP 集成和高级配置——请参阅[子代理委托](/user-guide/features/delegation)。*
+*完整的委托参考——所有参数、ACP 集成和高级配置——请参阅[子代理委托](../user-guide/features/delegation.md)。*

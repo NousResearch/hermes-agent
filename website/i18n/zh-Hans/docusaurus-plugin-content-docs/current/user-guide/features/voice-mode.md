@@ -8,13 +8,13 @@ description: "与 Hermes Agent 进行实时语音对话 — CLI、Telegram、Dis
 
 Hermes Agent 支持在 CLI 和消息平台上进行完整的语音交互。通过麦克风与 Agent 对话，听取语音回复，并在 Discord 语音频道中进行实时语音对话。
 
-如需包含推荐配置和实际使用模式的实践指南，请参阅 [使用 Hermes 的语音模式](/guides/use-voice-mode-with-hermes)。
+如需包含推荐配置和实际使用模式的实践指南，请参阅 [使用 Hermes 的语音模式](../../guides/use-voice-mode-with-hermes.md)。
 
 ## 前提条件
 
 使用语音功能前，请确保已完成以下准备：
 
-1. **已安装 Hermes Agent** — `pip install hermes-agent`（参见 [安装](/getting-started/installation)）
+1. **已安装 Hermes Agent** — 通过安装脚本（参见 [安装](../../getting-started/installation.md)）
 2. **已配置 LLM 提供商** — 运行 `hermes model` 或在 `~/.hermes/.env` 中设置首选提供商的凭据
 3. **基础设置正常** — 运行 `hermes` 验证 Agent 能够响应文字消息，再启用语音功能
 
@@ -23,7 +23,7 @@ Hermes Agent 支持在 CLI 和消息平台上进行完整的语音交互。通�
 :::
 
 :::tip Nous Portal 同时覆盖两项
-付费的 [Nous Portal](/user-guide/features/tool-gateway) 订阅通过 Tool Gateway 同时提供 LLM（第 2 步）**和** OpenAI TTS — 无需单独的 OpenAI 密钥。全新安装时，`hermes setup --portal` 可一次性完成两项配置。
+付费的 [Nous Portal](./tool-gateway.md) 订阅通过 Tool Gateway 同时提供 LLM（第 2 步）**和** OpenAI TTS — 无需单独的 OpenAI 密钥。全新安装时，`hermes setup --portal` 可一次性完成两项配置。
 :::
 
 ## 概览
@@ -38,30 +38,20 @@ Hermes Agent 支持在 CLI 和消息平台上进行完整的语音交互。通�
 
 ### Python 包
 
-```bash
-# CLI 语音模式（麦克风 + 音频播放）
-pip install "hermes-agent[voice]"
+通过 `hermes tools` 配置语音提供商。缺失的内置功能依赖由 PM 按策略和目标平台支持准备。
+如果选择的环境改变，请按提示重启 Hermes。
+桌面包预装其支持的引擎；Docker 使用较小集合并关闭按需安装。
+不要修改签名载荷或系统 Python。手动开发环境参见[开发配置](../../developer-guide/contributing.md)。
 
-# Discord + Telegram 消息（包含 discord.py[voice] 以支持语音频道）
-pip install "hermes-agent[messaging]"
+| Extra | 包 | 用途 |
+|---|---|---|
+| `voice` | `sounddevice`、`numpy`，以及支持平台上的 Faster-Whisper | CLI 音频和本地 STT |
+| `audio-io` | `sounddevice`、`numpy` | 不包含本地 STT 的麦克风和播放支持 |
+| `messaging` | `discord.py[voice]`、`python-telegram-bot`、`aiohttp` | Discord 和 Telegram |
+| `tts-premium` | `elevenlabs` | ElevenLabs TTS |
 
-# 高级 TTS（ElevenLabs）
-pip install "hermes-agent[tts-premium]"
-
-# 本地 TTS（NeuTTS，可选）
-python -m pip install -U neutts[all]
-
-# 一次性安装所有内容
-pip install "hermes-agent[all]"
-```
-
-| 扩展包 | 包含的包 | 用途 |
-|-------|----------|-------------|
-| `voice` | `sounddevice`、`numpy` | CLI 语音模式 |
-| `messaging` | `discord.py[voice]`、`python-telegram-bot`、`aiohttp` | Discord 和 Telegram 机器人 |
-| `tts-premium` | `elevenlabs` | ElevenLabs TTS 提供商 |
-
-可选本地 TTS 提供商：使用 `python -m pip install -U neutts[all]` 单独安装 `neutts`。首次使用时会自动下载模型。
+原生 Windows ARM64 和 Intel macOS 不包含 Faster-Whisper，请使用云端或命令式 STT。
+`all` 不代表所有语音或唤醒引擎。NeuTTS 是单独的可选运行时，首次使用会下载模型。
 
 :::info
 `discord.py[voice]` 会自动安装 **PyNaCl**（用于语音加密）和 **opus 绑定**。这是 Discord 语音频道支持的必要条件。
@@ -92,7 +82,7 @@ sudo apt install espeak-ng   # for NeuTTS
 
 ```bash
 # 语音转文字（STT）— 本地提供商完全不需要密钥
-# pip install faster-whisper          # 免费，本地运行，推荐
+# 本地 Faster-Whisper 由 PM 在支持的目标上准备，无需 STT API key。
 GROQ_API_KEY=your-key                 # Groq Whisper — 速度快，有免费额度（云端）
 VOICE_TOOLS_OPENAI_KEY=your-key       # OpenAI Whisper — 付费（云端）
 
@@ -263,13 +253,13 @@ DISCORD_FREE_RESPONSE_CHANNELS=123456789,987654321
 
 | 级别 | 整数 | 包含内容 |
 |-------|---------|----------------|
-| 仅文字 | `274878286912` | 查看频道、发送消息、读取历史、嵌入内容、附件、帖子、反应 |
-| 文字 + 语音 | `274881432640` | 以上所有 + Connect、Speak |
+| 仅文字 | `309237763136` | 查看频道、发送消息、读取历史、嵌入内容、附件、帖子、反应、创建公开帖子 |
+| 文字 + 语音 | `309240908864` | 以上所有 + Connect、Speak |
 
 **使用更新后的权限 URL 重新邀请 Bot：**
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274881432640
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309240908864
 ```
 
 将 `YOUR_APP_ID` 替换为开发者门户中的应用 ID。
@@ -315,7 +305,7 @@ Bot 会从以下路径自动加载编解码器：
 DISCORD_BOT_TOKEN=your-bot-token
 DISCORD_ALLOWED_USERS=your-user-id
 
-# STT — 本地提供商无需密钥（pip install faster-whisper）
+# 本地 Faster-Whisper 由 PM 在支持的目标上准备，无需 STT API key。
 # GROQ_API_KEY=your-key            # 替代方案：云端，速度快，有免费额度
 
 # TTS — 可选。Edge TTS 和 NeuTTS 无需密钥。
@@ -400,14 +390,14 @@ stt:
                                     # 作为入站消息的一部分传递给 Agent，
                                     # 适用于自定义流水线
                                     # （说话人分离、对齐、归档等）
-  provider: "local"                  # "local"（免费）| "groq" | "openai"
+  provider: "local"                  # "local"（免费）| "groq" | "openai" | "mistral" | "xai"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
   # model: "whisper-1"              # 旧版：在未设置 provider 时使用
 
 # 文字转语音（TTS）
 tts:
-  provider: "edge"                 # "edge"（免费）| "elevenlabs" | "openai" | "neutts" | "minimax"
+  provider: "edge"                 # "edge"（免费）| "elevenlabs" | "openai" | "neutts" | "minimax" | "mistral" | "gemini" | "xai" | "kittentts" | "piper"
   edge:
     voice: "en-US-AriaNeural"      # 322 种声音，74 种语言
   elevenlabs:
@@ -428,7 +418,7 @@ tts:
 
 ```bash
 # 语音转文字提供商（本地无需密钥）
-# pip install faster-whisper        # 免费本地 STT — 无需 API 密钥
+# 本地 Faster-Whisper 由 PM 在支持的目标上准备，无需 STT API key。
 GROQ_API_KEY=...                    # Groq Whisper（速度快，有免费额度）
 VOICE_TOOLS_OPENAI_KEY=...         # OpenAI Whisper（付费）
 
@@ -458,6 +448,7 @@ DISCORD_ALLOWED_USERS=...
 | **Groq** | `whisper-large-v3` | 快（约 1 秒） | 较好 | 免费额度 | 是 |
 | **OpenAI** | `whisper-1` | 快（约 1 秒） | 良好 | 付费 | 是 |
 | **OpenAI** | `gpt-4o-transcribe` | 中等（约 2 秒） | 最佳 | 付费 | 是 |
+| **OpenAI** | `gpt-transcribe` | 快 | 最佳 | 付费（$0.0045/分钟） | 是 |
 
 提供商优先级（自动回退）：**本地** > **groq** > **openai**
 

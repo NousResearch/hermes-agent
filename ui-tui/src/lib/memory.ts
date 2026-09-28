@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs'
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
@@ -51,6 +51,9 @@ export interface HeapDumpResult {
   diagPath?: string
   error?: string
   heapPath?: string
+  // True when an auto trigger wrote diagnostics only and intentionally skipped
+  // the heavy snapshot because HERMES_AUTO_HEAPDUMP was not enabled (#21767).
+  suppressed?: boolean
   success: boolean
 }
 
@@ -153,12 +156,68 @@ export async function performHeapDump(trigger: MemoryTrigger = 'manual'): Promis
     const heapPath = join(dir, `${base}.heapsnapshot`)
     const diagPath = join(dir, `${base}.diagnostics.json`)
 
+    // The diagnostics JSON is KB-sized and the most useful artifact when a
+    // full snapshot is suppressed by the auto-heapdump opt-in gate below.
     await writeFile(diagPath, JSON.stringify(diagnostics, null, 2), { mode: 0o600 })
+
+    // Auto triggers require explicit opt-in: multi-GiB snapshots written on
+    // every threshold cross can fill the user's disk (issue #21767).
+    const isAuto = trigger === 'auto-critical' || trigger === 'auto-high'
+    const autoEnabled = /^(?:1|true|yes|on)$/i.test((process.env.HERMES_AUTO_HEAPDUMP ?? '').trim())
+
+    if (isAuto && !autoEnabled) {
+      await pruneHeapdumps(dir).catch(() => undefined)
+
+      // Not an error: the dump did its job — it wrote the lightweight
+      // diagnostics sidecar and intentionally skipped the heavy snapshot.
+      // `heapPath` is omitted so callers/notices report diagnostics-only.
+      return { diagPath, suppressed: true, success: true }
+    }
+
     await pipeline(getHeapSnapshot(), createWriteStream(heapPath, { mode: 0o600 }))
+    await pruneHeapdumps(dir).catch(() => undefined)
 
     return { diagPath, heapPath, success: true }
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e), success: false }
+  }
+}
+
+// Cap total bytes of files in `dir`, deleting oldest first. Covers both
+// `.heapsnapshot` and `.diagnostics.json` artifacts so orphan sidecars from
+// gated auto-triggers cannot accumulate without bound. The newest file is
+// always retained even if it alone exceeds the cap.
+async function pruneHeapdumps(dir: string): Promise<void> {
+  const raw = process.env.HERMES_HEAPDUMP_MAX_BYTES?.trim()
+  const parsed = raw ? Number(raw) : NaN
+  const cap = Number.isFinite(parsed) && parsed > 0 ? parsed : 2 * 1024 ** 3
+
+  const names = await readdir(dir)
+
+  const stats = await Promise.all(
+    names.map(async name => {
+      const path = join(dir, name)
+      const s = await stat(path).catch(() => null)
+
+      return s && s.isFile() ? { mtimeMs: s.mtimeMs, path, size: s.size } : null
+    })
+  )
+
+  const valid = stats.filter((s): s is { mtimeMs: number; path: string; size: number } => s !== null)
+
+  valid.sort((a, b) => b.mtimeMs - a.mtimeMs)
+
+  let total = valid.reduce((acc, s) => acc + s.size, 0)
+
+  while (total > cap && valid.length > 1) {
+    const oldest = valid.pop()
+
+    if (!oldest) {
+      break
+    }
+
+    await unlink(oldest.path).catch(() => undefined)
+    total -= oldest.size
   }
 }
 

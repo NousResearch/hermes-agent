@@ -50,6 +50,32 @@ impl AppMode {
     }
 }
 
+/// Returns true when the args request a forced installer UI (repair/reinstall)
+/// via `--reinstall` or `--repair`, which overrides the macOS launcher
+/// fast-path so a broken install can be repaired. Arg-iterator generic so it's
+/// unit-testable, mirroring `AppMode::from_args`. Independent of mode selection:
+/// these flags never flip Install<->Update.
+pub fn force_setup_from_args<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .any(|a| a.as_ref() == "--reinstall" || a.as_ref() == "--repair")
+}
+
+/// Whether an already-installed launch must hand off before Tauri/AppKit.
+///
+/// The runtime's default activation policy is Regular. Entering it registers
+/// this bootstrap process as a Dock app even when Info.plist sets
+/// `LSUIElement`, and the real desktop is a different bundle id, so that
+/// registration is a second Hermes icon. Update, repair, and non-macOS
+/// launches still build the installer UI. The installed-on-disk check is I/O
+/// and stays with the caller.
+pub fn handoff_before_appkit(is_macos: bool, mode: AppMode, force_setup: bool) -> bool {
+    is_macos && mode == AppMode::Install && !force_setup
+}
+
 /// Process-wide install state, shared across Tauri commands.
 ///
 /// The bootstrap is a one-shot, single-tenant process — we only need one
@@ -85,7 +111,37 @@ pub fn run() {
     let _guard = paths::init_logging();
 
     let mode = AppMode::from_args(std::env::args().skip(1));
-    tracing::info!(?mode, "Hermes Setup starting");
+    // Escape hatch: `--reinstall`/`--repair` forces the installer UI even when
+    // Hermes is already installed, so users can re-run setup to repair a broken
+    // install instead of the launcher fast path silently relaunching the app.
+    let force_setup = force_setup_from_args(std::env::args().skip(1));
+    tracing::info!(?mode, force_setup, "Hermes installer starting");
+
+    // Hand off before constructing Tauri/AppKit. The setup callback is too
+    // late: by then the process has already been registered as a regular
+    // Dock application.
+    if handoff_before_appkit(cfg!(target_os = "macos"), mode, force_setup) {
+        let install_root = paths::hermes_home().join("hermes-agent");
+        if bootstrap::hermes_is_installed(&install_root) {
+            match bootstrap::spawn_installed_desktop(&install_root) {
+                Ok(()) => {
+                    // Brief grace so the spawned app is registered before we
+                    // exit (mirrors launch_hermes_desktop).
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    tracing::info!(
+                        "hermes already installed — relaunched desktop; exiting installer"
+                    );
+                    return;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        ?err,
+                        "relaunch of installed desktop failed; showing installer UI"
+                    );
+                }
+            }
+        }
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -93,6 +149,28 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .manage(Arc::new(AppState::new(mode)))
+        .setup(|app| {
+            use tauri::Manager;
+            // LSUIElement keeps the launcher hand-off out of the Dock. A
+            // visible installer (first run, repair, update) must still be a
+            // regular foreground app. The successful fast path returned
+            // before Tauri was constructed and cannot reach this callback.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+            // First run / repair install, or Update mode: reveal the UI.
+            match app.get_webview_window("main") {
+                Some(win) => {
+                    if let Err(err) = win.show() {
+                        tracing::error!(?err, "failed to show main installer window");
+                    }
+                }
+                None => {
+                    tracing::error!("main installer window not found; installer UI will not appear");
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // Mode (install vs update)
             get_mode,
@@ -115,7 +193,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::AppMode;
+    use super::{force_setup_from_args, handoff_before_appkit, AppMode};
 
     #[test]
     fn bare_args_are_install() {
@@ -128,6 +206,47 @@ mod tests {
         assert_eq!(AppMode::from_args(["--update"]), AppMode::Update);
         assert_eq!(
             AppMode::from_args(["--something", "--update", "--else"]),
+            AppMode::Update
+        );
+    }
+
+    #[test]
+    fn reinstall_and_repair_flags_force_setup() {
+        assert!(force_setup_from_args(["--reinstall"]));
+        assert!(force_setup_from_args(["--repair"]));
+        assert!(force_setup_from_args(["--foo", "--repair", "--bar"]));
+    }
+
+    #[test]
+    fn bare_or_unrelated_args_do_not_force_setup() {
+        assert!(!force_setup_from_args(Vec::<String>::new()));
+        assert!(!force_setup_from_args(["--foo", "bar"]));
+        // --update must not be mistaken for a force-setup flag.
+        assert!(!force_setup_from_args(["--update"]));
+    }
+
+    #[test]
+    fn bare_macos_install_hands_off_before_appkit() {
+        assert!(handoff_before_appkit(true, AppMode::Install, false));
+    }
+
+    #[test]
+    fn repair_update_and_other_platforms_build_installer_ui() {
+        assert!(!handoff_before_appkit(true, AppMode::Install, true));
+        assert!(!handoff_before_appkit(true, AppMode::Update, false));
+        assert!(!handoff_before_appkit(true, AppMode::Update, true));
+        assert!(!handoff_before_appkit(false, AppMode::Install, false));
+        assert!(!handoff_before_appkit(false, AppMode::Install, true));
+        assert!(!handoff_before_appkit(false, AppMode::Update, false));
+    }
+
+    #[test]
+    fn force_setup_flags_do_not_affect_mode_selection() {
+        // The repair flags must never flip Install<->Update.
+        assert_eq!(AppMode::from_args(["--reinstall"]), AppMode::Install);
+        assert_eq!(AppMode::from_args(["--repair"]), AppMode::Install);
+        assert_eq!(
+            AppMode::from_args(["--update", "--reinstall"]),
             AppMode::Update
         );
     }

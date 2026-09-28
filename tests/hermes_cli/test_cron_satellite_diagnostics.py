@@ -191,6 +191,35 @@ def test_desktop_serve_ticker_is_not_reported_as_no_gateway(tmp_path, monkeypatc
     assert "gateway install" in stale
 
 
+def test_in_process_ticker_heartbeat_counts_only_while_its_writer_lives(tmp_path, monkeypatch):
+    """A killed serve/Desktop ticker leaves a stamp that reads fresh for ~3 minutes; without a lock,
+    pid or served record the heartbeat proves a scheduler only while the process that wrote it is
+    alive. A legacy bare-epoch stamp names no writer and is not proof by itself."""
+    import subprocess
+    import sys
+
+    from cron import jobs
+    from hermes_cli import cron
+
+    home = tmp_path / "home"
+    (home / "cron").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+    monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda lock_path=None: False)
+    monkeypatch.setattr("hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: False)
+    monkeypatch.setattr(cron, "_active_cron_provider_name", lambda: "builtin")
+    dead = subprocess.Popen([sys.executable, "-c", ""], stdin=subprocess.DEVNULL)
+    dead.wait()
+
+    (jobs.CRON_DIR / "ticker_heartbeat").write_text(f"{time.time()} {dead.pid}", encoding="utf-8")
+    assert cron._builtin_gateway_liveness() is False
+    (jobs.CRON_DIR / "ticker_heartbeat").write_text(str(time.time()), encoding="utf-8")
+    assert cron._builtin_gateway_liveness() is False
+    jobs.record_ticker_heartbeat(success=True)
+    assert cron._builtin_gateway_liveness() is True
+
+
 def test_named_profile_output_names_the_profile_and_trusts_its_own_ticker(served_root, capsys, monkeypatch):
     """`hermes -p probe cron list/status` names the inspected profile on every verdict (#99579) and
     answers "is a scheduler ticking THIS home": a fresh heartbeat written into probe's store counts

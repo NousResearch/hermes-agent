@@ -59,12 +59,16 @@ def test_routed_run_is_queued_for_the_gateway_that_serves_the_profile(keeper_job
     m_run.assert_called_once()
 
 
-def test_routed_run_without_a_serving_gateway_fails_before_the_turn(keeper_job):
+@pytest.mark.parametrize("gateway_serves_profile", [False, None])
+def test_routed_run_without_a_serving_gateway_fails_before_the_turn(keeper_job, gateway_serves_profile):
+    """False = no scheduler; None = the probe could not tell. Neither may queue a run that nothing
+    would pick up."""
     from cron.jobs import get_job
-    out, m_run = _run(keeper_job["id"], gateway_serves_profile=False)
+    out, m_run = _run(keeper_job["id"], gateway_serves_profile=gateway_serves_profile)
 
     assert out["success"] is False
     assert "profile route" in out["error"]
+    assert ("Could not determine" in out["error"]) is (gateway_serves_profile is None)
     m_run.assert_not_called()
     stored = get_job(keeper_job["id"])
     assert stored["next_run_at"] == keeper_job["next_run_at"]

@@ -58,11 +58,17 @@ def _builtin_gateway_liveness() -> Optional[bool]:
             from gateway.status import is_gateway_runtime_lock_active
             if is_gateway_runtime_lock_active():
                 return True
-        from hermes_cli.gateway import find_gateway_pids
+        from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
         if find_gateway_pids():
             return True
-        from cron.jobs import get_ticker_heartbeat_age
-        return _ticker_age_is_fresh(get_ticker_heartbeat_age())
+        from cron.jobs import get_ticker_heartbeat_age, ticker_heartbeat_writer_alive
+        if not _ticker_age_is_fresh(get_ticker_heartbeat_age()):
+            return False
+        # A served named profile's heartbeat is the host multiplexer's, whose process the served
+        # record already proves. Any other writer (the in-process ticker, a shared gateway whose
+        # record omits this profile) must itself still be running: a killed ticker's last stamp
+        # reads fresh for ~3 minutes and would queue manual runs nobody picks up.
+        return named_profile_served_by_running_multiplexer() or ticker_heartbeat_writer_alive()
     except Exception:
         return None
 
@@ -499,8 +505,9 @@ def cron_status():
                 # `hermes serve` / the Desktop backend ticks every local profile in-process: no
                 # gateway argv, lock or host record — only the heartbeat it writes here (#121881).
                 with contextlib.suppress(Exception):
-                    from cron.jobs import get_ticker_heartbeat_age
-                    in_process_ticker = _ticker_age_is_fresh(get_ticker_heartbeat_age())
+                    from cron.jobs import get_ticker_heartbeat_age, ticker_heartbeat_writer_alive
+                    in_process_ticker = (_ticker_age_is_fresh(get_ticker_heartbeat_age())
+                                         and ticker_heartbeat_writer_alive())
         if host is not None:
             print(f"  Scheduler host: {host.describe()}")
             # `hermes gateway restart` exits 78 for a served NAMED profile

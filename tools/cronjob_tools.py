@@ -186,13 +186,18 @@ def _hand_off_primary_routed_run(job: Dict[str, Any], extra_prompt: Optional[str
     if not routed:
         return None
     from hermes_cli.cron import _builtin_gateway_liveness
-    if _builtin_gateway_liveness() is False:
+    alive = _builtin_gateway_liveness()
+    if alive is not True:
+        # None = the probe could not tell; a run queued for a ticker that may not exist is worse
+        # than an honest refusal (nothing would ever pick it up).
+        cause = ("Start the gateway — its ticker will deliver the job on schedule." if alive is False
+                 else "Could not determine whether a gateway serves this profile; check "
+                      "`hermes cron status` and re-run.")
         return _dumps({
             "success": False,
             "error": (
                 f"This job delivers to {', '.join(sorted(routed))} through the primary "
-                "gateway's profile route, which has no standalone sender. Start the "
-                "gateway — its ticker will deliver the job on schedule."),
+                f"gateway's profile route, which has no standalone sender. {cause}"),
         })
     updated = trigger_job(job["id"], extra_prompt=extra_prompt)
     _notify_provider_jobs_changed_safe()
@@ -353,7 +358,15 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         if runner is not None and hasattr(runner, "_adapters_for_profile"):
             from hermes_constants import get_hermes_home, profile_name_for_home
 
-            adapters = runner._adapters_for_profile(profile_name_for_home(get_hermes_home()))
+            profile = profile_name_for_home(get_hermes_home())
+            adapters = runner._adapters_for_profile(profile)
+            # A credentialless shared-bot satellite borrows the primary's bot for ROUTED targets
+            # only — the same grant the ticker's ``tick_adapters_for`` makes, never the full map.
+            if getattr(runner, "_is_shared_bot_satellite", lambda _p: False)(profile):
+                from cron.scheduler_preflight import (
+                    SharedRouteAdapters, _primary_profile_routes_for_current_home)
+
+                adapters = SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
         try:
             # run_one_job records last_run_at/last_status via mark_job_run; `job` is the

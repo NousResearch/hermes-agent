@@ -158,6 +158,40 @@ class TestCronjobRunExecutesImmediately:
         assert res["success"] is True
         assert m_run.call_args.kwargs["adapters"] is work_adapters
 
+    def test_execute_job_now_grants_a_shared_bot_satellite_only_its_routed_targets(self):
+        """A credentialless satellite that posts through the primary's bot gets the ticker's
+        route-restricted view (``SharedRouteAdapters``), never the whole primary adapter map: an
+        unrouted target is a miss (fail closed), the routed one resolves the primary adapter."""
+        from pathlib import Path
+
+        from cron.scheduler_preflight import SharedRouteAdapters
+        from gateway.profile_routing import ProfileRoute
+
+        primary_bot = object()
+        default_adapters = {"telegram": primary_bot}
+        runner = SimpleNamespace(
+            adapters=default_adapters, _gateway_loop=object(),
+            _adapters_for_profile=lambda profile: default_adapters,  # what authz hands a shared-bot satellite
+            _is_shared_bot_satellite=lambda profile: profile == "keeper",
+        )
+        route = ProfileRoute(name="ops", platform="telegram", profile="keeper", chat_id="-100")
+        completed = {"id": "job-run-1", "last_status": "ok", "last_error": None}
+
+        with patch("tools.cronjob_tools.claim_job_for_fire", return_value={**_JOB, "fire_claim": {"by": "manual-owner"}}), \
+             patch("gateway.run._gateway_runner_ref", return_value=runner), \
+             patch("hermes_constants.get_hermes_home", return_value=Path("/srv/hermes/profiles/keeper")), \
+             patch("cron.scheduler_preflight._primary_profile_routes_for_current_home", return_value=[route]), \
+             patch("cron.scheduler.run_one_job", return_value=True) as m_run, \
+             patch("tools.cronjob_tools.get_job", return_value=completed):
+            res = _execute_job_now(dict(_JOB))
+
+        assert res["success"] is True
+        adapters = m_run.call_args.kwargs["adapters"]
+        assert isinstance(adapters, SharedRouteAdapters)
+        assert adapters.get("telegram", {"chat_id": "-100"}) is primary_bot
+        assert adapters.get("telegram", {"chat_id": "-999"}) is None
+        assert adapters.get("telegram") is None
+
     def test_execute_job_now_fails_instead_of_falling_back_when_owner_resolution_raises(self):
         """Fail closed: if the owner profile cannot be resolved, the run is marked failed with the
         error surfaced — it must NOT silently fall back to ``runner.adapters`` (the default bot)."""

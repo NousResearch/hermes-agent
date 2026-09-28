@@ -493,6 +493,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
     # --- Webhook handling ---
 
+    async def _lookup_message(self, guid: str) -> Optional[Dict[str, Any]]:
+        """Fetch a message by guid (used to resolve threaded-reply originators); None on failure."""
+        if not self.client:
+            return None
+        try:
+            return ((await self._api_get(f"/api/v1/message/{quote(guid, safe='')}")) or {}).get("data") or None
+        except Exception as exc:
+            logger.warning("[bluebubbles] failed to fetch reply originator %s: %s", _redact(guid), exc)
+            return None
+
     def _extract_payload_record(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         data = payload.get("data")
         if isinstance(data, dict):
@@ -592,6 +602,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         media_urls, media_types, msg_type = await self._collect_attachments(record)
         if not text and media_urls:
             text = "(attachment)"
+        # Threaded iMessage replies: resolve the originator so `[Replying to: "…"]` context
+        # reaches the agent. run_inbound injects it only when both id and text are present.
+        reply_to_id = self._value(record.get("threadOriginatorGuid"))
+        reply_to_text = None
+        reply_to_is_own = False
+        if reply_to_id:
+            originator = await self._lookup_message(reply_to_id)
+            if originator:
+                reply_to_text = self._value(originator.get("text"))
+                reply_to_is_own = bool(originator.get("isFromMe"))
+        if not reply_to_id:  # legacy fallback: partial-quote reaction messages
+            reply_to_id = self._value(record.get("associatedMessageGuid"))
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
         source = self.build_source(chat_id=session_chat_id, chat_name=chat_identifier or sender,
@@ -600,7 +622,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         event = MessageEvent(
             text=text, message_type=msg_type, source=source, raw_message=payload,
             message_id=self._value(record.get("guid"), record.get("messageGuid"), record.get("id")),
-            reply_to_message_id=self._value(record.get("threadOriginatorGuid"), record.get("associatedMessageGuid")),
+            reply_to_message_id=reply_to_id,
+            reply_to_text=reply_to_text, reply_to_is_own_message=reply_to_is_own,
             media_urls=media_urls, media_types=media_types)
         task = asyncio.create_task(self.handle_message(event))
         self._background_tasks.add(task)

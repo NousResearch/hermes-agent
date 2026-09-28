@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from io import BytesIO
+import wave
 from threading import Event
 
 import pytest
@@ -14,6 +16,7 @@ from nio import (
     ReceiptEvent,
     RoomMessageText,
     RoomSendResponse,
+    UploadResponse,
 )
 
 from tests.fakes.fake_llm_provider import Text, ToolCall
@@ -21,6 +24,7 @@ from tests.integration.matrix_live.conftest import (
     LiveGateway,
     LiveRoom,
     MatrixFeedbackSettings,
+    GatewayDeliveryProbe,
 )
 
 
@@ -36,7 +40,7 @@ def gateway_busy_input_mode(request: pytest.FixtureRequest) -> str:
 
 @pytest.fixture
 def turn_gates() -> Iterator[list[tuple[Event, Event]]]:
-    gates = [(Event(), Event()) for _ in range(3)]
+    gates = [(Event(), Event()) for _ in range(4)]
     try:
         yield gates
     finally:
@@ -95,6 +99,36 @@ class FeedbackObserver:
             self.room.room_id,
             "m.room.message",
             {"msgtype": "m.text", "body": body},
+        )
+        assert isinstance(result, RoomSendResponse), result
+        return result.event_id
+
+    async def send_voice(self) -> str:
+        audio = BytesIO()
+        with wave.open(audio, "wb") as stream:
+            stream.setnchannels(1)
+            stream.setsampwidth(2)
+            stream.setframerate(16000)
+            stream.writeframes(b"\0\0" * 320)
+        payload = audio.getvalue()
+        uploaded, _encryption = await self.client.upload(
+            BytesIO(payload),
+            content_type="audio/wav",
+            filename="voice.wav",
+            filesize=len(payload),
+        )
+        assert isinstance(uploaded, UploadResponse), uploaded
+        result = await self.client.room_send(
+            self.room.room_id,
+            "m.room.message",
+            {
+                "msgtype": "m.audio",
+                "body": "voice.wav",
+                "url": uploaded.content_uri,
+                "info": {"mimetype": "audio/wav"},
+                "org.matrix.msc3245.voice": {},
+                "m.mentions": {"user_ids": [self.room.bot.user_id]},
+            },
         )
         assert isinstance(result, RoomSendResponse), result
         return result.event_id
@@ -519,6 +553,132 @@ def test_plaintext_approval_receipt_precedes_active_turn_completion(
                 .decode(errors="replace")[-6000:]
             )
         finally:
+            for _started, release in turn_gates:
+                release.set()
+            await client.close()
+
+    asyncio.run(exchange())
+
+
+@pytest.mark.parametrize("gateway_busy_input_mode", ["steer"], indirect=True)
+@pytest.mark.parametrize("feedback_path", ["delivery"], indirect=True)
+@pytest.mark.parametrize("gateway_delivery_probe", [True], indirect=True)
+@pytest.mark.parametrize("voice", [False, True])
+def test_steering_during_final_delivery_waits_for_its_own_turn(
+    gateway: LiveGateway,
+    live_room: LiveRoom,
+    turn_gates: list[tuple[Event, Event]],
+    gateway_delivery_probe: GatewayDeliveryProbe,
+    voice: bool,
+) -> None:
+    async def exchange() -> None:
+        client = live_room.observer.client(live_room.homeserver)
+        seen = FeedbackObserver(client, live_room)
+        try:
+            await client.sync(timeout=0)
+            opening = await seen.send("Opening [in:delivery-opening]")
+            assert await asyncio.to_thread(turn_gates[0][0].wait, 5)
+            await seen.observe_until(lambda: seen.reactions.get(opening) == ["👀"])
+            queued = await seen.send("/queue Queued [in:delivery-queued]")
+            await seen.observe_until(
+                lambda: any(
+                    "Queued for the next turn" in reply for reply in seen.replies
+                )
+            )
+            voice_id = None
+            if voice:
+                voice_id = await seen.send_voice()
+                await seen.observe_until(
+                    lambda: (
+                        '🎙️ "Voice correction [in:delivery-voice]"' in seen.replies
+                        and any(
+                            "Steered into current run" in reply
+                            for reply in seen.replies
+                        )
+                    )
+                )
+            turn_gates[0][1].set()
+            async with asyncio.timeout(5):
+                while not gateway_delivery_probe.started.exists():
+                    await asyncio.sleep(0.01)
+            late = await seen.send("/steer Later correction [in:delivery-late]")
+            await seen.observe_until(
+                lambda: any(
+                    "/steer queued for the next turn" in reply for reply in seen.replies
+                )
+            )
+            assert (seen.receipts, seen.reactions) == (set(), {opening: ["👀"]})
+            gateway_delivery_probe.release.touch()
+            expected = [
+                opening,
+                queued,
+                *([voice_id] if voice_id is not None else []),
+                late,
+            ]
+            for index, event_id in enumerate(expected[1:], 1):
+                assert await asyncio.to_thread(turn_gates[index][0].wait, 5)
+                await seen.observe_until(
+                    lambda: (
+                        expected[index - 1] in seen.receipts
+                        and seen.reactions.get(event_id) == ["👀"]
+                        and f"Completed Matrix turn {index}" in seen.replies
+                    )
+                )
+                assert (seen.receipts, seen.reactions) == (
+                    set(expected[:index]),
+                    {prior: ["👀", "✅"] for prior in expected[:index]}
+                    | {event_id: ["👀"]},
+                )
+                turn_gates[index][1].set()
+            await seen.observe_until(
+                lambda: (
+                    late in seen.receipts
+                    and seen.reactions.get(late) == ["👀", "✅"]
+                    and f"Completed Matrix turn {len(expected)}" in seen.replies
+                )
+            )
+            requests = gateway.model.main_requests()
+            inputs = [request["messages"][-1]["content"] for request in requests]
+            assert len(inputs) == len(expected)
+            for text, marker in zip(
+                inputs, ["opening", "queued", *(["voice"] if voice else []), "late"]
+            ):
+                assert text.count(f"[in:delivery-{marker}]") == 1
+            assert [
+                reply
+                for reply in seen.replies
+                if reply.startswith("Completed Matrix turn")
+            ] == [
+                f"Completed Matrix turn {index}"
+                for index in range(1, len(expected) + 1)
+            ]
+            assert (seen.receipts, seen.reactions) == (
+                set(expected),
+                {event_id: ["👀", "✅"] for event_id in expected},
+            )
+            if voice:
+                assert (
+                    len(
+                        gateway_delivery_probe.transcriptions.read_text(
+                            encoding="utf-8"
+                        ).splitlines()
+                    )
+                    == 1
+                )
+                assert (
+                    seen.replies.count('🎙️ "Voice correction [in:delivery-voice]"') == 1
+                )
+        except TimeoutError:
+            pytest.fail(
+                "Delivery-time steering timed out:\n"
+                + f"Receipts: {seen.receipts!r}\nReactions: {seen.reactions!r}\nReplies: {seen.replies!r}\n"
+                + gateway.container
+                .get_wrapped_container()
+                .logs()
+                .decode(errors="replace")[-6000:]
+            )
+        finally:
+            gateway_delivery_probe.release.touch()
             for _started, release in turn_gates:
                 release.set()
             await client.close()

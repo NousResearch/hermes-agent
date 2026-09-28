@@ -658,7 +658,7 @@ class GatewayBusySessionMixin:
         return True
 
     async def _resolve_busy_steer_or_redirect(
-        self, event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any
+        self: "GatewayRunner", event: MessageEvent, session_key: str, effective_mode: str, running_agent: Any
     ) -> "GatewayRunner._BusySteerOutcome":
         """Apply interrupt->queue demotions, then attempt steer (steer mode) or redirect (interrupt mode)."""
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -675,6 +675,8 @@ class GatewayBusySessionMixin:
         )
         if demoted_for_compression:
             effective_mode = self._demote_interrupt(session_key, "context compression is in flight (#56391)")
+        if self._running_turn_finished(session_key):
+            effective_mode = "queue"
         steered = redirected = False
         adapter = self._delivery_adapter_for(event.source)
         agent_live = running_agent is not None and running_agent is not _AGENT_PENDING_SENTINEL
@@ -727,9 +729,11 @@ class GatewayBusySessionMixin:
         return "queue"
 
     def _try_agent_verb(
-        self, running_agent, verb: str, text: str, session_key: str, *, event: Optional[MessageEvent] = None
+        self: "GatewayRunner", running_agent, verb: str, text: str, session_key: str, *, event: Optional[MessageEvent] = None
     ) -> Optional[str]:
         """Return the exact input admitted by steer/redirect, or None on rejection or failure."""
+        if self._running_turn_finished(session_key):
+            return None
         try:
             call_text = self._steer_text_with_origin(text, event) if event else text
             if verb == "steer":
@@ -740,7 +744,7 @@ class GatewayBusySessionMixin:
             logger.warning("Gateway %s failed for session %s: %s", verb, session_key, exc)
             return None
 
-    def _redirect_active_turn(self, running_agent, text: str, session_key: str, event: MessageEvent) -> bool:
+    def _redirect_active_turn(self: "GatewayRunner", running_agent, text: str, session_key: str, event: MessageEvent) -> bool:
         """``redirect()`` the running turn onto *event* and re-anchor its delivery to that message.
 
         The turn's reply anchor and ledger identity were bound to the message that OPENED it, and
@@ -764,14 +768,19 @@ class GatewayBusySessionMixin:
             turn.ctx.inbound_message_id = inbound_id
         return True
 
+    def _running_turn_finished(self: "GatewayRunner", session_key: str) -> bool:
+        state = self._peek_session_state(session_key)
+        ctx = state.turn.ctx if state is not None else None
+        return ctx is not None and ctx.result_holder[0] is not None
+
     def _fold_into_running_turn(
-        self, running_agent, session_key: str, event: MessageEvent, *, input_text: str
+        self: "GatewayRunner", running_agent, session_key: str, event: MessageEvent, *, input_text: str
     ):
         """The running turn now answers *event* too (steer, redirect): if *event* was addressed to
         the bot, a bare silence marker must not end the turn. Returns the turn, or None when a newer
-        turn already owns the slot."""
+        turn already owns the slot or the model turn has finished."""
         turn = self._session_state(session_key).turn
-        if turn.agent is not running_agent:
+        if turn.agent is not running_agent or self._running_turn_finished(session_key):
             return None
         event._processing_state.defer()
         processing_event = turn.processing_event
@@ -781,7 +790,7 @@ class GatewayBusySessionMixin:
                 turn.ctx.reply_expected = processing_event.reply_expected
         return turn
 
-    async def _interrupt_running_agent_for_busy_event(self, event: MessageEvent, adapter, running_agent) -> None:
+    async def _interrupt_running_agent_for_busy_event(self: "GatewayRunner", event: MessageEvent, adapter, running_agent, session_key: str) -> None:
         """Interrupt mode: abort in-flight tool calls; the agent loop exits at its next check point."""
         from gateway.run_inbound_media import _build_media_placeholder
         try:
@@ -793,6 +802,8 @@ class GatewayBusySessionMixin:
                 )
             elif not _interrupt_text and _media_urls:
                 _interrupt_text = _build_media_placeholder(event)
+            if self._running_turn_finished(session_key):
+                return
             key = self._session_key_for_source(event.source)
             if pending_dispatch_withdrawn(adapter, key, event):
                 return
@@ -1000,7 +1011,7 @@ class GatewayBusySessionMixin:
             effective_mode == "interrupt" and not redirected
             and running_agent and running_agent is not _AGENT_PENDING_SENTINEL
         ):
-            await self._interrupt_running_agent_for_busy_event(event, adapter, running_agent)
+            await self._interrupt_running_agent_for_busy_event(event, adapter, running_agent, session_key)
 
         # Disabled ack: still process input. Checked before debounce so an undelivered ack never
         # stamps the "last ack" timestamp.
@@ -1175,7 +1186,7 @@ class GatewayBusySessionMixin:
         depth = self._queue_depth(quick_key, adapter=adapter)
         return t("gateway.queue.queued") + (t("gateway.queue.queued_depth", depth=depth) if depth > 1 else "")
 
-    async def _busy_steer_command(self, event: MessageEvent, quick_key: str, source):
+    async def _busy_steer_command(self: "GatewayRunner", event: MessageEvent, quick_key: str, source):
         # /steer lands BETWEEN tool-call iterations of the same run (appended to the last tool
         # result) — no interrupt, no new user turn, no role-alternation violation.
         from gateway.run import _AGENT_PENDING_SENTINEL
@@ -1199,6 +1210,8 @@ class GatewayBusySessionMixin:
             return _queue_fallback(t("gateway.steer.queued_starting"))
         if not running_agent or not hasattr(running_agent, "steer"):
             return _queue_fallback(t("gateway.steer.queued_no_agent"))
+        if self._running_turn_finished(quick_key):
+            return _queue_fallback("Agent turn finished. /steer queued for the next turn.")
         try:
             input_text = self._steer_text_with_origin(steer_text, event)
             accepted = self._steer_running_agent(running_agent, input_text)

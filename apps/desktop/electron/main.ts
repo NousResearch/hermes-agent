@@ -6530,10 +6530,18 @@ function getWindowState(win = mainWindow) {
   }
 }
 
+// A quit or update handoff kills renderers while their windows can still report
+// live; the renderer lifecycle must treat that as teardown, not a crash to reload.
+function rendererTeardownInProgress(): boolean {
+  return isQuittingForHandoff || (typeof backendShutdown !== 'undefined' && backendShutdown.hasStarted())
+}
+
 function sendBackendExit(payload) {
   // Intentional soft re-home (gateway mode apply) kills the child on purpose —
   // don't surface the "backend stopped" error toast / boot-failure path.
-  if (softRehomeInProgress) {
+  // Neither should intentional quit teardown, which aborts the backend
+  // while the window is still open and waiting for follow-up quit.
+  if (softRehomeInProgress || rendererTeardownInProgress()) {
     return
   }
 
@@ -12953,12 +12961,6 @@ function startHermes({ supervisorRecovery = false }: { supervisorRecovery?: bool
   void start.then(releaseStart, releaseStart)
 
   return start
-}
-
-// A quit or update handoff kills renderers while their windows can still report
-// live; the renderer lifecycle must treat that as teardown, not a crash to reload.
-function rendererTeardownInProgress(): boolean {
-  return isQuittingForHandoff || backendShutdown.hasStarted()
 }
 
 function primaryRecoveryState() {

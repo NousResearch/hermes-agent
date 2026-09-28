@@ -790,6 +790,12 @@ def _rollback_if_pulled_syntax_error(git_cmd, pre_pull_sha, *, rollback_branch=N
         target = rollback_branch if rollback_branch not in (None, "HEAD") else pre_pull_sha[:10]
         print(f"→ Rolling back to {target}...")
         rollback_result = _git_run(git_cmd, rollback_args)
+        if rollback_result.returncode != 0 and rollback_branch not in (None, "HEAD"):
+            # The parked branch can be unavailable (e.g. checked out in another worktree): restore
+            # its commit detached so the install still boots the code it ran before.
+            print(f"  ✗ Could not check out {rollback_branch}; restoring its commit detached.")
+            rollback_args = ["checkout", "--detach", pre_pull_sha]
+            rollback_result = _git_run(git_cmd, rollback_args)
         if rollback_result.returncode == 0:
             print("  ✓ Rollback complete — your install is unchanged.")
             print("  Try ``hermes update`` again later once a fix lands.")
@@ -813,9 +819,9 @@ def _update_movement_baseline(git_cmd, pre_pull_sha, pre_sync_sha, rollback_bran
         # the stale/diverged branch tip, not the original detached checkout.
         contains_target = _git_run(
             git_cmd, ["merge-base", "--is-ancestor", target_sha, pre_pull_sha])
-        # rc 128 (a SHA git cannot resolve) falls through to the pre-switch baseline: the worst
-        # case is a loud "did not move" refusal, never a silent success.
-        if contains_target.returncode == 1:
+        # Anything but "contained" (rc 1, or rc 128 for a SHA git cannot resolve) keeps the strict
+        # baseline: the worst case is a loud "did not move" refusal, never a silent success.
+        if contains_target.returncode != 0:
             return pre_pull_sha
     return pre_sync_sha or pre_pull_sha
 
@@ -826,7 +832,7 @@ def _pull_updates(
     in_place_update=False, _windows_gateway_resume=None):
     """Fast-forward onto ``origin/<branch>`` and settle the autostash. Divergence by shape:
     custom branch -> merge, same branch -> rescue ref then reset; a
-    post-pull syntax error in a critical file rolls back. Exits on failure; returns pre-pull SHA."""
+    post-pull syntax error in a critical file rolls back. Exits on failure; returns the SHA HEAD had to move off."""
     update_succeeded = False
     # Rescue refs must retain the immediate pre-pull tip, even when syntax
     # rollback needs to cross an earlier upstream sync.
@@ -892,7 +898,7 @@ def _pull_updates(
                 _m()._restore_stashed_changes(
                     git_cmd, _m().PROJECT_ROOT, auto_stash_ref, prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn)
-    return pre_pull_sha
+    return movement_baseline
 
 
 @dataclass
@@ -1062,7 +1068,7 @@ def _prepare_checkout_for_update(
         parked_branch_switched=parked_branch_switched, prompt_for_restore=prompt_for_restore,
         switch_block_reason=switch_block_reason, upstream_checked=upstream_checked,
         pre_sync_sha=moved_from_sha, rollback_branch=rollback_branch,
-        switched_without_new_commits=switched_without_new_commits and commit_count == -1)
+        switched_without_new_commits=switched_without_new_commits)
 
 
 @dataclass
@@ -1297,13 +1303,10 @@ def _finish_already_up_to_date(
 
 
 def _apply_pulled_update(
-    git_cmd, branch, pre_pull_sha, _plan, *, _windows_gateway_resume, completion_request: dict) -> None:
-    """Post-pull phase: verify HEAD, sync Python/Node/web/Desktop, maintenance, fleet restart."""
-    movement_baseline = _plan.pre_sync_sha or pre_pull_sha
-    if _plan.rollback_branch is not None:
-        target_sha = (_git_run(git_cmd, ["rev-parse", f"origin/{branch}^{{commit}}"]).stdout or "").strip()
-        movement_baseline = _update_movement_baseline(
-            git_cmd, pre_pull_sha, _plan.pre_sync_sha, _plan.rollback_branch, target_sha)
+    git_cmd, branch, movement_baseline, _plan, *, _windows_gateway_resume, completion_request: dict) -> None:
+    """Post-pull phase: verify HEAD, sync Python/Node/web/Desktop, maintenance, fleet restart.
+
+    ``movement_baseline`` is what ``_pull_updates`` returned: the SHA HEAD had to move off."""
     post_pull_sha = _verify_head_after_pull(
         git_cmd, branch, movement_baseline, in_place_update=_plan.in_place_update,
         _windows_gateway_resume=_windows_gateway_resume)
@@ -1468,7 +1471,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("→ Updates available (commit count unknown on this shallow checkout)")
 
         print("→ Pulling updates...")
-        pre_pull_sha = _pull_updates(
+        movement_baseline = _pull_updates(
             git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
             gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
             keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
@@ -1476,7 +1479,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
             in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume)
         _apply_pulled_update(
-            git_cmd, branch, pre_pull_sha, _plan,
+            git_cmd, branch, movement_baseline, _plan,
             _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)
     except subprocess.CalledProcessError as e:
         try:

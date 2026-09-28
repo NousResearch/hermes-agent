@@ -1,25 +1,25 @@
 """Real Git regression coverage for updates that land via an existing branch."""
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from hermes_cli import update_cmd
-from tests.hermes_cli.test_update_target_identity import update_tree  # noqa: F401
+from tests.hermes_cli.test_update_target_identity import git, update_tree  # noqa: F401
 
 
-def git(root, *args):
-    result = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-    return result.stdout.strip()
+def init_repo(root, monkeypatch):
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    git(root, "config", "user.name", "Fixture")
+    git(root, "config", "user.email", "fixture@example.com")
+    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", root)
 
 
 @pytest.fixture
 def checkout(tmp_path, monkeypatch):
     root = tmp_path / "checkout"
-    root.mkdir()
-    git(root, "init", "-q", "-b", "main")
-    git(root, "config", "user.name", "Fixture")
-    git(root, "config", "user.email", "fixture@example.com")
+    init_repo(root, monkeypatch)
     (root / "cli.py").write_text("value = 1\n", encoding="utf8")
     git(root, "add", ".")
     git(root, "commit", "-qm", "old")
@@ -29,7 +29,6 @@ def checkout(tmp_path, monkeypatch):
     tip = git(root, "rev-parse", "HEAD")
     git(root, "update-ref", "refs/remotes/origin/main", tip)
     git(root, "checkout", "-q", "--detach", old)
-    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", root)
     return root, old, tip
 
 
@@ -41,18 +40,21 @@ def prepare(root, *, is_fork=False):
     )
 
 
+def pull(plan, **kwargs):
+    return update_cmd._pull_updates(
+        ["git"], "main", plan.auto_stash_ref, prompt_for_restore=False,
+        gw_input_fn=None, discard_local_changes=False, keep_stash=False,
+        pre_sync_sha=plan.pre_sync_sha, rollback_branch=plan.rollback_branch, **kwargs,
+    )
+
+
 def test_existing_main_counts_from_running_detached_code(checkout):
     root, old, tip = checkout
     plan = prepare(root)
     assert git(root, "rev-parse", "HEAD") == tip
     assert plan.commit_count == 1
     assert plan.pre_sync_sha == old
-    update_cmd._pull_updates(
-        ["git"], "main", plan.auto_stash_ref, prompt_for_restore=False,
-        gw_input_fn=None, discard_local_changes=False, keep_stash=False,
-        pre_sync_sha=plan.pre_sync_sha,
-        rollback_branch=plan.rollback_branch,
-    )
+    pull(plan)
     assert git(root, "rev-parse", "HEAD") == tip
 
 
@@ -80,17 +82,33 @@ def test_syntax_failure_returns_to_original_checkout_without_rewriting_main(chec
     git(root, "checkout", "-q", "feature" if parked else old)
     plan = prepare(root)
     with pytest.raises(SystemExit) as exc:
-        update_cmd._pull_updates(
-            ["git"], "main", plan.auto_stash_ref, prompt_for_restore=False,
-            gw_input_fn=None, discard_local_changes=False, keep_stash=False,
-            pre_sync_sha=plan.pre_sync_sha, rollback_branch=plan.rollback_branch,
-        )
+        pull(plan)
     assert exc.value.code == 1
     assert git(root, "rev-parse", "HEAD") == old
     assert git(root, "rev-parse", "--abbrev-ref", "HEAD") == ("feature" if parked else "HEAD")
     assert git(root, "rev-parse", "main") == bad
     assert (root / "cli.py").read_text(encoding="utf8") == "value = 1\n"
 
+
+
+def test_rollback_restores_the_commit_when_the_parked_branch_is_taken(checkout, tmp_path):
+    """Another worktree holding the parked branch must not leave the install on broken code."""
+    root, old, tip = checkout
+    git(root, "checkout", "-qb", "feature")
+    git(root, "commit", "--allow-empty", "-qm", "local")
+    feature_tip = git(root, "rev-parse", "HEAD")
+    git(root, "checkout", "-q", "main")
+    (root / "cli.py").write_text("def broken(\n", encoding="utf8")
+    git(root, "commit", "-qam", "bad upstream")
+    git(root, "update-ref", "refs/remotes/origin/main", git(root, "rev-parse", "HEAD"))
+    git(root, "checkout", "-q", "feature")
+    plan = prepare(root)
+    git(root, "worktree", "add", "-q", str(tmp_path / "other"), "feature")
+    with pytest.raises(SystemExit):
+        pull(plan)
+    assert git(root, "rev-parse", "HEAD") == feature_tip
+    assert git(root, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+    assert (root / "cli.py").read_text(encoding="utf8") == "value = 1\n"
 
 def test_locally_ahead_switch_still_needs_completion(checkout):
     root, old, tip = checkout
@@ -123,11 +141,7 @@ def test_merge_that_reports_success_without_moving_stale_main_is_refused(checkou
 
     monkeypatch.setattr(update_cmd, "_git_run", merge_is_a_silent_noop)
     with pytest.raises(SystemExit):
-        update_cmd._pull_updates(
-            ["git"], "main", plan.auto_stash_ref, prompt_for_restore=False,
-            gw_input_fn=None, discard_local_changes=False, keep_stash=False,
-            pre_sync_sha=plan.pre_sync_sha, rollback_branch=plan.rollback_branch,
-        )
+        pull(plan)
     assert git(root, "rev-parse", "HEAD") == old
 
 
@@ -137,11 +151,7 @@ def test_stale_local_main_can_catch_up_to_original_detached_tip(checkout):
     git(root, "checkout", "-q", "--detach", tip)
     plan = prepare(root)
     assert plan.commit_count != 0
-    update_cmd._pull_updates(
-        ["git"], "main", plan.auto_stash_ref, prompt_for_restore=False,
-        gw_input_fn=None, discard_local_changes=False, keep_stash=False,
-        pre_sync_sha=plan.pre_sync_sha, rollback_branch=plan.rollback_branch,
-    )
+    pull(plan)
     assert git(root, "rev-parse", "main") == tip
 
 
@@ -207,12 +217,7 @@ def test_early_fork_sync_without_push_still_completes(checkout, monkeypatch):
     assert plan.upstream_checked
     assert git(root, "rev-parse", "HEAD") == upstream_tip
     assert git(root, "rev-parse", "origin/main") == tip
-    before_pull = update_cmd._pull_updates(
-        ["git"], "main", plan.auto_stash_ref, prompt_for_restore=False,
-        gw_input_fn=None, discard_local_changes=False, keep_stash=False,
-        pre_sync_sha=plan.pre_sync_sha, rollback_branch=plan.rollback_branch,
-        sync_upstream=True,
-    )
+    before_pull = pull(plan, sync_upstream=True)
     completed = []
     monkeypatch.setattr(update_cmd, "_complete_source_update", completed.append)
     request = {}
@@ -230,7 +235,6 @@ def test_command_hands_off_after_existing_main_switch(update_tree, monkeypatch, 
     run = subprocess.run
 
     def local_git_only(command, *args, **kwargs):
-        from pathlib import Path
         assert Path(command[0]).name.lower() in {"git", "git.exe"}, command
         assert Path(kwargs["cwd"]).resolve() in {t.clone, t.origin}, command
         return run(command, *args, **kwargs)
@@ -251,11 +255,7 @@ def test_fork_sync_round_trip_is_not_misclassified_as_noop(tmp_path, monkeypatch
     """origin/main moves first, then the upstream sync returns HEAD to the SHA that was
     running before the update: still a successful branch repair, not a no-op."""
     root = tmp_path / "fork"
-    root.mkdir()
-    git(root, "init", "-q", "-b", "main")
-    git(root, "config", "user.name", "Fixture")
-    git(root, "config", "user.email", "fixture@example.com")
-    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", root)
+    init_repo(root, monkeypatch)
 
     def commit(value):
         (root / "state.txt").write_text(value + "\n", encoding="utf-8")
@@ -279,11 +279,7 @@ def test_fork_sync_round_trip_is_not_misclassified_as_noop(tmp_path, monkeypatch
         return True
 
     monkeypatch.setattr(update_cmd._m(), "_sync_with_upstream_if_needed", sync_upstream)
-    update_cmd._pull_updates(
-        ["git"], "main", plan.auto_stash_ref, prompt_for_restore=False,
-        gw_input_fn=None, discard_local_changes=False, keep_stash=False,
-        pre_sync_sha=plan.pre_sync_sha, rollback_branch=plan.rollback_branch, sync_upstream=True,
-    )
+    pull(plan, sync_upstream=True)
 
     assert git(root, "rev-parse", "HEAD") == upstream_tip
     assert git(root, "rev-parse", "main") == upstream_tip

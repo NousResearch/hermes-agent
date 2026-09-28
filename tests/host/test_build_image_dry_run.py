@@ -109,3 +109,14 @@ def test_install_script_installs_what_the_image_needs():
         assert needle in text, needle
     assert "/etc/litco-agent/env exists; image is not secret-free" in text
     assert ".env" not in text.replace("/etc/litco-agent/env", ""), "install script must not write env files"
+
+
+def test_builder_is_tagged_and_cleanup_survives_signals_and_lost_ids(fake_path):
+    out = run(["--version", "v3", "--dry-run"], fake_path["env"])
+    cmds = plan_commands(out.stdout)
+    assert "--tag-names litco-host-builder" in cmds[1]
+    out = run(["--version", "v3", "--tag", "other-tag", "--dry-run"], fake_path["env"])
+    assert "--tag-names other-tag" in plan_commands(out.stdout)[1]
+    text = SCRIPT.read_text()
+    assert "trap 'exit 130' INT" in text and "trap 'exit 143' TERM" in text
+    assert 'droplet list --tag-name "$TAG"' in text

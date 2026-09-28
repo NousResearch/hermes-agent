@@ -28,6 +28,9 @@
 #   --size <slug>        builder size, default s-4vcpu-8gb
 #   --base-image <slug>  default ubuntu-24-04-x64
 #   --ssh-key <fp|id>    account SSH key for the builder (required unless --dry-run)
+#   --tag <name>         droplet tag for the builder, default litco-host-builder; the
+#                        cleanup trap finds a builder by this tag + name if the
+#                        create call dies before it returns the droplet id
 #   --dry-run            print every command in order and exit 0; runs nothing
 #
 # The builder is deleted on any failure after it is created (trap), so a failed
@@ -43,9 +46,10 @@ REGION="sfo3"
 SIZE="s-4vcpu-8gb"
 BASE_IMAGE="ubuntu-24-04-x64"
 SSH_KEY=""
+TAG="litco-host-builder"
 DRY_RUN=false
 
-usage() { sed -n '2,36p' "${BASH_SOURCE[0]}"; }
+usage() { sed -n '2,39p' "${BASH_SOURCE[0]}"; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -56,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --size) SIZE="$2"; shift 2 ;;
     --base-image) BASE_IMAGE="$2"; shift 2 ;;
     --ssh-key) SSH_KEY="$2"; shift 2 ;;
+    --tag) TAG="$2"; shift 2 ;;
     --dry-run) DRY_RUN=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "build-image: unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -79,9 +84,11 @@ if [[ "$DRY_RUN" == false && -z "$SSH_KEY" ]]; then
 fi
 SSH_KEY_ARG="${SSH_KEY:-<ssh-key>}"
 
-SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o BatchMode=yes)
+SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o BatchMode=yes
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=10)
 DROPLET_ID="<droplet-id>"
 DROPLET_IP="<droplet-ip>"
+CREATE_ATTEMPTED=false
 STEP=0
 
 # plan <description> -- <command...>: print in dry-run, run otherwise.
@@ -99,6 +106,14 @@ plan() {
 
 cleanup_builder() {
   local rc=$?
+  set +e
+  if [[ "$DRY_RUN" == false && "$CREATE_ATTEMPTED" == true && \
+        ( "$DROPLET_ID" == "<droplet-id>" || -z "$DROPLET_ID" ) ]]; then
+    # The create call died before returning an id (timeout, signal, parse
+    # failure). Find the builder by tag + exact name so it is not orphaned.
+    DROPLET_ID="$(doctl compute droplet list --tag-name "$TAG" --format ID,Name --no-header 2>/dev/null \
+      | awk -v n="$BUILDER" '$2 == n {print $1}' | head -n1)"
+  fi
   if [[ "$DRY_RUN" == false && "$DROPLET_ID" != "<droplet-id>" && -n "$DROPLET_ID" ]]; then
     echo "[build-image] deleting builder ${DROPLET_ID} (exit ${rc})" >&2
     doctl compute droplet delete "$DROPLET_ID" --force || \
@@ -107,12 +122,17 @@ cleanup_builder() {
   exit "$rc"
 }
 trap cleanup_builder EXIT
+# A signal must still reach the EXIT trap, so the builder is deleted on ^C too.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 create_builder() {
   local out
+  CREATE_ATTEMPTED=true
   out="$(doctl compute droplet create "$BUILDER" \
     --region "$REGION" --size "$SIZE" --image "$BASE_IMAGE" \
-    --ssh-keys "$SSH_KEY" --enable-monitoring --tag-names litco-agent-builder \
+    --ssh-keys "$SSH_KEY" --enable-monitoring --tag-names "$TAG" \
     --wait --format ID,PublicIPv4 --no-header)"
   DROPLET_ID="$(awk '{print $1}' <<<"$out")"
   DROPLET_IP="$(awk '{print $2}' <<<"$out")"
@@ -137,7 +157,7 @@ snapshot_exists() {
 if [[ "$DRY_RUN" == true ]]; then
   echo "litco-agent host image build plan (dry run; nothing is created)"
   echo "  version=${VERSION} ref=${REF} snapshot=${SNAPSHOT} builder=${BUILDER}"
-  echo "  region=${REGION} size=${SIZE} base=${BASE_IMAGE} repo=${REPO}"
+  echo "  region=${REGION} size=${SIZE} base=${BASE_IMAGE} repo=${REPO} tag=${TAG}"
 fi
 
 if [[ "$DRY_RUN" == true ]]; then
@@ -151,7 +171,7 @@ fi
 
 if [[ "$DRY_RUN" == true ]]; then
   plan "create builder droplet" -- doctl compute droplet create "$BUILDER" --region "$REGION" --size "$SIZE" \
-    --image "$BASE_IMAGE" --ssh-keys "$SSH_KEY_ARG" --enable-monitoring --tag-names litco-agent-builder \
+    --image "$BASE_IMAGE" --ssh-keys "$SSH_KEY_ARG" --enable-monitoring --tag-names "$TAG" \
     --wait --format ID,PublicIPv4 --no-header
   plan "wait for SSH" -- ssh "${SSH_OPTS[@]}" "root@${DROPLET_IP}" true
 else

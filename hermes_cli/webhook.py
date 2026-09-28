@@ -55,16 +55,12 @@ def _load_subscriptions() -> Dict[str, dict]:
         return {}
 
 
-def _save_subscriptions(subs: Dict[str, dict]) -> None:
-    _replace_registry(_subscriptions_path(), subs)
-
-
 def _replace_registry(path: Path, subs: Dict[str, dict]) -> None:
     """Publish a fully synced private registry, never using the shared copy fallback.
 
     EBUSY/EXDEV on a bind-mounted registry cannot safely fall back to an
     in-place rewrite: the plugin and gateway can observe a partial JSON file.
-    Transactions hold the persistent sibling lock through this operation.
+    Only _subscription_transaction calls this, holding the persistent sibling lock.
     """
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(path.parent)

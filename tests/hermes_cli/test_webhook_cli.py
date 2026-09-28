@@ -12,7 +12,7 @@ from hermes_cli.webhook import (
     webhook_command,
     _get_webhook_base_url,
     _load_subscriptions,
-    _save_subscriptions,
+    _subscription_transaction,
     _subscriptions_path,
 )
 
@@ -162,7 +162,8 @@ class TestPersistence:
     def test_save_creates_secret_file_owner_only_under_permissive_umask(self):
         old_umask = os.umask(0o022)
         try:
-            _save_subscriptions({"demo": {"secret": "TOPSECRET", "prompt": "x"}})
+            with _subscription_transaction() as subs:
+                subs["demo"] = {"secret": "TOPSECRET", "prompt": "x"}
         finally:
             os.umask(old_umask)
 
@@ -178,7 +179,8 @@ class TestPersistence:
         path.write_text(json.dumps({"old": {"secret": "stale", "prompt": "x"}}))
         path.chmod(0o644)
 
-        _save_subscriptions({"demo": {"secret": "FRESH", "prompt": "x"}})
+        with _subscription_transaction() as subs:
+            subs["demo"] = {"secret": "FRESH", "prompt": "x"}
 
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
         assert "FRESH" in path.read_text(encoding="utf-8")

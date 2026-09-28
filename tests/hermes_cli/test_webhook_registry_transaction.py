@@ -167,8 +167,22 @@ def test_dashboard_overwrite_reports_persisted_enabled_state(tmp_path, monkeypat
     assert stored["custom"] == 1
     asyncio.run(ops.set_webhook_enabled("route", WebhookEnabledToggle(enabled=True)))
     result = asyncio.run(ops.create_webhook(WebhookCreate(name="route")))
-    assert result["enabled"] is True
-    assert json.loads(path.read_text())["route"]["enabled"] is True
+    stored = json.loads(path.read_text())["route"]
+    assert result["enabled"] is True and stored["enabled"] is True
+    # Re-creating without a secret keeps the stored one, as the CLI does.
+    assert stored["secret"] == result["secret"] == "new"
+
+
+
+def test_dashboard_list_read_failure_says_read(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    def unreadable():
+        raise OSError(errno.EIO, "read failed")
+    monkeypatch.setattr(wh, "_read_subscriptions_strict", unreadable)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(ops.list_webhooks())
+    assert exc.value.status_code == 500
+    assert exc.value.detail == "Could not read webhook subscriptions."
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory fsync")

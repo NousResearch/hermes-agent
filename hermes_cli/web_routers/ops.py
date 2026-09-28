@@ -169,7 +169,7 @@ async def list_webhooks(profile: Optional[str] = None):
             ],
         }
 
-    return await _webhook_write(profile, _run)
+    return await _webhook_write(profile, _run, verb="read")
 
 
 @router.post("/api/webhooks/enable")
@@ -211,11 +211,9 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
             status_code=400, detail="Direct delivery requires a real target (telegram, discord, …), not 'log'.",
         )
 
-    secret = body.secret or secrets.token_urlsafe(32)
     route: Dict[str, Any] = {
         "description": body.description or f"Dashboard-created subscription: {name}",
         "events": [e.strip() for e in body.events if e.strip()],
-        "secret": secret,
         "prompt": body.prompt or "",
         "skills": [s.strip() for s in body.skills if s.strip()],
         "deliver": body.deliver or "log",
@@ -232,6 +230,8 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
         try:
             with wh._subscription_transaction() as subs:
                 existing = wh._existing_route(subs, name) if name in subs else {}
+                # Like the CLI, re-creating a route keeps its secret unless one is given.
+                route["secret"] = body.secret or existing.get("secret") or secrets.token_urlsafe(32)
                 # Only PUT /api/webhooks/{name}/enabled changes that flag.
                 subs[name] = wh._replace_route(existing, route)
                 persisted = subs[name]
@@ -245,7 +245,7 @@ async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
                    if not durable else {})}
 
     summary = await _webhook_write(profile, _save)
-    summary["secret"] = secret  # surfaced exactly once, on create
+    summary["secret"] = route["secret"]  # the persisted secret, surfaced on create
     return summary
 
 
@@ -258,15 +258,15 @@ def _webhook_subs_with(subs: dict, name: str):
     wh._existing_route(subs, key)
     return key
 
-async def _webhook_write(profile, action):
+async def _webhook_write(profile, action, verb="update"):
     """Present damaged registries as a conflict, not an internal traceback."""
     try:
         return await config_scoped_to_thread(profile, action)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except OSError as exc:
-        _log.exception("Could not update webhook subscriptions")
-        raise HTTPException(status_code=500, detail="Could not update webhook subscriptions.") from exc
+        _log.exception("Could not %s webhook subscriptions", verb)
+        raise HTTPException(status_code=500, detail=f"Could not {verb} webhook subscriptions.") from exc
 
 
 @router.delete("/api/webhooks/{name}")

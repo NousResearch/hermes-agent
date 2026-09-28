@@ -444,8 +444,8 @@ def gateway(
                     + (f"    free_response_rooms:\n      - {room_id!r}\n" if resolution_pause else ""),
                     1,
                 )
-                + ("auxiliary:\n  title_generation:\n    model_upgrade_enabled: false\n"
-                   if mode == "inspection" else "")
+                + ("auxiliary:\n  background_review:\n    enabled: false\n  title_generation:\n    model_upgrade_enabled: false\n"
+                   if mode in {"inspection", "pause-image-context"} else "")
                 + ("display:\n  busy_input_mode: queue\n  busy_ack_enabled: false\n"
                    if mode == "pause-queued-context" else "")
                 + ("plugins:\n  enabled:\n    - matrix-live-context\n"

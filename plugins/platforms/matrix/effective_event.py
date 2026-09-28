@@ -34,6 +34,13 @@ class MatrixEffectiveEvent:
 def event_content(event: Any) -> dict[str, Any]:
     content = event.get("content") if isinstance(event, dict) else getattr(event, "content", None)
     if isinstance(content, dict):
+        event_type = event.get("type") if isinstance(event, dict) else str(getattr(event, "type", ""))
+        if event_type == "m.sticker":
+            content = {**content, "msgtype": "m.sticker"}
+            revised = content.get("m.new_content")
+            if isinstance(revised, dict):
+                content["m.new_content"] = {**revised, "msgtype": "m.sticker"}
+            return content
         return content
     serialize = getattr(content, "serialize", None)
     if callable(serialize):

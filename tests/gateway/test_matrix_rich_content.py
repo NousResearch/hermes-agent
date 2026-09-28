@@ -1,0 +1,438 @@
+"""Native Matrix actions and stickers use the normal message and context paths."""
+
+from __future__ import annotations
+
+import base64
+from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.platforms.event import MessageType
+from gateway.run import GatewayRunner
+from gateway.run_turn_runner import TurnRunner
+from gateway.turn_context import TurnContext
+from plugins.platforms.matrix.adapter import MatrixAdapter
+from plugins.platforms.matrix.read_context import read_matrix_context
+from plugins.platforms.matrix.thread_context import history_entry
+
+
+ROOM = "!room:example.org"
+SENDER = "@alice:example.org"
+PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+def _adapter(monkeypatch: pytest.MonkeyPatch) -> tuple[MatrixAdapter, AsyncMock]:
+    monkeypatch.setattr("plugins.platforms.matrix.adapter.time.time", lambda: 1000.0)
+    adapter = MatrixAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="test",
+            extra={
+                "homeserver": "https://example.org",
+                "user_id": "@hermes:example.org",
+                "require_mention": False,
+                "auto_thread": False,
+            },
+        )
+    )
+    adapter._text_batch_delay_seconds = 0
+    adapter._startup_ts = 999
+    adapter._joined_rooms.add(ROOM)
+    adapter._resolve_room_identity = AsyncMock(
+        return_value=SimpleNamespace(
+            chat_type="group",
+            display_name="Room",
+            room_topic=None,
+            server_name="example.org",
+            members_digest=None,
+        )
+    )
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter.set_authorization_check(lambda *_args, **_kwargs: True)
+    received = AsyncMock()
+    adapter.handle_message = received
+    adapter._client = SimpleNamespace(
+        download_media=AsyncMock(return_value=PNG),
+        api=SimpleNamespace(request=AsyncMock(return_value={"chunk": []})),
+        crypto=None,
+    )
+    return adapter, received
+
+
+def _event(kind: str) -> dict:
+    content = (
+        {"body": "/new waves"}
+        if kind == "emote"
+        else {
+            "body": "Friendly fox.png",
+            "url": "mxc://example.org/fox",
+            "info": {"mimetype": "image/png", "size": len(PNG), "w": 1, "h": 1},
+        }
+    )
+    if kind == "emote":
+        content.update(
+            msgtype="m.emote",
+            format="org.matrix.custom.html",
+            formatted_body="<i>/new waves</i>",
+        )
+    content["m.relates_to"] = {"rel_type": "m.thread", "event_id": "$root"}
+    return {
+        "type": "m.room.message" if kind == "emote" else "m.sticker",
+        "room_id": ROOM,
+        "sender": SENDER,
+        "event_id": "$native",
+        "origin_server_ts": 1000000,
+        "content": content,
+    }
+
+
+def _body(kind: str) -> str:
+    return (
+        f"[emote by {SENDER}] /new waves"
+        if kind == "emote"
+        else "[sticker: Friendly fox.png]"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,scenario",
+    [
+        (kind, scenario)
+        for kind in ("emote", "sticker")
+        for scenario in (
+            "accepted",
+            "mention-denied",
+            "room-denied",
+            "sender-denied",
+            "queued-redaction",
+            "queued-edit",
+        )
+    ]
+    + [
+        ("sticker", scenario)
+        for scenario in (
+            "oversize",
+            "download-failure",
+            "missing-media-key",
+            "conversion-redaction",
+            "analysis",
+            "analysis-redaction",
+            "analysis-edit",
+            "invalid-url-denied",
+            "download-oversize",
+            "download-edit",
+            "download-redaction",
+        )
+    ],
+)
+@pytest.mark.parametrize("typed", [False, True])
+async def test_native_content_reaches_model_with_actor_description_and_pixels(
+    monkeypatch, kind, scenario, typed
+):
+    adapter, received = _adapter(monkeypatch)
+    raw = _event(kind)
+    if scenario == "mention-denied":
+        adapter._require_mention = True
+    if scenario == "room-denied":
+        adapter._allowed_rooms = {"!other:example.org"}
+    if scenario == "sender-denied":
+        adapter.set_authorization_check(lambda *_args, **_kwargs: False)
+    if scenario == "oversize":
+        adapter._max_media_bytes = len(PNG) - 1
+    if scenario == "download-failure":
+        adapter._client.download_media.side_effect = OSError("unavailable")
+    if scenario == "invalid-url-denied":
+        raw["content"]["url"] = "https://example.org/fox.png"
+    if scenario == "download-oversize":
+        raw["content"]["info"]["size"] = 1
+        adapter._max_media_bytes = len(PNG) - 1
+    if scenario in {"download-edit", "download-redaction"}:
+
+        async def changed_download(_url):
+            if scenario == "download-redaction":
+                await adapter._on_redaction(
+                    SimpleNamespace(room_id=ROOM, redacts="$native")
+                )
+            else:
+                adapter._event_context_cache.apply_edit(
+                    ROOM,
+                    SENDER,
+                    {
+                        "m.new_content": {
+                            "msgtype": "m.sticker",
+                            "body": "Changed sticker",
+                            "url": "mxc://example.org/new",
+                            "info": {},
+                        },
+                        "m.relates_to": {
+                            "rel_type": "m.replace",
+                            "event_id": "$native",
+                        },
+                    },
+                    replacement_id="$edit",
+                )
+            return PNG
+
+        adapter._client.download_media.side_effect = changed_download
+    if scenario == "missing-media-key":
+        raw["content"]["file"] = {
+            "url": raw["content"].pop("url"),
+            "key": {
+                "k": "",
+                "kty": "oct",
+                "alg": "A256CTR",
+                "ext": True,
+                "key_ops": ["encrypt", "decrypt"],
+            },
+            "iv": "",
+            "hashes": {},
+            "v": "v2",
+        }
+    incoming = (
+        pytest.importorskip("mautrix.types").Event.deserialize(deepcopy(raw))
+        if typed
+        else raw
+    )
+    await adapter._on_room_message(incoming)
+    if scenario.endswith("denied"):
+        assert (
+            received.await_count,
+            adapter._client.download_media.await_count,
+        ) == (0, 0)
+        return
+    received.assert_awaited_once()
+    call = received.await_args
+    assert call is not None
+    event = call.args[0]
+    text = _body(kind)
+    if scenario == "oversize":
+        text += "\n[matrix sticker attachment too large]"
+    if scenario in {"download-failure", "missing-media-key", "download-oversize"}:
+        text += "\n[matrix sticker image unavailable]"
+    assert {
+        "text": event.text,
+        "type": event.message_type,
+        "actor": event.user_id,
+        "room": event.source.chat_id,
+        "thread": event.source.thread_id,
+        "id": event.message_id,
+    } == {
+        "text": text,
+        "type": MessageType.TEXT
+        if kind == "emote" or scenario == "oversize"
+        else MessageType.PHOTO,
+        "actor": SENDER,
+        "room": ROOM,
+        "thread": "$root",
+        "id": "$native",
+    }
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {Platform.MATRIX: adapter}
+    monkeypatch.setattr(runner, "_decide_image_input_mode", lambda **_kwargs: "native")
+    if scenario.startswith("analysis"):
+        monkeypatch.setattr(
+            runner, "_decide_image_input_mode", lambda **_kwargs: "text"
+        )
+
+        async def analyze(_text, _paths):
+            if scenario == "analysis-redaction":
+                await adapter._on_redaction(
+                    SimpleNamespace(room_id=ROOM, redacts="$native")
+                )
+            if scenario == "analysis-edit":
+                adapter._event_context_cache.apply_edit(
+                    ROOM,
+                    SENDER,
+                    {
+                        "m.new_content": {
+                            "msgtype": "m.sticker",
+                            "body": "Changed sticker",
+                            "url": "mxc://example.org/new",
+                            "info": {},
+                        },
+                        "m.relates_to": {
+                            "rel_type": "m.replace",
+                            "event_id": "$native",
+                        },
+                    },
+                    replacement_id="$edit",
+                )
+            return "Analysed sticker pixels"
+
+        monkeypatch.setattr(runner, "_enrich_message_with_vision", analyze)
+    if scenario == "queued-redaction":
+        await adapter._on_redaction(SimpleNamespace(room_id=ROOM, redacts="$native"))
+    if scenario == "queued-edit":
+        replacement = (
+            {"body": "Changed action"}
+            if kind == "emote"
+            else {
+                "body": "Changed sticker",
+                "url": "mxc://example.org/new",
+                "info": {"mimetype": "image/png"},
+            }
+        )
+        if kind == "emote":
+            replacement["msgtype"] = "m.emote"
+        await adapter._on_room_message({
+            **raw,
+            "event_id": "$edit",
+            "content": {
+                "body": "* changed",
+                "msgtype": "m.emote" if kind == "emote" else "m.sticker",
+                "m.new_content": replacement,
+                "m.relates_to": {"rel_type": "m.replace", "event_id": "$native"},
+            },
+        })
+    prepared = await runner._prepare_inbound_message_text(
+        event=event,
+        source=event.source,
+        history=[{}],
+        session_key="session",
+    )
+    if scenario == "conversion-redaction":
+        read_bytes = Path.read_bytes
+
+        def withdraw(path):
+            data = read_bytes(path)
+            if str(path) in event.media_urls:
+                adapter._event_context_cache.redact(ROOM, "$native")
+            return data
+
+        monkeypatch.setattr(Path, "read_bytes", withdraw)
+    turn = TurnRunner(
+        runner,
+        TurnContext(
+            session_key="session",
+            input_snapshot=event._prepared_inbound,
+            message=prepared,
+        ),
+    )
+    content = turn._native_image_run_message()
+    parts = (
+        content if isinstance(content, list) else [{"type": "text", "text": content}]
+    )
+    model_text = "".join(part.get("text", "") for part in parts)
+    if scenario in {
+        "queued-redaction",
+        "conversion-redaction",
+        "analysis-redaction",
+        "download-redaction",
+    }:
+        assert "[redacted]" in model_text and _body(kind) not in model_text
+    elif scenario in {"queued-edit", "analysis-edit", "download-edit"}:
+        assert (
+            "Changed action" if kind == "emote" else "Changed sticker"
+        ) in model_text
+        assert _body(kind) not in model_text
+    else:
+        assert text in model_text
+    assert ("Analysed sticker pixels" in model_text) is (scenario == "analysis")
+    assert any(part["type"] == "image_url" for part in parts) is (
+        kind == "sticker" and scenario == "accepted"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,scenario",
+    [
+        (kind, scenario)
+        for kind in ("emote", "sticker")
+        for scenario in ("visible", "withdrawn", "bounded", "missing-room-key")
+    ]
+    + [("sticker", "oversize")],
+)
+async def test_native_content_has_consistent_effective_reads_history_and_reply_pixels(
+    monkeypatch, kind, scenario
+):
+    adapter, _received = _adapter(monkeypatch)
+    raw = _event(kind)
+    body = _body(kind)
+    if scenario == "bounded":
+        raw["content"]["body"] = "Untrusted description " * 1000
+        body = (
+            f"[emote by {SENDER}] " + raw["content"]["body"]
+            if kind == "emote"
+            else "[sticker: " + raw["content"]["body"].strip() + "]"
+        ).strip()
+    if scenario == "oversize":
+        adapter._max_media_bytes = len(PNG) - 1
+    if scenario == "missing-room-key":
+        raw.update(
+            type="m.room.encrypted",
+            content={
+                "algorithm": "m.megolm.v1.aes-sha2",
+                "session_id": "missing",
+                "ciphertext": "unavailable",
+            },
+        )
+
+    async def request(_method, path, **_kwargs):
+        return raw if "/event/" in path else {"chunk": []}
+
+    adapter._client.api.request.side_effect = request
+    read = await read_matrix_context(
+        adapter, "event", ROOM, "$native", 1, requester=SENDER
+    )
+    if scenario == "missing-room-key":
+        assert read == {
+            "events": [],
+            "errors": [{"event_id": "$native", "error": "missing decryption keys"}],
+        }
+        parsed = await history_entry(
+            adapter._client, raw, adapter._event_context_cache, ROOM
+        )
+        assert parsed is not None
+        assert parsed[0].text == "[encrypted message could not be decrypted]"
+        return
+    assert read == {
+        "events": [
+            {
+                "event_id": "$native",
+                "sender": SENDER,
+                "body": body[:1200],
+                "msgtype": "m.emote" if kind == "emote" else "m.sticker",
+                "thread_id": "$root",
+                "timestamp": 1000000,
+                "sender_authorized": True,
+            }
+        ],
+        "errors": [],
+    }
+    parsed = await history_entry(
+        adapter._client, raw, adapter._event_context_cache, ROOM
+    )
+    assert parsed is not None and parsed[0].text == body
+    parent = await adapter._event_context_cache.resolve(
+        adapter._client, ROOM, "$native", adapter._cache_quoted_image
+    )
+    assert parent is not None and parent.text == body
+    assert bool(parent.media_path) is (kind == "sticker" and scenario != "oversize")
+    reply = await adapter._build_inbound_event(
+        ROOM,
+        SENDER,
+        "$question",
+        "question",
+        {"msgtype": "m.text", "body": "question"},
+        {"m.in_reply_to": {"event_id": "$native"}},
+    )
+    assert reply is not None
+    snapshot = await adapter.fetch_inbound_context(reply, include_thread_history=False)
+    if scenario == "withdrawn":
+        await adapter._on_redaction(SimpleNamespace(room_id=ROOM, redacts="$native"))
+    await snapshot.refresh()
+    assert snapshot.reply_event(reply).reply_to_text == (
+        None if scenario == "withdrawn" else body
+    )
+    assert bool(snapshot.reply_image_paths()) is (
+        kind == "sticker" and scenario not in {"withdrawn", "oversize"}
+    )

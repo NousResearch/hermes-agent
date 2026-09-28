@@ -151,11 +151,15 @@ What the host guarantees:
   input list, `on_turn_complete()` clones, `post_llm_call`'s
   `conversation_history`, `on_session_end()` messages, and every restored
   history (CLI, TUI, ACP, gateway, compression's durable-snapshot adoption). It
-  is restored unconditionally, unlike `_row_id`.
+  is restored unconditionally, unlike `_row_id`. The one exception is a row
+  written before the column existed: on a large store the upgrade mints those
+  over the next few opens, so a legacy row can briefly arrive without one.
+  Treat a missing uid as "no identity yet", never as an error.
 - **Kept across every host copy of the same logical message:** in-place
   compaction generations and their concurrent-tail clones, rotation-child
   handoff copies and foreign-tail clones, `replace_messages` re-issues,
-  rewind, export/import.
+  rewind, export/import, and `/branch` / Desktop branch copies (the child
+  session's copied rows keep the parent's uids).
 - **Kept across content rewrites of the same row:** the persist override, the
   sanitizer's row-addressed rewrite, the interrupted-stream fill. Treat
   `(message_uid, content)` as a *version* of the message; never fail closed on

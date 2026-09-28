@@ -335,10 +335,10 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     if is_redacted_credential_preview(body.value):
         raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
     with _env_write_errors("PUT /api/env failed"):
-        return await scoped_to_thread(body.profile or profile, lambda: _save_env_credential(body.key, body.value))
+        return await scoped_to_thread(body.profile or profile, lambda: _save_env_credential(body.key, body.value, body.provider_setup))
 
 
-def _save_env_credential(key: str, value: str) -> Any:
+def _save_env_credential(key: str, value: str, provider_setup: bool = False) -> Any:
     """Save under the request's profile scope; a new provider API key also counts as a provider setup."""
     from hermes_cli.config import load_env
     from hermes_cli.credential_lifecycle import save_provider_env_credential
@@ -346,7 +346,7 @@ def _save_env_credential(key: str, value: str) -> Any:
 
     previous = load_env().get(key)
     result = save_provider_env_credential(key, value)
-    record_api_key_saved(key, value, previous, web_setup_surface())
+    record_api_key_saved(key, value, previous, web_setup_surface(), connecting=provider_setup)
     return result
 
 

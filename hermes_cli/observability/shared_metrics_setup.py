@@ -253,25 +253,26 @@ def record_provider_setup_done(surface: str, provider: Any, *, hermes_home: Any 
         logger.debug("Provider setup not recorded", exc_info=True)
 
 
-def provider_for_api_key_env(env_var: Any) -> str | None:
+def provider_for_api_key_env(env_var: Any, *, connecting: bool = False) -> str | None:
     """The shipped provider whose own API key lives in ``env_var``; None for any other variable. A bare
-    key save cannot tell connecting a provider from configuring a tool, so ecosystem tokens and keys a
-    tool's settings panel (TTS, STT, image...) also asks for are None too."""
+    key save cannot tell connecting a provider from configuring a tool, so unless the caller says it is
+    ``connecting`` one, ecosystem tokens and keys a tool's settings panel (TTS, STT, image...) also asks
+    for are None too."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.tools_config import TOOL_CATEGORIES
 
     if env_var == "OPENROUTER_API_KEY":  # the aggregator is not a registry entry
         return "openrouter"
-    if env_var in _SHARED_TOKENS or any(
+    if not connecting and (env_var in _SHARED_TOKENS or any(
         env_var == entry.get("key") for category in TOOL_CATEGORIES.values()
         for row in category.get("providers", ()) for entry in row.get("env_vars") or ()
-    ):
+    )):
         return None
     return next((slug for slug, pconfig in PROVIDER_REGISTRY.items()
                  if env_var in (getattr(pconfig, "api_key_env_vars", None) or ())), None)
 
 
-def record_api_key_saved(env_var: Any, value: Any, previous: Any, surface: str) -> None:
+def record_api_key_saved(env_var: Any, value: Any, previous: Any, surface: str, *, connecting: bool = False) -> None:
     """Count a provider API key saved from a settings form: only a new or changed non-empty value (a
     clear or a same-value re-save connects nothing; other variables are not setups)."""
     try:
@@ -279,7 +280,7 @@ def record_api_key_saved(env_var: Any, value: Any, previous: Any, surface: str) 
 
         if not isinstance(value, str) or not value.strip() or value == previous:
             return
-        if enabled() and (provider := provider_for_api_key_env(env_var)):
+        if enabled() and (provider := provider_for_api_key_env(env_var, connecting=connecting)):
             record_provider_setup_done(surface, provider, background=True)
     except Exception:
         logger.debug("API key setup not recorded", exc_info=True)

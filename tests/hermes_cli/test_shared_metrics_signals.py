@@ -320,10 +320,12 @@ def test_web_forms_count_only_a_new_provider_key_or_endpoint(marks, monkeypatch)
                        ("OPENROUTER_API_KEY", ""), ("OPENROUTER_API_KEY", "sk-or-b"),  # clear, then a new key
                        ("GITHUB_TOKEN", "ghp_" + "b" * 36)):
         config_env._save_env_credential(key, value)
+    config_env._save_env_credential("GEMINI_API_KEY", "gm-a")  # Keys page: could be the TTS tool's key
+    config_env._save_env_credential("GEMINI_API_KEY", "gm-b", provider_setup=True)  # a provider-connection form
     body = {"name": "Acme LLM", "base_url": "http://10.0.0.5:8080/v1", "model": "acme-70b"}
     endpoint = config_env.upsert_custom_endpoint(CustomEndpointUpdate(**body))["id"]
     config_env.upsert_custom_endpoint(CustomEndpointUpdate(id=endpoint, **{**body, "model": "acme-70b-v2"}))
-    assert done == ["openrouter", "openrouter", "custom"]
+    assert done == ["openrouter", "openrouter", "gemini", "custom"]
 
 
 # ---- feature disabled ----

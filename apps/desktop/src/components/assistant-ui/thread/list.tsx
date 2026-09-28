@@ -46,7 +46,7 @@ import { isSecondaryWindow } from '@/store/windows'
 import { MessageRenderBoundary } from '../message-render-boundary'
 import { PendingApprovalStack } from '../tool/approval'
 
-import { captureHistoryScroll, type HistoryScrollAnchor, restoreHistoryScroll } from './history-scroll'
+import { captureHistoryScroll, type HistoryScrollAnchor, holdHistoryScroll } from './history-scroll'
 import { responseMessageRole, ResponseMessages } from './response-group'
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
 import { useMessagesBelow } from './use-messages-below'
@@ -534,7 +534,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   )
 
   const historyAnchorRef = useRef<HistoryScrollAnchor[]>([])
-  const historyFrameRef = useRef(0)
+  const historyHoldRef = useRef<(() => void) | null>(null)
   const [historyLoading, setHistoryLoading] = useState(false)
 
   useEffect(() => {
@@ -1314,7 +1314,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   }, [anchorBeforePrepend, expandWindow, paneBudget, paneVisible, releaseParkedRestore, structuralSignature])
 
   const clearHistoryAnchor = useCallback(() => {
-    cancelAnimationFrame(historyFrameRef.current)
+    historyHoldRef.current?.()
+    historyHoldRef.current = null
     historyAnchorRef.current = []
   }, [])
 
@@ -1350,6 +1351,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           restoreFromBottomRef.current = null
           loadSettledRef.current = true
           stopScroll()
+          clearHistoryAnchor()
           historyAnchorRef.current = captureHistoryScroll(el)
         })
       } finally {
@@ -1359,7 +1361,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         }
       }
     },
-    [expandWindow, isHistorical, paneVisible, revealNewer, scrollRef, stopScroll]
+    [clearHistoryAnchor, expandWindow, isHistorical, paneVisible, revealNewer, scrollRef, stopScroll]
   )
 
   useLayoutEffect(() => {
@@ -1376,18 +1378,23 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
-    cancelAnimationFrame(historyFrameRef.current)
-    restoreHistoryScroll(el, historyAnchorRef.current)
-    // The external-store runtime can notify descendants after their parent.
-    // Keep the anchor through that commit and the next layout frame.
-    historyFrameRef.current = requestAnimationFrame(() => {
-      restoreHistoryScroll(el, historyAnchorRef.current)
-      historyFrameRef.current = requestAnimationFrame(() => {
-        restoreHistoryScroll(el, historyAnchorRef.current)
-        historyAnchorRef.current = []
-      })
-    })
-  }, [currentMessages, expectedRuntimeIds, runtimeMessageIds, structuralSignature, weightSignature, scrollRef])
+    const content = contentRef.current
+
+    if (!content) {
+      return
+    }
+
+    const release = holdHistoryScroll(el, content, historyAnchorRef.current, stopScroll)
+    historyHoldRef.current = release
+
+    return () => {
+      release()
+
+      if (historyHoldRef.current === release) {
+        historyHoldRef.current = null
+      }
+    }
+  }, [contentRef, currentMessages, expectedRuntimeIds, runtimeMessageIds, structuralSignature, weightSignature, scrollRef, stopScroll])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -1471,6 +1478,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           return
         }
 
+        clearHistoryAnchor()
+
         if (direction > 0 && isHistorical && newerAvailable && el.scrollHeight - el.clientHeight - el.scrollTop <= 48) {
           void growHistoryWindow(false)
 
@@ -1508,6 +1517,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         el.scrollTop += direction * el.clientHeight
       }, sessionKey ?? null),
     [
+      clearHistoryAnchor,
       growHistoryWindow,
       hiddenCount,
       isAtBottom,

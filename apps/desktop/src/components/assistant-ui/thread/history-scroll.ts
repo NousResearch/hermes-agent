@@ -69,3 +69,56 @@ export function restoreHistoryScroll(viewport: HTMLElement, anchors: readonly Hi
 
   return false
 }
+
+/**
+ * Runtime publication and descendant layout are separate commits. Keep the
+ * chosen occurrence through later DOM/size changes, not an arbitrary number
+ * of frames. The owner releases this hold on user navigation or scope change.
+ * An idle historical page does no work: there is no polling/animation loop.
+ */
+export function holdHistoryScroll(
+  viewport: HTMLElement,
+  content: HTMLElement,
+  anchors: readonly HistoryScrollAnchor[],
+  beforeRestore: () => void
+): () => void {
+  let active = true
+  let frame = 0
+
+  const restore = () => {
+    if (!active) {
+      return
+    }
+
+    beforeRestore()
+    restoreHistoryScroll(viewport, anchors)
+  }
+
+  const schedule = () => {
+    if (active && !frame) {
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        restore()
+      })
+    }
+  }
+
+  const resize = new ResizeObserver(restore)
+  const mutations = new MutationObserver(schedule)
+  resize.observe(content)
+  mutations.observe(content, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['data-message-id', 'data-history-anchor']
+  })
+  restore()
+  schedule()
+
+  return () => {
+    active = false
+    cancelAnimationFrame(frame)
+    resize.disconnect()
+    mutations.disconnect()
+  }
+}

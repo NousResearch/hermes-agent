@@ -4563,7 +4563,9 @@ def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> Tuple[st
         main_model = alias_route.model
         main_provider = alias_route.provider or main_provider
         runtime_base_url = alias_route.base_url or runtime_base_url
-        runtime_api_key = alias_route.api_key or runtime_api_key
+        # An alias route owns its credential boundary. An empty alias key is intentional:
+        # retaining the primary runtime key would leak it to the alias endpoint.
+        runtime_api_key = alias_route.api_key
     # Latency-critical tasks (titling only) opt in to the provider's fast model. Opt-in only:
     # every settings surface defines "auto" as the main model.
     if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:

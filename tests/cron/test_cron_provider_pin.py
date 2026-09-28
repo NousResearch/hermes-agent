@@ -210,8 +210,10 @@ class TestRuntimeResolutionTargetModel:
 
         assert success is True, error
         assert agent_kwargs["model"] == "provider/primary-real"
+        # A URL-bearing alias on a non-canonical endpoint is a custom route: retaining
+        # the provider label here could send its stored credential to the alias host.
         assert agent_kwargs["fallback_model"] == [{
-            "provider": "openrouter", "model": "provider/fallback-real",
+            "provider": "custom", "model": "provider/fallback-real",
             "base_url": "https://router.example/v1",
         }]
         assert resolve_kwargs["target_model"] == "provider/primary-real"

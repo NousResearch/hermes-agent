@@ -12,6 +12,7 @@ import { type ComponentProps, isValidElement, memo, type ReactNode, useEffect, u
 import { defaultRemarkPlugins } from 'streamdown'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
+import { InlineFileLink } from '@/components/chat/inline-file-link'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { TranscriptVideo } from '@/components/chat/transcript-video'
@@ -36,7 +37,7 @@ import {
   resolveMediaPlaybackSrc,
   validImageDimensions
 } from '@/lib/media'
-import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
+import { fileLinkPathFromMarkdownHref, previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { remarkSoftBreaks } from '@/lib/remark-soft-breaks'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
@@ -302,6 +303,17 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     return <MediaAttachment path={mediaPath} />
   }
 
+  // A document the agent named mid-sentence: inline link text, not a card.
+  const inlineFilePath = fileLinkPathFromMarkdownHref(href)
+
+  if (inlineFilePath) {
+    return (
+      <InlineFileLink className={className} path={inlineFilePath}>
+        {children}
+      </InlineFileLink>
+    )
+  }
+
   const previewTarget = previewTargetFromMarkdownHref(href)
 
   if (previewTarget) {
@@ -330,7 +342,9 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 
     if (fileHref) {
       return mediaKind(fileHref) === 'file' ? (
-        <PreviewAttachment target={fileHref} />
+        <InlineFileLink className={className} path={fileHref}>
+          {children}
+        </InlineFileLink>
       ) : (
         <MediaAttachment path={fileHref} />
       )

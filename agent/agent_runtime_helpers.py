@@ -19,7 +19,8 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
 )
-from agent.message_metadata import TOOL_CALL_UIDS, merge_tool_call_uids, record_absorbed_message
+from agent.message_metadata import (
+    TOOL_CALL_UIDS, merge_tool_call_uids, per_occurrence_tool_call_uids, record_absorbed_message)
 from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
@@ -392,8 +393,10 @@ def _merge_assistant_into(prev: Dict, msg: Dict) -> bool:
     if new_calls:
         prev["tool_calls"] = prev_calls + new_calls
         # The absorbed turn's calls keep the per-occurrence ids they were persisted with.
-        if extra := msg.get(TOOL_CALL_UIDS):
-            prev[TOOL_CALL_UIDS] = merge_tool_call_uids(prev.get(TOOL_CALL_UIDS) or {}, extra)
+        if isinstance(extra := msg.get(TOOL_CALL_UIDS), dict) and extra:
+            prev[TOOL_CALL_UIDS] = merge_tool_call_uids(
+                per_occurrence_tool_call_uids(prev.get(TOOL_CALL_UIDS) or {}, prev_calls),
+                per_occurrence_tool_call_uids(extra, new_calls))
         calls_changed = True
     elif prev_calls:
         prev["tool_calls"] = prev_calls

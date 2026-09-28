@@ -8,6 +8,7 @@ import json
 from typing import Any, Dict, List, Mapping, MutableMapping, Optional
 
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, TOOL_CALL_UID, TOOL_CALL_UIDS, uid_list
+from agent.message_sanitization import coalesce_tool_call_id
 from hermes_state_common import _json_or
 
 
@@ -55,15 +56,35 @@ def _tool_call_uid_or_none(msg: Mapping[str, Any]) -> Optional[str]:
     return uid if isinstance(uid, str) and uid else None
 
 
+def _live_extends(live_uid: Any, stored_uid: Any) -> bool:
+    """A live per-occurrence list that starts with every stored occurrence: a fold's union not yet written."""
+    stored = stored_uid if isinstance(stored_uid, list) else [stored_uid]
+    return isinstance(live_uid, list) and live_uid[:len(stored)] == stored
+
+
+def _fill_missing_tool_call_uids(row: Any, msg: MutableMapping[str, Any]) -> None:
+    """Before a row-addressed rewrite serializes *msg*: stored uids for calls it still names but whose uid it
+    lost (a clone), so the rewrite does not null them. A call the live dict dropped keeps no uid."""
+    if not row["tool_call_uids"] or not isinstance(calls := msg.get("tool_calls"), list):
+        return
+    live = msg.get(TOOL_CALL_UIDS)
+    live = live if isinstance(live, dict) else {}
+    named = {coalesce_tool_call_id(tc) for tc in calls}
+    if missing := {k: v for k, v in _uid_map(row["tool_call_uids"]).items() if k in named and k not in live}:
+        msg[TOOL_CALL_UIDS] = {**live, **missing}
+
+
 def _restore_row_identity(row: Any, msg: MutableMapping[str, Any]) -> None:
-    """A stored row's uid and tool-call uids onto its live dict: the stored value wins; pairings only the live
-    dict knows (an un-persisted merge's union) stay."""
+    """A stored row's uid and tool-call uids onto its live dict (the stored value wins). A live per-occurrence
+    list that already holds the stored uid is kept: it is a fold's union the row has not been rewritten
+    with yet, and replacing it with the stored single uid would strip the later occurrence."""
     if row[MESSAGE_UID]:
         msg[MESSAGE_UID] = row[MESSAGE_UID]
     if row["tool_call_uids"] and (stored := _uid_map(row["tool_call_uids"])):
         live = msg.get(TOOL_CALL_UIDS)
         live = live if isinstance(live, dict) else {}
-        msg[TOOL_CALL_UIDS] = {**live, **stored}
+        msg[TOOL_CALL_UIDS] = {**live, **{call_id: uid for call_id, uid in stored.items()
+                                          if not _live_extends(live.get(call_id), uid)}}
     if row["tool_call_uid"]:
         msg[TOOL_CALL_UID] = row["tool_call_uid"]
 

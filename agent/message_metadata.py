@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from time import time as wall_time
 from uuid import uuid4
 from typing import Any, List, Mapping, MutableMapping, Optional, TypeVar
@@ -146,6 +147,21 @@ def merge_tool_call_uids(into: Mapping[str, Any], extra: Mapping[str, Any]) -> d
 
 def _uid_occurrences(value: Any) -> list:
     return list(value) if isinstance(value, list) else [value]
+
+
+def per_occurrence_tool_call_uids(uids: Mapping[str, Any], tool_calls: List[Mapping[str, Any]]) -> dict:
+    """*uids* with every provider id this row names more than once spelled out as one uid per occurrence. A
+    single response that repeats an id shares ONE uid (its results carry it, so every call stays paired);
+    before a fold appends another turn's occurrences, the shared uid must fill each of this row's slots or
+    the appended uids would align with the wrong calls."""
+    from agent.message_sanitization import coalesce_tool_call_id
+
+    counts = Counter(call_id for tc in tool_calls if (call_id := coalesce_tool_call_id(tc)))
+    expanded = dict(uids)
+    for call_id, count in counts.items():
+        if count > 1 and isinstance(uid := uids.get(call_id), str):
+            expanded[call_id] = [uid] * count
+    return expanded
 
 
 def index_tool_call_uids(index: MutableMapping[str, str], assistant: Mapping[str, Any]) -> frozenset:

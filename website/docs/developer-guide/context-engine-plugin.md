@@ -194,9 +194,11 @@ What the host guarantees:
   (Hermes mints deterministic `call_<12hex>` ids for identical calls, and models
   reuse ids), so an assistant message carries `_tool_call_uids`, a
   `{tool_call_id: uid}` map for its `tool_calls`, and each tool-result message
-  carries the matching `_tool_call_uid`. When a fold leaves one message with two
-  calls that share a provider id, that id maps to a list of uids, one per
-  occurrence in `tool_calls` order. The provider-facing `id` inside
+  carries the matching `_tool_call_uid`. Calls that repeat a provider id inside
+  one response share one uid (every result carries it, so no call looks
+  unanswered). When a fold leaves one message holding calls from two turns
+  that share an id, that id maps to a list of uids, one per occurrence in
+  `tool_calls` order. The provider-facing `id` inside
   `tool_calls` is untouched. Both are minted at the assistant row's first
   insert, paired onto the result when it is flushed (same batch, or from the
   live list when the result lands in a later flush) and on restore (from the

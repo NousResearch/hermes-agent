@@ -12,7 +12,7 @@ from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_metadata import (
     CANONICAL_ROW, DB_ROW_SNAPSHOT, MESSAGE_UID, copy_identity_fields)
 from hermes_state_common import _id_chunks, _placeholders
-from hermes_state_identity import _restore_row_identity
+from hermes_state_identity import _fill_missing_tool_call_uids, _restore_row_identity
 from hermes_state_messages import _MESSAGE_WRITE_COLUMNS
 
 
@@ -116,6 +116,7 @@ def resolve_and_repair_transcript_batch(
 
         target_id = int(target_row["id"])
         msg["_row_id"] = target_id
+        _fill_missing_tool_call_uids(target_row, msg)  # a dict that lost its uids must not rewrite them away
         expected = msg.get(DB_ROW_SNAPSHOT)
         canonical = None
         adopt = wrote = False

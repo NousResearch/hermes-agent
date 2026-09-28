@@ -298,7 +298,7 @@ class SessionMessagesMixin:
             for tc in tool_calls:
                 call_id = coalesce_tool_call_id(tc)
                 if call_id and call_id not in uids:
-                    uids[call_id] = mint_uid()
+                    uids[call_id] = mint_uid()  # one per provider id: a repeat in one response shares it
             if uids:
                 msg[TOOL_CALL_UIDS] = uids
             index_tool_call_uids(batch_index, msg)  # this row's ids shadow any earlier occurrence's
@@ -455,6 +455,9 @@ class SessionMessagesMixin:
         if not messages:
             return 0
         if chunk_rows is not None and len(messages) > chunk_rows:
+            tool_uid_index: Dict[str, str] = {}
+            for msg in messages:  # each chunk indexes only its own rows: pair results across chunk boundaries
+                self._stamp_tool_call_uids(msg, _parse_tool_calls(msg.get("tool_calls")), tool_uid_index)
             return sum(self.append_messages_batch(session_id, messages[start:start + chunk_rows],
                     compression_lock_holder=compression_lock_holder, turn_lease_holder=turn_lease_holder,
                     turn_lease_ttl_seconds=turn_lease_ttl_seconds)

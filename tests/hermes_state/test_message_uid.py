@@ -398,7 +398,7 @@ class TestPersistedMergeWitness:
         assistant = {"role": "assistant", "content": "partial",
                      "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "t", "arguments": "{}"}}]}
         db.append_messages_batch("s", [assistant])
-        uids = dict(assistant["_tool_call_uids"])
+        uids = assistant.pop("_tool_call_uids")  # a restored/cloned dict that lost its map: the row keeps it
         assistant["content"] = "partial, then filled by the sanitizer"
         db.append_messages_batch("s", [assistant])
         rows = _rows(db, "s")
@@ -465,3 +465,77 @@ def test_a_result_pairs_with_the_assistant_that_named_it_not_the_nearest_one(db)
     owners: dict = {}
     assert [tool_call_uid_from_history(live, i, owners) for i in (3, 4)] == [second, first]
 
+
+def test_one_response_repeating_a_provider_id_shares_one_uid_its_results_all_carry(db):
+    """Two calls sharing a provider id in ONE response share one uid: both results carry it, so neither call
+    looks unanswered to a context engine."""
+    db.create_session("s", "cli")
+    call = {"role": "assistant", "content": "", "tool_calls": [_call("call_x"), _call("call_x")]}
+    results = [{"role": "tool", "content": c, "tool_call_id": "call_x", "tool_name": "t"} for c in "ab"]
+    db.append_messages_batch("s", [{"role": "user", "content": "q"}, call, *results])
+    shared = call["_tool_call_uids"]["call_x"]
+    assert isinstance(shared, str) and [r["_tool_call_uid"] for r in results] == [shared, shared]
+
+
+def test_a_fold_after_a_shared_uid_row_keeps_each_call_aligned_with_its_uid():
+    """The shared uid fills each of the row's own slots before the absorbed turn's occurrence is appended, so
+    the absorbed call (third) keeps its own uid instead of sliding onto the second."""
+    from agent.agent_runtime_helpers import _merge_consecutive_assistants
+    from agent.message_metadata import index_tool_call_uids, resolve_tool_call_uid
+
+    shared, own = "1" * 32, "2" * 32
+    first = {"role": "assistant", "content": "", "tool_calls": [_call("call_x"), _call("call_x")],
+             "_tool_call_uids": {"call_x": shared}}
+    second = {"role": "assistant", "content": "", "tool_calls": [_call("call_x")], "_tool_call_uids": {"call_x": own}}
+    _merge_consecutive_assistants([first, second])
+    assert first["_tool_call_uids"] == {"call_x": [shared, shared, own]}
+    index: dict = {}
+    index_tool_call_uids(index, first)
+    assert resolve_tool_call_uid(index, "call_x") == own
+
+
+def test_a_rewrite_keeps_a_fold_that_extends_a_stored_occurrence_list(db):
+    db.create_session("s", "cli")
+    a = {"role": "assistant", "content": "a", "tool_calls": [_call("call_0"), _call("call_0")],
+         "_tool_call_uids": {"call_0": ["1" * 32, "2" * 32]}}
+    b = {"role": "assistant", "content": "b", "tool_calls": [_call("call_0")], "_tool_call_uids": {"call_0": "3" * 32}}
+    db.append_messages_batch("s", [{"role": "user", "content": "q"}, a, b])
+    survivor = db.get_messages_as_conversation("s", repair_alternation=True, include_row_ids=True)[1]
+    survivor.pop("_db_row_snapshot", None)
+    db.append_messages_batch("s", [survivor])
+    assert survivor["_tool_call_uids"] == {"call_0": ["1" * 32, "2" * 32, "3" * 32]}
+
+
+def test_a_rewrite_that_drops_a_call_does_not_write_its_uid_back(db):
+    db.create_session("s", "cli")
+    assistant = {"role": "assistant", "content": "x", "tool_calls": [_call("c1"), _call("c2")]}
+    db.append_messages_batch("s", [assistant])
+    assistant["tool_calls"] = [_call("c1")]
+    assistant["_tool_call_uids"] = {"c1": assistant["_tool_call_uids"]["c1"]}
+    db.append_messages_batch("s", [assistant])
+    stored = db._conn.execute("SELECT tool_call_uids FROM messages").fetchone()[0]
+    assert sorted(json.loads(stored)) == ["c1"]
+
+
+def test_a_rewrite_keeps_a_folds_per_occurrence_list_over_the_stored_single_uid(db):
+    """Restore folds two stored turns that reuse an id; re-flushing the survivor must not let the stored
+    pre-fold map collapse the list back to one uid (the later occurrence's results would pair with nothing)."""
+    db.create_session("s", "cli")
+    a = {"role": "assistant", "content": "a", "tool_calls": [_call("call_0")]}
+    b = {"role": "assistant", "content": "b", "tool_calls": [_call("call_0")]}
+    db.append_messages_batch("s", [{"role": "user", "content": "q"}, a, b])
+    occurrences = [a["_tool_call_uids"]["call_0"], b["_tool_call_uids"]["call_0"]]
+    survivor = db.get_messages_as_conversation("s", repair_alternation=True, include_row_ids=True)[1]
+    survivor.pop("_db_row_snapshot", None)  # the digest-less re-flush path (replay heal, adopt mismatch)
+    assert survivor["_tool_call_uids"] == {"call_0": occurrences}
+    db.append_messages_batch("s", [survivor])
+    assert survivor["_tool_call_uids"] == {"call_0": occurrences}
+
+
+def test_a_chunked_copy_pairs_a_result_with_a_call_in_the_previous_chunk(db):
+    db.create_session("s", "cli")
+    call = {"role": "assistant", "content": "", "tool_calls": [_call("call_1")]}
+    result = {"role": "tool", "content": "r", "tool_call_id": "call_1", "tool_name": "t"}
+    db.append_messages_batch("s", [{"role": "user", "content": "q"}, call, result], chunk_rows=2)
+    stored = db._conn.execute("SELECT tool_call_uid FROM messages WHERE role = 'tool'").fetchone()[0]
+    assert stored == call["_tool_call_uids"]["call_1"]

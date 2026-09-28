@@ -14,6 +14,7 @@ import logging
 import re
 import shlex
 import stat
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -132,13 +133,89 @@ def _looks_like_help_or_version_command(command: str) -> bool:
     )
 
 
-def _foreground_background_guidance(command: str) -> str | None:
+# This rejection is fully deterministic -- a command matching one of the
+# _FOREGROUND_GUIDANCE predicates will ALWAYS be rejected, identically, no
+# matter how many times it is retried. Hermes's general loop guardrail
+# (agent/tool_guardrails.py) deliberately exempts "terminal" from its
+# same-tool-failure hard-stop, since most terminal failures are genuine varied
+# diagnosis, not a loop -- but that exemption also covers this one
+# non-diagnostic, 100%-reproducible category. A model retrying different
+# commands that each trip this same guard never accumulates enough repeats of
+# any single exact signature to trip anything else, so nothing here ever
+# escalates on its own. Track it locally instead: after repeated rejections in
+# one task, stop repeating the identical guidance text and make unmistakably
+# clear it will never be accepted as written.
+_FG_BG_REJECTION_LOCK = threading.Lock()
+_FG_BG_REJECTION_COUNTS: dict[str, int] = {}
+_FG_BG_ESCALATE_AFTER = 3
+
+
+def _fg_bg_rejection_key(task_id: str) -> str:
+    """Stable per-rollout identity for the rejection counter.
+
+    Prefers the approval-context session key (stable for the life of a rollout
+    in interactive gateway sessions); ``task_id`` is the fallback for callers
+    with no session context (embeds/tests, and confirmed live: the sandboxed
+    batch-eval path never populates the session key at all -- see
+    ``cron/scheduler.py``'s "HERMES_SESSION_KEY is not in the CLI environment"
+    -- but ``task_id`` itself was verified stable across a whole rollout there,
+    so the fallback is sound in that path, not just a last resort).
+    """
+    from tools.approval_context import get_current_session_key
+
+    return get_current_session_key(default="") or task_id or ""
+
+
+def _foreground_background_guidance(command: str, task_id: str = "") -> str | None:
     """Guidance text when a foreground command looks long-lived or uses shell
-    backgrounding (it should be a managed background session), else None."""
+    backgrounding (it should be a managed background session), else None.
+
+    ``task_id`` is optional so existing call sites that pass none keep the
+    prior (non-escalating) behavior; only the terminal tool's own call site
+    threads it through.
+    """
     if _looks_like_help_or_version_command(command):
         return None
     unquoted = _strip_quotes(command)
-    return next((msg for hit, msg in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
+    msg = next((m for hit, m in _FOREGROUND_GUIDANCE if hit(unquoted)), None)
+    if msg is None or not task_id:
+        return msg
+    key = _fg_bg_rejection_key(task_id)
+    if not key:
+        return msg
+    with _FG_BG_REJECTION_LOCK:
+        count = _FG_BG_REJECTION_COUNTS.get(key, 0) + 1
+        _FG_BG_REJECTION_COUNTS[key] = count
+    if count >= _FG_BG_ESCALATE_AFTER:
+        return (
+            f"REPEATED REJECTION (#{count} this task): you have already received this "
+            "exact guidance. This command pattern will NEVER be accepted as written -- "
+            f"retrying with a different command that hits the same rule will not help "
+            f"either. {msg} If you cannot comply, stop attempting this pattern and use "
+            "a different approach entirely."
+        )
+    return msg
+
+
+def reset_foreground_background_guard(task_id: str) -> None:
+    """Clear this task's rejection count. Called only when a command is sent with
+    ``background=true`` -- the actual corrected usage this guard steers toward.
+
+    Deliberately NOT called for an ordinary compliant foreground command (one that
+    simply never tripped the guard): that's not evidence the model learned to
+    background long-running work, just an unrelated command, and resetting on every
+    one of those let a model that keeps retrying `&` in between other work escape
+    escalation entirely (confirmed live on git-multibranch: the counter reached 2,
+    then an unrelated successful command reset it, so the 3-strike threshold was
+    never reached across 7 total rejections in one task).
+    """
+    if not task_id:
+        return
+    key = _fg_bg_rejection_key(task_id)
+    if not key:
+        return
+    with _FG_BG_REJECTION_LOCK:
+        _FG_BG_REJECTION_COUNTS.pop(key, None)
 
 
 def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes: int) -> Optional[str]:

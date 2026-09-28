@@ -46,7 +46,7 @@ def test_slash_subscription_keeps_the_routed_source_owner(tmp_path, monkeypatch)
                for key in ("scope_id", "parent_chat_id"))
 
 
-def test_kanban_slash_masks_stale_process_session_id(monkeypatch):
+def test_kanban_slash_binds_current_session_instead_of_stale_process_id(monkeypatch):
     import asyncio
     from types import SimpleNamespace
     from gateway.platforms.event import MessageEvent
@@ -56,10 +56,15 @@ def test_kanban_slash_masks_stale_process_session_id(monkeypatch):
     runner.config = SimpleNamespace(get_connected_platforms=lambda: [],
                                     get_home_channel=lambda _platform: None)
     runner.adapters = {}
-    runner._session_key_for_source = lambda _source: "slash-session-key"
+    async def get_or_create_session(_source):
+        return SimpleNamespace(session_key="slash-session-key", session_id="current-chat",
+                               created_at=0, updated_at=0)
+    runner.session_store = object()
+    runner._async_session_store = SimpleNamespace(_store=runner.session_store,
+                                                  get_or_create_session=get_or_create_session)
     source = SessionSource(platform=Platform.LOCAL, chat_id="chat", profile="nyra")
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-other-chat")
     seen = []
     monkeypatch.setattr(kanban, "run_slash", lambda _text: seen.append(get_session_env("HERMES_SESSION_ID")) or "ok")
     assert asyncio.run(runner._handle_kanban_command(MessageEvent(text="/kanban list", source=source))) == "ok"
-    assert seen == [""]
+    assert seen == ["current-chat"]

@@ -259,10 +259,11 @@ def clear_session(session_key: str) -> None:
         entry.result = "deny"
         entry.event.set()
     _release_permission_mode_dependents(session_key)
-    # Session-persistent code kernels (local and remote) share this owner key and die at the same boundary so a
-    # finished conversation cannot leak a live interpreter.
+    # Session-persistent code kernels (local and remote) and the terminal fg/bg rejection counter share this owner
+    # key and are dropped at the same boundary so a finished conversation cannot leak a live interpreter or an entry.
     for module, shutdown in (("tools.code_kernel", "shutdown_kernels_for_owner"),
-                             ("tools.code_kernel_remote", "shutdown_remote_kernels_for_owner")):
+                             ("tools.code_kernel_remote", "shutdown_remote_kernels_for_owner"),
+                             ("tools.terminal_tool_guards", "clear_foreground_background_guard")):
         try:
             getattr(importlib.import_module(module), shutdown)(session_key)
         except Exception:

@@ -966,14 +966,9 @@ def _plan_execution(
         guidance = _foreground_background_guidance(command, task_id)
         if guidance:
             raise _Rejected(_error_json(guidance, status="error"))
-        # Deliberately NOT resetting the rejection counter here: an ordinary compliant
-        # foreground call (any command that doesn't trip the guard) is not evidence the
-        # model learned to background long-running work -- it's just an unrelated command.
-        # Resetting on every one of those let a model that keeps retrying `&` in between
-        # other work escape escalation entirely (confirmed live: git-multibranch reached
-        # count=2 then dropped back to 1 on the very next rejection, never hitting 3).
-        # Only an explicit background=true call (the ``else`` branch below) is the
-        # corrected usage this guard is steering toward, so only that resets.
+        # No counter reset for a compliant foreground call: an unrelated command is not
+        # evidence the model learned to background, and resetting here kept a model
+        # retrying `&` between other work from ever escalating.
         if timeout and timeout > FOREGROUND_MAX_TIMEOUT:
             promoted = timeout
     else:

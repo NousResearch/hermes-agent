@@ -58,16 +58,18 @@ agent sees a syntax-clean file with semantic problems as
 
 ### Workspace trust
 
-Some language servers run code that the project itself ships:
+Many language servers run code that the project itself ships:
 pyright executes the configured Python interpreter,
 typescript-language-server loads the project's
 `node_modules/typescript`, svelte-language-server loads
-`svelte.config.js`, and rust-analyzer runs build scripts and
-proc-macros. That is fine for your own project, but not for a
-repository the agent has just cloned.
+`svelte.config.js`, rust-analyzer runs `cargo check` (build scripts,
+proc-macros) on every save, and servers such as jdtls,
+kotlin-language-server, elixir-ls, zls or haskell-language-server
+evaluate the project's build files (Gradle, `mix.exs`, `build.zig`,
+Cabal/Stack) when they start. That is fine for your own project, but
+not for a repository the agent has just cloned.
 
-Hermes therefore lets a server load project code only in a
-**trusted** workspace:
+Hermes therefore treats every workspace as untrusted unless it is:
 
 - the git worktree Hermes was launched in (the process working
   directory, so `cd my-app && hermes`), or
@@ -79,8 +81,15 @@ it is not trusted. Gateway and desktop backends are usually started
 outside any repository, which means nothing is trusted there until
 you list your projects.
 
-In an untrusted workspace, servers still run, but on Hermes-side
-tools:
+In an untrusted workspace Hermes **denies by default**: only the
+servers below start, each with settings that keep it on Hermes-side
+tools. Every other server is skipped, including rust-analyzer, gopls,
+jdtls, kotlin-language-server, elixir-ls, zls, clojure-lsp,
+haskell-language-server, lua-language-server, terraform-ls, prisma,
+astro and any server you declare under `lsp.servers`. The diagnostics
+log records `skipped: untrusted workspace …; add it to
+lsp.trusted_workspaces`, and `hermes lsp status` marks those servers
+`[trusted workspaces only]`.
 
 | Server | Untrusted workspace |
 |---|---|
@@ -88,7 +97,15 @@ tools:
 | typescript-language-server | `tsserver.path` pinned to the TypeScript next to the server; skipped if there is none |
 | vue-language-server | `tsdk` from Hermes's staging tree only |
 | svelte-language-server | `isTrusted: false` (no `svelte.config.js`, no project `svelte`/`prettier`) |
-| rust-analyzer | build scripts and proc-macros disabled; cargo still reads the project's own cargo and toolchain files |
+| bash-language-server, yaml-language-server, dockerfile-ls, intelephense | unchanged: they only parse files |
+| clangd | unchanged: Hermes never passes `--query-driver`, so no project compiler runs |
+
+On a local backend, the post-write shell linters that would use the
+checkout's own toolchain are skipped the same way: `npx tsc` (it runs
+the repository's `node_modules/.bin/tsc`, or installs from the
+registry its `.npmrc` names) and `rustfmt --check` (rustup honours the
+repository's `rust-toolchain.toml`). Sandboxed backends (Docker, SSH,
+Modal, …) are unchanged.
 
 Diagnostics that need the project's dependencies (for example
 unresolved-import warnings) may be less precise until you trust the

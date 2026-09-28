@@ -48,13 +48,16 @@ agent 对于语法正确但存在语义问题的文件，会看到 ``lint: ok`` 
 
 ### 工作区信任
 
-部分语言服务器会运行项目自带的代码：pyright 会执行所配置的 Python
+许多语言服务器会运行项目自带的代码：pyright 会执行所配置的 Python
 解释器，typescript-language-server 会加载项目的
 `node_modules/typescript`，svelte-language-server 会加载
-`svelte.config.js`，rust-analyzer 会运行构建脚本和过程宏。对你自己的项目
-这没有问题，但对 agent 刚克隆下来的仓库则不应如此。
+`svelte.config.js`，rust-analyzer 每次保存都会运行 `cargo check`（构建脚本、
+过程宏），而 jdtls、kotlin-language-server、elixir-ls、zls、
+haskell-language-server 等服务器在启动时就会求值项目的构建文件（Gradle、
+`mix.exs`、`build.zig`、Cabal/Stack）。对你自己的项目这没有问题，但对 agent
+刚克隆下来的仓库则不应如此。
 
-因此，Hermes 只在**受信任**的工作区中允许服务器加载项目代码：
+因此，除以下情况外，Hermes 将所有工作区视为不受信任：
 
 - 启动 Hermes 时所在的 git 工作树（即进程工作目录，例如 `cd my-app && hermes`），或
 - `lsp.trusted_workspaces` 中列出的目录（及其下任意子目录）。
@@ -62,7 +65,13 @@ agent 对于语法正确但存在语义问题的文件，会看到 ``lint: ok`` 
 嵌套在启动工作树内部的检出拥有自己的 `.git`，因此不受信任。网关和桌面端
 后端通常在任何仓库之外启动，所以在你列出项目之前，那里没有受信任的工作区。
 
-在不受信任的工作区中，服务器仍会运行，但使用 Hermes 一侧的工具：
+在不受信任的工作区中，Hermes **默认拒绝**：只有下表中的服务器会启动，并且各自
+使用让它停留在 Hermes 一侧工具上的设置。其他所有服务器都会被跳过，包括
+rust-analyzer、gopls、jdtls、kotlin-language-server、elixir-ls、zls、
+clojure-lsp、haskell-language-server、lua-language-server、terraform-ls、
+prisma、astro，以及你在 `lsp.servers` 下声明的任何服务器。诊断日志会记录
+`skipped: untrusted workspace …; add it to lsp.trusted_workspaces`，
+`hermes lsp status` 会把这些服务器标记为 `[trusted workspaces only]`。
 
 | 服务器 | 不受信任的工作区 |
 |---|---|
@@ -70,7 +79,13 @@ agent 对于语法正确但存在语义问题的文件，会看到 ``lint: ok`` 
 | typescript-language-server | `tsserver.path` 固定为服务器旁边的 TypeScript；若没有则跳过 |
 | vue-language-server | `tsdk` 仅取自 Hermes 的暂存目录 |
 | svelte-language-server | `isTrusted: false`（不加载 `svelte.config.js`，不加载项目的 `svelte`/`prettier`） |
-| rust-analyzer | 禁用构建脚本和过程宏；cargo 仍会读取项目自己的 cargo 和工具链文件 |
+| bash-language-server、yaml-language-server、dockerfile-ls、intelephense | 不变：它们只解析文件 |
+| clangd | 不变：Hermes 从不传入 `--query-driver`，因此不会运行项目的编译器 |
+
+在本地后端上，会使用检出自带工具链的写入后 shell 检查器也会以同样方式跳过：
+`npx tsc`（它会运行仓库的 `node_modules/.bin/tsc`，或从仓库 `.npmrc` 指定的
+registry 安装）和 `rustfmt --check`（rustup 会遵循仓库的 `rust-toolchain.toml`）。
+沙箱后端（Docker、SSH、Modal 等）不受影响。
 
 依赖项目依赖项的诊断（例如无法解析的导入）在信任该工作区之前可能不够精确。
 

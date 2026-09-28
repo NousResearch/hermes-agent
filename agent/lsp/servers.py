@@ -377,6 +377,26 @@ def hermes_lsp_session_dir() -> str:
     return d
 
 
+# ---- workspace trust ----
+
+# The only servers that start in an untrusted workspace (``workspace.is_trusted_workspace``): with the
+# settings Hermes passes they run nothing the checkout ships.  Everything else waits for trust, because
+# it evaluates project build files on start or on save (cargo check / build.rs / proc-macros, Gradle,
+# mix.exs, build.zig, stack/cabal, Lua ``runtime.plugin``, terraform providers, prisma.config.ts, ...),
+# and so do user-declared ``lsp.servers`` entries, whose behaviour Hermes cannot vouch for.
+UNTRUSTED_SAFE_SERVERS = frozenset({
+    "pyright",                  # interpreter pinned to the operator's own (_spawn_pyright)
+    "typescript",               # tsserver pinned to Hermes's SDK; plugins then resolve beside it (_spawn_typescript)
+    "vue-language-server",      # Hermes's TypeScript SDK only (_spawn_vue)
+    "svelte-language-server",   # isTrusted: false — no svelte.config.js, no project svelte/prettier
+    "bash-language-server",     # parses scripts; diagnostics from shellcheck on PATH
+    "yaml-language-server",     # parses YAML against JSON schemas; no project code
+    "dockerfile-ls",            # parses the Dockerfile; never builds it
+    "intelephense",             # static PHP indexer; never runs php or composer
+    "clangd",                   # no --query-driver, so it never runs a project compiler
+})
+
+
 # ---- the registry ----
 
 _JS_MARKERS = ["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock", "package.json", "tsconfig.json"]
@@ -415,11 +435,7 @@ SERVERS: List[ServerDef] = [
     _server("astro-language-server", (".astro",), "Astro — @astrojs/language-server", resolve_root=_root_typescript,
             which=("astro-ls", "astro-language-server"), args=("--stdio",), install_pkg="@astrojs/language-server"),
     _server("gopls", (".go",), "Go — gopls", markers=["go.work", "go.mod", "go.sum"], install_pkg="gopls"),
-    # Untrusted: no build scripts or proc-macros (rust-analyzer runs both by default).
-    _server("rust-analyzer", (".rs",), "Rust — rust-analyzer", markers=["Cargo.toml", "Cargo.lock"],
-            build_spawn=_untrusted_init("rust-analyzer", {"cargo": {"buildScripts": {"enable": False}},
-                                                          "procMacro": {"enable": False}},
-                                        ("rust-analyzer",), (), "rust-analyzer")),
+    _server("rust-analyzer", (".rs",), "Rust — rust-analyzer", markers=["Cargo.toml", "Cargo.lock"], install_pkg="rust-analyzer"),
     _server("clangd", (".c", ".cpp", ".cc", ".cxx", ".h", ".hh", ".hpp", ".hxx"), "C/C++ — clangd",
             markers=["compile_commands.json", "compile_flags.txt", ".clangd"],
             args=("--background-index", "--clang-tidy"), install_pkg="clangd"),
@@ -517,5 +533,5 @@ def custom_servers(servers_cfg: Any) -> List[ServerDef]:
     return out
 
 
-__all__ = ["ServerDef", "ServerContext", "SpawnSpec", "SERVERS", "custom_servers", "find_server_for_file",
-           "language_id_for", "LANGUAGE_BY_EXT"]
+__all__ = ["ServerDef", "ServerContext", "SpawnSpec", "SERVERS", "UNTRUSTED_SAFE_SERVERS", "custom_servers",
+           "find_server_for_file", "language_id_for", "LANGUAGE_BY_EXT"]

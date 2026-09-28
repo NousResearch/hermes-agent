@@ -326,6 +326,7 @@ async function makeUnionHarness(options: { beforeLaunch?: () => Promise<void> } 
         receipt: {
           correlationId,
           outcome: 'success',
+          requestedSha: UNION_TARGET_SHA,
           preSha: UNION_ADMITTED_SHA,
           postSha: UNION_TARGET_SHA,
           startedAt: UNION_NOW_ISO,

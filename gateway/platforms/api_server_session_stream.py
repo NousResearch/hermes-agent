@@ -226,3 +226,129 @@ async def claim_session_run_or_conflict(
             return existing
     return None
 
+
+# ---------------------------------------------------------------------------
+# Adapter-method extraction (architecture gate follow-up, PR #96507)
+#
+# The four DB-access/inspect methods below are defined on the adapter as
+# one-line assignments so existing tests can still patch
+# ``APIServerAdapter._set_run_status``-style attributes, while the godfile
+# stops growing: the BODIES live here. ``replay_or_reserve...``/
+# ``claim_session_run_or_conflict`` already reach them through the adapter
+# duck-type, so the boundary is unchanged.
+# ---------------------------------------------------------------------------
+
+
+async def adapter_claim_session_active_run_async(
+    adapter: Any, session_id: str, run_id: str, run_key: str, status: str
+) -> Optional[str]:
+    """Off-loop claim of the session's active-run slot (see SessionDB)."""
+    db = await adapter._ensure_session_db_async()
+    if db is None:
+        return None
+    return await asyncio.to_thread(
+        db.claim_session_active_run, session_id, run_id, run_key, status
+    )
+
+
+async def adapter_set_session_active_run_status_async(
+    adapter: Any, session_id: str, run_id: str, status: str
+) -> bool:
+    """Off-loop coarse-status update, guarded by run id."""
+    db = await adapter._ensure_session_db_async()
+    if db is None:
+        return False
+    return await asyncio.to_thread(
+        db.set_session_active_run_status, session_id, run_id, status
+    )
+
+
+async def adapter_clear_session_active_run_async(
+    adapter: Any, session_id: str, expected_run_id: Optional[str] = None
+) -> bool:
+    """Off-loop clear of the session's active-run slot on terminal."""
+    db = await adapter._ensure_session_db_async()
+    if db is None:
+        return False
+    return await asyncio.to_thread(
+        db.clear_session_active_run, session_id, expected_run_id
+    )
+
+
+def adapter_session_run_is_live(adapter: Any, run_id: str) -> bool:
+    """Whether a run id names a still-executing server-side run.
+
+    ``_active_run_agents`` is the authoritative "the executor-backed turn
+    is still alive" signal (a detached run stays registered until the turn
+    exits). ``_run_statuses`` with a non-terminal status covers the brief
+    queued window before the agent is registered.
+    """
+    if run_id in adapter._active_run_agents:
+        return True
+    status = adapter._run_statuses.get(run_id)
+    return bool(status and status.get("status") in ("queued", "running", "stopping"))
+
+
+async def admit_session_stream_run(
+    adapter: Any,
+    request: "web.Request",
+    ctx: Dict[str, Any],
+    session_id: str,
+    user_message: Any,
+    run_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Idempotency receipt + durable claim for a session-stream run — the whole
+    admission gate in one call (single call site: ``_handle_session_chat_stream``).
+
+    Durable active-run claim (PR #96507 P1): the session row carries the live
+    run id + immutable request fingerprint, so a client that lost the SSE body
+    can rediscover the run via GET /api/sessions/{id} and a retry of the same
+    admitted request is met with a deterministic conflict instead of a second
+    execution. The caller registers the in-memory "queued" status BEFORE this
+    call, so a concurrent loser observes the winner's run as live (queued)
+    rather than mistaking it for a stale marker.
+
+    Durable receipt (review P1 fix): the session-row active slot only guards
+    LIVE runs — a same-key retry AFTER completion must replay the original
+    run, not mint a second execution. Explicit-key runs compose with the
+    /v1/runs ``RunIdempotencyStore`` (24h retention, terminal-status
+    persistence) so the receipt survives the active slot being cleared.
+
+    Returns ``None`` when the run is admitted and execution may proceed.
+    Returns a transport-independent payload dict otherwise:
+
+    - ``{"conflict": True, "payload": {...}}`` — another live run holds the
+      session (``run_already_active``) or the key was reused with a changed
+      body (``idempotency_key_conflict``); caller answers 409.
+    - ``{"replay": True, "payload": {...}}`` — same key + same body after (or
+      during) execution; caller answers 202 with the original run id.
+    """
+    body = ctx["body"]
+    system_prompt = body.get("system_message") or body.get("instructions")
+    run_key = session_run_key(
+        session_id=session_id,
+        user_message=user_message,
+        system_prompt=system_prompt,
+        idempotency_header=request.headers.get("Idempotency-Key"),
+    )
+    if request.headers.get("Idempotency-Key"):
+        receipt = await replay_or_reserve_header_run(
+            adapter, request, run_key,
+            session_request_fingerprint(
+                session_id=session_id,
+                user_message=user_message,
+                system_prompt=system_prompt,
+            ),
+            run_id,
+            adapter._run_statuses[run_id],
+        )
+        if receipt is not None:
+            kind, payload = receipt
+            return {"conflict": kind == "conflict", "payload": payload}
+    conflict_run_id = await claim_session_run_or_conflict(
+        adapter, session_id, run_id, run_key
+    )
+    if conflict_run_id:
+        return {"conflict": True, "payload": run_already_active_error(conflict_run_id)}
+    return None
+

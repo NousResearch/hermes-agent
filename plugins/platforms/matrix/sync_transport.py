@@ -88,14 +88,19 @@ class DurableSyncStore:
     async def accept_intake(self, event_id: str) -> None:
         if event_id in self._accepted_events:
             return
-        await self._commit(event_id=event_id)
+        await self.accept_intakes((event_id,))
+
+    async def accept_intakes(self, event_ids: tuple[str, ...]) -> None:
+        await self._commit(event_ids=event_ids)
 
     async def _commit(
-        self, *, next_batch: str | None = None, event_id: str | None = None
+        self, *, next_batch: str | None = None, event_ids: tuple[str, ...] = ()
     ) -> None:
         async def write() -> None:
             async with self._write_lock:
-                accepted = self._accepted_events | {event_id} if event_id else set()
+                accepted = (
+                    self._accepted_events | set(event_ids) if event_ids else set()
+                )
                 cursor = next_batch if next_batch is not None else self._next_batch
                 await asyncio.to_thread(self._write, cursor, accepted)
                 self._next_batch, self._accepted_events = cursor, accepted
@@ -235,6 +240,8 @@ class SyncDispatch:
             )
         if errors:
             raise errors[0]
+        if self.failed_sync_handlers:
+            raise RuntimeError("Matrix gateway refused sync intake")
 
     def acknowledge(self) -> None:
         self._completed_key_handlers.clear()
@@ -291,8 +298,32 @@ def create_sync_client(**kwargs):
         async def _catch_errors(self, handler, data):
             await self.hermes_sync._catch_errors(handler, data)
 
-        def dispatch_manual_event(self, *args, **kwargs):
-            tasks = super().dispatch_manual_event(*args, **kwargs)
+        def dispatch_manual_event(
+            self,
+            event_type,
+            data,
+            include_global_handlers=False,
+            force_synchronous=False,
+            source=None,
+        ):
+            params = (
+                event_type,
+                data,
+                include_global_handlers,
+                force_synchronous,
+                source,
+            )
+            middlewares = self.event_middlewares.get(event_type, [])
+            if not middlewares:
+                return self._dispatch_manual_event(*params)
+
+            async def run_middlewares():
+                for middleware in middlewares:
+                    if not await middleware(data):
+                        return
+                await asyncio.gather(*self._dispatch_manual_event(*params))
+
+            tasks = [asyncio.create_task(run_middlewares())]
             self.hermes_sync.own_tasks(tasks)
             return tasks
 

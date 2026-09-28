@@ -296,6 +296,18 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         # task" and can break encrypted Matrix delivery (#61495 — salvaged from #63586 by @Fly-onlyone).
         runner = runner_ref() if callable(runner_ref) else None
         adapters = getattr(runner, "adapters", None) if runner is not None else None
+        # ``runner.adapters`` is the DEFAULT profile's map. Under ``gateway.multiplex_profiles`` a
+        # manual run fired from a secondary profile's agent executes with HERMES_HOME overridden to
+        # that profile's home, so delivering through ``runner.adapters`` sends the result out the
+        # default bot (a Telegram DM reaches the user from the wrong bot). Resolve the owner's map
+        # the same way notifications and goals do — fail closed, no fallback to the default bot.
+        # A runner without ``_adapters_for_profile`` (shims, tests) keeps ``runner.adapters``; a
+        # resolution failure is NOT a reason to fall back: it propagates to the ``except`` below,
+        # which marks the run failed and surfaces the error instead of misdelivering.
+        if runner is not None and hasattr(runner, "_adapters_for_profile"):
+            from hermes_constants import get_hermes_home, profile_name_for_home
+
+            adapters = runner._adapters_for_profile(profile_name_for_home(get_hermes_home()))
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
         try:
             # run_one_job records last_run_at/last_status via mark_job_run; `job` is the

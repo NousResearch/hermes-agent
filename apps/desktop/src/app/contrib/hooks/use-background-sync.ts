@@ -1164,7 +1164,7 @@ export function useBackgroundSync({
   // the reconcile is signature-gated, so an unchanged transcript costs one
   // cheap tail read. Messaging transcripts keep their own visible poll below.
   useEffect(() => {
-    if (gatewayState !== 'open' || activeIsMessaging || !activeSessionId || !activeStoredSessionId) {
+    if (gatewayState !== 'open' || activeIsMessaging) {
       return
     }
 
@@ -1192,7 +1192,12 @@ export function useBackgroundSync({
       }
 
       lastRefreshAt = now
-      requestActiveTranscriptRefresh(true)
+      // The main pane resolves only with a selected session; a workspace whose
+      // pane shows just bot tiles has none, and the tile reconcile below still
+      // owes those tiles their catch-up.
+      if (activeSessionId && activeStoredSessionId) {
+        requestActiveTranscriptRefresh(true)
+      }
       // Workspace tiles share the zombie-socket blind spot: the sessions.changed
       // tick that would have reconciled them does not replay on wake, and bot
       // canonical chats never resolve through the main-pane path. The shared

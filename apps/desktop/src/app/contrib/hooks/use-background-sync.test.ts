@@ -795,6 +795,27 @@ describe('active transcript refresh', () => {
     await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledWith(tileStoredId, undefined, { passive: true }))
   })
 
+  it('reconciles tiles on return in a workspace with no selected session (#125532 review)', async () => {
+    // A workspace whose pane shows only bot tiles has no main-pane selection
+    // (activeSessionId null); the return reconcile must still reach the tiles,
+    // while the main-pane refresh stays silent for lack of a session to resolve.
+    const tileRuntimeId = 'runtime-tile-only'
+    const tileStoredId = 'stored-tile-only'
+    $sessionTiles.set([{ runtimeId: tileRuntimeId, storedSessionId: tileStoredId }])
+    publishSessionState(tileRuntimeId, createClientSessionState(tileStoredId))
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(transcript('tile only answer', tileStoredId) as never)
+
+    const refresh = vi.fn(async () => undefined)
+    renderSync(refresh, { activeSessionId: null, activeStoredSessionId: null })
+
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+
+    expect(refresh).not.toHaveBeenCalled() // nothing selected in the main pane
+    await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalledWith(tileStoredId, undefined, { passive: true }))
+  })
+
   it('does not refresh on a visibilitychange to hidden (#125532 review)', () => {
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
     $changeEventsAvailable.set(true)

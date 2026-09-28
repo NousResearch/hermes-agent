@@ -467,6 +467,7 @@ export interface HermesConfig {
     skin?: string
     interim_assistant_messages?: boolean
     timestamps?: boolean
+    tool_progress?: boolean | string
   }
   desktop?: {
     font_family?: string
@@ -713,7 +714,11 @@ export interface SessionMessagesResponse {
   pagination?: {
     limit: number
     offset: number
-    order: 'latest' | 'oldest'
+    /** Order the backend actually applied, echoed back from the request.
+     *  Absent on backends that predate the `order` param: they answered from
+     *  the OLDEST row while still returning this object, so a page may only be
+     *  read as a tail when this is `'latest'` (see `pageHonorsLatestOrder`). */
+    order?: 'latest' | 'oldest'
     returned: number
   }
   session_id: string
@@ -1621,6 +1626,11 @@ export interface ModelAssignmentRequest {
 /** An auxiliary task still pinned to a provider that differs from the
  *  newly-selected main provider after a main-model switch. */
 export interface StaleAuxAssignment {
+  /** Endpoint the pin bills, when the source knows it (the auxiliary config
+   *  read carries it; the switch echo doesn't). Part of the desktop's
+   *  stale-aux dismissal fingerprint so a repointed endpoint re-arms the
+   *  warning. Optional: backend `stale_aux` responses predate the field. */
+  base_url?: string
   task: string
   provider: string
   model: string

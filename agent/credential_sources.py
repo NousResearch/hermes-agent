@@ -292,14 +292,3 @@ _REGISTRY: List[RemovalStep] = [
         description="Custom provider config.yaml api_key field",
     ),
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def register(step: RemovalStep) -> RemovalStep:
-    _REGISTRY.append(step)
-    return step
-# ---- END PLUGIN-COMPAT ----

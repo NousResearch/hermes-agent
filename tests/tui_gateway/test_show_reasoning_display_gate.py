@@ -1,13 +1,17 @@
-"""display.show_reasoning false is answer-only on the live callback path.
+"""Display gates on the live callback path.
 
-The session flag, not reasoning_effort, decides whether reasoning/thinking
-deltas and non-essential tool chrome leave the gateway.
+display.show_reasoning decides whether reasoning leaves the gateway.
+display.tool_progress decides whether non-essential tool rows leave it.
+The two are independent; answer-only is both off. reasoning_effort is not a
+display switch. Regression for #121524, which tied tool rows to show_reasoning.
 """
 
 import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from tui_gateway import server
 
@@ -20,13 +24,13 @@ def _capture(monkeypatch):
     return events
 
 
-def _session(monkeypatch, sid, *, show_reasoning, effort="high"):
+def _session(monkeypatch, sid, *, show_reasoning, effort="high", tool_progress="all"):
     monkeypatch.setitem(
         server._sessions,
         sid,
         {
             "show_reasoning": show_reasoning,
-            "tool_progress_mode": "all",
+            "tool_progress_mode": tool_progress,
             "tool_started_at": {},
             "edit_snapshots": {},
             "agent": SimpleNamespace(reasoning_config={"enabled": True, "effort": effort}),
@@ -34,9 +38,10 @@ def _session(monkeypatch, sid, *, show_reasoning, effort="high"):
     )
 
 
-def test_hidden_reasoning_does_not_emit_reasoning_deltas(monkeypatch):
+@pytest.mark.parametrize("tool_progress", ["all", "off"])
+def test_hidden_reasoning_does_not_emit_reasoning_deltas(monkeypatch, tool_progress):
     events = _capture(monkeypatch)
-    _session(monkeypatch, "hide-deltas", show_reasoning=False, effort="high")
+    _session(monkeypatch, "hide-deltas", show_reasoning=False, effort="high", tool_progress=tool_progress)
 
     callbacks = server._agent_cbs("hide-deltas")
     callbacks["reasoning_callback"]("chain of thought from any provider")
@@ -61,11 +66,11 @@ def test_child_mirror_skips_reasoning_delta_when_hidden(monkeypatch):
     events = _capture(monkeypatch)
     _session(monkeypatch, "child-sid", show_reasoning=False)
     monkeypatch.setattr(
-        server, "_find_live_session_by_key", lambda key: ("child-sid", {"agent": None, "show_reasoning": False})
+        server, "_find_live_session_by_key", lambda key, _home: ("child-sid", {"agent": None, "show_reasoning": False})
     )
 
     server._mirror_subagent_to_child(
-        "subagent.thinking", {"child_session_id": "child-key", "text": "delegated thought"}
+        "subagent.thinking", {"child_session_id": "child-key", "text": "delegated thought"}, None
     )
 
     assert not any(event[0] == "reasoning.delta" for event in events)
@@ -80,38 +85,80 @@ def test_hidden_reasoning_drops_completed_reasoning_block(monkeypatch):
     assert events == []
 
 
-def test_hidden_reasoning_suppresses_nonessential_tool_chrome_without_effort_none(monkeypatch):
-    events = _capture(monkeypatch)
-    _session(monkeypatch, "hide-tools", show_reasoning=False, effort="high")
-
-    server._on_tool_start("hide-tools", "tool-read", "read_file", {"path": "README.md"})
-    server._on_tool_complete("hide-tools", "tool-read", "read_file", {"path": "README.md"}, "contents")
-    server._agent_cbs("hide-tools")["tool_gen_callback"]("terminal")
+def _emit_ordinary_and_essential_tools(sid):
+    server._on_tool_start(sid, "tool-read", "read_file", {"path": "README.md"})
+    server._on_tool_complete(sid, "tool-read", "read_file", {"path": "README.md"}, "contents")
+    server._agent_cbs(sid)["tool_gen_callback"]("terminal")
 
     clarify_args = {"question": "Pick one", "choices": ["A", "B"]}
-    server._on_tool_start("hide-tools", "tool-clarify", "clarify", clarify_args)
+    server._on_tool_start(sid, "tool-clarify", "clarify", clarify_args)
     server._on_tool_complete(
-        "hide-tools",
-        "tool-clarify",
-        "clarify",
-        clarify_args,
-        json.dumps({"question": "Pick one", "user_response": "A"}),
+        sid, "tool-clarify", "clarify", clarify_args, json.dumps({"question": "Pick one", "user_response": "A"})
     )
-    server._on_tool_complete(
-        "hide-tools",
-        "tool-fail",
-        "terminal",
-        {"command": "deploy"},
-        json.dumps({"error": "disk full"}),
-    )
+    server._on_tool_complete(sid, "tool-fail", "terminal", {"command": "deploy"}, json.dumps({"error": "disk full"}))
 
-    kinds = [event[0] for event in events]
-    assert "tool.generating" not in kinds
-    assert not any(event[2].get("name") == "read_file" for event in events)
-    assert [event[0] for event in events if event[2].get("name") == "clarify"] == ["tool.start", "tool.complete"]
+
+def _lifecycle(events, tool_id):
+    return [event[0] for event in events if (event[2] or {}).get("tool_id") == tool_id]
+
+
+def test_hidden_reasoning_keeps_tool_rows_when_tool_progress_is_on(monkeypatch):
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "hide-reasoning", show_reasoning=False, tool_progress="all")
+
+    _emit_ordinary_and_essential_tools("hide-reasoning")
+
+    assert _lifecycle(events, "tool-read") == ["tool.start", "tool.complete"]
+    assert "tool.generating" in [event[0] for event in events]
+
+
+def test_tool_progress_off_keeps_only_essential_tool_rows(monkeypatch):
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "tools-off", show_reasoning=True, tool_progress="off")
+
+    _emit_ordinary_and_essential_tools("tools-off")
+
+    assert _lifecycle(events, "tool-read") == []
+    assert "tool.generating" not in [event[0] for event in events]
+    assert _lifecycle(events, "tool-clarify") == ["tool.start", "tool.complete"]
     failed = [event for event in events if event[2].get("tool_id") == "tool-fail"]
     assert [event[0] for event in failed] == ["tool.complete"]
     assert failed[0][2]["result"]["error"] == "disk full"
+
+
+def test_subagent_tool_mirror_follows_tool_progress_not_reasoning(monkeypatch):
+    for sid, show_reasoning, tool_progress, expected in (
+        ("child-reasoning-off", False, "all", ["tool.start", "tool.complete"]),
+        ("child-tools-off", True, "off", []),
+    ):
+        events = _capture(monkeypatch)
+        _session(monkeypatch, sid, show_reasoning=show_reasoning, tool_progress=tool_progress)
+        session = server._sessions[sid]
+        session["agent"] = None  # a watch window, not a full agent: the mirror only feeds those
+        monkeypatch.setattr(server, "_find_live_session_by_key", lambda key, _home, sid=sid, session=session: (sid, session))
+
+        server._mirror_subagent_to_child(
+            "subagent.tool", {"child_session_id": f"key-{sid}", "tool_name": "read_file", "tool_preview": "x"}, None
+        )
+        server._mirror_subagent_to_child("subagent.complete", {"child_session_id": f"key-{sid}"}, None)
+
+        assert [event[0] for event in events if event[0].startswith("tool.")] == expected, sid
+
+
+def test_tool_progress_off_keeps_reasoning_blocks(monkeypatch):
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "tools-off-reasoning-on", show_reasoning=True, tool_progress="off")
+
+    server._on_tool_progress("tools-off-reasoning-on", "reasoning.available", "_thinking", "finished thought", None)
+    server._on_tool_progress(
+        "tools-off-reasoning-on", "moa.reference", "reference-a", "other model's thoughts", None
+    )
+    server._on_tool_progress(
+        "tools-off-reasoning-on", "tool.output_risk", "terminal", None, None,
+        tool_call_id="t1", risk_metadata={"risk": "high", "findings": ["secret"]},
+    )
+
+    assert [event[0] for event in events] == ["reasoning.available", "moa.reference"]
 
 
 def test_hidden_reasoning_drops_moa_reference_chrome(monkeypatch):
@@ -177,7 +224,7 @@ def test_shown_reasoning_keeps_subagent_thinking_text(monkeypatch):
     assert events[0][2]["text"] == "the child's visible thought"
 
 
-def test_hidden_reasoning_keeps_card_tool_lifecycle(monkeypatch):
+def test_tool_progress_off_keeps_card_tool_lifecycle(monkeypatch):
     """Card tools are the turn's deliverable, not chrome.
 
     Desktop's answer-only gate (`message-parts.tsx`) keeps card tools visible via
@@ -188,7 +235,7 @@ def test_hidden_reasoning_keeps_card_tool_lifecycle(monkeypatch):
     call's `tool.complete`.
     """
     events = _capture(monkeypatch)
-    _session(monkeypatch, "hide-cards", show_reasoning=False, effort="high")
+    _session(monkeypatch, "hide-cards", show_reasoning=False, tool_progress="off")
 
     cases = {
         "tool-image": ("image_generate", {"prompt": "a cat"}),
@@ -204,7 +251,7 @@ def test_hidden_reasoning_keeps_card_tool_lifecycle(monkeypatch):
         assert lifecycle == ["tool.start", "tool.complete"], tool_id
 
 
-def test_hidden_reasoning_keeps_file_edit_lifecycle_pair(monkeypatch):
+def test_tool_progress_off_keeps_file_edit_lifecycle_pair(monkeypatch):
     """A file edit is a diff card (`isFileEditTool`): answer-only keeps it visible.
 
     The complete-side guard admits edits through `inline_diff`; without the same
@@ -212,7 +259,7 @@ def test_hidden_reasoning_keeps_file_edit_lifecycle_pair(monkeypatch):
     consumer got a `tool.complete` it never saw a `tool.start` for.
     """
     events = _capture(monkeypatch)
-    _session(monkeypatch, "hide-edit", show_reasoning=False, effort="high")
+    _session(monkeypatch, "hide-edit", show_reasoning=False, tool_progress="off")
 
     def fake_edit_diff(tool_name, result, *, function_args=None, snapshot=None, print_fn=None):
         if print_fn is not None:
@@ -259,9 +306,9 @@ def test_gateway_lifecycle_set_covers_desktop_card_tools():
     assert desktop_cards <= set(server._TOOL_LIFECYCLE_UI_TOOLS)
 
 
-def test_hidden_reasoning_shows_failed_terminal_exit_code(monkeypatch):
+def test_tool_progress_off_shows_failed_terminal_exit_code(monkeypatch):
     events = _capture(monkeypatch)
-    _session(monkeypatch, "hide-exit", show_reasoning=False, effort="high")
+    _session(monkeypatch, "hide-exit", show_reasoning=False, tool_progress="off")
 
     server._on_tool_complete(
         "hide-exit",
@@ -276,9 +323,9 @@ def test_hidden_reasoning_shows_failed_terminal_exit_code(monkeypatch):
     assert failed[0][2]["result"]["exit_code"] == 1
 
 
-def test_hidden_reasoning_hides_successful_terminal_exit(monkeypatch):
+def test_tool_progress_off_hides_successful_terminal_exit(monkeypatch):
     events = _capture(monkeypatch)
-    _session(monkeypatch, "hide-exit-ok", show_reasoning=False, effort="high")
+    _session(monkeypatch, "hide-exit-ok", show_reasoning=False, tool_progress="off")
 
     server._on_tool_complete(
         "hide-exit-ok",

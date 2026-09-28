@@ -402,15 +402,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
 
 
 # =============================================================================
-# Section 1b: TTS Provider Configuration
-
-
-def _check_espeak_ng() -> bool:
-    """Check if espeak-ng is installed."""
-    return shutil.which("espeak-ng") is not None or shutil.which("espeak") is not None
-
-
-# =============================================================================
 # Section 3: Agent Settings
 # =============================================================================
 
@@ -745,32 +736,3 @@ def _run_setup_wizard_impl(args):
               "If setup changed a value you customized, restore it with:",
               f"  cp {_backup_path} {config_path}")
     _print_setup_summary(config, hermes_home)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-from typing import Dict  # noqa: F401,E402
-from typing import Optional  # noqa: F401,E402
-import json  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'get_nous_subscription_features': ('hermes_cli.nous_subscription', 'get_nous_subscription_features'),
-    'get_optional_skills_dir': ('hermes_constants', 'get_optional_skills_dir'),
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

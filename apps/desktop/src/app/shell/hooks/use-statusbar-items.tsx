@@ -37,9 +37,11 @@ import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
 import { setSessionYolo } from '@/lib/yolo-session'
+import type { ApprovalModeRequester } from '@/store/approval-mode'
 import { copyFilePath, revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
+import { requestGatewayForProfile } from '@/store/gateway'
 import { revealFileInTree } from '@/store/layout'
 import { $onboardingGate, guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -365,7 +367,19 @@ export function useStatusbarItems({
     [toggleSessionYolo, yoloActive]
   )
 
-  const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway, sessionYolo)
+  // Dial the viewed profile directly: the ambient `requestGateway` is the
+  // session-routed dispatcher, which re-scopes `params.profile` to the FOCUSED
+  // session's owner — a profile other than the one this menu shows.
+  const requestApprovalModeGateway = useCallback<ApprovalModeRequester>(
+    (method, params) => requestGatewayForProfile(activeGatewayProfile, method, params),
+    [activeGatewayProfile]
+  )
+
+  const approvalModeItem = useApprovalModeStatusbarItem(
+    activeGatewayProfile,
+    requestApprovalModeGateway,
+    sessionYolo
+  )
   const systemResourcesItem = useSystemResourcesStatusbarItem()
 
   const gatewayMenuContent = useMemo(

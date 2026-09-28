@@ -94,6 +94,25 @@ def test_new_failure_creates_incident_and_is_new(monkeypatch, tmp_path):
     assert inc.count_incidents() == 1
 
 
+def test_incidents_list_newest_instant_first_across_dst_fall_back(monkeypatch, tmp_path):
+    """01:10-05:00 is 20 minutes after 01:50-04:00 but sorts first as text."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    inc = _point_db(monkeypatch, tmp_path)
+    new_york = ZoneInfo("America/New_York")
+    monkeypatch.setattr(
+        inc, "_hermes_now", lambda: datetime(2026, 11, 1, 1, 50, tzinfo=new_york, fold=0)
+    )
+    earlier, _ = inc.upsert_incident("job-1", "first failure")
+    monkeypatch.setattr(
+        inc, "_hermes_now", lambda: datetime(2026, 11, 1, 1, 10, tzinfo=new_york, fold=1)
+    )
+    later, _ = inc.upsert_incident("job-2", "second failure")
+
+    assert [row["id"] for row in inc.list_incidents()] == [later, earlier]
+
+
 def test_same_signature_dedups_same_incident(monkeypatch, tmp_path):
     inc = _point_db(monkeypatch, tmp_path)
 

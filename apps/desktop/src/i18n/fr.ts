@@ -684,6 +684,8 @@ export const frOverrides = {
       'composer.focus': 'Mettre le focus sur le compositeur',
       'composer.modelPicker': 'Ouvrir le sélecteur de modèle',
       'composer.voice': 'Démarrer / arrêter la conversation vocale',
+      'composer.reasoningUp': 'Augmenter le niveau de raisonnement',
+      'composer.reasoningDown': 'Réduire le niveau de raisonnement',
       'view.toggleSidebar': 'Basculer la barre latérale des sessions',
       'view.cycleSidebarGrouping': 'Changer le regroupement des sessions',
       'view.toggleRightSidebar': "Basculer l'explorateur de fichiers",
@@ -1174,6 +1176,8 @@ export const frOverrides = {
       textDirection: { auto: 'Auto', rtl: 'De droite à gauche', ltr: 'De gauche à droite' },
       introSplashTitle: "Écran d'accueil",
       introSplashDesc: "Le logo et l'invite affichés dans une conversation vide.",
+      modelPricingTitle: 'Tarifs des modèles',
+      modelPricingDesc: "Affiche les prix d'entrée, de sortie et de lecture du cache par million de jetons dans le sélecteur de modèle.",
       reactionsTitle: 'Réactions aux messages',
       reactionsDesc: 'Réactions emoji façon iMessage — réagissez aux messages, et Hermes peut réagir aux vôtres.',
       tipsTitle: "Astuces dans l'application",
@@ -2071,6 +2075,7 @@ export const frOverrides = {
       restartFailed: 'Impossible de redémarrer le backend',
       auxiliaryTitle: 'Modèles auxiliaires',
       resetAllToMain: 'Tout réinitialiser au principal',
+      staleAuxDismiss: 'Ne plus afficher',
       auxiliaryDesc:
         "Les tâches d'assistance s'exécutent sur le modèle principal par défaut. Attribuez un modèle dédié à toute tâche pour remplacer.",
       setToMain: 'Définir comme principal',
@@ -3094,12 +3099,6 @@ export const frOverrides = {
       system: 'Système',
       usage: 'Utilisation'
     },
-    sectionDescriptions: {
-      maintenance: 'Diagnostiques, sauvegardes, curateur et données de mémoire',
-      sessions: 'Rechercher et gérer les sessions',
-      system: 'État, journaux et actions système',
-      usage: 'Activité des jetons, coûts et skills au fil du temps'
-    },
     nav: {
       newChat: {
         title: 'Nouvelle session',
@@ -3185,7 +3184,7 @@ export const frOverrides = {
     actions: count => `${count} actions`,
     logFile: 'Fichier journal',
     logLevel: 'Niveau',
-    logSearchPlaceholder: 'Filtrer les lignes du journal...',
+    logSearchPlaceholder: 'Rechercher dans les journaux…',
     maintenance: {
       runOps: 'Diagnostiques',
       doctor: 'Exécuter le diagnostic',
@@ -3234,6 +3233,13 @@ export const frOverrides = {
   },
   messaging: {
     search: 'Rechercher dans la messagerie...',
+    statusFilter: {
+      all: 'Tous',
+      bad: 'Erreurs',
+      good: 'Connectés',
+      muted: 'Inactifs',
+      warn: 'Attention requise'
+    },
     loading: 'Chargement des plateformes de messagerie...',
     loadFailed: 'Échec du chargement des plateformes de messagerie',
     states: {
@@ -4293,6 +4299,8 @@ export const frOverrides = {
     restoredDraftNotice: 'Votre message non envoyé a été restauré',
     restoredDraftUndo: 'Annuler',
     queueEdit: 'Modifier',
+    queueExpand: 'Déplier',
+    queueCollapse: 'Replier',
     queueSendNext: 'Suivant',
     queueSteer: 'Diriger — réorienter maintenant le tour en cours',
     queueSend: 'Envoyer',
@@ -4642,6 +4650,7 @@ export const frOverrides = {
     maybeLater: 'Peut-être plus tard',
     moreChanges: count =>
       `+ ${count} ${count === 1 ? 'changement supplémentaire inclus' : 'changements supplémentaires inclus'}.`,
+    copyFullLog: 'Copier le journal complet des modifications',
     manualTitle: 'Mise à jour depuis votre terminal',
     manualUnavailableTitle: 'Mise à jour impossible ici',
     manualBody:
@@ -4990,7 +4999,11 @@ export const frOverrides = {
     noAuthenticatedProviders: 'Aucun fournisseur authentifié.',
     addProvider: 'Ajouter un fournisseur…',
     addCustomModel: 'Ajouter un modèle personnalisé',
-    removeCustomModel: 'Retirer le modèle personnalisé'
+    removeCustomModel: 'Retirer le modèle personnalisé',
+    resetToDefaults: 'Rétablir les valeurs par défaut',
+    resetConfirm: 'Rétablir la visibilité des modèles par défaut ?',
+    resetDescription: 'Vos choix de modèles affichés et masqués sont effacés et chaque fournisseur retrouve sa liste par défaut. Les modèles personnalisés ajoutés sont conservés et affichés.',
+    resetAction: 'Rétablir'
   },
   shell: {
     windowControls: 'Contrôles de fenêtre',
@@ -5002,7 +5015,11 @@ export const frOverrides = {
       editModels: 'Modifier les modèles…',
       followDefault: 'Utiliser le modèle par défaut des Réglages',
       refreshModels: 'Actualiser les modèles',
-      fast: 'Rapide'
+      fast: 'Rapide',
+      free: 'gratuit',
+      cacheRead: 'lecture en cache',
+      priceTitle: (input: string, output: string, cache: string) =>
+        `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : '')
     },
     modelOptions: {
       noOptions: 'Aucune option pour ce modèle',
@@ -6111,6 +6128,11 @@ export const frOverrides = {
   ui: {
     search: {
       clear: 'Effacer la recherche'
+    },
+    logs: {
+      bottom: 'Aller à la fin',
+      search: 'Rechercher dans les journaux…',
+      top: 'Aller au début'
     },
     pagination: {
       label: 'pagination',

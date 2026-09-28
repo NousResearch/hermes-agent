@@ -1022,12 +1022,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
         )}
         <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
         {fullResponseAvailable && (
-          <CopyButton
-            appearance="icon"
-            buttonSize="icon"
-            label={copy.copyFullResponse}
-            text={getFullResponseText}
-          />
+          <CopyButton appearance="icon" buttonSize="icon" label={copy.copyFullResponse} text={getFullResponseText} />
         )}
         <ReadAloudButton
           fullResponseAvailable={fullResponseAvailable}

@@ -1171,6 +1171,10 @@ def _close_quietly(target: Any, failure_note: Optional[str]) -> None:
                 logger.debug("Codex auxiliary: %s", failure_note, exc_info=True)
 
 
+# The context compressor keys its retry-ladder classification on this text (#124077).
+CODEX_STREAM_STALL_MARKER = "stream stalled"
+
+
 class _CodexStreamGuard:
     """Progress-aware deadline + FD-safe timeout watchdog for one Codex aux stream attempt.
 
@@ -1272,7 +1276,7 @@ class _CodexStreamGuard:
                 "Codex auxiliary Responses stream produced no output "
                 f"within {float(self.no_progress_timeout):.1f}s (no-progress timeout, {elapsed:.1f}s elapsed)")
         return (
-            "Codex auxiliary Responses stream stalled: no new output "
+            f"Codex auxiliary Responses {CODEX_STREAM_STALL_MARKER}: no new output "
             f"for {float(self.no_progress_timeout):.1f}s ({elapsed:.1f}s elapsed)")
 
     def _close_client_on_timeout(self) -> None:

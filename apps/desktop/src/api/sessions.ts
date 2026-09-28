@@ -1,7 +1,7 @@
 import { isMissingRestEndpoint } from '@/lib/gateway-rpc'
 import { maybeBackfillLegacySessionOwners } from '@/lib/legacy-session-owner-backfill'
 import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
-import { recordTranscriptTail } from '@/store/transcript-tail'
+import { pageHonorsLatestOrder, recordTranscriptTail } from '@/store/transcript-tail'
 import type {
   PaginatedSessions,
   SessionInfo,
@@ -521,7 +521,19 @@ export function getLatestSessionMessages(
       includeCompacted: true
     },
     options
-  ).then(page => {
+  ).then(async page => {
+    // Order-echo guard. A backend built before the `order` param silently drops
+    // it (FastAPI ignores unknown query params) and serves the OLDEST page
+    // while still answering with a `pagination` object — so a full page looked
+    // like a truncated tail and the transcript silently became its first N
+    // rows, with "Show earlier" then prepending rows N..2N counted from the
+    // oldest end. Only a page that echoes `order: 'latest'` may be adopted as
+    // the tail; anything else is read as the complete transcript instead, which
+    // is the one paging contract both backend generations honour.
+    const authoritativePage = pageHonorsLatestOrder(page)
+      ? page
+      : await completeTranscriptForOrderlessBackend(id, profile, page, options)
+
     // Record whether the tail was truncated (page came back full) and where
     // the next older page starts, so "Show earlier" can backfill over REST
     // (app/chat/transcript-backfill). Keyed under both the requested id and
@@ -534,14 +546,43 @@ export function getLatestSessionMessages(
       profile: route.profile || page.profile || ambientProfile
     }
 
-    recordTranscriptTail(id, page, route, owner)
+    recordTranscriptTail(id, authoritativePage, route, owner)
 
-    if (page.session_id && page.session_id !== id) {
-      recordTranscriptTail(page.session_id, page, route, owner)
+    if (authoritativePage.session_id && authoritativePage.session_id !== id) {
+      recordTranscriptTail(authoritativePage.session_id, authoritativePage, route, owner)
     }
 
-    return page
+    return authoritativePage
   })
+}
+
+/**
+ * Complete chronological transcript for a backend that did not honour
+ * `order=latest` (#92508).
+ *
+ * A page with no `pagination` at all (the pre-paging generation) or an
+ * orderless page that came back SHORT already holds every row: both were
+ * served from the oldest row at offset 0. Only a full orderless page needs
+ * the paged read. `getAllSessionMessages` pages with `order: 'oldest'`: the
+ * newer generation honours that explicitly and the older one drops the param
+ * and always paged from the start, so both return the same full history. The
+ * result carries NO `pagination`, the established "this is everything" signal
+ * (`tailStateFromPage`), so nothing arms a REST backfill against the wrong end
+ * of the transcript.
+ */
+async function completeTranscriptForOrderlessBackend(
+  id: string,
+  profile: ProfileScope | undefined,
+  page: SessionMessagesResponse,
+  options: { passive?: boolean }
+): Promise<SessionMessagesResponse> {
+  const { pagination, ...complete } = page
+
+  if (!pagination || page.messages.length < pagination.limit) {
+    return complete
+  }
+
+  return { ...complete, messages: (await getAllSessionMessages(id, profile, options)).messages }
 }
 
 /**
@@ -606,7 +647,7 @@ export function getOlderSessionMessages(
 export async function getAllSessionMessages(
   id: string,
   profile?: ProfileScope,
-  options: { maxJsonChars?: number } = {}
+  options: { maxJsonChars?: number; passive?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const messages: SessionMessage[] = []
   const pageSize = 500
@@ -616,12 +657,17 @@ export async function getAllSessionMessages(
   let resolvedSessionId = id
 
   while (true) {
-    const page = await getSessionMessages(id, profile, {
-      limit: pageSize,
-      offset,
-      order: 'oldest',
-      includeCompacted: true
-    })
+    const page = await getSessionMessages(
+      id,
+      profile,
+      {
+        limit: pageSize,
+        offset,
+        order: 'oldest',
+        includeCompacted: true
+      },
+      { passive: options.passive }
+    )
 
     resolvedSessionId = page.session_id
     jsonChars += (JSON.stringify(page.messages) ?? '').length

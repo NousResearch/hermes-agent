@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
+from hermes_cli._subprocess_compat import pid_exists_stdlib
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -1055,59 +1056,7 @@ def _pid_exists(pid: int) -> bool:
         return bool(psutil.pid_exists(pid))
     except ImportError:
         pass  # Fall through to stdlib fallback.
-    if _IS_WINDOWS:
-        return _pid_exists_win32_ctypes(pid)
-    if _posix_is_zombie(pid):  # a zombie still answers os.kill(pid, 0)
-        return False
-    try:
-        os.kill(pid, 0)  # windows-footgun: ok — POSIX-only branch (the whole point of _pid_exists)
-    except PermissionError:
-        return True  # Exists but we can't signal it.
-    except OSError:  # ProcessLookupError included
-        return False
-    return True
-
-
-def _posix_is_zombie(pid: int) -> bool:
-    """Zombie via ``/proc/<pid>/stat`` field 3, or ``ps -o state=`` without /proc (macOS/BSD)."""
-    try:
-        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
-        return len(stat_fields) > 2 and stat_fields[2] == "Z"
-    except FileNotFoundError:
-        with contextlib.suppress(Exception):
-            r = subprocess.run(
-                ["ps", "-o", "state=", "-p", str(pid)],
-                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
-            )
-            return r.returncode == 0 and r.stdout.strip().startswith("Z")
-    except (IndexError, PermissionError, OSError):
-        pass
-    return False
-
-
-def _pid_exists_win32_ctypes(pid: int) -> bool:
-    """psutil-free Windows liveness probe via OpenProcess/WaitForSingleObject."""
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        # Pin restypes: default c_int mangles WAIT_* DWORDs into negatives.
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        kernel32.WaitForSingleObject.restype = ctypes.c_uint
-        kernel32.GetLastError.restype = ctypes.c_uint
-        PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE = 0x1000, 0x100000  # SYNCHRONIZE: for Wait*
-        WAIT_TIMEOUT, ERROR_ACCESS_DENIED = 0x00000102, 5
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, False, pid)
-        if not handle:
-            # ERROR_INVALID_PARAMETER (87): PID definitely gone. ACCESS_DENIED: exists
-            # but owned by another user/session. Any other error: conservative False.
-            return kernel32.GetLastError() == ERROR_ACCESS_DENIED
-        try:
-            # WAIT_TIMEOUT = still running; anything else = gone.
-            return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
-        finally:
-            kernel32.CloseHandle(handle)
-    except (OSError, AttributeError):
-        return False
+    return pid_exists_stdlib(pid)
 
 
 def _release_file_lock(handle) -> None:

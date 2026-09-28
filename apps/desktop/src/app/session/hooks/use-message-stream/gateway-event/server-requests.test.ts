@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { hasOpenServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { setActiveSessionId, setSessions } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
@@ -157,5 +158,47 @@ describe('tour request routing', () => {
     const { respond } = deliver('tour', { action: 'discover' }, null)
 
     expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+  })
+})
+
+// #75587: a blocking-input request still in flight when the session's runtime is
+// interrupted (Stop) or deleted must not park its card — parking one would
+// resurrect an overlay (and native notification) for a turn that is gone. It is
+// answered with an error (the backend's "unanswered"), not dropped, so the
+// blocked tool returns instead of waiting out its deadline.
+describe('blocking-input guard for interrupted sessions', () => {
+  const depsWith = (interrupted: boolean) =>
+    ({ ...deps, sessionInterrupted: () => interrupted }) as ServerRequestContext['deps']
+
+  const approvalRequest = (id: string) => ({
+    fail: vi.fn(),
+    id,
+    method: 'approval',
+    params: { command: 'rm -rf /', description: 'dangerous', request_id: 'r1', session_id: 'session-a' },
+    profile: 'default',
+    respond: vi.fn()
+  })
+
+  afterEach(() => {
+    resetServerRequestsForTests()
+  })
+
+  it('fails an approval request for an interrupted session instead of parking it', () => {
+    const request = approvalRequest('srq-dead')
+
+    expect(handleServerRequest(request, depsWith(true), 'session-a')).toBe(true)
+
+    expect(hasOpenServerRequest('srq-dead')).toBe(false)
+    expect(request.fail).toHaveBeenCalledWith(expect.any(Number), 'session interrupted')
+    expect(request.respond).not.toHaveBeenCalled()
+  })
+
+  it('still parks an approval request for a live session', () => {
+    const request = approvalRequest('srq-live')
+
+    handleServerRequest(request, depsWith(false), 'session-a')
+
+    expect(hasOpenServerRequest('srq-live')).toBe(true)
+    expect(request.fail).not.toHaveBeenCalled()
   })
 })

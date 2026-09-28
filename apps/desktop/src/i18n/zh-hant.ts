@@ -2402,6 +2402,7 @@ export const zhHant = defineLocale({
     skillsLabel: '技能',
     notSet: '未設定',
     soulDesc: '內建於此設定檔的系統提示詞與角色指令。',
+    soulMissing: '此設定檔尚無 SOUL.md 檔案。在下方輸入指令並儲存即可建立。config.yaml 中的人格預設需另外管理。',
     soulOptional: '選填',
     soulPlaceholder: mode => `此設定檔的系統提示詞 / 角色說明。\n留空則保留${mode}預設值。`,
     soulPlaceholderCloned: '複製的',
@@ -3071,6 +3072,7 @@ export const zhHant = defineLocale({
     goalWaiting: '目標等待中',
     subagents: count => `${count} 個子代理`,
     todos: (done, total) => `任務 ${done}/${total}`,
+    previousTodos: (done, total) => `先前任務 ${done}/${total}`,
     running: '執行中',
     stop: '停止',
     dismiss: '關閉',
@@ -3961,8 +3963,8 @@ export const zhHant = defineLocale({
           body: provider => `${provider} 傳回了伺服器錯誤。請稍後重試或切換服務商。`
         },
         timeout: {
-          title: '回覆逾時',
-          body: provider => `${provider} 未及時回應。請重試以重新傳送。`
+          title: '無法連線到 AI 服務',
+          body: provider => `無法連線到 ${provider}，或其未及時回應。請檢查網路連線後重試。`
         },
         ssl_cert_verification: {
           title: '安全連線失敗',

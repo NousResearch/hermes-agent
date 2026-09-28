@@ -645,6 +645,11 @@ export default {
       // a failed re-resume (backend still down) leaves the lazy recovery on
       // next send as the backstop. Feature-detected — older shells have no
       // host.onEvent.
+      //
+      // This is a BACKGROUND wake: it refreshes in place (refreshInPlace
+      // through openBotCanonicalChat) and never navigates, so a user
+      // reading the Kanban board — or any other route — keeps their view
+      // (issue 121874).
       const stopReclaimSync =
         typeof host.onEvent === 'function'
           ? host.onEvent('session.reclaimed', event => {
@@ -677,7 +682,7 @@ export default {
               }
 
               const generation = getBotOpenGeneration()
-              void openBotCanonicalChat(bot)
+              void openBotCanonicalChat(bot, { background: true })
                 .then(opened => {
                   // A user action while the re-resume ran owns the center now.
                   if (!opened || generation !== getBotOpenGeneration()) {

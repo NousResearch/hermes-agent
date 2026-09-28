@@ -405,6 +405,13 @@ def _ensure_session_db_row(session: dict) -> bool:
                         session.pop("pending_hidden", None)
                 except Exception:
                     logger.debug("failed to apply pending hidden flag", exc_info=True)
+            # Same deferral for session.archive before the row existed (mirrors pending_hidden).
+            if session.get("pending_archived"):
+                try:
+                    if db.set_session_archived(key, True):
+                        session.pop("pending_archived", None)
+                except Exception:
+                    logger.debug("failed to apply pending archived flag", exc_info=True)
         except Exception as exc:
             # Disk-full is not a soft failure: swallowed here, prompt.submit returns {"status":"streaming"} and the
             # message vanishes silently.

@@ -2182,6 +2182,8 @@ export const ja = defineLocale({
     skillsLabel: 'スキル',
     notSet: '未設定',
     soulDesc: 'このプロファイルに組み込まれたシステムプロンプトとペルソナの指示。',
+    soulMissing:
+      'このプロファイルにはまだ SOUL.md がありません。下に指示を入力して保存すると作成できます。config.yaml のペルソナ設定は別途管理されます。',
     soulOptional: '省略可能',
     soulPlaceholder: mode =>
       `このプロファイルのシステムプロンプト / ペルソナ。\n空欄のままにすると ${mode} のデフォルトを使用します。`,
@@ -2860,6 +2862,7 @@ export const ja = defineLocale({
     goalWaiting: '目標待機中',
     subagents: count => `サブエージェント ${count} 件`,
     todos: (done, total) => `タスク ${done}/${total}`,
+    previousTodos: (done, total) => `以前のタスク ${done}/${total}`,
     running: '実行中',
     stop: '停止',
     dismiss: '閉じる',
@@ -3789,8 +3792,9 @@ export const ja = defineLocale({
             `${provider} がサーバーエラーを返しました。しばらくしてから再試行するか、プロバイダーを切り替えてください。`
         },
         timeout: {
-          title: '応答がタイムアウトしました',
-          body: provider => `${provider} から時間内に応答がありませんでした。再試行してもう一度送信してください。`
+          title: 'AI サービスに接続できません',
+          body: provider =>
+            `${provider} に接続できないか、時間内に応答がありませんでした。インターネット接続を確認してから再試行してください。`
         },
         ssl_cert_verification: {
           title: '安全な接続に失敗しました',

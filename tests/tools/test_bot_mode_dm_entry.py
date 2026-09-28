@@ -22,6 +22,7 @@ import pytest
 
 from pm.environments import install_state_dir, runtime_facts_path, site_packages
 from tools import bot_relay
+from tools.bot_mode_dm import _dm_delivery_id
 
 REPO = Path(__file__).resolve().parents[2]
 RUNNER = REPO / "tools" / "bot_mode_dm.py"
@@ -109,50 +110,30 @@ def test_delivery_runner_that_cannot_activate_names_the_repair_remedy(tmp_path, 
     assert result.returncode == 1, result
     assert "hermes pm repair" in result.stderr
     assert "No module named" not in result.stdout + result.stderr
+    assert result.stdout == ""  # nothing was handed over, so no "do not resend" outcome
     assert dm_file.read_text(encoding="utf-8") == "hello teammate"
 
 
-@pytest.mark.parametrize("evidence,expected", [
-    ("none", "ambiguous"),
-    ("intent", "ambiguous"),
-    ("receipt", "ambiguous"),
-    ("unreadable_intent", "ambiguous"),
-    ("missing_dm", "ambiguous"),
-    ("unpinned_home", "ambiguous"),
-])
-def test_real_bootstrap_failure_reports_admission_evidence(tmp_path, uncommittable_home, evidence, expected):
-    """Exercise native activate_dependencies -> SystemExit, not an import replacement."""
+def test_delivery_runner_that_cannot_activate_after_live_admission_stays_ambiguous(tmp_path, uncommittable_home):
+    """The sender may already have admitted this DM to the live owner (its pinned intent exists)
+    and was told not to resend. A runner that then cannot activate must keep that outcome
+    unknown, with the same delivery id, instead of a bare repair hint that reads as a failure."""
     _home, env = uncommittable_home
-    profile = tmp_path / "recipient"
-    profile.mkdir()
     dm_file = tmp_path / "dm.txt"
-    dm_file.write_text("offline-message", encoding="utf-8")
-    from tools.bot_mode_dm import _dm_delivery_id
-    delivery_id = _dm_delivery_id(str(dm_file))
-    if evidence == "intent":
-        Path(str(dm_file) + ".live.json").write_text('{"status":"queued"}')
-    elif evidence == "unreadable_intent":
-        Path(str(dm_file) + ".live.json").write_text("")
-    elif evidence == "receipt":
-        receipt = profile / "runtime" / "bot_live_delivery" / f"{delivery_id}.json"
-        receipt.parent.mkdir(parents=True)
-        receipt.write_text('{"status":"queued"}')
-    elif evidence == "missing_dm":
-        dm_file.unlink()
-    argv = [*BARE, str(RUNNER), "--run-delivery", "query-file", str(dm_file)]
-    if evidence != "unpinned_home":
-        argv.extend(["--profile-home", str(profile)])
-    result = _run([*argv, sys.executable, "-c", "pass"], env)
+    dm_file.write_text("hello teammate", encoding="utf-8")
+    intent = Path(str(dm_file) + ".live.json")
+    intent.write_text("{}", encoding="utf-8")
+
+    result = _run([*BARE, str(RUNNER), "--run-delivery", "query-file", str(dm_file),
+                   "--profile-home", str(tmp_path), sys.executable, "-c", "pass"], env)
+
     assert result.returncode == 1, result
     assert "hermes pm repair" in result.stderr
     payload = json.loads(result.stdout)
-    assert payload["status"] == expected
-    assert payload["delivery_id"] == delivery_id
-    if expected == "ambiguous":
-        assert payload["outcome"] == "UNKNOWN"
-        assert "Do not resend" in payload["detail"]
-    else:
-        assert dm_file.exists()
+    assert payload["status"] == "ambiguous"
+    assert payload["delivery_id"] == _dm_delivery_id(str(dm_file))
+    assert "Do not resend" in payload["error"]
+    assert dm_file.exists() and intent.exists()
 
 
 @pytest.mark.parametrize("home", ["committed_home", "uncommittable_home"])

@@ -538,6 +538,21 @@ def _local_delivery_home(argv: list[str]) -> Path | None:
     return dict(_roster(_hermes_root(Path(_default_home())))).get(argv[2])
 
 
+def _live_outcome_unknown(dm_file: str, cause: object) -> str:
+    """The runner's stdout when a live admission may have happened but its outcome is unknown."""
+    return json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
+                       "error": f"Live admission outcome unknown: {cause}. Do not resend.",
+                       "evidence_file": dm_file})
+
+
+def _runner_dm_file(args: list[str]) -> Optional[str]:
+    """The DM file named by ``--run-delivery [--author <json>] <mode> <dm_file> …`` argv."""
+    rest = args[1:]
+    if rest[:1] == ["--author"]:
+        rest = rest[2:]
+    return rest[1] if len(rest) >= 2 and rest[0] in ("stdin", "query-file") else None
+
+
 def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                   profile_home: Path | None = None, author: Optional[dict] = None) -> int:
     """Route to the live owner before attempting a CLI transport. Live deliveries
@@ -559,9 +574,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
             try:
                 record = _admit_live_dm(home, dm_file, author)
             except Exception as exc:
-                print(json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
-                    "error": f"Live admission outcome unknown: {exc}. Do not resend.",
-                    "evidence_file": dm_file}))
+                print(_live_outcome_unknown(dm_file, exc))
                 return 1
             if record is not None:
                 return _wait_live_dm(record["profile_home"], record["delivery_id"], dm_file=dm_file)
@@ -823,80 +836,24 @@ def _session_title(agent: Any) -> str:
     return ""
 
 
-def _activation_failure_status(args: list[str], error: str) -> dict:
-    """Classify boot failure without mistaking a pre-admitted DM for non-delivery.
-
-    This absence proof assumes the supported one-runner-per-unique-DM-file model:
-    _write_dm_file creates a fresh file, the parent finishes _admit_live_dm before
-    spawning its runner, and _admit_live_dm creates the intent with O_EXCL before
-    delivery. If another process can concurrently admit this SAME file, lstat
-    absence is not atomic evidence; that unsupported race must be UNKNOWN.
-    """
-    def absent(path: Path) -> bool:
-        try:
-            os.lstat(path)
-        except FileNotFoundError:
-            return True
-        except OSError:
-            return False
-        return False
-
-    rest = args[1:]
-    if rest[:1] == ["--author"] and len(rest) >= 2:
-        rest = rest[2:]
-    dm_file = rest[1] if len(rest) >= 2 and rest[0] in ("stdin", "query-file") else None
-    profile_home = rest[3] if len(rest) >= 4 and rest[2] == "--profile-home" else None
-    delivery_id = ""
-    evidence: dict[str, Any] = {}
-    proven_no_effect = False
-    if args[:1] == ["--run-delivery"] and dm_file:
-        try:
-            delivery_id = _dm_delivery_id(dm_file)
-            dm_present = Path(dm_file).is_file() and not Path(dm_file).is_symlink()
-        except OSError:
-            dm_present = False
-        intent_absent = absent(Path(dm_file + ".live.json"))
-        evidence.update(dm_file_present=dm_present, live_intent_absent=intent_absent)
-        receipt_absent = False
-        if profile_home is not None:
-            receipt = Path(profile_home) / "runtime" / "bot_live_delivery" / f"{delivery_id}.json"
-            receipt_absent = absent(receipt)
-            evidence["receipt_absent"] = receipt_absent
-        # Only a pinned home and the single-runner contract make absence meaningful.
-        proven_no_effect = dm_present and intent_absent and receipt_absent
-    if proven_no_effect:
-        return {"status": "not_delivered", "reason": "dependency_activation_failed",
-                "delivery_id": delivery_id, "error": f"{error}; run `hermes pm repair`",
-                "evidence": evidence, "detail": "No live intent or receipt was found; the runner stopped before transport. The DM file is kept."}
-    return {"status": "ambiguous", "outcome": "UNKNOWN", "reason": "dependency_activation_failed",
-            "delivery_id": delivery_id, "evidence_file": dm_file, "evidence": evidence,
-            "error": f"{error}; run `hermes pm repair`",
-            "detail": "The message may already be admitted to the live owner. Do not resend; reconcile the receipt and target transcript."}
-
-
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process
     # Spawned as a script with the sender's sys.executable, which under PM is the bare store
     # interpreter (dependencies are activated in-process, never inherited), so boot like every
     # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is tools/.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    # The reply waiter is stdlib only and its stdout is the sender's wake-up, so an activation
-    # failure must never exit it before it can print the outcome.
+    # Only the delivery lane boots: the reply waiter is stdlib only and its stdout is the
+    # sender's wake-up, so an activation failure must never exit it before it can print.
     if sys.argv[1:2] == ["--run-delivery"]:
         try:
             import hermes_bootstrap  # noqa: F401
-        except SystemExit as exc:
-            # Bootstrap can exit after failed activation, but also after a legacy handoff
-            # or a Windows relaunch. An exit code alone cannot prove non-delivery.
-            # Keep the original zero/non-error exits intact; never catch KeyboardInterrupt.
-            if exc.code in (None, 0):
-                raise
-            status = _activation_failure_status(sys.argv[1:], "bootstrap exited before runner")
-            status.update(status="ambiguous", outcome="UNKNOWN", reason="bootstrap_exit_unknown",
-                          error="Bootstrap exited before runner; see stderr for the original cause",
-                          detail="Bootstrap exited before delivery status was known. Do not resend; reconcile the receipt and target transcript.")
-            print(json.dumps(status))
+        except (Exception, SystemExit) as exc:
+            # A pinned live intent means the sender may already have admitted this DM and was
+            # told not to resend; a bare repair hint would read as "NOT delivered". Without an
+            # intent nothing was handed over, so the plain failure is the truth.
+            dm_file = _runner_dm_file(sys.argv[1:])
+            failed = not isinstance(exc, SystemExit) or exc.code not in (None, 0)
+            if failed and dm_file and os.path.exists(dm_file + ".live.json"):
+                print(_live_outcome_unknown(dm_file, "the delivery runner could not activate "
+                                                     "Hermes dependencies (see stderr)"))
             raise
-        except Exception as exc:
-            print(json.dumps(_activation_failure_status(sys.argv[1:], str(exc))))
-            raise SystemExit(1) from None
     raise SystemExit(_delivery_main(sys.argv[1:]))

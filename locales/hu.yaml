@@ -463,3 +463,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "A munkamenet-adatbázis nem érhető el"
     session_not_found:           "A munkamenet nem található az adatbázisban."
     warn_passthrough:            "⚠️ {error}"
+
+translate:
+  header: "🌐 Translation ({target}) — machine-rendered, original kept below."
+  original_label: "Original:"
+  uncertain_note: "⚠️ Rough translation — verify against the original."
+  usage: "Usage: /translate [--to LANG] [text] | /translate on|off|status"
+  no_source: "Nothing to translate — pass text or run a command first."
+  auto_on: "Automatic translation ON (target: {target})."
+  auto_off: "Automatic translation OFF."
+  target_set: "Translation target: {target}."
+  status: "Translation target: {target}; automatic: {mode}."
+  failed: "Translation failed: {error}"

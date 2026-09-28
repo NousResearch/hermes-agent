@@ -460,3 +460,15 @@ gateway:
     session_db_unavailable_prefix: "Base de datos de sesiones no disponible"
     session_not_found:           "Sesión no encontrada en la base de datos."
     warn_passthrough:            "⚠️ {error}"
+
+translate:
+  header: "🌐 Traducción ({target}) — generada automáticamente, original abajo."
+  original_label: "Original:"
+  uncertain_note: "⚠️ Traducción aproximada — verifica con el original."
+  usage: "Uso: /translate [--to LANG] [texto] | /translate on|off|status"
+  no_source: "Nada que traducir — pasa un texto o ejecuta antes un comando."
+  auto_on: "Traducción automática ACTIVADA (destino: {target})."
+  auto_off: "Traducción automática DESACTIVADA."
+  target_set: "Idioma de destino: {target}."
+  status: "Idioma de destino: {target}; automática: {mode}."
+  failed: "Error de traducción: {error}"

@@ -463,3 +463,15 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Session-Datenbank nicht verfügbar"
     session_not_found:           "Session nicht in der Datenbank gefunden."
     warn_passthrough:            "⚠️ {error}"
+
+translate:
+  header: "🌐 Übersetzung ({target}) — maschinell erstellt, Original unten."
+  original_label: "Original:"
+  uncertain_note: "⚠️ Grobe Übersetzung — bitte am Original prüfen."
+  usage: "Verwendung: /translate [--to LANG] [Text] | /translate on|off|status"
+  no_source: "Nichts zu übersetzen — Text angeben oder zuerst einen Befehl ausführen."
+  auto_on: "Automatische Übersetzung EIN (Ziel: {target})."
+  auto_off: "Automatische Übersetzung AUS."
+  target_set: "Übersetzungsziel: {target}."
+  status: "Übersetzungsziel: {target}; automatisch: {mode}."
+  failed: "Übersetzung fehlgeschlagen: {error}"

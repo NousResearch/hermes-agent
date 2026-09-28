@@ -465,3 +465,15 @@ gateway:
     session_db_unavailable_prefix: "قاعدة بيانات الجلسات غير متاحة"
     session_not_found:           "لم يُعثر على الجلسة في قاعدة البيانات."
     warn_passthrough:            "⚠️ {error}"
+
+translate:
+  header: "🌐 Translation ({target}) — machine-rendered, original kept below."
+  original_label: "Original:"
+  uncertain_note: "⚠️ Rough translation — verify against the original."
+  usage: "Usage: /translate [--to LANG] [text] | /translate on|off|status"
+  no_source: "Nothing to translate — pass text or run a command first."
+  auto_on: "Automatic translation ON (target: {target})."
+  auto_off: "Automatic translation OFF."
+  target_set: "Translation target: {target}."
+  status: "Translation target: {target}; automatic: {mode}."
+  failed: "Translation failed: {error}"

@@ -103,6 +103,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<prompt>", busy_policy="dispatch"),
     CommandDef("btw", "Ask a side question about the current conversation without interrupting it", "Session",
                args_hint="<question>", busy_policy="dispatch"),
+    CommandDef("translate", "Render tool output or text in your language (code and paths stay verbatim)", "Session",
+               args_hint="[--to LANG] [text]|on|off|status", busy_policy="dispatch", cli_only=True),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",), busy_policy="dispatch"),
     CommandDef("journey", "Open the learning journey timeline",

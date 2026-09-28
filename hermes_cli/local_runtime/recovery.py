@@ -16,7 +16,7 @@ def read_state() -> dict:
     from hermes_cli.local_runtime.supervisor import state_path
 
     try:
-        state = json.loads(state_path().read_text(encoding="utf-8"))
+        state = json.loads(state_path().read_text(encoding="utf-8-sig"))
         return state if isinstance(state, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -131,7 +131,7 @@ def stop_recorded_orphan() -> bool:
     from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor, state_path
 
     try:
-        state = json.loads(state_path().read_text(encoding="utf-8"))
+        state = json.loads(state_path().read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return True  # already stopped and no record
     except (OSError, ValueError):

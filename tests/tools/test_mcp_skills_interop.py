@@ -40,13 +40,13 @@ def _run_independent_stdio_fixture(tmp_path, legacy):
     assert checks["nested_overlap"]["execution_separately_denied"] is True
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("legacy", [False, True], ids=["modern", "legacy"])
 def test_independent_stdio_skills_fixture_linux(tmp_path, legacy):
     _run_independent_stdio_fixture(tmp_path, legacy)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 @pytest.mark.parametrize("legacy", [False, True], ids=["modern", "legacy"])
 def test_independent_stdio_skills_fixture_macos(tmp_path, legacy):
     _run_independent_stdio_fixture(tmp_path, legacy)

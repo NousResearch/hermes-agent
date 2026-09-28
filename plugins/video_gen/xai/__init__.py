@@ -168,8 +168,8 @@ class XAIVideoGenProvider(VideoGenProvider):
         seed: Optional[int] = None, **kwargs: Any,
     ) -> Dict[str, Any]:
         return _run_xai_video(
-            "generation", _generate_xai_video_async, prompt=prompt, model=model,
-            explicit_model=bool(kwargs.get("_model_override_explicit")), image_url=image_url,
+            # ``model`` is the configured video_gen.model; the agent has no per-request override (#83080).
+            "generation", _generate_xai_video_async, prompt=prompt, model=model, explicit_model=False, image_url=image_url,
             reference_image_urls=reference_image_urls, duration=duration, aspect_ratio=aspect_ratio, resolution=resolution,
         )
 

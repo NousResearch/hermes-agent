@@ -14,7 +14,12 @@ def test_skills_transport_never_adopted_across_profile_homes():
         assert not _same_server_route(server, adopter, cross_profile=True)
         if owner == adopter:
             assert _same_server_route(server, adopter, cross_profile=False)
-    assert _same_server_route(SimpleNamespace(_config=ordinary), ordinary, cross_profile=True)
+    ordinary_server = SimpleNamespace(_config=ordinary, _resolved_identity="matching-identity")
+    assert _same_server_route(ordinary_server, ordinary, cross_profile=True,
+                              resolved_identity="matching-identity")
+    assert not _same_server_route(ordinary_server, ordinary, cross_profile=True)
+    assert not _same_server_route(ordinary_server, ordinary, cross_profile=True,
+                                  resolved_identity="different-identity")
 
 
 def test_revoke_catalog_uses_source_home_not_calling_home(tmp_path, monkeypatch):

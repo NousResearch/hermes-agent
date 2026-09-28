@@ -1,4 +1,4 @@
-"""Install and remove the Linux desktop entry (``hermes.desktop``).
+"""Install and remove the Linux desktop entry (``<app_id>.desktop``).
 
 The entry must be launch-context independent: ``Exec=`` is an absolute launcher that survives the
 venv (no ``#!/usr/bin/env python3`` escapes, no checkout-internal argv[0]), and ``Icon=`` is the
@@ -21,7 +21,17 @@ import time
 from pathlib import Path
 from typing import Callable, Mapping, Optional
 
-DESKTOP_ENTRY_NAME = "hermes.desktop"
+# Identity the packaged app claims for its window: electron-builder bakes product-identity.cjs's
+# `appId` into extraMetadata.desktopName, and Electron hands that string to the compositor
+# verbatim (Wayland app_id, CHROME_DESKTOP). GNOME links a window to a launcher by StartupWMClass
+# or by a `<app_id>.desktop` file name, so the entry has to carry the same id — under the old
+# "hermes.desktop" name a packaged launch matches neither rung and lands on the placeholder icon.
+APP_ID = "com.nousresearch.hermes"
+DESKTOP_ENTRY_NAME = f"{APP_ID}.desktop"
+
+# Entry name written before the app-id rename; a successful install converts it into a hidden
+# alias (NoDisplay=true) so pre-rename taskbar pins keep resolving (see _alias_legacy_desktop_entry).
+LEGACY_DESKTOP_ENTRY_NAME = "hermes.desktop"
 
 # XDG startup notification: set by an app-grid / menu launch, absent for terminal and detached
 # (updater relaunch) launches. See launched_from_shell().
@@ -221,14 +231,25 @@ def _resolve_hermes_bin_for_desktop_entry(
     # A resolver miss (argv[0] is ``-c`` under ``python -m`` on a cold relaunch AND PATH has no
     # ``hermes``) must NOT return None here: that skipped the durable-wrapper probe below and persisted
     # the module form, so the entry's bytes flipped on every alternating launch context — and
-    # gnome-shell 50.x crashes when hermes.desktop changes while its ShellApp is STARTING (#110885).
+    # gnome-shell 50.x crashes when the entry changes while its ShellApp is STARTING (#110885).
     # ``primary is None`` implies ``rerouted is None`` (the rerun only hides argv[0]), so only the
     # probe can still find anything.
-    if primary and rerouted is not None:
-        return rerouted or primary
+    if primary and rerouted is not None and not _inside_checkout(
+        rerouted, checkout_root, original_argv0
+    ):
+        return rerouted
+    # A PATH hit inside this checkout is the same launch-context artifact as argv[0]: the
+    # desktop-update hand-off hands the updater <checkout>/venv/bin at the front of PATH, so
+    # persisting a reroute to the venv console script pins the entry to WHO wrote it. The next
+    # DE-launched context re-resolves to the durable wrapper and flips the bytes back — and
+    # every flip rewrites the entry, which arms the gnome-shell 50.x crash this function's
+    # callers guard against when the write lands inside a launch's STARTING window. Fall
+    # through to the durable probe below, exactly as a PATH miss does.
 
-    # argv[0] was checkout-internal AND PATH had no `hermes` — common in stripped systemd user
-    # sessions and autostart relaunches. Probe the installer's known wrapper locations; each
+    # argv[0] was checkout-internal AND PATH yielded no DURABLE launcher (miss, or a hit inside
+    # this checkout) — common in stripped systemd user sessions, autostart relaunches, and the
+    # update hand-off with <checkout>/venv/bin on PATH. Probe the installer's known wrapper
+    # locations; each
     # candidate must be DE-safe and target THIS checkout (a foreign wrapper would make the entry
     # stable-but-wrong). No durable wrapper → None, so resolve_exec_command emits its runnable
     # module fallback instead of the self-regenerating checkout-internal form.
@@ -402,6 +423,7 @@ def _quote_exec_arg(arg: str) -> str:
 
 
 def render_desktop_entry(exec_command: str, icon: str) -> str:
+    """The app-id entry: identity lives in the file name and ``StartupWMClass``."""
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
@@ -413,8 +435,13 @@ def render_desktop_entry(exec_command: str, icon: str) -> str:
         "Terminal=false\n"
         "Categories=Utility;\n"
         "StartupNotify=true\n"
-        "StartupWMClass=Hermes\n"
+        f"StartupWMClass={APP_ID}\n"
     )
+
+
+def _render_legacy_alias_entry(exec_command: str, icon: str) -> str:
+    """The app-id entry, hidden from the app grid; ``StartupWMClass`` still groups old pins."""
+    return render_desktop_entry(exec_command, icon) + "NoDisplay=true\n"
 
 
 def refresh_desktop_databases(applications_dir: Path) -> "list[str]":
@@ -562,13 +589,14 @@ def _install_icon_to_hicolor(icon: Path) -> bool:
 
 
 def _launcher_entry_management_enabled() -> bool:
-    """Whether config.yaml allows rewriting an EXISTING launcher entry.
+    """Whether config.yaml allows touching an EXISTING launcher entry.
 
     ``desktop.manage_launcher_entry: false`` opts out of the every-launch
-    rewrite: a hand-edited ``hermes.desktop`` is then left alone instead
-    of silently reverting (#101097's clobber complaint). A MISSING entry
-    is still created regardless — the opt-out protects user edits, not
-    first-run presence. Any config error reads as enabled (default).
+    rewrite: a hand-edited entry is then left alone instead
+    of silently reverting (#101097's clobber complaint), and the pre-rename
+    retirement is skipped with it — deletion is management too. A MISSING
+    entry is still created regardless — the opt-out protects user edits,
+    not first-run presence. Any config error reads as enabled (default).
     """
     try:
         from hermes_cli.config import load_config_readonly
@@ -584,11 +612,43 @@ def _launcher_entry_management_enabled() -> bool:
         return True
 
 
-def install_desktop_entry(project_root: Path) -> Optional[Path]:
-    """Create or refresh the entry, respecting the opt-out for existing entries.
+def _alias_legacy_desktop_entry(applications_dir: Path, exec_command: str, icon: str) -> bool:
+    """Keep the pre-rename ``hermes.desktop`` as a hidden alias of the app-id entry.
 
-    ``None`` on non-Linux platforms or when the write fails — a convenience, never a reason to
-    fail a launch.
+    Shells resolve a taskbar pin by the entry file name it was pinned against: deleting the
+    file makes GNOME drop the favourite and Plasma leave an inert item, and nothing can
+    re-pin for the user. The alias stays launchable for old pins without listing Hermes
+    twice. Only a file that still names this app is converted; anything else at that path
+    is left alone. True when the legacy file was (re)written.
+    """
+    legacy = applications_dir / LEGACY_DESKTOP_ENTRY_NAME
+    try:
+        text = legacy.read_text(encoding="utf-8-sig")
+    except OSError:
+        return False
+    if not any(line.strip() == "Name=Hermes" for line in text.splitlines()):
+        return False
+    alias_contents = _render_legacy_alias_entry(exec_command, icon)
+    if text == alias_contents:
+        return False
+    try:
+        from utils import atomic_write_text
+
+        atomic_write_text(legacy, alias_contents, create_mode=0o755)
+        legacy.chmod(0o755)
+    except OSError:
+        return False
+    return True
+
+
+def install_desktop_entry(project_root: Path) -> Optional[Path]:
+    """Create or refresh the app-id entry, respecting the opt-out for existing entries.
+
+    Only the app-id entry is written; a pre-rename ``hermes.desktop`` beside it is converted
+    into a hidden alias once the new entry exists, and only while launcher management is
+    enabled — deleting it instead would silently kill existing taskbar pins (#124492).
+    ``None`` on non-Linux platforms or when the write fails — a convenience, never a reason
+    to fail a launch.
     """
     if not is_supported():
         return None
@@ -597,7 +657,8 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
 
     # Opt-out honored only for an entry that already exists: the flag
     # stops the every-launch clobber, not first-run creation.
-    if entry_path.is_file() and not _launcher_entry_management_enabled():
+    manage_enabled = _launcher_entry_management_enabled()
+    if entry_path.is_file() and not manage_enabled:
         return entry_path
 
     icon = icon_path(project_root)
@@ -607,26 +668,33 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     icon_value = str(icon) if icon.is_file() else "hermes"
     if icon.is_file() and _install_icon_to_hicolor(icon):
         icon_value = "hermes"
-    contents = render_desktop_entry(resolve_exec_command(project_root), icon_value)
+    exec_command = resolve_exec_command(project_root)
+    contents = render_desktop_entry(exec_command, icon_value)
 
     try:
         entry_path.parent.mkdir(parents=True, exist_ok=True)
-        # Unchanged → skip the rewrite so a launch doesn't churn the menu caches.
-        if entry_path.is_file() and entry_path.read_text(encoding="utf-8") == contents:
-            return entry_path
-        # Atomic replace: an interrupted plain write leaves a zero-byte entry, which permanently
-        # breaks the taskbar pin (nothing later rewrites a file that exists at the right path).
-        # The temp+rename dance in utils.atomic_write_text is the codebase's shared implementation — ported
-        # from #80547, which closed unmerged with this piece unlanded.
-        from utils import atomic_write_text
+        # When nothing changed, skip the rewrite. Then a launch does not
+        # churn the menu caches.
+        unchanged = entry_path.is_file() and entry_path.read_text(encoding="utf-8-sig") == contents
+        if not unchanged:
+            # Atomic replace: an interrupted plain write leaves a zero-byte entry, which permanently
+            # breaks the taskbar pin (nothing later rewrites a file that exists at the right path).
+            # The temp+rename dance in utils.atomic_write_text is the codebase's shared implementation — ported
+            # from #80547, which closed unmerged with this piece unlanded.
+            from utils import atomic_write_text
 
-        atomic_write_text(entry_path, contents, create_mode=0o755)
-        # Some launchers (and older Plasma) offer the entry only when it is executable.
-        entry_path.chmod(0o755)
+            atomic_write_text(entry_path, contents, create_mode=0o755)
+            # Some launchers (and older Plasma) offer the entry only when it is executable.
+            entry_path.chmod(0o755)
     except OSError:
         return None
 
-    refresh_desktop_databases(entry_path.parent)
+    # Converting the old entry is management too: with the opt-out set, an existing
+    # launcher stays untouched even here, in the missing-entry path where the new
+    # entry is still created.
+    aliased = manage_enabled and _alias_legacy_desktop_entry(entry_path.parent, exec_command, icon_value)
+    if aliased or not unchanged:
+        refresh_desktop_databases(entry_path.parent)
     return entry_path
 
 

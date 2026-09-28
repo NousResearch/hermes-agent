@@ -96,6 +96,7 @@ def _make_source(path: Path) -> dict[str, int]:
         # These are derived transition markers and must not reach the new DB.
         db.set_meta("fts_rebuild_high_water", "999")
         db.set_meta("fts_rebuild_progress", "500")
+        db.set_meta("fts_tool_full_content_high_water", "7")
     finally:
         db.close()
     return {"sessions": 3, "messages": 21}
@@ -737,6 +738,25 @@ def test_recovery_copies_delivery_obligations(tmp_path: Path) -> None:
         ("ob-delivered", "delivered", "already sent", None, "default"),
         ("ob-pending", "pending", "owed reply", 4242, "default"),
     ]
+
+
+def test_recovery_regenerates_rather_than_copies_derived_fts_meta(tmp_path: Path) -> None:
+    """Derived FTS markers (including the retired tool high-water key) never reach the new DB."""
+
+    source = tmp_path / "state.db"
+    output = tmp_path / "recovered.db"
+    _make_source(source)
+
+    report = recover_session_database(source, output, work_dir=tmp_path)
+    assert report["complete"] is True
+
+    conn = sqlite3.connect(str(output))
+    try:
+        keys = {row[0] for row in conn.execute("SELECT key FROM state_meta")}
+    finally:
+        conn.close()
+    assert "goal:recovery-session-0" in keys
+    assert not keys & {"fts_rebuild_high_water", "fts_rebuild_progress", "fts_tool_full_content_high_water"}
 
 
 def test_recovery_without_delivery_ledger_is_not_lossy(tmp_path: Path) -> None:

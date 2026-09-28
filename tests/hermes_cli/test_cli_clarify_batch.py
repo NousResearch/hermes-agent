@@ -237,6 +237,49 @@ class TestClarifyBatchPanel:
         thread.join(timeout=2)
         assert result["value"] == "a"
 
+        cli._connection_state = None
+        cli._capture_modal_input_snapshot = MagicMock()
+        cli._restore_modal_input_snapshot = MagicMock()
+        cli._ring_bell = MagicMock()
+        cli.session_id = "session"
+        operation = MagicMock(op_id="op")
+        payload = {
+            "op_id": "op",
+            "targets": [{
+                "name": "asana",
+                "state": "pending",
+                "instructions": "Use an Asana app.",
+                "required_env": [
+                    {"name": "CLIENT_ID", "prompt": "Client ID", "required": True, "default": "default-id"},
+                    {"name": "CLIENT_SECRET", "prompt": "Client secret", "required": True, "secret": True},
+                ],
+            }],
+        }
+        connection_result = {}
+        with patch.object(cli, "_connection_operation", return_value=operation), patch(
+            "tools.connectors.mcp.apply_answer"
+        ) as apply_answer:
+            connection_thread = threading.Thread(
+                target=lambda: connection_result.setdefault("value", cli._connection_callback(payload)), daemon=True
+            )
+            connection_thread.start()
+            connection_thread.join(timeout=2)
+            assert not connection_thread.is_alive()
+            assert connection_result["value"] is None
+            state = cli._connection_state
+            state["drafts"]["asana"]["CLIENT_SECRET"] = "never-render-this"
+            assert "never-render-this" not in "\n".join(cli._connection_render_lines())
+            assert "Client secret*: Set" in cli._connection_render_lines()
+            cli._connection_answer(approve=True)
+
+        sent = json.loads(apply_answer.call_args.args[1])
+        assert sent == {"targets": [{
+            "name": "asana",
+            "status": "approved",
+            "env": {"CLIENT_ID": "default-id", "CLIENT_SECRET": "never-render-this"},
+        }]}
+        cli._connection_close()
+
 
 class TestClarifyBatchNavigation:
     """Shift-Tab, answer restore on re-visit, and Other edit-prefill."""

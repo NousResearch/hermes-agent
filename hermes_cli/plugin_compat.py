@@ -68,7 +68,7 @@ def load_manifest() -> Dict[str, Dict[str, str]]:
         p = manifest_path()
         if p.exists():
             try:
-                for e in json.loads(p.read_text(encoding="utf-8"))["entries"]:
+                for e in json.loads(p.read_text(encoding="utf-8-sig"))["entries"]:
                     target = e.get("target") or ""
                     if target.startswith("("):            # restored-def etc.: no new home, just "gone later"
                         new = f"{e['facade']}.{e['name']} (removed; no replacement — vendor a copy)"
@@ -186,10 +186,12 @@ def scan_plugin(plugin_dir: Optional[Path], manifest: Optional[Dict[str, Dict[st
     hits: List[Hit] = []
     for p in _iter_py(plugin_dir):
         try:
-            src = p.read_text(encoding="utf-8", errors="replace")
+            src = p.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             continue
-        hits += scan_source(src, str(p.relative_to(plugin_dir)), manifest)
+        # POSIX form on every OS: notices/reports compare and dedupe on this string, and the
+        # compat tests pin ``sub/m.py`` — native Windows otherwise records ``sub\m.py`` (#112576).
+        hits += scan_source(src, p.relative_to(plugin_dir).as_posix(), manifest)
     if cacheable:
         with _scan_lock:
             _scan_cache[key] = (signature, list(hits))

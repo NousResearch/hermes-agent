@@ -38,6 +38,7 @@ import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { DetailColumn, ListColumn, MasterDetail } from '../master-detail'
 import { PageSearchShell } from '../page-search-shell'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
+import { credentialPreview } from '../settings/helpers'
 import { ListRow } from '../settings/primitives'
 import { SettingsProfileScope } from '../settings/profile-scope'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -178,6 +179,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setRestartNeeded(true)
   }, [])
 
+  // The scope each in-flight fetch was issued for. A→B: A's request can resolve
+  // AFTER the switch and repaint A's platforms/env snapshot (its redacted
+  // Telegram token included) under B until B's own response lands (#96542).
+  // A response whose scope is no longer the rendered one is dropped.
+  const scopeRef = useRef(scopeProfile)
+
+  scopeRef.current = scopeProfile
+
   const refreshPlatforms = useCallback(
     async (silent = false) => {
       if (!silent) {
@@ -186,7 +195,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
       try {
         const result = await getMessagingPlatforms(scopeProfile)
-        setPlatforms(result.platforms)
+
+        if (scopeRef.current === scopeProfile) {
+          setPlatforms(result.platforms)
+        }
       } catch (err) {
         if (!silent) {
           notifyError(err, m.loadFailed)
@@ -214,7 +226,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const refreshPairing = useCallback(async () => {
     try {
       const result = await getPairing(scopeProfile)
-      setPairing({ approved: result.approved ?? [], pending: result.pending ?? [] })
+
+      if (scopeRef.current === scopeProfile) {
+        setPairing({ approved: result.approved ?? [], pending: result.pending ?? [] })
+      }
     } catch {
       // Leave the last known rows in place rather than blanking them.
     }
@@ -235,20 +250,21 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   // Scope switch: the mounted list still shows the PREVIOUS profile's
   // platforms/pairing while the new fetch is in flight — blank it so stale
-  // rows can't be toggled against the wrong backend.
-  const scopeSeenRef = useRef(scopeProfile)
+  // rows can't be toggled against the wrong backend. This must run during
+  // render, not in an effect: passive effects fire after paint, and that
+  // first painted frame would show the previous profile's credential
+  // placeholders (e.g. a redacted Telegram token) under the new profile's
+  // scope for the ~1s until the fetch lands (#96542). Setting state during
+  // render makes React throw the stale frame away before it reaches the
+  // screen.
+  const [prevScope, setPrevScope] = useState(scopeProfile)
 
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (scope-change guard)
-  useEffect(() => {
-    if (scopeSeenRef.current === scopeProfile) {
-      return
-    }
-
-    scopeSeenRef.current = scopeProfile
+  if (prevScope !== scopeProfile) {
+    setPrevScope(scopeProfile)
     setPlatforms(null)
     setPairing({ approved: [], pending: [] })
     setEdits({})
-  }, [scopeProfile])
+  }
 
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const platformsChangeTick = useStore($platformsChangeTick)
@@ -413,7 +429,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     await refreshPlatforms(true)
 
     if (result.restart_started) {
-      notify({ kind: 'success', title: m.setupSaved('Telegram'), message: m.telegramQr.savedRestarting })
+      const connectedBot = result.bot_username ? `${m.states.connected}: @${result.bot_username}` : null
+
+      notify({
+        kind: 'success',
+        title: m.setupSaved('Telegram'),
+        message: [connectedBot, m.telegramQr.savedRestarting].filter(Boolean).join(' · ')
+      })
       setRestartNeeded(false)
       const ok = await watchGatewayRestartOutcome()
 
@@ -424,7 +446,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           title: m.restartFailedManual,
           message: m.restartFailedManualDetail,
           action: { label: m.restartAgain, onClick: () => void runGatewayRestart() },
-          secondaryAction: { label: m.openLogs, onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined) }
+          secondaryAction: {
+            label: m.openLogs,
+            onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined)
+          }
         })
       }
 
@@ -901,13 +926,16 @@ function PlatformActionBar({
 
   return (
     <>
-      <Switch
-        aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
-        checked={platform.enabled}
-        disabled={saving === `enabled:${platform.id}`}
-        onCheckedChange={onToggle}
-        size="xs"
-      />
+      <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+        <Switch
+          aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
+          checked={platform.enabled}
+          disabled={saving === `enabled:${platform.id}`}
+          onCheckedChange={onToggle}
+          size="xs"
+        />
+        {platform.enabled ? m.enabled : m.disabled}
+      </label>
 
       <div className="ml-auto flex items-center gap-2">
         {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
@@ -981,12 +1009,12 @@ function MessagingField({
   return (
     <ListRow
       action={
-        <div className="flex items-center gap-2">
+        <div className="flex w-full items-center gap-2 @2xl:w-88">
           <Input
             className={CREDENTIAL_CONTROL_CLASS}
             id={fieldId}
             onChange={event => onEdit(field.key, event.target.value)}
-            placeholder={field.is_set ? field.redacted_value || m.replaceValue : copy.placeholder}
+            placeholder={field.is_set ? credentialPreview(field.redacted_value) || m.replaceValue : copy.placeholder}
             type={field.is_password ? 'password' : 'text'}
             value={edits[field.key] || ''}
           />

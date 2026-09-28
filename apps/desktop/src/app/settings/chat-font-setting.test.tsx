@@ -8,13 +8,16 @@ import { ChatFontSetting } from './chat-font-setting'
 
 const mocks = vi.hoisted(() => ({
   cache: vi.fn(),
+  configUpdatedAt: 1,
   loadedConfig: {} as Record<string, unknown>,
   notifyError: vi.fn(),
-  save: vi.fn()
+  profileSwitch: null as null | (() => void),
+  save: vi.fn(),
+  writeScope: { connectionId: 'connection-a', profile: 'default' }
 }))
 
 vi.mock('@/hermes', () => ({
-  saveHermesConfig: (config: Record<string, unknown>) => mocks.save(config)
+  saveHermesConfig: (config: Record<string, unknown>, scope?: unknown) => mocks.save(config, scope)
 }))
 
 vi.mock('@/i18n', () => ({
@@ -41,11 +44,17 @@ vi.mock('@/store/notifications', () => ({
 
 vi.mock('../hooks/use-config-record', () => ({
   setHermesConfigCache: (config: Record<string, unknown>) => mocks.cache(config),
-  useHermesConfigRecord: () => ({ data: mocks.loadedConfig })
+  useHermesConfigRecord: () => ({
+    data: mocks.loadedConfig,
+    dataUpdatedAt: mocks.configUpdatedAt,
+    writeScope: mocks.writeScope
+  })
 }))
 
 vi.mock('../hooks/use-on-profile-switch', () => ({
-  useOnProfileSwitch: () => {}
+  useOnProfileSwitch: (callback: () => void) => {
+    mocks.profileSwitch = callback
+  }
 }))
 
 async function flushAutosave() {
@@ -59,8 +68,10 @@ async function flushAutosave() {
 describe('ChatFontSetting', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    mocks.configUpdatedAt = 1
     mocks.loadedConfig = { desktop: { font_family: '', repo_scan_enabled: true } }
     mocks.save.mockResolvedValue({ ok: true })
+    mocks.profileSwitch = null
     $chatFontFamily.set('')
   })
 
@@ -78,7 +89,10 @@ describe('ChatFontSetting', () => {
 
     await flushAutosave()
 
-    expect(mocks.save).toHaveBeenCalledWith({ desktop: { font_family: 'OpenDyslexic' } })
+    expect(mocks.save).toHaveBeenCalledWith(
+      { desktop: { font_family: 'OpenDyslexic' } },
+      { connectionId: 'connection-a', profile: 'default' }
+    )
     expect(mocks.cache).toHaveBeenCalledWith({ desktop: { font_family: 'OpenDyslexic', repo_scan_enabled: true } })
   })
 
@@ -95,6 +109,23 @@ describe('ChatFontSetting', () => {
     expect($chatFontFamily.get()).toBe('Lexend')
     expect(mocks.notifyError).toHaveBeenCalledWith(expect.any(Error), 'Autosave failed')
   })
+
+  it('reseeds after a profile refetch reuses the cached config record', () => {
+    const sharedConfig = { desktop: { font_family: 'Avenir' } }
+    mocks.loadedConfig = sharedConfig
+    const view = render(<ChatFontSetting />)
+
+    expect($chatFontFamily.get()).toBe('Avenir')
+    act(() => mocks.profileSwitch?.())
+    expect($chatFontFamily.get()).toBe('')
+    expect((screen.getByRole('combobox', { name: 'Chat Font' }) as HTMLInputElement).disabled).toBe(true)
+
+    mocks.configUpdatedAt = 2
+    view.rerender(<ChatFontSetting />)
+
+    expect((screen.getByRole('combobox', { name: 'Chat Font' }) as HTMLInputElement).value).toBe('Avenir')
+    expect($chatFontFamily.get()).toBe('Avenir')
+  })
 })
 
 describe('resolveChatFontFamily', () => {
@@ -104,6 +135,8 @@ describe('resolveChatFontFamily', () => {
     expect(resolveChatFontFamily('', theme)).toBe(theme)
     expect(resolveChatFontFamily('  ', theme)).toBe(theme)
     expect(resolveChatFontFamily('OpenDyslexic', theme)).toBe(`'OpenDyslexic', ${theme}`)
-    expect(resolveChatFontFamily("'Atkinson Hyperlegible', serif", theme)).toBe(`'Atkinson Hyperlegible', serif, ${theme}`)
+    expect(resolveChatFontFamily("'Atkinson Hyperlegible', serif", theme)).toBe(
+      `'Atkinson Hyperlegible', serif, ${theme}`
+    )
   })
 })

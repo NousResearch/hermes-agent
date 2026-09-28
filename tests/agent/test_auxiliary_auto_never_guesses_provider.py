@@ -44,7 +44,7 @@ def test_quarantined_fallback_hands_over_to_the_next_configured_entry():
     configured entry must still get its turn instead of the request dying on the original error."""
     healthy = MagicMock(name="second-fallback")
     route = aux._LadderRoute(None, "compression", "", False, "", "xai-oauth", None, None, None, None, None,
-                             {"provider": "xai-oauth"}, None)
+                             {"provider": "xai-oauth"}, None, None)
     with patch.object(aux, "_try_configured_fallback_chain", return_value=(healthy, "m2", "fallback_chain[1](nous)")), \
          patch.object(aux, "_try_payment_fallback") as discovery:
         client, model, label = aux._next_fallback_after_quarantine(

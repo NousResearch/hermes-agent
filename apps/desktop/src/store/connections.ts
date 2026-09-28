@@ -2,9 +2,11 @@ import { atom, computed } from 'nanostores'
 
 import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
+import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { $defaultProfileRoute, refreshDefaultProfile } from '@/store/default-profile'
 import {
   beginGatewaySwitch,
   endGatewaySwitch,
@@ -13,6 +15,7 @@ import {
 } from '@/store/gateway-switch'
 import {
   $activeGatewayProfile,
+  $freshSessionRequest,
   $newChatProfile,
   $showAllProfiles,
   captureNewChatSource,
@@ -22,7 +25,8 @@ import {
   refreshActiveProfile,
   requestFreshSession
 } from '@/store/profile'
-import { $connection } from '@/store/session'
+import { $activeSessionId, $connection, $selectedStoredSessionId } from '@/store/session'
+import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
 
 const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 
@@ -38,6 +42,7 @@ const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 // restore should stop waiting for it. Shared constant so the boot-class
 // budgets can't drift apart (see with-timeout.ts).
 const BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS = BACKEND_BOOT_WAIT_TIMEOUT_MS
+const REGISTRY_READ_TIMEOUT_MS = 5_000
 
 export { $connectionsRegistry } from '@/store/connection-registry-state'
 
@@ -70,6 +75,16 @@ const $activeConnectionProfile = computed(
     registryScoped: connection?.registryScoped === true
   })
 )
+
+// The CONNECTION twin of profile.ts's $activeGatewayProfile subscription.
+// The switch commit point (beginGatewaySwitch → invalidateProfileScopedQueries)
+// runs inside beforeActivate — BEFORE applyActive publishes the new request
+// scope (setApiRequestConnection) — so that invalidation's refetches ride the
+// OUTGOING backend. Re-invalidate on the actual connection-id change, which
+// applyActive publishes only after the tag moved, so the refetch lands on the
+// backend the tags now name. `listen` (not `subscribe`) skips the mount-time
+// fire, and the computed dedupes equal ids, so this only runs on a real switch.
+$activeConnectionId.listen(() => invalidateProfileScopedQueries())
 
 // Remember one profile per source, so switching machines is a re-home rather
 // than a reset to `default`. The map is local UI preference only; Electron
@@ -113,7 +128,12 @@ export async function refreshConnectionsRegistry(): Promise<DesktopConnectionsRe
     return null
   }
 
-  const registry = await bridge.list()
+  const registry = await withTimeout(
+    bridge.list(),
+    REGISTRY_READ_TIMEOUT_MS,
+    'Timed out reading the connection registry'
+  )
+
   setConnectionsRegistry(registry)
 
   return registry
@@ -185,14 +205,25 @@ function waitForInitialConnection(): Promise<void> {
 }
 
 /**
- * Load the registry once for Sessions and restore the last successfully used
- * source. Later registry refreshes stay side-effect free, so editing Settings
- * in another window never changes the active workspace.
+ * Load the registry once for Sessions and restore the explicit default route,
+ * otherwise the last successfully used source. Later registry refreshes stay
+ * side-effect free, so editing Settings in another window never changes the
+ * active workspace.
  */
 export async function initializeConnectionsRegistry(): Promise<DesktopConnectionsRegistry | null> {
-  const registry = await refreshConnectionsRegistry()
+  const freshSessionRequest = $freshSessionRequest.get()
 
-  if (!registry || restoreAttempted) {
+  const [registry, defaultLoaded] = await Promise.all([
+    refreshConnectionsRegistry(),
+    refreshDefaultProfile().then(
+      () => true,
+      () => false
+    )
+  ])
+
+  // Main may already have opened the explicit default. A failed preference
+  // read is not evidence of an absent preference; keep that live route.
+  if (!registry || !defaultLoaded || restoreAttempted || isPeerInstanceWindow() || windowProfileOverride()) {
     return registry
   }
 
@@ -203,19 +234,32 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   // (statusbar switcher, fleet profile rail) is not drift to "restore" over.
   // The launch preference only decides where a window lands when nobody has
   // said otherwise yet.
-  if (switchRevision > 0 || pendingTarget !== null) {
+  if (switchRevision > 0 || pendingTarget !== null || $freshSessionRequest.get() !== freshSessionRequest) {
     return registry
   }
 
-  // Residual drift: a window can be live on a source the registry cannot name
-  // (a v1-configured remote that reconciliation has not repaired yet, e.g. a
-  // read-only userData that rejected the healed write). $activeConnectionId is
-  // null there, so the preferred-id guard below would miss and "restore" the
-  // registry primary over a connection that is already up and painting —
-  // re-homing the user onto a different backend seconds after boot. The
-  // registry has no claim on a source it does not know; leave the live one be.
-  if ($connection.get() && $activeConnectionId.get() === null) {
-    return registry
+  // An explicit default is stronger than the registry's last-used preference,
+  // including the last profile remembered on the SAME source. A legacy null
+  // route is already resolved by main's ensureBackend(profile), including any
+  // per-profile remote override; the registry must not reinterpret it as local.
+  const defaultRoute = $defaultProfileRoute.get()
+
+  if (defaultRoute) {
+    if ($activeSessionId.get() || $selectedStoredSessionId.get()) {
+      return registry
+    }
+
+    const connectionId = defaultRoute.connectionId
+
+    if (connectionId === null) {
+      return registry
+    }
+
+    if (registry.connections.some(connection => connection.id === connectionId)) {
+      await selectConnection(connectionId, { profile: defaultRoute.profile })
+    }
+
+    return $connectionsRegistry.get() ?? registry
   }
 
   const lastUsed = registry.connections.some(connection => connection.id === registry.lastUsed)
@@ -223,6 +267,21 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     : registry.primary
 
   const preferredId = registry.launchMode === 'last-used' ? lastUsed : registry.primary
+  const preferred = registry.connections.find(connection => connection.id === preferredId)
+  const live = $connection.get()
+
+  // An unqualified local descriptor is the post-update empty-backend boot, not
+  // a v1 remote the registry cannot name. launchMode=primary must still select
+  // the registered SSH/remote primary instead of staying on that local spawn.
+  const replaceUnqualifiedLocal =
+    live?.mode === 'local' &&
+    $activeConnectionId.get() === null &&
+    registry.launchMode !== 'last-used' &&
+    Boolean(preferred && preferred.kind !== 'local')
+
+  if (live && $activeConnectionId.get() === null && !replaceUnqualifiedLocal) {
+    return registry
+  }
 
   if (!preferredId) {
     return registry

@@ -1151,6 +1151,26 @@ and the scope it was measured against (`across its lineage` or
 `hermes sessions export` still works for such sessions; its JSON/JSONL
 backup needs each session to stay under `max_export_messages`.
 
+### Import Limits
+
+`SessionDB.import_sessions` (dashboard `/api/sessions/import`, cross-profile
+session adoption) and the desktop's foreign-session import (Claude Code, Codex)
+reject payloads above fixed defaults. Setting a key to `0` disables that guard;
+negative or non-numeric values fall back to the default:
+
+```yaml
+sessions:
+  import_max_sessions: 500
+  import_max_messages_per_session: 10000
+  import_max_total_messages: 50000
+  import_max_session_bytes: 5242880      # 5 MiB
+  import_max_total_bytes: 26214400       # 25 MiB
+```
+
+These are global: raising one also raises it for every importer above, including
+the dashboard import endpoint. That endpoint separately caps its request body at
+25 MiB before parsing, so the byte limits cannot widen it past that.
+
 ### Manual Cleanup
 
 ```bash

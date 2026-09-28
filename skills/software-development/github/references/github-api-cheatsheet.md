@@ -68,6 +68,40 @@ Merge methods: `"merge"`, `"squash"`, `"rebase"`
 
 Note: The Issues API also returns PRs. Filter with `"pull_request" not in item` when parsing.
 
+## Notifications / Watching
+
+| Action | Method | Endpoint |
+|--------|--------|----------|
+| List notifications | GET | `/notifications` |
+| Mark all notifications read | PUT | `/notifications` |
+| Get a thread | GET | `/notifications/threads/{thread_id}` |
+| Mark thread as read | PATCH | `/notifications/threads/{thread_id}` |
+| Mark repo notifications read | PUT | `/repos/{owner}/{repo}/notifications` |
+| Get thread subscription | GET | `/notifications/threads/{thread_id}/subscription` |
+| Set thread subscription | PUT | `/notifications/threads/{thread_id}/subscription` |
+| Delete thread subscription | DELETE | `/notifications/threads/{thread_id}/subscription` |
+| Get repo subscription (watch status) | GET | `/repos/{owner}/{repo}/subscription` |
+| Set repo subscription (watch/ignore) | PUT | `/repos/{owner}/{repo}/subscription` |
+| Delete repo subscription (unwatch) | DELETE | `/repos/{owner}/{repo}/subscription` |
+| List your watched repos | GET | `/user/subscriptions` |
+
+Quirks that aren't obvious from the docs:
+
+- **Mark-thread-read is `PATCH`, not `PUT`.** `PUT /notifications/threads/{id}` doesn't exist
+  and returns 404 even with the right scope — the 404 reads like "not found / no access" but
+  actually means "wrong verb."
+- **Thread endpoints need the `notifications` scope.** A plain `repo`-scoped token 404s on them
+  (not 403), which again looks like "doesn't exist." Fix: `gh auth refresh -h github.com -s notifications`.
+- **Unwatch ≠ read.** `DELETE /repos/{owner}/{repo}/subscription` stops future delivery, but
+  already-delivered notifications stay unread. Clear the inbox with the bulk
+  `PUT /repos/{owner}/{repo}/notifications` instead.
+- **An exploratory `PUT .../threads/{id}/subscription` silently creates a thread subscription**
+  (200 OK) — easy to trigger while probing, and it re-subscribes you to the very thread you were
+  trying to silence. Undo with `DELETE` on the same URL.
+- **`GET /user/subscriptions` returns repo objects**, so its `created_at` is the repo's creation
+  date, not your watch date. The actual subscription timestamp is only in
+  `GET /repos/{owner}/{repo}/subscription` → `created_at`.
+
 ## CI / GitHub Actions
 
 | Action | Method | Endpoint |

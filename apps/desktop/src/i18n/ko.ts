@@ -416,7 +416,11 @@ export const koOverrides = {
     title: '이 링크를 열지 못했습니다',
     message: '이 주소를 열도록 등록된 브라우저가 없습니다. 링크를 복사해 직접 여세요.',
     copyUrl: '링크 복사',
-    close: '닫기'
+    close: '닫기',
+    missing: {
+      title: '파일을 찾을 수 없음',
+      message: '이 파일이 없습니다 — 삭제되었거나 옮겨졌을 수 있고, 다른 머신에 있을 수도 있습니다.'
+    }
   },
 
   fileMenu: {
@@ -734,6 +738,8 @@ export const koOverrides = {
       'composer.modelPicker': '모델 선택기 열기',
       'composer.voice': '음성 대화 시작 / 중지',
       'composer.dictate': '받아쓰기 시작 / 중지',
+      'composer.reasoningUp': '추론 강도 올리기',
+      'composer.reasoningDown': '추론 강도 내리기',
       'view.toggleSidebar': '세션 사이드바 토글',
       'view.cycleSidebarGrouping': '세션 그룹 방식 순환',
       'view.toggleRightSidebar': '파일 브라우저 토글',
@@ -760,6 +766,15 @@ export const koOverrides = {
       'view.findInPage': '페이지에서 찾기',
       'view.findNext': '다음 찾기',
       'view.findPrevious': '이전 찾기',
+      'view.tabSlot.1': '탭 1로 전환',
+      'view.tabSlot.2': '탭 2로 전환',
+      'view.tabSlot.3': '탭 3으로 전환',
+      'view.tabSlot.4': '탭 4로 전환',
+      'view.tabSlot.5': '탭 5로 전환',
+      'view.tabSlot.6': '탭 6으로 전환',
+      'view.tabSlot.7': '탭 7로 전환',
+      'view.tabSlot.8': '탭 8로 전환',
+      'view.tabSlot.9': '탭 9로 전환',
       'appearance.toggleMode': '밝은 / 어두운 테마 전환',
       'profile.default': '기본 프로필로 전환',
       'profile.switch.1': '프로필 1로 전환',
@@ -1199,6 +1214,9 @@ export const koOverrides = {
         'Hermes가 앱을 안내하며 각 단계를 강조해 보여줍니다. 사용 30일이 지나면 자동으로 꺼지며, 다시 켤 수 있습니다.',
       composerPopoutTitle: '플로팅 입력창',
       composerPopoutDesc: '입력창을 도크 밖으로 끌어낼 수 있게 합니다. 아래에 고정하려면 끄세요.',
+      fileBrowserTitle: '파일 브라우저',
+      fileBrowserDesc:
+        '작업 공간이 열려 있으면 대화 옆에 파일 브라우저를 표시합니다. 제목 표시줄의 토글로도 바꿀 수 있습니다.',
       vibeHeartsTitle: '하트 효과',
       vibeHeartsDesc: '고맙다고 하거나 하트를 보내면 하트가 떠오릅니다. 위의 메시지 반응과는 별개입니다.',
       embedsTitle: '인라인 임베드',
@@ -2026,6 +2044,8 @@ export const koOverrides = {
       provider: '공급자',
       model: '모델',
       applying: '적용하는 중...',
+      mainAppliedTitle: '기본 모델을 변경했습니다',
+      mainAppliedMessage: model => `새 세션은 ${model}을(를) 사용합니다.`,
       defaultsLabel: '기본값',
       reasoning: '추론',
       reasoningOff: '끔',
@@ -2746,12 +2766,17 @@ export const koOverrides = {
       emptyHint: '아래 카탈로그를 둘러보고 검토된 플러그인을 한 번에 설치하세요.',
       loadFailed: '에이전트 플러그인을 불러오지 못했습니다',
       toggleFailed: (name: string) => `${name}을(를) 전환하지 못했습니다`,
+      toolsetOn: (name: string, profile: string) => `${profile}에서 ${name} 에이전트 도구를 활성화했습니다`,
+      toolsetOff: (name: string, profile: string) => `${profile}에서 ${name} 에이전트 도구를 비활성화했습니다`,
+      toolsetToggleFailed: (name: string) =>
+        `${name} 에이전트 도구를 전환하지 못했습니다 — 데스크톱 패널은 변경하지 않았습니다`,
       legacyBackend:
         '이 백엔드는 키 기반 플러그인 전환이 도입되기 전 버전입니다 — 여기서 관리하려면 Hermes를 업데이트하세요.',
       portableBadge: '이식 가능',
       serverStates: {
         connected: '연결됨',
         app_not_running: '앱이 미실행',
+        hermes_not_connected: 'MCP 연결 없음',
         endpoint_unavailable: '엔드포인트 사용 불가',
         no_interactive_session: '대화형 세션 없음',
         version_too_old: '버전이 너무 오래됨',
@@ -3493,6 +3518,8 @@ export const koOverrides = {
     skillsLabel: '스킬',
     notSet: '미설정',
     soulDesc: '이 프로필에 박아 넣은 시스템 프롬프트와 페르소나 지시문입니다.',
+    soulMissing:
+      '이 프로필에는 아직 SOUL.md 파일이 없습니다. 아래에 지시문을 입력하고 저장하면 생성됩니다. config.yaml의 성향 프리셋은 별도로 관리됩니다.',
     soulOptional: '선택',
     soulPlaceholder: mode => `이 프로필의 시스템 프롬프트 / 페르소나입니다.\n${mode} 기본값을 유지하려면 비워 두세요.`,
     soulPlaceholderCloned: '복제된',
@@ -3650,6 +3677,8 @@ export const koOverrides = {
     nameLabel: '이름',
     namePlaceholder: '아침 브리핑',
     promptLabel: '프롬프트',
+    scriptLabel: '스크립트',
+    scriptBadge: '스크립트',
     promptPlaceholder: '읽지 않은 Slack 스레드를 요약해 상위 5개를 이메일로 보내줘...',
     frequencyLabel: '주기',
     deliverLabel: '전달 대상',
@@ -3934,6 +3963,7 @@ export const koOverrides = {
       backgroundRunning: '백그라운드 작업 실행 중',
       draftSession: '초안 — 아직 보내지 않음',
       handoffOrigin: platform => `${platform}에서 이어받음`,
+      continuationOrigin: '자동 이어받음 — 이 대화는 압축된 뒤 이어졌습니다',
       ownedByProfile: profile => `프로필: ${profile}`,
       renamed: '이름을 바꿨습니다',
       renameFailed: '이름 변경 실패',
@@ -4137,6 +4167,9 @@ export const koOverrides = {
     queueResumeTip: '중지로 일시 정지됨 — 대기 중인 턴 전송을 재개합니다',
     queueStuckTitle: '대기 중인 메시지가 전송되지 않음',
     queueStuckBody: '대기 중인 턴의 전송이 계속 실패했습니다. 아직 대기열에 있으니 다시 보내보세요.',
+    queueDroppedTitle: '대기 중인 프롬프트가 삭제됨',
+    queueDroppedBody:
+      '세션을 여러 번 재개하지 못해 이 백그라운드 대기열 항목을 삭제했습니다. 대기열의 다른 항목에는 영향이 없습니다.',
     previewUnavailable: '미리보기를 사용할 수 없음',
     previewLabel: label => `${label} 미리보기`,
     couldNotPreview: label => `${label}을(를) 미리 보지 못했습니다`,
@@ -4229,6 +4262,7 @@ export const koOverrides = {
     goalWaiting: '목표 대기 중',
     subagents: count => `서브에이전트 ${count}개`,
     todos: (done, total) => `작업 ${done}/${total}`,
+    previousTodos: (done, total) => `이전 작업 ${done}/${total}`,
     running: '실행 중',
     stop: '중지',
     dismiss: '닫기',
@@ -5417,6 +5451,8 @@ export const koOverrides = {
       preparingAudio: '오디오를 준비하는 중...',
       stopReading: '읽기 중지',
       readAloud: '소리 내어 읽기',
+      copyFullResponse: '전체 응답 복사',
+      readAloudFullResponseHint: 'Shift-클릭: 전체 응답 소리 내어 읽기',
       editMessage: '메시지 편집',
       expandMessage: '메시지 펼치기',
       scrollToBottom: '맨 아래로 이동',
@@ -5468,7 +5504,10 @@ export const koOverrides = {
       questionProgress: (answered, total) => `${total}개 중 ${answered}개 답변함`,
       lateAnswer: (question, choice) => `"${question}"에 대한 답변: ${choice}`,
       lateAnswerTip: '이 답변을 후속 메시지 초안으로 작성',
-      lateAnswerHint: '이 프롬프트는 더 이상 답변을 기다리지 않습니다. 선택지를 고르면 후속 메시지 초안으로 작성됩니다.'
+      lateAnswerHint:
+        '이 프롬프트는 더 이상 답변을 기다리지 않습니다. 선택지를 고르면 후속 메시지 초안으로 작성됩니다.',
+      notDelivered:
+        '이 질문이 앱에 전달되지 않아 여기서는 답할 수 없습니다. 중지를 눌러 턴을 끝낸 뒤 채팅에서 답하세요.'
     },
     catalogInstall: {
       preparing: '설치를 준비하는 중…',

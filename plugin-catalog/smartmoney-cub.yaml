@@ -1,7 +1,7 @@
 name: smartmoney-cub
 repo: https://github.com/myc0576/hermes-smartmoney-cub
-sha: d5490ba5406c4419e997560f0060dde3fa9cd2f0
-description: 'Local-first SmartMoney-Cub review harness wrapped as six Hermes tools. Preserves READ_ONLY_NO_ORDER_NO_CANCEL_NO_TRADE and performs no-trading actions: no orders, no cancels, no broker connection, no account mutation, no market-data fetch, and no financial advice. The plugin makes no network calls and reads no credentials. It shells out to the user's local smcub CLI with shell=False. evaluate-run writes eval.json in the configured run directory; build-evidence-pack creates an evidence pack in the specified output_dir. Both writes are confined to configured run_root; path-sensitive tools fail closed without it. Harness installation is from source or the GitHub Release wheel, not PyPI.'
+sha: 74279466a019d0ff3ccd1615ff660e224fa644d5
+description: 'Local-first SmartMoney-Cub review harness wrapped as six Hermes tools. Preserves READ_ONLY_NO_ORDER_NO_CANCEL_NO_TRADE and performs no-trading actions: no orders, no cancels, no broker connection, no account mutation, no market-data fetch, and no financial advice. The plugin makes no network calls and reads no credentials. It shells out to the user''s local smcub CLI with shell=False. evaluate-run writes eval.json in the configured run directory; build-evidence-pack creates an evidence pack in the specified output_dir. Both writes are confined to configured run_root; path-sensitive tools fail closed without it. Harness installation is from source or the GitHub Release wheel, not PyPI.'
 maintainer: myc0576
 tier: community
 category: tools

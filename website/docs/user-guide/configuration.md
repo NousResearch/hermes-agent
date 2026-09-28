@@ -1505,7 +1505,25 @@ Local OpenAI-compatible servers work under their own names too: `provider: ollam
 
 `provider: openai` is a direct-API alias: it routes through the custom endpoint at the block's `base_url`, else `OPENAI_BASE_URL`, else `https://api.openai.com/v1`, authenticated with `api_key` or `OPENAI_API_KEY`. Every auxiliary task resolves it the same way — `compression`/`vision`/`title_generation` as well as `background_review`, `curator` and MoA slots — so removing `base_url` while keeping `provider: openai` moves that task to the public OpenAI endpoint. A `providers.openai` entry in your `providers:` dict takes precedence and keeps its own endpoint and key.
 
-When a routed `auxiliary.<task>` block cannot be resolved (unknown provider, missing endpoint or credentials), the task runs on the main model and Hermes says so: `background_review` emits a one-time user-visible warning naming the provider and reason (plus a `WARNING` line in `agent.log` per review), and `hermes doctor` resolves every routed `auxiliary.<task>` block through the same resolver and reports the ones that fail.
+When a routed `auxiliary.<task>` block cannot be resolved (unknown provider, missing endpoint or credentials), the task runs on the main model and Hermes says so: `background_review` emits a one-time user-visible warning naming the provider and reason (plus a `WARNING` line in `agent.log` per review), and `hermes doctor` resolves every routed `auxiliary.<task>` block through the same resolver and reports the ones that fail. **Exception:** an opt-in `fail_closed` task refuses a substitute route instead of running on the main model.
+
+### Pin an auxiliary task without provider fallback
+
+For text tasks carrying sensitive content, set an explicit provider and model and opt in to `fail_closed`. For example, after installing a local-only `privacy-router` provider plugin:
+
+```yaml
+auxiliary:
+  title_generation:
+    provider: privacy-router
+    model: aux-local
+    fail_closed: true
+```
+
+This policy applies to `call_llm` and `async_call_llm` auxiliary requests. It pins the chosen provider/model for the duration of each call, rejects caller and task-level endpoint/key/transport overrides, and refuses configured fallback chains, auto-detection, main-model fallback, streaming, and vision. Pinned requests bypass pre-auxiliary-call hooks and the managed Relay request pipeline. A transient retry may use the **same** provider and model; a failure is returned to the caller instead of trying another route. Other model calls, plugins, tools, and the local model service itself remain outside this boundary.
+
+Use only literal `true` or `false` for `fail_closed`; a string such as `"true"` is invalid. Leave `base_url`, `api_key`, `key_env`, `api_key_env`, and `api_mode` unset or empty on a pinned task. A task pinned to `privacy-router` (or its `local-privacy` alias) must resolve to the registered plugin's `http://127.0.0.1:<port>/v1` endpoint; a named custom provider with the same name cannot substitute a cloud endpoint. **Do not rely on this policy for tasks that obtain a client outside `call_llm` / `async_call_llm`.** Verify the intended task path and the local provider before processing private data.
+
+If `config.yaml` is unreadable, Hermes cannot establish whether an auxiliary task was pinned. Content-bearing auxiliary calls then fail rather than treating the fallback/default configuration as permission to route automatically. This affects even unpinned tasks while the config error persists; metadata readers may still inspect the last-known-good configuration. Repair the file (or restore a good backup) to resume auxiliary calls. This is an intentional privacy-versus-availability tradeoff.
 
 :::tip MiniMax OAuth
 `minimax-oauth` logs in via browser OAuth (no API key needed). Run `hermes model` and select **MiniMax (OAuth)** to authenticate. Auxiliary tasks use `MiniMax-M2.7-highspeed` automatically. See the [MiniMax OAuth guide](../guides/minimax-oauth.md).

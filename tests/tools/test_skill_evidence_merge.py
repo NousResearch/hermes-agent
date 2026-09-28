@@ -26,6 +26,41 @@ Keep this byte-for-byte.
 """
 
 
+def _stage_via_real_gate(action="patch", name="test-skill", evidence=None, skill_dir=None):
+    """Stage an evidence write through the REAL _apply_skill_write_gate and return the payload.
+
+    Tests must not hand-build a staged payload: the frozen candidate is only honoured when it
+    carries this process's per-staging nonce, so a hand-made dict exercises the untrusted-caller
+    path instead of the replay path it means to test.
+    """
+    captured = {}
+
+    def fake_run(build):
+        class WA:
+            @staticmethod
+            def skill_pending_diff(rec):
+                return write_approval.skill_pending_diff(rec)
+
+            @staticmethod
+            def skill_gist(*a, **k):
+                return "gist"
+
+        captured["payload"], _ = build(WA)
+        return "staged"
+
+    tmp_path = skill_dir.parent
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
+         patch.object(smt, "_run_write_gate", side_effect=fake_run):
+        smt._apply_skill_write_gate(
+            action, name, content=None, category=None, file_path=None, file_content=None,
+            old_string=None, new_string=None, replace_all=False, absorbed_into=None,
+            evidence_merge=evidence)
+    return captured["payload"]
+
+
+
+
 def test_merge_is_additive_and_preserves_body():
     out = merge_evidence(BASE, {"success_count": 1, "fail_count": 2})
     assert "success_count: 12" in out
@@ -74,15 +109,14 @@ def test_stale_replay_is_rejected(tmp_path):
     skill_dir = tmp_path / "test-skill"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(BASE, encoding="utf-8")
+    # Stage for real so the payload carries this process's staging nonce, then corrupt the source so
+    # the replay is stale. Replaying it must be refused, not clobber the newer count.
+    payload = _stage_via_real_gate(evidence={"success_count": 1}, skill_dir=skill_dir)
+    (skill_dir / "SKILL.md").write_text(BASE.replace("success_count: 11", "success_count: 99"),
+                                        encoding="utf-8")
     with patch.object(smt, "SKILLS_DIR", tmp_path), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
-        # Use the real replay entry point (what /skills approve calls) so the bypass token is set —
-        # a frozen candidate is only honoured there, not from an arbitrary caller.
-        result = smt.apply_skill_pending({
-            "action": "patch", "name": "test-skill", "content": None, "old_string": None,
-            "new_string": None, "file_path": None, "replace_all": False,
-            "evidence_merge": {"_source_digest": "wrong", "_candidate_content": BASE},
-        })
+        result = smt.apply_skill_pending(payload)
     parsed = json.loads(result) if isinstance(result, str) else result
     assert parsed["success"] is False
     assert "stale" in parsed["error"]
@@ -356,14 +390,12 @@ def test_concurrent_evidence_updates_do_not_lose_a_count(tmp_path):
     assert "success_count: 13" in text, f"lost update: got {[l for l in text.splitlines() if 'success_count' in l]}"
 
 
-def test_injected_candidate_content_is_ignored_off_the_replay_path(tmp_path):
-    """A caller-supplied _candidate_content must not skip merge_evidence.
+def test_injected_candidate_content_cannot_write_a_forged_count(tmp_path):
+    """A caller-supplied _candidate_content must not be written verbatim.
 
-    Only apply_skill_pending (which sets the bypass token) may write a frozen candidate. Otherwise
-    anyone could pass _candidate_content plus a matching digest and write arbitrary evidence
-    without the merge's fail-closed validation. The private keys are staging metadata, so the merge
-    rejects them as unknown fields — which is the correct fail-closed outcome, and the forged
-    count must not appear either way.
+    The frozen candidate is only honoured when THIS process's staging pass produced it, identified
+    by a per-pass nonce the caller cannot derive. Here the write gate is off (no staging ran), so
+    the merge runs on the public delta and the forged candidate is simply never used.
     """
     skill_dir = tmp_path / "test-skill"
     skill_dir.mkdir()
@@ -373,12 +405,103 @@ def test_injected_candidate_content_is_ignored_off_the_replay_path(tmp_path):
     with patch.object(smt, "SKILLS_DIR", tmp_path), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
          patch.object(smt, "_run_write_gate", return_value=None):
-        result = smt.skill_manage(action="patch", name="test-skill", evidence_merge={
+        smt.skill_manage(action="patch", name="test-skill", evidence_merge={
             "success_count": 1,
             "_source_digest": smt.content_digest(BASE),
             "_candidate_content": forged,
         })
 
     text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-    assert "success_count: 9999" not in text, "injected candidate was written"
-    assert text == BASE, "the forged delta must not be written at all"
+    assert "success_count: 9999" not in text, "the forged candidate was written verbatim"
+    # The real merge still applied the caller's legitimate delta: 11 + 1.
+    assert "success_count: 12" in text, text[:200]
+
+
+def test_forged_candidate_is_rejected_even_with_a_matching_nonce_shape(tmp_path):
+    """Guessing the key name is not enough: the nonce value must match this process's staging pass.
+
+    A caller who supplies _staged_by with a plausible value must still not be honoured, because
+    the nonce is generated per staging pass and is not predictable.
+    """
+    skill_dir = tmp_path / "test-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(BASE, encoding="utf-8")
+    forged = BASE.replace("success_count: 11", "success_count: 9999")
+
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
+         patch.object(smt, "_run_write_gate", return_value=None):
+        smt.skill_manage(action="patch", name="test-skill", evidence_merge={
+            "success_count": 1,
+            "_source_digest": smt.content_digest(BASE),
+            "_candidate_content": forged,
+            "_staged_by": "0" * 32,
+        })
+
+    assert "success_count: 9999" not in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_batch_rejects_injected_staging_keys(tmp_path):
+    """A caller must not be able to smuggle a frozen candidate through the public batch interface.
+
+    The batch path sets the same gate-bypass token as an approved replay, so a caller-supplied
+    _candidate_content used to be written verbatim — turning an 11-success skill into 0 through a
+    documented parameter. Reproduced before the fix; the ingress now rejects internal keys.
+    """
+    skill_dir = tmp_path / "test-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(BASE, encoding="utf-8")
+    current = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    forged = current.replace("success_count: 11", "success_count: 0")
+
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+        out = smb._skill_manage_batch(
+            [{"action": "patch", "name": "test-skill", "evidence_merge": {
+                "success_count": 1,
+                "_source_digest": smt.content_digest(current),
+                "_candidate_content": forged}}], None, None, None)
+
+    text = json.dumps(out)
+    assert "internal staging keys" in text, text[:200]
+    assert "success_count: 0" not in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert "success_count: 11" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_batch_approval_preview_shows_the_evidence_change(tmp_path):
+    """The reviewer must SEE the counter change they are approving.
+
+    A batch record used to render as "( on '')": the approval surface showed nothing while the
+    write proceeded. The preview is built the way hermes_cli/write_approval_commands.py builds it.
+    """
+    skill_dir = tmp_path / "test-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(BASE, encoding="utf-8")
+    captured = {}
+
+    def fake_run(build):
+        class WA:
+            @staticmethod
+            def skill_pending_diff(rec):
+                return write_approval.skill_pending_diff(rec)
+
+            @staticmethod
+            def skill_gist(*a, **k):
+                return "gist"
+
+        captured["payload"], _ = build(WA)
+        return "staged"
+
+    with patch.object(smt, "SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]), \
+         patch.object(smt, "_run_write_gate", side_effect=fake_run):
+        assert smb._skill_manage_batch(
+            [{"action": "patch", "name": "test-skill",
+              "evidence_merge": {"success_count": 1}}], None, None, None) == "staged"
+
+    rec = {"id": "p1", "summary": "batch", "payload": captured["payload"]}
+    preview = write_approval.skill_pending_diff(rec)
+    # The reviewer's surface must show the resulting count and must not be the empty fallback.
+    assert "success_count: 12" in preview, preview[:300]
+    assert preview.strip() != "( on '')"
+    assert "( on '')" not in preview

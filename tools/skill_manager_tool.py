@@ -12,6 +12,7 @@ import hashlib
 import json
 from contextlib import ExitStack, suppress
 import logging
+import secrets
 import re
 import shutil
 import threading
@@ -653,6 +654,9 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
     if payload_kwargs.get("evidence_merge") is not None and action != "patch":
         return tool_error("evidence_merge is supported only with action 'patch'.", success=False)
     def _staging(wa):
+        return _build_staged(wa)
+
+    def _build_staged(wa):
         staged_kwargs = dict(payload_kwargs)
         if (evidence_merge := staged_kwargs.get("evidence_merge")) is not None:
             # Compute the merged candidate NOW, against the current source, and bind it to that
@@ -675,6 +679,7 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
                 **evidence_merge,
                 "_source_digest": content_digest(current),
                 "_candidate_content": candidate,
+                "_staged_by": _mint_staging_token(),
             }
             if wa.skill_pending_diff is not None:
                 staged_kwargs["evidence_merge"]["_preview"] = wa.skill_pending_diff(
@@ -746,6 +751,28 @@ def _maybe_debounced_sync_push(skill_name: str) -> None:
         timer.start()
 
 
+# Tokens for candidates this process froze. A ContextVar cannot be used: staging and the later
+# approval replay are separate requests, so the value would be unset at replay time and a forged
+# payload would compare equal to nothing. Instead every staging pass mints a fresh random token,
+# records it here, and stamps it into the payload. A caller cannot guess a token (secrets, minted
+# per pass, never reused), and public ingress rejects the "_staged_by" key outright, so an injected
+# _candidate_content can never be written verbatim. The set is bounded and cleared on replay.
+_STAGED_TOKENS: "set[str]" = set()
+_STAGED_TOKENS_MAX = 512
+
+
+def _mint_staging_token() -> str:
+    token = secrets.token_hex(16)
+    if len(_STAGED_TOKENS) >= _STAGED_TOKENS_MAX:
+        _STAGED_TOKENS.clear()
+    _STAGED_TOKENS.add(token)
+    return token
+
+
+def _is_ours(token: Optional[str]) -> bool:
+    return isinstance(token, str) and token in _STAGED_TOKENS
+
+
 def _act_patch(a):
     """Three shapes: evidence_merge (additive evidence counters), old_string/new_string
     replacement (validated in _patch_skill so the tool and the helper give the same guidance),
@@ -761,10 +788,15 @@ def _act_patch(a):
         try:
             # Replay of an APPROVED candidate: write the exact bytes that were previewed, and
             # refuse if the source moved since approval (a concurrent writer would be lost).
-            # Only honour a frozen candidate on the real replay path (_skill_gate_bypass set by
-            # apply_skill_pending). Otherwise anyone could hand us _candidate_content and skip
-            # merge_evidence entirely, discarding its fail-closed validation.
-            if "_candidate_content" in merged and _skill_gate_bypass.get():
+            #
+            # A set bypass token does NOT by itself mean "approved": the batch path also sets it
+            # while running its own already-staged ops, and a caller could otherwise hand us a
+            # frozen candidate and skip merge_evidence's fail-closed validation. So the candidate is
+            # honoured only when it carries a `_staged_by` token that this module issued. The
+            # module keeps a live set of the tokens it minted (ContextVars do not survive the
+            # staging -> approval -> replay round trip, which is a separate request), and a caller
+            # cannot guess one: tokens are minted per staging pass and never reused.
+            if "_candidate_content" in merged and _is_ours(merged.get("_staged_by")):
                 current = target.read_text(encoding="utf-8-sig")
                 if content_digest(current) != merged.get("_source_digest"):
                     return _err("Skill changed since approval; evidence_merge replay is stale and was rejected.")
@@ -776,7 +808,8 @@ def _act_patch(a):
             # inside _guarded_write is a no-op and the digest compare still runs there.
             with _skill_mutation_locks([a["name"]]):
                 current = target.read_text(encoding="utf-8-sig")
-                candidate = merge_evidence(current, merged)
+                public_delta = {k: v for k, v in merged.items() if not k.startswith("_")}
+                candidate = merge_evidence(current, public_delta)
                 return _edit_skill(a["name"], candidate, expected_source_digest=content_digest(current))
         except EvidenceMergeError as exc:
             return _err(f"evidence_merge rejected: {exc}")

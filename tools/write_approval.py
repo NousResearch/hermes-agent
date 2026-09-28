@@ -260,6 +260,24 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
     name = payload.get("name", "")
     if action == "create":
         return payload.get("content") or ""
+    if action == "batch":
+        # A batch is one approval covering many operations, so it must render ALL of them. Without
+        # this an evidence op inside a batch reviewed as "(batch on '')" — the reviewer saw no
+        # counter change, yet the write proceeded. Each op is rendered through the same per-op path
+        # so a frozen evidence candidate is shown as the diff it will actually write.
+        chunks = []
+        for op in payload.get("operations") or []:
+            op_name = op.get("name") or name
+            if op.get("action") == "patch" and isinstance(op.get("evidence_merge"), dict):
+                # Wrap the op as the flat record this function already handles, so the frozen
+                # candidate is diffed rather than re-derived.
+                chunks.append(skill_pending_diff(
+                    {"payload": {"action": "patch", "name": op_name, **{
+                        k: v for k, v in op.items() if k != "name"}}}))
+            else:
+                chunks.append(f"--- {op.get('action')} on '{op_name}' ---")
+        body = "\n".join(c for c in chunks if c)
+        return body or "(no textual change)"
     if action not in {"edit", "patch", "write_file"}:
         return {"remove_file": f"remove file: {payload.get('file_path')} from skill '{name}'",
                 "delete": f"delete skill '{name}'"}.get(action, f"({action} on '{name}')")

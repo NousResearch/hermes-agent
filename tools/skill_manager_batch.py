@@ -121,6 +121,17 @@ def _validate_batch_ops(operations, default_name, tool_error):
         # op[1] would first apply op[0] and then roll the whole batch back.
         if (shape_err := _op_shape_error(act, op)) is not None:
             return fail(i, f" ({act} on '{nm}'): {shape_err}")
+        # Staging metadata is private to this module. A caller-supplied _candidate_content or
+        # _source_digest would let a batch write a frozen candidate verbatim and skip
+        # merge_evidence entirely — and because the batch path sets the same gate-bypass token as
+        # an approved replay, the injected candidate would be honoured as if approved. Verified:
+        # 11 -> 0 through this interface. Reject at the public ingress instead of trusting a
+        # later layer to tell an approved replay from an ordinary batch.
+        if isinstance(op.get("evidence_merge"), dict):
+            private = sorted(k for k in op["evidence_merge"] if k.startswith("_"))
+            if private:
+                return fail(i, f" (patch on '{nm}'): evidence_merge must not carry internal "
+                               f"staging keys {private}; they are set by the writer, not the caller.")
         # evidence_merge is a third, mutually-exclusive patch shape: it must not ride along with
         # a replacement or a full rewrite, or the reviewed result is not what gets written.
         if op.get("evidence_merge") is not None:
@@ -285,6 +296,9 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
     if not _smt._skill_gate_bypass.get():
         # Approval gate for the WHOLE batch as one pending write.
         def _staging(wa):
+            return _build_staged(wa)
+
+        def _build_staged(wa):
             acts = ", ".join(op["action"] for op in operations)
             gist = f"batch({len(operations)} ops: {acts}) on {', '.join(sorted(set(names)))}"
             # Freeze each evidence candidate into the staged payload, bound to its source digest.
@@ -313,6 +327,7 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                 staged_ops.append({**op, "evidence_merge": {
                     **evidence,
                     "_source_digest": _content_digest(current),
+                    "_staged_by": _smt._mint_staging_token(),
                     "_candidate_content": candidate}})
                 if getattr(wa, "skill_pending_diff", None) is not None:
                     staged_ops[-1]["evidence_merge"]["_preview"] = wa.skill_pending_diff(

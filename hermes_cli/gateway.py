@@ -4131,7 +4131,19 @@ def host_multiplexer_serving(profile_name: str | None = None):
     try:
         from gateway.host_attach import host_gateway_serving
         name = profile_name if profile_name is not None else _current_profile_name()
-        return host_gateway_serving(name or "default")
+        gateway = host_gateway_serving(name or "default")
+        if gateway is None:
+            return None
+        # The host record is HOST-wide, and two Hermes tenants on one host (separate HERMES_HOMEs)
+        # each expose a profile named 'default': a same-named profile under ANOTHER tenant root is a
+        # collision, not coverage. decide() / _claim_host_gateway_role already start beside such an
+        # owner; the CLI guards read this probe and refused with exit 78 instead (#121352).
+        from hermes_constants import get_default_hermes_root
+        from gateway.status import _same_hermes_home
+        if not _same_hermes_home(get_default_hermes_root(home=gateway.home), get_default_hermes_root()):
+            logger.debug("Host gateway %s belongs to another Hermes home; not ours", gateway.describe())
+            return None
+        return gateway
     except Exception:
         logger.debug("Host multiplexer probe failed", exc_info=True)
         return None
@@ -4170,9 +4182,15 @@ def named_profile_served_by_running_multiplexer(profile_name: str | None = None)
         return False
 
     # The host record answers first: it names the live host process whatever home launched it, so a
-    # multiplexer started by a named profile is visible here too.
-    if host_multiplexer_serving(suffix) is not None:
-        return True
+    # multiplexer started by a named profile is visible here too. A record launched by THIS profile's
+    # own home is its own gateway (a standalone fleet member, or a multiplexer it hosts), never a
+    # multiplexer serving a satellite: counting it refused the owner's own restart with exit 78 and
+    # pointed it at `-p default`, whose gateway was not running (#120871).
+    gateway = host_multiplexer_serving(suffix)
+    if gateway is not None:
+        from hermes_cli.profiles import normalize_profile_name
+        if normalize_profile_name(gateway.profile_label) != normalize_profile_name(suffix):
+            return True
 
     try:
         from hermes_constants import get_default_hermes_root

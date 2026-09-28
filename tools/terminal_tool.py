@@ -322,8 +322,11 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     mid-session via ``session/load``). The session record keeps the RAW path
     (host workspaces are tracked there on purpose); only the live-env write is
     sanitized, since a host cwd can never be a container workdir.
+
+    Keyed like ``_session_cwd`` — routed-profile qualified (:func:`_qualify_task_key`) — so two
+    profiles registering the same task id never read each other's image/cwd (#123989).
     """
-    _task_env_overrides[task_id] = overrides
+    _task_env_overrides[_qualify_task_key(task_id)] = overrides
 
     new_cwd = overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
@@ -342,7 +345,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
 
 def clear_task_env_overrides(task_id: str):
     """Drop a task's overrides, cwd record and container alias (rollout cleanup)."""
-    _task_env_overrides.pop(task_id, None)
+    _task_env_overrides.pop(_qualify_task_key(task_id), None)
     clear_session_cwd(task_id)
     with _container_alias_lock:
         _container_aliases.pop(task_id, None)
@@ -378,9 +381,8 @@ def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     """True when *task_id* registered image/env_type overrides — the single
     "isolated RL/benchmark rollout" predicate shared by key resolution and
     container creation so the two can't drift."""
-    if not task_id or task_id not in _task_env_overrides:
-        return False
-    return bool(set(_task_env_overrides[task_id].keys()) & _ISOLATION_OVERRIDE_KEYS)
+    overrides = _task_env_overrides.get(_qualify_task_key(task_id)) if task_id else None
+    return bool(overrides and set(overrides) & _ISOLATION_OVERRIDE_KEYS)
 
 
 @dataclass(frozen=True)
@@ -499,7 +501,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
        else ``"default"``, which subagent ids collapse onto to share the parent's container.
     """
     if task_id and _has_isolation_overrides(task_id):
-        return task_id
+        return _qualify_task_key(task_id)
     scope = _session_scope()
     if task_id and scope.session_isolated:
         return _qualify_task_key(_resolve_container_alias(task_id))
@@ -538,7 +540,7 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     """
     raw = task_id or "default"
     return (
-        _task_env_overrides.get(raw)
+        _task_env_overrides.get(_qualify_task_key(raw))
         or _task_env_overrides.get(_resolve_container_task_id(raw))
         or {}
     )

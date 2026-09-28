@@ -1415,6 +1415,19 @@ class TestDeriveChatSessionId:
         assert research != legacy
         assert research == _derive_chat_session_id("sys", "hello", "research")
 
+    def test_launch_profile_prefix_keeps_the_unprefixed_id(self, monkeypatch, tmp_path):
+        """A gateway launched as ``work`` serves ``/p/work/`` and the bare route as ONE profile:
+        both must derive one id, or the same conversation forks by URL."""
+        import hermes_constants
+        from hermes_cli import profiles
+
+        work = tmp_path / "profiles" / "work"
+        work.mkdir(parents=True)
+        monkeypatch.setattr(hermes_constants, "get_routing_process_hermes_home", lambda: work)
+        monkeypatch.setattr(profiles, "get_profile_dir", lambda name: tmp_path / "profiles" / name)
+        assert _derive_chat_session_id("sys", "hello", "work") == _derive_chat_session_id("sys", "hello")
+        assert _derive_chat_session_id("sys", "hello", "research") != _derive_chat_session_id("sys", "hello")
+
 
 # ---------------------------------------------------------------------------
 # /v1/responses endpoint

@@ -999,7 +999,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 result = file_ops.patch_replace(_replace_target, old_string, new_string, replace_all)
             elif mode == "patch":
                 if not patch:
-                    return tool_error("patch content required")
+                    return tool_error(
+                        "patch content required: mode='patch' needs the V4A patch body in "
+                        "the 'patch' argument (*** Begin Patch ... *** End Patch). For a "
+                        "single edit, pass mode='replace' with path, old_string and "
+                        "new_string instead.",
+                    )
                 result = file_ops.patch_v4a(
                     _rewrite_v4a_patch_paths_for_host(patch, _path_to_resolved, _path_to_entry, file_ops))
             else:

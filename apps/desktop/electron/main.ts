@@ -204,6 +204,7 @@ import type { RosterProfileMetadata } from './connection-registry'
 import { liveWindowState, overlayWindowState } from './connection-window-state'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
+import { removeStaleSingletonLock } from './singleton-lock'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
@@ -947,9 +948,27 @@ if (INSTALL_STAMP) {
 
 const DESKTOP_PROFILE_CONFIG_PATH: string = path.join(app.getPath('userData'), 'active-profile.json')
 // Only the lock-owning destination may adopt a workspace or start a backend.
-const isPrimaryInstance: boolean = app.requestSingleInstanceLock()
+// #78101: on Linux/X11 a zombie/defunct Electron process leaves the
+// SingletonLock symlink behind with a PID that still answers kill(pid, 0),
+// so Chromium's own liveness probe keeps refusing every later launch and the
+// app silently exits. Clear a provably-dead owner and retry once; always log
+// when the lock is legitimately lost so the exit is diagnosable.
+function acquireSingleInstanceLock(): boolean {
+  if (app.requestSingleInstanceLock()) return true
+
+  const stalePid = removeStaleSingletonLock(app.getPath('userData'))
+  if (stalePid !== null) {
+    console.error(`[hermes] removed stale SingletonLock (owner ${stalePid} dead); retrying launch`)
+    return app.requestSingleInstanceLock()
+  }
+
+  return false
+}
+
+const isPrimaryInstance: boolean = acquireSingleInstanceLock()
 
 if (!isPrimaryInstance) {
+  console.error('[hermes] another Hermes Desktop instance holds the single-instance lock; exiting')
   app.exit(0)
 }
 

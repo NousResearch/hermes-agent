@@ -15,6 +15,7 @@ from .shared_metrics import SharedMetricsStore
 from .shared_metrics_fields import milestones_for
 from .shared_metrics_contract import (
     CLIENT_ACTIVE_METRIC,
+    COMMIT_TICKET_KEY,
     INSTALL_SNAPSHOT_METRIC,
     MODEL_ROUTE_METRIC,
     TOOL_CALL_METRIC,
@@ -74,6 +75,7 @@ class SharedMetricsSubscriber:
         self._active = True
         self._lock = threading.RLock()
         self._milestones_done: set[str] = set(store.recorded_milestones())
+        self._saved_tickets: dict[str, int] = {}
         # Events arrive on the Relay thread, which carries no profile binding.
         self._hermes_home = get_hermes_home()
 
@@ -100,14 +102,21 @@ class SharedMetricsSubscriber:
             self.store.record_milestone(milestone, age, self._client_resource)
             self._milestones_done.add(milestone)
 
+    def take_saved(self, ticket: str) -> int:
+        """How many events carrying ``ticket`` settled without a store error (and forget the ticket)."""
+        with self._lock:
+            return self._saved_tickets.pop(ticket, 0)
+
     def __call__(self, event: Any) -> None:
+        metadata = getattr(event, "metadata", None)
         if self._runtime_id is not None:
-            metadata = getattr(event, "metadata", None)
             if (
                 not isinstance(metadata, dict)
                 or metadata.get(RUNTIME_INSTANCE_KEY) != self._runtime_id
             ):
                 return
+        ticket = metadata.get(COMMIT_TICKET_KEY) if isinstance(metadata, dict) else None
+        saved = True  # a row the contract rejects is settled too: no retry can change that
         for metric_name, dimensions, amount in self._classify(event):
             with self._lock:
                 if not self._active:
@@ -121,6 +130,11 @@ class SharedMetricsSubscriber:
                         self.store.record_counter(metric_name, dimensions, self._client_resource, amount)
                     self._record_milestones(metric_name, dimensions)
                 except Exception:
+                    saved = False
                     logger.warning(
                         "Unable to persist the Hermes shared metric: %s", metric_name, exc_info=True
                     )
+        if ticket and saved:
+            with self._lock:
+                if self._active:
+                    self._saved_tickets[ticket] = self._saved_tickets.get(ticket, 0) + 1

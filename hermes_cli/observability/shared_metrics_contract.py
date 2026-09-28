@@ -16,6 +16,9 @@ from hermes_cli.platforms import PLATFORMS
 from toolsets import BUILTIN_TOOL_NAMES
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
+# A random per-emit token (no payload) on rows whose producer waits to learn they were SAVED: facts
+# recovered from a file that is deleted only then. Events persist on the Relay thread.
+COMMIT_TICKET_KEY = "hermes.shared_metrics.commit_ticket"
 SCHEMA_VERSION = "hermes.metrics.event.v3"
 MODEL_CALL_SCOPE = "hermes.model_call"
 MODEL_CALL_PROFILE_MODEL = "unknown"
@@ -599,7 +602,7 @@ def _relay_metadata(
     metadata = getattr(event, "metadata", None)
     if not isinstance(metadata, dict) or metadata.get(schema_key) != schema_version:
         return None
-    allowed = {schema_key, RUNTIME_INSTANCE_KEY, "otel.status_code", *extra_keys}
+    allowed = {schema_key, RUNTIME_INSTANCE_KEY, COMMIT_TICKET_KEY, "otel.status_code", *extra_keys}
     if set(metadata) - allowed or metadata.get("otel.status_code", "OK") not in {"OK", "ERROR"}:
         return None
     return metadata

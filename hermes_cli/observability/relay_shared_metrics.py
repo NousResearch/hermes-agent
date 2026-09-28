@@ -7,6 +7,7 @@ import contextlib
 import contextvars
 import logging
 import threading
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from time import monotonic_ns
@@ -934,6 +935,15 @@ class _Runtime:
         # No flush here: the next task close or the atexit shutdown drains the subscriber.
         self._with_scope_stack(self.relay.scope.event, mark, data=data, metadata=self._event_metadata())
 
+    def record_process_marks_saved(self, marks: list[tuple[str, dict[str, Any]]]) -> int:
+        """Emit ``marks`` and wait for the store; how many settled without a store error."""
+        ticket = uuid.uuid4().hex
+        metadata = {**self._event_metadata(), contract.COMMIT_TICKET_KEY: ticket}
+        for mark, data in marks:
+            self._with_scope_stack(self.relay.scope.event, mark, data=data, metadata=metadata)
+        self.relay.subscribers.flush()
+        return self.subscriber.take_saved(ticket)
+
     def record_auxiliary_tokens(self, event: dict[str, Any]) -> None:
         tokens = fields_.model_token_fields(
             event.get("usage"), call_role="auxiliary", aux_task=event.get("aux_task"),
@@ -1189,6 +1199,16 @@ def record_process_mark(mark: str, data: dict[str, Any]) -> None:
     runtime = _get_runtime(retry_failed=True)
     if runtime is not None:
         runtime._safe(runtime.record_process_mark, mark, data)
+
+
+def record_process_marks_saved(marks: list[tuple[str, dict[str, Any]]]) -> int:
+    """``record_process_mark`` for facts recovered from a file the caller deletes only once they are
+    saved (a busy store would otherwise lose them for good). How many rows are settled: saved, rejected
+    by the contract, or nothing to record because collection is off."""
+    if not enabled() or not relay_runtime.relay_instrumentation_enabled():
+        return len(marks)
+    runtime = _get_runtime(retry_failed=True)
+    return (runtime._safe(runtime.record_process_marks_saved, marks) or 0) if runtime is not None else 0
 
 
 def record_session_friction(signal: str, session_id: str, fallback_route: dict[str, str]) -> None:

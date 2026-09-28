@@ -31,7 +31,15 @@ def marks(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(relay_shared_metrics, "enabled", lambda: policy["on"])
     monkeypatch.setattr(relay_shared_metrics, "record_process_mark", lambda mark, data: captured.append((mark, data)))
-    yield SimpleNamespace(rows=captured, policy=policy, home=tmp_path / "home")
+    store = {"saves": True}  # rows recovered from files wait for the store; a test can make it refuse
+
+    def saved(rows):
+        if store["saves"]:
+            captured.extend(rows)
+        return len(rows) if store["saves"] else 0
+
+    monkeypatch.setattr(relay_shared_metrics, "record_process_marks_saved", saved, raising=False)
+    yield SimpleNamespace(rows=captured, policy=policy, home=tmp_path / "home", store=store)
 
 
 def _identity(monkeypatch, *shas: str) -> None:
@@ -173,6 +181,58 @@ def test_v3_schema_accepts_exactly_the_contract_values():
             field: set(values) for field, values in contract._COUNTER_DIMENSION_VALUES[metric].items()}
 
 
+def _pre_pull_finalize(monkeypatch) -> None:
+    _identity(monkeypatch, "a" * 40, "b" * 40)  # the checkout moved under this interpreter
+    update_receipt.begin_update_receipt()
+    update_receipt.record_step("admission", True, "operator text /home/someone/checkout")
+    update_receipt.record_stage("plan", "success")
+    update_receipt.finalize_update_receipt("failed")
+
+
+def test_pre_pull_park_happens_only_while_opted_in_and_keeps_only_metric_fields(marks, monkeypatch):
+    pending = update_metrics.pending_updates_dir(marks.home)
+    pending.mkdir(parents=True)
+    (pending / "earlier.json").write_text(json.dumps({"update_id": "earlier", "argv": ["hermes", "update"]}))
+    marks.policy["on"] = False
+    _pre_pull_finalize(monkeypatch)
+    assert not pending.exists() or list(pending.iterdir()) == []  # nothing parked, the earlier one purged
+
+    marks.policy["on"] = True
+    _pre_pull_finalize(monkeypatch)
+    (parked,) = pending.glob("*.json")
+    text = parked.read_text()
+    assert "argv" not in text and "operator text" not in text and "/home/" not in text
+    update_metrics.report_pending_updates()
+    assert [mark for mark, _ in marks.rows].count(contract.UPDATE_RUN_MARK) == 1
+
+
+def test_one_update_id_is_counted_once_across_the_child_and_the_parked_copy(marks, monkeypatch):
+    _identity(monkeypatch, "a" * 40)
+    update_receipt.begin_update_receipt()
+    update_receipt.record_stage("plan", "success")
+    update_receipt.finalize_update_receipt("success")  # the completion child records directly
+    receipt = update_receipt.read_latest_receipt()
+    pending = update_metrics.pending_updates_dir(marks.home)
+    pending.mkdir(parents=True)  # the parent's boundary finalize parks the SAME run as failed
+    (pending / f"{receipt['update_id']}.json").write_text(json.dumps({**receipt, "outcome": "failed"}))
+    update_metrics.report_pending_updates()
+    assert [data["outcome"] for mark, data in marks.rows if mark == contract.UPDATE_RUN_MARK] == ["success"]
+    assert list(pending.iterdir()) == []
+
+
+def test_a_marker_the_store_did_not_save_is_kept_for_the_next_start(marks):
+    directory = process_metrics.markers_dir(marks.home)
+    directory.mkdir(parents=True)
+    marker = directory / "gateway-2.json"
+    marker.write_text(json.dumps({"kind": "gateway", "pid": _dead_pid(), "start_time": None, "state": "clean"}))
+    marks.store["saves"] = False  # "database is locked"
+    process_metrics._report_dead_markers(marks.home, directory / "self.json")
+    assert marker.exists() and marks.rows == []
+    marks.store["saves"] = True
+    process_metrics._report_dead_markers(marks.home, directory / "self.json")
+    assert not marker.exists() and [data["exit_kind"] for _, data in marks.rows] == ["clean"]
+
+
 def test_graceful_gateway_exit_stamps_the_marker_clean(marks, monkeypatch):
     import gateway.run as gateway_run
 
@@ -193,3 +253,7 @@ def test_graceful_gateway_exit_stamps_the_marker_clean(marks, monkeypatch):
         gateway_run._exit_after_graceful_shutdown(1)
     marker = process_metrics.markers_dir(marks.home) / f"gateway-{os.getpid()}.json"
     assert json.loads(marker.read_text())["state"] == "clean"
+
+
+def test_unrepresentable_timestamps_read_as_unknown():
+    assert update_metrics._epoch(10 ** 400) is None

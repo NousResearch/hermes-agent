@@ -2878,3 +2878,20 @@ def test_token_usage_is_summed_per_model_and_auxiliary_task(direct_runtime, tmp_
         ("auxiliary", "compression", "input"): 7, ("auxiliary", "compression", "output"): 3,
         ("auxiliary", "other", "input"): 7, ("auxiliary", "other", "output"): 3,
     }
+
+
+def test_recovered_rows_report_saved_only_once_the_store_holds_them(real_binding_runtime, monkeypatch):
+    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+
+    row = ("hermes.process.exit", {"crash_class": "none", "exit_kind": "killed", "process_kind": "gateway"})
+    real_store_write = SharedMetricsStore.record_counter
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(SharedMetricsStore, "record_counter", locked)
+    assert relay_shared_metrics.record_process_marks_saved([row]) == 0
+    monkeypatch.setattr(SharedMetricsStore, "record_counter", real_store_write)
+    assert relay_shared_metrics.record_process_marks_saved([row]) == 1
+    saved = [(r["metric_name"], r["dimensions"], r["value"]) for r in SharedMetricsStore().counter_snapshot()]
+    assert saved == [("hermes.process.exit", row[1], 1)]

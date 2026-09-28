@@ -17,6 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +28,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 PENDING_DIRNAME = "pending_updates"
+# One empty file per update_id already counted in this profile: the completion child and the
+# parent's parked copy can both finalize the same run.
+RECORDED_DIRNAME = "recorded_updates"
+_RECORDED_KEEP = 64
+_UPDATE_ID = re.compile(r"[0-9a-f]{8,64}")
 # Receipt pm/Desktop outcome words → hermes.update.run outcome; anything else failed.
 _RUN_OUTCOMES = {"success": "success", "refused": "refused", "noop": "noop"}
 _FLEET_BAD_STATES = frozenset({"stale", "down"})
@@ -36,11 +44,11 @@ _DESKTOP_APPLY_MODES = {
 
 
 def _epoch(value: Any) -> float | None:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
     try:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
         return datetime.fromisoformat(str(value)).timestamp()
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
 
 
@@ -140,27 +148,67 @@ def _collection_on() -> bool:
     return isinstance(config, dict) and config.get("enabled") is True
 
 
-def record_update_receipt(receipt: dict[str, Any]) -> None:
-    """Record one run row plus its stage rows from a final receipt. Never raises."""
+def _claim_update_id(update_id: Any) -> tuple[bool, Path | None]:
+    """``(first, latch)``: first is False when this profile already counted ``update_id``."""
+    from hermes_constants import get_hermes_home
+
+    if not isinstance(update_id, str) or not _UPDATE_ID.fullmatch(update_id):
+        return True, None  # nothing stable to dedupe on
+    directory = get_hermes_home() / "telemetry" / "shared_metrics" / RECORDED_DIRNAME
+    directory.mkdir(parents=True, exist_ok=True)
+    latch = directory / update_id
+    try:
+        os.close(os.open(latch, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        return False, None
+    try:
+        for stale in sorted(directory.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)[_RECORDED_KEEP:]:
+            stale.unlink(missing_ok=True)
+    except OSError:  # a concurrent prune won; the next claim prunes again
+        pass
+    return True, latch
+
+
+def record_update_receipt(receipt: dict[str, Any], *, wait_saved: bool = False) -> bool:
+    """Record one run row plus its stage rows from a final receipt, once per update_id.
+
+    ``wait_saved`` (parked receipts) blocks until the rows are in the store; False means the caller
+    must keep the receipt for a later retry. True also covers "nothing to record". Never raises.
+    """
     try:
         if not _collection_on():
-            return
+            return True
         from . import shared_metrics_contract as contract
-        from .shared_metrics_events import _emit
+        from .shared_metrics_events import _emit, emit_saved
 
         derived = update_receipt_fields(receipt)
         if derived is None:
-            return
+            return True
+        first, latch = _claim_update_id(receipt.get("update_id"))
+        if not first:
+            return True
         run, stage_rows = derived
-        _emit(contract.UPDATE_RUN_MARK, lambda: run)
-        for row in stage_rows:
-            _emit(contract.UPDATE_STAGE_MARK, lambda row=row: row)
+        rows = [(contract.UPDATE_RUN_MARK, run), *((contract.UPDATE_STAGE_MARK, row) for row in stage_rows)]
+        if not wait_saved:
+            for mark, row in rows:
+                _emit(mark, lambda row=row: row)
+            return True
+        if emit_saved(rows):
+            return True  # even partly: a retry would count again the rows that did land
+        if latch is not None:
+            latch.unlink(missing_ok=True)  # nothing landed: let the retry count it
+        return False
     except Exception:
         logger.debug("Update shared metrics not recorded", exc_info=True)
+        return False
 
 
 def pending_updates_dir(home: Path) -> Path:
     return home / "telemetry" / "shared_metrics" / PENDING_DIRNAME
+
+
+def purge_pending_updates(home: Path) -> None:
+    shutil.rmtree(pending_updates_dir(home), ignore_errors=True)
 
 
 def report_pending_updates() -> None:
@@ -168,16 +216,23 @@ def report_pending_updates() -> None:
     try:
         from hermes_constants import get_hermes_home
 
+        from .shared_metrics_process import _claim, settle_claim
+
         directory = pending_updates_dir(get_hermes_home())
         if not directory.is_dir():
             return
-        for path in sorted(directory.glob("*.json")):
-            try:
-                receipt = json.loads(path.read_text(encoding="utf-8-sig"))
-                path.unlink()  # claim first: a concurrent start that loses the unlink records nothing
-            except (OSError, ValueError):
+        for path in sorted(directory.iterdir()):
+            if path.name.startswith(".") or ".json" not in path.name:
                 continue
-            record_update_receipt(receipt)
+            claimed = _claim(path)  # a concurrent start that loses the rename records nothing
+            if claimed is None:
+                continue
+            try:
+                receipt = json.loads(claimed.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                receipt = None
+            saved = not isinstance(receipt, dict) or record_update_receipt(receipt, wait_saved=True)
+            settle_claim(claimed, path, saved)
     except Exception:
         logger.debug("Pending update shared metrics not reported", exc_info=True)
 

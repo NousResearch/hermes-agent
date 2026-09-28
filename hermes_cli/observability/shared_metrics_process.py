@@ -75,12 +75,13 @@ def begin_process(kind: str) -> None:
     try:
         from hermes_constants import get_hermes_home
 
-        from .shared_metrics_update import _collection_on
+        from .shared_metrics_update import _collection_on, purge_pending_updates
 
         if _STATE:
             return
         _STATE["kind"] = kind  # watchdog turn rows name the surface even when this home is off
         if not _collection_on():
+            purge_pending_updates(get_hermes_home())  # parked while on, never to be counted once off
             return
         from gateway.status import get_process_start_time
 
@@ -130,6 +131,8 @@ def _claim(path: Path) -> Path | None:
         record = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
+    if not isinstance(record, dict):
+        return None
     if record_path is None and record.get("state") == "running" and runtime_status_pid_is_live(record):
         return None
     claimed = path.with_name(f"{path.name.split('.json')[0]}.json.{os.getpid()}{_REPORTING}")
@@ -154,11 +157,22 @@ def process_exit_fields(record: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def settle_claim(claimed: Path, original: Path, saved: bool) -> None:
+    """Delete a claimed file once its row is saved; otherwise hand it back for the next start."""
+    try:
+        if saved:
+            claimed.unlink(missing_ok=True)
+        else:
+            os.replace(claimed, original)
+    except OSError:  # a leftover claim is reclaimed once this reporter is gone
+        logger.debug("Claimed shared-metrics file not settled", exc_info=True)
+
+
 def _report_dead_markers(home: Path, own: Path) -> None:
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     from . import shared_metrics_contract as contract
-    from .shared_metrics_events import _emit
+    from .shared_metrics_events import emit_saved
 
     token = set_hermes_home_override(home)  # a thread does not inherit the profile binding
     try:
@@ -172,9 +186,8 @@ def _report_dead_markers(home: Path, own: Path) -> None:
                 record = json.loads(claimed.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
                 record = None
-            if isinstance(record, dict):
-                _emit(contract.PROCESS_EXIT_MARK, process_exit_fields, record=record)
-            claimed.unlink(missing_ok=True)
+            rows = [(contract.PROCESS_EXIT_MARK, process_exit_fields(record))] if isinstance(record, dict) else []
+            settle_claim(claimed, path, emit_saved(rows) == len(rows))
         from .shared_metrics_update import report_pending_updates
 
         report_pending_updates()

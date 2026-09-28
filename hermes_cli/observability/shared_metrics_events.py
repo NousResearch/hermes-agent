@@ -31,6 +31,18 @@ def _emit(mark: str, build: Callable[..., dict[str, str] | None], **raw: Any) ->
         logger.debug("Shared-metrics %s not recorded", mark, exc_info=True)
 
 
+def emit_saved(marks: list[tuple[str, dict[str, str]]]) -> int:
+    """``_emit`` for facts recovered from a file: how many rows are settled (saved, rejected, or
+    collection off), so the caller deletes the file only then. Blocks on the store: no hot paths."""
+    try:
+        from .relay_shared_metrics import record_process_marks_saved
+
+        return record_process_marks_saved(marks) if marks else 0
+    except Exception:
+        logger.debug("Shared-metrics recovered rows not recorded", exc_info=True)
+        return 0
+
+
 def record_setup_completed(*, surface: str, provider: str | None) -> None:
     _emit(contract.SETUP_COMPLETED_MARK, fields_.setup_completed_fields, surface=surface, provider=provider)
 

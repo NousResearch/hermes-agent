@@ -258,11 +258,15 @@ async function addExistingBranchWorktree(gitBin, root, name) {
   let remote = await remoteOfRef(gitBin, root, requested)
   let fetched = false
 
-  if (!remote && requested.includes('/')) {
+  if (
+    !remote &&
+    requested.includes('/') &&
+    !(await gitOk(gitBin, ['show-ref', '--verify', '--quiet', `refs/heads/${requested}`], root))
+  ) {
     // A tag-pinned narrow clone has no tracking ref for any branch, so the
     // ref-based reading above misreads "origin/feature" as a local branch. When
-    // the remote carries the branch, fetching it creates the ref; otherwise
-    // keep the local-branch reading and its error.
+    // no such local branch exists and the remote carries the branch, fetching
+    // it creates the ref; otherwise keep the local-branch reading and its error.
     const maybeRemote = requested.slice(0, requested.indexOf('/'))
 
     if (

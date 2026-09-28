@@ -615,10 +615,11 @@ def _worktree_for_existing(root: str, raw_name: str) -> dict:
     # #81724)
     remote = _remote_of_ref(root, requested)
     fetched = False
-    if not remote and "/" in requested:
+    if not remote and "/" in requested and not _ref_exists(root, f"refs/heads/{requested}"):
         # A tag-pinned narrow clone has no tracking ref for any branch, so the ref-based reading
-        # above misreads "origin/feature" as a local branch. When the remote carries the branch,
-        # fetching it creates the ref; otherwise keep the local-branch reading and its error.
+        # above misreads "origin/feature" as a local branch. When no such local branch exists
+        # and the remote carries the branch, fetching it creates the ref; otherwise keep the
+        # local-branch reading and its error.
         maybe_remote, maybe_branch = requested.split("/", 1)
         if _git_line(root, ["remote", "get-url", maybe_remote]) and _fetch_tracking_ref(
             root, maybe_remote, maybe_branch
@@ -630,19 +631,18 @@ def _worktree_for_existing(root: str, raw_name: str) -> dict:
         return {"path": root, "branch": existing, "repoRoot": root}
     target = _unique_dir(os.path.join(root, ".worktrees", _slugify(existing)))
     if remote:
-        ref = f"{remote}/{existing}"
         # Best-effort freshness: on failure (offline, branch gone) the last known ref is still
         # there to branch from.
         fetched = fetched or _fetch_tracking_ref(root, remote, existing)
-        if _git(root, ["worktree", "add", "--track", "-b", existing, target, ref])[0] != 0:
+        if _git(root, ["worktree", "add", "--track", "-b", existing, target, requested])[0] != 0:
             # `--track` needs remote.<remote>.fetch to map the ref back to a remote branch; a
             # narrow clone maps only its tag. Branch untracked, then register the branch and
             # wire upstream, but only for a branch the fetch just proved exists: a configured
             # refspec whose source is gone makes every later plain `git fetch` fail.
-            _git_ok(root, ["worktree", "add", "-b", existing, target, ref])
+            _git_ok(root, ["worktree", "add", "-b", existing, target, requested])
             if fetched:
                 _git(root, ["remote", "set-branches", "--add", remote, existing])
-                _git(root, ["branch", f"--set-upstream-to={ref}", existing])
+                _git(root, ["branch", f"--set-upstream-to={requested}", existing])
     else:
         _git_ok(root, ["worktree", "add", target, existing])
     return {"path": target, "branch": existing, "repoRoot": root}

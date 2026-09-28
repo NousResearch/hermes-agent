@@ -322,48 +322,6 @@ test('addWorktree: base origin/main does not set up upstream tracking', async ()
   }
 })
 
-test('addWorktree: base origin/main resolves on a tag-pinned narrow clone', async () => {
-  // `--single-branch --branch <tag>` maps remote.origin.fetch to the tag only.
-  // A by-name `git fetch origin main` writes FETCH_HEAD and never origin/main.
-  const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-narrow-remote-'))
-  const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-narrow-clone-'))
-  const ident = ['-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes']
-
-  try {
-    execFileSync('git', ['init', '-q', '-b', 'main', remoteDir])
-    execFileSync('git', ['-C', remoteDir, ...ident, 'commit', '-q', '--allow-empty', '-m', 'init'])
-    execFileSync('git', ['-C', remoteDir, 'tag', 'v0'])
-    execFileSync('git', ['-C', remoteDir, ...ident, 'commit', '-q', '--allow-empty', '-m', 'tip'])
-    const tip = execFileSync('git', ['-C', remoteDir, 'rev-parse', 'HEAD']).toString().trim()
-
-    execFileSync('git', ['clone', '-q', '--single-branch', '--branch', 'v0', remoteDir, cloneDir])
-
-    const result = await addWorktree(
-      cloneDir,
-      { base: 'origin/main', branch: 'from-main', name: 'from-main' },
-      'git'
-    )
-
-    const head = execFileSync('git', ['-C', result.path, 'rev-parse', 'HEAD']).toString().trim()
-
-    assert.equal(head, tip)
-    assert.equal(result.branch, 'from-main')
-
-    let hasUpstream = true
-
-    try {
-      execFileSync('git', ['-C', cloneDir, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', 'from-main@{u}'])
-    } catch {
-      hasUpstream = false
-    }
-
-    assert.equal(hasUpstream, false)
-  } finally {
-    fs.rmSync(remoteDir, { recursive: true, force: true })
-    fs.rmSync(cloneDir, { recursive: true, force: true })
-  }
-})
-
 // A tag-pinned narrow clone (`--single-branch --branch v0`), the shape older
 // installers made: remote.origin.fetch maps only the tag, so no branch has a
 // tracking ref. The remote has `main` and `feature` one commit past the tag.
@@ -384,6 +342,29 @@ function seedNarrowClone(label) {
 
   return { cloneDir, remoteDir, tip }
 }
+
+test('addWorktree: base origin/main resolves on a tag-pinned narrow clone', async () => {
+  // A by-name `git fetch origin main` on a tag-only refspec writes FETCH_HEAD
+  // and never origin/main.
+  const { cloneDir, remoteDir, tip } = seedNarrowClone('narrow-base')
+
+  try {
+    const result = await addWorktree(cloneDir, { base: 'origin/main', branch: 'from-main', name: 'from-main' }, 'git')
+
+    const head = execFileSync('git', ['-C', result.path, 'rev-parse', 'HEAD']).toString().trim()
+
+    assert.equal(head, tip)
+    assert.equal(result.branch, 'from-main')
+    assert.throws(() =>
+      execFileSync('git', ['-C', cloneDir, 'rev-parse', '--abbrev-ref', '--symbolic-full-name', 'from-main@{u}'], {
+        stdio: 'ignore'
+      })
+    )
+  } finally {
+    fs.rmSync(remoteDir, { recursive: true, force: true })
+    fs.rmSync(cloneDir, { recursive: true, force: true })
+  }
+})
 
 const fetchConfig = cloneDir =>
   execFileSync('git', ['-C', cloneDir, 'config', '--get-all', 'remote.origin.fetch']).toString().trim()
@@ -437,6 +418,30 @@ test('addWorktree: converting a remote branch on a normal clone adds no fetch re
 
     await addWorktree(cloneDir, { existingBranch: 'origin/teammate-work' }, 'git')
     assert.equal(fetchConfig(cloneDir), before)
+  } finally {
+    fs.rmSync(remoteDir, { recursive: true, force: true })
+    fs.rmSync(cloneDir, { recursive: true, force: true })
+  }
+})
+
+test('addWorktree: a local slash branch named like a remote branch stays local', async () => {
+  // Without this, "origin/feature" (a local branch) became a new `feature`
+  // tracking the remote branch of the same name, after a network fetch.
+  const { cloneDir, remoteDir, tip } = seedNarrowClone('narrow-local-slash')
+
+  try {
+    execFileSync('git', ['-C', cloneDir, 'branch', 'origin/feature'])
+    const local = execFileSync('git', ['-C', cloneDir, 'rev-parse', 'refs/heads/origin/feature']).toString().trim()
+
+    assert.notEqual(local, tip)
+
+    const result = await addWorktree(cloneDir, { existingBranch: 'origin/feature' }, 'git')
+    const head = execFileSync('git', ['-C', result.path, 'rev-parse', 'HEAD']).toString().trim()
+    const remoteRefs = execFileSync('git', ['-C', cloneDir, 'for-each-ref', 'refs/remotes']).toString().trim()
+
+    assert.equal(result.branch, 'origin/feature')
+    assert.equal(head, local)
+    assert.equal(remoteRefs, '')
   } finally {
     fs.rmSync(remoteDir, { recursive: true, force: true })
     fs.rmSync(cloneDir, { recursive: true, force: true })

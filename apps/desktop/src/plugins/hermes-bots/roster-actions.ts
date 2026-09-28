@@ -8,7 +8,7 @@
  * them can own an action the others call without importing a sibling surface.
  */
 
-import { ackStoredSessionId, atom, haptic, host, markSessionUnreadFinished } from '@hermes/plugin-sdk'
+import { ackStoredSessionId, atom, haptic, host, markSessionRead, markSessionUnreadFinished } from '@hermes/plugin-sdk'
 
 import {
   $openBotChat,
@@ -148,11 +148,13 @@ function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowW
   }
 
   const generation = getBotOpenGeneration()
-  void openBotCanonicalChat(bot, {
+
+  return openBotCanonicalChat(bot, {
     background: true,
     openingStillCurrent: () => generation === getBotOpenGeneration()
   }).catch(() => {
     /* the next click or reclaim event re-resolves it */
+    return undefined
   })
 }
 
@@ -272,15 +274,25 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     // round-trip. Both identities are recorded so the reclaim listener and
     // the roster-activity refresh treat it exactly like a registry open.
     $openBotChat.set({ key, openedRegistryId: fronted.registryId, openedSessionId: fronted.storedSessionId })
-    ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
+    // Front immediately, but do not acknowledge the cached transcript. A
+    // background in-place re-resume actually waits for the tile's REST merge;
+    // failure (or a newer click/activity/focus) keeps its unread marker.
+    const activityAtOpen = rosterWatermarks.get(botSelectionKey(bot))
+    void refreshOpenBotChat(bot, { allowWhileBusy: true })?.then(opened => {
+      if (
+        generation !== getBotOpenGeneration() ||
+        activityAtOpen !== rosterWatermarks.get(botSelectionKey(bot)) ||
+        !opened ||
+        opened.registryId !== fronted.registryId ||
+        opened.openedId !== fronted.storedSessionId ||
+        String(host.state.focusedStoredSessionId?.get?.() || '') !== fronted.storedSessionId
+      ) {
+        return
+      }
 
-    // Fronting is presentation-only: the pane keeps whatever transcript it
-    // last painted, which can predate rows the bot wrote while the user was
-    // elsewhere (another bot's turn, a cron delivery, a teammate's
-    // message_agent). Force a registry open so forceResume re-pulls the
-    // latest transcript instead of leaving a stale snapshot until the next
-    // user turn (#99393 class; #95600 only covered the not-yet-open path).
-    refreshOpenBotChat(bot, { allowWhileBusy: true })
+      markSessionRead(fronted.storedSessionId)
+      ackStoredSessionId(botCanonicalSessionId(bot), bot.name)
+    })
 
     return true
   }

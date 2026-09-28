@@ -237,6 +237,26 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(texts.some(text => text.includes('cron delivery'))).toBe(true)
   })
 
+  it('does not report a cached transcript as refreshed when the REST read fails', async () => {
+    const cached = {
+      busy: false,
+      messages: [{ id: 'old', parts: [textPart('cached')], role: 'user' }],
+      storedSessionId: 'stored-a'
+    }
+
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-a', 'runtime-a']]) }
+    const sessionStateByRuntimeIdRef = { current: new Map([['runtime-a', cached]]) }
+    const updateSessionState = vi.fn()
+
+    vi.mocked(getLatestSessionMessages).mockRejectedValueOnce(new Error('REST unavailable'))
+    renderTile(vi.fn(), { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef, updateSessionState })
+
+    await expect(sessionTileDelegate()!.resumeTile('stored-a', { refreshTranscript: true })).rejects.toThrow(
+      'Could not refresh the stored transcript'
+    )
+    expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
   it('keeps a completed tool card when a Bot Chat tile refreshes its final reply', async () => {
     const state = {
       busy: false,

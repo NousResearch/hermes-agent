@@ -7,6 +7,7 @@ import { registry } from '@/contrib/registry'
 import { applyDesktopOverlay } from '@/store/profile-share'
 import * as session from '@/store/session'
 import * as states from '@/store/session-states'
+import { $unreadFinishedMarkers, markSessionUnreadFinished } from '@/store/session-unread'
 
 // These app-lifetime watchers have no unsubscribe API. Install them once in
 // Vitest's isolated file graph, not once per case (which accumulates listeners).
@@ -90,6 +91,18 @@ describe('focusing a saved Bot Chat requires a visible pane', () => {
     expect(tree.$activeTreeGroup.get()).toBe('imported-main')
     expect(states.$sessionTiles.get()).toEqual(saved)
     expect(states.sessionTileOwnerRoute('canonical-chat')).toEqual(scope.ownerRoute)
+  })
+
+  it('fronts a cached canonical Bot tile without acknowledging unread before its transcript refresh', () => {
+    const { scope, states } = ctx
+    markSessionUnreadFinished('canonical-chat')
+    expect(session.$unreadFinishedSessionIds.get()).toContain('canonical-chat')
+
+    expect(states.focusWorkspaceOwnerSessionTile(scope.workspaceOwnerKey, undefined, ['canonical-chat'])).toBe(
+      'canonical-chat'
+    )
+    expect(session.$unreadFinishedSessionIds.get()).toContain('canonical-chat')
+    expect($unreadFinishedMarkers.get().default).toContain('canonical-chat')
   })
 
   it('reports a miss through both helpers if the layout cannot place the saved tab', () => {

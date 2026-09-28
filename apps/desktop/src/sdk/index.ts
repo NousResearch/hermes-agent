@@ -1147,6 +1147,13 @@ export const host = {
             // sit unconsumed and the wake would silently no-op.
             const mainShowing = $selectedStoredSessionId.get() === storedSessionId
 
+            if (existingTile && !tileDelegate) {
+              // The tile is visible but its resume owner is not mounted yet.
+              // Do not report success to a caller that would acknowledge unread
+              // without ever issuing a transcript refresh.
+              throw new Error('Transcript refresh is not ready for this tile')
+            }
+
             if (tileDelegate) {
               await tileDelegate.resumeTile(storedSessionId, { refreshTranscript: true })
             } else if (mainShowing) {
@@ -2011,6 +2018,7 @@ export { cn } from '@/lib/utils'
  *  the user opens the session, `forgetSessionUnread` drops it when the session
  *  is gone. Pass the owning profile — a hidden session has no row to read it
  *  from, and the persisted half is bucketed per profile. */
+export { markSessionRead } from '@/store/session'
 export { ackStoredSessionId, forgetSessionUnread, markSessionUnreadFinished } from '@/store/session-unread'
 /** `sidebarNav.prefs`: hide / re-order the sidebar's nav rows by CONTRIBUTING a
  *  preference (union of hides, `capabilities` never hidden; the first order

@@ -3079,8 +3079,17 @@ function stampTileSessionFocus(focused: null | string) {
 // doesn't repaint the dot the user just cleared by looking at it.
 $focusedStoredSessionId.listen(focused => {
   if (focused) {
-    markSessionRead(focused)
-    ackStoredSessionId(focused)
+    // Bot Chat tiles may paint a cached transcript while their explicit roster
+    // open is still re-pulling newer off-window activity. Only that successful
+    // refresh acknowledges the mark; ordinary session tiles keep focus-to-read.
+    const cachedBotChat = $sessionTiles
+      .get()
+      .some(tile => tile.storedSessionId === focused && tile.workspaceMode === 'bots' && tile.workspaceTabTitle === 'Bot Chat')
+
+    if (!cachedBotChat) {
+      markSessionRead(focused)
+      ackStoredSessionId(focused)
+    }
   }
 
   stampTileSessionFocus(focused)

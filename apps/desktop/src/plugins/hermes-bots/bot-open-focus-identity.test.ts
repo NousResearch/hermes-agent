@@ -116,20 +116,69 @@ describe('unread acknowledgement follows a successful foreground transition', ()
     expect($pendingBotOpen.get()).toBeNull()
   })
 
-  it('acknowledges after an existing bot tab successfully fronts', async () => {
+  it('acknowledges after an existing bot tab refreshes its transcript', async () => {
+    const focused = vi.spyOn(host.state.focusedStoredSessionId, 'get').mockReturnValue('reg-1')
+
     const restore = withFocusApi(() => {
       expect(ackStoredSessionId).not.toHaveBeenCalled()
 
       return 'reg-1'
     })
 
+    openBotCanonicalChat.mockResolvedValueOnce({ openedId: 'reg-1', registryId: 'reg-1' })
+
     try {
       await expect(openRosterBot(bot)).resolves.toBe(true)
-
-      expect(openBotCanonicalChat).not.toHaveBeenCalled()
-      expect(ackStoredSessionId).toHaveBeenCalledWith('reg-1', 'ops')
+      await vi.waitFor(() => expect(ackStoredSessionId).toHaveBeenCalledExactlyOnceWith('reg-1', 'ops'))
+      expect(openBotCanonicalChat).toHaveBeenCalledWith(bot, {
+        background: true,
+        openingStillCurrent: expect.any(Function)
+      })
     } finally {
       restore()
+      focused.mockRestore()
+    }
+  })
+
+  it('keeps unread when a fronted tab refresh fails, and acknowledges only after a delayed successful refresh', async () => {
+    const focused = vi.spyOn(host.state.focusedStoredSessionId, 'get').mockReturnValue('reg-1')
+    const restore = withFocusApi(() => 'reg-1')
+    let complete!: (value: { openedId: string; registryId: string }) => void
+
+    try {
+      openBotCanonicalChat.mockRejectedValueOnce(new Error('transcript unavailable'))
+      await expect(openRosterBot(bot)).resolves.toBe(true)
+      await vi.waitFor(() => expect(openBotCanonicalChat).toHaveBeenCalledTimes(1))
+      await Promise.resolve()
+      expect(ackStoredSessionId).not.toHaveBeenCalled()
+
+      openBotCanonicalChat.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+      await expect(openRosterBot(bot)).resolves.toBe(true)
+      expect(ackStoredSessionId).not.toHaveBeenCalled()
+      complete({ openedId: 'reg-1', registryId: 'reg-1' })
+      await vi.waitFor(() => expect(ackStoredSessionId).toHaveBeenCalledExactlyOnceWith('reg-1', 'ops'))
+    } finally {
+      restore()
+      focused.mockRestore()
+    }
+  })
+
+  it('does not acknowledge an old refresh after a newer bot-open intent', async () => {
+    const focused = vi.spyOn(host.state.focusedStoredSessionId, 'get').mockReturnValue('reg-1')
+    const restore = withFocusApi(() => 'reg-1')
+    let complete!: (value: { openedId: string; registryId: string }) => void
+
+    try {
+      openBotCanonicalChat.mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))
+      openBotCanonicalChat.mockResolvedValueOnce({ openedId: 'reg-1', registryId: 'reg-1' })
+      await expect(openRosterBot(bot)).resolves.toBe(true)
+      await expect(openRosterBot(bot)).resolves.toBe(true)
+      complete({ openedId: 'reg-1', registryId: 'reg-1' })
+      await Promise.resolve()
+      expect(ackStoredSessionId).toHaveBeenCalledTimes(1)
+    } finally {
+      restore()
+      focused.mockRestore()
     }
   })
 

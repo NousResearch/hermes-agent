@@ -7,7 +7,7 @@ import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
-import { refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
+import { transcriptRefreshIfBehind } from '@/lib/stale-transcript-guard'
 import {
   isVoicePlaybackActive,
   markVoicePlaybackInterrupted,
@@ -836,7 +836,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         if (guardStoredId && liveSessionId) {
           const localSnapshot = updateSessionState(liveSessionId, state => state, targetStoredSessionId)
 
-          const refreshed = await refreshIfTranscriptStale(guardStoredId, localSnapshot.messages, {
+          const refresh = await transcriptRefreshIfBehind(guardStoredId, localSnapshot.messages, {
             excludeMessageId: optimisticId,
             profile: profileScopeForTranscriptSession(resolveActiveTranscriptSession(guardStoredId, liveSessionId))
           })
@@ -845,31 +845,48 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             return abortForSessionSwitch(liveSessionId)
           }
 
-          if (refreshed) {
-            updateSessionState(
-              liveSessionId,
-              state => ({
-                ...state,
-                awaitingResponse: false,
-                busy: false,
-                messages: refreshed,
-                pendingBranchGroup: null
-              }),
-              targetStoredSessionId
-            )
+          if (refresh) {
+            if (refresh.competingView) {
+              updateSessionState(
+                liveSessionId,
+                state => ({
+                  ...state,
+                  awaitingResponse: false,
+                  busy: false,
+                  messages: refresh.messages,
+                  pendingBranchGroup: null
+                }),
+                targetStoredSessionId
+              )
 
-            if (targetIsCurrentView()) {
-              scope.setMessages(() => refreshed)
-              notify({
-                kind: 'warning',
-                message: copy.staleSessionBody,
-                title: copy.staleSessionTitle
-              })
+              if (targetIsCurrentView()) {
+                scope.setMessages(() => refresh.messages)
+                notify({
+                  kind: 'warning',
+                  message: copy.staleSessionBody,
+                  title: copy.staleSessionTitle
+                })
+              }
+
+              releaseBusy()
+
+              return false
             }
 
-            releaseBusy()
-
-            return false
+            // The surplus was this window's own server-side turn residue — a turn
+            // that died on an approval timeout leaves its tool/assistant rows
+            // server-side while the window only holds its optimistic user message
+            // (#124005). Graft the rows into the view silently and let the send
+            // proceed: the local view being behind is the expected aftermath of the
+            // turn's death, not evidence of a competing view.
+            updateSessionState(
+              liveSessionId,
+              state => ({ ...state, messages: refresh.messages }),
+              targetStoredSessionId
+            )
+            if (targetIsCurrentView()) {
+              scope.setMessages(() => refresh.messages)
+            }
           }
         }
 

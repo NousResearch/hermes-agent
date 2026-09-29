@@ -438,19 +438,24 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
 # git 2.53+ promisor fetches run index-pack --promisor, whose repack_local_links() BUG()s in
 # pack-objects (should_include_obj) when a local non-promisor object leads to a promisor-missing
 # one (#124272). The state is left behind by the repo, so every fetch dies the same way; one fetch
-# with the promisor machinery disabled gets past it. POSIX builds end with "died of signal 6",
-# Windows builds with "could not finish pack-objects to repack local links".
-_PACK_OBJECTS_CRASH_MARKERS = ("BUG: builtin/pack-objects.c", "index-pack failed")
+# with the promisor machinery disabled gets past it. Only the assertion itself is version-stable,
+# so that is the fingerprint; the wrapper around it is not. git <= 2.54 reports the aborted helper
+# with "index-pack failed" — POSIX builds ending with "died of signal 6", Windows builds with
+# "could not finish pack-objects to repack local links" — but the 2.55 builds that dropped that
+# string end with "fetch-pack: invalid index-pack output" (#125138), so keying the fingerprint on
+# "index-pack failed" left those builds with no retry at all: the update simply exited 1.
+_PACK_OBJECTS_CRASH_FINGERPRINT = "should_include_obj should only be called on existing objects"
 _PACK_OBJECTS_CRASH_TERMINATORS = (
     "pack-objects died of signal 6",
     "could not finish pack-objects to repack local links",
+    "fetch-pack: invalid index-pack output",
 )
 
 
 def is_partial_clone_pack_objects_crash(stderr: str) -> bool:
-    """True when a fetch failure is the git 2.53/2.54 partial-clone pack-objects BUG (#124272)."""
+    """True when a fetch failure is the git 2.53+ partial-clone pack-objects BUG (#124272)."""
     text = stderr or ""
-    if not all(marker in text for marker in _PACK_OBJECTS_CRASH_MARKERS):
+    if _PACK_OBJECTS_CRASH_FINGERPRINT not in text:
         return False
     return any(terminator in text for terminator in _PACK_OBJECTS_CRASH_TERMINATORS)
 

@@ -148,6 +148,16 @@ _CRASH_STDERR_WINDOWS = (
     "fatal: index-pack failed\n"
 )
 
+# git 2.55 evidence (#125138): the builds that dropped "index-pack failed" report the
+# aborted helper as "fetch-pack: invalid index-pack output" instead — that string exists in
+# Homebrew git 2.55.0 while "index-pack failed" does not. Field report: macOS 27 + git 2.55.0
+# failed the update fetch on the bare assertion line and exited 1 without retrying, and a
+# plain re-run of `hermes update` right after succeeded.
+_CRASH_STDERR_GIT_255 = (
+    "BUG: builtin/pack-objects.c:5004: should_include_obj should only be called on existing objects\n"
+    "fatal: fetch-pack: invalid index-pack output\n"
+)
+
 
 def test_crash_recognizer_rejects_unrelated_failures():
     assert not is_partial_clone_pack_objects_crash(
@@ -157,11 +167,17 @@ def test_crash_recognizer_rejects_unrelated_failures():
     assert not is_partial_clone_pack_objects_crash(
         "BUG: builtin/pack-objects.c:4842: should_include_obj should only be called on existing objects\n"
         "fatal: index-pack failed\n")  # fingerprint without either terminator: not this crash
+    assert not is_partial_clone_pack_objects_crash(
+        "fatal: fetch-pack: invalid index-pack output\n")  # 2.55 wrapper alone is not the crash
     assert not is_partial_clone_pack_objects_crash("")
     assert not is_partial_clone_pack_objects_crash(None)
 
 
-@pytest.mark.parametrize("crash_stderr", [_CRASH_STDERR, _CRASH_STDERR_WINDOWS], ids=["posix", "windows"])
+@pytest.mark.parametrize(
+    "crash_stderr",
+    [_CRASH_STDERR, _CRASH_STDERR_WINDOWS, _CRASH_STDERR_GIT_255],
+    ids=["posix", "windows", "git-255"],
+)
 def test_recovery_retries_once_with_promisor_disabled(crash_stderr):
     calls = []
 

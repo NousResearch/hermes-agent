@@ -55,7 +55,7 @@ async def history_entry(client: Any, raw: dict, cache: MatrixEventContextCache, 
         return MatrixEventContext(
             str(raw.get("sender") or ""), "[redacted]", redacted=True,
         ), state.original_content
-    body = poll_context(content, raw.get("type")) or content.get("body")
+    body = poll_context(content, state.event_type) or content.get("body")
     if not isinstance(body, str):
         return None
     body = body.strip()

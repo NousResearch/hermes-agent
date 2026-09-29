@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from plugins.platforms.matrix.relations import MatrixRelation
@@ -18,6 +18,7 @@ class MatrixEffectiveEvent:
     redacted: bool = False
     error: dict[str, str] | None = None
     replacement_id: str | None = None
+    event_type: str | None = None
 
 
 def event_content(event: Any) -> dict[str, Any]:
@@ -95,8 +96,15 @@ async def effective_event(
             return MatrixEffectiveEvent({}, original_content, redacted=True)
         if error is not None:
             return MatrixEffectiveEvent(None, original_content, error=error)
-    content = event_content(event)
+    event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
+    state = await _current_state(client, raw, event_content(event), original_content, is_redacted)
+    return replace(state, event_type=None if event_type is None else str(event_type))
 
+
+async def _current_state(
+    client: Any, raw: dict[str, Any], content: dict[str, Any], original_content: dict[str, Any],
+    is_redacted: Callable[[str | None], bool] | None,
+) -> MatrixEffectiveEvent:
     replacement = _replacement(raw)
     if replacement is None or MatrixRelation.from_content(original_content.get("m.relates_to")).is_edit:
         return MatrixEffectiveEvent(content, original_content)

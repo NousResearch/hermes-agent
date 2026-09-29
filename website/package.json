@@ -40,7 +40,7 @@
     "uuid": "^14.0.0",
     "@babel/core": "7.29.6",
     "joi": "^18.2.1",
-    "js-yaml": "4.2.0",
+    "js-yaml": "3.14.1",
     "launch-editor": "2.14.1",
     "ws": "7.5.11",
     "dompurify": "3.4.10"

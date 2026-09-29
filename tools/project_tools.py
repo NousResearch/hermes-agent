@@ -98,7 +98,8 @@ def project_list(task_id: Optional[str] = None) -> str:
         "projects": [
             {
                 "id": p.id, "slug": p.slug, "name": p.name,
-                "primary_path": _primary_path(p), "active": p.id == active}
+                "primary_path": _primary_path(p), "board_slug": p.board_slug,
+                "active": p.id == active}
             for p in projects]})
 
 
@@ -171,7 +172,8 @@ registry.register(
             "this chat into it — pass path to anchor it to a repo/folder (the "
             "chat's workspace moves there, the sidebar follows). switch: move "
             "this chat into an existing project by name/slug/id — the "
-            "intentional way to move the session, not `cd`. list: all projects + which one this chat is in."
+            "intentional way to move the session, not `cd`. list: all projects, their stored board_slug "
+            "bindings (null if unbound), and which project this chat is in."
         ),
         "parameters": {
             "type": "object",

@@ -916,3 +916,18 @@ def test_clean_bot_trigger_text_no_bot_username():
     adapter = _make_adapter()
     adapter._bot = None
     assert adapter._clean_bot_trigger_text("/resume@hermes_bot 2") == "/resume@hermes_bot 2"
+
+
+def test_clean_bot_trigger_text_drops_at_mention():
+    adapter = _make_adapter(bot_username="mybot")
+    assert adapter._clean_bot_trigger_text("@mybot /resume 2") == "/resume 2"
+
+
+def test_clean_bot_trigger_text_drops_at_mention_followed_by_comma():
+    adapter = _make_adapter(bot_username="mybot")
+    assert adapter._clean_bot_trigger_text("@mybot, /resume 2") == "/resume 2"
+
+
+def test_clean_bot_trigger_text_leaves_unmentioned_command_unchanged():
+    adapter = _make_adapter(bot_username="mybot")
+    assert adapter._clean_bot_trigger_text("/resume 2") == "/resume 2"

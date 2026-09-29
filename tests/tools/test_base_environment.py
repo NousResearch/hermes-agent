@@ -398,3 +398,15 @@ class TestSanitizeTaskIdForPath:
         )
         target.mkdir(parents=True)
         assert target.is_dir()
+
+
+def test_command_wrapper_restores_temp_vars_after_snapshot_source():
+    """Shell startup files must not replace Hermes-managed scratch variables."""
+    env = _TestableEnv()
+    env._snapshot_ready = True
+    env._snapshot_path = "/tmp/hermes-snapshot"
+    script = env._wrap_command("printf '%s\\n' \"$TMPDIR\"", "/tmp")
+    source = script.index("source ")
+    restore = script.index('export TMPDIR=')
+    assert restore > source
+    assert 'HERMES_SCRATCH_DIR=\"$__hermes_scratch\"' in script

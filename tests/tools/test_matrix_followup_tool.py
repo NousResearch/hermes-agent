@@ -24,6 +24,7 @@ async def test_followup_action_validates_filter_and_updates_live_turn():
         session_key="agent:matrix:room",
         session_id="sid",
         transport_adapter=adapter,
+        transport_loop=asyncio.get_running_loop(),
     )
     try:
         invalid = json.loads(

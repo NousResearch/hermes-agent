@@ -65,7 +65,7 @@ async def publish(room, frequency: int):
         await source.aclose()
 
 
-async def run(room_id: str, bot_id: str, mode: str, mallory: dict):
+async def run(room_id: str, bot_id: str, mode: str, mallory: dict, startup_grace: float):
     matrix = open_encrypted_client()
     room = rtc.Room()
     tasks = set()
@@ -124,6 +124,7 @@ async def run(room_id: str, bot_id: str, mode: str, mallory: dict):
                 await matrix.room_send(room_id, "m.room.message", {"msgtype": "m.text", "body": "Remember this typed question."})
                 await wait_until(lambda: body_seen("Typed context reply"), "typed gateway reply")
             await matrix.room_send(room_id, "m.room.message", {"msgtype": "m.text", "body": "/voice join"})
+            join_sent = time.time()
             await asyncio.wait_for(subscribed.wait(), 25)
             bot_key = f"_{bot_id}_"
             async def bot_membership_event():
@@ -160,6 +161,11 @@ async def run(room_id: str, bot_id: str, mode: str, mallory: dict):
                 await publish(room, 660)
                 await asyncio.wait_for(heard.wait(), 25)
                 await wait_until(lambda: body_seen("RTC audio reply"), "spoken gateway reply")
+            if mode == "restart":
+                # A restarted adapter handles messages sent less than its startup grace before
+                # it started, so a restart inside that window would replay this /voice join.
+                # Persisted sync cursors (#126281) stop the replay and make this wait unnecessary.
+                await asyncio.sleep(max(0.0, join_sent + startup_grace + 0.5 - time.time()))
             (paths / "rtc-peer-ready.json").write_text(json.dumps({"mode": mode, "membership": joined,
                                                                   "received": decoded}))
             async def control_ready():

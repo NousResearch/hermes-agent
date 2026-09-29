@@ -15,9 +15,10 @@ from pathlib import Path
 import pytest
 from testcontainers.core.container import DockerContainer
 
+from plugins.platforms.matrix.adapter import _STARTUP_GRACE_SECONDS
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 from tests.integration.matrix_live.conftest import (
-    REPO_ROOT, _gateway_ready, _host_route, _host_user, _register, _wait_for,
+    REPO_ROOT, LiveGateway, _gateway_ready, _host_route, _host_user, _register, _wait_for,
 )
 
 SFU_IMAGE = "livekit/livekit-server:v1.13.6@sha256:e37d68f172556d02aa77968b9fc55ef481468c0315fa38e4fa6c56ce72e3a815"
@@ -102,14 +103,14 @@ def rtc_gateway(tmp_path, gateway_image, synapse, live_room, rtc_services):
                       and _gateway_ready((home / "logs/gateway.log").read_text(errors="replace"), live_room.room_id),
                       "MatrixRTC gateway start-up", timeout=45,
                       details=lambda: container.get_wrapped_container().logs().decode(errors="replace")[-6000:])
-            yield container, model, home
+            yield LiveGateway(container, model, home)
     shutil.rmtree(home)
 
 
 @pytest.mark.parametrize("mode", ["leave", "shutdown", "crash", "restart"])
 def test_matrix_rtc_client_visible_lifecycle_and_duplex_audio(
         mode, rtc_gateway, rtc_services, live_room, linux_nio_observer, synapse):
-    container, model, home = rtc_gateway
+    container, model, home = rtc_gateway.container, rtc_gateway.model, rtc_gateway.home
 
     def logs():
         named = {"gateway": container, "sfu": rtc_services[0], "auth": rtc_services[1], "proxy": rtc_services[2]}
@@ -129,7 +130,7 @@ def test_matrix_rtc_client_visible_lifecycle_and_duplex_audio(
             await alice.close()
             await mallory.close()
     mallory = asyncio.run(mallory_account())
-    args = repr((live_room.room_id, live_room.bot.user_id, mode, asdict(mallory)))
+    args = repr((live_room.room_id, live_room.bot.user_id, mode, asdict(mallory), _STARTUP_GRACE_SECONDS))
     code = f"import asyncio; from rtc_peer import run; print(asyncio.run(run(*{args})))"
     compile(code, "rtc-peer-command", "exec")
     def peer_json(path):

@@ -121,3 +121,46 @@ it('keeps the client title for a command-less client manual stage', async (): Pr
   expect(screen.getByText(en.updates.manualTitle)).toBeTruthy()
   expect(screen.queryByText(en.updates.manualUnavailableTitle)).toBeNull()
 })
+
+it('keeps the install actions in a non-scrolling footer below the changelog scroll area', async (): Promise<void> => {
+  const commits = Array.from({ length: 3 }, (_, index) => ({
+    sha: `000000000000000000000000000000000000000${index}`.slice(-40),
+    summary: `fix(desktop): changelog row ${index} for a pending list`,
+    author: 'hermes',
+    at: 1_759_200_000 + index * 60
+  }))
+
+  $updateOverlayTarget.set('client')
+  $updateOverlayOpen.set(true)
+  $updateStatus.set({
+    supported: true,
+    updateAvailable: true,
+    behind: commits.length + 6,
+    commits,
+    branch: 'main'
+  })
+  await act(async (): Promise<void> => {
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <UpdatesOverlay />
+      </I18nProvider>
+    )
+  })
+
+  // The dialog renders through a portal, so query from the dialog element
+  // itself rather than the render container.
+  const overlay = screen.getByRole('dialog')
+  const scrollArea = overlay.querySelector('[data-slot="update-scroll-area"]')
+  expect(scrollArea).toBeTruthy()
+  expect(scrollArea?.className).toContain('overflow-y-auto')
+
+  // The actions sit in their own pinned footer, outside the scrolling box, so
+  // a long changelog can never push them below the fold (#128170).
+  const footer = overlay.querySelector('[data-slot="update-actions"]')
+  expect(footer).toBeTruthy()
+  expect(footer?.className).toContain('shrink-0')
+  expect(scrollArea?.contains(footer as Node)).toBe(false)
+  expect(footer?.contains(screen.getByRole('button', { name: en.updates.updateNow }))).toBe(true)
+  expect(footer?.contains(screen.getByRole('button', { name: en.updates.maybeLater }))).toBe(true)
+  expect(footer?.contains(screen.getByText(en.updates.moreChanges(6)))).toBe(true)
+})

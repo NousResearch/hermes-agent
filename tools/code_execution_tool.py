@@ -133,7 +133,7 @@ _TOOL_STUBS = {
         '"""Search content or filenames. Successful searches return {"total_count": int}; content hits use "matches" (list of {path,line,content}) OR "matches_text" (dense string with "matches_format"); filename hits use "files"; output_mode="count" uses "counts". Empty keys are omitted; use .get(). Failures include "error"."""',
         '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context, "order": order}'),
     "patch": ('path: str = None, old_string: str = None, new_string: str = None, replace_all: bool = False, mode: str = "replace", patch: str = None, cross_profile: bool = False',
-        '"""Targeted replacement or V4A patch. Returns {"success": bool, "diff": str?, "files_modified": list?, "error": str?}; empty optional keys are omitted."""',
+        '"""Targeted replacement or V4A patch. Returns {"success": bool, "diff": str?, "files_modified": list?, "error": str?}; empty optional keys are omitted. Some failures return only {"error": str}: check "error" first."""',
         '{"path": path, "old_string": old_string, "new_string": new_string, "replace_all": replace_all, "mode": mode, "patch": patch, "cross_profile": cross_profile}'),
     "terminal": ("command: str, timeout: int = None, workdir: str = None",
         '"""Run a shell command (foreground only). Returns {"output": str, "exit_code": int, ...}; failures also include "error"."""',
@@ -806,7 +806,8 @@ _TOOL_DOC_LINES = [
      "target=\"files\" uses \"files\"; output_mode=\"count\" uses \"counts\". Empty keys are omitted: use .get(). Failures include \"error\"."),
     ("patch", "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
      "    Replaces old_string with new_string in the file. "
-     "Returns {\"success\": bool, \"diff\": str?, \"files_modified\": list?, \"error\": str?}; empty optional keys are omitted."),
+     "Returns {\"success\": bool, \"diff\": str?, \"files_modified\": list?, \"error\": str?}; empty optional keys are omitted. "
+     "Some failures return only {\"error\": str}: check \"error\" first."),
     ("terminal", "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
      "    Foreground only (no background/pty). Returns {\"output\": str, \"exit_code\": int, ...}; failures also include \"error\"."),
 ]

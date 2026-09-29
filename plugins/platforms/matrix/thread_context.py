@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 # belongs to a turn that the transcript already contains, and catch-up stops at that event.
 PreviousTurnCheck = Callable[[str, dict], bool]
 
+NON_CONVERSATIONAL_KEY = "com.nousresearch.hermes.non_conversational"
+
 try:
     from mautrix.api import Method
 except ImportError:
@@ -61,6 +63,8 @@ async def history_entry(
         event = raw
 
     original_content = _content_dict(event)
+    if original_content.get(NON_CONVERSATIONAL_KEY) is True:
+        return None
     content, edited = _effective_content(event)
     body = content.get("body")
     if not isinstance(body, str):

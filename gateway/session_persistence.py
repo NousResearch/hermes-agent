@@ -380,6 +380,22 @@ class SessionPersistenceMixin:
         # Compression-ended parent with a newer live child for the same peer: repoint instead of
         # dropping, or queued/resume-pending work vanishes until the next message.
         if recovered_entry is not None and recovered_entry.session_id != entry.session_id:
+            if entry.compression_paused and row.get("end_reason") == "compression":
+                try:
+                    db = self._db_for_key(key)
+                    tip = db.get_compression_tip(entry.session_id)
+                    if tip == recovered_entry.session_id:
+                        child = db.get_session(tip)
+                        peer_fields = ("source", "user_id", "chat_id", "chat_type", "thread_id")
+                        if (child is not None and row.get("session_key") == key == child.get("session_key")
+                                and all(row.get(field) == child.get(field) for field in peer_fields)):
+                            # Recovery cannot substitute for the explicit pause-release commit.
+                            recovered_entry.metadata["compression_exhausted"] = True
+                except Exception:
+                    # An indeterminate lineage must not publish an unpaused substitute route.
+                    logger.debug("gateway.session: compression lineage lookup failed for %r", key,
+                                 exc_info=True)
+                    return None
             logger.warning(
                 "gateway.session: repointing stale sessions.json entry %r from ended %s "
                 "(end_reason=%r) to recovered %s", key, entry.session_id, row["end_reason"],

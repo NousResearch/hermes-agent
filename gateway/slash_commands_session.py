@@ -73,9 +73,11 @@ def _compress_preview_reply(history, partial: bool, keep_last, focus_topic, agg_
     from agent.model_metadata import estimate_request_tokens_rough
     from hermes_cli.partial_compress import summarize_compress_preview
 
-    # The split reads display_kind, so it gets the rows themselves; only the estimate takes the projection.
-    pv_rows = [m for m in history if m.get("role") in {"user", "assistant"} and m.get("content")]
-    pv_msgs = [{"role": m.get("role"), "content": m.get("content")} for m in pv_rows]
+    # The split gets the rows the real run compresses (a tool-call-only reply is what marks a wake as
+    # answered); only the estimate takes the text projection.
+    pv_rows = [m for m in history if m.get("role") in {"user", "assistant", "tool"}]
+    pv_msgs = [{"role": m.get("role"), "content": m.get("content")} for m in pv_rows
+               if m.get("role") in {"user", "assistant"} and m.get("content")]
     report = summarize_compress_preview(pv_rows, partial, keep_last, focus_topic,
                                         estimate_request_tokens_rough(pv_msgs))
     lines = [f"🗜️ {line}" for line in report["lines"]]

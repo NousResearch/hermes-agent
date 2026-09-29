@@ -85,16 +85,27 @@ async def test_aggressive_dry_run_shows_preview_plus_note():
     runner.session_store.rewrite_transcript.assert_not_called()
 
 
+_TIMELINE_MARKER = _make_history(2) + [
+    {"role": "user", "content": "[model switched]", "display_kind": "model_switch"},
+    {"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"},
+]
+# A wake answered only by tool calls still starts an exchange, as in the real run.
+_WAKE_ANSWERED_BY_TOOL_CALLS = _make_history(1) + [
+    {"role": "user", "content": "[process exited]", "display_kind": "auto_continue"},
+    {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+    {"role": "tool", "content": "t1", "tool_call_id": "c1"},
+    {"role": "user", "content": "u1"}, {"role": "assistant", "content": "a1"},
+]
+
+
 @pytest.mark.asyncio
-async def test_preview_here_boundary_ignores_timeline_marker():
+@pytest.mark.parametrize("history", [_TIMELINE_MARKER, _WAKE_ANSWERED_BY_TOOL_CALLS],
+                         ids=["timeline_marker", "wake_answered_by_tool_calls"])
+async def test_preview_here_boundary_matches_the_run(history):
     """The preview reports the split the real run makes: a marker row is not a kept exchange."""
-    history = _make_history(2)
-    history.append({"role": "user", "content": "[model switched]", "display_kind": "model_switch"})
-    history += [{"role": "user", "content": "u2"}, {"role": "assistant", "content": "a2"}]
     runner = _make_runner(history)
     result = await runner._handle_compress_command(
         _make_event("/compress --preview here 2")
     )
     assert "2 of 7" in result, result
     assert "(5 message(s))" in result, result
-

@@ -814,6 +814,39 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
 
 
 
+
+@pytest.mark.skipif(
+    os.name == "nt"
+    or not hasattr(os, "O_NOFOLLOW")
+    or os.open not in getattr(os, "supports_dir_fd", set()),
+    reason="descriptor-relative no-follow copy is POSIX-only",
+)
+def test_copy_capped_rejects_file_swapped_to_symlink_after_validation(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact = workspace / "artifact.bin"
+    artifact.write_bytes(b"safe")
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"secret")
+    resolved = artifact.resolve()
+
+    # Model the TOCTOU window: containment validation already resolved the file,
+    # then the writable worker replaces that exact path before preservation.
+    artifact.unlink()
+    artifact.symlink_to(outside)
+    destination = tmp_path / "copied.bin"
+
+    with pytest.raises(kb.ArtifactPreservationError, match="changed during preservation"):
+        kb._copy_capped(
+            resolved,
+            destination,
+            str(artifact),
+            workspace_root=workspace.resolve(),
+        )
+
+    assert not destination.exists()
+
+
 def test_complete_task_persists_scratch_artifacts_before_cleanup(kanban_home):
     """Completion artifacts from scratch workspaces survive workspace cleanup."""
     with kbc.connect() as conn:

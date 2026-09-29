@@ -297,7 +297,9 @@ class ChannelReader:
         def read() -> bytes:
             with self.opener(Request(
                 url,
-                headers={**_HEADERS, "Accept": "application/json"},
+                # ``read_bytes`` also serves YAML/XML feeds during publication;
+                # keep representation negotiation neutral at this byte layer.
+                headers={**_HEADERS, "Accept": "*/*"},
             ), timeout=30) as response:
                 if response.geturl() != url:
                     raise ChannelError("Channel archive redirects are not permitted")

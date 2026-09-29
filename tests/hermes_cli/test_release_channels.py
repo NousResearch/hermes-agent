@@ -100,7 +100,7 @@ def test_update_reads_retry_transient_http_and_honor_retry_after(monkeypatch):
         assert timeout == 30
         attempts.append((request.full_url, request.headers))
         assert request.headers["User-agent"].startswith("Mozilla/5.0")
-        assert request.headers["Accept"] == "application/json"
+        assert request.headers["Accept"] == "*/*"
         if len(attempts) == 1:
             raise HTTPError(url, 503, "unavailable", headers, None)
         return Response()
@@ -113,10 +113,10 @@ def test_update_reads_retry_transient_http_and_honor_retry_after(monkeypatch):
     assert waits == [7.0]
 
 
-def test_read_bytes_sends_asset_headers_without_retrying(monkeypatch):
+def test_read_bytes_sends_representation_neutral_asset_headers_without_retrying(monkeypatch):
     from hermes_cli.release_channels import ChannelReader
 
-    url = "https://releases.example/releases/fixture.json"
+    url = "https://releases.example/releases/fixture.appinstaller"
     captured = []
 
     class Response:
@@ -137,11 +137,11 @@ def test_read_bytes_sends_asset_headers_without_retrying(monkeypatch):
         return Response()
 
     reader = ChannelReader("https://releases.example", opener=opener)
-    assert reader.read_bytes("releases/fixture.json") == b"fixture"
+    assert reader.read_bytes("releases/fixture.appinstaller") == b"fixture"
     request, timeout = captured[0]
     assert timeout == 30
     assert request.get_header("User-agent") == "Mozilla/5.0 (X11; Linux x86_64) hermes-update/1.0"
-    assert request.get_header("Accept") == "application/json"
+    assert request.get_header("Accept") == "*/*"
 
 
 def test_passive_reads_and_missing_objects_make_one_attempt(monkeypatch):

@@ -188,7 +188,7 @@ def _handle_react(args, remove=False):
     # for the TARGET chat_id may react to messages in that chat.  _live_adapter() is keyed by
     # PROFILE, not chat_id, so its non-None result only proves a live gateway connection exists
     # for the profile — it does NOT prove the caller is the resident session for this specific
-    # chat_id.  Jan and Stacy share one TelegramAdapter under the default profile; without this
+    # chat_id.  Two principals share one TelegramAdapter under the default profile; without this
     # check a non-resident session could react to either principal's messages.
     if platform_name == "telegram" and chat_id:
         try:
@@ -242,7 +242,7 @@ def _load_resident_guard():
     import stat as _stat
     _GUARD_DIR = _os.environ.get(
         "HERMES_RESIDENT_GUARD_DIR",
-        "/opt/data/skills/autonomous-ai-agents/sister-ping/scripts",
+        "/etc/hermes-agent/resident-guard",
     )
     _guard_file = _os.path.join(_GUARD_DIR, "resident_guard.py")
     if not _os.path.isfile(_guard_file):

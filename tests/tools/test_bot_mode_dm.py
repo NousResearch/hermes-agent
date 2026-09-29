@@ -20,7 +20,17 @@ from tools import bot_mode_dm, bot_mode_probe, bot_relay
 
 
 @pytest.fixture(autouse=True)
-def _fresh_probe_cache():
+def _fresh_probe_cache(monkeypatch):
+    # Delivery runtime resolution reads the source install's PM manifest in
+    # production. Keep unit tests hermetic; the dedicated launcher test below
+    # verifies that boundary explicitly.
+    from hermes_cli import _launchers
+
+    monkeypatch.setattr(
+        _launchers,
+        "installation_command",
+        lambda root, args, *, module: [sys.executable, str(Path(bot_mode_dm.__file__).resolve()), *args],
+    )
     bot_mode_probe._reset_cache_for_tests()
     yield
     bot_mode_probe._reset_cache_for_tests()
@@ -313,6 +323,36 @@ def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
     assert '$(and this is not shell)' in content
 
 
+
+
+def test_delivery_command_uses_installation_launcher(tmp_path, monkeypatch):
+    """The detached runner must enter Hermes' managed dependency generation."""
+    from hermes_cli import _launchers
+
+    captured = {}
+
+    def fake_installation_command(root, args, *, module):
+        captured.update(root=root, args=list(args), module=module)
+        return ["/managed/hermes", "--run-module", module, *args]
+
+    monkeypatch.setattr(_launchers, "installation_command", fake_installation_command)
+    dm_file = tmp_path / "message.txt"
+    author = {"id": "bot:sender", "name": "sender", "is_bot": True}
+
+    command = bot_mode_dm._delivery_command(
+        ["hermes", "-p", "researcher"], str(dm_file), stdin_file=False,
+        profile_home=tmp_path / "profile", author=author,
+    )
+
+    parts = shlex.split(command)
+    assert parts[:3] == ["/managed/hermes", "--run-module", "tools.bot_mode_dm"]
+    assert captured["root"] == Path(bot_mode_dm.__file__).resolve().parents[1]
+    assert captured["module"] == "tools.bot_mode_dm"
+    assert captured["args"] == [
+        "--run-delivery", "--author", json.dumps(author, separators=(",", ":")),
+        "query-file", str(dm_file), "--profile-home", str((tmp_path / "profile").resolve()),
+        "hermes", "-p", "researcher",
+    ]
 
 
 def test_cli_runner_ack_is_queued_with_the_runner_delivery_id(tmp_path, monkeypatch):
@@ -633,6 +673,41 @@ def test_live_dm_runner_retry_never_reexecutes_failed_claim(tmp_path, monkeypatc
     assert failed["status"] == "failed"
     assert failed["delivery_id"] == queued["delivery_id"]
     assert dm_file.read_text(encoding="utf-8") == "hello"
+
+
+@pytest.mark.parametrize("status", ["settled", "failed"])
+def test_live_receipt_runner_without_site_packages(tmp_path, status):
+    """The bare delivery wrapper must read an admitted receipt without YAML deps."""
+    from tools import bot_live_delivery as live
+
+    home = tmp_path / "recipient"
+    owner = dict(profile_home=str(home), session_id="bot", lease_id="lease", live_session_id="live")
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("fixture message", encoding="utf-8")
+    delivery_id = bot_mode_dm._dm_delivery_id(dm_file)
+    author = {"id": "bot:sender", "name": "Sender", "is_bot": True}
+    intent_file = Path(str(dm_file) + ".live.json")
+    intent_file.write_text(json.dumps(dict(owner=owner, message="fixture message",
+                                         delivery_id=delivery_id, author=author)), encoding="utf-8")
+    live.deliver_to_live_owner(home, owner, "fixture message", delivery_id=delivery_id, author=author)
+    live.claim_pending_delivery(home, owner)
+    outcome = {"reply": "fixture reply"} if status == "settled" else {"error": "fixture failure"}
+    live.complete_delivery(home, delivery_id, status=status, **outcome)
+    receipt = live.read_delivery_result(home, delivery_id)
+
+    proc = subprocess.run(
+        [sys.executable, "-S", str(Path(bot_mode_dm.__file__).resolve()),
+         "--run-delivery", "--author", json.dumps(author), "query-file", str(dm_file),
+         "--profile-home", str(home), str(tmp_path / "must-not-launch-hermes"), "-p", "recipient"],
+        capture_output=True, text=True, timeout=10,
+    )
+
+    assert proc.returncode == (0 if status == "settled" else 1), (proc.stdout, proc.stderr)
+    assert json.loads(proc.stdout) == dict(status=status, delivery_id=delivery_id, **outcome)
+    assert not proc.stderr
+    assert live.read_delivery_result(home, delivery_id) == receipt
+    assert dm_file.exists() == (status != "settled")
+    assert intent_file.exists() == (status != "settled")
 
 
 # ── plaintext tempfile lifecycle ─────────────────────────────────────────────

@@ -241,6 +241,25 @@ hermes gateway uninstall   # Removes schtasks entry, Startup shortcut, pid file
 
 Login auto-start is only ever installed on an explicit answer: `hermes gateway install`, a `Y` on a real terminal, or `HERMES_GATEWAY_INSTALL_START_ON_LOGIN=1`. A scripted or piped `hermes gateway start` (no TTY, or `HERMES_NONINTERACTIVE=1`) starts the gateway without touching the Scheduled Task or the Startup folder; set `HERMES_GATEWAY_INSTALL_START_ON_LOGIN=0` to skip the question on a terminal too.
 
+### Operator-managed Scheduled Tasks
+
+If you intentionally changed the gateway task's trigger, principal or launcher, set this in the
+owning profile's `config.yaml` **before starting or updating Hermes**:
+
+```yaml
+gateway:
+  windows_task_reconcile: false
+```
+
+This disables automatic task-template replacement from `hermes gateway start` and `hermes update`.
+Status shows a neutral opt-out note instead of recommending a destructive repair. The default is
+`true`, so ordinary installations still receive template hardening. With the opt-out, you are
+responsible for maintaining the task settings yourself.
+
+This preserves the **registered task definition**, not custom edits to Hermes-generated launcher
+scripts (updates still refresh those). An explicit `hermes gateway install` still replaces the task;
+this setting does not add boot-task installation or change manual gateway launch identity.
+
 ### Why not a Windows Service?
 
 Services require admin rights to install and tie the gateway's lifecycle to machine boot, not user login. The typical Hermes user wants: log in → gateway available, log out → gateway gone. Scheduled Tasks do exactly that without elevation. If you genuinely want a service, use `nssm` or `sc create` manually — but you probably don't. If you do, name it `Hermes*` or point its binary path inside the Hermes install (`venv\Scripts\hermes.exe`, the checkout, or `gateway-service\`): `hermes update` stops and restarts only services it can positively identify as Hermes-owned through the Service Control Manager, and pauses a Scheduled-Task-launched gateway by PID (Task Scheduler itself is never touched).

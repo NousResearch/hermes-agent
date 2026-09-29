@@ -619,6 +619,12 @@ const SESSIONS_LIST_TICK_GAP_MS = 10_000
 // backstops) keep their cadence because they carry liveness, not the heavy
 // list reconciliation.
 const TYPING_BURST_QUIET_MS = 1_500
+// Coalesce return-to-window transcript catches: waking the display fires
+// `visibilitychange` and `focus` together, and ⌘⇥ mashing fires `focus` in a
+// burst. The signature-gated read underneath is cheap, but the burst still
+// resolves to one pull within the gap. Long enough to absorb the wake pair,
+// short enough that a user returning minutes later always gets a fresh read.
+const TRANSCRIPT_RETURN_COALESCE_MS = 2_000
 
 interface LiveSessionStatusItem {
   id?: string
@@ -1061,6 +1067,49 @@ export function useBackgroundSync({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- connect-scoped: session deps would fire on every switch
   }, [activeConnectionId, activeGatewayProfile, gatewayState])
+
+  // Returning to the window catches the transcript up. The reconnect backstop
+  // above only fires when the socket actually transitioned, but a socket that
+  // zombie-survived a machine sleep never transitions, and even a healthy
+  // redial is async — a submit in the first seconds after wake can beat both
+  // and bounce off the stale-send guard once. `visibilitychange -> visible` /
+  // `focus` close that window: the same signature-gated read the backstop
+  // uses, pulled the moment the user is actually looking again. A no-change
+  // read costs nothing, and the coalescing gap absorbs the wake pair and any
+  // ⌘⇥ mashing. Messaging transcripts already poll on visibility in their own
+  // effect below, so they stay out of this edge.
+  useEffect(() => {
+    if (gatewayState !== 'open' || activeIsMessaging || !activeSessionId || !activeStoredSessionId) {
+      return
+    }
+
+    let lastRunAt = 0
+
+    const catchUp = () => {
+      const now = Date.now()
+
+      if (now - lastRunAt < TRANSCRIPT_RETURN_COALESCE_MS) {
+        return
+      }
+
+      lastRunAt = now
+      requestActiveTranscriptRefresh(true)
+    }
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        catchUp()
+      }
+    }
+
+    window.addEventListener('focus', catchUp)
+    document.addEventListener('visibilitychange', onVisibility)
+
+    return () => {
+      window.removeEventListener('focus', catchUp)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [activeIsMessaging, activeSessionId, activeStoredSessionId, gatewayState, requestActiveTranscriptRefresh])
 
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session

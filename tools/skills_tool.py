@@ -261,7 +261,8 @@ def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False)
                     "category": _get_category_from_path(skill_md), "tier": tier, "root": scan_dir,
                     "path": skill_md, "visible": bool(skill_matches_platform(frontmatter)
                                                       and skill_matches_environment(frontmatter)
-                                                      and skill_matches_apps(frontmatter))})
+                                                      and skill_matches_apps(frontmatter)),
+                    "author": frontmatter.get("author")})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:

@@ -13570,7 +13570,13 @@ function focusWindow(win) {
     win.restore()
   }
 
-  if (!win.isVisible()) {
+  // macOS can leave a window ordered out while Electron still reports it as
+  // visible. Re-order it explicitly so HUD exit and Dock activation can recover
+  // the main surface instead of making focus() a no-op.
+  if (IS_MAC) {
+    win.hide()
+    win.show()
+  } else if (!win.isVisible()) {
     win.show()
   }
 

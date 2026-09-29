@@ -52,6 +52,9 @@ export const en: Translations = {
       "Could not load this plugin’s script. Check the Network tab (dashboard-plugins/…) and the server’s plugin path.",
     pluginNotRegistered:
       "The plugin’s script did not call register(), or the script errored. Open the browser console for details.",
+    pluginCrashed:
+      "This plugin ran into an error and stopped working. The rest of the dashboard is unaffected.",
+    pluginCrashedDetails: "Error details",
   },
 
   app: {

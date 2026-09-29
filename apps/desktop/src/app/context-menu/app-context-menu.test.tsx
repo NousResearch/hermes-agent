@@ -394,6 +394,20 @@ describe('AppContextMenu', () => {
     expect(await screen.findByText('Copy URL')).toBeTruthy()
   })
 
+  it('lets editable targets inside a radix surface use the edit menu', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach(
+      `<div data-slot="context-menu-trigger"><textarea>draft text</textarea></div>`
+    )
+    const textarea = host.querySelector('textarea')!
+
+    fireEvent.contextMenu(textarea)
+
+    expect(await screen.findByText('Select all')).toBeTruthy()
+    expect(screen.getByText('Paste')).toBeTruthy()
+  })
+
   it('leaves surfaces with their own radix menu alone', () => {
     installBridge()
     mountMenu()

@@ -228,7 +228,7 @@ async function waitForHooks(cdp) {
   }
 }
 
-/** Bring the minimized window back: maximize restores it, the second toggle un-maximizes. */
+/** Bring the minimized window back: maximize restores it, the second toggle un-maximizes (a window that started maximized ends un-maximized). */
 async function restoreWindow(cdp) {
   await cdp.eval('window.hermesDesktop.windowControls.toggleMaximize()')
   await sleep(500)
@@ -279,6 +279,8 @@ export default {
     const live = {}
     const phases = {}
     let attribution = null
+    let attributing = false
+    let minimizeRequested = false
     let hiddenMethod = null
     let minimized = false
     let restored = true
@@ -315,6 +317,7 @@ export default {
       phases.viewed_busy = await measurePhase(cdp, browser, seconds)
 
       await cdp.eval('window.hermesDesktop.windowControls.minimize()')
+      minimizeRequested = true
       minimized = await waitForPaused(cdp, true, 5000)
       hiddenMethod = minimized ? 'minimize' : 'forced-attribute'
 
@@ -328,12 +331,13 @@ export default {
 
       if (minimized) {
         restored = await restoreWindow(cdp)
-        minimized = false
+        minimized = !restored
       } else {
         await cdp.eval(forcePaused(false))
       }
 
       if (opts.attribute && restored) {
+        attributing = true
         attribution = await attributeAnimations(cdp, browser, live.viewed_busy, seconds)
       }
 
@@ -355,7 +359,9 @@ export default {
       await quietly(forcePaused(false))
       await quietly(RESUME_PAUSED)
 
-      if (minimized) {
+      // A minimize the app never reported (no pause attribute) still left the
+      // window minimized; bring it back either way.
+      if (minimized || (minimizeRequested && hiddenMethod === 'forced-attribute')) {
         await restoreWindow(cdp).catch(() => undefined)
       }
 
@@ -364,11 +370,11 @@ export default {
         await quietly(RESTORE_SESSIONS)
       }
 
-      if (attribution) {
+      if (attributing) {
         // play() detached the attributed animations from CSS; a reload
         // recreates them CSS-driven for whatever runs next.
-        await quietly('location.reload()')
-        await sleep(1000)
+        await quietly('window.__IDLE_BURN_RELOADING__ = true; location.reload()')
+        await waitFor(cdp, '!window.__IDLE_BURN_RELOADING__', 60000)
         await waitForHooks(cdp).catch(() => undefined)
       }
 

@@ -81,7 +81,9 @@ if (winParam === 'overlay') {
 } else {
   // CSS animations do not inherit Chromium's JS-loop pause policy. Mirror the
   // main window's visibility state to :root so decorative infinite
-  // animations stop producing frames when nobody can see them.
+  // animations stop producing frames when nobody can see them. Never disposed:
+  // it also holds the window's shared hidden-state subscription, so pause
+  // controllers created later start from the real state (renderer-loop-pause).
   installRendererAnimationPauseState()
 
   createRoot(document.getElementById('root')!).render(

@@ -10,7 +10,8 @@
  *    before any app module loads (so libraries that capture rAF at import,
  *    like motion's frame loop, are counted too);
  *  - `Element.animate()` calls, which catch timer-driven replays of finite
- *    Web Animations (StatusPulse's shared beat).
+ *    Web Animations (StatusPulse's shared beat). Mount entrances
+ *    (useEnterAnimation, fill 'backwards') are one-offs and not counted.
  * Not counted: DOM updates driven by setInterval/setTimeout alone (for
  * example DecodeText). Idle polls legitimately use timers, so a timer count
  * cannot be gated.
@@ -85,6 +86,14 @@ function installProbe() {
   const animate = Element.prototype.animate
 
   Element.prototype.animate = function (this: Element, ...args: Parameters<Element['animate']>) {
+    // Mount entrances (useEnterAnimation: a short transform with fill
+    // 'backwards') are one-offs tied to a DOM insert, not a loop.
+    const options = args[1]
+
+    if (typeof options === 'object' && options?.fill === 'backwards') {
+      return animate.apply(this, args)
+    }
+
     probe.animateCalls += 1
     // The last few callers, so a failure names what animated.
     const cls = typeof this.className === 'string' ? this.className.trim().split(/\s+/).slice(0, 3).join('.') : ''
@@ -211,6 +220,7 @@ test('idle windows move nothing, hidden windows pause, and motion stops with the
   const sandbox = createCoreSandbox('idle')
   writeProviderHome(sandbox.hermesHome, provider.url)
   const { app, page } = await launchCoreApp(coreAppEnv(sandbox))
+  let cdp: CDPSession | undefined
 
   try {
     await waitForInteractive(app, page)
@@ -220,14 +230,15 @@ test('idle windows move nothing, hidden windows pause, and motion stops with the
     await page.reload()
     await waitForInteractive(app, page)
 
-    const cdp = await page.context().newCDPSession(page)
-    await cdp.send('Performance.enable')
+    const session = await page.context().newCDPSession(page)
+    cdp = session
+    await session.send('Performance.enable')
 
     const settleStill = async (message: string) => {
-      await expect.poll(async () => verdict(await motion(page, cdp)), { timeout: 30_000, message }).toBe('still')
+      await expect.poll(async () => verdict(await motion(page, session)), { timeout: 30_000, message }).toBe('still')
       // Confirm over a sustained window: a loop that restarts on a timer,
       // or a one-off quiet sample, does not pass.
-      const sustained = await motion(page, cdp, 5_000)
+      const sustained = await motion(page, session, 5_000)
       expect(verdict(sustained), `${message} (sustained 5s)`).toBe('still')
 
       return sustained
@@ -245,7 +256,7 @@ test('idle windows move nothing, hidden windows pause, and motion stops with the
       await send(page, `${U(1)} start`, 'Enter')
       await provider.streamStarted(U(1))
       await expect
-        .poll(async () => verdict(await motion(page, cdp)), {
+        .poll(async () => verdict(await motion(page, session)), {
           timeout: 30_000,
           message: 'a running turn shows motion (otherwise the idle step proves nothing)'
         })
@@ -296,12 +307,12 @@ test('idle windows move nothing, hidden windows pause, and motion stops with the
         }
 
         await expect
-          .poll(async () => verdict(await motion(page, cdp), { judgeFrames }), {
+          .poll(async () => verdict(await motion(page, session), { judgeFrames }), {
             timeout: 15_000,
             message: 'nothing moves while hidden'
           })
           .toBe('still')
-        const sustained = await motion(page, cdp, 5_000)
+        const sustained = await motion(page, session, 5_000)
         expect(verdict(sustained, { judgeFrames }), 'nothing moves while hidden (sustained 5s)').toBe('still')
         test.info().annotations.push({
           type: 'hidden recalcs/s (turn running)',
@@ -311,7 +322,10 @@ test('idle windows move nothing, hidden windows pause, and motion stops with the
 
       await onPageWindow(app, page, 'show')
       await expect
-        .poll(async () => verdict(await motion(page, cdp)), { timeout: 15_000, message: 'motion resumes when shown' })
+        .poll(async () => verdict(await motion(page, session)), {
+          timeout: 15_000,
+          message: 'motion resumes when shown'
+        })
         .not.toBe('still')
     })
 
@@ -325,9 +339,8 @@ test('idle windows move nothing, hidden windows pause, and motion stops with the
         .toBe(true)
       await settleStill('nothing moves once the turn ends')
     })
-
-    await cdp.detach()
   } finally {
+    await cdp?.detach().catch(() => undefined)
     await app.close().catch(() => undefined)
     await provider.close()
   }

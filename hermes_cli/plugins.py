@@ -207,9 +207,9 @@ VALID_HOOKS: Set[str] = {
     # the clock did not already fire is enabled. Kwargs: session_id, turn_id, platform, model,
     # user_message, assistant_response, previous_assistant (what the user replied to), clock_memory,
     # clock_skills, turns_since_memory, iters_since_skill. Return None or {"review": "memory" |
-    # "skills" | [both]} to run that review now. Can only ADD a review the memory.nudge_interval /
-    # skills.creation_nudge_interval clock has not fired; never suppresses one, and a kind whose
-    # interval is 0 or whose tool is absent never runs (agent/review_trigger.py).
+    # "skills" | [both]} to run that review now, and/or {"skip": ...} to drop a clock-fired review —
+    # honored only with auxiliary.background_review.judgment_can_skip (default off); a request beats a
+    # skip. A kind whose interval is 0 or whose tool is absent never runs (agent/review_trigger.py).
     "request_background_review",
 }
 

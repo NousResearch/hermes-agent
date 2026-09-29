@@ -124,7 +124,8 @@ def test_a_judged_lesson_reviews_before_the_clock_and_resets_it(monkeypatch):
     assert calls[0]["clock_memory"] is False
 
 
-@pytest.mark.parametrize("answer", [None, {"review": []}, {"review": "nothing"}, "yes", RuntimeError("down")])
+@pytest.mark.parametrize("answer", [None, {"review": []}, {"review": "nothing"}, "yes", RuntimeError("down"),
+                                    {"skip": "memory"}])
 def test_a_subscriber_cannot_suppress_the_clock(monkeypatch, answer):
     _subscriber(monkeypatch, answer)
     agent = _agent()
@@ -205,3 +206,81 @@ def test_shell_hook_can_request_a_review():
 
     assert _parse_response("request_background_review", '{"review": ["skills", "bogus"]}') == {"review": ["skills"]}
     assert _parse_response("request_background_review", '{"review": []}') is None
+
+
+# --- Opt-in: auxiliary.background_review.judgment_can_skip ------------------------------------------
+
+
+def _can_skip(monkeypatch, value=True):
+    monkeypatch.setattr(review_trigger, "_review_settings", lambda: (True, value))
+
+
+def test_with_skip_enabled_a_judged_empty_window_drops_the_clock_review(monkeypatch):
+    _can_skip(monkeypatch)
+    calls = _subscriber(monkeypatch, {"skip": ["memory", "skills"]})
+    agent = _agent()
+    _finalize(agent, clock_memory=True)
+    assert _spawned(agent) == []
+    assert calls[0]["clock_can_be_skipped"] is True
+
+
+def test_skip_only_drops_the_kinds_it_names(monkeypatch):
+    _can_skip(monkeypatch)
+    _subscriber(monkeypatch, {"skip": "skills"})
+    agent = _agent()
+    agent._iters_since_skill = 20  # skills clock due too
+    _finalize(agent, clock_memory=True)
+    assert _spawned(agent) == [(True, False)]
+
+
+def test_a_request_beats_a_skip_from_another_subscriber(monkeypatch):
+    _can_skip(monkeypatch)
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: name == "request_background_review")
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook",
+                        lambda name, **kw: [{"skip": "memory"}, {"review": "memory"}] if name == "request_background_review" else [])
+    agent = _agent()
+    _finalize(agent, clock_memory=True)
+    assert _spawned(agent) == [(True, False)]
+
+
+def test_skip_enabled_but_subscriber_fails_keeps_the_clock_review(monkeypatch):
+    _can_skip(monkeypatch)
+    _subscriber(monkeypatch, RuntimeError("judge down"))
+    agent = _agent()
+    _finalize(agent, clock_memory=True)
+    assert _spawned(agent) == [(True, False)]
+
+
+def test_skip_from_real_config_and_real_plugin(monkeypatch):
+    """E2E: judgment_can_skip read from the real config.yaml; the plugin loaded by real discovery."""
+    import hermes_yaml as yaml
+
+    home = Path(os.environ["HERMES_HOME"])
+    plugin_dir = home / "plugins" / "lesson_gate_skip_probe"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.yaml").write_text("name: lesson_gate_skip_probe\n", encoding="utf-8")
+    (plugin_dir / "__init__.py").write_text(
+        "def register(ctx):\n"
+        "    ctx.register_hook('request_background_review', lambda **kw: {'skip': ['memory', 'skills']})\n",
+        encoding="utf-8",
+    )
+    cfg = {"plugins": {"enabled": ["lesson_gate_skip_probe"]}}
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    monkeypatch.setattr(plugins_mod, "_plugin_manager", plugins_mod.PluginManager())
+    plugins_mod.discover_plugins()
+
+    default_agent = _agent()
+    _finalize(default_agent, clock_memory=True)
+    assert _spawned(default_agent) == [(True, False)]  # off by default: the clock review runs
+
+    cfg["auxiliary"] = {"background_review": {"judgment_can_skip": True}}
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    opted_in = _agent()
+    _finalize(opted_in, clock_memory=True)
+    assert _spawned(opted_in) == []
+
+
+def test_shell_hook_can_request_a_skip():
+    from agent.shell_hooks import _parse_response
+
+    assert _parse_response("request_background_review", '{"skip": "skills"}') == {"skip": ["skills"]}

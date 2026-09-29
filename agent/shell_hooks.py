@@ -472,10 +472,11 @@ def _parse_context(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def _parse_review_request(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    # {"review": "memory"} or {"review": ["memory", "skills"]}; anything else asks for nothing.
-    from agent.review_trigger import parse_review_request
-    kinds = parse_review_request([data])
-    return {"review": sorted(kinds)} if kinds else None
+    # {"review": ...} and/or {"skip": ...} (kinds: "memory", "skills"); anything else asks for nothing.
+    from agent.review_trigger import parse_review_request, parse_review_skip
+    review, skip = parse_review_request([data]), parse_review_skip([data])
+    out = {**({"review": sorted(review)} if review else {}), **({"skip": sorted(skip)} if skip else {})}
+    return out or None
 
 
 _RESPONSE_PARSERS: Dict[str, Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = {

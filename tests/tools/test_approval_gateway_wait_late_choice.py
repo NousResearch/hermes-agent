@@ -95,3 +95,36 @@ def test_withdrawn_entry_settles_with_a_wire_reason(monkeypatch):
     decision = wait_mod._await_gateway_decision(SESSION_KEY, lambda data: None, APPROVAL)
     assert decision["choice"] is None and decision["cancelled"]
     assert reasons == ["session_closed"]
+
+
+def test_reply_after_the_deadline_reports_a_timeout(monkeypatch):
+    """A reply in the waiter's last poll slice, after the deadline has passed, leaves the entry to its waiter,
+    which reports a timeout; it is not a withdrawal."""
+    _clear()
+    clock = [100.0]
+    monkeypatch.setattr("tools.approval_gateway_wait.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("tools.approval.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 900)
+    hooks: list[tuple[str, dict]] = []
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: hooks.append((name, kw)))
+    late: list[int] = []
+
+    class _Event:
+        def __init__(self):
+            self._set = False
+
+        def wait(self, timeout):
+            clock[0] = 1000.0
+            late.append(mod.resolve_gateway_approval(SESSION_KEY, "once"))
+            return self._set
+
+        def set(self):
+            self._set = True
+
+        def is_set(self):
+            return self._set
+
+    monkeypatch.setattr(wait_mod.threading, "Event", _Event)
+    decision = wait_mod._await_gateway_decision(SESSION_KEY, lambda data: None, APPROVAL)
+    responses = [kw["choice"] for name, kw in hooks if name == "post_approval_response"]
+    assert (decision, late, responses) == ({"resolved": False, "choice": None, "reason": None}, [0], ["timeout"])

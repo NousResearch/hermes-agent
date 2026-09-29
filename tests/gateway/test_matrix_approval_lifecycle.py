@@ -75,8 +75,10 @@ async def test_card_controls_and_terminal_work_remain_with_the_owner(tmp_path, m
             elif boundary == "expired_typed":
                 prompt.expires_at = entry.expires_at = 0
                 assert approval.resolve_gateway_approval(session, "once", approval_id=entry.approval_id) == 0
-                assert entry.settle is not None
-                entry.settle("session_closed")
+                assert entry.settle is not None and entry.result is None
+                with approval._lock:
+                    approval._gateway_queues.pop(session)
+                entry.settle("timeout")
             elif boundary != "disconnect":
                 assert entry.settle is not None
                 with approval._lock:

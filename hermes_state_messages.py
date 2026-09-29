@@ -446,6 +446,22 @@ class SessionMessagesMixin:
 
         return self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
+    def release_caller_history_deliveries(self, session_id: str, row_ids: List[int]) -> int:
+        """Undo a claim whose consumer could not use the rows, so the next claim sees them again."""
+        lineage = self._resume_lineage_ids(session_id)
+        ids = [int(i) for i in row_ids]
+        if not ids:
+            return 0
+
+        def _do(conn):
+            return conn.execute(
+                "UPDATE messages SET display_metadata = json_remove(display_metadata, '$.caller_history_consumed')"
+                f" WHERE id IN ({_placeholders(ids)}) AND session_id IN ({_placeholders(lineage)})"
+                " AND json_extract(display_metadata, '$.caller_history_consumed') IS NOT NULL",
+                (*ids, *lineage)).rowcount
+
+        return self._execute_write(_do)
+
     def claim_caller_history_deliveries(self, session_id: str) -> List[Dict[str, Any]]:
         """Claim the lineage's detached delegation rows no caller-history run has consumed yet.
 

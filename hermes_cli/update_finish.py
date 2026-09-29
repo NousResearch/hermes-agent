@@ -35,6 +35,24 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
                               _windows_gateway_resume=windows_resume, update_complete=complete)
 
 
+# The build runner (``run_contained``) already captures the failing command's
+# output tail on ``CalledProcessError.output``; ``str(exc)`` alone is only the
+# exit code (the receipts in the report carried ``4294967295`` and nothing
+# else). Carry a bounded slice of the tail so the failure tells a locked-file
+# abort from a missing tool without rerunning the build (#124040).
+_COMPLETION_FAILURE_TAIL_CHARS = 4000
+
+
+def _completion_failure_detail(exc: Exception) -> str:
+    """Diagnosable receipt detail for a takeover completion failure."""
+    text = str(exc)
+    output = getattr(exc, "output", None)
+    if isinstance(output, str) and output.strip():
+        tail = output.strip()[-_COMPLETION_FAILURE_TAIL_CHARS:]
+        return f"{text}\n--- failing command output tail ---\n{tail}"
+    return text
+
+
 def _restore_plan(data):
     if not data:
         return None
@@ -117,7 +135,7 @@ def main(context: Path, result: Path) -> int:
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 1
     except Exception as exc:
-        update_receipt.record_step("historical_completion", False, str(exc))
+        update_receipt.record_step("historical_completion", False, _completion_failure_detail(exc))
         print(f"Update completion failed: {exc}", file=sys.stderr, flush=True)
     finally:
         if code and request.get("gateway_mode"):

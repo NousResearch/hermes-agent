@@ -11,6 +11,7 @@ import functools
 from urllib.parse import quote
 
 import pytest
+from mautrix.errors import MNotFound
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent, MessageType
@@ -18,7 +19,7 @@ from gateway.session import SessionSource
 from plugins.platforms.matrix.rtc import join as jn
 from plugins.platforms.matrix.rtc import outbound as ob
 from plugins.platforms.matrix.rtc.join import CALL_MEMBER_TYPE, MatrixCall, MatrixRTCVoiceMixin, live_call_members
-from plugins.platforms.matrix.rtc.membership import CallMembershipLease
+from plugins.platforms.matrix.rtc.membership import CallMembershipLease, call_membership_content
 from tests.gateway.matrix_rtc_helpers import (
     FOCUS_URL, SESSION, VoiceRunner, call_member_event, room_member_event, sync)
 
@@ -91,15 +92,15 @@ class _FakeClock:
 class _Api:
     """``client.api``: records every raw request after the versions probe."""
 
-    def __init__(self, delayed_events=True, fail_on=None):
-        self.calls, self.delayed_events, self.fail_on = [], delayed_events, fail_on
+    def __init__(self, delayed_events=True, fail_on=None, error=RuntimeError("M_UNKNOWN")):
+        self.calls, self.delayed_events, self.fail_on, self.error = [], delayed_events, fail_on, error
 
     async def request(self, method, path, content=None, query_params=None, **kwargs):
         if str(method) == "GET":
             return {"unstable_features": {"org.matrix.msc4140": self.delayed_events}}
         self.calls.append((str(method), path, content, query_params))
         if self.fail_on is not None and self.fail_on in path:
-            raise RuntimeError("M_NOT_FOUND")
+            raise self.error
         return {"delay_id": "delay1"} if query_params else {"event_id": "$event"}
 
 
@@ -164,6 +165,17 @@ def state_path():
 
 def delayed_path(action):
     return f"/_matrix/client/unstable/org.matrix.msc4140/delayed_events/delay1/{action}"
+
+
+def own_membership_event(content):
+    """The room's state for the bot's own call membership, as a sync delivers it."""
+    return {"type": CALL_MEMBER_TYPE, "state_key": f"_{BOT}_DEVICEBOT_m.call", "sender": BOT,
+            "origin_server_ts": NOW_MS, "content": content}
+
+
+async def settle():
+    for _ in range(20):
+        await asyncio.sleep(0)
 
 
 @pytest.fixture
@@ -234,6 +246,35 @@ async def test_a_failed_restart_leaves_the_call_and_clears_the_membership(call):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content, api, expected", [
+    pytest.param({}, _Api(), [
+        ("POST", delayed_path("cancel"), {}, None),
+        ("PUT", state_path(), {}, {"org.matrix.msc4140.delay": 8_000}),
+        ("PUT", state_path(), call_membership_content(BOT, ROOM, "DEVICEBOT", FOCUS_URL), None),
+    ], id="cleared"),
+    pytest.param({}, _Api(fail_on="/cancel", error=MNotFound(404, "Delayed event not found")), [
+        ("POST", delayed_path("cancel"), {}, None),
+        ("PUT", state_path(), {}, {"org.matrix.msc4140.delay": 8_000}),
+        ("PUT", state_path(), call_membership_content(BOT, ROOM, "DEVICEBOT", FOCUS_URL), None),
+    ], id="cleared-by-its-own-delayed-leave"),
+    pytest.param(call_membership_content(BOT, ROOM, "DEVICEBOT", FOCUS_URL), _Api(), [], id="own-echo"),
+])
+async def test_a_live_call_publishes_its_membership_again_when_room_state_loses_it(call, content, api, expected):
+    """A crashed process's delayed leave has the same state key as a later process's
+    membership, so it can clear that membership while the call is up. As in
+    matrix-js-sdk's MembershipManager ("Missing own membership: force re-join"), the bot
+    replaces its own delayed leave and publishes the membership again."""
+    adapter, api, clock = await call(api)
+    del api.calls[:]
+
+    adapter.update_rtc_call_state(sync(ROOM, own_membership_event(content)))
+    await settle()
+
+    assert (api.calls, list(adapter.rtc_receivers)) == (expected, [ROOM])
+    await adapter.leave_voice_channel(ROOM)
+
+
+@pytest.mark.asyncio
 async def test_leaving_sends_the_delayed_leave_and_stops_renewing(call):
     adapter, api, clock = await call()
     del api.calls[:]
@@ -244,13 +285,13 @@ async def test_leaving_sends_the_delayed_leave_and_stops_renewing(call):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ending", ["requester-hangs-up", "bot-leaves-the-room", "requester-loses-authorisation",
-                                    "renewal-fails", "adapter-disconnects"])
+                                    "renewal-fails", "republishing-fails", "adapter-disconnects"])
 async def test_a_call_that_ends_without_voice_leave_stops_the_spoken_replies(call, tmp_path, ending):
     """``/voice join`` switches the room to spoken replies, and ``/voice leave`` switches
     them off. When the bot leaves the call for any other reason, the gateway has to switch
     them off too, or every later reply in the room is also sent as a voice message."""
-    adapter, api, clock = await call(_Api(fail_on="/restart" if ending == "renewal-fails" else None),
-                                     runner_home=tmp_path)
+    fail_on = {"renewal-fails": "/restart", "republishing-fails": "/cancel"}.get(ending)
+    adapter, api, clock = await call(_Api(fail_on=fail_on), runner_home=tmp_path)
     left = asyncio.Event()
     reset_voice_mode = adapter._on_voice_disconnect
 
@@ -268,6 +309,8 @@ async def test_a_call_that_ends_without_voice_leave_stops_the_spoken_replies(cal
         await clock.tick()
     if ending == "renewal-fails":
         await clock.tick()
+    if ending == "republishing-fails":
+        adapter.update_rtc_call_state(sync(ROOM, own_membership_event({})))
     if ending == "adapter-disconnects":
         await adapter.close_rtc_calls()
     await asyncio.wait_for(left.wait(), 2)

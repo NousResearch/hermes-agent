@@ -195,8 +195,13 @@ class ApiErrorSummaryMixin:
         if isinstance(body, dict):
             err = body.get("error") if isinstance(body.get("error"), dict) else {}
             # Policy gateways state the refusal in ``reason``/``detail`` with no ``message``
-            # at all (#125058); without this fallback the summary line shows the raw JSON.
-            msg = err.get("message") or err.get("reason") or err.get("detail") or body.get("message")
+            # at all (#125058), and may send a flat body (no ``error`` wrapper) that carries
+            # the same fields at the top level; without this fallback the summary line shows
+            # the raw JSON.
+            msg = (
+                err.get("message") or err.get("reason") or err.get("detail")
+                or body.get("message") or body.get("reason") or body.get("detail")
+            )
             if msg:
                 msg = ApiErrorSummaryMixin._coerce_api_error_detail(msg)
                 return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")

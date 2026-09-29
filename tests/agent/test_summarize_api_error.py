@@ -106,3 +106,15 @@ def test_policy_gateway_reason_without_message_is_surfaced():
     summary = AIAgent._summarize_api_error(err)
     assert "estimated cost $0.02 exceeds policy threshold" in summary
     assert "{" not in summary
+
+
+def test_policy_gateway_flat_body_reason_is_surfaced():
+    """A flat policy-gateway body (no ``error`` wrapper) states its refusal in a
+    top-level ``reason`` (#125058); the summary must read it, not the raw JSON."""
+    err = Exception("Error code: 403")
+    err.status_code = 403
+    err.body = {"type": "wardryx_denied", "reason": "workspace policy blocks this model"}
+    err.response = SimpleNamespace(text="")
+    summary = AIAgent._summarize_api_error(err)
+    assert "workspace policy blocks this model" in summary
+    assert "{" not in summary

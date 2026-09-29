@@ -1012,7 +1012,10 @@ def _off_route_host(c: _Ctx) -> str:
 _403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
 
 # Machine-readable ``type``/``code`` values that DO name a credential/permission
-# refusal: a 403 carrying one of them keeps the auth verdict (#125058).
+# refusal: a 403 carrying one of them keeps the auth verdict (#125058). Matched as
+# substrings, not exact membership — real gateways stamp composite codes
+# (``unauthenticated_waf``, ``auth_required``, ``invalid_token_expired``) that an
+# exact set would miss and misread as a policy refusal.
 _403_AUTH_ERROR_TYPES = frozenset({
     "authentication_error", "authentication", "auth_error", "auth", "unauthenticated",
     "invalid_api_key", "invalid_token", "token_expired", "token_revoked", "unauthorized",
@@ -1028,21 +1031,34 @@ def _structured_policy_refusal(c: _Ctx) -> Optional[Verdict]:
     credential was never rejected (the same key answers the turns before and after), so
     the API-key copy and credential rotation are wrong. Kept narrower than "any unknown
     code": the code must be symbolic (Azure stamps a bare numeric ``"403"``) and must not
-    name an auth type, and the body must carry readable detail. The detail is screened
-    against the wording tables first — a gateway that words its refusal as billing, a
-    WAF block or an auth refusal keeps that verdict, because ``_status_403``'s earlier
-    checks only see ``error.message``, not ``reason``/``detail``. A code-less or
-    wording-only 403 keeps the auth verdict.
+    name an auth type, and the body must carry readable detail. The fields are read from
+    ``error`` or straight off the top level (some gateways send a flat body), and a body
+    flagging itself ``retryable`` is transient, not a policy verdict — both keep the auth
+    default. The detail is screened against the wording tables first — a gateway that
+    words its refusal as billing, a WAF block or an auth refusal keeps that verdict,
+    because ``_status_403``'s earlier checks only see ``error.message``, not
+    ``reason``/``detail``. A code-less or wording-only 403 keeps the auth verdict.
     """
-    code = c.code
-    if not code or code.isdigit() or code in _403_AUTH_ERROR_TYPES:
+    body = c.body if isinstance(c.body, dict) else {}
+    err = _error_obj(body) or body
+    # ``_extract_error_code`` only reads ``type`` inside ``error``; a flat body names its
+    # refusal in a top-level ``type``/``code`` instead.
+    code = (c.code or str(err.get("code") or err.get("type") or "")).strip().lower()
+    if not code or code.isdigit() or any(t in code for t in _403_AUTH_ERROR_TYPES):
         return None
-    err = _error_obj(c.body)
+    if c.code in _BILLING_ERROR_CODES:
+        # A structured billing code is never a policy verdict — and the xAI spending-limit
+        # code is provider-scoped, so off xai-oauth it keeps the auth default.
+        return None
     text = " ".join(
         str(t) for t in (err.get("message"), err.get("reason"), err.get("detail"))
         if isinstance(t, str) and t.strip()
     ).strip().lower()
     if not text:
+        return None
+    if err.get("retryable") is True:
+        # The gateway itself says the refusal is transient — not a policy verdict; the
+        # 403 keeps its auth default so the configured retry budget applies.
         return None
     if any(p in text for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
@@ -1058,7 +1074,15 @@ def _status_403(c: _Ctx) -> Verdict:
         return _V_OVERLOADED
     # OpenRouter 403 "key limit exceeded" and similar plan/credit exhaustion are billing.
     xai_spend = c.provider_slug == "xai-oauth" and c.code == _XAI_SPENDING_LIMIT_ERROR_CODE
-    billing = xai_spend or any(p in c.msg for p in ("key limit exceeded", "spending limit") + _BILLING_PATTERNS)
+    # A structured billing code is decisive on 404/429; on 403 it must not fall into the
+    # policy-refusal branch either — an exhausted balance is not a policy verdict and
+    # keeps credential rotation. xAI's spending-limit code stays provider-scoped.
+    structured_billing = c.code in _BILLING_ERROR_CODES and c.code != _XAI_SPENDING_LIMIT_ERROR_CODE
+    billing = (
+        xai_spend
+        or structured_billing
+        or any(p in c.msg for p in ("key limit exceeded", "spending limit") + _BILLING_PATTERNS)
+    )
     if billing:
         return _V_BILLING
     # A WAF/CDN in front of the provider answered, not the provider: the credential never
@@ -1403,8 +1427,10 @@ def _body_message_candidates(body: dict) -> Iterator[Any]:
     yield args.get("reason") if isinstance(args, dict) else None
     # Policy gateways put the human-readable refusal in ``error.reason`` while ``message``
     # is absent (#125058); without this candidate the raw str(error) JSON is all the
-    # terminal copy can show.
+    # terminal copy can show. A flat body (no ``error`` wrapper) states it at the top
+    # level instead.
     yield _error_obj(body).get("reason")
+    yield body.get("reason")
     # FastAPI/Starlette relays and the Codex gateway answer {"detail": "..."} (or a nested
     # OpenAI-ish object); without it a descriptive rejection reads as a bare 400 and the
     # large-session heuristic sends it into compression (#81558). A list here is pydantic's

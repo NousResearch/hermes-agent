@@ -136,6 +136,39 @@ def test_normalize_parses_string_envelope_single_dict():
     assert entries == [{"name": "session_search", "arguments": {"query": "x"}}]
 
 
+def test_normalize_repairs_swapped_close_brackets_in_string_envelope():
+    """Measured on a long Qwen3.8-27B turn (5/5 tool_call attempts failed): the
+    model emitted the batch as a JSON string whose tail read ``...}]}`` instead
+    of ``...}}]`` — the element object's closer and the outer array's closer
+    were emitted out of order. One bounded swap repair restores the payload
+    instead of rejecting it."""
+    good = json.dumps([
+        {"name": "session_search",
+         "arguments": {"query": "x", "plan": [{"id": "s", "step": "t", "status": "in_progress"}]}}
+    ])
+    # correct tail:  args"}  elem"}  outer"]   ->  "...}}]"
+    assert good.endswith("}}]")
+    # model emitted elem/outer swapped:   "...}]}"  (args"}  outer"]  elem"}")
+    swapped = good[:-2] + "]}"
+    assert swapped != good
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(swapped)  # premise: naive parse fails
+    entries, err = normalize_tool_call_entries({"calls": swapped})
+    assert err is None
+    assert entries == json.loads(good)
+
+
+def test_normalize_rejects_bracket_failures_outside_the_repair_class():
+    """A bracket failure that is not an adjacent closer swap must still be
+    rejected — the repair is one well-defined class, never a silent best-effort
+    parser."""
+    # missing comma between two array entries: unrepairable by a single swap
+    bad = "[{\"name\": \"a\"}{\"name\": \"b\"}]"
+    entries, err = normalize_tool_call_entries({"calls": bad})
+    assert entries == []
+    assert "not valid JSON" in (err or "")
+
+
 @pytest.mark.parametrize(
     "bad,expected_fragment",
     [

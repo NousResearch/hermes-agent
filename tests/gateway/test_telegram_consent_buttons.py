@@ -4,7 +4,7 @@ Mirrors test_telegram_clarify_buttons.py's mock-Update/CallbackQuery pattern. Po
 CONSENT_REQUEST_SCRIPT at the REAL consent_request.py script (so this exercises the real
 resolve_via_button logic, not a fake) but always with CONSENT_LEDGER redirected to a
 per-test tmp_path — never the production
-/opt/data/sister-ping/consent_ledger.jsonl, and never calls `hermes send` / a real chat_id.
+/etc/hermes-agent/resident-guard-state/consent_ledger.jsonl, and never calls `hermes send` / a real chat_id.
 """
 import importlib.util
 import os
@@ -18,7 +18,7 @@ import pytest
 from gateway.platforms.base import unauthorized_action_notice
 
 # This test file intentionally loads the real consent_request.py from
-# /opt/data/skills/autonomous-ai-agents/sister-ping/scripts/ to exercise the
+# /etc/hermes-agent/resident-guard/ to exercise the
 # real resolve_via_button logic.  That read hits the home-IO guard, which is
 # correct behaviour — this opt-out is intentional and documented.
 pytestmark = pytest.mark.allow_real_home_io
@@ -30,7 +30,7 @@ if _repo not in sys.path:
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import PlatformConfig
 
-_CONSENT_SCRIPT = "/opt/data/skills/autonomous-ai-agents/sister-ping/scripts/consent_request.py"
+_CONSENT_SCRIPT = "/etc/hermes-agent/resident-guard/consent_request.py"
 
 
 def _make_adapter():
@@ -63,7 +63,7 @@ def consent_env(tmp_path, monkeypatch):
     return {"ledger": ledger, "helper": helper}
 
 
-def _seed_request(helper, request_id, *, principal="jan", chat_id="89662969"):
+def _seed_request(helper, request_id, *, principal="testuser", chat_id="12345678"):
     ev = {
         "event": "requested", "request_id": request_id, "created_at": time.time(),
         "requested_by": "test", "principal": principal, "chat_id": chat_id,
@@ -72,7 +72,7 @@ def _seed_request(helper, request_id, *, principal="jan", chat_id="89662969"):
     helper._with_lock(helper.ledger_path(), lambda events: (None, [ev]))
 
 
-def _make_query(data, *, chat_id="89662969", user_id="89662969", first_name="Jan", text="Consent request"):
+def _make_query(data, *, chat_id="12345678", user_id="12345678", first_name="Testy", text="Consent request"):
     query = AsyncMock()
     query.data = data
     query.message = MagicMock()

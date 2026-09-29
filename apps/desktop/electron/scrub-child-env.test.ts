@@ -37,6 +37,16 @@ test('preserves non-secret endpoints and operator-owned credentials', () => {
   ]) {
     assert.equal(isHermesCredentialEnvVar(name), false, name)
   }
+
+  const scrubbed = scrubDesktopChildEnv({
+    OPENROUTER_BASE_URL: 'https://openrouter.example/v1',
+    openrouter_api_key: 'provider-secret',
+    NPM_TOKEN: 'operator-secret'
+  })
+
+  assert.equal(scrubbed.OPENROUTER_BASE_URL, 'https://openrouter.example/v1')
+  assert.equal(scrubbed.openrouter_api_key, undefined)
+  assert.equal(scrubbed.NPM_TOKEN, 'operator-secret')
 })
 
 test('scrubs every source map without deleting empty non-secret values', () => {

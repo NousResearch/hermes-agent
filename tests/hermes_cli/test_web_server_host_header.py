@@ -245,18 +245,23 @@ class TestWebSocketHostOriginGuard:
 @pytest.mark.parametrize("origin, trusted", [
     ("http://localhost:3999", False),     # a page previewed from any other local port
     ("http://127.0.0.1:5500", False),     # e.g. VS Code Live Server
+    ("http://127.0.0.1:5176", False),     # another hgui slot's renderer, not this backend's
     ("http://localhost:9119", True),      # the bound port
     ("http://localhost:5173", True),      # dashboard Vite dev server (proxies /api + ws)
+    ("http://127.0.0.1:5175", True),      # this backend's desktop renderer (hgui slot 1)
 ])
 def test_other_local_ports_can_neither_read_nor_open_a_socket(monkeypatch, origin, trusted):
     """A loopback page on another port is a different origin. It must get no CORS grant (else it
     reads index.html's session token) and no WebSocket upgrade (else it drives /api/pty with that
-    token) — only the documented dashboard origins and the bound port are trusted."""
+    token) — only the documented dashboard origins, the bound port and the desktop renderer this
+    backend was spawned for (Electron passes HERMES_DESKTOP_DEV_SERVER down; worktree-ui-dev.md
+    runs slot N's Vite on 5174+N) are trusted."""
     from fastapi.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
     import hermes_cli.web_server as ws
 
+    monkeypatch.setenv("HERMES_DESKTOP_DEV_SERVER", "http://127.0.0.1:5175")
     monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
     monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
     monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)

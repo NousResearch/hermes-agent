@@ -731,6 +731,7 @@
     "commandCenter.statCost",
     "commandCenter.statSessions",
     "commandCenter.statTokens",
+    "commandCenter.toggleBrowser",
     "commandCenter.topModels",
     "commandCenter.topSkills",
     "commandCenter.unpinSession",
@@ -4925,6 +4926,7 @@
     "zones.toggleStripTab",
     "zones.zoneCount",
     "zones.zoneEditorTitle",
+    "zones.zoneMenuLabel",
     "zones.zoneTag"
   ]
 }

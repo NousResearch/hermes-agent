@@ -457,7 +457,7 @@ async def test_failed_dispatch_retries_without_acknowledging_or_repeating_siblin
         SynapseSyncFailure("Invalid stream token"),
     ],
 )
-async def test_rejected_cursor_refreshes_state_and_preserves_offline_intake(
+async def test_rejected_cursor_refreshes_state_with_startup_grace(
     tmp_path, monkeypatch, transport, error
 ):
     requests, responses = transport
@@ -479,7 +479,6 @@ async def test_rejected_cursor_refreshes_state_and_preserves_offline_intake(
     ]
     assert [call.args[2] for call in adapter._handle_text_message.await_args_list] == [
         "$recent",
-        "$offline",
     ]
     await adapter.disconnect()
 
@@ -1944,3 +1943,52 @@ async def test_sync_loop_retries_a_batch_that_the_gateway_did_not_consume(
         ) == (["s1", "s2", "s1", "s2"], ["$first"], "s2")
     finally:
         await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rejected_by", ["connect", "sync-loop"])
+async def test_rejected_cursor_after_restart_does_not_replay_handled_history(
+    tmp_path, monkeypatch, transport, rejected_by
+):
+    requests, responses = transport
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    first = make_adapter()
+    handled_yesterday = message("$handled-yesterday", int((NOW - 1) * 1000))
+    responses.append(batch("s1", handled_yesterday))
+    assert await first.connect()
+    await first.disconnect()
+
+    # A day later the gateway restarts and the homeserver rejects the saved cursor.
+    monkeypatch.setattr(matrix.time, "time", lambda: NOW + 86400)
+    restarted = make_adapter()
+    offline = message("$sent-while-offline", int((NOW + 86399) * 1000))
+    if rejected_by == "connect":
+        responses.extend([
+            SyncFailure("expired since token"),
+            batch("s2", handled_yesterday),
+        ])
+        assert await restarted.connect()
+    else:
+        responses.append(batch("s2", offline))
+        assert await restarted.connect()
+        responses.extend([
+            SyncFailure("expired since token"),
+            SyncFailure("expired since token"),
+            batch("s3", handled_yesterday),
+        ])
+        real_sleep = asyncio.sleep
+        monkeypatch.setattr(asyncio, "sleep", lambda delay: real_sleep(0))
+        restarted._sync_task = asyncio.create_task(_SYNC_LOOP(restarted))
+
+        async def fallback_absorbed():
+            # The sixth request follows the absorbed fallback response.
+            while len(requests) < 6:
+                await real_sleep(0)
+
+        await asyncio.wait_for(fallback_absorbed(), timeout=2)
+    handled = [c.args[2] for c in restarted._handle_text_message.await_args_list]
+    await restarted.disconnect()
+    assert (first._handle_text_message.await_count, handled) == (
+        1,
+        ["$sent-while-offline"] if rejected_by == "sync-loop" else [],
+    )

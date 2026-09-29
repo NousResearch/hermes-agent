@@ -612,10 +612,46 @@ def _home_prefix_fold_regex(path: str):
     return re.compile(r"[/\\]*" + r"[/\\]+".join(re.escape(c) for c in components) + _PATH_TAIL)
 
 
+# A Windows drive path and the MSYS POSIX-drive mount name the SAME directory two ways
+# (`C:\Users\alice` == `/c/Users/alice`), and the second is what this host's bash terminal writes
+# natively. The fold below keys on the string, so a home listed in only one dialect never folded
+# the other: `/c/Users/alice/.bashrc` and `sed -i … /c/Users/alice/AppData/Local/hermes/config.yaml`
+# reached no home rule at all and ran ungated. Both directions matter — `$HOME` is
+# `/c/Users/alice` under git-bash and `C:\Users\alice` under a native shell, and the terminal
+# backend normalises it to the latter, so neither spelling can be relied on as the only input.
+# Deliberately NOT gated on the host OS: a Linux-hosted Hermes driving a Windows box over SSH
+# classifies the same strings (the precedent the path patterns in test_approval_windows.py pin).
+_WINDOWS_DRIVE_PATH_RE = re.compile(r"^([A-Za-z]):[/\\](.+)$")
+_POSIX_DRIVE_PATH_RE = re.compile(r"^/([A-Za-z])/(.+)$")
+
+
+def _drive_dialect_spellings(path: str) -> list[str]:
+    """*path* named in the other Windows drive dialect — the same directory, so it must fold
+    either way. Both letter cases: MSYS accepts `/c/` and `/C/`. Empty for a path with no
+    drive letter (`/home/alice`, `""`, a UNC share), so POSIX hosts are byte-for-byte unchanged
+    and `/home/x` is never mistaken for a mount of `H:`."""
+    match = _WINDOWS_DRIVE_PATH_RE.match(path)
+    if match:
+        drive, tail = match.group(1), match.group(2).replace("\\", "/")
+        return [f"/{d}/{tail}" for d in (drive.lower(), drive.upper())]
+    match = _POSIX_DRIVE_PATH_RE.match(path)
+    if match:
+        drive, tail = match.group(1), match.group(2)
+        return [f"{d}:/{tail}" for d in (drive.upper(), drive.lower())]
+    return []
+
+
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
     """Fold each resolved home prefix in *command* to *replacement* (no trailing separator; the tail
-    supplies it). Longest first so a deeper home folds before a shorter overlapping one that would clobber it."""
-    for path in dict.fromkeys(sorted((p for p in paths if p), key=len, reverse=True)):
+    supplies it). Longest first so a deeper home folds before a shorter overlapping one that would clobber it.
+    Every path also folds under its other Windows drive dialect (_drive_dialect_spellings), so the
+    same directory reaches the rules however the shell spelled it."""
+    candidates: list[str] = []
+    for path in paths:
+        if path:
+            candidates.append(path)
+            candidates.extend(_drive_dialect_spellings(path))
+    for path in dict.fromkeys(sorted(candidates, key=len, reverse=True)):
         pattern = _home_prefix_fold_regex(path)
         if pattern is not None:
             command = pattern.sub(lambda m: replacement + m.group("tail").replace("\\", "/"), command)

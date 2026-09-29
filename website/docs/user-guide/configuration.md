@@ -999,6 +999,7 @@ compression:
   threshold_tokens: null                            # Absolute token cap (optional) — takes lower of ratio vs absolute
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
   tail_mode: lean                                   # Tail retention: "lean" (default — clamped 2.5% tail, 10K-25K, never above 20% of the window, with a detailed session log + anchor index + session_search recovery pointers in the summary, all from ONE auxiliary summarizer call; ~3x fewer retained tokens after compaction) or "legacy" (0.20×threshold verbatim tail)
+  mode: standard                                    # Built-in ContextCompressor residual when context.engine=compressor. "standard" (LLM summary, default), "catalog" (extractive redacted catalog, no summarizer), or "hybrid" (standard summary plus one unique-handle index). Provider-native Codex compaction may bypass this setting. Invalid values fall back to standard. Orthogonal to tail_mode. Plugin engines are not passed this parameter.
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   protect_first_n: 3                                # Non-system head messages pinned across compactions (0 = pin nothing)
   in_place: true                                    # Compact on the same session id (no rotation) — see below

@@ -17,6 +17,10 @@ from typing import Any, Dict, List, Optional, Union
 
 from hermes_state_common import _BOUNDARY_END_REASONS
 from hermes_time import safe_strftime
+from tools.session_search_hints import (  # noqa: F401  (re-exported)
+    SESSION_SEARCH_DISCOVERY_CALL,
+    SESSION_SEARCH_DISCOVERY_HINT,
+)
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
 # subagent runs, kanban workers are not the user's history.
@@ -651,6 +655,7 @@ def check_session_search_requirements() -> bool:
 SESSION_SEARCH_SCHEMA = {
     "name": "session_search",
     "description": (
+        f"DISCOVERY CALL: {SESSION_SEARCH_DISCOVERY_CALL} — {SESSION_SEARCH_DISCOVERY_HINT} "
         "Recall past conversations: search or read old Hermes sessions (FTS5), or "
         "scroll inside one. Four shapes, picked by args: `query` = discovery "
         "(top-N matching sessions, top result fully hydrated); `session_id` + "

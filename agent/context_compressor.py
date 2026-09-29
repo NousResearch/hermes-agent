@@ -31,6 +31,16 @@ from agent.auxiliary_client import (
     call_llm,
     extract_content_or_reasoning,
 )
+from agent.catalog_residual import (
+    CATALOG_BUDGET_CHARS,
+    LEAN_ANCHOR_HEADING,
+    append_hybrid_handle_index,
+    build_catalog_residual,
+    build_hybrid_handle_index,
+    extract_catalog_items,
+    merge_handles_into_anchor_index,
+    normalize_compression_mode,
+)
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -42,6 +52,7 @@ from agent.model_metadata import (
 )
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
+from tools.session_search_hints import SESSION_SEARCH_DISCOVERY_CALL, SESSION_SEARCH_DISCOVERY_HINT
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
@@ -959,7 +970,7 @@ _LEAN_TAIL_DEMOTE_MIN_CHARS = 1_500
 
 def _lean_recovery_stub(tool_name: str, content_len: int, session_id: str) -> str:
     """One-line replacement for a demoted tail tool result."""
-    hint = f" Recover with session_search(query=..., session_id='{session_id}')" if session_id else ""
+    hint = f" Recover with {SESSION_SEARCH_DISCOVERY_CALL} — {SESSION_SEARCH_DISCOVERY_HINT}" if session_id else ""
     return (
         f"[{tool_name or 'tool'} output demoted at compaction — {content_len:,} "
         f"chars preserved in session history.{hint}]"
@@ -1018,11 +1029,11 @@ def _build_recovery_footer(session_id: str, region_len: int) -> str:
     return (
         "\n\n" + _LEAN_RECOVERY_HEADING + "\n"
         f"The {region_len} compacted message(s) remain fully preserved in "
-        "session history. If you need any detail this summary does not carry "
-        "(exact command output, file contents, error text, earlier "
-        "reasoning), recover it with: "
-        f"session_search(query='<keywords>', session_id='{session_id}') — "
-        "do not guess at lost specifics when you can look them up."
+        f"session history for this session ({session_id}). If you need any "
+        "detail this summary does not carry (exact command output, file "
+        "contents, error text, earlier reasoning), recover it with: "
+        f"{SESSION_SEARCH_DISCOVERY_CALL} — {SESSION_SEARCH_DISCOVERY_HINT} "
+        "Do not guess at lost specifics when you can look them up."
     )
 
 
@@ -1052,7 +1063,7 @@ Spend up to ~{_LEAN_SESSION_LOG_BUDGET_TOKENS} tokens here — this section is t
 
 # Anchor ledger: mechanically harvested exact identifiers, no LLM, so needle facts
 # (SHAs, ids, error strings) cannot be paraphrased away; also a session_search map.
-_LEAN_ANCHOR_HEADING = "## Anchor Index (mechanically extracted, exact)"
+_LEAN_ANCHOR_HEADING = LEAN_ANCHOR_HEADING
 _LEAN_ANCHOR_BUDGET_CHARS = 7_000
 _ANCHOR_PATTERNS: "list[tuple[str, re.Pattern[str], int]]" = [
     ("PRs/issues", re.compile(r"#\d{3,6}\b"), 120),
@@ -1280,6 +1291,11 @@ def _content_length_for_budget(raw_content: Any) -> int:
         (image_chars if _is_image_part(p) else len(p.get("text", "") or "")) if isinstance(p, dict) else len(str(p))
         for p in raw_content
     )
+
+
+def _estimate_compacted_window_chars(messages: List[Dict[str, Any]]) -> int:
+    """Character length of a compacted middle, for catalog grow-clamp checks."""
+    return sum(_content_length_for_budget(msg.get("content")) for msg in messages)
 
 
 def _serialized_length_for_budget(value: Any) -> int:
@@ -2696,11 +2712,14 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, mode: str = "standard",
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
+        # Compaction residual: standard (LLM summary), catalog (extractive replacement), or hybrid
+        # (standard + one unique-handle index). Orthogonal to tail_mode; invalid values → standard.
+        self.mode = normalize_compression_mode(mode)
         # Per-model context_length overrides live in custom_providers; without them deferred
         # resolution falls back to the hardcoded family catalog (#83324).
         self.custom_providers = custom_providers or None
@@ -3569,6 +3588,89 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             if heading not in summary:
                 summary += build()
         return summary
+
+    def _generate_catalog_residual(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+    ) -> str:
+        """Build an extractive catalog residual without calling the aux LLM."""
+        snapshot = self._latest_user_task_snapshot(turns_to_summarize)
+        if snapshot:
+            task_snapshot = snapshot
+        else:
+            # Zero-user provenance: the catalog must carry the same sentinel
+            # the Standard path uses so resume / anti-harvest stay aligned.
+            task_snapshot = _NO_USER_TASK_SENTINEL
+
+        previous = ""
+        if self._previous_summary:
+            previous = _redact_compaction_text(
+                self._strip_summary_prefix(self._previous_summary)
+            )
+
+        body = build_catalog_residual(
+            turns_to_summarize,
+            previous_residual=previous,
+            task_snapshot=task_snapshot,
+        )
+        if not str(body).strip():
+            raise RuntimeError("catalog residual was empty")
+
+        _pruned_names = _collect_ghosted_skill_names(turns_to_summarize)
+        body = _reinject_pruned_skill_markers(body, _pruned_names)
+        body = _redact_compaction_text(body)
+        # Catalog never calls the summarizer. Lean keeps only the
+        # session_search recovery footer — not digests, verbatim quotes,
+        # or the mechanical anchor index.
+        if getattr(self, "tail_mode", "legacy") == "lean":
+            if _LEAN_RECOVERY_HEADING not in body:
+                footer = _build_recovery_footer(
+                    getattr(self, "_session_id", "") or "",
+                    len(turns_to_summarize),
+                )
+                if footer:
+                    body = body.rstrip() + footer
+        self._validate_summary_user_provenance(
+            body, bool(getattr(self, "_summary_has_user_turn", False))
+        )
+        self._previous_summary = body
+        self._clear_compression_failure_cooldown()
+        self._last_summary_error = None
+        self._clear_terminal_summary_failures()
+        return self._with_summary_prefix(body)
+
+    def _append_hybrid_handle_index(
+        self,
+        summary: str,
+        turns_to_summarize: List[Dict[str, Any]],
+        previous_residual: str = "",
+    ) -> str:
+        """Rebuild exactly one unique-handle index after a Standard summary.
+
+        Seeds from ``previous_residual`` (the pre-generation prior compaction
+        residual), not the just-written Standard summary. Lean already carries
+        the mechanical Anchor Index plus other summary aids — strip any
+        echoed Unique handles heading so the extractive index is not doubled.
+        """
+        if getattr(self, "tail_mode", "legacy") == "lean":
+            # Reingest prior Unique handles / Anchor Index before stripping
+            # the public Unique section, then fold first-window handles into
+            # the single lean Anchor Index so they survive the next pass.
+            items = extract_catalog_items(
+                turns_to_summarize,
+                previous_residual=previous_residual,
+            )
+            updated = merge_handles_into_anchor_index(summary, items)
+            updated = append_hybrid_handle_index(updated, "")
+            self._previous_summary = self._strip_summary_prefix(updated)
+            return updated
+        index = build_hybrid_handle_index(
+            turns_to_summarize,
+            previous_residual=previous_residual,
+        )
+        updated = append_hybrid_handle_index(summary, index)
+        self._previous_summary = self._strip_summary_prefix(updated)
+        return updated
 
     @classmethod
     def _bound_summary_input(cls, content: str) -> str:
@@ -5146,6 +5248,61 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         return True
 
+    def _catalog_grow_clamp(
+        self, telemetry: Dict[str, Any], turns_to_summarize: List[Dict[str, Any]],
+        compress_start: int, compress_end: int,
+    ) -> bool:
+        """Skip catalog construction when the middle is smaller than the residual budget.
+        A window below CATALOG_BUDGET_CHARS could be replaced by a residual up to that budget and grow
+        context; unlike the min-reclaim skip this needs no prior ineffectiveness strike."""
+        window_chars = _estimate_compacted_window_chars(turns_to_summarize)
+        if window_chars >= CATALOG_BUDGET_CHARS:
+            return False
+        self._last_feasibility_skip = True
+        self._prellm_skip_count += 1
+        telemetry["prellm_skip_count"] = self._prellm_skip_count
+        telemetry["catalog_skip_reason"] = "window_smaller_than_budget"
+        if not self.quiet_mode:
+            logger.warning(
+                "Compression: catalog window (%d chars at indices %d-%d) is below CATALOG_BUDGET_CHARS (%d) — "
+                "skipping catalog construction to avoid growing context. prellm_skip_count=%d",
+                window_chars, compress_start, compress_end, CATALOG_BUDGET_CHARS, self._prellm_skip_count,
+            )
+        return True
+
+    def _catalog_window(
+        self, telemetry: Dict[str, Any], turns_to_summarize: List[Dict[str, Any]], scan: "_HandoffScan",
+        n_skipped: int,
+    ) -> Optional[str]:
+        """Build the catalog residual; ``None`` means construction failed and compression aborted.
+        Catalog failures always abort (fail-closed) regardless of abort_on_summary_failure."""
+        from agent.conversation_compression import _caller_attempt_is_current
+
+        try:
+            return self._generate_catalog_residual(turns_to_summarize)
+        except AuxiliaryExplicitCancellation:
+            if _caller_attempt_is_current(self):
+                self._previous_summary = scan.previous_summary_before
+                self._summary_has_user_turn = scan.has_user_turn_before
+            raise
+        except Exception as exc:
+            logger.warning("Catalog residual construction failed: %s", exc)
+            self._last_summary_error = f"catalog residual failed: {exc}"
+        self._last_summary_dropped_count = 0  # nothing actually dropped
+        self._last_summary_fallback_used = False
+        self._last_compress_aborted = True
+        telemetry["failure_class"] = "catalog_construction_failed"
+        # Roll back the self-heal rehydration so the aborted attempt is a true no-op (#57835).
+        if _caller_attempt_is_current(self):
+            self._previous_summary = scan.previous_summary_before
+        if not self.quiet_mode:
+            logger.warning(
+                "Catalog residual construction failed — aborting compaction without injecting a "
+                "Standard fallback. %d message(s) preserved unchanged.",
+                n_skipped,
+            )
+        return None
+
     def _abort_on_summary_failure(
         self, telemetry: Dict[str, Any], n_skipped: int, previous_summary_before_scan: Optional[str],
     ) -> bool:
@@ -5443,9 +5600,30 @@ Write only the summary body. Do not include any preamble or prefix."""
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
+        compaction_mode = normalize_compression_mode(getattr(self, "mode", "standard"))
+        telemetry["compaction_mode"] = compaction_mode
+        # Snapshot the prior residual BEFORE summary generation mutates _previous_summary: hybrid
+        # reingests unique handles from it across repeated compactions.
+        prior_residual = (
+            _redact_compaction_text(self._strip_summary_prefix(self._previous_summary))
+            if self._previous_summary else ""
+        )
         feasibility_skip = not force and self._feasibility_skip(telemetry, turns_to_summarize, compress_start, compress_end)
+        if compaction_mode == "catalog" and not force:
+            if feasibility_skip:
+                telemetry["catalog_skip_reason"] = "feasibility_min_reclaim"
+            else:
+                feasibility_skip = self._catalog_grow_clamp(
+                    telemetry, turns_to_summarize, compress_start, compress_end,
+                )
         summary = None  # feasibility skip: no LLM call; Phase 4 inserts the deterministic fallback
-        if not feasibility_skip:
+        if compaction_mode == "catalog" and not feasibility_skip:
+            # Extractive replacement — never calls the auxiliary summarizer, and a construction
+            # failure aborts instead of injecting the Standard static narrative (no-invention).
+            summary = self._catalog_window(telemetry, turns_to_summarize, scan, compress_end - compress_start)
+            if not summary:
+                return canonical_messages
+        elif not feasibility_skip:
             summary = self._summarize_window(
                 messages, turns_to_summarize, scan, focus_topic, memory_context, bypass_cooldown,
             )
@@ -5456,6 +5634,12 @@ Write only the summary body. Do not include any preamble or prefix."""
         if not summary:
             summary = self._fallback_summary_for_window(
                 telemetry, turns_to_summarize, compress_end - compress_start, feasibility_skip,
+            )
+        if compaction_mode == "hybrid" and summary:
+            # Hybrid = Standard residual plus one compact unique-handle index, seeded from the
+            # pre-generation prior residual (lean folds it into the existing Anchor Index instead).
+            summary = self._append_hybrid_handle_index(
+                summary, turns_to_summarize, previous_residual=prior_residual,
             )
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)

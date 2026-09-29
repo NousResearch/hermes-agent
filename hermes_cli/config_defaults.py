@@ -600,6 +600,12 @@ DEFAULT_CONFIG = {
         # (~3x fewer retained tokens; a few extra summarizer calls at the boundary). "legacy" =
         # 0.20×threshold verbatim tail (100-240K tokens on big windows).
         "tail_mode": "lean",
+        # mode: compaction residual (orthogonal to tail_mode). Built-in ContextCompressor only;
+        # applies when context.engine=compressor. Provider-native Codex compaction may bypass it.
+        # "standard" = current LLM summary (default); "catalog" = extractive redacted catalog of
+        # files/tools/ids/topics/asks, no auxiliary summarizer call; "hybrid" = standard summary
+        # plus one compact unique-handle index. Invalid values fall back to standard.
+        "mode": "standard",
         # protect_last_n: minimum recent messages kept uncompressed, honoured up to a small count
         # floor; the verbatim tail is otherwise token-bounded and never above 20% of the window.
         "protect_last_n": 20,

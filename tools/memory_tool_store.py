@@ -104,6 +104,9 @@ class MemoryStore:
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
+        # Successful add/replace calls that honored an explicit user "remember this" request.
+        # Observability only: never gates writes or changes caps.
+        self.user_requested_write_count = 0
 
     # Per-turn counter of failed at-capacity consolidation attempts; reset at each turn boundary by
     # reset_consolidation_failures() (#42405).

@@ -30,3 +30,23 @@ def test_memory_schema_has_no_forbidden_top_level_combinators():
             "Codex backend (chatgpt.com/backend-api/codex). Per-action "
             "required-field checks belong in the runtime handler, not the schema."
         )
+
+
+def test_memory_store_accepts_explicit_task_progress_writes(tmp_path, monkeypatch):
+    """Guidance routes autonomous writes; MemoryStore stays permissive."""
+    from tools.memory_tool import MemoryStore
+
+    monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+    store = MemoryStore(memory_char_limit=2000, user_char_limit=1000)
+    store.load_from_disk()
+    result = store.add("memory", "Phase 3 done — submitted PR #4242 at abcdef123")
+    assert result["success"] is True
+    assert any("Phase 3 done" in entry for entry in store.memory_entries)
+
+
+def test_memory_schema_routes_autonomous_writes_and_marks_user_requests():
+    description = MEMORY_SCHEMA["description"]
+    assert "session_search" in description
+    assert "explicit user-authored memory writes are still accepted" in description
+    assert "user_requested=true" in description
+    assert MEMORY_SCHEMA["parameters"]["properties"]["user_requested"]["default"] is False

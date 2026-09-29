@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { BUILTIN_PERSONALITIES } from './constants'
+import { BUILTIN_PERSONALITIES, ENUM_OPTIONS, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
 import {
   clearsEnabledToolsets,
@@ -18,6 +18,17 @@ import {
 } from './helpers'
 
 describe('settings helpers', () => {
+  it('surfaces Compression Mode on Memory & Context with searchable enum options', () => {
+    const memory = SECTIONS.find(section => section.id === 'memory')
+
+    expect(memory?.keys).toEqual(expect.arrayContaining(['compression.mode']))
+    expect(ENUM_OPTIONS['compression.mode']).toEqual(['standard', 'catalog', 'hybrid'])
+    expect(fieldCopyForSchemaKey(FIELD_LABELS, 'compression.mode')).toBe('Compression Mode')
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'compression.mode')).toMatch(/catalog/i)
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'compression.mode')).toMatch(/context\.engine=compressor/)
+    expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, 'compression.mode')).toMatch(/Codex/)
+  })
+
   it('does not shadow the backend schema options for memory.provider', () => {
     // memory.provider options are discovery-driven and served by the backend
     // config schema (merged per-request); enumOptionsFor must return undefined

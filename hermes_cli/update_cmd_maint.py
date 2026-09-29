@@ -426,11 +426,19 @@ def _restore_state_db_from_snapshot(state_path: Path, snap_state: Path) -> bool:
     from hermes_cli.backup import verify_sqlite_integrity
     from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     from hermes_state_holders import foreign_state_db_holders
-    holders = sorted({pid for pid, _target in foreign_state_db_holders(state_path)})
+    holders = foreign_state_db_holders(state_path)
     if holders:
+        pids = sorted({pid for pid, _target in holders if pid > 0})
+        unknown = [target for pid, target in holders if pid <= 0]
+        reason = (
+            f"process(es) {pids} still hold state.db or its WAL open."
+            if pids
+            else "cannot prove no process holds state.db or its WAL open."
+        )
+        if unknown:
+            reason += f" (holder scan incomplete: {unknown[0][:120]})"
         print(
-            f"  ✗ Auto-restore refused: process(es) {holders} still hold "
-            "state.db or its WAL open. Stop them (hermes gateway stop), "
+            f"  ✗ Auto-restore refused: {reason} Stop them (hermes gateway stop), "
             "then restore manually with /snapshot restore."
         )
         return False

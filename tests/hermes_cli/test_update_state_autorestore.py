@@ -219,6 +219,22 @@ def test_restore_helper_propagates_copy_errors(tmp_path):
         _restore_state_db_from_snapshot(state_path, tmp_path / "does-not-exist.db")
 
 
+def test_restore_helper_names_an_inconclusive_holder_scan(
+    live_db_with_hot_wal, snapshot_db, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        "hermes_state_holders.foreign_state_db_holders",
+        lambda path: [(-1, "open-file scan unavailable")],
+    )
+
+    assert _restore_state_db_from_snapshot(live_db_with_hot_wal, snapshot_db) is False
+
+    out = capsys.readouterr().out
+    assert "[-1]" not in out
+    assert "holder scan incomplete: open-file scan unavailable" in out
+    assert _row_count(live_db_with_hot_wal) == OLD_ROWS
+
+
 # ── Multi-profile coverage (#97994) ─────────────────────────────────────
 
 

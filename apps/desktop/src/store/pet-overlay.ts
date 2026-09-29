@@ -4,8 +4,8 @@ import { desktopOrbCopy } from '@/app/jarvis/desktop-orb-copy'
 import {
   $desktopOrbConnection,
   $desktopOrbMode,
-  type DesktopOrbState,
-  ORB_WINDOW_SIZE
+  currentOrbWindowSize,
+  type DesktopOrbState
 } from '@/app/jarvis/desktop-orb-state'
 import { $jarvisUi } from '@/app/jarvis/store'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
@@ -200,7 +200,7 @@ export function popOutDesktopOrb(onOpened?: () => void): void {
     const saved = loadSavedBounds()
 
     if (saved) {
-      void window.hermesDesktop?.petOverlay?.open({ bounds: { ...saved, ...ORB_WINDOW_SIZE }, screen: true }).then(result => {
+      void window.hermesDesktop?.petOverlay?.open({ bounds: { ...saved, ...currentOrbWindowSize() }, screen: true }).then(result => {
         if (result.bounds) {saveBounds(result.bounds)}
         onOpened?.()
       })
@@ -215,7 +215,7 @@ export function popOutDesktopOrb(onOpened?: () => void): void {
 
   const saved = loadSavedBounds()
   openOverlay({
-    bounds: { ...(saved ?? { x: Math.max(0, window.innerWidth - 360), y: 100 }), ...ORB_WINDOW_SIZE },
+    bounds: { ...(saved ?? { x: Math.max(0, window.innerWidth - 360), y: 100 }), ...currentOrbWindowSize() },
     screen: Boolean(saved)
   }, onOpened)
 }
@@ -288,7 +288,7 @@ export function popOutPet(petRect: PetOverlayBounds): void {
   const pet = $petInfo.get()
 
   const { width, height } = $desktopOrbMode.get()
-    ? ORB_WINDOW_SIZE
+    ? currentOrbWindowSize()
     : overlayWindowSize(pet.frameW ?? 192, pet.frameH ?? 208, pet.scale ?? 0.33)
 
   const x = Math.round(petRect.x - (width - petRect.width) / 2)
@@ -315,7 +315,7 @@ export function restorePetOverlay(): void {
     return
   }
 
-  openOverlay({ bounds: $desktopOrbMode.get() ? { ...saved, ...ORB_WINDOW_SIZE } : saved, screen: true })
+  openOverlay({ bounds: $desktopOrbMode.get() ? { ...saved, ...currentOrbWindowSize() } : saved, screen: true })
 }
 
 /** Pop the pet back into the window (closes the overlay window). */

@@ -10,6 +10,7 @@ import { type ReactNode, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { useI18n } from '@/i18n'
+import { triggerHaptic } from '@/lib/haptics'
 import { ArrowUpRight, Brain, Check, ChevronDown, Cpu, Loader2, Users } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -66,7 +67,10 @@ export function RailCard({
         <button
           aria-expanded={!folded}
           className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left outline-none focus-visible:outline focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--ui-accent)"
-          onClick={() => setRailCardCollapsed(testId, !folded)}
+          onClick={() => {
+            triggerHaptic(folded ? 'open' : 'close')
+            setRailCardCollapsed(testId, !folded)
+          }}
           type="button"
         >
           <Icon className="size-4 shrink-0 text-(--ui-accent)" />

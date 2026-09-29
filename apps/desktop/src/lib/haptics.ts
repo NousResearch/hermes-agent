@@ -1,5 +1,6 @@
 import type { HapticInput, TriggerOptions } from 'web-haptics'
 
+import { playUiSound } from '@/lib/ui-sound'
 import { $hapticsMuted } from '@/store/haptics'
 
 export type HapticIntent =
@@ -100,7 +101,15 @@ export function registerHapticTrigger(trigger: HapticTrigger | null) {
   registeredTrigger = trigger
 }
 
+// Intents that also get a sound. Stream start/finish have their own cues (thinking and completion
+// sounds), so they are left out rather than doubled.
+const SOUNDLESS_INTENTS = new Set<HapticIntent>(['streamDone', 'streamStart'])
+
 export function triggerHaptic(intent: HapticIntent = 'selection') {
+  if (!SOUNDLESS_INTENTS.has(intent)) {
+    playUiSound(intent as Exclude<HapticIntent, 'streamDone' | 'streamStart'>)
+  }
+
   if ($hapticsMuted.get() || !registeredTrigger) {
     return
   }

@@ -13,6 +13,9 @@ export interface DesktopOrbCopy {
   working: string
   offline: string
   error: string
+  larger: string
+  resize: string
+  smaller: string
 }
 
 export const desktopOrbCopy: Record<Locale, DesktopOrbCopy> = {
@@ -28,7 +31,10 @@ export const desktopOrbCopy: Record<Locale, DesktopOrbCopy> = {
     speaking: 'Mówię do Ciebie',
     working: 'Agenci pracują',
     offline: 'Łączę z Cześkiem…',
-    error: 'Sprawdź rozmowę w aplikacji'
+    error: 'Sprawdź rozmowę w aplikacji',
+    larger: 'Większa kula',
+    resize: 'Zmień rozmiar kuli',
+    smaller: 'Mniejsza kula'
   },
   en: {
     show: 'Leave the orb on desktop',
@@ -42,7 +48,10 @@ export const desktopOrbCopy: Record<Locale, DesktopOrbCopy> = {
     speaking: 'Speaking',
     working: 'Agents are working',
     offline: 'Connecting to Czesiek…',
-    error: 'Check the conversation in the app'
+    error: 'Check the conversation in the app',
+    larger: 'Larger orb',
+    resize: 'Resize the orb',
+    smaller: 'Smaller orb'
   },
   ja: {
     show: 'デスクトップのオーブ',
@@ -56,7 +65,10 @@ export const desktopOrbCopy: Record<Locale, DesktopOrbCopy> = {
     speaking: '話しています',
     working: 'エージェントが作業中',
     offline: '接続中…',
-    error: 'アプリで会話を確認してください'
+    error: 'アプリで会話を確認してください',
+    larger: 'オーブを大きく',
+    resize: 'オーブのサイズを変更',
+    smaller: 'オーブを小さく'
   },
   zh: {
     show: '桌面光球',
@@ -70,7 +82,10 @@ export const desktopOrbCopy: Record<Locale, DesktopOrbCopy> = {
     speaking: '正在说话',
     working: '智能体正在工作',
     offline: '正在连接…',
-    error: '请在应用中查看对话'
+    error: '请在应用中查看对话',
+    larger: '放大光球',
+    resize: '调整光球大小',
+    smaller: '缩小光球'
   },
   'zh-hant': {
     show: '桌面光球',
@@ -84,7 +99,10 @@ export const desktopOrbCopy: Record<Locale, DesktopOrbCopy> = {
     speaking: '正在說話',
     working: '智慧體正在工作',
     offline: '正在連線…',
-    error: '請在應用程式中查看對話'
+    error: '請在應用程式中查看對話',
+    larger: '放大光球',
+    resize: '調整光球大小',
+    smaller: '縮小光球'
   },
   ru: {
     show: 'Сфера на рабочем столе',
@@ -98,7 +116,10 @@ export const desktopOrbCopy: Record<Locale, DesktopOrbCopy> = {
     speaking: 'Говорю',
     working: 'Агенты работают',
     offline: 'Подключение…',
-    error: 'Проверьте разговор в приложении'
+    error: 'Проверьте разговор в приложении',
+    larger: 'Увеличить сферу',
+    resize: 'Изменить размер сферы',
+    smaller: 'Уменьшить сферу'
   },
   ar: {
     show: 'الكرة على سطح المكتب',
@@ -112,6 +133,9 @@ export const desktopOrbCopy: Record<Locale, DesktopOrbCopy> = {
     speaking: 'أتحدث إليك',
     working: 'الوكلاء يعملون',
     offline: 'جارٍ الاتصال…',
-    error: 'تحقق من المحادثة في التطبيق'
+    error: 'تحقق من المحادثة في التطبيق',
+    larger: 'كرة أكبر',
+    resize: 'تغيير حجم الكرة',
+    smaller: 'كرة أصغر'
   }
 }

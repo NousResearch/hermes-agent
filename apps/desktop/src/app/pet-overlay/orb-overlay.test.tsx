@@ -28,3 +28,31 @@ test('orb mirrors the live conversation and sends controls to its owner without 
   expect(control).toHaveBeenLastCalledWith({ type: 'pop-in' })
   expect(moveOrb({ x: -400, y: 60 }, { x: -320, y: 120 }, { x: -190, y: 160 })).toEqual({ x: -270, y: 100 })
 })
+
+test('the orb resizes around its centre from its own buttons and stays within the size range', () => {
+  const setBounds = vi.fn()
+  const control = vi.fn()
+
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: { petOverlay: { control, setBounds, setIgnoreMouse: vi.fn() } }
+  })
+  window.localStorage.removeItem('czesiek.orb-scale.v1')
+  const state = { active: false, connected: true, locale: 'pl' as const, voice: 'idle' as const, task: 'idle' as const }
+  render(<OrbOverlay state={state} />)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Większa kula' }))
+
+  const grown = setBounds.mock.calls.at(-1)![0]
+
+  expect(grown.width).toBeGreaterThan(320)
+  expect(grown.width / grown.height).toBeCloseTo(320 / 360, 1)
+
+  for (let i = 0; i < 30; i += 1) {
+    fireEvent.click(screen.getByRole('button', { name: 'Mniejsza kula' }))
+  }
+
+  // Bottomed out: the button disables instead of shrinking the orb to nothing.
+  expect((screen.getByRole('button', { name: 'Mniejsza kula' }) as HTMLButtonElement).disabled).toBe(true)
+  expect(setBounds.mock.calls.at(-1)![0].width).toBeGreaterThanOrEqual(160)
+})

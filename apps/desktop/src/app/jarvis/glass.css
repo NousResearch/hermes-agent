@@ -4,24 +4,28 @@
    Tokens flip with the theme; components only pick a class. */
 
 :root {
+  /* One brand gradient, used by the primary action, the active nav marker and the wordmark. */
+  --czesiek-grad: linear-gradient(135deg, #22b8ff 0%, #4f7dff 52%, #8b5cf6 100%);
+  --czesiek-glow: 0 0 14px rgb(79 125 255 / 0.55);
   --glass-bg: rgb(255 255 255 / 0.88);
   --glass-bg-strong: rgb(255 255 255 / 0.8);
   --glass-border: rgb(15 23 42 / 0.18);
   --glass-highlight: rgb(255 255 255 / 0.95);
   --glass-shadow: 0 12px 32px -18px rgb(30 41 82 / 0.35);
   --glass-blur: 22px;
-  --aurora-a: rgb(0 150 255 / 0.1);
-  --aurora-b: rgb(124 92 255 / 0.1);
+  --aurora-a: rgb(0 150 255 / 0.13);
+  --aurora-b: rgb(124 92 255 / 0.12);
 }
 
 :root.dark {
-  --glass-bg: rgb(22 30 62 / 0.88);
-  --glass-bg-strong: rgb(18 25 52 / 0.62);
+  /* Deeper ink-blue surfaces with a lit top edge: depth from layering, not from borders. */
+  --glass-bg: rgb(15 20 44 / 0.9);
+  --glass-bg-strong: rgb(11 16 38 / 0.7);
   --glass-border: rgb(150 170 255 / 0.28);
-  --glass-highlight: rgb(255 255 255 / 0.07);
-  --glass-shadow: 0 20px 44px -22px rgb(0 0 0 / 0.8);
-  --aurora-a: rgb(0 170 255 / 0.12);
-  --aurora-b: rgb(124 92 255 / 0.14);
+  --glass-highlight: rgb(190 205 255 / 0.1);
+  --glass-shadow: 0 22px 48px -22px rgb(0 0 0 / 0.85);
+  --aurora-a: rgb(0 170 255 / 0.16);
+  --aurora-b: rgb(139 92 246 / 0.2);
 }
 
 /* The soft light the glass frosts over. Fixed to the shell, not scrolled. */
@@ -99,7 +103,11 @@
 /* A quiet selected row stays visible without outshining the conversation. */
 .jarvis-nav-active {
   position: relative;
-  background: color-mix(in srgb, var(--ui-accent) 13%, transparent);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--ui-accent) 16%, transparent),
+    color-mix(in srgb, #8b5cf6 5%, transparent)
+  );
 }
 
 .jarvis-nav-active::before {
@@ -110,7 +118,8 @@
   bottom: 24%;
   width: 3px;
   border-radius: 0 3px 3px 0;
-  background: var(--ui-accent);
+  background: var(--czesiek-grad);
+  box-shadow: var(--czesiek-glow);
 }
 
 /* Flat panels for the side rail: one frosted surface per card and a soft
@@ -437,5 +446,41 @@ main[data-home='true'] .jarvis-tips-corner {
     background: var(--ui-bg-secondary);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
+  }
+}
+
+/* The wordmark: the brand gradient clipped to the letters. */
+.jarvis-wordmark {
+  background: var(--czesiek-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: -0.01em;
+}
+
+/* The primary action gets a sheen on hover: a highlight that sweeps once across the gradient. */
+.jarvis-action--talk {
+  position: relative;
+  overflow: hidden;
+  background: var(--czesiek-grad);
+}
+
+.jarvis-action--talk::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 30%, rgb(255 255 255 / 0.35) 50%, transparent 70%);
+  transform: translateX(-120%);
+  transition: transform 600ms ease;
+  pointer-events: none;
+}
+
+.jarvis-action--talk:hover:not(:disabled)::after {
+  transform: translateX(120%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-action--talk::after {
+    transition: none;
   }
 }

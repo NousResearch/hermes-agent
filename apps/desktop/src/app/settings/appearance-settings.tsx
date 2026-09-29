@@ -13,6 +13,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
+import { $uiSoundsEnabled, playUiSound } from '@/lib/ui-sound'
 import { cn } from '@/lib/utils'
 import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $composerPopoutGesturesEnabled, setComposerPopoutGesturesEnabled } from '@/store/composer-popout'
@@ -70,6 +71,31 @@ import { useDeepLinkHighlight } from './use-deep-link-highlight'
 // config.yaml and the cold-start restore in use-desktop-integrations), not a
 // renderer store. Saves write through the shared react-query cache so the
 // restore gate sees the new value on the next launch.
+function UiSoundsSetting() {
+  const { locale } = useI18n()
+  const enabled = useStore($uiSoundsEnabled)
+  const pl = locale === 'pl'
+
+  return (
+    <ToggleRow
+      checked={enabled}
+      description={
+        pl
+          ? 'Ciche kliknięcia przy przyciskach, otwieraniu i zapisie. Przycisk wyciszenia na pasku tytułu wycisza też je.'
+          : 'Quiet clicks on buttons, opening and saving. The mute button in the title bar silences them too.'
+      }
+      label={pl ? 'Dźwięki interfejsu' : 'Interface sounds'}
+      onChange={next => {
+        $uiSoundsEnabled.set(next)
+
+        if (next) {
+          playUiSound('open')
+        }
+      }}
+    />
+  )
+}
+
 function ResumeLastSessionSetting() {
   const { t } = useI18n()
   const a = t.settings.appearance
@@ -809,6 +835,8 @@ export function AppearanceSettings() {
           />
 
           <ResumeLastSessionSetting />
+
+          <UiSoundsSetting />
 
           <ListRow
             action={

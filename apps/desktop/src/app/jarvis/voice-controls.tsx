@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
+import { triggerHaptic } from '@/lib/haptics'
 import { Loader2, Mic, MicOff, Square, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -67,6 +68,8 @@ export function VoiceControls({
       return
     }
 
+    // Start and stop are the moments worth a sound; the rest are quiet taps.
+    triggerHaptic(action === 'startListening' ? 'open' : action === 'stopListening' ? 'close' : 'tap')
     setPendingAction(action)
 
     try {

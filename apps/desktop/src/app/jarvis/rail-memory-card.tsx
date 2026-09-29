@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router'
 import { createVaultNote, getVaultGraph, VAULT_RAIL_KEY, type VaultNoteNode } from '@/api/vault'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
+import { triggerHaptic } from '@/lib/haptics'
 import { ArrowUpRight, Brain, FileText, Loader2, Plus } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -95,6 +96,7 @@ export function JarvisMemoryCard({ connected }: { connected: boolean }) {
       await createVaultNote(captureTitle(value), { conflict: 'suffix', content: `${value}\n`, folder: INBOX_FOLDER })
       setText('')
       notify({ kind: 'success', message: copy.saved, durationMs: 1800 })
+      triggerHaptic('success')
       await queryClient.invalidateQueries({ queryKey: key })
     } catch (error) {
       notifyError(error, copy.captureLabel)

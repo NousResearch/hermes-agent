@@ -4,6 +4,7 @@ import { createRef, useMemo } from 'react'
 
 import logoUrl from '@/assets/czesiek-logo.png'
 import { type Locale, useI18n } from '@/i18n'
+import { triggerHaptic } from '@/lib/haptics'
 import {
   Activity,
   Box,
@@ -90,7 +91,10 @@ function NavButton({ active, buttonRef, icon: Icon, label, onClick, onKeyDown, v
           : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)'
       )}
       data-jarvis-nav-view={view}
-      onClick={onClick}
+      onClick={() => {
+        triggerHaptic(active ? 'selection' : 'tap')
+        onClick()
+      }}
       onKeyDown={onKeyDown}
       ref={buttonRef}
       type="button"
@@ -204,7 +208,7 @@ export function JarvisNavigation({ activeView, copy, onSelect }: JarvisNavigatio
           src={logoUrl}
         />
         <div className="min-w-0">
-          <div className="truncate text-sm font-semibold text-(--ui-text-primary)">{copy.productName}</div>
+          <div className="jarvis-wordmark truncate text-base font-semibold">{copy.productName}</div>
           <div className="hidden truncate text-[0.65rem] uppercase tracking-[0.08em] text-(--ui-text-tertiary) md:block">
             {navCopy.tagline}
           </div>

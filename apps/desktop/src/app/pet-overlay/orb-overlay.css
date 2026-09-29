@@ -1,5 +1,16 @@
+/*
+ * The floating desktop orb. It lives alone on a transparent window, so its look
+ * is only what it draws itself: the sphere, a soft light under it, a status
+ * pill and a small glass capsule of controls that appears on hover. The size is
+ * one number (--orb-scale) set by the overlay, and everything below follows it.
+ */
+
 .desktop-orb {
-  --jarvis-hero-size: 280px;
+  --orb-scale: 1;
+  --jarvis-hero-size: calc(280px * var(--orb-scale));
+  --orb-glass: color-mix(in srgb, var(--glass-bg-strong, rgb(255 255 255 / 0.8)) 88%, transparent);
+  --orb-ink: var(--ui-text-primary);
+  --orb-state: var(--ui-accent);
   width: 100vw;
   height: 100vh;
   display: flex;
@@ -8,15 +19,47 @@
   justify-content: center;
   user-select: none;
   overflow: hidden;
-  color: var(--ui-text-primary);
+  color: var(--orb-ink);
+}
+
+.desktop-orb[data-voice='listening'] {
+  --orb-state: #29e68c;
+}
+.desktop-orb[data-voice='speaking'] {
+  --orb-state: #8b5cf6;
+}
+.desktop-orb[data-voice='error'] {
+  --orb-state: var(--destructive, #ff4d6d);
+}
+
+.desktop-orb__stage {
+  position: relative;
+  width: var(--jarvis-hero-size);
+  height: var(--jarvis-hero-size);
+  flex-shrink: 0;
+}
+
+/* A soft pool of light under the sphere: it grounds the orb on any wallpaper. */
+.desktop-orb__stage::after {
+  content: '';
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  bottom: -6%;
+  height: 12%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--orb-state) 38%, transparent), transparent);
+  filter: blur(6px);
+  opacity: 0.75;
+  pointer-events: none;
+  transition: background 400ms ease;
 }
 
 .desktop-orb__sphere {
-  width: var(--jarvis-hero-size);
-  height: var(--jarvis-hero-size);
+  width: 100%;
+  height: 100%;
   cursor: grab;
   touch-action: none;
-  flex-shrink: 0;
 }
 .desktop-orb__sphere:active {
   cursor: grabbing;
@@ -24,36 +67,121 @@
 .desktop-orb__sphere > * {
   pointer-events: none;
 }
+
+/* The resize grip: a small ring on the sphere's lower-right rim, shown on hover. */
+.desktop-orb__grip {
+  position: absolute;
+  left: calc(50% + var(--jarvis-hero-size) * 0.3);
+  top: calc(50% + var(--jarvis-hero-size) * 0.3);
+  width: 20px;
+  height: 20px;
+  margin: -10px 0 0 -10px;
+  padding: 0;
+  border: 2px solid color-mix(in srgb, var(--orb-ink) 55%, transparent);
+  border-radius: 50%;
+  background: var(--orb-glass);
+  cursor: nwse-resize;
+  opacity: 0;
+  transform: scale(0.7);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+  touch-action: none;
+}
+.desktop-orb:hover .desktop-orb__grip,
+.desktop-orb__grip:focus-visible {
+  opacity: 1;
+  transform: scale(1);
+}
+.desktop-orb__grip:focus-visible {
+  outline: 2px solid var(--ui-accent);
+  outline-offset: 2px;
+}
+
 .desktop-orb__caption {
-  margin-top: -22px;
-  padding: 5px 14px;
-  border-radius: var(--radius-xl);
-  background: var(--ui-bg-chrome);
-  border: 1px solid var(--stroke-nous);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: -14px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: var(--orb-glass);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight, rgb(255 255 255 / 0.6)),
+    0 8px 22px -12px rgb(9 20 52 / 0.45);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;
+  white-space: nowrap;
   pointer-events: none;
 }
+
+.desktop-orb__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--orb-state);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--orb-state) 25%, transparent);
+  transition: background 300ms ease;
+}
+.desktop-orb[data-voice='listening'] .desktop-orb__dot,
+.desktop-orb[data-voice='speaking'] .desktop-orb__dot {
+  animation: desktop-orb-pulse 1.6s ease-in-out infinite;
+}
+
 .desktop-orb__controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   margin-top: 10px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: var(--orb-glass);
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight, rgb(255 255 255 / 0.6)),
+    0 12px 28px -14px rgb(9 20 52 / 0.55);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
   opacity: 0;
   transform: translateY(4px);
   transition:
-    opacity 120ms ease,
-    transform 120ms ease;
+    opacity 140ms ease,
+    transform 140ms ease;
 }
 .desktop-orb:hover .desktop-orb__controls,
 .desktop-orb:focus-within .desktop-orb__controls {
   opacity: 1;
   transform: translateY(0);
 }
+
+/* The one primary: the voice button, in the product gradient. */
+.desktop-orb__mic {
+  background: linear-gradient(135deg, #22b8ff 0%, #4f7dff 55%, #8b5cf6 100%);
+  color: #fff;
+  box-shadow: 0 8px 20px -8px rgb(79 125 255 / 0.8);
+}
+.desktop-orb__mic[aria-pressed='true'] {
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--orb-state) 30%, transparent),
+    0 8px 20px -8px rgb(79 125 255 / 0.8);
+}
+
+@keyframes desktop-orb-pulse {
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--orb-state) 0%, transparent);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .desktop-orb__controls {
+  .desktop-orb__controls,
+  .desktop-orb__grip {
     transition: none;
     transform: none;
+  }
+
+  .desktop-orb__dot {
+    animation: none !important;
   }
 }

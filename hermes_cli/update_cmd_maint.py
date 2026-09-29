@@ -278,12 +278,12 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
     See #83595.
     """
     from hermes_cli.update_cmd import _m, _record_update_step
-    from hermes_constants import get_hermes_home
+    from hermes_cli.update_fleet_scope import update_scope_homes
 
     try:
         stop_result = _m()._kill_stale_dashboard_processes(
             restart_managed=True, already_restarted_units=already_restarted_units,
-            scope_home=str(get_hermes_home()),
+            scope_homes={str(home) for home in update_scope_homes()},
         )
     except Exception as exc:
         # Isolated like every sibling post-update step: a failure here (#112604) used to abort
@@ -297,15 +297,16 @@ def _refresh_dashboard_after_update(*, already_restarted_units: set[str] | None 
         print("  If one is still running, restart it so it serves the updated code:")
         print("    hermes dashboard --port <port>   (or: systemctl --user restart hermes-dashboard)")
         return set()
-    unrecovered = {int(pid) for pid in stop_result.get("unrecovered") or ()}
-    if not unrecovered:
-        return unrecovered
+    incomplete = {int(pid) for pid in stop_result.get("unrecovered") or ()}
+    incomplete.update(int(row[0]) for row in stop_result.get("failed") or () if row)
+    if not incomplete:
+        return incomplete
 
     print()
-    print("⚠ A web dashboard/serve process was stopped during update and could not be auto-restarted.")
+    print("⚠ A web dashboard/serve process could not be stopped or auto-restarted during update.")
     print("  Re-launch it when you want the web UI back:")
     print("    hermes dashboard --port <port>")
-    return unrecovered
+    return incomplete
 
 
 def _print_update_completion(message: str) -> None:

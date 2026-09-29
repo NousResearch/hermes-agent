@@ -286,18 +286,45 @@ class TestDashboardUpdateCleanup:
     """The git and Windows ZIP update paths share this final cleanup."""
 
     def test_all_failed_stops_do_not_claim_the_dashboard_was_stopped(self, capsys, monkeypatch, tmp_path):
-        own_home = tmp_path / "profiles" / "work"
-        monkeypatch.setenv("HERMES_HOME", str(own_home))
+        root_home = tmp_path / ".hermes"
+        profile_home = root_home / "profiles" / "work"
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        updater = MagicMock()
+        updater._kill_stale_dashboard_processes.return_value = {
+            "matched": [12345], "killed": [], "failed": [(12345, "denied")],
+            "unrecovered": [],
+        }
         with patch(
-            "hermes_cli.main._kill_stale_dashboard_processes",
-            return_value={"matched": [12345], "killed": [], "failed": [(12345, "denied")],
-                          "unrecovered": []},
-        ) as kill:
+            "hermes_cli.update_fleet_scope.update_scope_homes",
+            return_value={root_home, profile_home},
+        ), patch(
+            "hermes_cli.update_cmd._m", return_value=updater,
+        ):
             update_cmd_maint._refresh_dashboard_after_update()
 
-        # The sweep only touches this home's backends (#113978).
-        assert kill.call_args.kwargs["scope_home"] == str(own_home)
+        kill = updater._kill_stale_dashboard_processes
+        # The update owns the root machine dashboard plus every profile home, but not a
+        # separate Hermes checkout. Explicit ``dashboard --stop`` remains exact-home scoped.
+        assert kill.call_args.kwargs["scope_homes"] == {str(root_home), str(profile_home)}
+        assert "scope_home" not in kill.call_args.kwargs
         assert "stopped during update" not in capsys.readouterr().out
+
+    def test_scoped_update_does_not_restart_account_global_dashboard_unit(self):
+        """Plural update ownership must be established from scoped live PIDs before any
+        systemd restart; a same-named unit from another install is not ours."""
+        with patch.object(
+            main_dashboard, "_restart_managed_dashboard_service"
+        ) as restart, patch.object(
+            main_dashboard, "_find_stale_dashboard_pids", return_value=[]
+        ), patch(
+            "hermes_cli.dashboard_procs._lock_owned_serve_pids", return_value=set()
+        ):
+            result = _kill_stale_dashboard_processes(
+                restart_managed=True, scope_homes={"/home/u/.hermes"}
+            )
+
+        restart.assert_not_called()
+        assert result == {"matched": [], "killed": [], "failed": []}
 
 
 
@@ -456,6 +483,163 @@ class TestManualBackendRespawn:
         assert "when you're ready" not in capsys.readouterr().out
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_plural_update_respawn_carries_the_captured_home(self, capsys):
+        """A root/sibling manual backend selected by plural update scope must not inherit the
+        invoking profile's HERMES_HOME when it is replayed."""
+        live = self._live()
+        argv = ["hermes", "serve", "--port", "8300"]
+        captured_home = "/home/u/.hermes"
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service") as global_restart, \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[6002]), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid", return_value=captured_home), \
+             patch.object(live, "_respawn_dashboard_requests", return_value=[]) as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(
+                restart_managed=True,
+                scope_homes={captured_home, f"{captured_home}/profiles/work"},
+            )
+
+        global_restart.assert_not_called()
+        respawn.assert_called_once_with([(argv, captured_home)])
+        assert "when you're ready" not in capsys.readouterr().out
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
+    def test_plural_update_restores_identical_argv_for_each_owned_home(self):
+        """Root and profile homes are distinct runtime identities even when argv is identical."""
+        live = self._live()
+        argv = ["hermes", "serve", "--port", "8300"]
+        root_home = "/home/u/.hermes"
+        profile_home = f"{root_home}/profiles/work"
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service") as global_restart, \
+             patch.object(live, "_find_stale_dashboard_pids", return_value=[6002, 6003]), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", return_value=argv), \
+             patch("hermes_cli.dashboard_procs._hermes_home_for_pid",
+                   side_effect=lambda pid: {6002: root_home, 6003: profile_home}[pid]), \
+             patch.object(live, "_respawn_dashboard_requests", return_value=[]) as respawn, \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            _kill_stale_dashboard_processes(
+                restart_managed=True, scope_homes={root_home, profile_home}
+            )
+
+        global_restart.assert_not_called()
+        respawn.assert_called_once_with([
+            (argv, root_home),
+            (argv, profile_home),
+        ])
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX ownership snapshot")
+    def test_plural_update_revalidates_home_before_kill_and_fails_closed(self):
+        """A PID whose home becomes unreadable after discovery is not killed or respawned."""
+        live = self._live()
+        root_home = "/home/u/.hermes"
+
+        with patch.object(
+            dashboard_procs, "_scan_dashboard_processes",
+            return_value=[(6004, "hermes serve --port 8300")]
+        ), patch.object(dashboard_procs, "_caller_ancestor_pids", return_value=set()), patch.object(
+            dashboard_procs, "_hermes_home_for_pid", side_effect=[root_home, None]
+        ), patch.object(main_dashboard, "_get_pid_cgroup_path") as cgroup, patch.object(
+            live, "_respawn_dashboard_processes"
+        ) as respawn, patch("os.kill") as kill:
+            result = _kill_stale_dashboard_processes(
+                restart_managed=True, scope_homes={root_home}
+            )
+
+        assert result == {"matched": [], "killed": [], "failed": []}
+        cgroup.assert_not_called()
+        respawn.assert_not_called()
+        kill.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX PID identity guard")
+    def test_posix_kill_refuses_reused_root_pid(self):
+        killed: list[int] = []
+        failed: list[tuple[int, str]] = []
+        pid = 6005
+
+        with patch.object(
+            dashboard_procs, "_posix_descendants", return_value={7005: (pid, 333)}
+        ), patch("gateway.status._pid_exists", return_value=True), patch(
+            "gateway.status.get_process_start_time",
+            side_effect=lambda current_pid: 222 if current_pid == pid else 333,
+        ), patch("os.kill") as kill:
+            dashboard_procs._kill_pids_posix(
+                [pid], killed, failed,
+                expected_start_times={pid: 111},
+                expected_homes={pid: "/home/u/.hermes"},
+            )
+
+        assert killed == []
+        assert failed == [(pid, "process identity changed before stop")]
+        kill.assert_not_called()
+
+    def test_posix_kill_rechecks_identity_before_sigkill(self):
+        import signal
+
+        killed: list[int] = []
+        failed: list[tuple[int, str]] = []
+        pid = 6006
+        signals: list[int] = []
+
+        with patch.object(dashboard_procs, "_posix_descendants", return_value={}), patch.object(
+            dashboard_procs, "_wait_gone", side_effect=[[pid], [], []]
+        ), patch("gateway.status._pid_exists", return_value=True), patch(
+            "gateway.status.get_process_start_time", side_effect=[111, 222]
+        ), patch.object(
+            dashboard_procs, "_hermes_home_for_pid", return_value="/home/u/.hermes"
+        ), patch("os.kill", side_effect=lambda _pid, sig: signals.append(sig)):
+            dashboard_procs._kill_pids_posix(
+                [pid], killed, failed,
+                expected_start_times={pid: 111},
+                expected_homes={pid: "/home/u/.hermes"},
+            )
+
+        assert signals == [signal.SIGTERM]
+        assert killed == []
+        assert failed == [(pid, "process identity changed before stop")]
+
+    def test_respawn_requests_share_one_liveness_window_for_identical_argv(
+        self, tmp_path, monkeypatch
+    ):
+        live = self._live()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "work"))
+        argv = ["hermes", "serve", "--port", "8300"]
+        homes = [str(tmp_path / ".hermes"), str(tmp_path / ".hermes" / "profiles" / "work")]
+        spawned_envs: list[str | None] = []
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                spawned_envs.append((kwargs.get("env") or {}).get("HERMES_HOME"))
+
+            def poll(self):
+                return None
+
+        with patch.object(live.subprocess, "Popen", _FakePopen), patch.object(
+            live.time, "sleep"
+        ) as sleep:
+            failed = live._respawn_dashboard_requests([(argv, home) for home in homes])
+
+        assert failed == []
+        assert spawned_envs == homes
+        sleep.assert_called_once_with(live._RESPAWN_LIVENESS_GRACE_SECONDS)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
     def test_port_zero_serves_killed_without_respawn(self, capsys):
         """``serve --port 0`` backends are stopped but not resurrected (#78821)."""
         live = self._live()
@@ -510,6 +694,32 @@ class TestManualBackendRespawn:
         assert failed == []
         assert spawned[0] == ["hermes", "dashboard", "--port", "8300", "--no-open"]
         assert spawned[1] == ["hermes", "serve", "--host", "0.0.0.0"]
+
+    def test_respawn_sets_each_captured_hermes_home(self, tmp_path, monkeypatch):
+        live = self._live()
+        invoking_home = str(tmp_path / ".hermes" / "profiles" / "work")
+        root_home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", invoking_home)
+        argv = ["hermes", "dashboard", "--port", "8300"]
+        spawned_envs: list[dict[str, str] | None] = []
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                spawned_envs.append(kwargs.get("env"))
+
+            def poll(self):
+                return None
+
+        with patch.object(live.subprocess, "Popen", _FakePopen), \
+             patch.object(live.time, "sleep"):
+            failed = live._respawn_dashboard_processes(
+                [argv], hermes_homes={tuple(argv): root_home}
+            )
+
+        assert failed == []
+        assert spawned_envs[0] is not None
+        assert spawned_envs[0]["HERMES_HOME"] == root_home
+        assert os.environ["HERMES_HOME"] == invoking_home
 
     def test_respawn_failure_returned(self, tmp_path, monkeypatch, capsys):
         live = self._live()
@@ -621,6 +831,20 @@ class TestFilterDashboardRespawnCandidates:
         ])
         assert out == [a]
 
+    def test_plural_scope_keeps_identical_argv_for_distinct_owned_homes(self):
+        from hermes_cli.dashboard_procs import _select_dashboard_respawn_candidates
+
+        root = "/home/u/.hermes"
+        profile = f"{root}/profiles/work"
+        argv = ["hermes", "serve", "--port", "8300"]
+        candidates: list[tuple[int, list[str], str | None]] = [
+            (1, argv, root), (2, argv, profile)
+        ]
+
+        assert _select_dashboard_respawn_candidates(
+            candidates, own_homes={root, profile}
+        ) == candidates
+
     def test_caps_one_per_profile(self):
         from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
 
@@ -695,6 +919,28 @@ class TestFilterDashboardRespawnCandidates:
             own_home="/home/u/.hermes",
         )
         assert out == [a]
+
+    def test_update_scope_replays_root_and_profile_homes_only(self):
+        """A named-profile update may restart the unified root dashboard and its own profile,
+        while a dashboard from another checkout stays excluded."""
+        from hermes_cli.dashboard_procs import _filter_dashboard_respawn_candidates
+
+        root = "/home/u/.hermes"
+        profile = f"{root}/profiles/work"
+        root_argv = ["hermes", "-p", "default", "dashboard", "--port", "9119"]
+        profile_argv = ["hermes", "-p", "work", "serve", "--port", "9120"]
+        foreign_argv = ["hermes", "dashboard", "--port", "9121"]
+
+        out = _filter_dashboard_respawn_candidates(
+            [
+                (1, root_argv, root),
+                (2, profile_argv, profile),
+                (3, foreign_argv, "/work/other/.hermes"),
+            ],
+            own_homes={root, profile},
+        )
+
+        assert out == [root_argv, profile_argv]
 
     def test_skips_sidecar_fixed_port_serve_on_foreign_home(self):
         """The reported case: launchd-supervised sidecar serve, fixed port."""
@@ -941,3 +1187,12 @@ class TestLaunchdSupervisedBackends:
         assert owning(9999, serve_argv[:-1] + ["8643"], jobs) is None
         assert owning(9999, None, jobs) is None
         assert owning(4242, None, []) is None
+
+        # An exact live-PID owner wins before an earlier identical-argv fallback job.
+        duplicate_argv_jobs = [
+            (f"user/{uid}", "ai.hermes.dashboard.first", backend_argv, 1111),
+            (f"user/{uid}", "ai.hermes.dashboard.second", backend_argv, 2222),
+        ]
+        assert owning(2222, backend_argv, duplicate_argv_jobs) == (
+            f"user/{uid}", "ai.hermes.dashboard.second", 2222
+        )

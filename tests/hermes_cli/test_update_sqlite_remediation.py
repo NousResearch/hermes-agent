@@ -34,12 +34,34 @@ def test_selected_sqlite_controls_completion_and_action_receipt(tmp_path, monkey
 
 
 @pytest.mark.parametrize('already_restarted_units', [None, {'hermes-serve'}])
-def test_dashboard_refresh_preserves_restart_bookkeeping(already_restarted_units, monkeypatch, capsys):
+def test_dashboard_refresh_preserves_restart_bookkeeping(
+    already_restarted_units, monkeypatch, capsys, tmp_path
+):
     calls = []
+    root_home = tmp_path / '.hermes'
+    profile_home = root_home / 'profiles' / 'work'
     monkeypatch.setattr(update_cmd, '_m', lambda: SimpleNamespace(
         _kill_stale_dashboard_processes=lambda **kwargs: calls.append(kwargs) or {'unrecovered': [1234]}))
+    monkeypatch.setattr(
+        'hermes_cli.update_fleet_scope.update_scope_homes',
+        lambda: {root_home, profile_home},
+    )
     update_cmd_maint._refresh_dashboard_after_update(already_restarted_units=already_restarted_units)
-    from hermes_constants import get_hermes_home
     assert calls == [{'restart_managed': True, 'already_restarted_units': already_restarted_units,
-                      'scope_home': str(get_hermes_home())}]
-    assert 'could not be auto-restarted' in capsys.readouterr().out
+                      'scope_homes': {str(root_home), str(profile_home)}}]
+    assert 'could not be stopped or auto-restarted' in capsys.readouterr().out
+
+
+def test_dashboard_refresh_marks_failed_stop_incomplete(monkeypatch, capsys, tmp_path):
+    root_home = tmp_path / '.hermes'
+    monkeypatch.setattr(update_cmd, '_m', lambda: SimpleNamespace(
+        _kill_stale_dashboard_processes=lambda **kwargs: {
+            'failed': [(4321, 'process identity changed before stop')],
+            'unrecovered': [],
+        }))
+    monkeypatch.setattr(
+        'hermes_cli.update_fleet_scope.update_scope_homes', lambda: {root_home}
+    )
+
+    assert update_cmd_maint._refresh_dashboard_after_update() == {4321}
+    assert 'could not be stopped or auto-restarted' in capsys.readouterr().out

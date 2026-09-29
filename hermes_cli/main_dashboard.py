@@ -21,18 +21,21 @@ _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run bu
 
 
 def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
-                               scope_home: str | None = None) -> list[int]:
+                               scope_home: str | None = None,
+                               scope_homes: set[str] | None = None) -> list[int]:
     """PIDs of running ``dashboard``/``serve`` backends the caller may stop.
 
     *scope_home*: keep only backends whose resolved Hermes home (see
     ``_hermes_home_for_pid``) is this home; unreadable ownership is spared, never guessed.
-    ``--stop`` and the post-update cleanup pass their own home so another install's or
-    profile's backend on the same machine is never a target (#113978).
+    Explicit ``--stop`` uses this exact-home scope. Update cleanup uses
+    *scope_homes* for the install root plus its profiles, without admitting a separate
+    checkout's backend on the same machine (#113978).
     """
     from hermes_cli.dashboard_procs import (
         _caller_ancestor_pids,
         _is_caller_wrapper_shell,
         _pids_owned_by_hermes_home,
+        _pids_owned_by_hermes_homes,
         _scan_dashboard_processes,
     )
     pids = [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
@@ -40,6 +43,10 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
     # killing it takes down the invoking terminal.
     ancestors = _caller_ancestor_pids()
     pids = [pid for pid in pids if not _is_caller_wrapper_shell(pid, ancestors)]
+    if scope_home is not None and scope_homes is not None:
+        raise ValueError("pass scope_home or scope_homes, not both")
+    if scope_homes is not None:
+        return _pids_owned_by_hermes_homes(pids, scope_homes)
     return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
 
 
@@ -263,20 +270,29 @@ def _launchd_plist_dirs() -> list[tuple[str, Path]]:
 
 def _loaded_launchd_backend_jobs(
     plist_dirs: list[tuple[str, Path]] | None = None,
-) -> list[tuple[str, str, list[str], int | None]]:
+    *, scope_homes: set[str] | None = None,
+) -> list[tuple]:
     """``(domain, label, program_arguments, live_pid)`` for every LOADED launchd job whose
     ``ProgramArguments`` is a ``hermes dashboard`` / ``hermes serve`` backend. macOS only (empty
     elsewhere). Reads the plists (unreadable/malformed ones are skipped) and asks ``launchctl print``
     per candidate label — a job that is not loaded in any domain is not returned, so an operator's
-    stale plist never claims a process."""
+    stale plist never claims a process. When *scope_homes* is supplied, a plist that explicitly
+    pins a foreign ``HERMES_HOME`` is excluded before its account-global label is probed. Scoped
+    rows carry the normalized pinned home as a fifth field: an unpinned job may claim only its
+    reported live PID/ancestor, and a pinned job's argv fallback is exact-home only."""
     if sys.platform != "darwin":
         return []
     import plistlib
     from xml.parsers.expat import ExpatError
 
     from hermes_cli.gateway import _launchd_print_service_pid
+    from hermes_cli.dashboard_procs import _normalized_home_for_compare
     uid = os.getuid()  # windows-footgun: ok — darwin-only branch
-    jobs: list[tuple[str, str, list[str], int | None]] = []
+    jobs: list[tuple] = []
+    scope_keys = (
+        {_normalized_home_for_compare(home) for home in scope_homes if home}
+        if scope_homes is not None else None
+    )
     for kind, plist_dir in (plist_dirs if plist_dirs is not None else _launchd_plist_dirs()):
         try:
             plists = sorted(plist_dir.glob("*.plist"))
@@ -298,6 +314,16 @@ def _loaded_launchd_backend_jobs(
             args = data.get("ProgramArguments")
             if not label or not isinstance(args, list) or not args:
                 continue
+            env = data.get("EnvironmentVariables")
+            pinned_home = (
+                str(env.get("HERMES_HOME") or "").strip()
+                if isinstance(env, dict) else ""
+            )
+            if (
+                scope_keys is not None and pinned_home
+                and _normalized_home_for_compare(pinned_home) not in scope_keys
+            ):
+                continue
             argv = [str(a) for a in args]
             if _parse_dashboard_runtime(shlex.join(argv)) is None:
                 continue
@@ -308,14 +334,21 @@ def _loaded_launchd_backend_jobs(
                 except _SYSTEMCTL_ERRORS:
                     loaded, live_pid = False, None
                 if loaded:
-                    jobs.append((domain, label, argv, live_pid))
+                    job = (domain, label, argv, live_pid)
+                    if scope_keys is not None:
+                        job = (
+                            *job,
+                            _normalized_home_for_compare(pinned_home) if pinned_home else None,
+                        )
+                    jobs.append(job)
                     break
     return jobs
 
 
 def _launchd_job_owning_backend(
-    pid: int, cmdline: list[str] | None, jobs: list[tuple[str, str, list[str], int | None]],
+    pid: int, cmdline: list[str] | None, jobs: list[tuple],
     ancestors: "list[int] | tuple[int, ...]" = (),
+    hermes_home: str | None = None,
 ) -> tuple[str, str, int | None] | None:
     """``(domain, label, live_pid)`` of the loaded launchd job that owns *pid*: launchd reports *pid*
     (or one of its *ancestors* — a plist may wrap the backend in ``/bin/sh -c …`` without ``exec``)
@@ -327,10 +360,24 @@ def _launchd_job_owning_backend(
     def _norm(argv: list[str]) -> list[str]:
         return [a for a in argv if a != "--no-open"]
 
-    for domain, label, argv, live_pid in jobs:
+    from hermes_cli.dashboard_procs import _normalized_home_for_compare
+
+    candidate_home = _normalized_home_for_compare(hermes_home) if hermes_home else None
+    parsed_jobs = [
+        (job[0], job[1], job[2], job[3], job[4] if len(job) > 4 else ...)
+        for job in jobs
+    ]
+    # A supervisor's exact live PID/ancestor is stronger than argv coincidence. Check every
+    # job for that proof before considering a detached-copy argv fallback.
+    for domain, label, _argv, live_pid, _pinned_home in parsed_jobs:
         if live_pid is not None and (live_pid == pid or live_pid in ancestors):
             return (domain, label, live_pid)
-        if cmdline is not None and _norm(list(cmdline)) == _norm(argv):
+    for domain, label, argv, live_pid, pinned_home in parsed_jobs:
+        argv_match_allowed = (
+            True if pinned_home is ...
+            else bool(pinned_home and candidate_home and pinned_home == candidate_home)
+        )
+        if argv_match_allowed and cmdline is not None and _norm(list(cmdline)) == _norm(argv):
             return (domain, label, live_pid)
     return None
 
@@ -397,55 +444,77 @@ def _respawnable_command_for_current_install(argv: list[str]) -> list[str]:
     return list(argv)
 
 
-def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
-    """Respawn manually-started dashboards after ``hermes update``, detached, logging to
-    ``logs/dashboard-restart.log``; returns the argvs that failed to spawn. Callers pre-filter via
-    ``_filter_dashboard_respawn_candidates`` (no Desktop ``--port 0`` backends, capped per profile).
+def _respawn_dashboard_requests(
+    requests: list[tuple[list[str], str | None]],
+) -> list[int]:
+    """Respawn ``(argv, HERMES_HOME)`` requests in one shared liveness window.
 
-    See #78821.
+    Returns failed request indexes so identical argv under distinct homes retain separate
+    failure attribution.
     """
     from hermes_constants import get_hermes_home
-    respawned: list[list[str]] = []
-    spawned: list[tuple[list[str], list[str], "subprocess.Popen"]] = []
-    failed: list[tuple[list[str], list[str], str]] = []
+    respawned: list[tuple[int, list[str]]] = []
+    spawned: list[tuple[int, list[str], "subprocess.Popen"]] = []
+    failed: list[tuple[int, list[str], str]] = []
     log_path = get_hermes_home() / "logs" / "dashboard-restart.log"
     with contextlib.suppress(OSError):
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for original in commands:
+    for index, (original, captured_home) in enumerate(requests):
         command = _respawnable_command_for_current_install(original)
         # Keep restarted dashboards headless; reopening a browser after a
         # background update is noisy and fails in SSH/headless sessions.
         if "dashboard" in command and "--no-open" not in command:
             command = [*command, "--no-open"]
+        env = None
+        if captured_home:
+            env = os.environ.copy()
+            env["HERMES_HOME"] = captured_home
         try:
             with open(log_path, "ab") as log_f:
-                proc = subprocess.Popen(
-                    command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
-                    start_new_session=True, close_fds=True)
-            spawned.append((original, command, proc))
+                popen_kwargs = {
+                    "stdin": subprocess.DEVNULL,
+                    "stdout": log_f,
+                    "stderr": subprocess.STDOUT,
+                    "start_new_session": True,
+                    "close_fds": True,
+                }
+                if env is not None:
+                    popen_kwargs["env"] = env
+                proc = subprocess.Popen(command, **popen_kwargs)
+            spawned.append((index, command, proc))
         except (OSError, ValueError) as exc:
-            failed.append((original, command, str(exc)))
+            failed.append((index, command, str(exc)))
 
     # A respawned backend is a resident server: one that exits within the grace
     # window died at startup (SyntaxError on a stale argv, port already bound,
     # ...) and must surface as a failure, not as ``✓ restarted`` (#124778).
     if spawned:
         time.sleep(_RESPAWN_LIVENESS_GRACE_SECONDS)
-    for original, command, proc in spawned:
+    for index, command, proc in spawned:
         if proc.poll() is None:
-            respawned.append(command)
+            respawned.append((index, command))
         else:
-            failed.append((original, command, f"child exited during the first "
-                                              f"{_RESPAWN_LIVENESS_GRACE_SECONDS:.0f}s (code {proc.returncode})"))
+            failed.append((index, command, f"child exited during the first "
+                                           f"{_RESPAWN_LIVENESS_GRACE_SECONDS:.0f}s (code {proc.returncode})"))
 
-    for command in respawned:
+    for _, command in respawned:
         print(f"    ✓ restarted: {shlex.join(command)}")
     for _, command, err_msg in failed:
         print(f"    ✗ failed to restart ({shlex.join(command)}): {err_msg}")
-    # The caller's argv, not the spawned one: callers match it against the stopped PID's
-    # captured cmdline to book the runtime as not brought back (#109290).
-    return [original for original, _, _ in failed]
+    return [index for index, _, _ in failed]
+
+
+def _respawn_dashboard_processes(
+    commands: list[list[str]], *,
+    hermes_homes: dict[tuple[str, ...], str] | None = None,
+) -> list[list[str]]:
+    """Compatibility wrapper returning the original argvs that failed to spawn."""
+    requests = [
+        (command, hermes_homes.get(tuple(command)) if hermes_homes else None)
+        for command in commands
+    ]
+    return [commands[index] for index in _respawn_dashboard_requests(requests)]
 
 
 class _UpdateOutputStream:

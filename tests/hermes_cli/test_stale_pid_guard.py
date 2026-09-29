@@ -198,6 +198,42 @@ def test_stop_only_targets_the_invoking_hermes_home(monkeypatch):
     assert result["matched"] == [12345]
 
 
+@pytest.mark.platforms("posix")
+def test_update_targets_every_owned_home_but_not_a_foreign_checkout(monkeypatch):
+    """A profile-scoped update also owns the unified root dashboard, while unreadable and
+    unrelated homes remain fail-closed."""
+    root_home = "/tmp/hermes-own"
+    profile_home = f"{root_home}/profiles/work"
+    foreign_home = "/tmp/hermes-foreign"
+
+    with mock.patch.object(
+        dashboard_procs, "_scan_dashboard_processes",
+        return_value=[
+            (12345, "hermes dashboard"),
+            (12346, "hermes serve"),
+            (12347, "hermes serve"),
+            (12348, "hermes serve"),
+        ],
+    ), mock.patch.object(dashboard_procs, "_caller_ancestor_pids", return_value=set()), mock.patch.object(
+        dashboard_procs, "_hermes_home_for_pid",
+        side_effect=lambda pid: {
+            12345: root_home,
+            12346: profile_home,
+            12347: foreign_home,
+            12348: None,
+        }[pid],
+    ), mock.patch.object(
+        dashboard_procs, "_kill_pids_posix"
+    ) as kill:
+        result = dashboard_procs._kill_stale_dashboard_processes(
+            scope_homes={root_home, profile_home}
+        )
+
+    kill.assert_called_once()
+    assert kill.call_args.args[0] == [12345, 12346]
+    assert result["matched"] == [12345, 12346]
+
+
 class TestHermesHomeForPid:
     """Tri-state owner resolution: a readable environment always names a home."""
 

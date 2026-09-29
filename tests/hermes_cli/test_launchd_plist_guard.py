@@ -40,6 +40,15 @@ GOOD_PLIST = (
 )
 
 
+def _good_plist_with_home(home: str) -> str:
+    return GOOD_PLIST.replace(
+        "  <key>ProgramArguments</key>",
+        "  <key>EnvironmentVariables</key>\n  <dict>\n"
+        f"    <key>HERMES_HOME</key>\n    <string>{home}</string>\n"
+        "  </dict>\n  <key>ProgramArguments</key>",
+    )
+
+
 def test_malformed_plist_is_skipped_not_fatal(tmp_path):
     p = tmp_path / "com.example.bad.plist"
     p.write_text(MALFORMED_PLIST, encoding="utf-8")
@@ -67,3 +76,73 @@ def test_malformed_sibling_does_not_hide_the_good_job(tmp_path):
     ]
     # Only the well-formed label was probed against launchd.
     assert [c.args[1] for c in probe.call_args_list] == ["ai.hermes.dashboard.test"]
+
+
+def test_update_scope_excludes_loaded_job_pinned_to_foreign_home(tmp_path):
+    plist = tmp_path / "ai.hermes.dashboard.test.plist"
+    plist.write_text(_good_plist_with_home("/work/other/.hermes"), encoding="utf-8")
+
+    with mock.patch(
+        "hermes_cli.gateway._launchd_print_service_pid", return_value=(True, 4321)
+    ) as probe:
+        jobs = main_dashboard._loaded_launchd_backend_jobs(
+            [("agent", tmp_path)], scope_homes={"/home/u/.hermes"}
+        )
+
+    assert jobs == []
+    probe.assert_not_called()
+
+
+def test_update_scope_keeps_loaded_job_pinned_to_owned_profile(tmp_path):
+    owned = "/home/u/.hermes/profiles/work"
+    plist = tmp_path / "ai.hermes.dashboard.test.plist"
+    plist.write_text(_good_plist_with_home(owned), encoding="utf-8")
+
+    with mock.patch(
+        "hermes_cli.gateway._launchd_print_service_pid", return_value=(True, 4321)
+    ):
+        jobs = main_dashboard._loaded_launchd_backend_jobs(
+            [("agent", tmp_path)], scope_homes={"/home/u/.hermes", owned}
+        )
+
+    assert len(jobs) == 1
+
+
+def test_scoped_unpinned_job_cannot_claim_different_pid_by_argv(tmp_path):
+    plist = tmp_path / "ai.hermes.dashboard.test.plist"
+    plist.write_text(GOOD_PLIST, encoding="utf-8")
+
+    with mock.patch(
+        "hermes_cli.gateway._launchd_print_service_pid", return_value=(True, 9999)
+    ):
+        jobs = main_dashboard._loaded_launchd_backend_jobs(
+            [("agent", tmp_path)], scope_homes={"/home/u/.hermes"}
+        )
+
+    argv = ["/usr/local/bin/hermes", "dashboard", "--port", "9119"]
+    assert main_dashboard._launchd_job_owning_backend(1234, argv, jobs) is None
+    assert main_dashboard._launchd_job_owning_backend(9999, argv, jobs) == (
+        f"gui/{os.getuid()}", "ai.hermes.dashboard.test", 9999
+    )
+
+
+def test_scoped_pinned_job_argv_fallback_requires_same_exact_home(tmp_path):
+    root = "/home/u/.hermes"
+    profile = f"{root}/profiles/work"
+    plist = tmp_path / "ai.hermes.dashboard.test.plist"
+    plist.write_text(_good_plist_with_home(profile), encoding="utf-8")
+
+    with mock.patch(
+        "hermes_cli.gateway._launchd_print_service_pid", return_value=(True, None)
+    ):
+        jobs = main_dashboard._loaded_launchd_backend_jobs(
+            [("agent", tmp_path)], scope_homes={root, profile}
+        )
+
+    argv = ["/usr/local/bin/hermes", "dashboard", "--port", "9119"]
+    assert main_dashboard._launchd_job_owning_backend(
+        1234, argv, jobs, hermes_home=root
+    ) is None
+    assert main_dashboard._launchd_job_owning_backend(
+        1234, argv, jobs, hermes_home=profile
+    ) == (f"gui/{os.getuid()}", "ai.hermes.dashboard.test", None)

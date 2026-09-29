@@ -273,12 +273,28 @@ def _pids_owned_by_hermes_home(pids: list[int], home: str) -> list[int]:
     as a match, so a stop request fails closed rather than taking down an
     unrelated backend.
     """
-    target = _normalized_home_for_compare(home)
-    return [
-        pid for pid in pids
-        if (pid_home := _hermes_home_for_pid(pid))
-        and _normalized_home_for_compare(pid_home) == target
-    ]
+    return _pids_owned_by_hermes_homes(pids, {home})
+
+
+def _pids_owned_by_hermes_homes(pids: list[int], homes: set[str]) -> list[int]:
+    """Return only *pids* whose resolved Hermes home is one of *homes*.
+
+    Update cleanup owns the install root plus its profile homes, while explicit
+    ``dashboard --stop`` continues to call the singular exact-home helper above.
+    Unreadable ownership still fails closed.
+    """
+    return list(_owned_pid_homes(pids, homes))
+
+
+def _owned_pid_homes(pids: list[int], homes: set[str]) -> dict[int, str]:
+    """One ownership snapshot for scoped admission and later restart attribution."""
+    targets = {_normalized_home_for_compare(home) for home in homes if home}
+    owned: dict[int, str] = {}
+    for pid in pids:
+        pid_home = _hermes_home_for_pid(pid)
+        if pid_home and _normalized_home_for_compare(pid_home) in targets:
+            owned[pid] = pid_home
+    return owned
 
 
 def _profile_key_for_respawn(argv: list[str], hermes_home: str | None = None) -> str:
@@ -297,10 +313,11 @@ def _profile_key_for_respawn(argv: list[str], hermes_home: str | None = None) ->
     return f"profile:{_profile_flag_value(argv) or 'default'}"
 
 
-def _filter_dashboard_respawn_candidates(
-    candidates: list[tuple[int, list[str], str | None]], *, own_home: str | None = None
-) -> list[list[str]]:
-    """Select which killed manual backends ``(pid, argv, hermes_home)`` to respawn after update.
+def _select_dashboard_respawn_candidates(
+    candidates: list[tuple[int, list[str], str | None]], *, own_home: str | None = None,
+    own_homes: set[str] | None = None,
+) -> list[tuple[int, list[str], str | None]]:
+    """Select killed manual backends ``(pid, argv, hermes_home)`` to respawn after update.
 
     Rules: never resurrect Desktop ``--port 0`` backends; never replay a backend from a
     **foreign** ``HERMES_HOME`` (the argv-only respawn would come back on this install's home
@@ -316,29 +333,53 @@ def _filter_dashboard_respawn_candidates(
     with ``start_new_session=True``, so fixed-port manual backends are reparented to init and must still be
     eligible for the next update's #40449 restart.
     """
-    if own_home is None:
+    if own_home is not None and own_homes is not None:
+        raise ValueError("pass own_home or own_homes, not both")
+    explicit_homes = own_homes is not None
+    if own_homes is None and own_home is None:
         try:
             from hermes_constants import get_hermes_home
             own_home = str(get_hermes_home())
         except Exception:
             own_home = ""
-    own_key = _normalized_home_for_compare(own_home) if own_home else ""
-    selected: list[list[str]] = []
-    seen_cmdlines: set[tuple[str, ...]] = set()
+    if own_homes is None:
+        own_homes = {own_home} if own_home else set()
+    own_keys = {_normalized_home_for_compare(home) for home in own_homes if home}
+    selected: list[tuple[int, list[str], str | None]] = []
+    seen_cmdlines: set[tuple] = set()
     seen_profiles: set[str] = set()
-    for _pid, argv, hermes_home in candidates:
+    for candidate in candidates:
+        _pid, argv, hermes_home = candidate
         if not argv or _is_ephemeral_port_zero_backend(argv):
             continue
-        if own_key and hermes_home and _normalized_home_for_compare(hermes_home) != own_key:
+        if (explicit_homes or own_keys) and hermes_home and (
+            _normalized_home_for_compare(hermes_home) not in own_keys
+        ):
             continue
         norm = _normalize_dashboard_cmdline(argv)
         profile_key = _profile_key_for_respawn(argv, hermes_home)
-        if norm in seen_cmdlines or profile_key in seen_profiles:
+        # In plural update scope, identical argv under root and a profile are separate runtime
+        # identities and both must return. Historical unscoped/singular behavior still dedupes
+        # identical argv globally.
+        cmdline_key = (norm, profile_key) if explicit_homes else norm
+        if cmdline_key in seen_cmdlines or profile_key in seen_profiles:
             continue
-        seen_cmdlines.add(norm)
+        seen_cmdlines.add(cmdline_key)
         seen_profiles.add(profile_key)
-        selected.append(list(argv))
+        selected.append(candidate)
     return selected
+
+
+def _filter_dashboard_respawn_candidates(
+    candidates: list[tuple[int, list[str], str | None]], *, own_home: str | None = None,
+    own_homes: set[str] | None = None,
+) -> list[list[str]]:
+    """Compatibility projection of selected respawn candidates to argv lists."""
+    return [
+        list(argv) for _pid, argv, _home in _select_dashboard_respawn_candidates(
+            candidates, own_home=own_home, own_homes=own_homes
+        )
+    ]
 
 
 def _exclude_pids_from_env() -> set[int]:
@@ -542,7 +583,11 @@ def _wait_gone(pids: list[int], seconds: float) -> list[int]:
     return alive
 
 
-def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
+def _kill_pids_posix(
+    pids: list[int], killed: list[int], failed: list[tuple[int, str]], *,
+    expected_start_times: dict[int, int | None] | None = None,
+    expected_homes: dict[int, str] | None = None,
+) -> None:
     """SIGTERM, wait up to ``_POSIX_TERM_GRACE_SECONDS`` for graceful exit, SIGKILL survivors, then
     sweep the dashboard-owned descendants that outlived the root and wait for the tree to be gone.
 
@@ -552,7 +597,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
     """
     import signal as _signal
 
-    from gateway.status import get_process_start_time
+    from gateway.status import _pid_exists, get_process_start_time
 
     descendants = _posix_descendants(pids)
 
@@ -566,17 +611,43 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
         except (PermissionError, OSError) as e:
             failed.append((pid, str(e)))
 
+    def _identity_matches(pid: int) -> bool:
+        if expected_start_times is not None or expected_homes is not None:
+            if not _pid_exists(pid):
+                killed.append(pid)
+                return False
+            if expected_start_times is not None:
+                expected_start = expected_start_times.get(pid)
+                if expected_start is None or get_process_start_time(pid) != expected_start:
+                    failed.append((pid, "process identity changed before stop"))
+                    return False
+            if expected_homes is not None:
+                expected_home = expected_homes.get(pid)
+                current_home = _hermes_home_for_pid(pid)
+                if (
+                    not expected_home or not current_home
+                    or _normalized_home_for_compare(current_home)
+                    != _normalized_home_for_compare(expected_home)
+                ):
+                    failed.append((pid, "process ownership changed before stop"))
+                    return False
+        return True
+
     for pid in pids:
-        _send(pid, _signal.SIGTERM)
+        if _identity_matches(pid):
+            _send(pid, _signal.SIGTERM)
     pending = [p for p in pids if p not in killed and p not in {f[0] for f in failed}]
     alive = _wait_gone(pending, _POSIX_TERM_GRACE_SECONDS)
     killed.extend(p for p in pending if p not in alive)
     for pid in alive:
-        _send(pid, _signal.SIGKILL)
+        if _identity_matches(pid):
+            _send(pid, _signal.SIGKILL)
 
     # Snapshot identity must still match: a PID recycled during the grace is not ours to signal.
-    survivors = [p for p, (_root, start) in descendants.items()
-                 if start is not None and get_process_start_time(p) == start]
+    recovered_roots = set(killed)
+    survivors = [p for p, (root, start) in descendants.items()
+                 if root in recovered_roots and start is not None
+                 and get_process_start_time(p) == start]
     for sig in (_signal.SIGTERM, _signal.SIGKILL):
         for pid in survivors:
             with contextlib.suppress(OSError):
@@ -589,7 +660,7 @@ def _kill_pids_posix(pids: list[int], killed: list[int], failed: list[tuple[int,
 def _kill_stale_dashboard_processes(
     reason: str = "the running backend no longer matches the updated frontend", *,
     restart_managed: bool = False, already_restarted_units: "set[str] | None" = None,
-    scope_home: str | None = None,
+    scope_home: str | None = None, scope_homes: set[str] | None = None,
 ) -> dict[str, list]:
     """Kill running ``hermes dashboard`` / ``hermes serve`` processes (update end, ``--stop``).
 
@@ -599,8 +670,9 @@ def _kill_stale_dashboard_processes(
     ``.service`` suffix) are left untouched, not killed twice.
 
     When *scope_home* is supplied, only processes with that exact live
-    ``HERMES_HOME`` are candidates; unknown ownership fails closed. This is
-    used by ``dashboard --stop`` and the per-profile update cleanup.
+    ``HERMES_HOME`` are candidates. Update cleanup instead supplies
+    *scope_homes* (the install root plus its profiles), so a named-profile update
+    also refreshes the unified root dashboard. Unknown ownership fails closed.
 
     Manually-started dashboards are not auto-restarted because we don't know the original launch args
     (--host, --port, --insecure, --tui, --no-open). See #68934.
@@ -611,7 +683,10 @@ def _kill_stale_dashboard_processes(
     """
     from hermes_cli import main_dashboard as _dash
 
-    if restart_managed and _dash._restart_managed_dashboard_service(reason):
+    if (
+        restart_managed and scope_home is None and scope_homes is None
+        and _dash._restart_managed_dashboard_service(reason)
+    ):
         # The dashboard unit is handled but other backends (e.g. hermes-serve.service) are not:
         # mark the unit handled so the filter below drops its PIDs, and keep going.
         _dash_unit = getattr(_dash, "_DASHBOARD_SYSTEMD_UNIT", "hermes-dashboard.service")
@@ -622,9 +697,41 @@ def _kill_stale_dashboard_processes(
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
         exclude |= _lock_owned_serve_pids()
-    pids = _dash._find_stale_dashboard_pids(exclude_pids=exclude or None, scope_home=scope_home)
+    if scope_home is not None and scope_homes is not None:
+        raise ValueError("pass scope_home or scope_homes, not both")
+    if scope_homes is None:
+        pids = _dash._find_stale_dashboard_pids(
+            exclude_pids=exclude or None, scope_home=scope_home
+        )
+        scoped_pid_homes: dict[int, str] = {}
+    else:
+        pids = _dash._find_stale_dashboard_pids(
+            exclude_pids=exclude or None, scope_homes=scope_homes
+        )
+        # Revalidate after discovery and use this same snapshot for launchd attribution/manual
+        # respawn. A process whose ownership became unreadable is spared rather than restarted
+        # under the invoking profile's environment.
+        scoped_pid_homes = _owned_pid_homes(pids, scope_homes)
+        pids = list(scoped_pid_homes)
     if not pids:
         return _empty_result()
+    if sys.platform == "win32":
+        pid_start_times: dict[int, int | None] | None = None
+        expected_homes: dict[int, str] | None = None
+    elif scope_home is None and scope_homes is None:
+        pid_start_times = None
+        expected_homes = None
+    else:
+        from gateway.status import get_process_start_time
+        # Fingerprint roots immediately after scoped ownership selection; the service/argv/cgroup
+        # probes below may take long enough for a dead PID to be reused before SIGTERM.
+        pid_start_times = {pid: get_process_start_time(pid) for pid in pids}
+        if scope_homes is not None:
+            expected_homes = dict(scoped_pid_homes)
+        elif scope_home is not None:
+            expected_homes = {pid: scope_home for pid in pids}
+        else:
+            expected_homes = None
     # Snapshot systemd unit/cgroup and argv BEFORE killing (the cgroup dies with the process).
     pid_cgroup: dict[int, str | None] = {}
     pid_service: dict[int, str | None] = {}
@@ -636,10 +743,22 @@ def _kill_stale_dashboard_processes(
     # job then fails every KeepAlive restart with "port already in use", and the running backend
     # is left unsupervised. Snapshot the loaded jobs once, before the kill; ``--stop`` reads them
     # too, so it can say that a KeepAlive job will undo the stop.
-    launchd_jobs = _dash._loaded_launchd_backend_jobs() if sys.platform != "win32" else []
+    launchd_scope = scope_homes if scope_homes is not None else (
+        {scope_home} if scope_home is not None else None
+    )
+    if sys.platform == "win32":
+        launchd_jobs = []
+    elif launchd_scope is None:
+        launchd_jobs = _dash._loaded_launchd_backend_jobs()
+    else:
+        launchd_jobs = _dash._loaded_launchd_backend_jobs(scope_homes=launchd_scope)
 
     def _launchd_owner(pid: int, cmdline: list[str] | None):
-        return _dash._launchd_job_owning_backend(pid, cmdline, launchd_jobs, ancestors=_process_ancestors(pid))
+        candidate_home = scoped_pid_homes.get(pid) if scope_homes is not None else scope_home
+        return _dash._launchd_job_owning_backend(
+            pid, cmdline, launchd_jobs, ancestors=_process_ancestors(pid),
+            hermes_home=candidate_home,
+        )
 
     if restart_managed and sys.platform != "win32":
         for pid in pids:
@@ -656,7 +775,10 @@ def _kill_stale_dashboard_processes(
                 # (#40449, #68934). Snapshot HERMES_HOME before the kill so per-profile caps still work
                 # after the process is gone (#78821).
                 pid_cmdline[pid] = cmdline
-                pid_home[pid] = _hermes_home_for_pid(pid)
+                pid_home[pid] = (
+                    scoped_pid_homes.get(pid)
+                    if scope_homes is not None else _hermes_home_for_pid(pid)
+                )
         if already_restarted_units:
             pids = [pid for pid in pids if (pid_service.get(pid) or "").removesuffix(".service")
                     not in already_restarted_units]
@@ -669,14 +791,29 @@ def _kill_stale_dashboard_processes(
     print(f"\n⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
-    (_kill_pids_windows if sys.platform == "win32" else _kill_pids_posix)(pids, killed, failed)
+    if sys.platform == "win32":
+        _kill_pids_windows(pids, killed, failed)
+    else:
+        _kill_pids_posix(
+            pids, killed, failed,
+            expected_start_times=pid_start_times,
+            expected_homes=expected_homes,
+        )
     for pid in killed:
         print(f"    ✓ stopped PID {pid}")
     for pid, err_msg in failed:
         print(f"    ✗ failed to stop PID {pid}: {err_msg}")
     if killed and restart_managed:
-        unrecovered = _restart_killed_backends(
-            killed, pid_service, pid_cgroup, pid_cmdline, pid_home, pid_launchd=pid_launchd)
+        if scope_homes is None:
+            unrecovered = _restart_killed_backends(
+                killed, pid_service, pid_cgroup, pid_cmdline, pid_home,
+                pid_launchd=pid_launchd,
+            )
+        else:
+            unrecovered = _restart_killed_backends(
+                killed, pid_service, pid_cgroup, pid_cmdline, pid_home,
+                pid_launchd=pid_launchd, respawn_homes=scope_homes,
+            )
     else:
         unrecovered = list(killed)
         # A stopped launchd job with KeepAlive restarts itself: say so instead of a misleading
@@ -693,7 +830,9 @@ def _kill_stale_dashboard_processes(
 def _restart_killed_backends(
     killed: list[int], pid_service: dict[int, str | None], pid_cgroup: dict[int, str | None],
     pid_cmdline: dict[int, list[str]], pid_home: dict[int, str | None], *,
-    pid_launchd: dict[int, tuple[str, str, int | None]] | None = None) -> list[int]:
+    pid_launchd: dict[int, tuple[str, str, int | None]] | None = None,
+    respawn_homes: set[str] | None = None,
+) -> list[int]:
     """Update path: restart systemd units, kickstart launchd jobs (macOS), respawn manual argv
     (detached, headless, logged to logs/dashboard-restart.log; one per profile, no ``--port 0``).
     Returns PIDs not brought back."""
@@ -742,8 +881,18 @@ def _restart_killed_backends(
             unrecovered.append(pid)
     for svc, err in failed_restarts:
         print(f"    ⚠ {svc}: {err}")
-    respawn_cmds = _filter_dashboard_respawn_candidates(respawn_candidates)
-    failed_cmds = _dash._respawn_dashboard_processes(respawn_cmds) if respawn_cmds else None
+    failed_cmds: list[list[str]] | None = None
+    if respawn_homes is None:
+        respawn_cmds = _filter_dashboard_respawn_candidates(respawn_candidates)
+        if respawn_cmds:
+            failed_cmds = _dash._respawn_dashboard_processes(respawn_cmds)
+    else:
+        selected_candidates = _select_dashboard_respawn_candidates(
+            respawn_candidates, own_homes=respawn_homes
+        )
+        requests = [(list(argv), home) for _pid, argv, home in selected_candidates]
+        failed_indexes = _dash._respawn_dashboard_requests(requests) if requests else []
+        unrecovered.extend(selected_candidates[index][0] for index in failed_indexes)
     if failed_cmds:
         unrecovered.extend(p for p in killed if pid_cmdline.get(p) in failed_cmds)
     if failed_restarts or unrecovered:

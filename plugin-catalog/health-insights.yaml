@@ -1,0 +1,21 @@
+name: health-insights
+repo: https://github.com/mwdearing/hermes-health-insights
+sha: 7f8bc3940faefdad0343b4f2992daf522fd499b0
+description: Deterministic, local-first analysis of your own Apple Health data - weekly trends, rule-based
+  concern checks, nutrition versus Dietary Reference Intakes, an IOM energy target and lab results. Portable
+  Agent Plugins v1 package of six skills that drive the separately installed health-insights command line
+  tool (pipx install from the repository); the plugin itself contains no executable. Works on a self-hosted
+  HealthRelay or Health Bridge receiver database. Disclosure - it handles sensitive health data, so use a
+  local model or one you trust; personal integrations (medication counts, push, model wording) are off by default.
+maintainer: mwdearing
+tier: community
+category: tools
+requires_hermes: '>=0.20'
+docs_url: https://github.com/mwdearing/hermes-health-insights#readme
+version: 0.1.0
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

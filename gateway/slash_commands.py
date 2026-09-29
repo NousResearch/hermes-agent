@@ -599,8 +599,8 @@ class GatewaySlashCommandsMixin(
         from gateway.slash_access import policy_for_runner_source
         source = event.source
         options = {"platform": source.platform.value} if source and source.platform else {}
-        # ``getattr``: partially-constructed runners (``GatewayRunner.__new__`` in tests) have
-        # no ``config``; policy_for_source treats None as ungated.
+        # Partially-constructed runners (``GatewayRunner.__new__`` in tests) have no ``config``;
+        # policy_for_source treats None as ungated.
         policy = policy_for_runner_source(self, source)
         if policy.enabled and not policy.is_admin(source.user_id if source else None):
             options["allowed_commands"] = {"help", "whoami", *policy.user_allowed_commands}

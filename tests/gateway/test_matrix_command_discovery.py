@@ -86,10 +86,9 @@ def _event(text: str, platform: Platform) -> MessageEvent:
 def _matrix_registry_descriptions() -> dict[str, str]:
     """Registry descriptions as Matrix help shows them."""
     changes = {
-        "help": [("/help", "!help"), ("<text>", "&lt;text&gt;")],
+        "help": [("/help", "!help")],
         "save": [("/save", "!save")],
         "pause": [("/pause", "!pause")],
-        "bundles": [("<name>", "&lt;name&gt;")],
     }
     native = {}
     for command, replacements in changes.items():
@@ -284,14 +283,18 @@ async def test_matrix_command_help_shows_argument_placeholders(display_language:
     )
     html = object.__new__(MatrixAdapter)._markdown_to_html(reply)
     placeholders = set(re.findall(r"<[^<>\n]+>", canonical))
-    rendered = {
-        placeholder: html.count(escape(placeholder, quote=False))
+    shown = {
+        placeholder: (
+            reply.count(placeholder),
+            html.count(escape(placeholder, quote=False)),
+        )
         for placeholder in placeholders
     }
     expected = {
-        placeholder: canonical.count(placeholder) for placeholder in placeholders
+        placeholder: (canonical.count(placeholder), canonical.count(placeholder))
+        for placeholder in placeholders
     }
-    assert (get_language(), rendered) == (display_language, expected)
+    assert (get_language(), shown) == (display_language, expected)
 
 
 @pytest.mark.asyncio

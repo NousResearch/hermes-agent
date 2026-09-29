@@ -278,7 +278,10 @@ def gateway(
         write_hermes_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
-            extra_config="platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n",
+            extra_config=(
+                "platforms:\n  matrix:\n    enabled: true\nupdates:\n  check: false\n"
+                "display:\n  platforms:\n    matrix:\n      tool_progress: \"off\"\n"
+            ),
         )
         with (home / ".env").open("a", encoding="utf-8") as stream:
             stream.write(

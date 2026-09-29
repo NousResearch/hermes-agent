@@ -42,6 +42,14 @@ def test_configured_budget_extends_the_wait(bot_mode_cfg):
     assert live_wait_seconds() == 7200.0
 
 
+def test_invalid_configured_budget_falls_back(bot_mode_cfg):
+    from tools.bot_mode_dm import live_wait_seconds
+
+    for value in ("5m", "", "30m", float("inf"), float("nan"), -1):
+        bot_mode_cfg["bot_mode"] = {"live_wait_seconds": value}
+        assert live_wait_seconds() == 300.0
+
+
 def test_local_dm_waiter_waits_on_the_configured_budget(bot_mode_cfg, monkeypatch, capsys):
     """``_wait_live_dm`` (local lane) must pass the configured budget — not the
     module constant — to the shared await primitive."""

@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import math
 import logging
 import os
 import re
@@ -67,7 +68,13 @@ def live_wait_seconds() -> float:
     from tools.bot_relay import _bot_mode_cfg
 
     val = _bot_mode_cfg("live_wait_seconds", loader="load_config")
-    return float(_LIVE_WAIT_SECONDS) if val is None else max(0.0, float(val))
+    if val is None:
+        return float(_LIVE_WAIT_SECONDS)
+    try:
+        parsed = float(val)
+    except (TypeError, ValueError, OverflowError):
+        return float(_LIVE_WAIT_SECONDS)
+    return parsed if math.isfinite(parsed) and parsed >= 0.0 else float(_LIVE_WAIT_SECONDS)
 
 
 def _default_home() -> str:

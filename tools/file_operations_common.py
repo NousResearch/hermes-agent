@@ -285,9 +285,9 @@ def _keep_untouched_line_endings(original: str, edited: str, fallback: Optional[
     old_end, new_end = len(old) - tail, len(new) - tail
     blocks = [("equal", 0, head, 0, head)]
     if max(old_end, new_end) - head > _LINE_MATCH_LIMIT:
-        # Matching is quadratic; past the limit the span between the first and last
-        # change counts as changed rather than stalling the edit.
-        blocks.append(("replace", head, old_end, head, new_end))
+        # Matching is quadratic; past the limit the span is paired by position rather
+        # than stalling the edit, so a line between two distant hunks keeps its own ending.
+        blocks.append(("span", head, old_end, head, new_end))
     else:
         matcher = difflib.SequenceMatcher(
             None, [body for body, _ in old[head:old_end]], [body for body, _ in new[head:new_end]])
@@ -302,15 +302,18 @@ def _keep_untouched_line_endings(original: str, edited: str, fallback: Optional[
         return fallback or ""
 
     out: List[str] = []
-    for tag, i1, _i2, j1, j2 in blocks:
+    for tag, i1, i2, j1, j2 in blocks:
         if tag == "delete":
             continue
         for offset, (body, ending) in enumerate(new[j1:j2]):
+            at = i1 + offset
+            same_line = tag == "equal" or (tag == "span" and at < i2 and old[at][0] == body)
             # A line that gained or lost its final newline was edited there, even if its text was not.
-            if tag == "equal" and bool(old[i1 + offset][1]) == bool(ending):
-                ending = old[i1 + offset][1]
+            if same_line and bool(old[at][1]) == bool(ending):
+                ending = old[at][1]
             elif ending:
-                ending = ending_near(i1 + offset if tag == "equal" else i1) or ending
+                near = at if tag == "equal" else min(at, i2 - 1) if tag == "span" else i1
+                ending = ending_near(near) or ending
             out.append(body + ending)
     return "".join(out)
 

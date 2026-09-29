@@ -50,7 +50,7 @@ from agent.reasoning_summaries import (
     append_streamed_reasoning_detail, separate_glued_reasoning_blocks,
     streamed_reasoning_detail_text,
 )
-from agent.repetition_guard import is_repetition_dominated
+from agent.repetition_guard import RunawayStreamWatch, is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -3170,6 +3170,10 @@ class _StreamingCall(StreamingWaitMonitor):
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
         from agent.chat_completion_helpers_relay import RelayChatAccumulator
         relay_response = RelayChatAccumulator()
+        # The raw channels, not the callback-delivered text: cron, subagents and callback-less
+        # gateway turns register no stream callback, so nothing else sees a loop mid-stream.
+        content_watch, reasoning_watch = RunawayStreamWatch(), RunawayStreamWatch()
+        runaway = None
 
         def _open_stream(next_api_kwargs: dict[str, Any]):
             timeout = _httpx.Timeout(connect=conn_cap, read=read_timeout, write=base_timeout, pool=conn_cap)
@@ -3192,18 +3196,20 @@ class _StreamingCall(StreamingWaitMonitor):
             # Hermes interrupts the managed stream; Relay alone closes the provider stream.
             self.clients.set_stream_handle(stream)
 
+        def _close_half_read_stream(reason: str) -> None:
+            # A half-read SSE response stays checked out of the httpx pool and the finally
+            # would cache the client WITH the leaked connection: close on the owner first.
+            try:
+                stream.close()
+            except Exception:
+                # Still checked out: poison the slot so the finally really closes the pool.
+                if self._attempt_request_client is not None:
+                    self.agent._abort_request_openai_client(self._attempt_request_client, reason=reason)
+
         for chunk in _iter_provider_stream_chunks(stream, response=lambda: self._attempt_stream_response):
             self._count_chunk(_diag, chunk)
             if self.agent._interrupt_requested:
-                # A half-read SSE response stays checked out of the httpx pool and the finally
-                # would cache the client WITH the leaked connection: close on the owner first.
-                try:
-                    stream.close()
-                except Exception:
-                    # Still checked out: poison the slot so the finally really closes the pool.
-                    if self._attempt_request_client is not None:
-                        self.agent._abort_request_openai_client(
-                            self._attempt_request_client, reason="interrupt_stream_close_failed")
+                _close_half_read_stream("interrupt_stream_close_failed")
                 break
             if not self._stream_attempt_is_active(stream_attempt_id):
                 self._discard_stale_stream_chunk(stream_attempt_id, chunk)
@@ -3267,6 +3273,9 @@ class _StreamingCall(StreamingWaitMonitor):
             display_reasoning = detail_text or reasoning_text
             if display_reasoning:
                 self._emit_reasoning(display_reasoning)
+                if reasoning_watch.feed(display_reasoning):
+                    runaway = "reasoning"
+                    break
             # Not routed to the live display: the transport promotes a sole-payload
             # refusal to content + ``content_filter`` and the loop surfaces it terminally.
             delta_refusal = getattr(delta, "refusal", None)
@@ -3280,6 +3289,9 @@ class _StreamingCall(StreamingWaitMonitor):
             delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
             if delta_content:
                 content_parts.append(delta_content)
+                if content_watch.feed(delta_content):
+                    runaway = "content"
+                    break
                 if tool_calls_acc:
                     self._route_suppressed_text(delta_content)
                 elif (pending_text_parts or _provider_stream_text_may_be_sse(delta_content)
@@ -3305,16 +3317,29 @@ class _StreamingCall(StreamingWaitMonitor):
                         # complete instead of silently discarding the action.
                         self.result["partial_tool_names"].append(name)
 
+        if runaway:
+            _close_half_read_stream("runaway_stream_close_failed")
+            self._log_runaway_cut(runaway)
         tool_calls.materialize()
         self._close_managed_stream()
         if self._stream_attempt_was_cancelled(stream_attempt_id):
             raise _httpx.RemoteProtocolError(f"stream attempt {stream_attempt_id} was superseded")
         if stream.final_response is not None:
             return self._adopt_final_response(stream.final_response)
-        return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
-            finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
+        response = self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
+            "length" if runaway else finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal_parts=refusal_parts)
+        if runaway:
+            # Cut, not finished: the length path ends the turn on this mark instead of continuing.
+            response._runaway_repetition = True
+        return response
+
+    def _log_runaway_cut(self, channel: str) -> None:
+        logger.warning(
+            "%sStream cut: the %s turned into a runaway repetition loop (model=%s, provider=%s).",
+            getattr(self.agent, "log_prefix", ""), channel, self.api_kwargs.get("model", "unknown"),
+            getattr(self.agent, "provider", "") or "unknown")
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the
@@ -3481,6 +3506,8 @@ class _StreamingCall(StreamingWaitMonitor):
         self._attempt_request_client = request_client
         _stream_context = {"manager": None, "stream": None}
         base_final_message = None
+        text_watch, thinking_watch = RunawayStreamWatch(), RunawayStreamWatch()
+        runaway = None
 
         from agent import relay_llm
         from agent.anthropic_adapter import normalize_stream_usage, sanitize_anthropic_kwargs
@@ -3535,10 +3562,16 @@ class _StreamingCall(StreamingWaitMonitor):
                         text = getattr(delta, "text", "")
                         if text and not has_tool_use:
                             self._emit_text(text)
+                        if text_watch.feed(text):
+                            runaway = "content"
+                            break
                     elif delta_type == "thinking_delta" and getattr(delta, "thinking", ""):
                         self._emit_reasoning(delta.thinking)
+                        if thinking_watch.feed(delta.thinking):
+                            runaway = "reasoning"
+                            break
             raw_stream = _stream_context["stream"]
-            if not self.agent._interrupt_requested and raw_stream is not None:
+            if not self.agent._interrupt_requested and raw_stream is not None and not runaway:
                 if not saw_message_stop:
                     raise EmptyStreamError(
                         "Anthropic Messages stream ended before message_stop (possible upstream stream drop)."
@@ -3560,6 +3593,13 @@ class _StreamingCall(StreamingWaitMonitor):
 
         if self.agent._interrupt_requested:
             return None
+        if runaway:
+            self._log_runaway_cut(runaway)
+            # No message_stop, so no final message: the SDK's snapshot is what streamed so far.
+            message = accumulator.response(_stream_context["stream"].current_message_snapshot)
+            message.stop_reason = "max_tokens"
+            message._runaway_repetition = True  # same hand-off as the chat_completions wire
+            return message
         if base_final_message is not None:
             self._check_anthropic_message(base_final_message, tool_drop=False)
             if not stream.output_modified:

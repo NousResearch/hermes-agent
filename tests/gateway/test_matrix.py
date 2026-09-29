@@ -6295,7 +6295,7 @@ class TestMatrixInboundEventTimestamp:
     @pytest.mark.parametrize("msgtype, body", [("m.text", "hello"), ("m.image", "photo.png")])
     @pytest.mark.parametrize("timestamp_ms, expected", [
         pytest.param(1768488600123, datetime(2026, 1, 15, 14, 50, 0, 123000, tzinfo=timezone.utc), id="server"),
-        pytest.param(1768489230000, datetime(2026, 1, 15, 15, 0, 30, tzinfo=timezone.utc), id="within-skew"),
+        pytest.param(1768489230000, _TIMESTAMP_TEST_NOW, id="30-seconds-ahead"),
         pytest.param(0, _TIMESTAMP_TEST_NOW, id="missing"),
         pytest.param(1800025200000, _TIMESTAMP_TEST_NOW, id="a-year-ahead"),
         pytest.param(10**15, _TIMESTAMP_TEST_NOW, id="unrepresentable"),

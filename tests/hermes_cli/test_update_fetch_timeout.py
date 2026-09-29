@@ -14,8 +14,27 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+import psutil
 
 import hermes_cli.update_cmd as update_cmd
+
+
+def _unreachable_pid() -> int:
+    """A pid that is not running, so a double's ``pid`` cannot reach a real process tree.
+
+    A stalled network call really does ``kill_process_tree(proc)``, which on Windows ends at
+    ``taskkill /T /F /PID <pid>``. With a test double that pid is a bare integer, not a retained
+    handle, so a fixed literal makes the run destroy whatever unrelated process happens to hold
+    it — and ``/T`` takes that process's whole subtree with it.
+
+    Liveness is probed with ``psutil.pid_exists``, never ``os.kill(pid, 0)``: on Windows every
+    signal other than the two console events goes straight to TerminateProcess, so a probe built
+    on ``os.kill`` would kill the very process it was checking.
+    """
+    for candidate in range(4_000_000, 0, -1):
+        if not psutil.pid_exists(candidate):
+            return candidate
+    raise RuntimeError("no unreachable pid found")
 
 
 def _timeout(cmd, **kwargs):
@@ -29,7 +48,7 @@ def test_network_fetch_stall_becomes_a_failed_run_with_a_named_cause(monkeypatch
 
     class _HangingProc:
         args = ["git", "fetch", "origin", "main"]
-        pid = 4321
+        pid = _unreachable_pid()
         returncode = 0
 
         def communicate(self, timeout=None):
@@ -56,7 +75,7 @@ def test_local_git_stays_unbounded_and_check_true_raises(monkeypatch):
 class _FakeProc:
     def __init__(self, cmd):
         self.args = list(cmd)
-        self.pid = 4321
+        self.pid = _unreachable_pid()
         self.returncode = 0
 
     def communicate(self, timeout=None):

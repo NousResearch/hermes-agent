@@ -92,7 +92,7 @@ from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.media_content import _inbound_media_caption, _is_bare_media_filename, _media_wire_body
 from plugins.platforms.matrix.effective_event import event_content, event_unsigned
-from plugins.platforms.matrix.rich_content import MatrixRichContentMixin, has_media_url
+from plugins.platforms.matrix.rich_content import MatrixRichContentMixin, has_media_url, native_event_context
 from plugins.platforms.matrix.context_mixin import MatrixContextMixin
 from plugins.platforms.matrix.turn_context import MatrixTurnContextUpdate
 from plugins.platforms.matrix.reply_context import (
@@ -2084,10 +2084,7 @@ class MatrixAdapter(MatrixRichContentMixin, MatrixContextMixin, BasePlatformAdap
         if msgtype == "m.notice" and not self._process_notices:
             return
         if msgtype in {"m.emote", "m.sticker"}:
-            self._event_context_cache.store(room_id, event_id, MatrixEventContext(
-                sender, _label_body(msgtype, str(source_content.get("body") or ""), sender),
-                is_image=msgtype == "m.sticker", media_content=MatrixEventContext.image_content(source_content),
-            ))
+            self._event_context_cache.store(room_id, event_id, native_event_context(source_content, sender))
         if msgtype in ("m.image", "m.audio", "m.video", "m.file", "m.sticker"):
             await self._handle_media_message(
                 room_id, sender, event_id, event_ts, source_content, relates_to, msgtype,

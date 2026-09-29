@@ -929,6 +929,7 @@ export interface DesktopBrandConnector {
   status: string
   mcpUrl: string
   credential: string
+  accountId?: string
   hermesName: string
   source: 'web' | 'desktop' | 'both'
 }

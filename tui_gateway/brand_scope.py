@@ -27,11 +27,25 @@ def _clean_ids(raw) -> list[str]:
     return seen
 
 
+def read_brand_inbox_account_id() -> str:
+    """Digits written by the desktop after login. Empty when the brand has no Inbox id."""
+    try:
+        from hermes_constants import get_hermes_home
+        text = (get_hermes_home() / "brand-inbox-account-id").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    text = text.strip()
+    if text.isdigit() and len(text) <= 12:
+        return text
+    return ""
+
+
 def build_brand_scope_prompt(
     app_id: str = "",
     app_ids=None,
     email: str = "",
     is_super: bool = False,
+    inbox_account_id: str | None = None,
 ) -> str:
     """Return the brand block, or "" when the session has no portal login."""
     allowed = _clean_ids(app_ids)
@@ -66,7 +80,13 @@ def build_brand_scope_prompt(
         )
     tools = ""
     if active:
-        tools = (
+        account = str(inbox_account_id if inbox_account_id is not None else read_brand_inbox_account_id()).strip()
+        if account.isdigit() and len(account) <= 12:
+            tools += (
+                f"Inbox Studio account id for this brand is {account}. "
+                f"Pass accountId {account} on every chatwoot tool call.\n"
+            )
+        tools += (
             f'\nThis brand\'s connector tools are MCP servers named ivx-{active}-<connector id>. '
             f'Firecrawl for this brand is the server ivx-{active}-firecrawl. Call that server. '
             "A server whose name is exactly firecrawl is not this brand's server. "

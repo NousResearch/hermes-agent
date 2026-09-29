@@ -1,8 +1,10 @@
 import { app, session } from 'electron'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import path from 'node:path'
 
 import type { BrandSession } from './brand-scope'
+import { resolveDesktopHermesHome } from './data-paths'
 
 const PORTAL_ORIGIN = 'https://admin.intelli-verse-x.ai'
 const PARTITION = 'persist:ivx-portal'
@@ -13,20 +15,20 @@ export interface BrandConnectorCatalogEntry {
   mcpUrl: string
 }
 
-/** Official MCP address when the desktop can connect the tool itself. */
+/** Shared MCP host for every brand. The brand key selects the tenant. */
 export const BRAND_CONNECTOR_CATALOG: BrandConnectorCatalogEntry[] = [
   { id: 'firecrawl', label: 'Firecrawl', mcpUrl: 'https://mcp.firecrawl.dev/v2/mcp' },
-  { id: 'postiz', label: 'Postiz', mcpUrl: '' },
-  { id: 'telnyx', label: 'Telnyx', mcpUrl: '' },
-  { id: 'notifuse', label: 'Mail Studio', mcpUrl: '' },
-  { id: 'chatwoot', label: 'Inbox Studio', mcpUrl: '' },
-  { id: 'twenty', label: 'CRM', mcpUrl: '' },
-  { id: 'fonoster', label: 'Voice Studio', mcpUrl: '' },
+  { id: 'postiz', label: 'Postiz', mcpUrl: 'https://postiz-mcp.intelli-verse-x.ai/' },
+  { id: 'telnyx', label: 'Telnyx', mcpUrl: 'https://telnyx-mcp.intelli-verse-x.ai/' },
+  { id: 'notifuse', label: 'Mail Studio', mcpUrl: 'https://notifuse-mcp.intelli-verse-x.ai/mcp' },
+  { id: 'chatwoot', label: 'Inbox Studio', mcpUrl: 'https://chatwoot-mcp.intelli-verse-x.ai/' },
+  { id: 'twenty', label: 'CRM', mcpUrl: 'https://crm.intelli-verse-x.ai/mcp' },
+  { id: 'fonoster', label: 'Voice Studio', mcpUrl: 'https://fonoster-mcp.intelli-verse-x.ai/' },
   { id: 'stripe', label: 'Stripe', mcpUrl: 'https://mcp.stripe.com' },
   { id: 'revenuecat', label: 'RevenueCat', mcpUrl: 'https://mcp.revenuecat.ai/mcp' },
   { id: 'appsflyer', label: 'AppsFlyer', mcpUrl: 'https://mcp.appsflyer.com/auth/mcp' },
   { id: 'beehiiv', label: 'Beehiiv', mcpUrl: '' },
-  { id: 'n8n', label: 'n8n', mcpUrl: '' },
+  { id: 'n8n', label: 'n8n', mcpUrl: 'https://n8n-mcp.intelli-verse-x.ai/' },
   { id: 'slack', label: 'Slack', mcpUrl: '' },
   { id: 'notion', label: 'Notion', mcpUrl: 'https://mcp.notion.com/mcp' },
   { id: 'linear', label: 'Linear', mcpUrl: 'https://mcp.linear.app/sse' }
@@ -38,6 +40,7 @@ export interface BrandConnectorView {
   status: string
   mcpUrl: string
   credential: string
+  accountId: string
   hermesName: string
   source: 'web' | 'desktop' | 'both'
 }
@@ -56,6 +59,12 @@ interface WebRow {
   status: string
   mcpUrl: string
   credential: string
+  accountId?: string
+}
+
+function numericAccountId(value: unknown): string {
+  const id = typeof value === 'string' ? value.trim() : ''
+  return /^\d+$/.test(id) ? id : ''
 }
 
 function catalogById(id: string): BrandConnectorCatalogEntry | undefined {
@@ -95,6 +104,7 @@ export function mergeBrandConnectors(appId: string, web: WebRow[], local: Record
       status: row.status || (credential ? 'saved' : 'requested'),
       mcpUrl,
       credential,
+      accountId: numericAccountId(row.accountId),
       hermesName: credential && mcpUrl ? brandMcpServerName(appId, row.connectorId) : '',
       source
     })
@@ -114,6 +124,7 @@ export function mergeBrandConnectors(appId: string, web: WebRow[], local: Record
       status: 'saved',
       mcpUrl,
       credential,
+      accountId: '',
       hermesName: mcpUrl ? brandMcpServerName(appId, connectorId) : '',
       source: 'desktop'
     })
@@ -194,7 +205,8 @@ function parseRows(body: unknown): WebRow[] {
       label: typeof (item as { label?: unknown }).label === 'string' ? (item as { label: string }).label : '',
       status: typeof (item as { status?: unknown }).status === 'string' ? (item as { status: string }).status : '',
       mcpUrl: typeof (item as { mcpUrl?: unknown }).mcpUrl === 'string' ? (item as { mcpUrl: string }).mcpUrl : '',
-      credential: typeof credential === 'string' ? credential : ''
+      credential: typeof credential === 'string' ? credential : '',
+      accountId: numericAccountId((item as { accountId?: unknown }).accountId)
     })
   }
 
@@ -239,8 +251,30 @@ async function webRows(appId: string): Promise<{ rows: WebRow[]; error: string }
   return { rows: parseRows(listed.body), error: '' }
 }
 
+/** Hermes reads this on the next Inbox Studio call. Digits only; never the key. */
+export function rememberInboxAccountId(accountId: string): void {
+  const file = path.join(resolveDesktopHermesHome({ home: homedir() }), 'brand-inbox-account-id')
+  const id = numericAccountId(accountId)
+
+  try {
+    if (!id) {
+      unlinkSync(file)
+      return
+    }
+
+    mkdirSync(path.dirname(file), { recursive: true })
+    writeFileSync(file, id, 'utf8')
+  } catch {
+    // The key can still connect. A missing file is the same as no backup id.
+  }
+}
+
 export async function loadBrandConnectors(brand: BrandSession): Promise<BrandConnectorList> {
   if (!brand.signedIn || !brand.activeAppId) {
+    if (!brand.signedIn) {
+      rememberInboxAccountId('')
+    }
+
     return emptyList(brand.activeAppId || '', brand.signedIn ? 'Choose a brand to see its tools.' : '')
   }
 
@@ -248,10 +282,15 @@ export async function loadBrandConnectors(brand: BrandSession): Promise<BrandCon
 
   try {
     const web = await webRows(brand.activeAppId)
+    const connectors = mergeBrandConnectors(brand.activeAppId, web.rows, local)
+
+    if (!web.error) {
+      rememberInboxAccountId(connectors.find(row => row.connectorId === 'chatwoot')?.accountId || '')
+    }
 
     return {
       appId: brand.activeAppId,
-      connectors: mergeBrandConnectors(brand.activeAppId, web.rows, local),
+      connectors,
       catalog: BRAND_CONNECTOR_CATALOG,
       error: web.error,
       webSaved: false

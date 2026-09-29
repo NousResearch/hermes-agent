@@ -90,11 +90,35 @@ def _properties(name: str) -> Dict[str, Any]:
     return props if isinstance(props, dict) else {}
 
 
+def apply_inbox_account_id(name: str, args: Dict[str, Any], props: Dict[str, Any], account_id: str) -> None:
+    """Fill a missing Chatwoot accountId. Other MCP tools keep their own ids."""
+    if "chatwoot" not in name.lower() or "accountId" not in props:
+        return
+    if args.get("accountId") or args.get("account_id"):
+        return
+    seeded = str(account_id or "").strip()
+    if not seeded.isdigit():
+        return
+    field = props.get("accountId")
+    kind = field.get("type") if isinstance(field, dict) else ""
+    args["accountId"] = int(seeded) if kind == "number" else seeded
+
+
+def _stored_inbox_account_id() -> str:
+    try:
+        from tui_gateway.brand_scope import read_brand_inbox_account_id
+    except ImportError:
+        return ""
+    return read_brand_inbox_account_id()
+
+
 def _fit_args(name: str, arguments: Dict[str, Any], *, query: str, remap: bool) -> Dict[str, Any]:
     """Keep arguments the tool declares. A remapped click/open guess sets that flag."""
     args = dict(arguments or {})
     props = _properties(name)
     if props:
+        if "chatwoot" in name.lower():
+            apply_inbox_account_id(name, args, props, _stored_inbox_account_id())
         for dest, sources in _ARG_ALIASES.items():
             if dest in props and dest not in args:
                 for source in sources:

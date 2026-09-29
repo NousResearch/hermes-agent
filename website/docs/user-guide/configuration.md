@@ -1773,7 +1773,10 @@ quick_commands:
     command: df -h /
   update:
     type: exec
-    command: cd ~/.hermes/hermes-agent && git pull && uv pip install -e .
+    command: git -C ~/.hermes/hermes-agent pull --ff-only
+    # Shell metacharacters (; | & < > ( ) ` $) are rejected by default.
+    # Opt in per command if you really need shell semantics:
+    # allow_shell: true
   gpu:
     type: exec
     command: nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader
@@ -1785,6 +1788,7 @@ quick_commands:
 Usage: type `/status`, `/disk`, `/update`, `/gpu`, or `/restart` in the CLI or any messaging platform. `exec` commands run locally on the host and return the output directly — no LLM call, no tokens consumed. `alias` commands rewrite to the configured slash command target.
 
 - **30-second timeout** — long-running commands are killed with an error message
+- **No shell by default** — `exec` commands are tokenized and run as a plain argv vector (`shell=False`). Shell metacharacters (`;`, `|`, `&`, `<`, `>`, `(`, `)`, `` ` ``, `$`) are rejected with an explanatory error; set `allow_shell: true` on a command to opt in to shell execution locally. Opted-in commands are still screened by the danger checker and refused when the safety module is unavailable.
 - **Priority** — quick commands are checked before skill commands, so you can override skill names
 - **Autocomplete** — quick commands are resolved at dispatch time and are not shown in the built-in slash-command autocomplete tables
 - **Type** — supported types are `exec` and `alias`; other types show an error

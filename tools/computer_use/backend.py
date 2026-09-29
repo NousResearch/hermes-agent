@@ -45,7 +45,7 @@ def image_dimensions_from_bytes(raw: bytes) -> Optional[Tuple[int, int]]:
 class UIElement:
     """One interactable element on the current screen."""
 
-    index: int                       # 1-based SOM index
+    index: int                       # exact index assigned by the driver (0 is valid)
     role: str                        # AX role (AXButton, AXTextField, ...)
     label: str = ""                  # AXTitle / AXDescription / AXValue snippet
     bounds: Tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h (logical px)
@@ -116,7 +116,7 @@ class ComputerUseBackend(ABC):
     """Lifecycle: `start()` before first use, `stop()` at shutdown. Pointer/keyboard actions
     take ``delivery_mode`` (background (default) | foreground) and ``bring_to_front``;
     ``button`` is left | right | middle; ``modifiers`` a list of key names. ``element`` args
-    are 1-based SOM indices from a prior capture. `direction` is up | down | left | right and
+    are the exact indices returned by a prior capture (including 0). `direction` is up | down | left | right and
     `amount` is wheel ticks; `keys` is a combo such as 'cmd+s', 'ctrl+alt+t', 'return'."""
 
     @abstractmethod

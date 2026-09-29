@@ -26,42 +26,72 @@ from gateway.session import (
 normalize_whatsapp_identifier = canonical_whatsapp_identifier
 
 
-def test_matrix_reset_pins_current_room_metadata_for_new_conversation(tmp_path):
+def test_reset_pins_current_room_metadata_for_new_conversation(tmp_path):
+    from types import SimpleNamespace
+
     from gateway.run import GatewayRunner
 
     config = GatewayConfig()
     store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+    runner = object.__new__(GatewayRunner)
+    runner.config = config
+    runner.adapters = {Platform.MATRIX: SimpleNamespace(reports_chat_changes_in_turn=True)}
     initial = SessionSource(
         platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="thread",
         user_id="@alice:example.org", thread_id="$root", profile="matrix-bot",
         chat_name="Old name", chat_topic="Old topic",
     )
     old_entry = store.get_or_create_session(initial)
+    assert old_entry is not None
     changed = replace(initial, chat_name="New name", chat_topic="New topic")
 
     def prompt_and_signature(source, entry):
-        prompt = build_session_context_prompt(build_session_context(source, config, entry))
+        context = runner._prompt_session_context(build_session_context(source, config, entry), entry)
+        prompt = build_session_context_prompt(context)
         return prompt, GatewayRunner._agent_config_signature("fake-model", {}, [], prompt)
 
     old_prompt = prompt_and_signature(initial, old_entry)
-    assert prompt_and_signature(changed, old_entry) == old_prompt
-
     new_entry = store.reset_session(old_entry.session_key, source=changed)
-
     assert new_entry is not None
-    assert new_entry.session_id != old_entry.session_id
-    assert (new_entry.session_key, new_entry.origin.profile, new_entry.origin.thread_id) == (
-        old_entry.session_key, "matrix-bot", "$root",
-    )
-    assert new_entry.origin.chat_name == "New name"
-    assert new_entry.origin.chat_topic == "New topic"
-    assert prompt_and_signature(changed, old_entry) == old_prompt
-    assert prompt_and_signature(changed, new_entry) != old_prompt
+    restored = SessionStore(sessions_dir=tmp_path / "sessions", config=config).get_or_create_session(changed)
 
-    restarted = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
-    restored = restarted.get_or_create_session(changed)
-    assert restored.session_id == new_entry.session_id
-    assert prompt_and_signature(changed, restored) == prompt_and_signature(changed, new_entry)
+    assert prompt_and_signature(changed, old_entry) == old_prompt
+    assert prompt_and_signature(changed, new_entry) == prompt_and_signature(changed, None)
+    assert prompt_and_signature(changed, new_entry) != old_prompt
+    assert (restored.session_id, prompt_and_signature(changed, restored)) == (
+        new_entry.session_id, prompt_and_signature(changed, new_entry),
+    )
+
+
+@pytest.mark.parametrize("platform", [Platform.MATRIX, Platform.TELEGRAM])
+def test_reset_refreshes_origin_names_and_keeps_origin_routing(tmp_path, platform):
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+    initial = SessionSource(
+        platform=platform, chat_id="room", chat_type="thread", user_id="alice", user_name="Alice",
+        thread_id="root", profile="bot-profile", chat_name="Old name", chat_topic="Old topic",
+    )
+    entry = store.get_or_create_session(initial)
+    current = replace(initial, profile=None, chat_name="New name", chat_topic="New topic", user_name="Alice B")
+
+    new_entry = store.reset_session(entry.session_key, source=current)
+    assert new_entry is not None
+
+    assert new_entry.origin == replace(
+        initial, chat_name="New name", chat_topic="New topic", user_name="Alice B",
+    )
+
+
+def test_session_context_gives_tools_the_current_room_names(tmp_path):
+    config = GatewayConfig()
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+    initial = SessionSource(
+        platform=Platform.MATRIX, chat_id="!room:example.org", chat_type="group",
+        user_id="@alice:example.org", chat_name="Old name", chat_topic="Old topic",
+    )
+    entry = store.get_or_create_session(initial)
+    current = replace(initial, chat_name="New name", chat_topic="New topic")
+
+    assert build_session_context(current, config, entry).source == current
 
 
 class TestSessionSourceRoundtrip:
@@ -323,7 +353,7 @@ class TestSenderPrefixWithBackfill:
 class TestNeutralizeUntrustedInlineText:
     """Unit coverage for gateway.session.neutralize_untrusted_inline_text().
 
-    Sibling of _format_untrusted_prompt_value for inline call sites (like the
+    Sibling of format_untrusted_prompt_value for inline call sites (like the
     sender-name prefix in gateway/run.py) that must preserve the surrounding
     format instead of rendering a standalone quoted **Label:** line.
     """

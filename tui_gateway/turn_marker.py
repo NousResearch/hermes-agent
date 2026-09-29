@@ -3,14 +3,16 @@ lives only in process memory (the agent flushes to SQLite at turn end), so a mar
 start and cleared on any conclusion — only a process death leaves one behind, and ``session.resume``
 reads it (``_maybe_schedule_auto_continue``). Stored per ``HERMES_HOME`` (profile-aware); writes prune
 entries older than ``_MAX_AGE_SECS`` and cap the count so a crash streak can't grow the file. Every
-function is best-effort — marker bookkeeping must never break a turn — so I/O errors degrade to "no
-marker" instead of raising. A marker also carries its writer's pid + start time (``marker_writer_state``): "a
-marker exists" only implies the writer died when no live sibling backend wrote it (#94778)."""
+legacy bookkeeping function is best-effort — marker writes must never break a turn — so the legacy
+reader degrades I/O errors to "no marker". A marker carries its writer's pid and optional start time;
+its presence alone does not prove the writer died. Exact attachment uses a separate read-only inspector
+that reports unknown recovery instead of inferring terminal work from absent or unreadable state."""
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -152,3 +154,65 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
                    if entry.get("notification_category") == "diagnostic" else {})}
     except Exception:
         return None
+
+
+def inspect_turn_recovery(home: Path | str, session_key: str) -> tuple[str, str]:
+    """Read-only, fail-closed counterpart to best-effort ``read_turn_marker``.
+
+    Absence is UNKNOWN, not a terminal receipt. Never return the old prompt,
+    clear a marker, prune stale work, or infer permission from freshness/policy.
+    """
+    def unique_object(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError("duplicate recovery identity")
+            obj[key] = value
+        return obj
+
+    try:
+        with _lock, open(_marker_path(home), encoding="utf-8-sig") as stream:
+            raw = stream.read(4 * 1024 * 1024 + 1)
+        if len(raw) > 4 * 1024 * 1024:
+            return "unknown", "invalid_recovery_state"
+        entries = json.loads(raw, object_pairs_hook=unique_object)
+        # The writer prunes to _MAX_ENTRIES before adding the new turn, so a
+        # freshly written file can legitimately contain one extra entry.
+        if not isinstance(entries, dict) or len(entries) > _MAX_ENTRIES + 1:
+            return "unknown", "invalid_recovery_state"
+        for key, entry in entries.items():
+            if not isinstance(key, str) or not key or not isinstance(entry, dict):
+                return "unknown", "invalid_recovery_state"
+            if set(entry) - {"prompt", "started_at", "attempts", "auto_continue", "notification_category",
+                              "writer_pid", "writer_start_time"}:
+                return "unknown", "invalid_recovery_state"
+            if "notification_category" in entry and entry["notification_category"] != "diagnostic":
+                return "unknown", "invalid_recovery_state"
+            started, attempts, prompt = entry.get("started_at"), entry.get("attempts"), entry.get("prompt")
+            if (type(started) not in (int, float) or not math.isfinite(started) or started <= 0
+                    or type(attempts) is not int or attempts < 0
+                    or not isinstance(prompt, str) or not prompt.strip() or len(prompt) > _MAX_PROMPT_CHARS
+                    or type(entry.get("auto_continue", True)) is not bool):
+                return "unknown", "invalid_recovery_state"
+            if "writer_pid" in entry and (
+                    type(entry["writer_pid"]) is not int or not 0 < entry["writer_pid"] <= 0xFFFFFFFF):
+                return "unknown", "invalid_recovery_state"
+            if "writer_start_time" in entry and (
+                    "writer_pid" not in entry or type(entry["writer_start_time"]) not in (int, float)
+                    or not math.isfinite(entry["writer_start_time"]) or entry["writer_start_time"] <= 0):
+                return "unknown", "invalid_recovery_state"
+        marker = entries.get(session_key)
+        if marker is None:
+            return "unknown", "no_terminal_receipt"
+        if "writer_pid" not in marker:
+            return "unknown", "writer_liveness_unknown"
+        writer = marker_writer_state(marker)
+        if writer == "dead":
+            return "interrupted", "interrupted_turn"
+        if writer == "alive":
+            return "unknown", "marker_writer_alive"
+        return "unknown", "writer_liveness_unknown"
+    except FileNotFoundError:
+        return "unknown", "no_terminal_receipt"
+    except (OSError, ValueError, TypeError, OverflowError):
+        return "unknown", "invalid_recovery_state"

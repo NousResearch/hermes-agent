@@ -14,6 +14,7 @@ import type {
   SubscriptionUpgradeResponse
 } from '../gatewayTypes.js'
 import type { QueueItem } from '../hooks/useQueue.js'
+import type { GlyphPreset } from '../lib/glyphs.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
@@ -338,6 +339,7 @@ export interface UiState {
   // Focus view (/focus) — display-only reduced-output mode. Drives the
   // persistent `◉ focus` status-bar badge; never affects request payloads.
   focusView: boolean
+  glyphPreset: GlyphPreset
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean

@@ -12,9 +12,8 @@ import { $petBox } from '../app/petFlashStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, NATIVE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
-import { placeholder } from '../content/placeholders.js'
+import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
-import { useT } from '../i18n/useT.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -22,6 +21,7 @@ import {
   stableComposerColumns
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
+import { GlyphProvider } from '../lib/glyphs.js'
 import { composerPromptText } from '../lib/prompt.js'
 import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from '../sdk/host.js'
 
@@ -304,7 +304,6 @@ const ComposerPane = memo(function ComposerPane({
   nativeMode: boolean
 }) {
   const ui = useStore($uiState)
-  const T = useT()
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
 
@@ -462,7 +461,7 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? placeholder() : ui.busy ? T.composer.interruptHint : ''}
+                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
                   // Exactly the "(and N more toolsets…)" tone. `muted` is a
                   // MID-luminance family tone, so it reads receded on both
                   // poles even when polarity detection is wrong (transparent
@@ -584,7 +583,8 @@ export const AppLayout = memo(function AppLayout({
   const shellProps = INLINE_MODE ? {} : { mouseTracking }
 
   return (
-    <Shell {...shellProps}>
+    <GlyphProvider preset={ui.glyphPreset}>
+      <Shell {...shellProps}>
       <Box flexDirection="column" flexGrow={1} position={NATIVE_MODE ? undefined : 'relative'}>
         <Box flexDirection="row" flexGrow={1}>
           {!overlay.agents && !overlay.journey && <AmbientRail side="left" />}
@@ -646,7 +646,8 @@ export const AppLayout = memo(function AppLayout({
       </Box>
 
       <ActiveWidgetSlot />
-    </Shell>
+      </Shell>
+    </GlyphProvider>
   )
 })
 

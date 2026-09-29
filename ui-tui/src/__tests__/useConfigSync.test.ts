@@ -6,6 +6,7 @@ import {
   hydrateFullConfig,
   type McpRevState,
   normalizeBusyInputMode,
+  normalizeGlyphPreset,
   normalizeIndicatorStyle,
   normalizeMouseTracking,
   normalizeStatusBar,
@@ -257,6 +258,37 @@ describe('normalizeIndicatorStyle', () => {
     expect(normalizeIndicatorStyle('')).toBe('kaomoji')
     expect(normalizeIndicatorStyle('sparkle')).toBe('kaomoji')
     expect(normalizeIndicatorStyle(42)).toBe('kaomoji')
+  })
+})
+
+describe('normalizeGlyphPreset', () => {
+  it('accepts the three terminal chrome tiers', () => {
+    expect(normalizeGlyphPreset('nerd')).toBe('nerd')
+    expect(normalizeGlyphPreset('unicode')).toBe('unicode')
+    expect(normalizeGlyphPreset('ascii')).toBe('ascii')
+  })
+
+  it('trims/case-folds and defaults unknown values to unicode', () => {
+    expect(normalizeGlyphPreset(' ASCII ')).toBe('ascii')
+    expect(normalizeGlyphPreset('UNICODE')).toBe('unicode')
+    expect(normalizeGlyphPreset(undefined)).toBe('unicode')
+    expect(normalizeGlyphPreset('emoji')).toBe('unicode')
+  })
+})
+
+describe('applyDisplay → tui_glyph_preset', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  it('threads display.tui_glyph_preset into $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { tui_glyph_preset: 'ascii' } } }, setBell)
+    expect($uiState.get().glyphPreset).toBe('ascii')
+
+    applyDisplay({ config: { display: { tui_glyph_preset: 'nerd' } } }, setBell)
+    expect($uiState.get().glyphPreset).toBe('nerd')
   })
 })
 

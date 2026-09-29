@@ -81,8 +81,6 @@ export interface ConfigDisplayConfig {
   /** Focus view (/focus) — display-only reduced-output mode. */
   focus_view?: boolean
   inline_diffs?: boolean
-  /** UI language id (`en`, `pl`, `pt-br`); the TUI fetches its pack via `i18n.catalog`. */
-  language?: string
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
   show_cost?: boolean
@@ -104,6 +102,8 @@ export interface ConfigDisplayConfig {
   tui_agents_nudge?: boolean
   tui_auto_resume_recent?: boolean
   tui_compact?: boolean
+  /** Terminal chrome glyph tier. Runtime-normalized: nerd | unicode | ascii. */
+  tui_glyph_preset?: string
   /** Legacy alias for display.mouse_tracking. */
   tui_mouse?: boolean | null | number | string
   // Forward-compat: backend may send styles this client doesn't know yet —

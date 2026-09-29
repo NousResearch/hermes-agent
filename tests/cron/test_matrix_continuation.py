@@ -341,7 +341,7 @@ def destinations(tmp_path, monkeypatch):
                 }
             )
             adapter._get_room_member_profiles = AsyncMock(return_value=None)
-            adapter._get_room_state_value = AsyncMock(return_value=None)
+            adapter._read_room_state_event = AsyncMock(return_value=None)
             adapter.gateway_runner = runner
             adapter.set_owner_profile(profile)
             adapter.set_session_store(SessionStore(target_home / "sessions", config))
@@ -545,7 +545,7 @@ def test_unknown_membership_defers_continuation_until_identity_recovers(
         )
     )
     adapter._get_room_member_profiles = AsyncMock(return_value=None)
-    adapter._get_room_state_value = AsyncMock(return_value=None)
+    adapter._read_room_state_event = AsyncMock(return_value=None)
     source = SessionSource(
         platform=Platform.MATRIX,
         chat_id=room,
@@ -662,7 +662,7 @@ def test_fallback_uses_confirmed_canonical_destination_and_participant(
         adapter._client.send_message_event.side_effect = ValueError("send rejected")
     if outcome == "unknown":
         adapter._get_room_members = AsyncMock(return_value=None)
-        adapter._get_room_state_value = AsyncMock(return_value=None)
+        adapter._read_room_state_event = AsyncMock(return_value=None)
 
     async def request(self, method, path, **kwargs):
         target_room = room if outcome != "other_room" else "!other:remote.test"

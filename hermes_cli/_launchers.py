@@ -45,7 +45,7 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
     entry = f"exec({_inline_string_literal(code)})" if code is not None else (
         f"runpy.run_module({_inline_string_literal(module)}, run_name='__main__', alter_sys=True)")
     default_home = (_inline_string_literal(str(home)) if home is not None else
-                    "str(__import__('hermes_constants').get_default_hermes_root())")
+                    "str(__import__('hermes_constants').sudo_aware_default_hermes_root())")
     bootstrap = (
         "import os, sys, runpy; "
         "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
@@ -284,8 +284,8 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
         "os.environ.pop('PYTHONPATH', None)\n"
         f"sys.path.insert(0, {str(repo_root.resolve())!r})\n"
         "if sys.argv[1:2] == ['--print-runtime-command']: sys.dont_write_bytecode = True\n"
-        "from hermes_constants import get_default_hermes_root\n"
-        "os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or str(get_default_hermes_root())\n"
+        "from hermes_constants import sudo_aware_default_hermes_root\n"
+        "os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or str(sudo_aware_default_hermes_root())\n"
         "if sys.argv[1:2] == ['--print-runtime-command']:\n"
         "    from pathlib import Path\n"
         "    from hermes_cli._launchers import print_runtime_command\n"

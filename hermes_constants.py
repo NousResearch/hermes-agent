@@ -58,23 +58,109 @@ def _get_platform_default_hermes_home() -> Path:
     return Path.home() / (".hermes" + suffix)
 
 
+_SYSTEMD_SYSTEM_UNIT_DIR = Path("/etc/systemd/system")
+
+
+def _hermes_home_from_installed_unit(sudo_user: str) -> Path | None:
+    """``HERMES_HOME`` pinned by an installed ``hermes-*.service`` unit that runs as *sudo_user*.
+
+    A non-default HERMES_HOME (Docker-style ``/opt/data``, a moved data dir) cannot be recovered
+    from ``pw_dir / \".hermes\"`` alone. systemd persists the real value on disk in the unit's
+    ``Environment=\"HERMES_HOME=...\"`` line — readable regardless of sudo's env stripping — so this
+    is checked before falling back to the native-default guess. Best-effort: any read/parse
+    failure just means \"no answer\", never an exception (this sits on the hot import path).
+
+    Parsing rules (matching systemd's own semantics):
+    - ``Environment=`` is only honoured inside ``[Service]`` sections; lines before the first
+      ``[Service]`` header or inside any other section (``[Unit]``, ``[Install]``, …) are ignored.
+    - ``Environment=`` accepts multiple assignments on one line, space-separated after optional
+      shell quoting (e.g. ``Environment=\"HERMES_HOME=/opt/data\" \"OTHER=x\"``).  We use
+      ``shlex.split`` on the right-hand-side to handle all quoting variants correctly instead of
+      the old \"strip outer quotes if the whole body looks quoted\" heuristic, which returned
+      a corrupted path for the multi-assignment case.
+    """
+    import shlex
+
+    if sys.platform == "win32":
+        return None
+    try:
+        unit_paths = sorted(_SYSTEMD_SYSTEM_UNIT_DIR.glob("hermes-*.service"))
+    except OSError:
+        return None
+    for unit_path in unit_paths:
+        try:
+            text = unit_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        user = None
+        home = None
+        in_service_section = False
+        for line in text.splitlines():
+            line = line.strip()
+            # Track section headers — Environment= is only valid in [Service].
+            if line.startswith("[") and line.endswith("]"):
+                in_service_section = (line == "[Service]")
+                continue
+            if line.startswith("User="):
+                user = line.split("=", 1)[1].strip()
+            elif line.startswith("Environment=") and in_service_section:
+                body = line[len("Environment="):].strip()
+                try:
+                    tokens = shlex.split(body)
+                except ValueError:
+                    continue  # malformed quoting — skip, don't corrupt
+                for token in tokens:
+                    if token.startswith("HERMES_HOME="):
+                        value = token.split("=", 1)[1] or None
+                        if value:
+                            home = value
+                        break  # first HERMES_HOME wins within one line
+        if user == sudo_user and home:
+            return Path(home)
+    return None
+
+
 def sudo_invoker_default_home() -> Path | None:
-    """The invoking user's native ``~/.hermes`` when this process is root under ``sudo``, else None.
+    """The invoking user's real ``.hermes`` home when this process is root under ``sudo``, else None.
 
     sudo strips HERMES_HOME and sets HOME=/root, so the process's own default is root's; the profile
-    store and the system service being operated on belong to SUDO_USER.
+    store, dependency/venv state, and the system service being operated on belong to SUDO_USER.
+    Prefers the value pinned by an installed systemd unit (survives a relocated, non-default
+    HERMES_HOME); falls back to the platform-native ``pw_dir/.hermes`` guess otherwise.
     """
     if not hasattr(os, "geteuid") or os.geteuid() != 0:
         return None
     sudo_user = os.environ.get("SUDO_USER", "").strip()
     if not sudo_user or sudo_user == "root":
         return None
+    pinned = _hermes_home_from_installed_unit(sudo_user)
+    if pinned is not None:
+        return pinned
     import pwd
 
     try:
         return Path(pwd.getpwnam(sudo_user).pw_dir) / ".hermes"
     except KeyError:  # SUDO_USER not in passwd (chroot/container)
         return None
+
+
+def sudo_aware_default_hermes_root() -> Path:
+    """:func:`get_default_hermes_root`, preferring the sudo invoker's real home over root's own.
+
+    For code that must compute the *default* HERMES_HOME before HERMES_HOME is set on the
+    process — most notably the launcher bootstrap this module's own generated scripts run
+    (:func:`hermes_cli._launchers.runtime_command` / ``_launcher_script``), which sets
+    ``os.environ['HERMES_HOME']`` from this value as the FIRST thing an isolated store-Python
+    process does, before ``hermes_bootstrap`` or any of the CLI's own sudo/profile fix-ups have
+    had a chance to run. Under ``sudo`` with no explicit ``HERMES_HOME``, sudo already reset
+    HOME=/root and stripped HERMES_HOME, so a bare ``get_default_hermes_root()`` call there
+    baked /root/.hermes into ``HERMES_HOME`` for the rest of that process AND every worker
+    subprocess it spawns afterwards — the exact bug that made PM treat an existing shared
+    dependency generation as foreign and build a whole new duplicate, root-owned one. Same
+    invoker-aware fallback as :func:`pm.environments.dependency_home_root`.
+    """
+    sudo_home = sudo_invoker_default_home()
+    return get_default_hermes_root(home=sudo_home) if sudo_home is not None else get_default_hermes_root()
 
 
 def _warn_profile_fallback_once() -> None:

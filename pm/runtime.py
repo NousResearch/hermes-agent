@@ -19,14 +19,27 @@ from pm.package import InstallError
 
 
 def runtime_environment() -> dict[str, str]:
-    """Do not let an activated application or a uv caller select PM's imports."""
-    from hermes_constants import get_hermes_home
+    """Do not let an activated application or a uv caller select PM's imports.
+
+    The PM worker is a fresh subprocess (see ``pm.client._request``), so it does not inherit
+    this process's context-local overrides — it only sees what lands in *env*. Under ``sudo``
+    with no explicit ``HERMES_HOME``, ``get_hermes_home()`` alone would bake root's own
+    ``/root/.hermes`` into the worker's environment (sudo already reset HOME=/root and stripped
+    HERMES_HOME), so the worker judges the real checkout's dependency generation "foreign" or
+    stale against the wrong home. Same invoker-aware fallback as
+    :func:`pm.environments.dependency_home_root`.
+    """
+    from hermes_constants import get_hermes_home, get_hermes_home_override, sudo_invoker_default_home
     from pm.paths import store_root
 
     from pm.environment import _base_environment
 
     env = _base_environment()
-    env["HERMES_HOME"] = str(get_hermes_home())
+    home = get_hermes_home_override()
+    if not home and not os.environ.get("HERMES_HOME", "").strip():
+        sudo_home = sudo_invoker_default_home()
+        home = str(sudo_home) if sudo_home is not None else None
+    env["HERMES_HOME"] = home or str(get_hermes_home())
     env["HERMES_RUNTIME_DIR"] = str(store_root())
     return env
 

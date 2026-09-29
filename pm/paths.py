@@ -53,10 +53,15 @@ def partials_root() -> Path:
     downloader writes continuously, so they must land somewhere writable
     on every install kind: ``%LOCALAPPDATA%\\hermes\\cache\\partials`` on
     Windows, ``~/.hermes/cache/partials`` on POSIX.
-    """
-    from hermes_constants import get_default_hermes_root
 
-    return get_default_hermes_root() / "cache" / "partials"
+    Anchored via ``dependency_home_root()`` (not a bare ``get_default_hermes_root()``): under
+    sudo with no explicit HERMES_HOME that would resolve against root's own HOME=/root instead
+    of the real invoking user's HERMES_HOME, spilling partial downloads into a root-owned
+    /root/.hermes/cache/partials next to the shared store the rest of PM actually uses.
+    """
+    from pm.environments import dependency_home_root
+
+    return dependency_home_root() / "cache" / "partials"
 
 
 def facts_path() -> Path:
@@ -66,9 +71,9 @@ def facts_path() -> Path:
 def writable_store_root() -> Path:
     if not (store_root().parent / "manifest.json").is_file():
         return store_root()
-    from hermes_constants import get_default_hermes_root
+    from pm.environments import dependency_home_root
 
-    return get_default_hermes_root() / "tools"
+    return dependency_home_root() / "tools"
 
 
 def runtime_facts_path() -> Path:

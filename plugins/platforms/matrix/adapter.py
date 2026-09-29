@@ -430,6 +430,7 @@ from hermes_constants import get_hermes_dir as _get_hermes_dir
 
 _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
 _ROOM_STATE_READ_TIMEOUT_SECONDS = 10.0
+_ROOM_NAME_STATE_KEYS = {"m.room.name": "name", "m.room.topic": "topic", "m.room.canonical_alias": "alias"}
 
 _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
 
@@ -866,6 +867,9 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identity_cached_at: dict[str, float] = {}
         self._room_identity_ttl_seconds = _env_number("MATRIX_ROOM_IDENTITY_TTL_SECONDS", 60.0, float)
         self._room_identity_cache_max = 256
+        # Last successful state read per room and event type. Kept apart from _room_identities
+        # because _absorb_sync clears that cache whenever a sync response includes joined rooms.
+        self._room_state_values: Dict[str, Dict[str, Optional[str]]] = {}
         self._joined_rooms: set[str] = set()
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)  # event dedup, newest kept
@@ -2879,21 +2883,46 @@ class MatrixAdapter(BasePlatformAdapter):
         return f"{', '.join(names[:3])} and {remaining} {noun}"
 
     async def _read_room_state_event(self, room_id: str, event_type: str) -> Any:
-        """The content of a room state event, or None when the room has no such event. Any other
-        failure, including the read deadline, raises."""
+        """The content of a room state event, or None when the room has no such event (``M_NOT_FOUND``).
+        Any other failure, including the read deadline, raises."""
         if not self._client or not hasattr(self._client, "get_state_event"):
             return None
         try:
             return await asyncio.wait_for(
                 self._client.get_state_event(RoomID(room_id), event_type), _ROOM_STATE_READ_TIMEOUT_SECONDS,
             )
-        except MNotFound:
-            return None
+        except Exception as exc:
+            if isinstance(exc, MNotFound) or getattr(exc, "errcode", None) == "M_NOT_FOUND":
+                return None
+            raise
 
     async def _read_room_member_profiles(self, room_id: str) -> tuple[Optional[set[str]], Optional[Dict[Any, Any]]]:
         members = await self._get_room_members(room_id)
         profiles = await self._get_room_member_profiles(room_id) if members is not None else None
         return members, profiles
+
+    def _remember_room_names(
+        self, room_id: str, reads: Dict[str, Any], profiles: Optional[Dict[Any, Any]],
+    ) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+        """The room's name, topic, canonical alias and member-derived name. *reads* maps each event type
+        in ``_ROOM_NAME_STATE_KEYS`` to its content or to the exception that its read raised, and
+        *profiles* is None when the member read failed. A failed read gives the last value read for the
+        room, so a timeout does not rename the room; a successful read replaces that value, so a removed
+        name or topic applies."""
+        values = self._room_state_values.pop(room_id, {})
+        for event_type, key in _ROOM_NAME_STATE_KEYS.items():
+            event = reads[event_type]
+            if not isinstance(event, Exception):
+                values[event_type] = (self._state_event_value(event, key) or "").strip() or None
+        if profiles is not None:
+            values["m.room.member"] = self._compute_room_display_name(profiles)
+        if len(self._room_state_values) >= self._room_identity_cache_max:
+            del self._room_state_values[next(iter(self._room_state_values))]
+        self._room_state_values[room_id] = values
+        return (
+            values.get("m.room.name"), values.get("m.room.topic"), values.get("m.room.canonical_alias"),
+            values.get("m.room.member"),
+        )
 
     def _invalidate_room_identities(self, room_id: str | None = None) -> None:
         """Drop one cached room identity (or all when *room_id* is None)."""
@@ -2939,9 +2968,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 return None
             return (self._state_event_value(event, key) or "").strip() or None
 
-        room_name = state_value(name_event, "name")
-        room_topic = state_value(topic_event, "topic")
-        canonical_alias = state_value(alias_event, "alias")
+        room_name, room_topic, canonical_alias, member_name = self._remember_room_names(
+            room_id, dict(zip(_ROOM_NAME_STATE_KEYS, (name_event, topic_event, alias_event))), profiles,
+        )
         member_count = len(members) if members is not None else None
         members_digest = None
         if members is not None and profiles is not None:
@@ -2956,10 +2985,7 @@ class MatrixAdapter(BasePlatformAdapter):
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
         is_likely_dm = bool(members is not None and len(members) == 2 and self._user_id in members)
-        computed_name = None
-        if not room_name and not canonical_alias:
-            computed_name = self._compute_room_display_name(profiles)
-        display_name = room_name or canonical_alias or computed_name or room_id
+        display_name = room_name or canonical_alias or member_name or room_id
         room_state = (
             None if failed_reads or members_digest is None
             else MatrixRoomState(

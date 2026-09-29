@@ -971,7 +971,12 @@ class GatewayNotificationsMixin:
                     _served_notice_target_key(
                         profile, platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
                     for profile, platform, cfg in self._served_home_channel_configs()
-                    if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
+                    if (
+                        cfg.enabled
+                        and cfg.home_channel
+                        and cfg.home_channel.chat_id
+                        and cfg.gateway_restart_notification
+                    )
                 }
                 delivered |= await self._send_home_channel_startup_notifications(skip_targets=delivered)
                 if owed <= delivered:
@@ -1020,11 +1025,15 @@ class GatewayNotificationsMixin:
             if chat in notified_chats:
                 delivered.add(target)
                 continue
-            if await self._send_home_channel_message(
+            sent = await self._send_home_channel_message(
                 platform, home, transport, message, "Home-channel startup notification failed for %s:%s: %s",
-            ):
+            )
+            # A live transport that rejects this one-way startup notice cannot make progress by
+            # being retried forever. Treat the attempted target as settled so one broken adapter
+            # does not block notices for every other home channel on subsequent boots.
+            delivered.add(target)
+            if sent:
                 notified_chats.add(chat)
-                delivered.add(target)
                 logger.info("Sent home-channel startup notification to %s:%s", platform.value, home.chat_id)
         return delivered
 

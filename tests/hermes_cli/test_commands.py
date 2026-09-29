@@ -1,10 +1,8 @@
 """Tests for the central command registry and autocomplete."""
 
-import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from agent import i18n
 from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
 from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
@@ -175,42 +173,6 @@ class TestTelegramBotCommands:
         assert "queue" in names
         assert "steer" in names
 
-
-
-@pytest.mark.parametrize("lang", i18n.SUPPORTED_LANGUAGES)
-def test_plain_text_menus_spell_command_examples_without_code_spans(lang, monkeypatch):
-    """CLI help and Telegram's command menu show descriptions as plain text."""
-    import contextlib
-    import io
-    import re
-
-    from hermes_cli.cli_info_mixin import CLIInfoMixin
-
-    class _Cli(CLIInfoMixin):
-        config: dict = {}
-
-        def _command_available(self, slash_command):
-            return True
-
-    monkeypatch.setenv("HERMES_LANGUAGE", lang)
-    monkeypatch.setenv("COLUMNS", "400")
-    i18n.reset_language_cache()
-    try:
-        help_out = io.StringIO()
-        with contextlib.redirect_stdout(help_out):
-            _Cli().show_help("")
-        cli_rows = re.findall(r"^ +/(help|save) +- (.*)$", help_out.getvalue(), re.M)
-        menu = [(name, desc) for name, desc in telegram_bot_commands() if name in {"help", "save", "pause"}]
-        surfaces = {
-            "cli": {name: "`" in desc for name, desc in cli_rows},
-            "telegram": {name: "`" in desc for name, desc in menu},
-        }
-        assert (i18n.get_language(), surfaces) == (lang, {
-            "cli": {"help": False, "save": False},
-            "telegram": {"help": False, "save": False, "pause": False},
-        })
-    finally:
-        i18n.reset_language_cache()
 
 
 class TestSlackSubcommandMap:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from hermes_time import now as _hermes_now
 from typing import Optional
 
@@ -77,7 +78,17 @@ def _archive_answer(archive: str) -> str | None:
     """
     if "## Response" not in archive:
         return archive
-    answer = archive.rpartition("## Response")[2].strip()
+    framed = list(re.finditer(r"(?m)^\*\*Response Characters:\*\* (\d+)\n^## Response\n\n", archive))
+    if framed:
+        boundary = framed[-1].end()
+        length = int(framed[-1].group(1))
+        answer = archive[boundary:boundary + length]
+        if len(answer) == length:
+            answer = answer.strip()
+        else:
+            answer = ""
+    else:
+        answer = archive.rpartition("## Response")[2].strip()
     if not answer or _sched._is_cron_silence_response(answer):
         return None
     return answer

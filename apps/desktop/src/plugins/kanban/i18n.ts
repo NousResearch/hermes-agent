@@ -1127,8 +1127,163 @@ const zhHant: KanbanMessages = {
   }
 }
 
+const ptBr: KanbanMessages = {
+  ...en,
+  nav: 'Kanban',
+  openBoard: 'Kanban: abrir painel',
+  newTaskCommand: 'Kanban: nova tarefa',
+  countTip: (running, ready) => `Kanban — ${running} em andamento, ${ready} prontas`,
+  col: {
+    triage: { label: 'Triagem', help: 'Ideias iniciais — um agente de detalhamento as transforma em especificações.' },
+    todo: { label: 'A fazer', help: 'Aguardando dependências ou atribuição.' },
+    scheduled: { label: 'Agendada', help: 'Aguardando o horário programado.' },
+    ready: { label: 'Pronta', help: 'Dependências atendidas — atribua um perfil para o agendador executar.' },
+    running: { label: 'Em andamento', help: 'Uma unidade de trabalho está cuidando dela. Controlado pelo agendador.' },
+    blocked: { label: 'Bloqueada', help: 'A unidade de trabalho precisa de uma resposta sua.' },
+    review: { label: 'Em revisão', help: 'Um agente revisor está verificando o trabalho. Controlado pelo agendador.' },
+    done: { label: 'Concluída', help: 'Concluída; as tarefas dependentes ficam prontas.' },
+    archived: { label: 'Arquivada', help: 'Oculta da visualização padrão do painel.' }
+  },
+  locked: {
+    review: 'O agendador define o estado de revisão quando o agente revisor assume o cartão.',
+    running: 'O agendador define o estado em andamento quando uma unidade de trabalho assume o cartão.',
+    scheduled:
+      'Uma tarefa agendada precisa de um horário para despertar — definido pelo agente; não pode ser movida para cá.'
+  },
+  arcRunning: 'Um agente está trabalhando nela.',
+  arcStale: 'Assumida, mas sem atividade há mais de 2 minutos — o agendador vai assumi-la novamente.',
+  title: 'Kanban',
+  orchestrationSettings: 'Configurações de orquestração',
+  newTask: 'Nova tarefa',
+  filterCards: 'Filtrar cartões…',
+  noMatch: 'Nenhuma tarefa corresponde ao filtro',
+  noTasks: 'Este painel ainda não tem tarefas',
+  open: 'Abrir',
+  select: modifier => `Selecionar (${modifier}+clique)`,
+  deselect: 'Desmarcar',
+  moveTo: label => `Mover para ${label}`,
+  delete: 'Excluir',
+  reviewChecking: 'O agente revisor está verificando o trabalho concluído.',
+  attachedTip: name => `${name} assumiu — o agendador fará a transferência no próximo ciclo (até 1 min).`,
+  orchestratorTip: name => `${name} (orquestrador) vai assumir no próximo ciclo e escrever a especificação.`,
+  autoAssignTip: name => `Atribuição automática para ${name} no próximo ciclo do agendador (kanban.default_assignee).`,
+  wontRun: 'Não será executada',
+  wontRunTip:
+    'Cartões prontos só são executados quando um perfil é atribuído. Abra o cartão e defina um responsável ou configure um responsável padrão nas opções de orquestração.',
+  noHeartbeat: 'Sem sinal de atividade',
+  expand: label => `Expandir ${label}`,
+  collapse: label => `Recolher ${label}`,
+  newTaskIn: label => `Nova tarefa em ${label}`,
+  empty: 'Vazia',
+  unassigned: 'Sem responsável',
+  filters: 'Filtros',
+  allProfiles: 'Todos os perfis',
+  allTenants: 'Todos os espaços',
+  showArchived: 'Mostrar arquivadas',
+  groupRunning: 'Agrupar tarefas em andamento por perfil',
+  nSelected: n => `${n} selecionadas`,
+  moveToShort: 'Mover para',
+  assign: 'Atribuir',
+  unassignAction: 'Remover atribuição',
+  archive: 'Arquivar',
+  clearSelection: 'Limpar seleção (Esc)',
+  refused: 'Recusada',
+  bulkFailed: (failed, total, err) =>
+    `${failed} de ${total} falharam — ${err}. Os cartões que falharam continuam selecionados.`,
+  titlePlaceholderTriage: 'Ideia inicial — o agente de detalhamento vai completar',
+  titlePlaceholder: 'Título',
+  descPlaceholder: 'Descrição (opcional)',
+  priority: 'Prioridade',
+  workspace: 'Espaço de trabalho',
+  model: 'Modelo',
+  assignee: 'Responsável',
+  skills: 'Skills (separadas por vírgula)',
+  creating: 'Criando…',
+  createTask: 'Criar tarefa',
+  cancel: 'Cancelar',
+  save: 'Salvar',
+  estimateEffort: 'Estimar esforço',
+  estimating: 'Estimando…',
+  reEstimate: 'Estimar novamente',
+  couldNotEstimate: 'Não foi possível estimar',
+  complexity: { S: 'Pequena', M: 'Média', L: 'Grande' },
+  introGotIt: 'Entendi',
+  someone: 'Alguém',
+  blockKindTip: kind =>
+    kind === 'needs_input'
+      ? 'O agente pediu uma resposta sua.'
+      : kind === 'capability'
+        ? 'O agente encontrou uma limitação de recurso que não consegue superar.'
+        : kind === 'transient'
+          ? 'O agente falhou por causa de um erro temporário.'
+          : 'O agente informou uma dependência pela qual precisa aguardar.',
+  blockReason: 'Tipo de bloqueio',
+  blockRecurrences: 'Bloqueios recorrentes',
+  blockRecurrencesTip:
+    'Vezes que esta tarefa voltou a bloquear pelo mesmo motivo após ser desbloqueada por uma pessoa.',
+  consecutiveFailures: 'Falhas consecutivas',
+  lastFailureError: 'Última falha',
+  unblockedMessage: id => `Tarefa ${id} desbloqueada. Ela está pronta para o próximo ciclo.`,
+  readyUnassignedTitle: 'Pronta, mas sem responsável — este cartão não será executado.',
+  readyUnassignedBody:
+    'O agendador só assume cartões prontos com responsável. Escolha um perfil no campo Responsável acima (ou defina um responsável padrão nas opções de orquestração) para a tarefa começar em até um minuto.',
+  description: 'Descrição',
+  editDescription: 'Editar descrição',
+  cancelEdit: 'Cancelar edição',
+  noDescription: 'Ainda não há descrição.',
+  result: 'Resultado',
+  latestSummary: 'Resumo mais recente',
+  dependencies: 'Dependências',
+  blockedBy: 'Bloqueada por',
+  blocks: 'Bloqueia',
+  send: 'Enviar',
+  comment: 'Comentário',
+  commentsHelpRunning:
+    'Esta tarefa está em execução. Sua nota entra na resposta atual do agente em poucos segundos, sem precisar bloquear e desbloquear. “Recolocar na fila com nota” reinicia a tarefa do zero com sua nota no contexto.',
+  commentsHelp:
+    'Os comentários são adicionados à conversa da tarefa. Quando um agente assumir a tarefa, ele os lerá como parte do contexto.',
+  messageWorker: 'Enviar mensagem ao agente em execução…',
+  addComment: 'Adicionar comentário…',
+  deliveredLive: 'Enviado ao agente em execução em poucos segundos.',
+  requeueWithNote: 'Recolocar na fila com nota',
+  notePosted: 'Nota publicada — tarefa recolocada na fila',
+  activity: n => `Atividade · ${n}`,
+  runs: n => `Execuções · ${n}`,
+  workerLog: 'Log do agente',
+  workerLogTail: 'Log do agente · trecho final',
+  attachments: n => `Anexos · ${n}`,
+  noAttachments: 'Ainda não há anexos.',
+  uploadAttachment: 'Enviar anexo',
+  taskActions: 'Ações da tarefa',
+  copyTaskId: 'Copiar ID da tarefa',
+  copyTitle: 'Copiar título',
+  copiedId: id => `${id} copiado`,
+  copiedTitle: 'Título copiado',
+  close: 'Fechar',
+  working: 'Em andamento',
+  board: 'Painel',
+  newBoard: 'Novo painel',
+  switchBoard: 'Trocar painel',
+  createBoard: 'Criar painel',
+  name: 'Nome',
+  project: 'Projeto',
+  noProject: 'Sem projeto (sandbox temporário)',
+  auto: 'Automático',
+  notify: {
+    completedTitle: 'Tarefa concluída',
+    blockedTitle: 'Tarefa bloqueada — precisa da sua resposta',
+    blockLoopTitle: 'Tarefa enviada à triagem — precisa de uma decisão',
+    gaveUpTitle: 'Tarefa interrompida',
+    gaveUpBody: 'O Hermes não conseguiu concluir esta tarefa. Abra o Kanban para ver o motivo e atribuí-la novamente.',
+    crashedTitle: 'A tarefa encontrou um problema — o Hermes tentará novamente',
+    timedOutTitle: 'A tarefa demorou demais — o Hermes tentará novamente',
+    openKanban: 'Abrir Kanban',
+    artifacts: n => `${n} ${n === 1 ? 'artefato' : 'artefatos'}`
+  }
+}
+
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const KANBAN_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const KANBAN_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant, 'pt-br': ptBr }
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …). One tiny generic

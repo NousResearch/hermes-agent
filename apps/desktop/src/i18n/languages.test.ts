@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from './catalog'
-import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, LOCALE_OPTIONS, normalizeLocale } from './languages'
+import {
+  DEFAULT_LOCALE,
+  isLocale,
+  isSupportedLocaleValue,
+  LOCALE_OPTIONS,
+  normalizeLocale,
+  osPreferredLocale
+} from './languages'
 
 describe('desktop i18n languages', () => {
   it('normalizes supported locale aliases', () => {
@@ -35,6 +42,10 @@ describe('desktop i18n languages', () => {
     expect(normalizeLocale('ES-419')).toBe('es')
     expect(normalizeLocale(' es_mx ')).toBe('es')
     expect(normalizeLocale('Español')).toBe('es')
+    expect(normalizeLocale('pt-BR')).toBe('pt-br')
+    expect(normalizeLocale('pt_br')).toBe('pt-br')
+    expect(normalizeLocale('Português')).toBe('pt-br')
+    expect(normalizeLocale('pt-PT')).toBe('pt-br')
   })
 
   it('falls back to English for empty or unsupported values', () => {
@@ -49,6 +60,8 @@ describe('desktop i18n languages', () => {
     expect(isSupportedLocaleValue('ja-JP')).toBe(true)
     expect(isSupportedLocaleValue('ru-RU')).toBe(true)
     expect(isSupportedLocaleValue('de-DE')).toBe(true)
+    expect(isSupportedLocaleValue('pt-BR')).toBe(true)
+    expect(osPreferredLocale('pt-BR')).toBe('pt-br')
     expect(isSupportedLocaleValue('it')).toBe(false)
     expect(isLocale('zh-CN')).toBe(false)
     expect(isLocale('zh')).toBe(true)
@@ -59,6 +72,7 @@ describe('desktop i18n languages', () => {
     expect(isLocale('fr')).toBe(true)
     expect(isLocale('de')).toBe(true)
     expect(isLocale('es')).toBe(true)
+    expect(isLocale('pt-br')).toBe(true)
   })
 
   it('round-trips every picker option through its display.language value to a registered catalog', () => {

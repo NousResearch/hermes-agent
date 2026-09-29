@@ -1069,7 +1069,7 @@ export async function saveOnboardingApiKey(
   // provider probes, self-hosted endpoints). We now save the value as-is and
   // let the user proceed; an actually-bad key surfaces later at chat time.
   try {
-    await setEnvVar(envKey, trimmed, ctx.scope)
+    await setEnvVar(envKey, trimmed, ctx.scope, { providerSetup: true })
 
     if (generation !== flowGeneration) {
       return { ok: false }

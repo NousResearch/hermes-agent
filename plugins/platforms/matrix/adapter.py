@@ -33,7 +33,6 @@ import hashlib
 import inspect
 import json
 from contextlib import suppress
-from datetime import datetime
 import logging
 import mimetypes
 import os
@@ -48,8 +47,9 @@ from dataclasses import dataclass, field
 from html import escape as _html_escape
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Collection, Dict, Optional, Set
 
+from agent.i18n import t
 from agent.secret_scope import get_secret
 from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
@@ -80,25 +80,29 @@ except ImportError:
         "PRIVATE": "private_chat", "PUBLIC": "public_chat", "TRUSTED_PRIVATE": "trusted_private_chat"})
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
+try:
+    from mautrix.errors import MNotFound
+except ImportError:
+    class MNotFound(Exception):  # type: ignore[no-redef]
+        """Import-safe stand-in for the homeserver's M_NOT_FOUND error."""
+
 from gateway.config import Platform, PlatformConfig
 from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.relations import MatrixRelation
 from plugins.platforms.matrix.reply_context import (
     MatrixEventContext, MatrixEventContextCache, MatrixReplyContext, extract_mx_reply_quote,
 )
-from plugins.platforms.matrix.room_context import (
-    MatrixRoomState, PendingRoomNotes, RoomStateNote, room_state_change_note,
-)
 from plugins.platforms.matrix.thread_context import fetch_thread_entries
 from plugins.platforms.matrix.read_context import read_matrix_context
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
 )
 from gateway.platforms.base import transcode_to_ogg_opus
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.session import SessionSource
+from plugins.platforms.matrix.room_context import MatrixRoomState, format_room_notes
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
@@ -229,6 +233,21 @@ def _strip_reply_fallback(body: str) -> str:
     return "\n".join(stripped) if stripped else body
 
 
+_MATRIX_THREAD_FALLBACK_FIRST_LINE_RE = re.compile(r"^> (?:\* )?<@[^>\s]+>")
+
+
+def _strip_thread_reply_fallback(body: str) -> str:
+    """Strip a thread message's legacy reply fallback. A quote written by the user stays.
+
+    Element sets ``is_falling_back`` on ordinary thread messages without adding a body fallback,
+    so a leading quote there is the user's own text. A real fallback starts with the quoted
+    sender's pill (``> <@user:server>``, or ``> * <@user:server>`` for an emote).
+    """
+    if not _MATRIX_THREAD_FALLBACK_FIRST_LINE_RE.match(body or ""):
+        return body
+    return _strip_reply_fallback(body)
+
+
 # Auth errcodes that genuinely require re-authentication (never retried).
 _MATRIX_PERMANENT_ERRCODES = frozenset({
     "m_unknown_token",
@@ -356,7 +375,8 @@ class MatrixRoomIdentity:
     canonical_alias: str | None
     server_name: str | None
     joined_member_count: int | None
-    members_digest: str | None
+    # None when any state or member read failed. A turn then reports nothing and keeps the saved baseline.
+    room_state: MatrixRoomState | None
     is_direct_account_data: bool
     display_name: str
     has_explicit_name: bool
@@ -424,6 +444,7 @@ def _resolve_max_message_length(config) -> int:
 from hermes_constants import get_hermes_dir as _get_hermes_dir
 
 _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
+_ROOM_STATE_READ_TIMEOUT_SECONDS = 10.0
 
 _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
 
@@ -849,6 +870,7 @@ class MatrixAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
     splits_long_messages = True  # send() chunks via truncate_message(max_message_length)
     typed_command_prefix = "!"  # clients reserve typed "/" for local commands; "!command" always reaches Hermes
+    reports_chat_changes_in_turn = True  # room name, topic and member changes arrive as turn notes
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
@@ -895,7 +917,6 @@ class MatrixAdapter(BasePlatformAdapter):
         self._room_identity_cached_at: Dict[str, float] = {}
         self._room_identity_ttl_seconds = _env_number("MATRIX_ROOM_IDENTITY_TTL_SECONDS", 60.0, float)
         self._room_identity_cache_max = 256
-        self._pending_room_notes = PendingRoomNotes(self._room_identity_cache_max)
         self._event_context_cache = MatrixEventContextCache()
         self._thread_fallbacks = ThreadFallbackTracker()
         try:
@@ -1216,6 +1237,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     device_id=self._device_id or None)
                 if resp and hasattr(resp, "device_id"):
                     client.device_id = resp.device_id
+                self._user_id = str(client.mxid)
                 logger.info("Matrix: logged in as %s", self._user_id)
             except Exception as exc:
                 logger.error("Matrix: login failed — %s", exc)
@@ -1489,7 +1511,7 @@ class MatrixAdapter(BasePlatformAdapter):
         handoff watcher and the cron seeder mirror that shape rather than the shared ``thread`` slot."""
         if self._client is None:
             return None
-        result = await self.send(parent_chat_id, (name or "").strip() or "Hermes session")
+        result = await self.send(parent_chat_id, (name or "").strip() or t("platform.matrix.handoff.default_name"))
         root = result.message_id if result.success else None
         if not root:
             return None
@@ -1563,8 +1585,7 @@ class MatrixAdapter(BasePlatformAdapter):
             data, ct, fname = await self._download_external_media_with_cap(image_url)
         except Exception as exc:
             logger.warning("Matrix: failed to download image %s: %s", _redact_url_for_log(image_url), exc)
-            fallback = ("I couldn't download and upload the image to Matrix. "
-                        "The source URL was not shown because it may contain private tokens.")
+            fallback = t("platform.matrix.media.image_download_failed")
             return await self.emit_media_warning(chat_id, fallback, caption=caption, reply_to=reply_to, metadata=metadata)
         return await self._upload_and_send(chat_id, data, fname, ct, "m.image", caption, reply_to, metadata)
 
@@ -1696,8 +1717,11 @@ class MatrixAdapter(BasePlatformAdapter):
 
     # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
     # the smart-deny/scope wording lives in the reaction legend below).
-    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n"
     _EA_CMD_BUDGET = 2000
+
+    @property
+    def _EA_HEADER(self) -> str:  # noqa: N802 — base class attr name; resolved per call for the active language
+        return f"⚠️ **{t('gateway.exec_approval.header')}**\n"
 
     async def _send_reaction_prompt(
         self, chat_id: str, text: str, metadata: Optional[dict], make_prompt, registry: dict, emojis,
@@ -1721,21 +1745,25 @@ class MatrixAdapter(BasePlatformAdapter):
         return result
 
     _EA_REACTIONS = {"once": "✅", "session": "🌀", "always": "♾️", "deny": "❌"}
-    _EA_LEGEND = {"once": "✅ = approve once", "session": "🌀 = approve for this session",
-                  "always": "♾️ = approve always", "deny": "❎ = deny"}
-    _EA_TYPED_HINT = {"session": "Reply `!approve session` to approve this pattern for the session, ",
-                      "always": "`!approve always` to approve permanently, "}
+    _EA_LEGEND_KEYS = {"once": "platform.matrix.approval.legend_once", "session": "platform.matrix.approval.legend_session",
+                       "always": "platform.matrix.approval.legend_always", "deny": "platform.matrix.approval.legend_deny"}
+    # Whole sentences per offered tier (the highest tier wins) so translations never splice fragments.
+    _EA_TYPED_HINT_KEYS = {"once": "platform.matrix.approval.typed_hint_once",
+                           "session": "platform.matrix.approval.typed_hint_session",
+                           "always": "platform.matrix.approval.typed_hint_always"}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Reaction-driven approval: the bot seeds one reaction per offered choice."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
         choices = prompt.choices
-        typed_hints = "" if prompt.smart_denied else "".join(self._EA_TYPED_HINT[c] for c in choices if c in self._EA_TYPED_HINT)
+        tier = "once"
+        if not prompt.smart_denied:
+            tier = "always" if "always" in choices else ("session" if "session" in choices else "once")
         text = (
             f"{prompt.text}\n\n"
-            f"{typed_hints}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
-            "You can also click the reaction to approve:\n" + "\n".join(self._EA_LEGEND[c] for c in choices))
+            f"{t(self._EA_TYPED_HINT_KEYS[tier])}\n\n"
+            f"{t('platform.matrix.approval.legend_intro')}\n" + "\n".join(t(self._EA_LEGEND_KEYS[c]) for c in choices))
         reactions = tuple(self._EA_REACTIONS[c] for c in choices)
         session_key, chat_id = prompt.session_key, prompt.chat_id
 
@@ -1760,15 +1788,17 @@ class MatrixAdapter(BasePlatformAdapter):
             for p in providers or [] for model_id in (p.get("models") or [])][:len(_MATRIX_MODEL_PICKER_REACTIONS)]
         if not flat_choices:
             return await self.send(
-                chat_id, "No authenticated models are available for this session.", metadata=metadata)
+                chat_id, t("platform.matrix.picker.no_models"), metadata=metadata)
         try:
             from hermes_cli.providers import get_label
             provider_label = get_label(current_provider)
         except Exception:
             provider_label = current_provider
+        unknown = t("platform.shared.unknown")
         lines = [
-            "⚙ **Model Configuration**", f"Current model: `{current_model or 'unknown'}`",
-            f"Provider: {provider_label or 'unknown'}", "", "React to choose a model:"]
+            t("platform.matrix.picker.title"), t("platform.matrix.picker.current_model", model=current_model or unknown),
+            t("platform.matrix.picker.provider", provider=provider_label or unknown), "",
+            t("platform.matrix.picker.react_model")]
         choices: dict[str, tuple[str, str]] = {}
         for emoji, (model_id, provider_slug, provider_name) in zip(_MATRIX_MODEL_PICKER_REACTIONS, flat_choices):
             choices[emoji] = (model_id, provider_slug)
@@ -1800,12 +1830,12 @@ class MatrixAdapter(BasePlatformAdapter):
             value = str(choice.get("value") or "")
             label = str(choice.get("label") or value)
             if choice.get("is_current"):
-                label = f"{label} ← current"
+                label = t("platform.matrix.picker.current_suffix", label=label)
             emoji_choices[emoji] = value
             lines.append(f"{emoji} {label}")
         if not emoji_choices:
             return SendResult(success=False, error="No choices")
-        lines += ["", "React to choose."]
+        lines += ["", t("platform.matrix.picker.react_choice")]
         return await self._send_picker(
             chat_id, lines, emoji_choices, session_key, on_choice_selected, metadata,
             self._choice_picker_prompts_by_event, "choice picker")
@@ -1885,7 +1915,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if not p.exists():
             # file_path is host-local; never echo it into chat.
             logger.warning("[%s] upload fallback: media file not found for %s", self.name, file_path)
-            text = "⚠️ Couldn't deliver the attachment."
+            text = t("platform.shared.media.attachment_failed")
             return await self.emit_media_warning(room_id, text, caption=caption, reply_to=reply_to, metadata=metadata)
         try:
             file_size = p.stat().st_size
@@ -2096,7 +2126,7 @@ class MatrixAdapter(BasePlatformAdapter):
         relation = MatrixRelation.from_content(relates_to)
         thread_id = relation.thread_root
         if relation.thread_fallback_target:
-            body = _normalize_matrix_bang_command(_strip_reply_fallback(body))
+            body = _normalize_matrix_bang_command(_strip_thread_reply_fallback(body))
         is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
@@ -2149,7 +2179,6 @@ class MatrixAdapter(BasePlatformAdapter):
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
-        source.room_members_digest = identity.members_digest
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
             self._thread_fallbacks.remember(room_id, thread_id, event_id)
@@ -2163,8 +2192,6 @@ class MatrixAdapter(BasePlatformAdapter):
         """Resolve an explicit reply and its inline or fetched quoted context."""
         relation = MatrixRelation.from_content(relates_to)
         reply_to = relation.reply_target
-        if relation.thread_fallback_target:
-            body = _strip_reply_fallback(body)
         reply_to_text = reply_to_author_id = reply_to_author_name = None
         reply_to_is_own_message = False
         reply_to_author_authorized = None
@@ -2263,26 +2290,32 @@ class MatrixAdapter(BasePlatformAdapter):
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
 
-    def take_turn_channel_context(
-        self, event: MessageEvent, session_key: str | None = None,
-        created_at: datetime | None = None,
-    ) -> str | None:
-        if event.internal or event.message_type != MessageType.TEXT:
+    async def prepare_turn_context(
+        self, event: MessageEvent, *, origin: SessionSource | None,
+        acknowledged_state: Dict[str, Any] | None, first_turn: bool,
+    ) -> TurnContextUpdate | None:
+        if event.internal or self._client is None:
             return None
-        return self._pending_room_notes.take(event.source.chat_id, session_key, created_at)
-
-    def take_turn_room_notes(
-        self, event: MessageEvent, session_key: str, created_at: datetime | None,
-    ) -> Dict[str, RoomStateNote]:
-        if event.internal or event.message_type != MessageType.TEXT:
-            return {}
-        return self._pending_room_notes.take_notes(event.source.chat_id, session_key, created_at)
-
-    async def resolve_turn_room_state(self, room_id: str) -> MatrixRoomState | None:
-        if self._client is None:
+        blocks = []
+        current = None
+        if event.message_type == MessageType.TEXT:
+            current = (await self._resolve_room_identity(event.source.chat_id)).room_state
+        if current is not None:
+            previous = MatrixRoomState.from_dict(acknowledged_state) or MatrixRoomState.from_origin(origin or event.source)
+            blocks.append(format_room_notes(current.changes_since(previous)))
+        thread_id = event.source.thread_id
+        if first_turn and thread_id and thread_id != event.message_id:
+            try:
+                blocks.append(await self.fetch_thread_context(
+                    event.source.chat_id, thread_id,
+                    exclude_event_ids=[event.message_id, *event.merged_message_ids],
+                ))
+            except Exception as exc:
+                logger.debug("Matrix thread context fetch failed: %s", exc)
+        note = "\n\n".join(block for block in blocks if block)
+        if current is None and not note:
             return None
-        identity = await self._resolve_room_identity(room_id, force_refresh=True)
-        return MatrixRoomState(identity.display_name, identity.room_topic, identity.members_digest)
+        return TurnContextUpdate(note or None, current.to_dict() if current is not None else None)
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
@@ -2423,22 +2456,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _on_room_state(self, event: Any) -> None:
         room_id = str(getattr(event, "room_id", ""))
-        if not room_id:
-            return
-
-        self._invalidate_room_identities(room_id)
-        if room_id not in self._joined_rooms:
-            return
-        if self._is_self_sender(str(getattr(event, "sender", ""))):
-            return
-        event_ts = _matrix_event_timestamp_seconds(event)
-        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
-            return
-
-        change = room_state_change_note(event)
-        if change:
-            kind, note = change
-            self._pending_room_notes.stash(room_id, kind, note)
+        if room_id:
+            self._invalidate_room_identities(room_id)
 
     async def _on_redaction(self, event: Any) -> None:
         room_id = str(getattr(event, "room_id", "") or "")
@@ -2513,7 +2532,8 @@ class MatrixAdapter(BasePlatformAdapter):
             # it, or (for invites that arrived while the gateway was down)
             # is only now seeing it. The invite event object is gone by
             # this point, so the DM signal must be read from the stripped
-            # invite state so direct intent is recorded in m.direct.
+            # invite state. Without it, a direct invite joined here is never
+            # recorded in m.direct.
             is_direct, inviter = self._extract_invite_dm_signal(invited_room)
             # The inviter allowlist gate from _on_invite must apply here
             # too: an unconditional join would re-admit a live invite that
@@ -2674,7 +2694,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Resolve a pending exec-approval prompt from a reaction. True if it was the target."""
         handled, prompt, choice = await self._claim_reaction_prompt(
             self._approval_prompts_by_event, room_id, reacts_to, key, sender, "approval",
-            "That reaction is not valid for this approval prompt.", self._expire_matrix_approval_prompt,
+            t("platform.matrix.approval.invalid_reaction"), self._expire_matrix_approval_prompt,
             choices=self._approval_reaction_map)
         if choice is None:
             return handled
@@ -2697,8 +2717,8 @@ class MatrixAdapter(BasePlatformAdapter):
         """Apply a model-picker reaction. True if the reaction targeted a pending picker."""
         return await self._handle_picker_reaction(
             self._model_picker_prompts_by_event, room_id, reacts_to, key, sender, "model picker",
-            "That reaction is not one of the available model choices.", self._expire_matrix_model_picker_prompt,
-            ("switch model", "switch model"), redact_bot_reactions=True)
+            t("platform.matrix.picker.invalid_model_reaction"), self._expire_matrix_model_picker_prompt,
+            ("switch model", "platform.matrix.picker.verb_switch_model"), redact_bot_reactions=True)
 
     async def _handle_choice_picker_reaction(self, room_id: str, reacts_to: str, key: str, sender: str) -> bool:
         """Apply a choice-picker reaction. True if the reaction targeted a pending picker."""
@@ -2706,13 +2726,14 @@ class MatrixAdapter(BasePlatformAdapter):
             self._choice_picker_prompts_by_event.pop(target_event_id, None)
         return await self._handle_picker_reaction(
             self._choice_picker_prompts_by_event, room_id, reacts_to, key, sender, "choice picker",
-            "That reaction is not one of the available choices.", _expire, ("apply choice", "apply selection"))
+            t("platform.matrix.picker.invalid_choice_reaction"), _expire,
+            ("apply choice", "platform.matrix.picker.verb_apply_selection"))
 
     async def _handle_picker_reaction(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,
         on_expired, verbs: tuple[str, str], *, redact_bot_reactions: bool = False) -> bool:
         """Claim the picker, fire ``on_selected(room_id, *selection)`` and post its confirmation (or the error).
-        ``verbs`` = (log verb, user-facing verb)."""
+        ``verbs`` = (log verb, catalog key of the user-facing verb)."""
         handled, prompt, selection = await self._claim_reaction_prompt(
             registry, room_id, reacts_to, key, sender, label, invalid_text, on_expired)
         if selection is None:
@@ -2728,7 +2749,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 await self.send(room_id, confirmation, reply_to=reacts_to)
         except Exception as exc:
             logger.error("Failed to %s from Matrix reaction: %s", verbs[0], exc)
-            await self.send(room_id, f"Failed to {verbs[1]}: {exc}", reply_to=reacts_to)
+            await self.send(room_id, t("platform.matrix.picker.failed", action=t(verbs[1]), error=str(exc)),
+                            reply_to=reacts_to)
         return True
 
     def _matrix_prompt_expired(self, prompt: Any) -> bool:
@@ -2747,14 +2769,14 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.info(
                 "Matrix: ignoring %s reaction from unauthorized user %s on %s", prompt_label, sender, target_event_id)
             await self._send_invalid_reaction_feedback(
-                room_id, target_event_id, "Only an authorized Matrix user can use these controls.")
+                room_id, target_event_id, t("platform.matrix.reaction.unauthorized"))
             return False
         requester = getattr(prompt, "requester_user_id", None)
         # getattr: object.__new__-built test doubles may lack the attribute.
         if getattr(self, "_approval_require_sender", True) and requester and sender != requester:
             logger.info("Matrix: ignoring %s reaction from %s; requester is %s", prompt_label, sender, requester)
             await self._send_invalid_reaction_feedback(
-                room_id, target_event_id, "Only the user who requested this action can use these controls.")
+                room_id, target_event_id, t("platform.matrix.reaction.not_requester"))
             return False
         return True
 
@@ -2771,14 +2793,14 @@ class MatrixAdapter(BasePlatformAdapter):
         await self._redact_bot_approval_reactions(room_id, prompt)
         await self._send_invalid_reaction_feedback(
             room_id, target_event_id,
-            "This approval prompt has expired. Run the command again if you still want to approve it.")
+            t("platform.matrix.approval.expired"))
 
     async def _expire_matrix_model_picker_prompt(self, room_id: str, target_event_id: str, prompt: Any) -> None:
         prompt.resolved = True
         self._model_picker_prompts_by_event.pop(target_event_id, None)
         await self._redact_bot_model_picker_reactions(room_id, prompt)
         await self._send_invalid_reaction_feedback(
-            room_id, target_event_id, "This model picker has expired. Run `/model` again to choose a model.")
+            room_id, target_event_id, t("platform.shared.model_picker_expired"))
 
     async def _redact_bot_approval_reactions(self, room_id: str, prompt: Any) -> None:
         """Redact the bot's seeded approval reactions (delayed), leaving only the user's reaction."""
@@ -2928,7 +2950,9 @@ class MatrixAdapter(BasePlatformAdapter):
         client = getattr(self, "_client", None)
         if client is not None and hasattr(client, "get_joined_members"):
             with suppress(Exception):
-                profiles = await client.get_joined_members(RoomID(room_id))
+                profiles = await asyncio.wait_for(
+                    client.get_joined_members(RoomID(room_id)), _ROOM_STATE_READ_TIMEOUT_SECONDS,
+                )
                 if profiles:
                     return dict(profiles)
         return None
@@ -2962,16 +2986,22 @@ class MatrixAdapter(BasePlatformAdapter):
         noun = "other" if remaining == 1 else "others"
         return f"{', '.join(names[:3])} and {remaining} {noun}"
 
-    async def _get_room_state_value(self, room_id: str, event_type: str, key: str) -> Optional[str]:
-        """Fetch a stripped string field from a room state event, or None."""
+    async def _read_room_state_event(self, room_id: str, event_type: str) -> Any:
+        """The content of a room state event, or None when the room has no such event. Any other
+        failure, including the read deadline, raises."""
         if not self._client or not hasattr(self._client, "get_state_event"):
             return None
         try:
-            event = await self._client.get_state_event(RoomID(room_id), event_type)
-        except Exception:
+            return await asyncio.wait_for(
+                self._client.get_state_event(RoomID(room_id), event_type), _ROOM_STATE_READ_TIMEOUT_SECONDS,
+            )
+        except MNotFound:
             return None
-        value = (self._state_event_value(event, key) or "").strip()
-        return value or None
+
+    async def _read_room_member_profiles(self, room_id: str) -> tuple[Optional[set[str]], Optional[Dict[Any, Any]]]:
+        members = await self._get_room_members(room_id)
+        profiles = await self._get_room_member_profiles(room_id) if members is not None else None
+        return members, profiles
 
     def _invalidate_room_identities(self, room_id: str | None = None) -> None:
         """Drop one cached room identity (or all when *room_id* is None)."""
@@ -2989,12 +3019,33 @@ class MatrixAdapter(BasePlatformAdapter):
         cache_fresh = ttl <= 0 or time.monotonic() - self._room_identity_cached_at.get(room_id, 0.0) <= ttl
         if cached is not None and cache_fresh and not force_refresh:
             return cached
-        room_name = await self._get_room_state_value(room_id, "m.room.name", "name")
-        room_topic = await self._get_room_state_value(room_id, "m.room.topic", "topic")
-        canonical_alias = await self._get_room_state_value(room_id, "m.room.canonical_alias", "alias")
-        members = await self._get_room_members(room_id)
+        (
+            name_event, topic_event, alias_event, join_rules_event, history_event, encryption_event,
+            tombstone_event, member_read,
+        ) = reads = await asyncio.gather(
+            *(
+                self._read_room_state_event(room_id, event_type) for event_type in (
+                    "m.room.name", "m.room.topic", "m.room.canonical_alias", "m.room.join_rules",
+                    "m.room.history_visibility", "m.room.encryption", "m.room.tombstone",
+                )
+            ),
+            self._read_room_member_profiles(room_id),
+            return_exceptions=True,
+        )
+        failed_reads = [result for result in reads if isinstance(result, Exception)]
+        members, profiles = (None, None) if isinstance(member_read, Exception) else member_read
+        if failed_reads:
+            logger.debug("Matrix: room state read failed for %s: %r", room_id, failed_reads[0])
+
+        def state_value(event: Any, key: str) -> Optional[str]:
+            if isinstance(event, Exception):
+                return None
+            return (self._state_event_value(event, key) or "").strip() or None
+
+        room_name = state_value(name_event, "name")
+        room_topic = state_value(topic_event, "topic")
+        canonical_alias = state_value(alias_event, "alias")
         member_count = len(members) if members is not None else None
-        profiles = await self._get_room_member_profiles(room_id) if members is not None else None
         members_digest = None
         if members is not None and profiles is not None:
             profile_names = {
@@ -3011,11 +3062,21 @@ class MatrixAdapter(BasePlatformAdapter):
         computed_name = None
         if not room_name and not canonical_alias:
             computed_name = self._compute_room_display_name(profiles)
+        display_name = room_name or canonical_alias or computed_name or room_id
+        room_state = (
+            None if failed_reads or members_digest is None
+            else MatrixRoomState(
+                display_name, room_topic, members_digest,
+                join_rule=state_value(join_rules_event, "join_rule"),
+                history_visibility=state_value(history_event, "history_visibility"),
+                encrypted=encryption_event is not None, tombstoned=tombstone_event is not None,
+            )
+        )
         identity = MatrixRoomIdentity(
             room_id=room_id, room_name=room_name, room_topic=room_topic, canonical_alias=canonical_alias,
             server_name=(room_id.rsplit(":", 1)[-1].strip() or None) if ":" in room_id else None,
-            joined_member_count=member_count, members_digest=members_digest,
-            is_direct_account_data=is_direct, display_name=room_name or canonical_alias or computed_name or room_id,
+            joined_member_count=member_count, room_state=room_state,
+            is_direct_account_data=is_direct, display_name=display_name,
             has_explicit_name=has_explicit_name, chat_type="dm" if is_likely_dm else "room",
             conflict=bool(is_direct and not is_likely_dm))
         if len(self._room_identities) >= self._room_identity_cache_max:
@@ -3039,11 +3100,11 @@ class MatrixAdapter(BasePlatformAdapter):
         )
 
     async def fetch_thread_context(
-        self, chat_id: str, thread_id: str, *, exclude_event_id: str | None = None
+        self, chat_id: str, thread_id: str, *, exclude_event_ids: Collection[str] = ()
     ) -> str | None:
         entries = await fetch_thread_entries(
             self._client, self._event_context_cache, chat_id, thread_id,
-            limit=self._thread_backfill_limit, exclude_event_id=exclude_event_id,
+            limit=self._thread_backfill_limit, exclude_event_ids=exclude_event_ids,
         )
         if not entries:
             return None
@@ -3135,18 +3196,14 @@ class MatrixAdapter(BasePlatformAdapter):
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
         meta = metadata or {}
         thread_id = str(meta.get("thread_id") or "")
-        fallback_to = str(
-            meta.get("matrix_thread_fallback_event_id")
-            or meta.get("thread_fallback_event_id")
-            or ""
-        )
+        fallback_to = str(meta.get("matrix_thread_fallback_event_id") or "")
         if reply_to:
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
-            if reply_to:
+            if reply_to and not self._thread_fallbacks.is_continuation(room_id, thread_id, reply_to):
                 relates_to["is_falling_back"] = False
             else:
                 latest = self._thread_fallbacks.latest(room_id, thread_id)
@@ -3502,32 +3559,3 @@ def register(ctx) -> None:
         allow_all_env="MATRIX_ALLOW_ALL_USERS", cron_deliver_env_var="MATRIX_HOME_ROOM",
         standalone_sender_fn=_standalone_send, max_message_length=DEFAULT_MAX_MESSAGE_LENGTH, emoji="🔐",
         allow_update_command=True)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-MAX_MESSAGE_LENGTH = DEFAULT_MAX_MESSAGE_LENGTH
-
-_MATRIX_CAPABILITIES: Dict[str, str] = {
-    "text": "yes",
-    "threads": "yes",
-    "reactions": "yes",
-    "approvals": "yes",
-    "model picker": "yes",
-    "thinking panes": "yes",
-    "images": "yes",
-    "multiple images": "yes",
-    "files": "yes",
-    "voice/audio": "yes",
-    "video": "yes",
-    "E2EE": "off / optional / required",
-    "diagnostics": "yes",
-}
-
-def get_matrix_capabilities() -> Dict[str, str]:
-    """Return Matrix gateway capabilities for docs and release checks."""
-    return dict(_MATRIX_CAPABILITIES)
-# ---- END PLUGIN-COMPAT ----

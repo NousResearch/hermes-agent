@@ -2,7 +2,6 @@
 explicit resets and the dynamic "Current Session Context" system prompt section."""
 
 import asyncio
-import dataclasses
 import hashlib
 import logging
 import os
@@ -15,7 +14,7 @@ from typing import Dict, List, Optional, Any
 
 from .config import Platform, GatewayConfig, HomeChannel
 from .whatsapp_identity import canonical_whatsapp_identifier
-from gateway.session_identity import transport_profile_of
+from gateway.session_identity import replace_source, transport_profile_of
 from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_prompt_pin import SessionPromptPinMixin, sanitize_prompt_pin
 from gateway.session_recovery import SessionRecoveryMixin
@@ -95,7 +94,6 @@ class SessionSource:
     # Discord auto-thread continuity: the thread id a CHANNEL message WILL be delivered into, so
     # the initiating message and later in-thread follow-ups share ONE session.
     prospective_thread_id: Optional[str] = None
-    room_members_digest: Optional[str] = None
     # Wire-INVISIBLE trust signal (never in to_dict/from_dict, so a peer cannot forge it): came
     # over the authenticated relay WebSocket. ``platform`` is the UNDERLYING platform, not
     # ``relay``, so authz must key upstream trust off THIS flag.
@@ -128,7 +126,7 @@ class SessionSource:
     _ALWAYS_FIELDS = ("chat_id", "chat_name", "chat_type", "user_id", "user_name", "thread_id", "chat_topic")
     _OPTIONAL_PRE_SCOPE = ("user_id_alt", "chat_id_alt")
     _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile")
-    _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id", "room_members_digest")
+    _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id")
 
     def to_dict(self) -> Dict[str, Any]:
         d = {"platform": self.platform.value}
@@ -266,7 +264,7 @@ def _discord_tools_loaded() -> bool:
 _MAX_PROMPT_METADATA_CHARS = 240
 
 
-def _format_untrusted_prompt_value(value: Any, *, max_chars: int = _MAX_PROMPT_METADATA_CHARS) -> str:
+def format_untrusted_prompt_value(value: Any, *, max_chars: int = _MAX_PROMPT_METADATA_CHARS) -> str:
     """Render untrusted gateway metadata as an inert quoted string."""
     text = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
     text = "".join(ch if ch >= " " or ch in "\n\t" else " " for ch in text)
@@ -402,15 +400,15 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
             user = src.user_name or (_hash_sender_id(src.user_id) if src.user_id else "user")
             chat = src.chat_name or _chat_label(src.chat_id)
             desc = SessionSource._describe(src.chat_type, user, chat)
-        lines.append(f"**Source:** {platform_name} ({_format_untrusted_prompt_value(desc)})")
+        lines.append(f"**Source:** {platform_name} ({format_untrusted_prompt_value(desc)})")
 
     if src.chat_topic:
-        lines.append(f"**Channel Topic:** {_format_untrusted_prompt_value(src.chat_topic)}")
+        lines.append(f"**Channel Topic:** {format_untrusted_prompt_value(src.chat_topic)}")
 
     if src.platform == Platform.MATRIX:
         lines += [
             "",
-            f"**Matrix Room:** {_format_untrusted_prompt_value(src.chat_name or src.chat_id)}",
+            f"**Matrix Room:** {format_untrusted_prompt_value(src.chat_name or src.chat_id)}",
             f"**Matrix Room ID:** {_chat_label(src.chat_id)}",
         ]
         if src.thread_id:
@@ -430,10 +428,10 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
             "Multiple users may participate."
         )
     elif src.user_name:
-        lines.append(f"**User:** {_format_untrusted_prompt_value(src.user_name)}")
+        lines.append(f"**User:** {format_untrusted_prompt_value(src.user_name)}")
     elif src.user_id:
         uid = _hash_sender_id(src.user_id) if redact_pii else src.user_id
-        lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
+        lines.append(f"**User ID:** {format_untrusted_prompt_value(uid)}")
 
     lines.extend(_PLATFORM_NOTES.get(src.platform, lambda ctx: [])(context))
     platforms_list = ["local (files on this machine)"] + [
@@ -444,8 +442,8 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
     if context.home_channels:
         lines += ["", "**Home Channels (default destinations):**"]
         for platform, home in context.home_channels.items():
-            safe_name = _format_untrusted_prompt_value(home.name)
-            safe_id = _format_untrusted_prompt_value(_chat_label(home.chat_id))
+            safe_name = format_untrusted_prompt_value(home.name)
+            safe_id = format_untrusted_prompt_value(_chat_label(home.chat_id))
             lines.append(f"  - {platform.value}: {safe_name} (ID: {safe_id})")
 
     lines += ["", "**Delivery options for scheduled tasks:**"]
@@ -453,12 +451,12 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
     if src.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
     else:
-        _origin_label = _format_untrusted_prompt_value(src.chat_name or _chat_label(src.chat_id))
+        _origin_label = format_untrusted_prompt_value(src.chat_name or _chat_label(src.chat_id))
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
 
     lines.append(f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)")
     for platform, home in context.home_channels.items():
-        home_name = _format_untrusted_prompt_value(home.name)
+        home_name = format_untrusted_prompt_value(home.name)
         lines.append(f"- `\"{platform.value}\"` → Home channel ({home_name})")
 
     lines += ["", "*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*"]
@@ -1126,22 +1124,15 @@ class SessionStore(
         self, session_key: str, display_name: Optional[str] = None,
         *, source: Optional[SessionSource] = None,
     ) -> Optional[SessionEntry]:
-        """Force reset a session, creating a new session ID."""
+        """Force reset a session, creating a new session ID. With *source*, the new origin keeps the
+        old origin's routing fields and takes the chat name, topic and user name from *source*."""
         with self._lock:
             old_entry = self._entry_locked(session_key)
             if old_entry is None:
                 return None
             origin = old_entry.origin
-            if source is not None and source.platform == Platform.MATRIX:
-                if self._generate_session_key(source) != session_key:
-                    raise ValueError("Matrix reset source does not match the session key")
-                if origin is not None and (
-                    source.platform, source.chat_id, source.thread_id, source.profile
-                ) != (
-                    origin.platform, origin.chat_id, origin.thread_id, origin.profile
-                ):
-                    raise ValueError("Matrix reset source does not match the session origin")
-                origin = source
+            if source is not None and origin is not None:
+                origin = with_chat_metadata_from(origin, source)
             now = _now()
             session_id = _new_session_id(now)
             new_entry = self._replace_route_locked(
@@ -1338,16 +1329,17 @@ class SessionStore(
             return entry.session_id if entry else None
 
 
+def with_chat_metadata_from(target: SessionSource, donor: SessionSource) -> SessionSource:
+    """*target* with the chat name and topic of *donor*, and with *donor*'s user name when the same
+    user sent both. In a shared chat the two sources can come from different users."""
+    user_name = donor.user_name if target.user_id == donor.user_id else target.user_name
+    return replace_source(target, chat_name=donor.chat_name, chat_topic=donor.chat_topic, user_name=user_name)
+
+
 def build_session_context(
     source: SessionSource, config: GatewayConfig, session_entry: Optional[SessionEntry] = None
 ) -> SessionContext:
     """Build a full session context (for system prompt injection)."""
-    origin = session_entry.origin if session_entry else None
-    if source.platform == Platform.MATRIX and origin is not None:
-        pinned_user_name = origin.user_name if source.user_id == origin.user_id else source.user_name
-        source = dataclasses.replace(
-            source, chat_name=origin.chat_name, chat_topic=origin.chat_topic, user_name=pinned_user_name,
-        )
     connected = config.get_connected_platforms()
     shared = is_shared_multi_user_session(
         source, group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
@@ -1362,32 +1354,3 @@ def build_session_context(
         context.session_id = session_entry.session_id
         context.created_at, context.updated_at = session_entry.created_at, session_entry.updated_at
     return context
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from dataclasses import replace  # noqa: F401,E402
-import uuid  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'SessionResetPolicy': ('gateway.config', 'SessionResetPolicy'),
-    'TranscriptReadError': ('gateway.session_transcript', 'TranscriptReadError'),
-    'atomic_replace': ('utils', 'atomic_replace'),
-    'auto_continue_freshness_window': ('gateway.session_lifecycle', 'auto_continue_freshness_window'),
-    'extract_api_content_sidecar': ('agent.turn_context', 'extract_api_content_sidecar'),
-    'normalize_whatsapp_identifier': ('gateway.whatsapp_identity', 'normalize_whatsapp_identifier'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

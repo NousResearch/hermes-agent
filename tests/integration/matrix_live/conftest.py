@@ -3,28 +3,38 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import json
 import os
+import shutil
+import socket
 import subprocess
 import time
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import docker
 import pytest
 from docker import errors as docker_errors
+from docker.context import ContextAPI
+from docker.context.config import get_current_context_name
 from nio import AsyncClient, LoginResponse, RegisterResponse, RoomCreateResponse
 from testcontainers.core import testcontainers_config
 from testcontainers.core.container import DockerContainer, Reaper
 from testcontainers.core.labels import LABEL_SESSION_ID, SESSION_ID
 from testcontainers.core.network import Network
 
+from hermes_platform.host import facts
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+from tests.integration.matrix_live.image_build import REPO_ROOT, build_command
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+PREBUILT_IMAGE_VARIABLE = "HERMES_TEST_MATRIX_IMAGE"
 SYNAPSE_IMAGE = "matrixdotorg/synapse:v1.158.0@sha256:5f868df1f5772907c6dbe973a9b69ab530a5d6bb317c011a3788f7ad78eb1292"
 RYUK_IMAGE = "testcontainers/ryuk:0.8.1@sha256:bf3f74a47dee0acda89aba4b2fc9c7fdcf994a084db02a2d06566f07baae022e"
 
@@ -56,6 +66,12 @@ class LiveGateway:
 
 
 @dataclass(frozen=True)
+class GatewaySettings:
+    reply: str = "Matrix live reply"
+    max_message_length: int | None = None
+
+
+@dataclass(frozen=True)
 class LinuxNioObserver:
     container: DockerContainer
     account: MatrixAccount
@@ -82,68 +98,99 @@ def _wait_for(
 
 @pytest.fixture(scope="module")
 def docker_engine(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
-    docker_config = tmp_path_factory.mktemp("matrix-docker-config")
-    (docker_config / "config.json").write_text("{}", encoding="utf-8")
-    previous_config = os.environ.get("DOCKER_CONFIG")
-    os.environ["DOCKER_CONFIG"] = str(docker_config)
-    testcontainers_config.ryuk_disabled = False
-    testcontainers_config.ryuk_image = RYUK_IMAGE
-    client = None
-    try:
-        client = docker.from_env()
-        client.ping()
-    except docker_errors.DockerException as exc:
-        message = f"Matrix live tests require a running Docker daemon: {exc}"
-        if os.environ.get("CI"):
-            pytest.fail(message, pytrace=False)
-        pytest.skip(message)
-    finally:
-        if client is not None:
-            client.close()
-    try:
+    with _docker_connection_scope(tmp_path_factory.mktemp("matrix-docker-config")):
         yield
+
+
+@contextmanager
+def _docker_connection_scope(docker_config: Path) -> Iterator[None]:
+    with pytest.MonkeyPatch.context() as environment:
+        client = None
+        docker_host = "the selected Docker context"
+        try:
+            docker_host = _selected_docker_host()
+            _write_isolated_docker_config(docker_config)
+            environment.setenv("DOCKER_HOST", docker_host)
+            environment.delenv("DOCKER_CONTEXT", raising=False)
+            environment.setenv("DOCKER_CONFIG", str(docker_config))
+            if facts.os_family() == "darwin":
+                # The daemon resolves Ryuk's socket mount inside its Linux VM, where the socket is /var/run/docker.sock.
+                environment.setenv("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "/var/run/docker.sock")
+            environment.setattr(testcontainers_config, "ryuk_disabled", False)
+            environment.setattr(testcontainers_config, "ryuk_image", RYUK_IMAGE)
+            client = docker.from_env()
+            client.ping()
+        except docker_errors.DockerException as exc:
+            message = f"Matrix live tests require a running Docker daemon at {docker_host}: {exc}"
+            if os.environ.get("CI"):
+                pytest.fail(message, pytrace=False)
+            pytest.skip(message)
+        finally:
+            if client is not None:
+                client.close()
+        yield
+
+
+def _selected_docker_host() -> str:
+    if host := os.environ.get("DOCKER_HOST"):
+        return host
+    name = os.environ.get("DOCKER_CONTEXT") or get_current_context_name()
+    context = ContextAPI.get_context(name)
+    if context is None:
+        raise docker_errors.ContextNotFound(name)
+    return context.Host
+
+
+def _write_isolated_docker_config(destination: Path) -> None:
+    source = Path(os.environ.get("DOCKER_CONFIG") or Path.home() / ".docker")
+    source_file = source / "config.json"
+    settings = json.loads(source_file.read_text(encoding="utf-8")) if source_file.is_file() else {}
+    plugin_dirs = [str(source / "cli-plugins"), *settings.get("cliPluginsExtraDirs", [])]
+    (destination / "config.json").write_text(json.dumps({"cliPluginsExtraDirs": plugin_dirs}), encoding="utf-8")
+
+
+class _ImageStore(Protocol):
+    def get(self, tag: str) -> object: ...
+
+    def remove(self, image: str, force: bool) -> None: ...
+
+
+@contextmanager
+def _gateway_image_tag(images: _ImageStore, prebuilt: str | None, build: Callable[[str], None]) -> Iterator[str]:
+    if prebuilt:
+        try:
+            images.get(prebuilt)
+        except docker_errors.ImageNotFound:
+            pytest.fail(f"{PREBUILT_IMAGE_VARIABLE}={prebuilt} is not loaded in the Docker daemon", pytrace=False)
+        yield prebuilt
+        return
+
+    image = f"hermes-matrix-live:{uuid.uuid4().hex}"
+    try:
+        build(image)
+        yield image
     finally:
-        if previous_config is None:
-            os.environ.pop("DOCKER_CONFIG", None)
-        else:
-            os.environ["DOCKER_CONFIG"] = previous_config
+        try:
+            images.remove(image=image, force=True)
+        except docker_errors.ImageNotFound:
+            pass
+
+
+def _build_gateway_image(tag: str) -> None:
+    result = subprocess.run(build_command(tag, {LABEL_SESSION_ID: SESSION_ID}), capture_output=True, text=True)
+    assert result.returncode == 0, f"Linux gateway image build failed:\n{result.stdout[-6000:]}\n{result.stderr[-6000:]}"
 
 
 @pytest.fixture(scope="module")
 def gateway_image(docker_engine: None) -> Iterator[str]:
     # Start Ryuk before building so it can remove the image if the worker is killed.
     Reaper.get_instance()
-    image = f"hermes-matrix-live:{uuid.uuid4().hex}"
+    client = docker.from_env()
     try:
-        result = subprocess.run(
-            [
-                "docker", "buildx", "build", "--load", "--progress=plain",
-                "-f", str(REPO_ROOT / "tests" / "integration" / "matrix_live" / "Dockerfile"),
-                "--label", f"{LABEL_SESSION_ID}={SESSION_ID}", "-t", image, str(REPO_ROOT),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=1800,
-        )
-        assert result.returncode == 0, f"Linux gateway image build failed:\n{result.stdout[-6000:]}\n{result.stderr[-6000:]}"
-
-        with DockerContainer(image, entrypoint="/opt/hermes/.venv/bin/python").with_command(
-            ["-c", "import olm; import mautrix.crypto"]
-        ) as crypto_probe:
-            status = crypto_probe.get_wrapped_container().wait(timeout=30)
-            assert status["StatusCode"] == 0, (
-                "Linux gateway image lacks Matrix crypto support:\n"
-                + crypto_probe.get_wrapped_container().logs().decode(errors="replace")
-            )
-        yield image
+        with _gateway_image_tag(client.images, os.environ.get(PREBUILT_IMAGE_VARIABLE), _build_gateway_image) as image:
+            yield image
     finally:
-        client = docker.from_env()
-        try:
-            client.images.remove(image=image, force=True)
-        except docker_errors.ImageNotFound:
-            pass
-        finally:
-            client.close()
+        client.close()
 
 
 @pytest.fixture
@@ -167,7 +214,7 @@ def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network
             entrypoint="/bin/sh",
         ).with_command([
             "-c",
-            "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\n' >> /data/homeserver.yaml",
+            "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\nrc_message:\\n  per_second: 100\\n  burst_count: 100\\n' >> /data/homeserver.yaml",
         ]).with_volume_mapping(volume.name, "/data", "rw") as configure:
             exit_state = configure.get_wrapped_container().wait(timeout=30)
             assert exit_state["StatusCode"] == 0, configure.get_wrapped_container().logs().decode(errors="replace")
@@ -253,18 +300,58 @@ def linux_nio_observer(
         yield observer
 
 
+@dataclass(frozen=True)
+class HostRoute:
+    bind_host: str
+    container_address: str
+
+
+def _host_route(network: Network) -> HostRoute:
+    """Choose where a server on this host listens and what ``host.docker.internal`` resolves to.
+
+    With a daemon on this host (Linux), the network's bridge gateway is a local address. A daemon
+    in a VM (Docker Desktop, OrbStack) does not expose that address to the host, and its
+    ``host-gateway`` forwards to the host's loopback interface instead.
+    """
+    client = docker.from_env()
+    try:
+        configs = client.networks.get(network.id).attrs["IPAM"]["Config"]
+    finally:
+        client.close()
+    gateway = next(
+        config["Gateway"] for config in configs
+        if config.get("Gateway") and ipaddress.ip_address(config["Gateway"]).version == 4
+    )
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind((gateway, 0))
+    except OSError:
+        return HostRoute("127.0.0.1", "host-gateway")
+    return HostRoute(gateway, gateway)
+
+
+def _host_user() -> str:
+    """Return the container user that lets this user delete what a container writes to a bind mount."""
+    if facts.os_family() == "windows":
+        return "10000:10000"
+    return f"{os.getuid()}:{os.getgid()}"
+
+
 @pytest.fixture
 def gateway(
+    request: pytest.FixtureRequest,
     tmp_path: Path,
     gateway_image: str,
     synapse: tuple[DockerContainer, str, Network],
     live_room: LiveRoom,
 ) -> Iterator[LiveGateway]:
+    settings: GatewaySettings = getattr(request, "param", GatewaySettings())
     _, _, network = synapse
     room_id = live_room.room_id
     home = tmp_path / "hermes"
-    home.mkdir(mode=0o777)
-    with FakeLLMServer([Text("Matrix live reply")], bind_host="0.0.0.0") as model:
+    home.mkdir()
+    route = _host_route(network)
+    with FakeLLMServer([Text(settings.reply)], bind_host=route.bind_host) as model:
         write_hermes_home(
             home,
             f"http://host.docker.internal:{model.port}/v1",
@@ -278,16 +365,19 @@ def gateway(
                 f"MATRIX_HOME_ROOM={room_id}\n"
                 "MATRIX_E2EE_MODE=optional\nMATRIX_REACTIONS=false\nMATRIX_AUTO_THREAD=false\n"
             )
-        home.chmod(0o777)
+            if settings.max_message_length is not None:
+                stream.write(f"MATRIX_MAX_MESSAGE_LENGTH={settings.max_message_length}\n")
 
         with DockerContainer(
             gateway_image,
             network=network,
             entrypoint="/opt/hermes/.venv/bin/python",
-            user="10000:10000",
+            user=_host_user(),
             working_dir="/opt/hermes",
-            extra_hosts={"host.docker.internal": "host-gateway"},
-        ).with_command("-m hermes_cli.main gateway run").with_volume_mapping(home, "/opt/data", "rw") as container:
+            extra_hosts={"host.docker.internal": route.container_address},
+        ).with_command("-m hermes_cli.main gateway run").with_volume_mapping(
+            home, "/opt/data", "rw"
+        ).with_env("HOME", "/opt/data") as container:
             def connected() -> bool:
                 output = container.get_wrapped_container().logs().decode(errors="replace")
                 gateway_log = home / "logs" / "gateway.log"
@@ -302,3 +392,8 @@ def gateway(
                 details=lambda: container.get_wrapped_container().logs().decode(errors="replace")[-6000:],
             )
             yield LiveGateway(container, model)
+
+    # The test runner ignores errors when it deletes its temporary directory, so files that the
+    # container wrote and this user cannot delete would remain on the host. Removing the home here
+    # makes such files fail the test.
+    shutil.rmtree(home)

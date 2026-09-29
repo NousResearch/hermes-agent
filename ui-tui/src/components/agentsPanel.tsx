@@ -144,6 +144,17 @@ export function AgentsPanelView({
   )
 }
 
+/** Whether the live-agents dock should arm its 1s elapsed clock.
+ *
+ * Collapsed chrome shows counts + first activity only — no per-row elapsed —
+ * so a ticking clock while collapsed is idle churn (#111986 PR3 / #99773).
+ */
+export const shouldArmAgentDockClock = (
+  collapsed: boolean,
+  hasLiveAgents: boolean,
+  processCount: number
+): boolean => !collapsed && (hasLiveAgents || processCount > 0)
+
 export function LiveAgentsPanel({ cols }: { cols: number }) {
   const { theme } = useStore($uiState)
   const collapsed = useStore($agentDockCollapsed)
@@ -152,13 +163,17 @@ export function LiveAgentsPanel({ cols }: { cols: number }) {
   const live = subagents.some(s => s.status === 'running' || s.status === 'queued')
   const [now, setNow] = useState(Date.now)
   const processRows = useProcessRows(now)
-  // Process rows carry `Ns ago` / elapsed text, so the clock ticks while any are shown.
-  const ticking = live || processRows.length > 0
+  // Process/agent rows carry `Ns ago` / elapsed text only while expanded.
+  // Collapsed summary omits elapsed — halt the clock (agentDockCollapsedClockHalt).
+  const ticking = shouldArmAgentDockClock(collapsed, live, processRows.length)
   useEffect(() => {
     if (!ticking) {
       return
     }
 
+    // Re-seed from the wall clock on (re)arm so expand after a long collapse
+    // does not resume a stale `now` from the moment the dock collapsed.
+    setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 1000)
 
     return () => clearInterval(timer)

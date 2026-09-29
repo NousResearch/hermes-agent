@@ -88,11 +88,12 @@ class TestCliSkinPromptIntegration:
         assert cli._app.style is not None
 
     def test_handle_skin_command_reaches_a_listed_user_skin_in_any_case(self, tmp_path, monkeypatch):
-        """A user skin keeps its own capitalisation; `/skin` must select the name it lists."""
+        """A user skin keeps its own capitalisation; `/skin` must select the name it lists. The
+        listing uses the declared `name:`, which need not match the file name."""
         from hermes_cli.skin_engine import list_skins
 
         (tmp_path / "skins").mkdir()
-        (tmp_path / "skins" / "MyTheme.yaml").write_text(
+        (tmp_path / "skins" / "theme-file.yaml").write_text(
             'name: MyTheme\ncolors:\n  banner_title: "#FF00FF"\n', encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         listed = next(s["name"] for s in list_skins() if s["source"] == "user")

@@ -4709,14 +4709,16 @@ class TestMatrixImageOnlyMediaNormalization:
 
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("msgtype, body, filename, media_url, expected_text", [
-        ("m.image", "caption.png", "huge.png", "url", "caption.png\n[matrix image attachment too large: huge.png]"),
-        ("m.file", "report.pdf", "report.pdf", "url", "[matrix file attachment too large: report.pdf]"),
-        ("m.video", "clip.mp4", "", "url", "[matrix video attachment too large: clip.mp4]"),
-        ("m.audio", "meeting notes", "recording.ogg", "file", "meeting notes\n[matrix audio attachment too large: recording.ogg]"),
+    @pytest.mark.parametrize("msgtype, body, filename, media_url, relates_to, expected_text", [
+        ("m.image", "caption.png", "huge.png", "url", {}, "caption.png\n[matrix image attachment too large: huge.png]"),
+        ("m.file", "report.pdf", "report.pdf", "url", {}, "[matrix file attachment too large: report.pdf]"),
+        ("m.video", "clip.mp4", "", "url", {}, "[matrix video attachment too large: clip.mp4]"),
+        ("m.audio", "meeting notes", "recording.ogg", "file", {}, "meeting notes\n[matrix audio attachment too large: recording.ogg]"),
+        ("m.audio", "> <@bob:example.org> hi\n\nvoice.ogg", "", "url", {"m.in_reply_to": {"event_id": "$parent"}},
+         "[matrix audio attachment too large: voice.ogg]"),
     ])
     async def test_inbound_oversized_media_surfaces_context_without_download(
-        self, msgtype, body, filename, media_url, expected_text,
+        self, msgtype, body, filename, media_url, relates_to, expected_text,
     ):
         self.adapter._max_media_bytes = 10
         self.adapter.handle_message = AsyncMock()
@@ -4739,7 +4741,7 @@ class TestMatrixImageOnlyMediaNormalization:
             event_id="$image-big",
             event_ts=0.0,
             source_content=source_content,
-            relates_to={},
+            relates_to=relates_to,
             msgtype=msgtype,
         )
 

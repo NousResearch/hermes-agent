@@ -75,7 +75,7 @@ _BROWSERS = (
         (("Chromium", "Application", "chrome.exe"), ("Chromium", "Application", "chromium.exe")),
         ("Chromium", "User Data"),
         ("chromium-browser", "chromium"),
-        ("/usr/bin/chromium-browser", "/usr/bin/chromium"),
+        ("/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"),
         "chromium"),
     _Browser(
         "brave", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
@@ -349,7 +349,14 @@ _AUTH_REFRESH_PROFILE_FILES = (
 
 
 def real_profile_copy_dir(browser: str) -> str:
-    """Return the hermes-owned snapshot dir for ``browser``'s real profile."""
+    """Return a writable snapshot dir for ``browser``'s real profile.
+
+    Snap-confined browsers cannot write below hidden directories in ``$HOME``.
+    Keep their snapshot inside the snap's shared data directory instead.
+    """
+    executable = chromium_executable(browser, "Linux")
+    if executable and Path(executable).parts[:2] == ("/", "snap"):
+        return str(Path.home() / "snap" / browser / "common" / "hermes-profile")
     return str(get_hermes_home() / "browser-profile" / browser)
 
 

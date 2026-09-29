@@ -157,6 +157,12 @@ class TestLinuxProfileDir:
         monkeypatch.setattr(bc.os.path, "expanduser", lambda _p: home.as_posix())
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
 
+
+    def test_snap_browser_snapshot_uses_snap_writable_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bc.Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(bc, "chromium_executable", lambda browser, system=None: "/snap/bin/chromium")
+        assert bc.real_profile_copy_dir("chromium") == (tmp_path / "snap/chromium/common/hermes-profile").as_posix()
+
     def test_native_path_when_nothing_exists(self, tmp_path, monkeypatch):
         self._env(monkeypatch, tmp_path)
         assert bc.real_profile_data_dir("chromium", "Linux") == posixpath.join(tmp_path.as_posix(), ".config", "chromium")

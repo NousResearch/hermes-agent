@@ -736,12 +736,10 @@ def _slash_args(cmd: str) -> str:
 
 
 def _ensure_skill_commands() -> dict:
-    global _skill_commands
-    if _skill_commands is None:
-        from agent.skill_commands import get_interactive_skill_commands
-
-        _skill_commands = get_interactive_skill_commands()
-    return _skill_commands
+    if _skill_commands is not None:
+        return _skill_commands
+    from agent.skill_commands import get_interactive_skill_commands
+    return get_interactive_skill_commands()
 
 
 def get_skill_commands() -> dict:

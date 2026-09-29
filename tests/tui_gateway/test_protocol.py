@@ -1484,6 +1484,33 @@ def test_plugin_skill_catalog_completion_dispatch_and_profile_switch(server, tmp
     finally:
         plugins._reset_plugin_managers_for_tests()
 
+def test_slash_exec_plugin_command_precedes_colliding_skill(server, tmp_path, monkeypatch):
+    import agent.skill_commands as sc
+    from hermes_cli import plugins
+
+    home = tmp_path / "home"
+    plugin = home / "plugins" / "collision"
+    md = plugin / "skills" / "guide" / "SKILL.md"
+    md.parent.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: collision\nversion: 0.1.0\n")
+    (plugin / "__init__.py").write_text(
+        "from pathlib import Path\ndef register(ctx):\n"
+        "    ctx.register_skill('guide', Path(__file__).parent / 'skills' / 'guide' / 'SKILL.md')\n"
+        "    ctx.register_command('collision:guide', lambda arg: 'plugin:' + arg)\n")
+    md.write_text("---\nname: guide\n---\nSkill body.\n")
+    (home / "config.yaml").write_text("plugins:\n  enabled: [collision]\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugins._reset_plugin_managers_for_tests()
+    try:
+        sid = "collision-session"
+        server._sessions[sid] = {"session_key": sid, "profile_home": home, "agent": None}
+        assert "/collision:guide" in sc.get_interactive_skill_commands()
+        result = server.handle_request({"id": "r", "method": "slash.exec", "params": {
+            "session_id": sid, "command": "/collision:guide hello"}})
+        assert result["result"]["output"] == "plugin:hello"
+    finally:
+        plugins._reset_plugin_managers_for_tests()
+
 
 def test_sessionless_slash_palette_follows_profile_param(server, tmp_path, monkeypatch):
     """A Desktop draft has no session yet: ``commands.catalog`` / ``complete.slash`` must scan the

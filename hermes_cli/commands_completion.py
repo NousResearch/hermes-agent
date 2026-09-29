@@ -303,7 +303,8 @@ class SlashCommandCompleter(Completer):
         return "/" + token.lstrip("/").replace("_", "-").lower()
 
     def _is_skill_command(self, token: str) -> bool:
-        return self._normalize_skill_token(token) in self._iter_skill_commands()
+        from agent.skill_commands import resolve_slash_key
+        return resolve_slash_key(token.lstrip("/"), self._iter_skill_commands()) is not None
 
     def _stacked_skill_completions(self, text: str):
         """Skill-command completions for stacked invocations (``/skill-a /skill-b do XYZ``): only
@@ -315,10 +316,11 @@ class SlashCommandCompleter(Completer):
             _cap = 5
         completed, current_word = _split_args(text)
         skill_cmds = self._iter_skill_commands()
+        from agent.skill_commands import resolve_slash_key
         seen: set[str] = set()
         for token in completed:
-            key = self._normalize_skill_token(token)
-            if key not in skill_cmds or key in seen:
+            key = resolve_slash_key(token.lstrip("/"), skill_cmds)
+            if key is None or key in seen:
                 return
             seen.add(key)
         if len(seen) >= _cap or not current_word.startswith("/"):

@@ -6,7 +6,7 @@ import os
 import re
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Mapping, Optional
 
 from hermes_constants import display_hermes_home
 from agent.prompt_cache_boundary import register_stable_prefix
@@ -556,7 +556,8 @@ def get_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
             parsed, _ = _parse_frontmatter(skill_md.read_text(encoding="utf-8-sig", errors="replace"))
         except OSError:
             continue
-        frontmatter = metadata.get("frontmatter") or parsed
+        # Offer from the file we will actually load, not registration-time hints.
+        frontmatter = parsed
         if not (skill_matches_platform(frontmatter) and skill_matches_environment(frontmatter)
                 and skill_matches_apps(frontmatter)):
             continue
@@ -565,7 +566,7 @@ def get_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
             logger.warning("Plugin skill %r collides with an existing slash command; skipping", qualified)
             continue
         commands[key] = {
-            "name": qualified, "description": str(metadata.get("description") or parsed.get("description")
+            "name": qualified, "description": str(parsed.get("description") or metadata.get("description")
                                                   or f"Invoke the {qualified} plugin skill").strip(),
             "skill_identifier": qualified, "skill_md_path": str(skill_md),
             "skill_dir": str(skill_md.parent), "source": "plugin",
@@ -630,7 +631,7 @@ def resolve_skill_command_key(command: str, *, interactive: bool = False) -> Opt
     return resolve_slash_key(command, get_interactive_skill_commands() if interactive else get_skill_commands())
 
 
-def resolve_slash_key(command: str, table: Dict[str, Any]) -> Optional[str]:
+def resolve_slash_key(command: str, table: Mapping[str, Any]) -> Optional[str]:
     """``command`` -> ``"/slug"`` when present in *table* (``_`` normalized to ``-``), else None."""
     if not command:
         return None

@@ -3092,6 +3092,28 @@ def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypat
     # A core slash command is not a skill — nothing to expand.
     assert server._expand_skill_invocation_for_replay("/status", "t") == "/status"
 
+def test_replay_preserves_qualified_plugin_skill(tmp_path, monkeypatch):
+    from hermes_cli import plugins
+
+    home = tmp_path / "home"
+    plugin = home / "plugins" / "replay-probe"
+    md = plugin / "skills" / "guide" / "SKILL.md"
+    md.parent.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: replay-probe\nversion: 0.1.0\n")
+    (plugin / "__init__.py").write_text(
+        "from pathlib import Path\ndef register(ctx):\n"
+        "    ctx.register_skill('guide', Path(__file__).parent / 'skills' / 'guide' / 'SKILL.md')\n")
+    md.write_text("---\nname: guide\n---\nReplay instructions.\n")
+    (home / "config.yaml").write_text("plugins:\n  enabled: [replay-probe]\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugins._reset_plugin_managers_for_tests()
+    try:
+        expanded = server._expand_skill_invocation_for_replay("/replay-probe:guide do it", "task")
+        assert "Replay instructions." in expanded
+        assert server._skill_scaffold_projection(expanded) == "/replay-probe:guide do it"
+    finally:
+        plugins._reset_plugin_managers_for_tests()
+
 
 def _two_repo_project_skill_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]:
     """Two trusted repos (``alpha-skill`` / ``beta-skill``) bound to sessions ``sid-a`` / ``sid-b``, in a

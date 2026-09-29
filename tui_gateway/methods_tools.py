@@ -1142,6 +1142,13 @@ def _(rid, params: dict) -> dict:
         target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
     if target is not None:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
+    # Plugin commands have the same precedence as command.dispatch and the CLI;
+    # a same-named skill must not intercept them.
+    if plugin_handler := _plugin_command_handler(base) if base else None:
+        try:
+            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
+        except Exception as e:
+            return _ok(rid, {"output": f"Plugin command error: {e}"})
     # Recognized skills keep the 4018 gate so clients command.dispatch. A scan
     # exception must not fail open into the worker: return the dispatch payload
     # (or a hard error) here, or the loading banner swallows the prompt.
@@ -1154,11 +1161,6 @@ def _(rid, params: dict) -> dict:
         # run it. Anything else might be the skill the scan failed to see.
         if (dispatched.get("result") or {}).get("type") or not _is_registry_command(base):
             return dispatched
-    if plugin_handler := _plugin_command_handler(base) if base else None:
-        try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
-        except Exception as e:
-            return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
     if not worker:
         # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None

@@ -362,8 +362,6 @@ export interface MockBackendOptions {
   extraConfig?: string
   /** Override the mock model's context window for compression scenarios. */
   modelContextLength?: number
-  /** Options forwarded verbatim to the mock inference server. */
-  mockServer?: import('../../../tests-js/scripts/mock-server').MockServerOptions
 }
 
 /**

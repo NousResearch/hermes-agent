@@ -1966,10 +1966,34 @@ export interface FleetGatewaySession {
   elapsed_seconds: number;
 }
 
+/** One provider's pace-vs-actual reading off the pacing governor's state file. Any of the
+ * four pct fields may be `null` when that window hasn't been fetched yet or the provider's
+ * usage endpoint errored (see `error`) -- degrade the row, never the whole panel. */
+export interface FleetProviderPaceState {
+  provider: string;
+  five_hour_used_pct: number | null;
+  five_hour_allowed_pct: number | null;
+  weekly_used_pct: number | null;
+  weekly_allowed_pct: number | null;
+  fetched_at: number | null;
+  error: string | null;
+}
+
+/** Pace-vs-actual across every provider in the governor's chain (t_1eb32e10 item 5). */
+export interface FleetProviderPace {
+  generated_at: number | null;
+  chain: string[];
+  reserved_lane_pct: number | null;
+  providers: Record<string, FleetProviderPaceState>;
+}
+
 export interface FleetActivityResponse {
   kanban_tasks: FleetKanbanTask[];
   gateway_sessions: FleetGatewaySession[];
   count: number;
+  /** `null` when the pacing governor has never polled on this host -- omit the strip, not
+   * an error for the rest of the panel. */
+  provider_pace: FleetProviderPace | null;
 }
 
 export interface PlatformStatus {

@@ -2,7 +2,7 @@ import { Card, CardContent } from "@nous-research/ui/ui/components/card";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { cn } from "@/lib/utils";
 import { useFleetActivity } from "@/hooks/useFleetActivity";
-import type { FleetGatewaySession, FleetKanbanTask } from "@/lib/api";
+import type { FleetGatewaySession, FleetKanbanTask, FleetProviderPace, FleetProviderPaceState } from "@/lib/api";
 
 /** Same "live" green pulsing dot the per-chat sidebar badge uses (ChatSidebar's
  * ``STATE_TONE.open`` -> "success"), reused here for anything mid-turn fleet-wide. */
@@ -75,6 +75,70 @@ function EmptyRow({ label }: { label: string }) {
   return <li className="px-4 py-6 text-center text-sm text-text-tertiary">{label}</li>;
 }
 
+function formatPct(value: number | null | undefined): string {
+  return value == null ? "—" : `${value.toFixed(0)}%`;
+}
+
+/** used%/allowed% for one pace window, over-pace (used > allowed) called out in the
+ * destructive color the same way the rest of the dashboard flags a threshold breach. */
+function PaceWindowReading({ label, used, allowed }: { label: string; used: number | null; allowed: number | null }) {
+  const overPace = used != null && allowed != null && used > allowed;
+  return (
+    <span className="whitespace-nowrap" title={`${label}: used ${formatPct(used)} of ${formatPct(allowed)} allowed`}>
+      {label} <span className={cn(overPace && "font-semibold text-destructive")}>{formatPct(used)}</span>
+      <span className="text-text-tertiary">/{formatPct(allowed)}</span>
+    </span>
+  );
+}
+
+function ProviderPaceRow({ name, state }: { name: string; state: FleetProviderPaceState }) {
+  return (
+    <li className="flex flex-col gap-1 border-b border-current/10 px-4 py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+      <p className="truncate text-sm font-medium text-text-primary">{name}</p>
+      {state.error ? (
+        <p className="truncate text-xs text-text-tertiary" title={state.error}>
+          no reading ({state.error})
+        </p>
+      ) : (
+        <div className="flex shrink-0 items-center gap-3 pl-4 text-xs text-text-secondary sm:pl-0">
+          <PaceWindowReading label="5h" used={state.five_hour_used_pct} allowed={state.five_hour_allowed_pct} />
+          <PaceWindowReading label="wk" used={state.weekly_used_pct} allowed={state.weekly_allowed_pct} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+/** Pace-vs-actual summary strip (t_1eb32e10 item 5 / t_9fa39b57): per-provider used%/allowed%
+ * for both pacing-governor windows plus the reserved-lane slice. `null` (governor never
+ * polled on this host) renders nothing -- the rest of the panel is unaffected. */
+function ProviderPaceStrip({ pace }: { pace: FleetProviderPace | null }) {
+  if (!pace) return null;
+  const entries = Object.entries(pace.providers);
+  if (entries.length === 0) return null;
+  return (
+    <Card className={cn("overflow-hidden")}>
+      <div className="flex items-center justify-between border-b border-current/10 px-4 py-3">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-text-secondary">
+          Provider Pace
+        </h3>
+        {pace.reserved_lane_pct != null && (
+          <span className="text-xs text-text-tertiary" title="Slice of every window reserved for the priority lane (chat bots, prime)">
+            {pace.reserved_lane_pct}% reserved lane
+          </span>
+        )}
+      </div>
+      <CardContent className="p-0">
+        <ul>
+          {entries.map(([name, state]) => (
+            <ProviderPaceRow key={name} name={name} state={state} />
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function FleetActivityPage() {
   const { activity, error } = useFleetActivity();
 
@@ -98,6 +162,8 @@ export default function FleetActivityPage() {
           Could not load fleet activity: {error}
         </p>
       )}
+
+      <ProviderPaceStrip pace={activity?.provider_pace ?? null} />
 
       <Card className={cn("overflow-hidden")}>
         <div className="flex items-center justify-between border-b border-current/10 px-4 py-3">

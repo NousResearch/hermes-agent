@@ -87,6 +87,7 @@ describe("FleetActivityPage", () => {
         },
       ],
       count: 2,
+      provider_pace: null,
     };
     apiMocks.getFleetActivity.mockResolvedValue(response);
 
@@ -104,6 +105,7 @@ describe("FleetActivityPage", () => {
       kanban_tasks: [],
       gateway_sessions: [],
       count: 0,
+      provider_pace: null,
     } satisfies FleetActivityResponse);
 
     await renderPage();
@@ -111,6 +113,8 @@ describe("FleetActivityPage", () => {
 
     expect(container.textContent).toContain("No Kanban tasks running right now.");
     expect(container.textContent).toContain("No gateway sessions mid-turn right now.");
+    // No pacing-governor state file on this host -- the strip must not render at all.
+    expect(container.textContent).not.toContain("Provider Pace");
   });
 
   it("surfaces a load error without crashing", async () => {
@@ -120,5 +124,48 @@ describe("FleetActivityPage", () => {
     await waitFor(() => container.textContent?.includes("network down") ?? false);
 
     expect(container.textContent).toContain("Could not load fleet activity");
+  });
+
+  it("renders per-provider pace-vs-actual when the governor state file is present", async () => {
+    apiMocks.getFleetActivity.mockResolvedValue({
+      kanban_tasks: [],
+      gateway_sessions: [],
+      count: 0,
+      provider_pace: {
+        generated_at: Date.now() / 1000,
+        chain: ["claude-subscription", "openai-codex"],
+        reserved_lane_pct: 15,
+        providers: {
+          "claude-subscription": {
+            provider: "claude-subscription",
+            five_hour_used_pct: null,
+            five_hour_allowed_pct: null,
+            weekly_used_pct: null,
+            weekly_allowed_pct: null,
+            fetched_at: Date.now() / 1000,
+            error: "skipping fetch: upstream rate limited",
+          },
+          "openai-codex": {
+            provider: "openai-codex",
+            five_hour_used_pct: null,
+            five_hour_allowed_pct: null,
+            weekly_used_pct: 55,
+            weekly_allowed_pct: 53,
+            fetched_at: Date.now() / 1000,
+            error: null,
+          },
+        },
+      },
+    } satisfies FleetActivityResponse);
+
+    await renderPage();
+    await waitFor(() => container.textContent?.includes("Provider Pace") ?? false);
+
+    expect(container.textContent).toContain("Provider Pace");
+    expect(container.textContent).toContain("15% reserved lane");
+    expect(container.textContent).toContain("claude-subscription");
+    expect(container.textContent).toContain("no reading");
+    expect(container.textContent).toContain("openai-codex");
+    expect(container.textContent).toContain("55%");
   });
 });

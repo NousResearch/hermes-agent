@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,13 @@ from hermes_cli.web_deps import late
 
 router = APIRouter()
 _log = logging.getLogger("hermes_cli.web_server")
+
+# Same env var / default as aos/pacing_governor.py's DEFAULT_STATE_PATH and the kanban
+# dispatcher's vendored mirror (hermes_cli/kanban_db_dispatch_pacing.py) -- one on-disk
+# contract, three independent readers, never a shared writer lock (write_state's
+# write-then-rename already makes a torn read impossible, not just unlikely).
+_PACE_STATE_PATH = Path(os.environ.get(
+    "HERMES_PACING_STATE_PATH", "~/.qwickapps/state/provider_pace.json")).expanduser()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time (web/AGENTS.md).
 _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
@@ -173,16 +181,53 @@ def _all_gateway_sessions() -> List[Dict[str, Any]]:
     return sessions
 
 
+def _provider_pace() -> Optional[Dict[str, Any]]:
+    """Pace-vs-actual per provider, straight off the on-disk state file the pacing
+    governor's poll tick writes (``aos/pacing_governor.py::write_state``, same file the
+    kanban dispatcher's spawn-routing already reads via
+    ``hermes_cli/kanban_db_dispatch_pacing.py``). This router never imports ``aos`` (a
+    separate repo/venv, not on hermes-agent's runtime ``sys.path`` today) and never
+    recomputes pace math -- it only reads the doc the governor already evaluated.
+
+    Fail-open like every other reader of this file: a missing/unreadable/corrupt state
+    file (governor never ran, or ran on a host without this file) returns ``None`` so the
+    caller omits the key entirely -- it must never turn into a 500 for the rest of the
+    fleet activity panel, which has nothing to do with the pacing governor's health.
+    """
+    try:
+        doc = json.loads(_PACE_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    providers = doc.get("providers")
+    if not isinstance(providers, dict):
+        return None
+    return {
+        "generated_at": doc.get("generated_at"),
+        "chain": doc.get("chain") or [],
+        "reserved_lane_pct": doc.get("reserved_lane_pct"),
+        "providers": providers,
+    }
+
+
 @router.get("/api/fleet/activity")
 async def get_fleet_activity():
     """Everything working right now, fleet-wide: running Kanban tasks across every board
     (card, profile, elapsed, last heartbeat) plus gateway sessions mid-turn across every
     served profile (platform, chat, elapsed) — the panel `@raaj` uses to see all agents at
-    a glance, regardless of surface (WebUI chat, gateway messaging, Kanban worker)."""
+    a glance, regardless of surface (WebUI chat, gateway messaging, Kanban worker).
+
+    Also surfaces ``provider_pace`` (pace-vs-actual per provider from the pacing governor's
+    state file, t_1eb32e10 item 5 / t_9fa39b57) when that state file exists and is
+    readable; ``null`` when it does not (fresh install, governor never polled, or a host
+    without the governor at all) -- never an error for the rest of the panel."""
     kanban_tasks = await run_in_threadpool(_kanban_running_tasks)
     gateway_sessions = await run_in_threadpool(_all_gateway_sessions)
+    provider_pace = await run_in_threadpool(_provider_pace)
     return {
         "kanban_tasks": kanban_tasks,
         "gateway_sessions": gateway_sessions,
         "count": len(kanban_tasks) + len(gateway_sessions),
+        "provider_pace": provider_pace,
     }

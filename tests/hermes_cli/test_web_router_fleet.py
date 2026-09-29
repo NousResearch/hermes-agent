@@ -13,13 +13,20 @@ import pytest
 
 
 @pytest.fixture
-def _client(monkeypatch, _isolate_hermes_home):
+def _client(monkeypatch, tmp_path, _isolate_hermes_home):
     from starlette.testclient import TestClient
     import hermes_state
     from hermes_constants import get_hermes_home
+    from hermes_cli.web_routers import fleet as fleet_router
     from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+    # HOME is deliberately not redirected by _hermetic_environment (see conftest.py), so
+    # the pacing-governor state path (~/.qwickapps/state/provider_pace.json by default)
+    # would otherwise resolve to the real developer/host home. Point it at a per-test
+    # tmp path that does not exist by default -- individual tests write into it.
+    _pace_state_path = tmp_path / "provider_pace.json"
+    monkeypatch.setattr(fleet_router, "_PACE_STATE_PATH", _pace_state_path)
 
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -59,7 +66,9 @@ class TestFleetActivityEndpoint:
         resp = _client.get("/api/fleet/activity")
         assert resp.status_code == 200
         body = resp.json()
-        assert body == {"kanban_tasks": [], "gateway_sessions": [], "count": 0}
+        assert body == {
+            "kanban_tasks": [], "gateway_sessions": [], "count": 0, "provider_pace": None,
+        }
 
     def test_running_kanban_task_is_surfaced_with_elapsed_and_heartbeat(self, _client):
         task_id = _create_running_kanban_task(title="ship the fleet panel", assignee="anika")
@@ -156,3 +165,62 @@ class TestFleetActivityEndpoint:
         resp = _client.get("/api/fleet/activity")
         assert resp.status_code == 200
         assert resp.json()["gateway_sessions"] == []
+
+
+class TestFleetActivityProviderPace:
+    """GET /api/fleet/activity's ``provider_pace`` key: pace-vs-actual per provider off
+    the pacing governor's on-disk state file (t_1eb32e10 item 5 / t_9fa39b57), same
+    write_state()/read_state() contract as aos/pacing_governor.py and the kanban
+    dispatcher's spawn-routing (hermes_cli/kanban_db_dispatch_pacing.py)."""
+
+    def test_missing_state_file_degrades_to_null_not_error(self, _client):
+        # No file written at all (the default in every other test in this module) --
+        # a governor that has never polled on this host must never break the panel.
+        resp = _client.get("/api/fleet/activity")
+        assert resp.status_code == 200
+        assert resp.json()["provider_pace"] is None
+
+    def test_corrupt_state_file_degrades_to_null_not_error(self, _client, tmp_path):
+        (tmp_path / "provider_pace.json").write_text("{not valid json")
+
+        resp = _client.get("/api/fleet/activity")
+        assert resp.status_code == 200
+        assert resp.json()["provider_pace"] is None
+
+    def test_valid_state_file_surfaces_used_and_allowed_pct_both_windows(self, _client, tmp_path):
+        doc = {
+            "generated_at": 1790706235.0,
+            "chain": ["claude-subscription", "openai-codex"],
+            "reserved_lane_pct": 15.0,
+            "providers": {
+                "claude-subscription": {
+                    "provider": "claude-subscription",
+                    "five_hour_used_pct": 12.5,
+                    "five_hour_allowed_pct": 30.0,
+                    "weekly_used_pct": 40.0,
+                    "weekly_allowed_pct": 45.0,
+                    "fetched_at": 1790706234.9,
+                    "error": None,
+                },
+                "openai-codex": {
+                    "provider": "openai-codex",
+                    "five_hour_used_pct": None,
+                    "five_hour_allowed_pct": None,
+                    "weekly_used_pct": 55.0,
+                    "weekly_allowed_pct": 53.2,
+                    "fetched_at": 1790706234.9,
+                    "error": None,
+                },
+            },
+        }
+        (tmp_path / "provider_pace.json").write_text(json.dumps(doc))
+
+        resp = _client.get("/api/fleet/activity")
+        assert resp.status_code == 200
+        pace = resp.json()["provider_pace"]
+        assert pace is not None
+        assert pace["chain"] == ["claude-subscription", "openai-codex"]
+        assert pace["reserved_lane_pct"] == 15.0
+        assert pace["providers"]["claude-subscription"]["weekly_used_pct"] == 40.0
+        assert pace["providers"]["claude-subscription"]["weekly_allowed_pct"] == 45.0
+        assert pace["providers"]["openai-codex"]["five_hour_used_pct"] is None

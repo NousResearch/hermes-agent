@@ -89,7 +89,7 @@ These items are unchanged from rc1:
 
 ## 2026-09-29: `litco-agent-host-2026.09.29-rc3` (Ana: thread context, actor, channel; litkit_channel_history)
 
-rc3 adds PR #8 (`feat/ana-thread-context`): `actor` / `threadContext` / `litkitChannel` on `POST /turn`, Ana's framing in the turn prompt and SOUL.md, and the `litkit_channel_history` tool. rc2 (image `247411090`) is kept until rc3 passes a real-turn smoke on a re-provisioned matter host; delete it then.
+rc3 adds PR #8 (`feat/ana-thread-context`): `actor` / `threadContext` / `litkitChannel` on `POST /turn`, Ana's framing in the turn prompt and SOUL.md, and the `litkit_channel_history` tool. rc2 (image `247411090`) was deleted at 2026-09-29 ~18:50Z after rc3 passed the wave-3 prod smoke (14/14) on the re-provisioned demo host `matter-90780fb4838a-3` (litkit-notes MATTER_CHANNELS_DESIGN_2026-09-28.md, waves 3+4 ship ledger). Hosts still running from rc2 keep their droplets; a fresh provision uses rc3.
 
 | Item | Value |
 |---|---|

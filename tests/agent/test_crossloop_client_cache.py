@@ -30,10 +30,6 @@ def _stub_resolve_provider_client(provider, model, async_mode, **kw):
 @pytest.fixture(autouse=True)
 def _clean_client_cache():
     """Clear the client cache before each test."""
-    # We need to patch before importing
-    with patch.dict("sys.modules", {}):
-        pass
-    # Import and clear
     import agent.auxiliary_client as ac
     ac._client_cache.clear()
     yield

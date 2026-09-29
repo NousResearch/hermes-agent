@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.context_references import preprocess_context_references_async
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import merge_pending_message_event
 from gateway.platforms.event import MessageType
@@ -100,7 +101,7 @@ def _typed(raw: dict):
 
 def _body(kind: str, sender: str = SENDER) -> str:
     return (
-        f"[emote by {sender}] /new waves"
+        f"[emote by https://matrix.to/#/{sender}] /new waves"
         if kind == "emote"
         else "[sticker: Friendly fox.png]"
     )
@@ -386,7 +387,7 @@ async def test_native_content_has_consistent_effective_reads_history_and_reply_p
     if scenario == "bounded":
         raw["content"]["body"] = "Untrusted description " * 1000
         body = (
-            f"[emote by {SENDER}] " + raw["content"]["body"]
+            f"[emote by https://matrix.to/#/{SENDER}] " + raw["content"]["body"]
             if kind == "emote"
             else "[sticker: " + raw["content"]["body"].strip() + "]"
         ).strip()
@@ -601,6 +602,35 @@ async def test_unchanged_effective_read_preserves_mention_stripped_native_input(
         "text": snapshot.prepend_history(event.text),
         "paths": snapshot.media_event(event).media_urls,
     } == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sender",
+    [
+        "@file:example.org",
+        "@url:example.org",
+        "@diff-bot:example.org",
+        "@historical.@file:example.org",
+    ],
+)
+async def test_emote_attribution_is_not_a_context_reference(
+    monkeypatch, tmp_path, sender
+):
+    (tmp_path / "example.org").write_text("local file")
+    adapter, received = _adapter(monkeypatch)
+    raw = _event("emote")
+    raw["sender"] = sender
+    await adapter._on_room_message(_typed(raw))
+    text = received.await_args.args[0].text
+    result = await preprocess_context_references_async(
+        text,
+        cwd=tmp_path,
+        context_length=100_000,
+        url_fetcher=lambda _url: "fetched page",
+        allowed_root=tmp_path,
+    )
+    assert (result.expanded, result.references, result.message) == (False, [], text)
 
 
 @pytest.mark.asyncio

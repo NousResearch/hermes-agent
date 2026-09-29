@@ -48,7 +48,7 @@ def test_native_emotes_and_stickers_reach_model_and_withdraw_only_new_input(
         requests = gateway.model.main_requests()
         assert len(requests) == 2
         emote_text = json.dumps(requests[0]["messages"][-1]["content"])
-        assert f"[emote by {live_room.observer.user_id}] /new waves" in emote_text
+        assert f"[emote by https://matrix.to/#/{live_room.observer.user_id}] /new waves" in emote_text
         sticker_parts = requests[1]["messages"][-1]["content"]
         assert isinstance(sticker_parts, list)
         assert "[sticker: Friendly fox.png]" in json.dumps(sticker_parts)

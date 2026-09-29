@@ -538,8 +538,9 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 
 from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
-    clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
+    clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, jobs_lock_degraded,
+    mark_job_run, save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope,
+    use_cron_store)
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
@@ -2671,6 +2672,19 @@ def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:
                             job_id, expected_owner=owner):
                         last_confirmed = time.monotonic()
                         continue
+                    if (
+                        jobs_lock_degraded()
+                        and time.monotonic() - last_confirmed
+                        < _FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
+                    ):
+                        # Both samples ran WITHOUT the cross-process jobs lock (a sibling process
+                        # held it past _JOBS_LOCK_TIMEOUT_SECONDS), so the compare-and-refresh read
+                        # the store unserialized: a contended lock, not evidence about the claim.
+                        # Keep renewing and only latch once the grace window is exhausted.
+                        logger.warning(
+                            "Job '%s': fire claim miss sampled without the cross-process jobs "
+                            "lock; re-sampling instead of declaring ownership lost", job_id)
+                        continue
                     lost_ownership.set()
                     logger.warning(
                         "Job '%s': fire claim ownership lost; interrupting stale run",
@@ -2813,6 +2827,41 @@ def _record_fire_ownership_lost(job_id: str, fire_owner: Optional[str], executio
             error="Fire claim ownership lost; stale result was discarded.")
 
 
+_FIRE_FENCE_BUSY = (
+    "Fire fence busy before terminal completion; the run's result was not recorded."
+)
+
+
+def _refused_side_effect(fence: "_FireOwnership") -> Exception:
+    """Which refusal a ``False`` from a side-effect fence actually was.
+
+    ``fence.fence_busy`` is set when the fence itself could not be acquired (bounded by
+    ``_JOBS_LOCK_TIMEOUT_SECONDS``, while a sibling side effect — the run's own long delivery, a
+    duplicate fire — holds it). That outcome samples nothing from the store, so it must never be
+    recorded as a lost claim; only an acquired fence that found a different owner is a verdict.
+    """
+    return _FireFenceBusy() if fence.fence_busy else _FireClaimLostDuringSideEffect()
+
+
+def _record_fire_fence_busy(job_id: str, execution_id: str, phase: str) -> None:
+    """Bookkeeping for a side effect the FENCE refused to authorize.
+
+    Fail closed — the delivery/terminal write is skipped, nothing is written to the job record
+    without the fence, and the run is not recorded as a success. But the cause is reported
+    honestly: no ownership verdict is available here, and stamping the run with the ownership-lost
+    error made a busy lock unreadable in the failure data.
+    """
+    logger.error(
+        "Job '%s': fire fence could not be acquired for %s — no ownership verdict; "
+        "result not recorded", job_id, phase)
+    try:
+        finish_execution(execution_id, success=False, error=_FIRE_FENCE_BUSY)
+    except Exception:
+        logger.warning(
+            "Job '%s': failed to close execution ledger row for a busy fire fence",
+            job_id, exc_info=True)
+
+
 def _classify_delivery_outcome(
     *, delivery_error, should_deliver: bool, unresolved_origin: bool,
     normalized_deliver: str, incident_acked: bool, success: bool,
@@ -2888,6 +2937,16 @@ class _FireClaimLostDuringSideEffect(Exception):
     """Raised inside a side-effect fence when the durable fire claim is no longer ours."""
 
 
+class _FireFenceBusy(Exception):
+    """Raised inside a side-effect fence when the FENCE could not be acquired at all.
+
+    Distinct from ``_FireClaimLostDuringSideEffect``: the fence timing out (bounded by
+    ``_JOBS_LOCK_TIMEOUT_SECONDS``) is a contended lock, not a verdict about the claim. Nothing was
+    sampled from the store, so the run must fail closed with an honest cause — the delivery is
+    skipped and no terminal status is written — instead of being stamped as lost ownership.
+    """
+
+
 class _FireOwnership:
     """Fire-claim ownership checks for one run (``owner`` is None when the job carries no claim)."""
 
@@ -2908,6 +2967,9 @@ class _FireOwnership:
             else None)
         claim = job.get("fire_claim")
         self.owner = str(claim.get("by") or "") if isinstance(claim, dict) else None
+        # Appended to by ``fire_claim_fence`` when a side-effect write was refused by the FENCE
+        # itself (it could not be acquired), which carries no evidence about the claim.
+        self.fence_busy: list = []
 
     def transport_cancelled(self) -> bool:
         return self.transport_cancel is not None and self.transport_cancel.is_set()
@@ -2915,7 +2977,10 @@ class _FireOwnership:
     def side_effect_fence(self):
         if self.owner is None:
             return contextlib.nullcontext(True)
-        return fire_claim_fence(self.job["id"], expected_owner=self.owner)
+        # Cleared per acquisition: only the fence acquired by THIS block may report itself busy.
+        self.fence_busy.clear()
+        return fire_claim_fence(
+            self.job["id"], expected_owner=self.owner, fence_busy=self.fence_busy)
 
     def lost(self) -> bool:
         if self.transport_cancelled():
@@ -2959,6 +3024,8 @@ class _RunDelivery:
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
+    # The FENCE, not the claim, refused a side-effect write (no ownership evidence exists).
+    side_effect_fence_busy: bool = False
 
 
 def _save_compose_deliver(
@@ -2970,7 +3037,7 @@ def _save_compose_deliver(
     job = d.job
     with fence.side_effect_fence() as owns_output:
         if not owns_output:
-            raise _FireClaimLostDuringSideEffect
+            raise _refused_side_effect(fence)
         # remove_job() already deleted this job's output dir; saving would re-create an orphan.
         output_file = (
             None if self_removal_delivery_allowed(job["id"])
@@ -3026,7 +3093,7 @@ def _save_compose_deliver(
     try:
         with fence.side_effect_fence() as owns_delivery:
             if not owns_delivery:
-                raise _FireClaimLostDuringSideEffect
+                raise _refused_side_effect(fence)
             d.delivery_attempted = True
             d.delivery_error = _deliver_result(
                 job,
@@ -3038,8 +3105,8 @@ def _save_compose_deliver(
                 for_failure=not d.success,
             )
     except Exception as de:
-        if isinstance(de, _FireClaimLostDuringSideEffect):
-            raise
+        if isinstance(de, (_FireClaimLostDuringSideEffect, _FireFenceBusy)):
+            raise  # a fence refusal is not a delivery error: the send never happened
         d.delivery_error = str(de)
         logger.error("Delivery failed for job %s: %s", job["id"], de)
 
@@ -3088,9 +3155,15 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     if d.blocked_config:
         mark_kwargs["status"] = "blocked_config"
     # A run that removed its own record has nothing left to mark; the delivery above is its result.
+    fence_busy: list = []
     marked = self_removal_delivery_allowed(job["id"]) or mark_job_run(
-        job["id"], d.success, d.error, **mark_kwargs)
+        job["id"], d.success, d.error, fence_busy=fence_busy, **mark_kwargs)
     if fire_owner is not None and not marked:
+        if fence_busy:
+            # The FENCE refused, not the claim: mark_job_run never reached the store, so this run
+            # has no ownership verdict to record — and the delivery above already left the process.
+            _record_fire_fence_busy(job["id"], execution_id, "terminal status")
+            return True
         finish_execution(
             execution_id, success=False,
             error="Fire claim ownership lost before terminal completion.")
@@ -3277,10 +3350,18 @@ def _run_one_job_body(
                 execution_token=execution_token)
         except _FireClaimLostDuringSideEffect:
             d.side_effect_ownership_lost = True
+        except _FireFenceBusy:
+            d.side_effect_fence_busy = True
         finally:
             delivery_attempted, delivery_error = d.delivery_attempted, d.delivery_error
             # Every path must tear down deferred agent(s) so they never leak subprocesses/clients.
             _teardown_deferred()
+
+        if d.side_effect_fence_busy:
+            # The fence, not the claim, refused: the side effect did NOT complete and no ownership
+            # sample exists, so record the real cause instead of an ownership loss.
+            _record_fire_fence_busy(job["id"], execution_id, "side-effect write")
+            return True
 
         if d.side_effect_ownership_lost:
             # The claim died inside a side-effect fence: the side effect did NOT complete.

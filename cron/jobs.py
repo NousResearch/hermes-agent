@@ -295,6 +295,10 @@ def _jobs_lock():
         # stamps from unlocked loads or prior sections can never suppress a needed merge.
         # See #80703.
         _jobs_lock_state.load_stamp = None
+        # Whether THIS section ran without the cross-process lock (flock timeout / no backend).
+        # A compare-and-refresh inside a degraded section reads the file unserialized, so its
+        # verdict is a sample, not an authority — see jobs_lock_degraded().
+        _jobs_lock_state.degraded = False
         lock_fd = None
         try:
             try:
@@ -308,6 +312,7 @@ def _jobs_lock():
                         "it. Proceeding with in-process locking only "
                         "so the scheduler stays alive (#60703).",
                         _JOBS_LOCK_TIMEOUT_SECONDS, _jobs_lock_file())
+                    _jobs_lock_state.degraded = True
                     with contextlib.suppress(OSError):
                         lock_fd.close()
                     lock_fd = None
@@ -315,6 +320,7 @@ def _jobs_lock():
                 # A locking failure must never take down cron writes — in-process lock still held.
                 logger.warning("jobs.json cross-process lock unavailable (%s); "
                                "proceeding with in-process lock only", e)
+                _jobs_lock_state.degraded = True
             try:
                 yield
             finally:
@@ -323,6 +329,19 @@ def _jobs_lock():
         finally:
             _jobs_lock_state.depth = 0
             _jobs_lock_state.load_stamp = None
+            _jobs_lock_state.degraded = False
+
+
+def jobs_lock_degraded() -> bool:
+    """True when the CALLING thread's last ``_jobs_lock`` section ran without the cross-process
+    lock (a sibling process held it past the timeout, or no flock backend exists).
+
+    Such a section still serializes against this process's own threads, but its view of the store
+    is not authoritative: a compare-and-refresh that misses there may be reading through another
+    process's write. Callers that treat a miss as a verdict (the fire-claim heartbeat) must
+    re-sample instead of latching — see ``_run_with_fire_claim_heartbeat``.
+    """
+    return bool(getattr(_jobs_lock_state, "degraded", False))
 
 
 @contextlib.contextmanager
@@ -379,20 +398,38 @@ def _fire_job_lock(job_id: str):
         local_lock.release()
 
 
-def _under_fire_fence(job_id: str, fn: Callable[[], Any]) -> Any:
-    """Run ``fn()`` holding the job's fire fence; False (fail closed) when it can't be acquired."""
+def _under_fire_fence(
+    job_id: str, fn: Callable[[], Any], *, fence_busy: Optional[List[bool]] = None,
+) -> Any:
+    """Run ``fn()`` holding the job's fire fence; False (fail closed) when it can't be acquired.
+
+    ``fence_busy`` (a list the caller owns) gets a ``True`` appended when the refusal was the FENCE
+    itself — held by a sibling owner, or unavailable — so a caller can tell that apart from ``fn``
+    returning False on its own (a stale owner, a missing record). Nothing was sampled from the
+    store in the fence-busy case, so it is never evidence about ownership."""
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
+            if fence_busy is not None:
+                fence_busy.append(True)
             return False
         return fn()
 
 
 @contextlib.contextmanager
-def fire_claim_fence(job_id: str, *, expected_owner: str):
+def fire_claim_fence(job_id: str, *, expected_owner: str,
+                     fence_busy: Optional[List[bool]] = None):
     """Hold a per-job fence while an owner performs an external side effect. A missing record
-    is accepted only for the active run that removed this exact job (#111039)."""
+    is accepted only for the active run that removed this exact job (#111039).
+
+    ``fence_busy``: see ``_under_fire_fence``. ``False`` alone is ambiguous — it is yielded both
+    for a genuine revocation (the stored claim belongs to someone else) and when the fence could
+    not be taken at all. The second case carries no ownership evidence, so a caller that reports
+    ownership loss must check the flag first (see ``cron.scheduler._refused_side_effect``).
+    """
     with _fire_job_lock(job_id) as acquired:
         if not acquired:
+            if fence_busy is not None:
+                fence_busy.append(True)
             yield False
             return
         with _jobs_lock():
@@ -2450,6 +2487,7 @@ def mark_job_run(
     model_unreachable: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
+    fence_busy: Optional[List[bool]] = None,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached.
@@ -2458,6 +2496,9 @@ def mark_job_run(
     ``last_status = "delivery_failed"`` (never "ok") while ``failure_streak`` is left alone. An
     explicit ``status`` (e.g. "blocked_config") overrides the derived value. False when the fence
     can't be taken, the job is missing, or ``expected_fire_owner`` no longer holds the fire claim.
+    ``fence_busy`` (see ``_under_fire_fence``) distinguishes the first case from the last two:
+    it is appended to when the fence itself was unavailable, where nothing about the claim was
+    sampled and a caller must not report an ownership change.
 
     ``model_unreachable``: this failed run never reached the model (transient network/DNS error,
     zero API calls). Recurring jobs then get a bounded automatic re-run — ``next_run_at`` is pulled
@@ -2503,7 +2544,7 @@ def mark_job_run(
             return False
         return found
 
-    return _under_fire_fence(job_id, locked)
+    return _under_fire_fence(job_id, locked, fence_busy=fence_busy)
 
 
 def _write_oneshot_diagnostic(job: Dict[str, Any], text: str, what: str) -> bool:

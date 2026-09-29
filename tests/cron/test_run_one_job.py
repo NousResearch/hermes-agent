@@ -308,7 +308,11 @@ def test_run_one_job_exception_after_delivery_does_not_redeliver(monkeypatch):
 
     assert ok is False
     assert delivered == [("j5", "final response")]
-    assert mark_calls[0] == (("j5", True, None), {"delivery_error": None})
+    assert mark_calls[0] == (
+        ("j5", True, None),
+        {"delivery_error": None, "fence_busy": []},
+    )
+    # The crash path's own bookkeeping call takes no fence-busy reporter.
     assert mark_calls[1] == (
         ("j5", False, "bookkeeping boom"),
         {"delivery_error": None},

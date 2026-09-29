@@ -28,6 +28,16 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   skips past-grace misses with a logged reason. Never drop a slot silently (#107485).
 - Per-home tick lock `<home>/cron/.tick.lock` prevents duplicate ticks across processes for
   that profile's store; never a `~/.hermes/...` literal.
+- **An unacquirable fire fence is not lost fire-claim ownership.** `_fire_job_lock` fails closed
+  after `_JOBS_LOCK_TIMEOUT_SECONDS`, and the fence is legitimately held across a run's own
+  side effects — a delivery send can outlast that cap (measured 50–57s client-side where the
+  homeserver answers in 2–6ms). A refused acquire samples NOTHING from the store, so
+  `fire_claim_fence` / `mark_job_run` report it as busy (`fence_busy`) instead of as a verdict:
+  the run still fails closed (no delivery, no terminal status write, nothing recorded as a
+  success) but the recorded cause is `_FIRE_FENCE_BUSY`, never `_OWNERSHIP_LOST_INTERRUPTED`.
+  Likewise a fire-claim miss whose compare-and-refresh ran without the cross-process jobs lock
+  (`jobs_lock_degraded()`) is re-sampled until `_FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS` rather than
+  latching a loss that cancels a live, still-owned run.
 - **The ticker binds each served profile's scope for the whole tick, including pre-loop code.**
   `scheduler_provider.py::_start_multiplex` is ONE ticker iterating `profiles_to_serve()`
   sequentially under `_profile_cron_scope(home)` (home + secret scope + terminal scope) — never N

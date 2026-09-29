@@ -6044,7 +6044,13 @@ def main():
         from hermes_cli.stdio import configure_windows_stdio
         configure_windows_stdio()
 
-    for _step in (_register_identity, _arm_watchdog, _utf8_stdio):
+    def _arm_fatal_signal_dump() -> None:
+        # A native crash (SIGILL/SIGSEGV — e.g. an illegal instruction in a C dependency) runs no
+        # Python handler; without faulthandler the death is invisible except to the supervisor.
+        from gateway.lifecycle_ledger import enable_fatal_signal_dump
+        enable_fatal_signal_dump()
+
+    for _step in (_register_identity, _arm_watchdog, _arm_fatal_signal_dump, _utf8_stdio):
         _best_effort(_step)
 
     # pm startup contract (PATH provisioning for the store's tools), then

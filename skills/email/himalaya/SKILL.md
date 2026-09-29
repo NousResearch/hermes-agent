@@ -26,6 +26,7 @@ requires the external `himalaya` CLI.
 
 - `references/configuration.md` (config file setup + IMAP/SMTP authentication)
 - `references/message-composition.md` (MML syntax for composing emails)
+- `references/reading-email.md` (reading, flags, handling forwarded emails)
 
 ## Prerequisites
 
@@ -139,6 +140,20 @@ himalaya envelope list --page 1 --page-size 20
 ```bash
 himalaya envelope list from john@example.com subject meeting
 ```
+
+**Pitfall: Query strings with spaces must be quoted:**
+
+```bash
+# Wrong - will fail with parse error
+himalaya envelope list subject Verification Code
+
+# Correct - quoted phrase
+himalaya envelope list 'subject "Verification Code"'
+```
+
+The himalaya query parser expects spaces to separate operators. Multi-word
+phrases without quotes are interpreted as separate tokens, causing "found
+'Verification' expected space between filters" errors.
 
 ### Read an Email
 

@@ -14,3 +14,17 @@ def test_unpruned_cache_hogs_skips_pruned_dirs_and_small_entries(tmp_path):
     assert {name for name, _ in hogs} == {"campaign-x", "web"}
     assert not unpruned_cache_hogs(tmp_path, min_bytes=1 << 20)
     assert all(size >= 2048 for _, size in hogs)
+
+
+def test_unpruned_cache_hogs_skips_hermes_owned_uv_cache(tmp_path, monkeypatch):
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: tmp_path)
+    cache = tmp_path / "cache"
+    for name in ("uv", "campaign-x"):
+        (cache / name).mkdir(parents=True)
+        with open(cache / name / "blob", "wb") as fh:
+            fh.truncate(2048)
+            fh.write(b"x" * 2048)
+
+    assert unpruned_cache_hogs(tmp_path, min_bytes=1024) == [("campaign-x", 2048)]

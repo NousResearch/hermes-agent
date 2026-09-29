@@ -94,7 +94,10 @@ export function decideNvidiaEglFallback(options: {
     return { enable: false, reason: null }
   }
 
-  const detected = false // Disabled automatic SwiftShader fallback for driver >= 580 to use real GPU hardware acceleration
+  // Only the confirmed-broken 580 series gets the SwiftShader reroute; an
+  // open-ended `>= 580` wrongly forces newer series (e.g. 615.x) onto CPU
+  // rendering. `HERMES_DESKTOP_NVIDIA_SWIFTSHADER` overrides detection both ways.
+  const detected = driverMajor !== null && driverMajor >= NVIDIA_BROKEN_EGL_MAJOR
 
   if (!detected && !OVERRIDE_ON.has(nvidiaOverride)) {
     return { enable: false, reason: null }

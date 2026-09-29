@@ -12,12 +12,12 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from gateway.session_context import clear_session_vars, set_session_vars
-from hermes_cli.tools_config import _get_platform_tools
+from hermes_cli.tools_config import _checklist_toolset_keys, _get_platform_tools, _save_platform_tools
 from plugins.platforms.matrix.poll_actions import matrix_poll_action
 from plugins.platforms.matrix.polls import UNSTABLE
 from plugins.platforms.matrix.read_context import read_matrix_context
@@ -210,3 +210,17 @@ def test_tool_discovery_does_not_load_the_matrix_adapter():
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=120, check=True,
                             env=env, cwd=Path(__file__).resolve().parents[2])
     assert result.stdout.strip().splitlines()[-1] == "False"
+
+
+@pytest.mark.parametrize("selection,expected", [({"web"}, False), ({"web", "matrix_polls"}, True)])
+def test_hermes_tools_selection_controls_matrix_polls_on_matrix_only(selection, expected):
+    config: dict[str, Any] = {}
+    with patch("hermes_cli.tools_config.save_config"):
+        for platform in ("matrix", "telegram"):
+            _save_platform_tools(config, platform, selection)
+
+    assert (
+        ("matrix_polls" in _checklist_toolset_keys("matrix"), "matrix_polls" in _checklist_toolset_keys("telegram")),
+        "matrix_polls" in _get_platform_tools({}, "matrix"),
+        ("matrix_polls" in _get_platform_tools(config, "matrix"), "matrix_polls" in _get_platform_tools(config, "telegram")),
+    ) == ((True, False), True, (expected, False))

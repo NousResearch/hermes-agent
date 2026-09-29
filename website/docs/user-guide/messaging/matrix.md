@@ -60,8 +60,10 @@ are disabled, opportunistic, or required.
 ### Native Polls
 
 Ask Hermes to create a poll, vote in a poll, read its results or close it in
-the current Matrix room. The `matrix_polls` toolset is included in the Matrix
-bundle. Use `hermes tools` to enable or disable it for Matrix sessions.
+the current Matrix room. The **Matrix Polls** toolset (`matrix_polls`) is
+enabled by default for Matrix sessions. Use `hermes tools` to enable or disable
+it. If you saved a Matrix tool selection before this toolset existed, enable it
+there.
 
 Polls support disclosed and undisclosed results and a configurable selection
 limit. An open undisclosed poll hides vote totals until an authorised user closes

@@ -276,6 +276,17 @@ class TestMatrixConfigLoading:
             config.extra["room_backfill_limit"], adapter._room_backfill_limit,
         ) == (5, 5, 7, 7)
 
+    @pytest.mark.parametrize("key", ["thread_backfill_limit", "room_backfill_limit"])
+    def test_dashboard_offers_backfill_limit_at_the_adapter_default(self, key):
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+
+        client = TestClient(app, headers={_SESSION_HEADER_NAME: _SESSION_TOKEN})
+        field = client.get("/api/config/schema").json()["fields"].get(f"matrix.{key}", {})
+        shown = client.get("/api/config").json()["matrix"].get(key)
+
+        assert (field.get("type"), shown) == ("number", getattr(_make_adapter(), f"_{key}"))
+
     def test_apply_env_overrides_with_password(self, monkeypatch):
         monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
         monkeypatch.setenv("MATRIX_PASSWORD", "secret123")

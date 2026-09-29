@@ -1325,6 +1325,11 @@ class _TargetDelivery:
     opened_thread_id: Optional[str]
     live_adapter_ready: bool = False
     live_error: Optional[str] = None  # the live lane's own rejection string, e.g. "send_path_degraded"
+    # The adapter's SendResult.retryable verdict for live_error (carried by DeliverySendError on the
+    # exception arm, read off the SendResult on the unconfirmed arm). The string alone is ambiguous —
+    # Telegram's "Not connected" is retryable while the bot client rebuilds, permanent when the fatal
+    # is not — so the queue gate keys on this flag, not on widening a string set.
+    live_retryable: Optional[bool] = None
 
     @property
     def is_relay(self) -> bool:
@@ -1513,8 +1518,10 @@ def _live_send_text(
         return True, True, None
     except Exception as ex:
         # Real send error (not a slow confirmation): fall through to standalone. The router raises
-        # a failed SendResult's error string, so this is where send_path_degraded arrives.
+        # a failed SendResult's error string, so this is where send_path_degraded arrives. The
+        # adapter's retryable verdict rides DeliverySendError.send_retryable (None if it didn't).
         t.live_error = str(ex)
+        t.live_retryable = getattr(ex, "send_retryable", None)
         target_errors.append(f"live adapter send failed: {ex}")
         raise
 
@@ -1538,6 +1545,10 @@ def _live_send_text(
             err, shape = getattr(send_result, "error", None), type(send_result).__name__
         msg = f"live adapter send to {t.where} returned unconfirmed result ({shape}, error={err})"
         t.live_error = str(err) if err else None
+        if isinstance(send_result, dict):
+            t.live_retryable = send_result.get("retryable")
+        else:
+            t.live_retryable = getattr(send_result, "retryable", None)
         _warn_live_lane_failure(job, msg, t.is_relay)
         target_errors.append(msg)
         return False, False, None
@@ -1687,9 +1698,12 @@ def _deliver_via_live_adapter(
 
 
 def _standalone_send(
-    t: _TargetDelivery, content: str, media_files: list) -> tuple[Any, Optional[str]]:
-    """Run the standalone sender for one target: ``(result, None)`` or ``(None, error)`` (already
-    logged — WARNING for a shutdown race, ERROR with traceback otherwise)."""
+    t: _TargetDelivery, content: str, media_files: list) -> tuple[Any, Optional[str], bool]:
+    """Run the standalone sender for one target: ``(result, None, False)`` or
+    ``(None, error, in_flight)`` (already logged — WARNING for a shutdown race, ERROR with
+    traceback otherwise). ``in_flight`` is True only for a timeout: the dispatch shield keeps a
+    timed-out send un-cancelled, so the payload may STILL be delivered — the caller must not
+    queue such a payload for redelivery (a replay would duplicate it)."""
     from tools.send_message_tool import _send_to_platform
     job = t.job
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
@@ -1703,14 +1717,22 @@ def _standalone_send(
             t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
             media_files=media_files), timeout=send_timeout)
 
-    def _warned(msg: str) -> tuple[None, str]:
+    def _warned(msg: str) -> tuple[None, str, bool]:
         logger.warning("Job '%s': %s", job["id"], msg)
-        return None, msg
+        return None, msg, False
 
-    def _failed(e) -> tuple[None, str]:
+    def _failed(e) -> tuple[None, str, bool]:
         msg = f"delivery to {t.where} failed: {e}"
         logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
-        return None, msg
+        return None, msg, False
+
+    def _in_flight(seconds: int) -> tuple[None, str, bool]:
+        # The send may still complete on the gateway loop (the dispatch shield keeps an in-flight
+        # send un-cancelled); the run is released instead of waiting on it unbounded (#115469).
+        msg = (f"standalone send to {t.where} timed out after {seconds}s "
+               "(the send may still be in flight)")
+        logger.error("Job '%s': %s", job["id"], msg)
+        return None, msg, True
 
     # Interpreter finalizing (SIGTERM/restart/OOM): asyncio.run and a fresh ThreadPoolExecutor both
     # raise "cannot schedule new futures after interpreter shutdown" — warn, not ERROR traceback.
@@ -1722,14 +1744,9 @@ def _standalone_send(
         return _warned(f"standalone send skipped (empty text and no media) for {t.where}")
     coro = _send()
     try:
-        return asyncio.run(coro), None
+        return asyncio.run(coro), None, False
     except TimeoutError:
-        # The send may still complete on the gateway loop (the dispatch shield keeps an in-flight
-        # send un-cancelled); the run is released instead of waiting on it unbounded (#115469).
-        msg = (f"standalone send to {t.where} timed out after {send_timeout}s "
-               "(the send may still be in flight)")
-        logger.error("Job '%s': %s", job["id"], msg)
-        return None, msg
+        return _in_flight(send_timeout)
     except RuntimeError as run_err:
         # asyncio.run() refuses inside a running loop; close the unstarted coro, retry in a thread.
         coro.close()
@@ -1742,27 +1759,46 @@ def _standalone_send(
                 # A fresh thread does NOT inherit the profile ContextVars (home override + secret
                 # scope); run in the active context or the sender reads the default bot token.
                 return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(
-                    timeout=30), None
+                    timeout=30), None, False
             finally:
                 pool.shutdown(wait=False)
         except Exception as e:
             if _sched._interpreter_shutting_down(e):
                 return _warned(shutdown_msg)
+            # A result timeout leaves the pooled thread's send running: same in-flight ambiguity.
+            if isinstance(e, TimeoutError):
+                return _in_flight(30)
             return _failed(e)
     except Exception as e:
         return _failed(e)
 
 
+def _standalone_credential_missing(t: _TargetDelivery) -> bool:
+    """True when the credential the standalone sender will consume resolved empty, so the attempt
+    is guaranteed to fail closed before any network IO. Keyed on the exact value the dispatch
+    passes — Telegram's sender is invoked with ``pconfig.token`` — never a re-derived check that
+    could miss env/plugin secret-source shapes. Platforms whose consumption isn't provable from
+    the resolved config are attempted as before."""
+    if t.platform_name == "telegram":
+        return not str(getattr(t.pconfig, "token", "") or "").strip()
+    return False
+
+
 def _queue_for_live_reconnect(t: _TargetDelivery, content: str, media_files: list, delivery_errors: list) -> None:
-    """Hand a payload the live lane rejected as reconnect-only (``send_path_degraded``) and the
-    standalone lane then failed to send to the delivery ledger, as a failed reconnect-only row
-    owned by the adapter that rejected it: the post-reconnect sweep redelivers it (#125363). Only
-    reached after standalone failed, so nothing was sent and a replay cannot duplicate. The ledger
-    carries text only; dropped attachments are reported."""
+    """Hand a payload the live lane rejected retryably and the standalone lane then definitively
+    failed (or provably could not attempt) to the delivery ledger, as a failed row owned by the
+    adapter that rejected it: the post-reconnect sweep / retry timer redelivers it (#125363).
+    Retryable = the reconnect-only ``send_path_degraded`` string, or any rejection the adapter
+    itself marked retryable (``SendResult.retryable`` carried on ``DeliverySendError``) — e.g.
+    Telegram's "Not connected" while the bot client rebuilds. Only reached after standalone
+    failed definitively (a timeout returns "may still be in flight" and is NOT queued), so
+    nothing was sent and a replay cannot duplicate. The ledger carries text only; dropped
+    attachments are reported."""
     try:
         from gateway.delivery_ledger import (
             compute_obligation_id, is_reconnect_only, ledger_enabled, mark_failed, record_obligation)
-        if not is_reconnect_only(t.live_error) or not ledger_enabled():
+        retryable_live_rejection = is_reconnect_only(t.live_error) or t.live_retryable is True
+        if not retryable_live_rejection or not ledger_enabled():
             return
         session_key = f"cron:{t.platform_name}:{t.chat_id}" + (f":{t.thread_id}" if t.thread_id else "")
         obligation_id = compute_obligation_id(session_key, f"job:{t.job.get('id', '?')}", content)
@@ -1793,7 +1829,19 @@ def _deliver_standalone(
             target_errors.append(f"relay delivery to {t.where} failed")
         delivery_errors.extend(target_errors)
         return
-    result, err = _standalone_send(t, content, media_files)
+    if _standalone_credential_missing(t):
+        # A satellite profile's worker resolves no platform token: the standalone send is a
+        # guaranteed pre-network failure whose ERROR line and failed stamps are pure noise on
+        # every degraded-window delivery. Skip it and go straight to the queue gate.
+        msg = (f"standalone send skipped for {t.where}: no {t.platform_name} credential resolved "
+               "in this worker (satellite profile) — the send would fail closed before any "
+               "network IO")
+        logger.warning("Job '%s': %s", job["id"], msg)
+        target_errors.append(msg)
+        delivery_errors.extend(target_errors)
+        _queue_for_live_reconnect(t, content, media_files, delivery_errors)
+        return
+    result, err, in_flight = _standalone_send(t, content, media_files)
     if err is None and result and result.get("error"):
         # Not inside an except block — the error comes from the result dict, no traceback.
         err = f"delivery error: {result['error']} (target {t.where})"
@@ -1801,9 +1849,18 @@ def _deliver_standalone(
     if err is not None:
         target_errors.append(err)
         delivery_errors.extend(target_errors)
-        # A satellite profile's worker has no platform token, so standalone cannot stand in for a
-        # live adapter that is only waiting to reconnect: keep the payload for that adapter.
-        _queue_for_live_reconnect(t, content, media_files, delivery_errors)
+        if in_flight:
+            # A timed-out send may still land; queueing it would let the redelivery sweep replay
+            # a payload that in fact went out. Possible loss over certain duplication: surface
+            # the window loudly instead of queueing.
+            logger.warning(
+                "Job '%s': NOT queueing %s for post-reconnect redelivery — the standalone "
+                "send timed out with the payload possibly in flight; a replay could duplicate it",
+                job["id"], t.where)
+        else:
+            # A satellite profile's worker has no platform token, so standalone cannot stand in
+            # for a live adapter that is only waiting to reconnect: keep the payload for that adapter.
+            _queue_for_live_reconnect(t, content, media_files, delivery_errors)
         return
     # Standalone senders report per-file attachment failures in ``warnings`` while returning
     # success; surface them so a vanished attachment doesn't mark the run ok.

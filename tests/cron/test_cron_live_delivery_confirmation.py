@@ -104,7 +104,9 @@ def _job(thread_id=None):
 
 def _gateway_config(relay=False):
     config = MagicMock()
-    platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True)}
+    # A token so these tests exercise the standalone lane itself; the credential-less
+    # (satellite) skip has its own coverage in test_cron_standalone_queue_gates.py.
+    platforms = {Platform.TELEGRAM: PlatformConfig(enabled=True, token="tok")}
     if relay:
         platforms[Platform.RELAY] = PlatformConfig(enabled=True)
     config.platforms = platforms

@@ -36,9 +36,11 @@ def gateway_loop():
     loop.call_soon_threadsafe(loop.stop)
 
 
-def _deliver_through_router(monkeypatch, loop, *, live_error: str):
+def _deliver_through_router(monkeypatch, loop, *, live_error: str, pconfig_token: str = "tok"):
     """Run the live lane against a transport whose send is rejected with ``live_error`` (the router
-    raises it), then the standalone lane on a token-less worker. Returns (standalone calls, errors)."""
+    raises it), then the standalone lane on a worker holding ``pconfig_token``. A token-holding
+    worker always attempts standalone first; the credential-less (satellite) skip lives in
+    test_cron_standalone_queue_gates.py. Returns (standalone calls, errors)."""
     class Transport:
         adapter = type("Adapter", (), {"_owner_profile": "satellite"})()
         is_relay = False
@@ -49,12 +51,13 @@ def _deliver_through_router(monkeypatch, loop, *, live_error: str):
     fields = {name: None for name in sd._TargetDelivery.__dataclass_fields__}
     fields.update(job={"id": "job-1"}, platform=Platform.TELEGRAM, platform_name="telegram", chat_id="-100",
                   thread_id="42", transport=Transport(), config=GatewayConfig(), loop=loop,
-                  target_adapters={}, mirror_text="", origin={})
+                  target_adapters={}, mirror_text="", origin={},
+                  pconfig=type("PConfig", (), {"token": pconfig_token})())
     t = sd._TargetDelivery(**fields)
     standalone_calls = []
     monkeypatch.setattr(
         sd, "_standalone_send",
-        lambda t, content, media: standalone_calls.append(content) or (None, "You must pass the token from BotFather"))
+        lambda t, content, media: standalone_calls.append(content) or (None, "You must pass the token from BotFather", False))
     target_errors, delivery_errors = [], []
     assert not sd._deliver_via_live_adapter(
         t, "the report", [], target_errors=target_errors, delivery_errors=delivery_errors, unverified_targets=[])

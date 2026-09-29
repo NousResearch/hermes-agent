@@ -97,6 +97,20 @@ def _send_result_error(result: Any) -> Optional[str]:
     return None if get("success", True) is not False else str(get("error") or "")
 
 
+class DeliverySendError(RuntimeError):
+    """A send the platform refused, carrying the adapter's own ``SendResult.retryable`` verdict.
+
+    Raising a bare RuntimeError with only the error string loses the retryable bit: two rejections
+    with the SAME wording can differ (Telegram's "Not connected" is retryable while the bot client
+    rebuilds, permanent when the fatal is not). Downstream redelivery gates (cron's ledger queue)
+    must not re-derive that verdict from the string, so it rides the exception.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.send_retryable = retryable
+
+
 @dataclass
 class DeliveryTarget:
     """One target: "origin", "local", "telegram" (home channel) or "telegram:123456[:thread]"."""
@@ -318,5 +332,7 @@ class DeliveryRouter:
             send_metadata["thread_id"] = await _ensure_named_dm_topic(adapter, target.chat_id, named_topic, refresh=True)
             send_metadata["telegram_dm_topic_created_for_send"] = True
         if error is not None:
-            raise RuntimeError(error or f"{target.platform.value} delivery failed")
+            raise DeliverySendError(
+                error or f"{target.platform.value} delivery failed",
+                retryable=bool(getattr(result, "retryable", False)))
         return result

@@ -153,6 +153,18 @@ class TestTirithAllowDangerous:
 # tirith warn + safe command
 # ---------------------------------------------------------------------------
 
+class TestTirithPackageApprovalScope:
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("warn", [{"rule_id": "analysis_incomplete"}], "analysis incomplete"))
+    def test_package_approval_does_not_cross_commands(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        session_key = os.getenv("HERMES_SESSION_KEY", "default")
+        approve_session(session_key, "tirith:analysis_incomplete:alpha")
+        cb = MagicMock(return_value="deny")
+        result = check_all_command_guards("beta", "local", approval_callback=cb)
+        assert result["approved"] is False
+        cb.assert_called_once()
+
+
 class TestTirithWarnSafe:
     @patch(_TIRITH_PATCH,
            return_value=_tirith_result("warn",

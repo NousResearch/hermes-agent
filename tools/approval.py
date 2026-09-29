@@ -1214,7 +1214,8 @@ def check_all_command_guards(command: str, env_type: str,
         # package install suppress the same finding for every later install.
         # Bind the session key to the exact scanned command so approvals do not
         # cross package or command boundaries.
-        tirith_key = f"tirith:{rule_id}:{command}"
+        package_rules = {"analysis_incomplete", "threat_malicious_package"}
+        tirith_key = f"tirith:{rule_id}:{command}" if rule_id in package_rules else f"tirith:{rule_id}"
         if not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, _format_tirith_description(tirith_result), True))
     if is_dangerous and not is_approved(session_key, pattern_key):

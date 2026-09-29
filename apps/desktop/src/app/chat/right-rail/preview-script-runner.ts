@@ -14,6 +14,8 @@ import type { PreviewOwner } from '@/store/preview-ownership'
 
 import { activePreviewTabFor } from './preview-active-tab'
 
+import { resolveActivePreviewTab } from './preview-reader'
+
 /** Runs JS source in the pane's guest page, resolving its completion value. */
 export interface PreviewScriptRunner {
   (code: string, signal?: AbortSignal): Promise<unknown>
@@ -21,14 +23,33 @@ export interface PreviewScriptRunner {
   withActivity?: <T>(operation: () => Promise<T>, signal?: AbortSignal) => Promise<T>
 }
 
-const runners = new Map<string, PreviewScriptRunner>()
+export interface ActivePreviewScriptRunner {
+  generation: number
+  runner: PreviewScriptRunner
+  tabId: string
+}
+
+interface RegisteredRunner {
+  generation: number
+  ready: boolean
+  runner: PreviewScriptRunner
+}
+
+const runners = new Map<string, RegisteredRunner>()
+let nextDocumentGeneration = 0
 
 /** Register a live preview's script runner; returns an idempotent unregister. */
-export function registerPreviewScriptRunner(tabId: string, runner: PreviewScriptRunner): () => void {
-  runners.set(tabId, runner)
+export function registerPreviewScriptRunner(
+  tabId: string,
+  runner: PreviewScriptRunner,
+  options: { initiallyReady?: boolean } = {}
+): () => void {
+  const registration = { generation: ++nextDocumentGeneration, ready: options.initiallyReady ?? true, runner }
+
+  runners.set(tabId, registration)
 
   return () => {
-    if (runners.get(tabId) === runner) {
+    if (runners.get(tabId) === registration) {
       runners.delete(tabId)
     }
   }
@@ -40,5 +61,63 @@ export function registerPreviewScriptRunner(tabId: string, runner: PreviewScript
 export function activePreviewScriptRunner(owner?: PreviewOwner): PreviewScriptRunner | null {
   const tab = activePreviewTabFor(owner)
 
-  return (tab && runners.get(tab.id)) || null
+  return (tab && runners.get(tab.id)?.runner) || null
+}
+
+/** Retire bindings to the current guest document before its replacement loads. */
+export function invalidatePreviewScriptRunner(tabId: string): void {
+  const registration = runners.get(tabId)
+
+  if (registration) {
+    registration.ready = false
+    registration.generation = ++nextDocumentGeneration
+  }
+}
+
+/** Mark the live renderer as ready after Electron created its new document. */
+export function markPreviewDocumentReady(tabId: string): void {
+  const registration = runners.get(tabId)
+
+  if (registration) {
+    registration.ready = true
+    registration.generation = ++nextDocumentGeneration
+  }
+}
+
+/** Follow the Electron guest's main-frame replacement and ready boundaries. */
+export function watchPreviewDocumentLifecycle(target: EventTarget, tabId: string): () => void {
+  const onStartNavigation = (event: Event) => {
+    const detail = event as Event & { isInPlace?: boolean; isMainFrame?: boolean }
+
+    if (detail.isMainFrame === true && detail.isInPlace !== true) {
+      invalidatePreviewScriptRunner(tabId)
+    }
+  }
+
+  const onReady = () => markPreviewDocumentReady(tabId)
+
+  target.addEventListener('did-start-navigation', onStartNavigation)
+  target.addEventListener('dom-ready', onReady)
+
+  return () => {
+    target.removeEventListener('did-start-navigation', onStartNavigation)
+    target.removeEventListener('dom-ready', onReady)
+  }
+}
+
+/** The page the preview reader considers selected, paired with its exact live runner. */
+export function resolveActivePreviewScriptRunner(): ActivePreviewScriptRunner | null {
+  const tab = resolveActivePreviewTab()
+  const registration = tab ? runners.get(tab.id) : undefined
+
+  return tab && registration?.ready
+    ? { generation: registration.generation, runner: registration.runner, tabId: tab.id }
+    : null
+}
+
+/** True only while the selected tab still has the same registered runner. */
+export function isActivePreviewScriptRunner(binding: ActivePreviewScriptRunner): boolean {
+  const active = resolveActivePreviewScriptRunner()
+
+  return active?.tabId === binding.tabId && active.runner === binding.runner && active.generation === binding.generation
 }

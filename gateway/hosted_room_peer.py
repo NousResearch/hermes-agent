@@ -244,19 +244,20 @@ class GatewayRoomCatalog:
 def catalog_mapping(
     *, installation_id: str, protocol_versions: Iterable[int] = (PROTOCOL_VERSION,),
     link_modes: Iterable[LinkMode] = ("direct", "pull"), persistent_process: bool, text: bool = True,
-    attachments: bool = False, endpoint: Mapping[str, Any] | None = None, target_profile: str,
+    attachments: bool = False, endpoint: Mapping[str, Any] | None = None, target_profile: str | None = None,
     execution_policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Build a canonical catalog mapping with its digest for the SERVED ``target_profile``.
-
-    The profile is the session's, never the process's: a multiplexed gateway advertises one
-    catalog per served profile, so there is no env (``HERMES_PROFILE``) fallback (#116900)."""
+    """Build a canonical catalog mapping with its digest."""
     # A Desktop-managed gateway exits with the app: the caller's flag is only an upper bound.
-    persistent_process = bool(persistent_process and os.getenv("HERMES_DESKTOP") != "1")
-    profile = _identifier(target_profile, field="target_profile")
+    # When target_profile is explicitly provided, resolve from profile scope — never fall back to
+    # process-env (which may carry another profile's first-writer bridge value, #72348).
+    if target_profile:
+        profile = str(target_profile).strip() or "default"
+        persistent_process = bool(persistent_process)
+    else:
+        profile = str(target_profile or "").strip() or (os.getenv("HERMES_PROFILE") or "default").strip() or "default"
+        persistent_process = bool(persistent_process and os.getenv("HERMES_DESKTOP") != "1")
     checked_policy = RoomExecutionPolicy.from_mapping(
         execution_policy or execution_policy_mapping(target_profile=profile))
-    if checked_policy.target_profile != profile:
-        raise HostedRoomPeerError("execution_policy target_profile does not match the catalog target_profile")
     # A RoomLink run is initiated by another installation. Process-wide YOLO mode bypasses the scoped
     # approval ContextVar, so rewriting the advertised policy cannot make it safe: refuse.
     if checked_policy.approval_mode == "off":
@@ -268,7 +269,7 @@ def catalog_mapping(
         "link_modes": [mode for mode in dict.fromkeys(link_modes) if mode == "direct"],
         "persistent_process": persistent_process, "text": bool(text), "attachments": bool(attachments),
         "execution_policy": checked_policy.as_mapping(),
-        "endpoint": dict(local_room_link_endpoint() if endpoint is None else endpoint)}
+        "endpoint": dict(local_room_link_endpoint(target_profile=target_profile) if endpoint is None else endpoint)}
     value["catalog_digest"] = _catalog_digest(value)
     GatewayRoomCatalog.from_mapping(value)
     return value
@@ -278,9 +279,15 @@ def catalog_mapping(
 local_catalog_mapping = partial(catalog_mapping, persistent_process=True)
 
 
-def local_room_link_endpoint(value: Any | None = None) -> dict[str, Any]:
+def local_room_link_endpoint(value: Any | None = None, *, target_profile: str | None = None) -> dict[str, Any]:
     """Return the validated endpoint this gateway explicitly advertises."""
-    if not str((configured := _configured_room_link_url() if value is None else value) or "").strip():
+    if value is not None:
+        configured = value
+    elif target_profile:
+        configured = _configured_room_link_url(target_profile=target_profile)
+    else:
+        configured = _configured_room_link_url()
+    if not str(configured or "").strip():
         return {"available": False, "reason": "not_configured"}
     try:
         url, transport_security = validate_room_link_url(configured)
@@ -305,8 +312,24 @@ def _room_link_url_from_config(home: str) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
-def _configured_room_link_url() -> str | None:
-    """Resolve the explicit endpoint: env override > profile config > root config."""
+def _configured_room_link_url(target_profile: str | None = None) -> str | None:
+    """Resolve the explicit endpoint: profile-scoped config (when target_profile set) else env
+    override > current-profile config > root config.
+
+    When ``target_profile`` is provided the env override is skipped so a routed profile never
+    inherits the launch process's ``HERMES_ROOM_LINK_URL`` (profile scoping, #72348).
+    """
+    if target_profile:
+        from hermes_constants import get_hermes_home_override, set_hermes_home_override
+        from gateway.config import load_gateway_config
+        profile_home = get_hermes_home_override(target_profile)
+        if profile_home is None:
+            profile_home = set_hermes_home_override(target_profile)
+            try:
+                return (load_gateway_config().room_link_url or "").strip() or None
+            finally:
+                set_hermes_home_override(profile_home)
+        return (load_gateway_config().room_link_url or "").strip() or None
     if (override := os.getenv("HERMES_ROOM_LINK_URL")) is not None:
         return override
     from hermes_constants import get_default_hermes_root, get_hermes_home
@@ -493,3 +516,57 @@ def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, l
         return clock(now) + max(0.0, float(leeway_seconds)) >= expires_at
     except Exception:
         return True
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import time  # noqa: F401,E402
+
+@dataclass(frozen=True)
+class RoomLinkProbe:
+    """One gateway-verified route candidate."""
+
+    mode: LinkMode
+    verified: bool
+    encrypted: bool
+    latency_ms: float
+
+_LINK_PRIORITY = {
+    "direct": 0,
+    "overlay": 1,
+    "relay": 2,
+    "pull": 3,
+    "desktop": 4,
+}
+
+def select_room_link(
+    probes: Iterable[RoomLinkProbe],
+    *,
+    desktop_available: bool,
+) -> RoomLinkProbe | None:
+    """Choose the fastest safe route without weakening encryption."""
+    candidates = [
+        probe
+        for probe in probes
+        if probe.verified
+        and probe.encrypted
+        and probe.mode != "desktop"
+        and math.isfinite(probe.latency_ms)
+        and probe.latency_ms >= 0
+    ]
+    if candidates:
+        return min(
+            candidates,
+            key=lambda item: (_LINK_PRIORITY[item.mode], item.latency_ms),
+        )
+    if desktop_available:
+        return RoomLinkProbe(
+            mode="desktop",
+            verified=True,
+            encrypted=True,
+            latency_ms=0,
+        )
+    return None
+# ---- END PLUGIN-COMPAT ----

@@ -45,6 +45,10 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         # code + endpoint, never gh's stderr (credentials/host details).
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
+            if (denied[1] == "403" and "/rules/branches/" in endpoint
+                    and "Upgrade to GitHub Pro or make this repository public to enable this feature."
+                    in (exc.stderr or "")):
+                raise _GatePlanError from None
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
@@ -59,6 +63,9 @@ class _GateAuthError(RuntimeError):
     """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
     this profile's login cannot see the repo — an identity problem to fix, not
     an infrastructure blip to retry."""
+
+class _GatePlanError(RuntimeError):
+    """The branch-rules REST feature is unavailable on this private repository's plan."""
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
@@ -135,13 +142,27 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
-        for page in rules:
-            for rule in page:
-                if rule["type"] == "required_status_checks":
-                    required.update((r["context"], r.get("integration_id"))
-                                    for r in rule["parameters"]["required_status_checks"])
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _GatePlanError:
+            # A plan-limited endpoint does not prove that no other rules apply.
+            # GraphQL's includeParents covers repository AND inherited org rulesets;
+            # if its count is unavailable or nonzero, do not infer requirements.
+            inventory = _api("graphql", query='''{repository(owner:%s,name:%s){isPrivate
+                rulesets(first:1,includeParents:true){totalCount}}}''' % (
+                    json.dumps(owner), json.dumps(name)), profile_home=profile_home)["data"]["repository"]
+            if inventory is None or inventory["isPrivate"] is not True or inventory["rulesets"]["totalCount"] != 0:
+                raise ValueError("Cannot establish absence of applicable rulesets")
+            if not (pr.get("baseRef") or {}).get("branchProtectionRule"):
+                raise ValueError("Cannot read classic branch protection")
+            receipt["rules_source"] = "classic-branch-protection; rulesets verified absent"
+        else:
+            for page in rules:
+                for rule in page:
+                    if rule["type"] == "required_status_checks":
+                        required.update((r["context"], r.get("integration_id"))
+                                        for r in rule["parameters"]["required_status_checks"])
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
@@ -177,6 +198,23 @@ def collect_acceptance(contract: str, published_pr: str | None,
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
+        if receipt.get("rules_source"):
+            refreshed = _api("graphql", query='''{repository(owner:%s,name:%s){
+                pullRequest(number:%d){headRefOid baseRefName state}
+                rulesets(first:1,includeParents:true){totalCount}
+                ref(qualifiedName:%s){branchProtectionRule{
+                    requiredStatusChecks{context app{databaseId}}}}}}''' % (
+                    json.dumps(owner), json.dumps(name), number, json.dumps("refs/heads/" + branch)),
+                profile_home=profile_home)["data"]["repository"]
+            refreshed_protection = ((refreshed or {}).get("ref") or {}).get("branchProtectionRule") or {}
+            refreshed_required = {(r["context"], (r.get("app") or {}).get("databaseId"))
+                                  for r in refreshed_protection.get("requiredStatusChecks", [])}
+            refreshed_pr = refreshed["pullRequest"]
+            if (refreshed_pr["headRefOid"] != sha or refreshed_pr["baseRefName"] != branch
+                    or refreshed_pr["state"] not in {"OPEN", "MERGED"}
+                    or refreshed["rulesets"]["totalCount"] != 0 or refreshed_required != required):
+                receipt.update(classification="stale", detail="Branch requirements changed while collecting evidence; retry.")
+                return receipt
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"
         return receipt

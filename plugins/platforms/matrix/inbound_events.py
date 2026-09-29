@@ -22,21 +22,18 @@ def _matrix_event_timestamp_seconds(event: Any) -> float:
     return ts / 1000.0 if ts > 10_000_000_000 else ts
 
 
-_MAX_EVENT_CLOCK_SKEW_SECONDS = 60
-
-
 def _matrix_event_datetime(event_ts: float, now: datetime) -> datetime:
     """Return the UTC time of an event from its server timestamp ``event_ts`` in seconds, or
-    ``now`` when the timestamp is missing, cannot be converted, or is more than
-    ``_MAX_EVENT_CLOCK_SKEW_SECONDS`` ahead of ``now``. The sender's homeserver sets
-    ``origin_server_ts`` from its own clock, and a future time in the transcript would make the
-    session look active until then."""
-    if not event_ts or event_ts > now.timestamp() + _MAX_EVENT_CLOCK_SKEW_SECONDS:
+    ``now`` when the timestamp is missing or cannot be converted. The sender's homeserver sets
+    ``origin_server_ts`` from its own clock, so a time ahead of ``now`` is clamped to ``now``.
+    A later time would sort the user's message after the reply, which is stamped with ``now``."""
+    if not event_ts:
         return now
     try:
-        return datetime.fromtimestamp(event_ts, tz=timezone.utc)
+        server_time = datetime.fromtimestamp(event_ts, tz=timezone.utc)
     except (OverflowError, OSError, ValueError):
         return now
+    return min(server_time, now)
 
 
 class MatrixInboundEventMixin(BasePlatformAdapter):

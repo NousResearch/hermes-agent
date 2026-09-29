@@ -457,6 +457,18 @@ def test_pre_pm_base_dependencies_activate_only_at_boot(tmp_path, monkeypatch):
     assert json.loads(result.stdout)["value"] == "base-pth"
 
 
+def test_runtime_command_falls_back_to_project_python_when_store_entry_is_unavailable(tmp_path, monkeypatch):
+    selected = tmp_path / "venv" / "Scripts" / "python.exe"
+    selected.parent.mkdir(parents=True)
+    selected.touch()
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _root: None)
+    monkeypatch.setattr(_launchers, "project_python", lambda _root: selected)
+
+    command = _launchers.runtime_command(tmp_path, ["serve"])
+
+    assert Path(command[0]) == selected
+
+
 def test_external_interpreter_keeps_its_owned_dependencies(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "empty-store"))

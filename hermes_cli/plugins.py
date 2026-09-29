@@ -1395,6 +1395,14 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 self._discovered = False
                 raise
         # Outside the lock: a listener (the gateway's re-wire) may read the registry from another thread.
+        # The registry just changed shape (force reload: enable/disable/install): the interactive
+        # plugin-skill projection must not keep serving the pre-sweep skill set.
+        if force:
+            try:
+                from agent.skill_commands import invalidate_plugin_skill_commands
+                invalidate_plugin_skill_commands()
+            except Exception:
+                logger.debug("plugin-skill projection invalidation failed", exc_info=True)
         self._notify_plugin_loaded(loaded_before)
 
     def _re_register_config_hooks_after_force(self) -> None:

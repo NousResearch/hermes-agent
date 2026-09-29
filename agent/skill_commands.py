@@ -509,8 +509,61 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     return scan_skill_commands()
 
 
+# Plugin projection cache, keyed on the resolved Hermes home like the filesystem
+# scan above (``_plugin_managers_by_home`` in hermes_cli/plugins.py is home-keyed,
+# so two profiles never share a registry). The projection re-parses every plugin
+# SKILL.md frontmatter and sits on the per-keystroke completion path; without the
+# cache each Tab paid full discovery + disk I/O (94 ms measured with 60 plugin
+# skills). Invalidate with ``invalidate_plugin_skill_commands()`` (``reload_skills``
+# and plugin lifecycle changes route through it); a profile switch self-heals via
+# the home tag.
+_plugin_skill_commands: Dict[str, Dict[str, Any]] = {}
+_plugin_skill_commands_home: Optional[str] = None
+
+
+def invalidate_plugin_skill_commands() -> None:
+    """Drop the cached plugin skill projection (config or plugin registry changed)."""
+    global _plugin_skill_commands, _plugin_skill_commands_home
+    with _publish_lock:
+        _plugin_skill_commands = {}
+        _plugin_skill_commands_home = None
+
+
 def get_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Project enabled plugin skills into the interactive-only slash namespace."""
+    """Project enabled plugin skills into the interactive-only slash namespace.
+
+    Cached on the resolved Hermes home: the projection re-parses every plugin
+    SKILL.md and runs discovery, so it must not run per completion RPC. Config
+    disable lists (``skills.disabled``, ``plugins.disabled``) are applied to the
+    cached snapshot on EVERY call — a config-only disable takes effect without a
+    rescan, preserving the live lifecycle behavior the cache replaced. Registry
+    changes (enable/install of a plugin) rebuild the projection via
+    ``invalidate_plugin_skill_commands()``, which ``reload_skills()`` and every
+    plugin activation path call.
+    """
+    from agent.skill_utils import get_disabled_skill_names
+    from hermes_cli.plugins_discovery import _get_disabled_plugins
+    from hermes_constants import get_hermes_home
+    home = str(get_hermes_home())
+    with _publish_lock:
+        cached = _plugin_skill_commands
+        is_fresh = bool(cached) and _plugin_skill_commands_home == home
+    if not is_fresh:
+        cached = _scan_plugin_skill_commands()
+    disabled = get_disabled_skill_names()
+    disabled_plugins = _get_disabled_plugins()
+    if not disabled and not disabled_plugins:
+        return cached
+    return {
+        key: info for key, info in cached.items()
+        if not (info["name"] in disabled or info["name"].split(":", 1)[1] in disabled
+                or info["name"].split(":", 1)[0] in disabled_plugins)
+    }
+
+
+def _scan_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
+    """Build the plugin skill projection and publish it with its home tag atomically."""
+    global _plugin_skill_commands, _plugin_skill_commands_home
     from agent.skill_utils import get_disabled_skill_names
     from hermes_cli.plugins import discover_plugins, get_plugin_manager
     from hermes_cli.plugins_discovery import _get_disabled_plugins
@@ -520,10 +573,10 @@ def get_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
     )
 
     discover_plugins()
-    manager = get_plugin_manager()
     disabled = get_disabled_skill_names()
     disabled_plugins = _get_disabled_plugins()
     commands: Dict[str, Dict[str, Any]] = {}
+    manager = get_plugin_manager()
     for metadata in manager.list_plugin_skill_metadata():
         qualified = str(metadata.get("name") or "").strip()
         if not qualified or ":" not in qualified or qualified in disabled or qualified.split(":", 1)[1] in disabled:
@@ -552,11 +605,16 @@ def get_plugin_skill_commands() -> Dict[str, Dict[str, Any]]:
             "skill_identifier": qualified, "skill_md_path": str(skill_md),
             "skill_dir": str(skill_md.parent), "source": "plugin",
         }
+    with _publish_lock:
+        _plugin_skill_commands = commands
+        from hermes_constants import get_hermes_home
+        _plugin_skill_commands_home = str(get_hermes_home())
     return commands
 
 
 def get_interactive_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Filesystem skills plus profile-scoped plugin skills; never use for native menus."""
+    """Filesystem skills plus profile-scoped plugin skills; never use for
+    messaging/native command menus (plugin skills are CLI/TUI/desktop only)."""
     commands = dict(get_skill_commands())
     for key, info in get_plugin_skill_commands().items():
         if key in commands:
@@ -586,7 +644,9 @@ def reload_skills() -> Dict[str, Any]:
     """Re-scan skill dirs and return a diff of the slash-command map (``added``
     / ``removed`` / ``unchanged`` / ``total`` / ``commands``; descriptions are the
     full frontmatter field). Does NOT invalidate the skills system-prompt cache:
-    skills are called by name, so ``/reload-skills`` costs no cache reset."""
+    skills are called by name, so ``/reload-skills`` costs no cache reset. The
+    plugin projection is rebuilt too, so a plugin enabled/disabled/installed
+    since the last scan shows up without a restart."""
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
         before_commands = _skill_commands_by_key.get(key, {})
@@ -594,9 +654,10 @@ def reload_skills() -> Dict[str, Any]:
         # platform/profile combination, so every cached identity must rescan.
         _skill_commands_by_key.clear()
     before = command_snapshot(before_commands)
+    invalidate_plugin_skill_commands()
     new_commands = scan_skill_commands()
     result = diff_command_snapshots(before, command_snapshot(new_commands))
-    result["commands"] = len(new_commands)
+    result["commands"] = len(new_commands) + len(get_plugin_skill_commands())
     return result
 
 
@@ -640,10 +701,12 @@ def build_skill_invocation_message(
 _MAX_STACKED_SKILLS = 5
 
 
-def split_stacked_skill_commands(rest: str) -> tuple[list[str], str]:
+def split_stacked_skill_commands(rest: str, *, interactive: bool = False) -> tuple[list[str], str]:
     """Consume further leading ``/skill`` tokens from *rest* (text after the first
     matched command); stops at the first non-skill (or repeated) token, which
-    starts the user instruction. Returns ``(extra_cmd_keys, remaining_instruction)``."""
+    starts the user instruction. Returns ``(extra_cmd_keys, remaining_instruction)``.
+    Native callers (messaging gateway) must pass ``interactive=False``: plugin
+    skills are interactive-only and must not resolve here."""
     keys: list[str] = []
     remaining = rest or ""
     while len(keys) < _MAX_STACKED_SKILLS - 1:
@@ -651,7 +714,7 @@ def split_stacked_skill_commands(rest: str) -> tuple[list[str], str]:
         if not stripped.startswith("/"):
             break
         token, tail = (stripped.split(None, 1) + [""])[:2]
-        cmd_key = resolve_skill_command_key(token.lstrip("/"), interactive=True)
+        cmd_key = resolve_skill_command_key(token.lstrip("/"), interactive=interactive)
         if cmd_key is None or cmd_key in keys:
             break
         keys.append(cmd_key)
@@ -660,11 +723,17 @@ def split_stacked_skill_commands(rest: str) -> tuple[list[str], str]:
 
 
 def build_stacked_skill_invocation_message(
-    cmd_keys: list[str], user_instruction: str = "", task_id: str | None = None,
+    cmd_keys: list[str], user_instruction: str = "", task_id: str | None = None, *, table: Mapping[str, Any] | None = None,
 ) -> Optional[tuple[str, list[str], list[str]]]:
     """Build the user message for a stacked multi-skill slash invocation:
-    ``(message, loaded_skill_names, missing_skill_names)``, or ``None`` when no skill loaded."""
-    commands = get_interactive_skill_commands()
+    ``(message, loaded_skill_names, missing_skill_names)``, or ``None`` when no skill loaded.
+
+    *table* overrides the default interactive lookup table; the messaging gateway
+    passes its filesystem-only map so a stacked token can never load a plugin
+    skill (they are interactive-only) and so the per-platform disabled filter
+    sees every loaded skill's real name.
+    """
+    commands = table if table is not None else get_interactive_skill_commands()
     keys = [k for k in cmd_keys if k]
     loaded_names, missing, _disabled, skill_blocks = _load_skill_blocks(
         keys,

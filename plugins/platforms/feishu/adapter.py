@@ -2452,12 +2452,17 @@ class FeishuAdapter(BasePlatformAdapter):
         await self._dispatch_synthetic_event(
             text=synthetic_text, message_type=MessageType.COMMAND, chat_id=chat_id,
             sender_id=SimpleNamespace(open_id=open_id, user_id=None, union_id=None), event_chat_type="group",
-            raw_message=data, message_id=token or str(uuid.uuid4()),
+            raw_message=data,
+            # Card-action callbacks carry no source message: event.token is an opaque
+            # callback id (c-...), not an open_message_id (om-...). Downstream reply
+            # targeting such a token makes every send fail with Feishu 99992354
+            # ("not a valid open_message_id"), so pass None instead of the callback id.
+            message_id=token if token.startswith("om") else None,
         )
 
     async def _dispatch_synthetic_event(
         self, *, text: str, message_type: MessageType, chat_id: str, sender_id: Any, event_chat_type: str,
-        raw_message: Any, message_id: str,
+        raw_message: Any, message_id: Optional[str],
     ) -> None:
         """Wrap a reaction/card click as a MessageEvent and run it through the guarded pipeline."""
         sender_profile = await self._resolve_sender_profile(sender_id)

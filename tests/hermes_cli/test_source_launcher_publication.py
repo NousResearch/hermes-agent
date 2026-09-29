@@ -255,7 +255,8 @@ def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeyp
     (out / "hermes-acp").write_text(
         '#!/usr/bin/env bash\n# Hermes Agent — ACP launcher (written by `hermes update`).\n'
         f'exec "{out}/hermes" acp "$@"\n', encoding="utf-8")
-    foreign = f'#!/bin/sh\n# user note about {repo}\nexit 19\n'
+    # Mentions this install only in a comment and runs another checkout's venv.
+    foreign = f'#!/bin/sh\n# user note about {repo}/venv/bin/hermes\nexec "{tmp_path}/other/venv/bin/hermes" "$@"\n'
     (out / "hermes-agent").write_text(foreign, encoding="utf-8")
 
     result = _launchers.expose_cli()
@@ -273,24 +274,6 @@ def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeyp
     before = {p: p.stat().st_mtime_ns for p in out.iterdir()}
     assert _launchers.expose_cli()["written"] == []
     assert before == {p: p.stat().st_mtime_ns for p in out.iterdir()}
-
-
-def test_legacy_venv_console_wrapper_is_replaced_only_for_its_install(tmp_path):
-    repo = tmp_path / "checkout"
-    out = tmp_path / "bin"
-    out.mkdir()
-    wrapper = out / "hermes"
-    wrapper.write_text(
-        f'#!/usr/bin/env bash\nunset PYTHONPATH\nunset PYTHONHOME\n'
-        f'exec {shlex.quote(str(repo / "venv/bin/hermes"))} "$@"\n', encoding="utf-8")
-
-    assert _launchers._publish_conveniences(repo, out, ("hermes",)) == {wrapper: True}
-    assert str(repo / ".hermes/bin/hermes") in wrapper.read_text(encoding="utf-8")
-
-    foreign = f'#!/bin/sh\nexec {shlex.quote(str(tmp_path / "other/venv/bin/hermes"))} "$@"\n'
-    wrapper.write_text(foreign, encoding="utf-8")
-    assert _launchers._publish_conveniences(repo, out, ("hermes",)) == {}
-    assert wrapper.read_text(encoding="utf-8") == foreign
 
 
 def _command_survives_generation_collection(tmp_path, monkeypatch, surface):

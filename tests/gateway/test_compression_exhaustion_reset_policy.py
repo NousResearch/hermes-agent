@@ -1547,6 +1547,72 @@ async def test_native_compress_reports_committed_history_when_pause_clear_fails(
     assert "/compress" in str(reply) and "/new" in str(reply)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("routing_committed", [False, True])
+async def test_compression_child_startup_keeps_pause_until_routing_commit(env, routing_committed):
+    e = env
+    mark(e)
+    assert e.store.set_session_metadata(e.key, "manual_fallback_index", 1, require_primary=True)
+    parent = e.entry.session_id
+    before = e.db.get_messages(parent)
+    child = "compression-child"
+    e.db.create_session(child, source="telegram", parent_session_id=parent,
+                        session_key=e.key, user_id=e.source.user_id, chat_id=e.source.chat_id,
+                        chat_type=e.source.chat_type, thread_id=e.source.thread_id)
+    assert e.store.rewrite_transcript(child, HISTORY)
+    e.db.end_session(parent, "compression")
+    assert e.db.get_compression_tip(parent) == child
+    if routing_committed:
+        assert e.store.commit_manual_compression(e.key, parent, child)
+    else:
+        # Compression committed, but the route and pause release did not.
+        with patch.object(e.db, "replace_gateway_routing_entries", side_effect=OSError("routing unavailable")):
+            with pytest.raises(OSError):
+                e.store.commit_manual_compression(e.key, parent, child)
+
+    restarted = SessionStore(e.store.sessions_dir, e.store.config)
+    restarted._db = e.db
+    e.runner.session_store = e.store = restarted
+    recovered = restarted.lookup_by_session_key(e.key)
+    assert recovered.session_id == child
+    assert recovered.metadata["manual_fallback_index"] == 1
+    assert reload_entry(e).metadata["manual_fallback_index"] == 1
+    assert recovered.compression_paused is (not routing_committed)
+    assert reload_entry(e).compression_paused is (not routing_committed)
+    assert e.db.get_messages(parent) == before
+    if not routing_committed:
+        reply, _ = await admit(e)
+        assert "paused" in reply.lower()
+        e.runner._hmwa_prepare_turn.assert_not_awaited()
+        e.runner._run_agent.assert_not_awaited()
+        # A later successful explicit compression commit can still release the pause.
+        assert restarted.commit_manual_compression(e.key, child, child)
+        assert not reload_entry(e).compression_paused
+    assert e.db.get_messages(parent) == before
+    assert len(e.db.get_messages(child)) == len(HISTORY)
+
+
+@pytest.mark.parametrize("lineage", ["unrelated", "lookup_error"])
+def test_startup_pause_transfer_requires_verified_compression_child(env, monkeypatch, lineage):
+    e = env
+    mark(e)
+    parent = e.entry.session_id
+    child = "candidate-child"
+    e.db.create_session(child, source="telegram",
+                        parent_session_id=parent if lineage == "lookup_error" else None,
+                        session_key=e.key, user_id=e.source.user_id, chat_id=e.source.chat_id,
+                        chat_type=e.source.chat_type, thread_id=e.source.thread_id)
+    assert e.store.rewrite_transcript(child, HISTORY)
+    e.db.end_session(parent, "compression")
+    if lineage == "lookup_error":
+        monkeypatch.setattr(e.db, "get_compression_tip", Mock(side_effect=OSError("lineage unavailable")))
+    restarted = SessionStore(e.store.sessions_dir, e.store.config)
+    restarted._db = e.db
+    recovered = restarted.lookup_by_session_key(e.key)
+    assert recovered.session_id == (parent if lineage == "lookup_error" else child)
+    assert recovered.compression_paused is (lineage == "lookup_error")
+
+
 def test_idle_compression_pause_survives_prune_and_store_reload(env):
     from datetime import datetime, timedelta
 

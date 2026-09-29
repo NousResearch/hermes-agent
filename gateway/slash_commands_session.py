@@ -764,8 +764,9 @@ class GatewaySessionCommandsMixin:
             logger.warning("Session /save failed: %s", e)
             return t("gateway.save.failed", error=e)
         finally:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 os.remove(temp_path)
+            with contextlib.suppress(OSError):
                 os.rmdir(temp_dir)
 
     async def _handle_title_command(self, event: MessageEvent) -> str:

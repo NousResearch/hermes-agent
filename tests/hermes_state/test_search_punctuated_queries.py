@@ -6,6 +6,8 @@ OperationalError was answered with "no results" before any fallback ran — so s
 '.env', 'git push --force' or a sentence ending in a period came back empty.
 """
 
+import sqlite3
+
 import pytest
 
 from hermes_state import SessionDB
@@ -30,3 +32,21 @@ def db(tmp_path):
 def test_punctuated_query_finds_its_row(db, query):
     rows = db.search_messages(query)
     assert rows and rows[0]["session_id"] == "s1", query
+
+
+def test_corruption_on_the_quoted_retry_still_fails_open(db, monkeypatch):
+    """The quoted retry runs inside the syntax-error handler; corruption it hits must still reach
+    the fail-open path (answer from canonical rows), not escape as an exception."""
+    real_read_all = db._read_all
+    errors = [sqlite3.OperationalError("fts5: syntax error near \".\""),
+              sqlite3.DatabaseError('fts5: corrupt structure record for table "messages_fts"')]
+
+    def _read_all(sql, params=()):
+        if errors and "MATCH" in sql:
+            raise errors.pop(0)
+        return real_read_all(sql, params)
+
+    monkeypatch.setattr(db, "_read_all", _read_all)
+    rows = db.search_messages("deploy")
+    assert not errors
+    assert rows and rows[0]["session_id"] == "s1"

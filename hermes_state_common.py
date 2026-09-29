@@ -155,8 +155,9 @@ def _shape_preview(raw: Any) -> str:
     return text[:_PREVIEW_MAX_CHARS] + "..." if len(text) > _PREVIEW_MAX_CHARS else text
 
 
-# Correlated ``_preview_raw`` column for a ``sessions s`` row.
-_PREVIEW_RAW_SUBQUERY_SQL = (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messages m"
+# Correlated ``_preview_raw`` column for a ``sessions s`` row. ``INDEXED BY`` walks the session in timestamp
+# order and stops at the first eligible row; the planner otherwise may sort the whole session (#119403).
+_PREVIEW_RAW_SUBQUERY_SQL = (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messages m INDEXED BY idx_messages_session"
     f" WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL AND {_PREVIEW_ELIGIBLE_SQL}"
     f" ORDER BY m.timestamp, m.id LIMIT 1), '') AS _preview_raw")
 
@@ -256,7 +257,10 @@ def _sql_freshest_of(activity: str, session_id_expr: str, started: str) -> str:
     Cells outside the ``coerce_epoch`` window (garbage doubles salvaged from a damaged page, TEXT) are
     skipped, fallback included, or one bad row pins the session's recency to ``5e+246`` (#91536); a
     session with no trusted cell at all is NULL."""
-    msg_max = (f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr}"
+    # Pinned to the (session_id, timestamp) index: with planner stats older than idx_messages_session_id,
+    # SQLite picks that non-covering index and reads every message row of every listed session (#119403).
+    msg_max = (f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m INDEXED BY idx_messages_session"
+        f" WHERE _act_m.session_id = {session_id_expr}"
         f" AND _act_m.timestamp {_SQL_IN_WINDOW})")
     return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v"
         f" WHERE _act_v.v {_SQL_IN_WINDOW}), {_sql_in_window(started)})")

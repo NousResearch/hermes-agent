@@ -107,7 +107,7 @@ def _workspace_key_clause(key: str) -> Tuple[str, List[str]]:
 # The indentation is part of the list_sessions_rich SQL text.
 _PREVIEW_COL_SQL = f"""COALESCE(
                         (SELECT {_PREVIEW_RAW_SELECT}
-                         FROM messages m
+                         FROM messages m INDEXED BY idx_messages_session
                          WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
                            AND {_PREVIEW_ELIGIBLE_SQL}
                          ORDER BY m.timestamp, m.id LIMIT 1),

@@ -111,7 +111,8 @@ class GatewayInboundMixin:
     async def _admit_internal_event(self, event, session_key: str) -> bool:
         """Recheck queued automatic work (``event.internal``) before context setup or any model call.
 
-        Slash commands (``/loop 10m /recap``) are not gated: they run their command path."""
+        Not gated: slash commands (they run their command path) and ``/loop`` wakeups (user-scheduled,
+        marked exempt at injection)."""
         if not getattr(event, "internal", False):
             return True
         # metadata (a field) survives dataclasses.replace when command dispatch rewrites the text
@@ -130,12 +131,9 @@ class GatewayInboundMixin:
             async with self._async_profile_scope_for_source(event.source):
                 admitted = await self._check_internal_admission(event, session_key)
         if not admitted:
-            rollback = getattr(event, "_release_on_admission_block", None)
-            if callable(rollback):  # a /loop tick claimed before injection: nothing ran, roll it back
-                try:
-                    await self._run_in_executor_with_context(rollback)
-                except Exception:
-                    logger.exception("Rolling back a blocked automatic event failed: session=%s", session_key)
+            # Blocked (or failed closed) is a final decision that consumes the wake: without the
+            # receipt, gateway.wake.admit_internal_event raises WakeNotAccepted and producers retry it.
+            event._gateway_accepted = True
         return admitted
 
     async def _check_internal_admission(self, event, session_key: str) -> bool:

@@ -1,7 +1,8 @@
 """``gateway_internal_admission``: plugins decide whether an automatic event may reach the model.
 
 * user (non-internal) events never consult the hook;
-* no ``block`` result admits the event; a blocked event's claimed ``/loop`` tick is released;
+* no ``block`` result admits the event;
+* ``/loop`` wakeups (marked exempt at injection) are not gated;
 * an automatic event dequeued behind a busy turn is re-checked before its follow-up runs;
 * ``block`` stops the turn, sends ``response`` when given, and fires ``phase="delivered"``
   with the receipt only after a successful send;
@@ -133,22 +134,6 @@ async def test_async_callback_runs_on_the_gateway_loop():
 
 
 @pytest.mark.asyncio
-async def test_blocked_loop_tick_is_released(monkeypatch):
-    _hook(monkeypatch, {"action": "block"})
-    runner, _ = _runner()
-    released = []
-
-    async def run_in_executor(fn, *args):
-        return fn(*args)
-
-    runner._run_in_executor_with_context = run_in_executor
-    event = _event()
-    event._release_on_admission_block = lambda: released.append(True)
-    assert await runner._admit_internal_event(event, "sk") is False
-    assert released == [True]
-
-
-@pytest.mark.asyncio
 async def test_slash_commands_are_not_gated(monkeypatch):
     calls = _hook(monkeypatch, {"action": "block"})
     runner, _ = _runner()
@@ -181,19 +166,27 @@ async def test_busy_queue_keeps_the_command_exemption(monkeypatch):
     assert calls == []
 
 @pytest.mark.asyncio
-async def test_failed_hook_still_rolls_back_loop_tick(monkeypatch):
-    _hook(monkeypatch, raises=RuntimeError("boom"))
+async def test_loop_wakeups_are_not_gated(monkeypatch):
+    calls = _hook(monkeypatch, {"action": "block"})
     runner, _ = _runner()
-    rolled_back = []
-
-    async def run_in_executor(fn, *args):
-        return fn(*args)
-
-    runner._run_in_executor_with_context = run_in_executor
     event = _event()
-    event._release_on_admission_block = lambda: rolled_back.append(True)
-    assert await runner._admit_internal_event(event, "sk") is False
-    assert rolled_back == [True]
+    event.metadata["internal_admission_exempt"] = True  # set by the /loop watcher at injection
+    assert await runner._admit_internal_event(event, "sk") is True
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_blocked_wake_never_enters_the_busy_queue(monkeypatch):
+    calls = _hook(monkeypatch, {"action": "block"})
+    runner, adapter = _runner()
+    adapter._pending_messages = {"sk": object()}
+    queued = []
+    runner._queue_or_replace_pending_event = lambda key, ev: queued.append(ev)
+    event = _event()
+    assert await runner._handle_active_session_busy_message(event, "sk") is True
+    assert queued == [] and [c["phase"] for c in calls] == ["admit"]
+    assert event._gateway_accepted is True  # consumed: wake producers must not retry it
+
 
 @pytest.mark.asyncio
 async def test_hook_failure_blocks(monkeypatch):

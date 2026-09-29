@@ -805,6 +805,9 @@ class GatewayBusySessionMixin:
             logger.debug("Failed to send busy-ack: %s", e)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
+        # A blocked automatic event must not occupy the pending queue shared with human follow-ups.
+        if not await self._admit_internal_event(event, session_key):
+            return True
         # Gateway wakes have no external user identity. Admit them before auth/drain/approval
         # handling, without merging their text into an already queued human message.
         if event.internal and event.allow_gateway_control:
@@ -830,8 +833,6 @@ class GatewayBusySessionMixin:
         if not self._admit_bot_message_for_source(event.source):
             return True
         event._bot_loop_admitted = True
-        if not await self._admit_internal_event(event, session_key):
-            return True
 
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping

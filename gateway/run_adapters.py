@@ -1267,6 +1267,14 @@ class GatewayAdapterLifecycleMixin:
                 # reconcile watcher would never revisit this platform and the secondary outage
                 # would be permanent until its config changes (#126749 review). Queue it in the
                 # profile's own scope; the reconnect loop re-attempts adapter creation (#126367).
+                # The normal path below refuses a credential another profile already owns — an
+                # adapterless entry must not bypass that rule: the plugin may register while the
+                # secondary is queued, and its reconnect would then race the primary's retry for
+                # the same credential (#126749 review). Config-derived claim, same arbitration.
+                credential_claim = self._config_credential_claim(platform, platform_config)
+                if self._refuse_duplicate_claim(
+                        credential_claim, claimed, profile_name, platform, "credential"):
+                    continue
                 self._update_platform_runtime_status(
                     f"{profile_name}:{platform.value}", platform_state="retrying",
                     error_code="adapter_unavailable",
@@ -1422,6 +1430,20 @@ class GatewayAdapterLifecycleMixin:
                     platform.value, profile_name,
                 )
                 return None, False
+            # Claims can change while an adapterless entry waits (the plugin registered, the
+            # primary's own retry connected first): re-arbitrate one-credential-one-owner at
+            # attempt time, not only at scan time (#126749 review).
+            credential_claim = self._adapter_credential_claim(platform, adapter)
+            if credential_claim is not None:
+                from hermes_cli.profiles import get_active_profile_name
+                active = getattr(self, "_primary_profile_name", None) or get_active_profile_name() or "default"
+                owner = self._primary_resource_claims(active).get(credential_claim)
+                if owner is not None and owner != profile_name:
+                    logger.error(
+                        "Secondary %s reconnect stopped: credential is now owned by profile '%s' "
+                        "(one credential cannot be consumed twice)", platform.value, owner,
+                    )
+                    return None, None
             carry_inbound_dedup(inbound_dedup, adapter)
             try:
                 self._configure_profile_adapter(adapter, profile_name, platform)
@@ -1450,7 +1472,18 @@ class GatewayAdapterLifecycleMixin:
                     )
                     if adapter is None:
                         if success is None:
-                            return  # terminal: disabled, or credential removed from scope
+                            # Terminal (profile disabled / credential removed, or the credential is
+                            # now owned by another profile): the finally below pops the queue slot —
+                            # publish a terminal status or gateway_state.json would keep reporting
+                            # "retrying" with no retry remaining (#126749 review).
+                            self._update_platform_runtime_status(
+                                f"{profile_name}:{platform.value}", platform_state="disconnected",
+                                error_code="retry_stopped",
+                                error_message="platform disabled, credential removed, or credential "
+                                              "owned by another profile; retry stopped",
+                                needs_attention=False,
+                            )
+                            return
                         # (None, False): the platform's plugin has not (re)registered an adapter
                         # yet — stay on the backoff loop like any connect failure.
                     elif success and self._running:

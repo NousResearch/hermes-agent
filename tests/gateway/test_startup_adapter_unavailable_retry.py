@@ -263,3 +263,61 @@ async def test_adapterless_queue_entry_reserves_app_id_credential(monkeypatch, t
         assert claim in runner._primary_resource_claims("default")
     finally:
         await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_adapterless_secondary_with_claimed_credential_is_refused(monkeypatch, tmp_path):
+    """ehz0ah round 3: the adapterless branch ran BEFORE the credential-conflict check, so a
+    secondary sharing the queued primary's token was scheduled anyway — when the plugin
+    registered, its reconnect would race the primary's retry for the same credential. The
+    adapterless entry must be refused exactly like the adapter-present path."""
+    runner = _runner(monkeypatch, tmp_path, lambda platform, cfg: None)
+    try:
+        assert await runner.start() is True
+        assert runner._failed_platforms[Platform.TELEGRAM]["credential_claim"] is not None
+        cfg_stub = SimpleNamespace(
+            # Same token as the queued primary ("***" in the fixture).
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
+        async def _load_cfg(name, home):
+            return cfg_stub
+        monkeypatch.setattr(runner, "_load_secondary_profile_config", _load_cfg)
+        monkeypatch.setattr(runner, "_multiplex_on", lambda: False, raising=False)
+        runner._running = True
+        claimed = runner._primary_resource_claims("default")
+        connected = await runner._start_one_profile_adapters("prof2", tmp_path, claimed)
+        assert connected == 0
+        assert Platform.TELEGRAM not in (runner._profile_failed_platforms.get("prof2") or {}), \
+            "a secondary claiming an already-owned credential must be refused, not queued"
+        plat = await _wait_platform_status("prof2:telegram", lambda p: True)
+        assert plat["state"] == "fatal"
+        assert plat["error_code"] == "duplicate_credential"
+    finally:
+        await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_adapterless_secondary_terminal_exit_publishes_status(monkeypatch, tmp_path):
+    """ehz0ah round 3: when the profile-scoped retry stops for good (profile disabled /
+    credential removed / credential now owned elsewhere), the persisted state must not keep
+    reporting 'retrying' — the queue-slot pop needs a terminal status beside it."""
+    runner = _runner(monkeypatch, tmp_path, lambda platform, cfg: None)
+    try:
+        assert await runner.start() is True
+        cfg_stub = SimpleNamespace(
+            platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="tok-secondary")})
+        async def _load_cfg(name, home):
+            return cfg_stub
+        monkeypatch.setattr(runner, "_load_secondary_profile_config", _load_cfg)
+        monkeypatch.setattr(runner, "_multiplex_on", lambda: False, raising=False)
+        runner._running = True
+        async def _terminal(*args, **kwargs):
+            return None, None  # disabled / credential removed: give up for good
+        monkeypatch.setattr(runner, "_secondary_reconnect_attempt", _terminal)
+        await runner._start_one_profile_adapters("prof2", tmp_path, {})
+        task = runner._profile_failed_platforms["prof2"][Platform.TELEGRAM]
+        await task  # one pass, terminal exit; the finally pops the queue slot
+        plat = await _wait_platform_status("prof2:telegram", lambda p: p["state"] != "retrying")
+        assert plat["state"] == "disconnected"
+        assert plat["error_code"] == "retry_stopped"
+    finally:
+        await runner.stop()

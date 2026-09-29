@@ -59,7 +59,9 @@ registry.register(
         "description": (
             "Read recent messages, one thread, or one event in the current Matrix room. "
             "Events are listed oldest first: a room read returns the latest messages, and a thread "
-            "read returns the thread root followed by its latest replies."
+            "read returns the thread root followed by its latest replies. `skipped` counts events in "
+            "the read window that have no readable message body, such as redacted messages. "
+            "`errors` lists events that could not be decrypted."
         ),
         "parameters": {
             "type": "object",

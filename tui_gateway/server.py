@@ -3422,10 +3422,13 @@ def _skill_usage_lookup():
 _SLASH_COMPLETION_LIMIT = 30
 
 
-def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bool, score_of=None) -> list[dict]:
+def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bool, score_of=None,
+                            registry_command_names: frozenset[str] | None = None) -> list[dict]:
     """Registry commands keep their order; only skills reorder: fuzzy ``score_of`` first, then most-used, then
     A-Z. The limit is spent PER KIND (a flat cut on a large install offered no skill at all). ``browsing``
-    (bare ``/``) drops never-used bundled skills as noise; a typed query is SEARCHING — nothing pruned, only reordered."""
+    (bare ``/``) drops never-used bundled skills as noise; a typed query is SEARCHING — nothing pruned, only reordered.
+    While browsing, only names in ``registry_command_names`` (default ``GATEWAY_KNOWN_COMMANDS``) skip the cap:
+    plugin-registered commands are also ``kind != "skill"`` but unbounded, so they stay capped like skills."""
     def name_of(item: dict) -> str:
         return str(item.get("text", "")).strip().lstrip("/").lower()
     commands = [item for item in items if item.get("kind") != "skill"]
@@ -3434,7 +3437,16 @@ def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bo
         skills = [item for item in skills if origin_of(name_of(item)) != "bundled" or usage(name_of(item)) > 0]
     skills.sort(key=lambda item: (
         *(() if score_of is None else (score_of(item),)), -usage(name_of(item)), name_of(item)))
-    return commands[:_SLASH_COMPLETION_LIMIT] + skills[:_SLASH_COMPLETION_LIMIT]
+    if browsing:
+        if registry_command_names is None:
+            from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+            registry_command_names = GATEWAY_KNOWN_COMMANDS
+        fixed = [c for c in commands if name_of(c) in registry_command_names]
+        other = [c for c in commands if name_of(c) not in registry_command_names]
+        ranked_commands = fixed + other[:_SLASH_COMPLETION_LIMIT]
+    else:
+        ranked_commands = commands[:_SLASH_COMPLETION_LIMIT]
+    return ranked_commands + skills[:_SLASH_COMPLETION_LIMIT]
 
 
 # argv shapes that must not run headless in the gateway process → user hint.

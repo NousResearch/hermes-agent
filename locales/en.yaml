@@ -764,6 +764,7 @@ gateway:
     usage_idle: "Usage: /steer <prompt>  (no agent is running; sending as a normal message)"
     queued_starting: "Agent still starting — /steer queued for the next turn."
     queued_no_agent: "No active agent — /steer queued for the next turn."
+    queued_turn_finished: "Agent turn finished. /steer queued for the next turn."
     failed: "⚠️ Steer failed: {error}"
     rejected_empty: "Steer rejected (empty payload)."
     target_subagents: "run and its active subagent(s)"

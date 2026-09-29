@@ -1229,7 +1229,7 @@ class GatewayBusySessionMixin:
         if not running_agent or not hasattr(running_agent, "steer"):
             return _queue_fallback(t("gateway.steer.queued_no_agent"))
         if self._running_turn_finished(quick_key):
-            return _queue_fallback("Agent turn finished. /steer queued for the next turn.")
+            return _queue_fallback(t("gateway.steer.queued_turn_finished"))
         try:
             input_text = self._steer_text_with_origin(steer_text, event)
             accepted = self._steer_running_agent(running_agent, input_text)

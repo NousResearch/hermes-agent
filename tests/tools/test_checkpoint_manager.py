@@ -1120,6 +1120,71 @@ class TestStoreStatus:
         assert len(info["legacy_archives"]) == 1
         assert info["legacy_archives"][0]["size_bytes"] >= 100
 
+    @staticmethod
+    def _store_with_projects(root: Path, count: int, monkeypatch) -> Path:
+        base = root / "checkpoints"
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+        m = CheckpointManager(enabled=True)
+        workdirs = root / "work"
+        (workdirs / "keep").mkdir(parents=True)
+        for i in range(count):
+            d = workdirs / f"p{i}"
+            d.mkdir()
+            (d / "f.txt").write_text(str(i))
+            m.ensure_checkpoint(str(d), "initial")
+        return base
+
+    def test_git_env_resolution_does_not_scale_with_project_count(self, tmp_path, monkeypatch):
+        """Status and prune walk every project; resolving the git env (a PM helper process on a
+        managed install) per git call made `hermes update` sit ~11 min on a 666-project store."""
+        import tools.checkpoint_manager as cm
+
+        real = cm.selected_git_env
+        calls = []
+
+        def counting(*args, **kwargs):
+            calls.append(1)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(cm, "selected_git_env", counting)
+
+        def resolutions(count: int) -> tuple:
+            root = tmp_path / f"n{count}"
+            base = self._store_with_projects(root, count, monkeypatch)
+            calls.clear()
+            info = store_status(base)
+            status_calls = len(calls)
+            assert info["project_count"] == count
+            assert all(p["commits"] == 1 for p in info["projects"])
+            for i in range(count):
+                shutil.rmtree(root / "work" / f"p{i}")
+            calls.clear()
+            result = prune_checkpoints(retention_days=0, checkpoint_base=base)
+            assert result["deleted_orphan"] == count
+            return status_calls, len(calls)
+
+        assert resolutions(2) == resolutions(6)
+
+    def test_broken_store_reports_projects_without_per_project_git(self, tmp_path, monkeypatch):
+        """A store that lost objects/ and refs/ fails every git call; status says so once."""
+        import tools.checkpoint_maintenance as maint
+
+        base = self._store_with_projects(tmp_path, 4, monkeypatch)
+        for name in ("objects", "refs"):
+            shutil.rmtree(base / "store" / name)
+        real = maint._run_git
+        calls = []
+
+        def counting(args, *rest, **kwargs):
+            calls.append(args)
+            return real(args, *rest, **kwargs)
+
+        monkeypatch.setattr(maint, "_run_git", counting)
+        info = store_status(base)
+        assert info["project_count"] == 4
+        assert all(p["commits"] == 0 for p in info["projects"])
+        assert len(calls) <= 1
+
 
 class TestClearFunctions:
     def test_clear_all_wipes_base_then_is_a_noop(self, tmp_path, monkeypatch, work_dir):

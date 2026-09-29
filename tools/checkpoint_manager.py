@@ -56,6 +56,8 @@ import re
 import shutil
 import subprocess
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
@@ -294,6 +296,42 @@ def _project_meta_path(store: Path, dir_hash: str) -> Path:
 # Git env
 # ---------------------------------------------------------------------------
 
+# Set by ``_reuse_git_env``: a slot holding the selected base env once resolved.
+_reused_git_env: ContextVar[Optional[Dict[str, dict]]] = ContextVar("_reused_git_env", default=None)
+
+
+@contextmanager
+def _reuse_git_env():
+    """Resolve the selected git environment at most once for every store call in this block.
+
+    Selection can start a PM helper process on a managed install, so a loop that runs git per
+    project or per ref (status, prune, list-all) paid that once per call: ~11 minutes of
+    ``hermes update`` on a 666-project store. Nested blocks share the outer resolution.
+    """
+    if _reused_git_env.get() is not None:
+        yield
+        return
+    token = _reused_git_env.set({})
+    try:
+        yield
+    finally:
+        _reused_git_env.reset(token)
+
+
+def _selected_base_env() -> dict:
+    from tools.environments.local import build_subprocess_env
+
+    slot = _reused_git_env.get()
+    if slot is not None and "env" in slot:
+        return dict(slot["env"])
+    # git child with hand-isolated config env; exact preservation; a HOME
+    # rewrite would change which ~/.gitconfig the isolation vars are hiding.
+    env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
+    if slot is not None:
+        slot["env"] = dict(env)
+    return env
+
+
 def _git_env(
     store: Path,
     working_dir: str,
@@ -316,11 +354,7 @@ def _git_env(
     ``store/indexes/<hash>`` so projects don't race on a shared index.
     """
     normalized_working_dir = _normalize_path(working_dir)
-    # git child with hand-isolated config env; exact preservation — a HOME
-    # rewrite would change which ~/.gitconfig the isolation vars are hiding.
-    from tools.environments.local import build_subprocess_env
-
-    env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
+    env = _selected_base_env()
     env["GIT_DIR"] = str(store)
     env["GIT_WORK_TREE"] = str(normalized_working_dir)
     env.pop("GIT_NAMESPACE", None)
@@ -513,9 +547,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     # ``git init --bare`` rejects GIT_WORK_TREE, so we can't use _run_git
     # here (which always sets GIT_DIR + GIT_WORK_TREE).  Use a raw
     # subprocess with just the config-isolation env vars.
-    from tools.environments.local import build_subprocess_env
-
-    init_env = selected_git_env(build_subprocess_env(scrub_secrets=False, inherit_profile_home=False))
+    init_env = _selected_base_env()
     init_env["GIT_CONFIG_GLOBAL"] = os.devnull
     init_env["GIT_CONFIG_SYSTEM"] = os.devnull
     init_env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -934,37 +966,38 @@ class CheckpointManager:
         if not (store / "HEAD").exists():
             return []
 
-        ref = _ref_name(_project_hash(abs_dir))
-        ok, stdout, _ = _run_git(
-            ["log", ref, "--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
-            store, abs_dir,
-            allowed_returncodes={128, 129},
-        )
+        with _reuse_git_env():
+            ref = _ref_name(_project_hash(abs_dir))
+            ok, stdout, _ = _run_git(
+                ["log", ref, "--format=%H|%h|%aI|%s", "-n", str(self.max_snapshots)],
+                store, abs_dir,
+                allowed_returncodes={128, 129},
+            )
 
-        if not ok or not stdout:
-            return []
+            if not ok or not stdout:
+                return []
 
-        results: List[Dict] = []
-        for line in stdout.splitlines():
-            parts = line.split("|", 3)
-            if len(parts) == 4:
-                entry = {
-                    "hash": parts[0],
-                    "short_hash": parts[1],
-                    "timestamp": parts[2],
-                    "reason": parts[3],
-                    "files_changed": 0,
-                    "insertions": 0,
-                    "deletions": 0,
-                }
-                stat_ok, stat_out, _ = _run_git(
-                    ["diff", "--shortstat", f"{parts[0]}~1", parts[0]],
-                    store, abs_dir,
-                    allowed_returncodes={128, 129},
-                )
-                if stat_ok and stat_out:
-                    self._parse_shortstat(stat_out, entry)
-                results.append(entry)
+            results: List[Dict] = []
+            for line in stdout.splitlines():
+                parts = line.split("|", 3)
+                if len(parts) == 4:
+                    entry = {
+                        "hash": parts[0],
+                        "short_hash": parts[1],
+                        "timestamp": parts[2],
+                        "reason": parts[3],
+                        "files_changed": 0,
+                        "insertions": 0,
+                        "deletions": 0,
+                    }
+                    stat_ok, stat_out, _ = _run_git(
+                        ["diff", "--shortstat", f"{parts[0]}~1", parts[0]],
+                        store, abs_dir,
+                        allowed_returncodes={128, 129},
+                    )
+                    if stat_ok and stat_out:
+                        self._parse_shortstat(stat_out, entry)
+                    results.append(entry)
         return results
 
     def list_all_checkpoints(self) -> List[Dict]:
@@ -980,13 +1013,14 @@ class CheckpointManager:
         if not (store / "HEAD").exists():
             return []
         results: List[Dict] = []
-        for meta in _list_projects(store):
-            workdir = meta.get("workdir") or ""
-            if not workdir:
-                continue
-            for entry in self.list_checkpoints(workdir):
-                entry["workdir"] = workdir
-                results.append(entry)
+        with _reuse_git_env():
+            for meta in _list_projects(store):
+                workdir = meta.get("workdir") or ""
+                if not workdir:
+                    continue
+                for entry in self.list_checkpoints(workdir):
+                    entry["workdir"] = workdir
+                    results.append(entry)
         results.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         return results
 
@@ -1114,7 +1148,7 @@ class CheckpointManager:
         from tools.checkpoint_pruning import PruneError, store_lock
 
         try:
-            with store_lock(_resolve_checkpoint_base()):
+            with store_lock(_resolve_checkpoint_base()), _reuse_git_env():
                 return self._restore(working_dir, commit_hash, file_path, safe)
         except (PruneError, OSError) as exc:
             return {"success": False, "error": str(exc)}
@@ -1492,8 +1526,10 @@ class CheckpointManager:
 
         pruner = Pruner(_run_git, store, working_dir, _GIT_TIMEOUT, _dir_size_bytes, _REFS_PREFIX)
         try:
-            pruner.trim(ref, self.max_snapshots)
-            if pruner.drop_one_round(self.max_total_size_mb * 1024 * 1024):
+            with _reuse_git_env():
+                pruner.trim(ref, self.max_snapshots)
+                dropped = pruner.drop_one_round(self.max_total_size_mb * 1024 * 1024)
+            if dropped:
                 logger.info("Checkpoint store exceeded %d MB — dropped the oldest snapshot per project; "
                             "space is reclaimed by the next prune", self.max_total_size_mb)
         except (PruneError, OSError) as exc:

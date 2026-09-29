@@ -11,7 +11,7 @@ from utils import rmtree_readonly
 from tools.checkpoint_manager import (
     _GIT_TIMEOUT, _LEGACY_PREFIX, _PRUNE_MARKER_NAME, _REFS_PREFIX, _STORE_DIRNAME,
     _dir_size_bytes, _index_path, _list_projects, _pre_v2_shadow_repos,
-    _project_meta_path, _ref_name, _resolve_checkpoint_base, _run_git, _store_path,
+    _project_meta_path, _ref_name, _resolve_checkpoint_base, _reuse_git_env, _run_git, _store_path,
 )
 
 logger = logging.getLogger(__name__)
@@ -185,7 +185,7 @@ def prune_checkpoints(
     from tools.checkpoint_pruning import PruneError, store_lock
 
     try:
-        with store_lock(base):
+        with store_lock(base), _reuse_git_env():
             return _prune_checkpoints(base, result, retention_days, delete_orphans, max_total_size_mb, orphan_allowlist)
     except (PruneError, OSError) as exc:
         result["errors"] += 1
@@ -503,26 +503,37 @@ def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
     if store.exists():
         out["store_size_bytes"] = _dir_size_bytes(store)
         if (store / "HEAD").exists():
-            for meta in _list_projects(store):
-                dir_hash = meta.get("_hash") or ""
-                workdir = meta.get("workdir") or ""
-                ref = _ref_name(dir_hash)
-                ok, count_out, _ = _run_git(
-                    ["rev-list", "--count", ref], store, str(base),
-                    allowed_returncodes={128},
-                )
-                try:
-                    commits = int(count_out) if ok else 0
-                except ValueError:
+            projects = _list_projects(store)
+            with _reuse_git_env():
+                # A store that lost objects/ or refs/ fails every git call; probe once
+                # instead of paying one failing call per project.
+                readable = bool(projects) and _run_git(
+                    ["rev-parse", "--git-dir"], store, str(base), allowed_returncodes={128},
+                )[0]
+                if projects and not readable:
+                    logger.warning("Checkpoint store %s is not a readable git repository; "
+                                   "reporting 0 commits for its %d project(s)", store, len(projects))
+                for meta in projects:
+                    dir_hash = meta.get("_hash") or ""
+                    workdir = meta.get("workdir") or ""
                     commits = 0
-                out["projects"].append({
-                    "hash": dir_hash,
-                    "workdir": workdir,
-                    "exists": bool(workdir) and Path(workdir).exists(),
-                    "created_at": meta.get("created_at"),
-                    "last_touch": meta.get("last_touch"),
-                    "commits": commits,
-                })
+                    if readable:
+                        ok, count_out, _ = _run_git(
+                            ["rev-list", "--count", _ref_name(dir_hash)], store, str(base),
+                            allowed_returncodes={128},
+                        )
+                        try:
+                            commits = int(count_out) if ok else 0
+                        except ValueError:
+                            commits = 0
+                    out["projects"].append({
+                        "hash": dir_hash,
+                        "workdir": workdir,
+                        "exists": bool(workdir) and Path(workdir).exists(),
+                        "created_at": meta.get("created_at"),
+                        "last_touch": meta.get("last_touch"),
+                        "commits": commits,
+                    })
     out["project_count"] = len(out["projects"])
 
     out["pre_v2_projects"] = [

@@ -787,6 +787,15 @@ class TestNativeScreenshots:
         out = f"step one saved {a}\nthen saved {b}\n"
         assert bu_cli._find_screenshot(out, since=time.time() - 5) == b
 
+    def test_find_screenshot_accepts_paths_with_spaces(self, tmp_path):
+        shot = tmp_path / "Windows profile path with spaces" / "shot.png"
+        shot.parent.mkdir()
+        shot.write_bytes(b"\x89PNG fake")
+
+        assert bu_cli._find_screenshot(
+            f"saved screenshot to {shot}\n", since=time.time() - 5
+        ) == str(shot)
+
     def test_find_screenshot_rejects_stale_and_missing(self, tmp_path):
         stale = self._shot(tmp_path)
         os.utime(stale, (time.time() - 900, time.time() - 900))

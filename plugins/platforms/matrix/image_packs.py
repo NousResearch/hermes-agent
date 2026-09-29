@@ -179,20 +179,8 @@ class PackImage:
 class Selection:
     source: PackSource
     image: PackImage
-    home: str
-    client: Any
-    bot: str
-    device: str
-    store: Any
-    owner_profile: str | None
-    room_id: str
-    requester: str
-    session_key: str
-    session_id: str
+    owner: tuple[Any, ...]
     expires_at: float
-    crypto: Any
-    state_store: Any
-    owner_key: tuple[Any, ...]
 
 
 @dataclass(frozen=True)
@@ -200,8 +188,6 @@ class PackRequest:
     adapter: Any
     client: Any
     bot: str
-    device: str
-    store: Any
     owner_profile: str | None
     home: str
     room_id: str
@@ -210,11 +196,6 @@ class PackRequest:
     session_id: str
     crypto: Any
     state_store: Any
-    api: Any
-    homeserver: str
-    access_token: str | None
-    client_device: str | None
-    crypto_store: Any
     session_store: Any
     stored_session_id: str | None
     admissions: dict[str, str] = field(default_factory=dict)
@@ -246,8 +227,6 @@ class PackRequest:
             adapter,
             adapter._client,
             adapter._user_id,
-            adapter._device_id,
-            adapter._store_dir,
             adapter._owner_profile,
             hermes_home_key(),
             room_id,
@@ -256,22 +235,20 @@ class PackRequest:
             session_id,
             getattr(adapter._client, "crypto", None),
             getattr(adapter._client, "state_store", None),
-            getattr(adapter._client, "api", None),
-            str(getattr(getattr(adapter._client, "api", None), "base_url", "")),
-            getattr(getattr(adapter._client, "api", None), "token", None),
-            getattr(adapter._client, "device_id", None),
-            getattr(getattr(adapter._client, "crypto", None), "crypto_store", None),
             session_store,
             stored_session_id,
         )
 
-    def owner_key(self) -> tuple[Any, ...]:
+    def owner(self) -> tuple[Any, ...]:
         return (
-            id(self.api),
-            self.homeserver,
-            self.access_token,
-            self.client_device,
-            id(self.crypto_store),
+            self.home,
+            self.client,
+            self.bot,
+            self.owner_profile,
+            self.room_id,
+            self.requester,
+            self.session_key,
+            self.session_id,
         )
 
     def check(self) -> None:
@@ -282,18 +259,9 @@ class PackRequest:
             or adapter._client is not self.client
             or not self.bot
             or self.client.mxid != self.bot
-            or adapter._user_id != self.bot
-            or adapter._device_id != self.device
-            or adapter._store_dir != self.store
             or adapter._owner_profile != self.owner_profile
             or hermes_home_key() != self.home
             or getattr(self.client, "crypto", None) is not self.crypto
-            or getattr(self.client, "state_store", None) is not self.state_store
-            or getattr(self.client, "api", None) is not self.api
-            or str(getattr(self.api, "base_url", "")) != self.homeserver
-            or getattr(self.api, "token", None) != self.access_token
-            or getattr(self.client, "device_id", None) != self.client_device
-            or getattr(self.crypto, "crypto_store", None) is not self.crypto_store
             or get_session_env("HERMES_SESSION_PLATFORM") != "matrix"
             or get_session_env("HERMES_SESSION_CHAT_ID") != self.room_id
             or get_session_env("HERMES_SESSION_USER_ID") != self.requester
@@ -513,22 +481,7 @@ class Catalog:
             key = uuid.uuid4().hex
             records = _selections(self.request.adapter)
             records[key] = Selection(
-                source,
-                image,
-                self.request.home,
-                self.request.client,
-                self.request.bot,
-                self.request.device,
-                self.request.store,
-                self.request.owner_profile,
-                self.request.room_id,
-                self.request.requester,
-                self.request.session_key,
-                self.request.session_id,
-                time.monotonic() + SELECTION_TTL,
-                self.request.crypto,
-                self.request.state_store,
-                self.request.owner_key(),
+                source, image, self.request.owner(), time.monotonic() + SELECTION_TTL
             )
             while len(records) > MAX_SELECTIONS:
                 records.popitem(last=False)
@@ -694,35 +647,7 @@ async def _send(
     request: PackRequest, selection_id: str, reply_to: str | None, thread_id: str | None
 ) -> dict:
     selection = _selections(request.adapter).get(selection_id)
-    if selection is None or (
-        selection.home,
-        selection.client,
-        selection.bot,
-        selection.device,
-        selection.store,
-        selection.owner_profile,
-        selection.room_id,
-        selection.requester,
-        selection.session_key,
-        selection.session_id,
-        selection.crypto,
-        selection.state_store,
-        selection.owner_key,
-    ) != (
-        request.home,
-        request.client,
-        request.bot,
-        request.device,
-        request.store,
-        request.owner_profile,
-        request.room_id,
-        request.requester,
-        request.session_key,
-        request.session_id,
-        request.crypto,
-        request.state_store,
-        request.owner_key(),
-    ):
+    if selection is None or selection.owner != request.owner():
         raise PackError("Matrix image selection is unavailable; list packs again")
     await request.access(request.room_id)
     content = await request.pack(selection.source)

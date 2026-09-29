@@ -1193,6 +1193,121 @@ class TestCuaDriverSessionReconnect:
             ("call", "list_apps", {}),
         ]
 
+    # cua-driver binds a public label to the transport that declared it. After the
+    # old transport dies (daemon still running) the driver refuses that label on
+    # every new transport, so the reconnect must move to a fresh label (#118975).
+    _LABEL_UNAVAILABLE = {"isError": True, "data": "session is not available to this transport",
+                          "structuredContent": {"code": "session_unavailable"}}
+
+    def _scripted_bridge(self, effects):
+        class FakeBridge:
+            def __init__(self):
+                self.calls, self.effects = [], list(effects)
+
+            def run(self, value, timeout=None):
+                self.calls.append(value)
+                effect = self.effects.pop(0)
+                if isinstance(effect, BaseException):
+                    raise effect
+                return effect
+
+        return FakeBridge()
+
+    def test_reconnect_replaces_label_the_driver_refuses_to_restore(self):
+        from anyio import ClosedResourceError
+
+        bridge = self._scripted_bridge([
+            ClosedResourceError(),
+            self._LABEL_UNAVAILABLE,
+            {"isError": False},
+            {"isError": False, "structuredContent": {"apps": []}},
+        ])
+        session = self._make_session(bridge)
+        session._declared_session_id = "hermes-old"
+        session.set_session_label_factory(lambda: "hermes-new")
+
+        result = session.call_tool("list_apps", {"session": "hermes-old"})
+
+        assert result["isError"] is False
+        assert bridge.calls == [
+            ("call", "list_apps", {"session": "hermes-old"}),
+            ("call", "start_session", {"session": "hermes-old"}),  # restore is still tried first
+            ("call", "start_session", {"session": "hermes-new"}),
+            ("call", "list_apps", {"session": "hermes-new"}),  # the replay carries the live label
+        ]
+        assert session._declared_session_id == "hermes-new"
+
+    def test_recreation_before_call_moves_call_to_replacement_label(self):
+        import concurrent.futures
+
+        bridge = self._scripted_bridge([
+            concurrent.futures.TimeoutError(),
+            self._LABEL_UNAVAILABLE,
+            {"isError": False},
+            {"isError": False, "structuredContent": {"windows": []}},
+        ])
+        session = self._make_session(bridge)
+        session._declared_session_id = "hermes-old"
+        session.set_session_label_factory(lambda: "hermes-new")
+
+        session.call_tool("get_window_state", {"session": "hermes-old", "window_id": 42})
+        result = session.call_tool("list_windows", {"session": "hermes-old"})
+
+        assert result["isError"] is False
+        assert bridge.calls[-1] == ("call", "list_windows", {"session": "hermes-new"})
+        assert session._reconnect_log == ["stop", "start"]
+
+    def test_mutation_is_not_replayed_when_label_is_replaced(self):
+        from anyio import ClosedResourceError
+
+        bridge = self._scripted_bridge([ClosedResourceError(), self._LABEL_UNAVAILABLE, {"isError": False}])
+        session = self._make_session(bridge)
+        session._declared_session_id = "hermes-old"
+        session.set_session_label_factory(lambda: "hermes-new")
+
+        result = session.call_tool("click", {"session": "hermes-old", "x": 20, "y": 30})
+
+        assert result["structuredContent"]["code"] == "transport_outcome_unknown"
+        assert [c[1] for c in bridge.calls] == ["click", "start_session", "start_session"]
+        assert session._declared_session_id == "hermes-new"
+
+    def test_lifecycle_call_keeps_the_label_it_names(self):
+        bridge = self._scripted_bridge([{"isError": False}])
+        session = self._make_session(bridge)
+        session._declared_session_id = "hermes-new"
+        session._retired_labels = frozenset({"hermes-old"})
+
+        session.call_tool("end_session", {"session": "hermes-old"})
+
+        assert bridge.calls == [("call", "end_session", {"session": "hermes-old"})]
+        assert session._declared_session_id == "hermes-new"
+
+    def test_backend_adopts_replacement_label_for_later_calls(self):
+        from anyio import ClosedResourceError
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        old_label = backend._session_id
+        bridge = self._scripted_bridge([
+            ClosedResourceError(),
+            self._LABEL_UNAVAILABLE,
+            {"isError": False},
+            {"isError": False, "structuredContent": {"apps": []}},
+            {"isError": False, "structuredContent": {"apps": []}},
+        ])
+        session = self._make_session(bridge)
+        session._declared_session_id = old_label
+        session._session_label_factory = backend._session._session_label_factory
+        backend._session = session
+
+        backend.call_tool("list_apps")
+        backend.call_tool("list_apps")
+
+        new_label = backend._session_id
+        assert new_label != old_label and new_label.startswith("hermes-")
+        assert session._declared_session_id == new_label
+        assert bridge.calls[-2:] == [("call", "list_apps", {"session": new_label})] * 2
+
 
     def test_cli_fallback_reads_screenshot_from_file(self, tmp_path, monkeypatch):
         """_call_tool_via_cli must base64-read a screenshot written to disk

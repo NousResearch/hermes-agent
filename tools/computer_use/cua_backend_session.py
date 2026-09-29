@@ -184,6 +184,9 @@ class _CuaDriverSession:
     # call_tool. Class-level default: tests that bypass __init__ see healthy.
     # See #74799.
     _timeout_suspect = False
+    # Owner-supplied source of a replacement public label, and the labels it replaced (#118975).
+    _session_label_factory: Optional[Any] = None
+    _retired_labels: frozenset[str] = frozenset()
 
     def __init__(self, bridge: _AsyncBridge, embedded_daemon: Optional[Any] = None) -> None:
         self._bridge, self._embedded_daemon, self._session = bridge, embedded_daemon, None
@@ -324,6 +327,10 @@ class _CuaDriverSession:
         """Register a synchronous cache invalidation hook for transport swaps."""
         self._transport_reset_callback = callback
 
+    def set_session_label_factory(self, factory: Any) -> None:
+        """Register the owner's hook that mints and adopts a new public label (see ``_replace_session_label``)."""
+        self._session_label_factory = factory
+
     def _notify_transport_reset(self) -> None:
         try:
             if (callback := getattr(self, "_transport_reset_callback", None)) is not None:
@@ -431,8 +438,31 @@ class _CuaDriverSession:
                 self._started = True
             if clear_timeout_suspect:
                 self._timeout_suspect = False
-        if getattr(self, "_declared_session_id", None):
-            self._redeclare_session(timeout, "cua-driver public session label %s could not be restored: %s")
+        if getattr(self, "_declared_session_id", None) and not self._redeclare_session(
+                timeout, "cua-driver public session label %s could not be restored: %s"):
+            self._replace_session_label(timeout)
+
+    def _replace_session_label(self, timeout: float) -> None:
+        """cua-driver binds a public label to the transport that declared it, so a rebuilt transport can never
+        restore it (#118975). Move to a fresh label from the owner instead of sending the refused one forever.
+        The new label is kept even if declaring it fails: the driver still accepts it on first use, and the next
+        reconnect must be able to replace it in turn."""
+        factory = getattr(self, "_session_label_factory", None)
+        if factory is None:
+            return
+        old, self._declared_session_id = self._declared_session_id, factory()
+        self._retired_labels = frozenset({*self._retired_labels, old})
+        logger.warning("cua-driver session label %s replaced by %s after reconnect", old, self._declared_session_id)
+        self._redeclare_session(timeout, "cua-driver replacement session label %s could not be declared: %s")
+
+    def _live_label_args(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Point a call built with a retired label (e.g. the read replayed after a reconnect) at the live one.
+        Lifecycle calls keep the label they name."""
+        live = getattr(self, "_declared_session_id", None)
+        if not self._retired_labels or not live or name in self._LIFECYCLE_CALLS:
+            return args
+        return {k: live if k in ("session", "cursor_id") and isinstance(v, str) and v in self._retired_labels
+                else v for k, v in args.items()}
 
     def _call_tool_via_cli(self, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         """Fallback transport: ``cua-driver call <tool> <json>`` subprocess. The MCP stdio bridge can persistently
@@ -479,6 +509,7 @@ class _CuaDriverSession:
                     name, timeout, "cua-driver session not active on %s; (re)starting before call", restart=False)
         if not self._started:
             raise RuntimeError("cua-driver session not started")
+        args = self._live_label_args(name, args)
         try:
             result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         except concurrent.futures.TimeoutError as e:
@@ -503,6 +534,7 @@ class _CuaDriverSession:
             self._recreate_session(name, timeout, "cua-driver MCP session closed during %s; reconnecting once")
             if name not in self._TRANSPORT_REPLAY_SAFE_TOOLS:
                 return _outcome_unknown(name, e, "transport_outcome_unknown")
+            args = self._live_label_args(name, args)
             result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
         # Remember only a SUCCESSFULLY declared identity: no stale recovery state.
         declared_id, ok = args.get("session"), result.get("isError") is not True

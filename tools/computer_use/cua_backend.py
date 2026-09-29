@@ -272,10 +272,16 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         # gives config/recording state a stable owner across transport restarts. Part of the 0.20 runtime contract.
         self._session_id: str = f"hermes-{uuid.uuid4().hex[:12]}"
         self._session.set_transport_reset_callback(self._handle_transport_reset)
+        self._session.set_session_label_factory(self._adopt_new_session_label)
 
     def _handle_transport_reset(self) -> None:
         """Invalidate every capability minted by the replaced transport."""
         self._clear_active_target()
+
+    def _adopt_new_session_label(self) -> str:
+        """Switch this run to a fresh public label; the old one stays bound to a dead transport (#118975)."""
+        self._session_id = f"hermes-{uuid.uuid4().hex[:12]}"
+        return self._session_id
 
     def start(self) -> None:
         # Driver inside the terminal backend: the sandbox image pins its own cua-driver; the host

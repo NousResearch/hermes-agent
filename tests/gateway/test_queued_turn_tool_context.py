@@ -35,6 +35,7 @@ async def test_queued_tool_context_restores_outer_identity_and_profile(tmp_path,
     runner.config = GatewayConfig(multiplex_profiles=True)
     runner.adapters = {}
     runner._draining = False
+    runner._gateway_loop = asyncio.get_running_loop()
     runner._profile_adapters = {}
     runner._resolve_profile_home_for_source = lambda source: homes[source.profile]
     for profile, requester in (("a", "@alice:test"), ("b", "@bob:test")):
@@ -92,6 +93,7 @@ async def test_queued_tool_context_restores_outer_identity_and_profile(tmp_path,
         platform="matrix", chat_id=source.chat_id, user_id=source.user_id,
         thread_id=source.thread_id, profile="a", session_key=key,
         session_id="sid", message_id=source.message_id, transport_adapter=adapters["a"],
+        transport_loop=asyncio.get_running_loop(),
     )
     cwd_token = set_session_cwd("/outer/workspace")
     try:

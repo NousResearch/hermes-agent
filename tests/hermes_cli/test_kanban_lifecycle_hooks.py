@@ -14,6 +14,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli.plugins import VALID_HOOKS, get_plugin_manager
 
 
@@ -47,8 +48,6 @@ def captured_hooks(monkeypatch):
         mgr._hooks = saved
 
 
-
-
 def test_claim_fires_hook(kanban_home, captured_hooks):
     conn = kbc.connect()
     try:
@@ -66,8 +65,6 @@ def test_claim_fires_hook(kanban_home, captured_hooks):
     assert kw["run_id"] is not None
 
 
-
-
 def test_misbehaving_hook_does_not_break_transition(kanban_home, monkeypatch):
     """A hook callback that raises must not break the board transition."""
     mgr = get_plugin_manager()
@@ -82,10 +79,82 @@ def test_misbehaving_hook_does_not_break_transition(kanban_home, monkeypatch):
         try:
             tid = kb.create_task(conn, title="t", assignee="worker")
             kb.claim_task(conn, tid)
-            # Despite the raising hook, completion succeeds and persists.
             assert kb.complete_task(conn, tid, summary="ok") is True
             assert kb.get_task(conn, tid).status == "done"
         finally:
             conn.close()
     finally:
         mgr._hooks = saved
+
+
+def test_pre_create_suppress_prevents_row_write(kanban_home):
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_kanban_task_create", []).append(
+        lambda **kw: {"action": "suppress", "reason": "duplicate", "existing_task_id": "existing"}
+    )
+    try:
+        conn = kbc.connect()
+        try:
+            assert kb.create_task(conn, title="blocked") == "existing"
+            assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+        finally:
+            conn.close()
+    finally:
+        mgr._hooks = saved
+
+
+def test_pre_dispatch_hold_records_respawn_guard(kanban_home, monkeypatch):
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_kanban_dispatch", []).append(
+        lambda **kw: {"action": "hold", "reason": "operator hold"}
+    )
+    try:
+        conn = kbc.connect()
+        try:
+            monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: None)
+            tid = kb.create_task(conn, title="held", assignee="worker")
+            conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,))
+            result = kbd.dispatch_once(conn, board=None)
+            assert result.respawn_guarded == [(tid, "operator hold")]
+            assert kb.get_task(conn, tid).status == "ready"
+            assert conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 1", (tid,)
+            ).fetchone()[0] == "respawn_guarded"
+        finally:
+            conn.close()
+    finally:
+        mgr._hooks = saved
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [None, "not-a-dict", {"action": "unknown", "reason": "bad"}, {"action": "suppress"}],
+)
+def test_pre_create_invalid_directives_are_noops(kanban_home, directive):
+    mgr = get_plugin_manager()
+    saved = {k: list(v) for k, v in mgr._hooks.items()}
+    mgr._hooks.setdefault("pre_kanban_task_create", []).append(lambda **kw: directive)
+    try:
+        conn = kbc.connect()
+        try:
+            tid = kb.create_task(conn, title="normal")
+            assert tid
+            assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+        finally:
+            conn.close()
+    finally:
+        mgr._hooks = saved
+
+
+def test_pre_kanban_hooks_are_noops_without_subscriber(kanban_home, monkeypatch):
+    conn = kbc.connect()
+    try:
+        monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: None)
+        tid = kb.create_task(conn, title="normal", assignee="worker")
+        result = kbd.dispatch_once(conn, dry_run=True)
+        assert result.respawn_guarded == []
+        assert result.spawned and result.spawned[0][0] == tid
+    finally:
+        conn.close()

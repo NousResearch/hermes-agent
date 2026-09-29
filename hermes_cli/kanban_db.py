@@ -182,10 +182,31 @@ def _kanban_observer_consumed(event: str) -> bool:
     Inspection failure counts as unconsumed (dropping an observer is always safe)."""
     try:
         from hermes_cli.lifecycle import has_hook
-
         return has_hook(event)
-    except Exception:  # pragma: no cover - defensive
+    except Exception:
         return False
+
+
+def _pre_kanban_task_create(**fields: Any) -> Optional[dict[str, Any]]:
+    if not _kanban_observer_consumed("pre_kanban_task_create"):
+        return None
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+        for result in invoke_hook("pre_kanban_task_create", **fields):
+            if not isinstance(result, dict):
+                _log.debug("pre kanban task create hook returned a non-dict directive")
+                continue
+            if result.get("action") != "suppress":
+                _log.debug("pre kanban task create hook returned unknown action: %r", result.get("action"))
+                continue
+            reason = result.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                _log.debug("pre kanban task create hook suppression requires a reason")
+                continue
+            return result
+    except Exception as exc:
+        _log.debug("pre kanban task create hook failed: %s", exc)
+    return None
 
 
 def _fire_worker_spawned_hook(
@@ -1319,6 +1340,15 @@ def create_task(
     )
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
+
+    decision = _pre_kanban_task_create(
+        title=title, body=body, board=board, assignee=assignee,
+        session_id=session_id, idempotency_key=idempotency_key,
+    )
+    if decision is not None:
+        # An empty string means the pre-create hook suppressed the row; a non-empty
+        # value identifies an existing task supplied by the hook.
+        return str(decision.get("existing_task_id") or "")
 
     # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
     # race may insert twice, the next lookup stabilises on the newest.

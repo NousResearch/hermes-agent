@@ -56,6 +56,7 @@ class ThreadFallbackTracker:
         reply_to: str,
         *,
         allow_repeat: bool = False,
+        notice: bool = False,
     ) -> bool:
         """Whether a send anchored on ``reply_to`` continues output already in the thread or room.
 
@@ -68,9 +69,16 @@ class ThreadFallbackTracker:
         Other responses and inbound posts can arrive between two messages of one
         response, so the check covers several recent answered and sent events, not
         only the latest of each.
+
+        A notice, such as the confirmation of a reaction prompt, is a deliberate reply
+        to ``reply_to`` and never continues a response, even when Hermes sent the
+        target. Only the root check applies to it.
         """
         if reply_to == thread_id:
             return True
+
+        if notice:
+            return False
 
         events = self._threads.get((room_id, thread_id))
         if events is None:

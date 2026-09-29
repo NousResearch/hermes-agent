@@ -73,6 +73,17 @@ class TestHandleFunctionCall:
             assert kwargs_by_hook[hook_name]["error_message"] == "exit 1"
 
 
+    def test_profile_is_forwarded_to_registry_handlers(self, monkeypatch):
+        observed = {}
+
+        def dispatch(tool_name, args, **kwargs):
+            observed.update(kwargs)
+            return "ok"
+
+        monkeypatch.setattr("model_tools.registry.dispatch", dispatch)
+        assert handle_function_call("web_search", {"q": "test"}, profile="research") == "ok"
+        assert observed["profile"] == "research"
+
     def test_tool_request_and_execution_middleware_wrap_registry_dispatch(self, monkeypatch):
         seen = {}
 

@@ -119,6 +119,57 @@ def test_non_literal_operand_to_a_protected_store():
     assert _flagged(f'R="$LOCALAPPDATA/hermes/profiles"; sed -i \'s/a/b/\' "$R/{OTHER}/SOUL.md"')
 
 
+# --- R1b: an expansion GLUED to the protected name ---------------------------
+# No separator exists between the expansion and the name, so the last path SEGMENT
+# of the word is `${P}config.yaml`, not `config.yaml`: matching that segment returns
+# None and the word walks past the guard. The name only has to sit at the END of the
+# word (review change 1 of round 1).
+
+
+GLUED_OPERAND_COMMANDS = (
+    'P="$LOCALAPPDATA/hermes/profiles/pm-bangioi/"; sed -i \'s/a/b/\' "${P}config.yaml"',
+    "sed -i 's/a/b/' %P%config.yaml",
+    "sed -i 's/a/b/' `echo C:/x/y/`config.yaml",
+    "cat ${P}.env",
+    "cat ${P}auth.json",
+    "sed -i 's/a/b/' ${P}SOUL.md",
+    "cat ${P}id_rsa",
+    'cat "$(dirname /a/b).env"',
+    # The same operand behind a command/pipeline/redirect separator: one shell word
+    # per _SHELL_WORD_RE, so trailing `; echo done` must not hide the protected name.
+    'sed -i \'s/a/b/\' "$P/config.yaml"; echo done',
+    "cat ${P}/.env | wc -l",
+    "cat ${P}auth.json > /tmp/copied",
+)
+
+
+def test_expansion_glued_to_a_protected_name_is_flagged():
+    for command in GLUED_OPERAND_COMMANDS:
+        assert _flagged(command), command
+
+
+def test_expansion_beside_a_protected_name_stays_safe():
+    """The suffix test is bounded on BOTH sides: a longer name to the left names a
+    different file (the file-tool denylist matches whole basenames, so `myconfig.yaml`
+    and `xauth.json` are not protected either), and a longer name to the right is a
+    backup — while `$P;config.yaml` runs a COMMAND called config.yaml after `$P`."""
+    for command in (
+        "echo x > /tmp/${USER}_notes.txt",
+        'cp "$SRC/readme.md" "$DST/"',
+        "ls $HOME/projects",
+        "cat $HOME/myconfig.yaml",
+        "cat $HOME/xauth.json",
+        "echo x > $HOME/config.yaml.bak",
+        "cat ${ROOT}/.env.example",
+        "echo $P; config.yaml",
+        "grep -rn 'SOUL.md' website/docs",
+    ):
+        assert not _flagged(command), command
+    # `python -c` is flagged by a different, pre-existing rule (the -e/-c flag rule);
+    # R1b must not be the reason.
+    assert detect_dangerous_command('python -c "print(1)"')[1] != "non-literal path to a protected file"
+
+
 # --- .env.example stays usable ---------------------------------------------
 
 

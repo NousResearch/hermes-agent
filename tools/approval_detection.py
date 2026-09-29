@@ -1583,31 +1583,48 @@ _NON_LITERAL_EXPANSION_RE = re.compile(
     r'\$(?:\{[^}]*\}|[A-Za-z_][A-Za-z0-9_]*|\()|%[A-Za-z_][A-Za-z0-9_]*%|`'
 )
 # `.env.example` / `.env.sample` / `.env.template` are NOT protected (see _ENV_TEMPLATE_TAIL).
-_PROTECTED_OPERAND_BASENAME_RE = re.compile(
-    r'\.env(?!\.(?:example|sample|template)\b)[^\s/\\]*'
+#
+# A SUFFIX match on the expansion-built word, not a fullmatch of its last path segment: an
+# expansion may be glued straight onto the protected name with no separator at all
+# (`${P}config.yaml`, `` `d/`config.yaml ``, `%P%.env`), so the last segment is `${P}config.yaml`
+# and segment matching returns None — while `$(dirname /a/b).env` puts the name after a `)` the
+# segment split also loses. The left boundary keeps a LONGER name on the left unflagged
+# (`$HOME/myconfig.yaml`, `my.env` name a different file, exactly as the file-tool denylist
+# does — it matches whole basenames), and `\Z` keeps a LONGER name on the right unflagged
+# (`$HOME/config.yaml.bak`).
+_PROTECTED_OPERAND_SUFFIX_RE = re.compile(
+    r'(?<![A-Za-z0-9_.-])'
+    r'(?:\.env(?!\.(?:example|sample|template)\b)[^\s/\\]*'
     r'|auth\.json'
     r'|config\.yaml'
     r'|soul\.md'
     r'|id_rsa|id_ed25519'
-    r'|[^\s/\\]+\.pem',
+    r'|[^\s/\\]+\.pem)'
+    r'\Z',
     re.IGNORECASE,
 )
 # One shell WORD: quoted spans, $( ) / ${ } substitutions and backticks are atomic, so their
 # inner spaces never split the word, and the surrounding glue stays attached.
 _SHELL_WORD_RE = re.compile(
-    r'(?:"(?:[^"\\]|\\.)*"|\'[^\']*\'|\$\([^()]*\)|\$\{[^}]*\}|`[^`]*`|[^\s])+'
+    r'(?:\"(?:[^\"\\]|\\.)*\"|\'[^\']*\'|\$\([^()]*\)|\$\{[^}]*\}|`[^`]*`|[^\s])+'
 )
+# ... INCLUDING the command/pipeline/redirect separator that follows an operand: an operand
+# ends at one of these, so the word is split back into operands before the suffix test —
+# otherwise a trailing `; echo done` glued onto `"$P/config.yaml"` hides the protected name.
+_OPERAND_SEPARATOR_RE = re.compile(r'[;|&<>,]+')
 
 
 def _non_literal_protected_operand(command: str) -> str | None:
     """The first word in *command* that is BOTH non-literal and a protected file, else ``None`` (R1b)."""
     for token in _SHELL_WORD_RE.findall(command):
-        if not _NON_LITERAL_EXPANSION_RE.search(token):
-            continue
-        # Trailing quote/paren is matcher glue from an atomic span, not part of the name.
-        basename = re.split(r'[/\\]', token)[-1].rstrip('"\')')
-        if _PROTECTED_OPERAND_BASENAME_RE.fullmatch(basename):
-            return token
+        for operand in _OPERAND_SEPARATOR_RE.split(token):
+            # Non-literal is judged per operand: `$P;config.yaml` runs a COMMAND called
+            # config.yaml after `$P`, it does not write the protected file.
+            if not _NON_LITERAL_EXPANSION_RE.search(operand):
+                continue
+            # Trailing quote/paren is matcher glue from an atomic span, not part of the name.
+            if _PROTECTED_OPERAND_SUFFIX_RE.search(operand.rstrip('"\')')):
+                return token
     return None
 
 

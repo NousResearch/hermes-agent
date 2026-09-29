@@ -399,10 +399,13 @@ pty = []
 # they hand to the SDK, so it is pinned here explicitly rather than left to
 # resolution. Hermes' own `httpx[socks]==0.28.1` in [dependencies] is
 # unaffected — the two distributions install side by side under different
-# module names.
+# module names. The pin also carries a security floor: 2.7.0 is affected by
+# GHSA-7mj9-2mp8-4m2p / GHSA-8xx6-hgc6-gc2m / GHSA-f2fp-rgf2-35cp /
+# GHSA-h4x7-gw46-3wm6 / GHSA-pf96-p4fj-6566 (fixed across 2.10.0–2.12.0),
+# reachable through user-configured MCP servers and multipart uploads.
 mcp = [
   "mcp==2.0.0",
-  "httpx2==2.7.0",
+  "httpx2==2.13.1",
   "starlette==1.3.1",
 ] # starlette: CVE-2026-48710
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
@@ -418,7 +421,7 @@ teams = [
 # provides the MCP client, independently of the native driver package.
 computer-use = [
   "mcp==2.0.0",
-  "httpx2==2.7.0",
+  "httpx2==2.13.1",
   "starlette==1.3.1",
 ] # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
@@ -544,7 +547,7 @@ dev = [
   "pytest==9.1.1",
   "pytest-asyncio==1.3.0",
   "mcp==2.0.0",
-  "httpx2==2.7.0",
+  "httpx2==2.13.1",
   "starlette==1.3.1",
   "ty==0.0.82",
   "ruff==0.15.10",
@@ -729,6 +732,7 @@ google-auth-oauthlib = false
 google-cloud-pubsub = false
 h2 = false
 honcho-ai = false
+httpcore2 = false
 httplib2 = false
 httpx = false
 httpx2 = false

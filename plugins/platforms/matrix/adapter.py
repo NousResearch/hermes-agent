@@ -90,7 +90,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from plugins.platforms.matrix.outbound_relations import ThreadFallbackTracker
 from plugins.platforms.matrix.relations import MatrixRelation
-from plugins.platforms.matrix.media_content import _inbound_media_caption, _is_bare_media_filename
+from plugins.platforms.matrix.media_content import _inbound_media_caption, _is_bare_media_filename, _media_wire_body
 from plugins.platforms.matrix.context_mixin import MatrixContextMixin
 from plugins.platforms.matrix.turn_context import MatrixTurnContextUpdate
 from plugins.platforms.matrix.reply_context import (
@@ -2439,7 +2439,8 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
             media_kind = {
                 "m.image": "image", "m.audio": "audio", "m.video": "video",
             }.get(msgtype, "file")
-            filename = declared_filename or (body if _is_bare_media_filename(msgtype, body) else "")
+            wire_body = _media_wire_body(source_content, relates_to)
+            filename = declared_filename or (wire_body if _is_bare_media_filename(msgtype, wire_body) else "")
             marker = f"[matrix {media_kind} attachment too large"
             if filename:
                 marker += f": {filename}"

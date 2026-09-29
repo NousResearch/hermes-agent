@@ -17,6 +17,16 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_subparsers.add_parser("show", help="Show current configuration")
     config_subparsers.add_parser("edit", help="Open config file in editor")
 
+    from hermes_cli.config_inventory import config_keys_command
+
+    config_keys = config_subparsers.add_parser(
+        "keys", help="List registered configuration paths (no values)",
+        description="List registered roots and defaulted nested paths, without reading user "
+        "configuration. Open mappings allow additional user-defined keys; this is not an "
+        "exhaustive runtime schema.")
+    add_json_flag(config_keys, "Print paths as a JSON array")
+    config_keys.set_defaults(func=config_keys_command)
+
     config_get = config_subparsers.add_parser("get", help="Print a resolved configuration value")
     config_get.add_argument("key", nargs="?", help="Configuration key (e.g., model)")
     add_json_flag(config_get, "Print value as JSON")

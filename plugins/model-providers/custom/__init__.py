@@ -106,7 +106,15 @@ class CustomProfile(ProviderProfile):
                 # GPT-OSS is Groq's one model family with its own graded reasoning_effort
                 # knob (low/medium/high — console.groq.com/docs/reasoning); it 400s on
                 # "default" itself, so it must be excluded from the blanket clamp below.
-                top_level["reasoning_effort"] = clamp_effort(effort, GROQ_GPT_OSS_EFFORTS)
+                # clamp_effort() returns an unrecognized level (e.g. "default", a typo)
+                # verbatim by design, for providers with genuinely bespoke tiers — but this
+                # family's wire vocabulary is exactly GROQ_GPT_OSS_EFFORTS, so anything that
+                # escapes clamping still 400s. Re-validate and fall back to the family's
+                # floor rather than shipping an out-of-vocabulary value (review on #124103).
+                clamped = clamp_effort(effort, GROQ_GPT_OSS_EFFORTS)
+                top_level["reasoning_effort"] = (
+                    clamped if clamped in GROQ_GPT_OSS_EFFORTS else GROQ_GPT_OSS_EFFORTS[0]
+                )
             elif effort and base_url_host_matches(str(ctx.get("base_url") or ""), "api.groq.com"):
                 # Groq's OpenAI-compatible wire accepts top-level reasoning_effort only as
                 # "none" / "default" for every other model; any graded level 400s (#75089).

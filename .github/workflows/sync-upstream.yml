@@ -1,16 +1,15 @@
 name: Sync upstream
 
 # Keep this fork's main in step with NousResearch/hermes-agent.
-# Runs weekly and on demand: merges upstream main into fork main.
-# - Clean merge  -> pushes directly to main (triggers the full CI suite).
-# - Conflicts    -> opens a PR with the conflicted merge for manual resolution.
+# Manual-only while this fork is carrying a deliberate customization set. The
+# v0.22 re-merge is a planned operation, not a weekly auto-merge.
 #
-# This is the fork's "updates can't silently break us" guarantee:
-# every sync lands on main only after the inherited CI suite passes.
+# A clean manually-triggered merge pushes to main and starts the normal CI
+# suite. A conflicted merge is reported in the Actions summary and aborted
+# cleanly; it must not leave the runner in a merge state or manufacture a
+# useless conflict PR.
 
 on:
-  schedule:
-    - cron: '0 3 * * 1'   # Monday 03:00 UTC
   workflow_dispatch:
 
 permissions:
@@ -51,16 +50,15 @@ jobs:
         if: steps.merge.outcome == 'success'
         run: git push origin main
 
-      - name: Open sync PR on conflict
+      - name: Report and abort conflicted merge
         if: steps.merge.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          BRANCH="sync/upstream-$(date +%F)"
-          git switch -c "$BRANCH"
-          git push origin "$BRANCH"
-          gh pr create \
-            --base main \
-            --head "$BRANCH" \
-            --title "Upstream sync $(date +%F) (conflicts)" \
-            --body "Merging upstream main into the fork produced conflicts. Resolve them in this PR, verify, and merge. The customizations live in the commits on top of upstream — keep them."
+          {
+            echo "## Upstream sync requires manual resolution"
+            echo
+            echo "The merge was aborted; no files were pushed."
+            echo
+            echo "### Conflicted paths"
+            git diff --name-only --diff-filter=U | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
+          git merge --abort

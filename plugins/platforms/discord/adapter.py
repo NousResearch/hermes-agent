@@ -3742,6 +3742,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         finally:
             self._reset_voice_timeout(guild_id)
 
+    def voice_member_display_name(self, guild_id: int, user_id) -> Optional[str]:
+        """Display name of a guild member, as text messages carry it (``author.display_name``)."""
+        guild = self._client.get_guild(int(guild_id)) if self._client else None
+        member = guild.get_member(int(user_id)) if guild else None
+        return getattr(member, "display_name", None) or None
+
     async def get_user_voice_channel(self, guild_id: int, user_id: str):
         """Return the voice channel the user is currently in, or None."""
         if not self._client:

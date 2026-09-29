@@ -232,14 +232,22 @@ class GatewayVoiceMixin:
     @staticmethod
     def _voice_input_source(adapter, guild_id: int, user_id: int, text_ch_id) -> SessionSource:
         """Bound text channel's own source when available (voice shares the text conversation's
-        session), else a synthetic one."""
+        session), else a synthetic one. The speaker's name is the display name a text message from
+        them carries: the session-context system prompt renders it, so the bare user ID made every
+        switch between typing and talking re-prefill the whole conversation (prompt-cache miss)."""
+        name = None
+        with suppress(Exception):
+            if callable(lookup := getattr(adapter, "voice_member_display_name", None)):
+                name = lookup(guild_id, user_id)
         if source_data := getattr(adapter, "_voice_sources", {}).get(guild_id):
             source = SessionSource.from_dict(source_data)
-            source.user_id = source.user_name = str(user_id)
+            same_user = source.user_id == str(user_id)
+            source.user_id = str(user_id)
+            source.user_name = name or (source.user_name if same_user else None) or str(user_id)
         else:
             source = SessionSource(
                 platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),
-                user_name=str(user_id), chat_type="channel",
+                user_name=name or str(user_id), chat_type="channel",
                 profile=getattr(adapter, "_owner_profile", None))
         # Serialization drops transport provenance; auth must still follow the receiving bot.
         source._transport_adapter_ref = weakref.ref(adapter)

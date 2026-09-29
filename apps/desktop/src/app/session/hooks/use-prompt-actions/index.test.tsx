@@ -6203,3 +6203,206 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     )
   })
 })
+
+describe('usePromptActions transport-loss submit reconcile (#123079)', () => {
+  // The WS dying mid-submit rejects the unbounded prompt.submit RPC even
+  // though the backend keeps running the turn. The catch must ASK the
+  // gateway before painting a terminal card.
+  const CLOSED = new Error('Hermes gateway connection closed')
+  const HEARTBEAT = new Error('WebSocket heartbeat acknowledgement timed out')
+
+  afterEach(() => {
+    cleanup()
+    $connection.set(null)
+    vi.restoreAllMocks()
+  })
+
+  async function transportLostSubmit({
+    activeList,
+    probeRejects = false,
+    submitError = CLOSED
+  }: {
+    activeList?: { sessions: Array<{ id?: string; session_key?: string; status?: string }> }
+    probeRejects?: boolean
+    submitError?: Error
+  }) {
+    const states: Record<string, unknown>[] = []
+    const calls: string[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      calls.push(method)
+
+      if (method === 'prompt.submit') {
+        throw submitError
+      }
+
+      if (method === 'session.active_list') {
+        if (probeRejects) {
+          throw new Error('Hermes gateway is not connected')
+        }
+
+        return (activeList ?? { sessions: [] }) as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={{ current: false } as MutableRefObject<boolean>}
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const result = handle!.submitText('keep running my turn')
+    await vi.waitFor(() => {
+      expect(calls).toContain('session.active_list')
+    })
+    await result
+
+    return {
+      busyAfter: states.at(-1),
+      calls,
+      states,
+      submittedCard: states.some(state =>
+        (state.messages as Array<{ error?: string }>).some(message => message.error)
+      )
+    }
+  }
+
+  it('keeps the turn live (no error card) when the backend reports it working', async () => {
+    const { busyAfter, submittedCard } = await transportLostSubmit({
+      activeList: { sessions: [{ id: RUNTIME_SESSION_ID, session_key: RUNTIME_SESSION_ID, status: 'working' }] }
+    })
+
+    expect(submittedCard).toBe(false)
+    expect(busyAfter?.busy).toBe(true)
+    expect(busyAfter?.awaitingResponse).toBe(true)
+  })
+
+  it('settles with no error card when the backend answers without the runtime', async () => {
+    const { busyAfter, submittedCard } = await transportLostSubmit({
+      activeList: { sessions: [{ id: 'some-other-runtime', session_key: 'other', status: 'working' }] }
+    })
+
+    expect(submittedCard).toBe(false)
+    expect(busyAfter?.busy).toBe(false)
+    expect(busyAfter?.awaitingResponse).toBe(false)
+  })
+
+  it('falls through to a retryable streaming card when the probe never answers', async () => {
+    vi.useFakeTimers()
+    try {
+      const states: Record<string, unknown>[] = []
+
+      const requestGateway = vi.fn(async (method: string) => {
+        if (method === 'prompt.submit') {
+          throw CLOSED
+        }
+
+        throw new Error('Hermes gateway is not connected')
+      })
+
+      let handle: HarnessHandle | null = null
+      await actRender(
+        <Harness
+          onReady={h => (handle = h)}
+          onSeedState={s => states.push(s)}
+          refreshSessions={async () => undefined}
+          requestGateway={requestGateway}
+        />
+      )
+
+      const result = handle!.submitText('dead gateway')
+      await vi.advanceTimersByTimeAsync(21_000)
+      await result
+
+      const card = states
+        .flatMap(state => (state.messages as Array<Record<string, unknown>>) ?? [])
+        .find(message => message.error)
+
+      expect(card).toBeTruthy()
+      expect(card?.error).toBe('Hermes gateway connection closed')
+      expect(card?.errorSurface).toEqual({ code: 'transport_closed', layer: 'streaming', retryable: true })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('also reconciles a heartbeat timeout like a socket close', async () => {
+    const { submittedCard } = await transportLostSubmit({
+      activeList: { sessions: [{ id: RUNTIME_SESSION_ID, session_key: RUNTIME_SESSION_ID, status: 'working' }] },
+      submitError: HEARTBEAT
+    })
+
+    expect(submittedCard).toBe(false)
+  })
+
+  it('keeps the definitive card for a non-transport error (provider 401)', async () => {
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('Unauthorized: invalid api key')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    expect(await handle!.submitText('bad key')).toBe(false)
+
+    const card = states
+      .flatMap(state => (state.messages as Array<Record<string, unknown>>) ?? [])
+      .find(message => message.error)
+
+    expect(card).toBeTruthy()
+    expect(card?.errorSurface).toBeUndefined()
+    // No transport probe for a provider failure.
+    expect(requestGateway.mock.calls.every(([method]: [string]) => method !== 'session.active_list')).toBe(true)
+  })
+
+  it('does not treat the pre-send not-connected refusal as a transport loss', async () => {
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('Hermes gateway is not connected')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('never left the client')
+
+    const card = states
+      .flatMap(state => (state.messages as Array<Record<string, unknown>>) ?? [])
+      .find(message => message.error)
+
+    expect(card).toBeTruthy()
+    expect(requestGateway.mock.calls.every(([method]: [string]) => method !== 'session.active_list')).toBe(true)
+  })
+})

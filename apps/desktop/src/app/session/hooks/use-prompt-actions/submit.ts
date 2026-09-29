@@ -36,7 +36,7 @@ import {
   setMessages,
   touchSessionActivity
 } from '@/store/session'
-import { $sessionStates, $sessionTiles } from '@/store/session-states'
+import { $sessionStates, $sessionTiles, noteSessionEvent } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
@@ -49,6 +49,11 @@ import { resolveSessionProfile } from '../use-session-actions/utils'
 
 import { finalizeInterruptedMessages } from './rewind'
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
+import {
+  reconcileTransportLostTurn,
+  TRANSPORT_CLOSED_ERROR_SURFACE,
+  isTransportLossError
+} from './transport-loss'
 import {
   acquireSubmitInFlight,
   type GatewayRequest,
@@ -1005,6 +1010,63 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
+        // #123079: a transport death (socket closed / heartbeat timeout)
+        // mid-submit rejects the RPC even though the backend keeps running
+        // the turn — the submit window is 30 min, so this rejection is never
+        // a prompt failure. Ask the gateway which it was before showing a
+        // terminal card. (Pre-send refusals — 'gateway is not connected' —
+        // are not transport losses: nothing reached the backend.)
+        let transportClosed = false
+
+        if (sessionId && isTransportLossError(err)) {
+          const verdict = await reconcileTransportLostTurn({
+            foreground: targetIsCurrentView(),
+            requestGateway,
+            runtimeSessionId: sessionId,
+            storedSessionId: targetStoredSessionId ?? selectedStoredSessionIdRef.current
+          })
+
+          if (verdict === 'working') {
+            // The turn is live server-side: restore the busy state
+            // releaseBusy() just dropped and re-arm the silence watchdog —
+            // events resume on reconnect, and the 45s settle owns a backend
+            // that stops producing them.
+            if (targetIsCurrentView()) {
+              setMutableRef(busyRef, true)
+              scope.setBusy(true)
+              scope.setAwaitingResponse(true)
+            }
+
+            noteSessionEvent(sessionId)
+
+            return true
+          }
+
+          if (verdict === 'settled-elsewhere') {
+            // The backend answered: the turn is over (or never started). No
+            // error card — the durable terminal state is repainted by the
+            // reconnect backstop's transcript refresh.
+            updateSessionState(
+              sessionId,
+              state => ({
+                ...state,
+                busy: false,
+                awaitingResponse: false,
+                pendingBranchGroup: null,
+                turnStartedAt: null
+              }),
+              targetStoredSessionId
+            )
+
+            return false
+          }
+
+          // 'unreachable' — the gateway never answered: fall through to the
+          // card, tagged as a retryable streaming drop rather than a
+          // definitive prompt failure.
+          transportClosed = true
+        }
+
         const message = inlineErrorMessage(err, copy.promptFailed)
         const occurredAt = Date.now() / 1000
         // Another surface owns the session (#106217): a deterministic gateway
@@ -1023,6 +1085,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 parts: [],
                 error: message || copy.promptFailed,
                 ...(notOwned && { errorSurface: { layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false } }),
+                ...(!notOwned && transportClosed && { errorSurface: TRANSPORT_CLOSED_ERROR_SURFACE }),
                 branchGroupId: state.pendingBranchGroup ?? undefined,
                 completedAt: occurredAt,
                 timestamp: occurredAt

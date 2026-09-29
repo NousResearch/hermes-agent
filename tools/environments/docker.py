@@ -326,6 +326,23 @@ _TEARDOWN_LOCK = threading.Lock()
 
 _S6_INIT_ENTRYPOINTS = ("/init", "/package/admin/s6-overlay/command/init")
 
+# Runs as root inside a just-started container: create the passwd-declared home of the
+# image's non-root default user when it is missing. Non-root images (e.g.
+# hermes-sandbox:desktop's ``pn``) declare HOME=/home/pn but start with a nonexistent,
+# uncreatable $HOME: our non-persistent mounts overlay /home with a fresh root-owned
+# tmpfs, persistent mode binds the host home at /root, and the user has no sudo (#127341).
+# Idempotent and fail-quiet: root, unknown users, unusable homes and read-only mounts exit 0.
+_IMAGE_USER_HOME_SCRIPT = (
+    'u="$1"; case "$u" in ""|root|0) exit 0 ;; esac; '
+    'entry=$(getent passwd "$u" 2>/dev/null) || exit 0; '
+    '[ -n "$entry" ] || exit 0; '
+    'uid=$(printf \'%s\\n\' "$entry" | cut -d: -f3); '
+    'gid=$(printf \'%s\\n\' "$entry" | cut -d: -f4); '
+    'home=$(printf \'%s\\n\' "$entry" | cut -d: -f6); '
+    'case "$home" in ""|/) exit 0 ;; esac; '
+    '[ -d "$home" ] || mkdir -p "$home" || exit 0; '
+    'chown "$uid:$gid" "$home" 2>/dev/null || true')
+
 
 _NO_NEW_PRIVILEGES_ARGS = ["--security-opt", "no-new-privileges"]
 
@@ -694,6 +711,7 @@ class DockerEnvironment(BaseEnvironment):
             task_label, profile_name, egress_label, network)
         if not reused:
             self._container_id = self._docker_run(cwd)
+        self._ensure_image_user_home()
 
         # Init-time env forwarding args seed the snapshot.
         self._init_env_args = self._build_init_env_args()
@@ -973,6 +991,33 @@ class DockerEnvironment(BaseEnvironment):
         logger.info("Started container %s (%s)", container_name, container_id[:12])
         return container_id
 
+    def _ensure_image_user_home(self) -> None:
+        """After container start, create the image user's passwd-declared $HOME (#127341).
+
+        Applies to both fresh and reattached containers, so pre-fix containers heal on the
+        next session too. Best-effort by design: root images, host-uid overrides whose uid
+        the container cannot resolve, and shell-less images all degrade to the pre-fix
+        behaviour instead of blocking the sandbox start.
+        """
+        docker_exe = getattr(self, "_docker_exe", None)
+        if not self._container_id or not docker_exe:
+            return
+        user_result = _docker_query(
+            [docker_exe, "inspect", "-f", "{{.Config.User}}", self._container_id],
+            timeout=15,
+            fail="Docker: could not inspect the container user for $HOME bootstrap: %s",
+            nonzero="Docker: container user inspect exited %d (stderr=%s)")
+        user = (user_result.stdout or "").strip() if user_result is not None else ""
+        name = user.split(":", 1)[0].strip()
+        if not name or name in ("root", "0"):
+            return
+        _docker_query(
+            [docker_exe, "exec", "-u", "0", self._container_id, "sh", "-c",
+             _IMAGE_USER_HOME_SCRIPT, "hermes-home", name],
+            timeout=30,
+            fail="Docker: could not ensure $HOME for image user %r: %s", fail_args=(name,),
+            nonzero="Docker: $HOME bootstrap for image user %r exited %d (stderr=%s)")
+
     # --- Env forwarding ---
     def _docker_client_env(self, values: dict[str, str]) -> dict[str, str] | None:
         """Env for the docker-client subprocess carrying forwarded values (pairs with name-only
@@ -1087,6 +1132,7 @@ class DockerEnvironment(BaseEnvironment):
 
         try:
             self._snapshot_ready = False
+            self._ensure_image_user_home()
             self.init_session()
         except Exception as e:
             logger.error("Recovery: init_session failed in new container: %s", e)

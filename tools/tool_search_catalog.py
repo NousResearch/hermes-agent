@@ -4,6 +4,7 @@ defs plus the budgeted, byte-stable catalog listing embedded in the bridge."""
 from __future__ import annotations
 
 import functools
+import logging
 import math
 import re
 import threading
@@ -12,6 +13,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import snowballstemmer
+
+logger = logging.getLogger(__name__)
 
 # Reserved bridge names: a user/plugin/MCP tool may not take them (registry override
 # protection rejects such registrations).
@@ -321,6 +324,12 @@ def build_catalog_listing_with_form(
     def collapsed_form(modes: Dict[str, str]) -> str:
         return "groups" if all(m == "summary" for m in modes.values()) else "mixed"
 
+    if shown is not None:  # accept registry names too: "mcp-github" pins the "github" heading
+        shown = frozenset(_listing_group_label(name) for name in shown)
+        if shown and groups and not shown & set(groups):
+            logger.warning(
+                "tools.tool_search.listing_groups %s matches no listing group, so every group "
+                "is collapsed. Use listing headings: %s", sorted(shown), ", ".join(sorted(groups)))
     forced = {lbl for lbl in groups if shown is not None and lbl not in shown}
     for mode in ("full", "names"):  # 1. everything full; 2. everything names-only
         modes = {lbl: "summary" if lbl in forced else mode for lbl in groups}

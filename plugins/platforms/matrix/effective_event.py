@@ -53,6 +53,14 @@ def event_content(event: Any) -> dict[str, Any]:
     return {}
 
 
+def event_unsigned(event: Any) -> dict[str, Any]:
+    unsigned = event.get("unsigned") if isinstance(event, dict) else getattr(event, "unsigned", None)
+    serialize = getattr(unsigned, "serialize", None)
+    if callable(serialize):
+        unsigned = serialize()
+    return unsigned if isinstance(unsigned, dict) else {}
+
+
 def _replacement(raw: dict[str, Any]) -> dict[str, Any] | None:
     unsigned = raw.get("unsigned")
     relations = unsigned.get("m.relations") if isinstance(unsigned, dict) else None

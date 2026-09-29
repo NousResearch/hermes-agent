@@ -4789,16 +4789,21 @@ class TestCustomEndpointApiKeyInheritance:
 
         assert captured.get("api_key") == "no-key-required"
 
-    @pytest.mark.parametrize("aux_base_url,inherits", [
-        ("https://gw.example.com:443/v2", True),
-        ("http://gw.example.com/v1", False),
-        ("https://gw.example.com:8443/v1", False),
-    ])
-    def test_main_key_follows_only_the_identical_origin(self, tmp_path, monkeypatch, aux_base_url, inherits):
-        """Same hostname is not the same endpoint: a different scheme or port must not
-        receive the main key; the identical origin (default port spelled out) still does.
+    @pytest.mark.parametrize("aux_base_url,live_key,inherits", [
+        ("https://gw.example.com:443/v2", None, True),
+        ("http://gw.example.com/v1", None, False),
+        ("https://gw.example.com:8443/v1", None, False),
+        ("http://127.0.0.1:8080/v1", "", False),
+        ("http://127.0.0.1:8080/v1", lambda: "sk-live-cmd-key", False),
+    ], ids=["same-origin", "http-downgrade", "other-port", "live-keyless", "live-key_cmd"])
+    def test_main_key_goes_only_to_its_own_origin(self, tmp_path, monkeypatch, aux_base_url, live_key, inherits):
+        """Same hostname is not the same endpoint: a different scheme or port must not receive
+        the main key; the identical origin (default port spelled out) still does. A live main
+        runtime (a /model switch to a keyless local server, a key_cmd) is the anchor, and
+        config.yaml's key belongs to config.yaml's base_url, never to the live endpoint.
         Real config.yaml under a temp HERMES_HOME, resolved through the task route."""
         import hermes_yaml as yaml
+        from agent.auxiliary_client import reset_runtime_main, set_runtime_main
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -4810,44 +4815,27 @@ class TestCustomEndpointApiKeyInheritance:
             "auxiliary": {"compression": {"provider": "custom", "base_url": aux_base_url, "model": "aux-model"}},
         }))
         monkeypatch.setenv("HERMES_HOME", str(home))
-
-        client, model = get_text_auxiliary_client("compression")
+        token = (None if live_key is None else
+                 set_runtime_main("custom", "local-model", base_url="http://127.0.0.1:8080/v1", api_key=live_key))
+        try:
+            client, model = get_text_auxiliary_client("compression")
+        finally:
+            if token is not None:
+                reset_runtime_main(token)
 
         assert model == "aux-model"
         assert (client.api_key == "sk-main-config-key") is inherits
 
-    @pytest.mark.parametrize("live_key", ["", lambda: "sk-live-cmd-key"], ids=["keyless", "key_cmd"])
-    def test_inherited_key_belongs_to_the_anchor_endpoint(self, tmp_path, monkeypatch, live_key):
-        """The live main runtime (a /model switch, a keyless local server, a key_cmd) is the
-        anchor; config.yaml's key belongs to config.yaml's base_url and must not ride along to
-        the live endpoint."""
-        import hermes_yaml as yaml
-        from agent.auxiliary_client import reset_runtime_main, set_runtime_main
-
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-        home = tmp_path / ".hermes"
-        home.mkdir()
-        (home / "config.yaml").write_text(yaml.safe_dump({
-            "model": {"provider": "custom", "base_url": "https://gw.example.com/v1",
-                      "api_key": "sk-main-config-key", "default": "main-model"},
-            "auxiliary": {"compression": {"provider": "custom", "base_url": "http://127.0.0.1:8080/v1",
-                                          "model": "aux-model"}},
-        }))
-        monkeypatch.setenv("HERMES_HOME", str(home))
-        token = set_runtime_main("custom", "local-model", base_url="http://127.0.0.1:8080/v1", api_key=live_key)
-        try:
-            client, _ = get_text_auxiliary_client("compression")
-        finally:
-            reset_runtime_main(token)
-
-        assert client.api_key != "sk-main-config-key"
-
-    @pytest.mark.parametrize("aux_base_url", ["https://gw.example.com/v1", None],
-                             ids=["explicit-base-url", "runtime-endpoint"])
-    def test_cached_client_follows_the_live_main_credential(self, monkeypatch, aux_base_url):
-        """Auxiliary requests go through the client cache: a client built while one runtime was
-        live must not be served, carrying that runtime's key, once the live runtime changed."""
+    @pytest.mark.parametrize("aux_base_url,explicit_key", [
+        ("https://gw.example.com/v1", None), (None, None),
+        ("https://gw.example.com/v1", "   "), (None, "   "), (None, "sk-explicit-aux"),
+    ], ids=["explicit-base-url", "runtime-endpoint", "explicit-base-url-blank-key",
+            "runtime-endpoint-blank-key", "runtime-endpoint-explicit-key"])
+    def test_cached_client_carries_only_the_live_main_credential(self, monkeypatch, aux_base_url, explicit_key):
+        """Auxiliary requests go through the client cache: a client built while one runtime was live
+        must not be served, carrying that runtime's key, once the live runtime changed. The cache and
+        the client build agree on when the main credential is borrowed: a blank explicit key is
+        keyless, and the runtime-endpoint shape never uses the explicit key."""
         import agent.auxiliary_client as aux
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -4858,7 +4846,7 @@ class TestCustomEndpointApiKeyInheritance:
             for live_key in ("sk-first-session", "sk-second-session", ""):
                 token = aux.set_runtime_main("custom", "main-model", base_url="https://gw.example.com/v1", api_key=live_key)
                 try:
-                    client, _ = aux._get_cached_client("custom", "aux-model", base_url=aux_base_url)
+                    client, _ = aux._get_cached_client("custom", "aux-model", base_url=aux_base_url, api_key=explicit_key)
                 finally:
                     aux.reset_runtime_main(token)
                 served.append(getattr(client, "api_key", None))
@@ -4868,32 +4856,6 @@ class TestCustomEndpointApiKeyInheritance:
 
         assert served[:2] == ["sk-first-session", "sk-second-session"]
         assert served[2] not in ("sk-first-session", "sk-second-session")
-
-    @pytest.mark.parametrize("aux_base_url,explicit_key", [
-        ("https://gw.example.com/v1", "   "), (None, "   "), (None, "sk-explicit-aux"),
-    ], ids=["explicit-base-url-blank-key", "runtime-endpoint-blank-key", "runtime-endpoint-explicit-key"])
-    def test_cache_separates_runtimes_whenever_the_build_borrows(self, monkeypatch, aux_base_url, explicit_key):
-        """The cache and the client build must agree on when the main credential is borrowed: a
-        blank explicit key is keyless, and the runtime-endpoint shape never uses the explicit key."""
-        import agent.auxiliary_client as aux
-
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-        aux.shutdown_cached_clients()
-        served = []
-        try:
-            for live_key in ("sk-first-session", "sk-second-session"):
-                token = aux.set_runtime_main("custom", "main-model", base_url="https://gw.example.com/v1", api_key=live_key)
-                try:
-                    client, _ = aux._get_cached_client("custom", "aux-model", base_url=aux_base_url, api_key=explicit_key)
-                finally:
-                    aux.reset_runtime_main(token)
-                served.append(getattr(client, "api_key", None))
-        finally:
-            aux.shutdown_cached_clients()
-            aux.clear_runtime_main()
-
-        assert served == ["sk-first-session", "sk-second-session"]
 
 
 class TestNoProgressTimeoutTaskConfigGating:

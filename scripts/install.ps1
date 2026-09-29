@@ -619,6 +619,43 @@ function Invoke-Native([scriptblock]$Command) {
     & $Command
 }
 
+# Windows PowerShell 5.1 decodes redirected native output with the active
+# console code page. uv emits managed-Python paths as UTF-8, so capturing its
+# stdout through the normal pipeline corrupts non-ASCII profile names (for
+# example, `ł` becomes `┼é`). Use Process' explicit UTF-8 decoder for the
+# machine-readable path lookup instead.
+function Invoke-Utf8NativeCapture {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = ($Arguments | ForEach-Object {
+        '"' + ($_ -replace '(\\*)"', '$1$1\\"' -replace '(\\+)$', '$1$1') + '"'
+    }) -join ' '
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $psi.StandardOutputEncoding = $utf8
+    $psi.StandardErrorEncoding = $utf8
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    try {
+        [void]$process.Start()
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        $global:LASTEXITCODE = $process.ExitCode
+        if ($stderr) { [Console]::Error.Write($stderr) }
+        return $stdout -split "`r?`n" | Where-Object { $_ -ne '' }
+    } finally {
+        $process.Dispose()
+    }
+}
+
 # Interactive runs collapse child-process output (git, uv, pm, the builds)
 # into one status line. CI, -Verbose and redirected output -- the
 # Hermes-Setup -Json driver, E2E transcripts -- keep the full stream those
@@ -929,11 +966,11 @@ function Get-BootstrapPython {
     # A bare version lets uv pick emulated x86_64 on Windows-on-ARM.
     $pyArch = if ((Get-WindowsArch) -eq 'arm64') { 'aarch64' } else { 'x86_64' }
     $pyRequest = "cpython-$pyVersion-windows-$pyArch-none"
-    $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
+    $bootPy = Invoke-Utf8NativeCapture $uv @('python', 'find', '--managed-python', '--no-project', $pyRequest)
     if ($LASTEXITCODE -or -not $bootPy) {
         Invoke-Logged "Downloading Python $pyVersion" { & $uv python install --no-bin --no-registry $pyRequest }
         if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
-        $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
+        $bootPy = Invoke-Utf8NativeCapture $uv @('python', 'find', '--managed-python', '--no-project', $pyRequest)
     }
     if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
     $script:BootstrapPython = $bootPy.Trim()

@@ -435,6 +435,29 @@ class TestRunDebugShareRedaction:
         assert any("backup-model" in text for text in uploads)  # the dump really ran
         assert not [text for text in uploads if fallback_key in text]
 
+    @pytest.mark.parametrize(("yaml_value", "secret"), [
+        ("87419362508741936250", "87419362508741936250"),  # unquoted: YAML int
+        ("'opaque***Fallback0123456789'", "opaque***Fallback0123456789"),  # looks pre-masked
+        ("{value: nestedOpaque0123456789abcdef}", "nestedOpaque0123456789abcdef"),
+    ])
+    def test_fallback_api_key_masked_whatever_its_yaml_shape(self, hermes_home_with_secret, yaml_value, secret):
+        """The runtime ``str()``s any ``api_key`` value (fallback_config.resolve_entry_api_key), so the
+        dump masks the field itself rather than relying on text redaction to recognise the value."""
+        from hermes_cli.debug import _capture_dump, collect_debug_report, collect_share_bundle
+
+        (hermes_home_with_secret / "config.yaml").write_text(
+            "fallback_providers:\n"
+            "  - provider: custom\n"
+            "    model: backup-model\n"
+            f"    api_key: {yaml_value}\n", encoding="utf-8")
+
+        texts = [_capture_dump(redact=False),  # `hermes dump` stdout, as printed
+                 *collect_share_bundle(log_lines=20).values(),
+                 collect_debug_report(log_lines=20, dump_text=_capture_dump())]
+
+        assert "backup-model" in texts[0]
+        assert not [text for text in texts if secret in text]
+
     @pytest.mark.parametrize("base_url", [
         "https://user:{s}@backup.example/v1",
         "https://backup.example/v1?key={s}",
@@ -462,6 +485,29 @@ class TestRunDebugShareRedaction:
 
         assert all("backup-model" in text and "backup.example" in text for text in texts[:2])
         assert not [text for text in texts if secret in text]
+
+    def test_capture_dump_is_independent_strict_redaction_boundary(self):
+        """A future dump formatting mistake cannot leak through debug upload paths."""
+        from hermes_cli.debug import _capture_dump
+
+        raw_key = "opaqueBoundaryKeyABC123456789"
+        raw_password = "boundaryPasswordABC123456789"
+        raw_signature = "boundarySignatureABC123456789"
+
+        def leaky_dump(_args):
+            print(
+                "{'api_key': '" + raw_key + "', "
+                "'base_url': 'https://user:" + raw_password
+                + "@example.test/v1?X-Amz-Signature=" + raw_signature + "'}"
+            )
+
+        with patch("hermes_cli.dump.run_dump", side_effect=leaky_dump):
+            safe = _capture_dump()
+            raw = _capture_dump(redact=False)
+
+        for secret in (raw_key, raw_password, raw_signature):
+            assert secret not in safe
+            assert secret in raw
 
     def test_default_share_includes_redaction_banner(
         self, hermes_home_with_secret, capsys

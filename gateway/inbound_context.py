@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Protocol
+import asyncio
+from dataclasses import dataclass, field
+from typing import Any, Callable, Protocol, TypeVar
 
 from gateway.platforms.event import MessageEvent
+
+_T = TypeVar("_T")
+
+_LOOP_CALL_TIMEOUT_SECONDS = 10.0
 
 
 class InboundContextSnapshot(Protocol):
@@ -26,6 +31,12 @@ class QuotedImageEnrichment:
 
 @dataclass
 class PreparedInboundMessage:
+    """A new input whose external context is rendered again before model use.
+
+    The snapshot reads platform state that belongs to the event loop that
+    prepared the input. Calls from any other thread run on that loop.
+    """
+
     snapshot: InboundContextSnapshot
     event: MessageEvent
     text: str
@@ -34,8 +45,40 @@ class PreparedInboundMessage:
     message_text: str | None = None
     persist_user_message: str | None = None
     persist_user_timestamp: float | None = None
+    loop: asyncio.AbstractEventLoop = field(
+        default_factory=asyncio.get_running_loop, repr=False, compare=False
+    )
 
     def retained_image_paths(self, paths: list[str]) -> list[str]:
+        return self._on_loop(self._retained_image_paths, paths)
+
+    def revalidate_native_input(
+        self, runner: Any, message: str, paths: list[str]
+    ) -> tuple[str, list[str]]:
+        return self._on_loop(self._revalidate_native_input, runner, message, paths)
+
+    def render(self, runner: Any, *, timestamps: bool = False) -> str:
+        return self._on_loop(self._render, runner, timestamps)
+
+    def _on_loop(self, call: Callable[..., _T], *args: Any) -> _T:
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is self.loop or not self.loop.is_running():
+            return call(*args)
+
+        async def run() -> _T:
+            return call(*args)
+
+        future = asyncio.run_coroutine_threadsafe(run(), self.loop)
+        try:
+            return future.result(timeout=_LOOP_CALL_TIMEOUT_SECONDS)
+        except TimeoutError:
+            future.cancel()
+            raise
+
+    def _retained_image_paths(self, paths: list[str]) -> list[str]:
         current = self.snapshot.reply_image_paths()
         authored = self.event.authored_media().media_urls
         quoted = {image.path for image in self.quoted_images}
@@ -45,16 +88,16 @@ class PreparedInboundMessage:
             if path not in quoted or path in current or path in authored
         ]
 
-    def revalidate_native_input(
+    def _revalidate_native_input(
         self, runner: Any, message: str, paths: list[str]
     ) -> tuple[str, list[str]]:
         previous = self.message_text
-        current = self.render(runner, timestamps=True)
+        current = self._render(runner, True)
         if previous is not None and previous in message:
             current = message.replace(previous, current, 1)
-        return current, self.retained_image_paths(paths)
+        return current, self._retained_image_paths(paths)
 
-    def render(self, runner: Any, *, timestamps: bool = False) -> str:
+    def _render(self, runner: Any, timestamps: bool) -> str:
         text = self.text
         current = self.snapshot.reply_image_paths()
         descriptions = [

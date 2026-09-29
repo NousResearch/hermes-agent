@@ -941,3 +941,132 @@ async def test_typed_edit_callback_resolves_current_native_input(
         previous_history,
         "cached system prefix",
     )
+
+
+class _WorkerScanProbe:
+    """A tracked event state that blocks a scan from a worker thread.
+
+    While the worker waits, the event loop stores a newly observed event,
+    which is what a sync callback does when a message arrives.
+    """
+
+    room_id_value = "!elsewhere:example.org"
+    event_id = "$probe"
+
+    def __init__(self, cache, loop):
+        import threading
+
+        self.cache, self.loop = cache, loop
+        self.loop_thread = threading.get_ident()
+        self.resumed = threading.Event()
+        self.worker_reads = 0
+
+    def _arrive(self):
+        self.cache.retain(ROOM, "$arrived")
+        self.resumed.set()
+
+    @property
+    def room_id(self):
+        import threading
+
+        if threading.get_ident() != self.loop_thread:
+            self.worker_reads += 1
+            self.loop.call_soon_threadsafe(self._arrive)
+            assert self.resumed.wait(2), "the event loop did not store the arriving event"
+        return self.room_id_value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["turn-message", "native-image"])
+async def test_worker_thread_input_preparation_reads_matrix_state_on_the_loop(
+    tmp_path, monkeypatch, stage
+):
+    import base64
+
+    image = tmp_path / "quoted.png"
+    image.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
+        )
+    )
+    adapter = _make_adapter()
+    adapter._get_display_name = AsyncMock(return_value="Alice")
+    adapter._is_sender_authorized = lambda *_args, **_kwargs: True
+    adapter._client = None
+    cache = adapter._event_context_cache
+    cache.store(
+        ROOM,
+        "$target",
+        MatrixEventContext(
+            SENDER,
+            "quoted parent",
+            str(image),
+            "image/png",
+            is_image=True,
+            replacement_id="$latest",
+        ),
+    )
+    source = SessionSource(Platform.MATRIX, ROOM, chat_type="dm", user_id=SENDER)
+    event = await adapter._build_inbound_event(
+        ROOM,
+        SENDER,
+        "$current",
+        "question",
+        {"body": "question"},
+        {"m.in_reply_to": {"event_id": "$target"}},
+        ctx=("question", True, "dm", None, "Alice", source),
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    runner.adapters = {Platform.MATRIX: adapter}
+    state = runner._session_state("session")
+
+    async def enrich(_source, _key, text, paths):
+        state.persistent.native_image_paths = list(paths)
+        return text
+
+    monkeypatch.setattr(runner, "_enrich_inbound_images", enrich)
+    message = await runner._prepare_inbound_message_text(
+        event=event, source=source, history=[{}], session_key="session"
+    )
+    history = [{"role": "user", "content": "previous turn"}]
+    ctx = TurnContext(
+        source=source,
+        message=message,
+        history=history,
+        context_prompt="cached system prefix",
+        session_key="session",
+        session_id="id",
+        input_snapshot=event._prepared_inbound,
+    )
+    turn = TurnRunner(runner, ctx)
+    captured = {}
+
+    def model_input(text, **_kwargs):
+        captured["text"] = text
+        return {"final_response": "ok"}
+
+    agent = SimpleNamespace(run_conversation=model_input)
+    prepared = None if stage == "turn-message" else turn._prepare_turn_message(history)
+
+    def work():
+        if prepared is None:
+            return turn._prepare_turn_message(history)
+        return turn._run_conversation_with_approval(agent, history, [], *prepared)
+
+    probe = _WorkerScanProbe(cache, asyncio.get_running_loop())
+    cache._active_states.add(probe)
+
+    await asyncio.wait_for(asyncio.to_thread(work), timeout=5)
+
+    rendered = captured.get("text", ctx.message)
+    text = (
+        rendered
+        if isinstance(rendered, str)
+        else "\n".join(part["text"] for part in rendered if part["type"] == "text")
+    )
+    assert (probe.worker_reads, "quoted parent" in text, "question" in text) == (
+        0,
+        True,
+        True,
+    )

@@ -1,18 +1,53 @@
 import { isMissingHealthEndpointError } from './backend-health'
+import { clampRemoteLivenessTimeoutMs, REMOTE_LIVENESS_TIMEOUT_DEFAULT_MS } from './remote-liveness-timeout'
 
-export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
+let currentRemoteLivenessTimeoutMs = REMOTE_LIVENESS_TIMEOUT_DEFAULT_MS
+
+/**
+ * The live remote liveness/dispatch probe timeout (ms). A device-local
+ * Settings preference (see remote-liveness-timeout.ts); main seeds it at
+ * startup from the persisted preference (or the legacy
+ * HERMES_REMOTE_LIVENESS_TIMEOUT_MS env var / 10s default) and pushes a new
+ * value here on every Settings save — every consumer below reads live so a
+ * host under transient load (spawn-under-load starvation, #121941) can raise
+ * the budget without an app restart.
+ */
+export function getRemoteLivenessTimeoutMs(): number {
+  return currentRemoteLivenessTimeoutMs
+}
+
+/** Set the live timeout; returns the clamped value actually in force. */
+export function setRemoteLivenessTimeoutMs(ms: number): number {
+  currentRemoteLivenessTimeoutMs = clampRemoteLivenessTimeoutMs(ms)
+
+  return currentRemoteLivenessTimeoutMs
+}
+
 // Dispatch is synchronous user intent: a cached descriptor must prove its
 // forwarded endpoint is alive before it can be returned. Probe cheap
 // /api/health — not /api/status, whose cold payload (gateway probe, topology,
 // state.db session count) on a fresh SSH forward routinely runs seconds — and
 // reuse the background liveness budget so a quiet-box cold-start (~6-8s) can
 // finish instead of failing the probe and kicking off a reconnect storm.
-export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = REMOTE_LIVENESS_TIMEOUT_MS
+export function getPooledRemoteDispatchProbeTimeoutMs(): number {
+  return getRemoteLivenessTimeoutMs()
+}
+
 export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // Even at the capped retry path, consecutive liveness observations are at most
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
 // One minute keeps a continuous outage together without carrying old failures.
 export const REMOTE_LIVENESS_FAILURE_WINDOW_MS = 60_000
+
+// The 48s spacing (and so the 60s window) assumed the fixed 10s probe timeout.
+// Now that the probe timeout is a live Settings value (up to 120s, #121941),
+// the fixed window alone can no longer span a full failure-to-failure
+// interval, which would silently reset the streak before it ever reaches
+// REMOTE_LIVENESS_FAILURE_LIMIT. Track the live timeout so the window still
+// covers one interval at every setting, not just the default.
+export function getRemoteLivenessFailureWindowMs(): number {
+  return Math.max(REMOTE_LIVENESS_FAILURE_WINDOW_MS, getRemoteLivenessTimeoutMs() * 3 + 20_000)
+}
 
 export interface RemoteLivenessFailure {
   failures: number
@@ -106,7 +141,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
 
     try {
       await probe(connection, '/api/health', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+        timeoutMs: getPooledRemoteDispatchProbeTimeoutMs()
       })
     } catch (healthError) {
       // A remote that predates /api/health would otherwise 404 every dispatch,
@@ -117,7 +152,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       }
 
       await probe(connection, '/api/status', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+        timeoutMs: getPooledRemoteDispatchProbeTimeoutMs()
       })
     }
   } catch (error) {
@@ -142,25 +177,23 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
  */
 export class RemoteLivenessTracker {
   readonly #failureLimit: number
-  readonly #failureWindowMs: number
+  // undefined means "track the live setting" (getRemoteLivenessFailureWindowMs());
+  // an explicit override pins the window regardless of later Settings changes.
+  readonly #failureWindowMsOverride: number | undefined
   readonly #failuresByBaseUrl = new Map<string, { failures: number; lastFailureAt: number }>()
   readonly #now: () => number
 
-  constructor(
-    failureLimit = REMOTE_LIVENESS_FAILURE_LIMIT,
-    failureWindowMs = REMOTE_LIVENESS_FAILURE_WINDOW_MS,
-    now: () => number = Date.now
-  ) {
+  constructor(failureLimit = REMOTE_LIVENESS_FAILURE_LIMIT, failureWindowMs?: number, now: () => number = Date.now) {
     if (!Number.isInteger(failureLimit) || failureLimit < 1) {
       throw new Error('Remote liveness failure limit must be a positive integer.')
     }
 
-    if (!Number.isFinite(failureWindowMs) || failureWindowMs < 1) {
+    if (failureWindowMs !== undefined && (!Number.isFinite(failureWindowMs) || failureWindowMs < 1)) {
       throw new Error('Remote liveness failure window must be positive.')
     }
 
     this.#failureLimit = failureLimit
-    this.#failureWindowMs = failureWindowMs
+    this.#failureWindowMsOverride = failureWindowMs
     this.#now = now
   }
 
@@ -170,8 +203,9 @@ export class RemoteLivenessTracker {
 
   recordFailure(baseUrl: string): RemoteLivenessFailure {
     const now = this.#now()
+    const failureWindowMs = this.#failureWindowMsOverride ?? getRemoteLivenessFailureWindowMs()
     const previous = this.#failuresByBaseUrl.get(baseUrl)
-    const withinFailureWindow = previous && now - previous.lastFailureAt <= this.#failureWindowMs
+    const withinFailureWindow = previous && now - previous.lastFailureAt <= failureWindowMs
     const failures = (withinFailureWindow ? previous.failures : 0) + 1
     const shouldReset = failures >= this.#failureLimit
 
@@ -234,7 +268,7 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
         }
 
         const connection = await entry.connectionPromise
-        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+        await probe(connection, '/api/status', { timeoutMs: getRemoteLivenessTimeoutMs() })
         tracker.recordSuccess(baseUrl)
       } catch {
         const failure = tracker.recordFailure(baseUrl)
@@ -309,7 +343,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
         }
 
         const connection = await entry.connectionPromise
-        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+        await probe(connection, '/api/status', { timeoutMs: getRemoteLivenessTimeoutMs() })
         tracker.recordSuccess(baseUrl)
 
         return
@@ -359,6 +393,15 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
 // signals can never queue back-to-back sweeps into a hot loop.
 export const POWER_RESUME_REVALIDATION_HOLDOFF_MS = 15_000
 
+// The 15s baseline assumes the default 10s probe timeout. Now that the probe
+// timeout is a live Settings value (up to 120s, #121941), the fixed baseline
+// alone can no longer stay "comfortably above" it, which would let a resume
+// sweep queue back-to-back onto one still awaiting its probes. Track the live
+// timeout so the guarantee above holds at every setting, not just the default.
+export function getPowerResumeRevalidationHoldoffMs(): number {
+  return Math.max(POWER_RESUME_REVALIDATION_HOLDOFF_MS, getPooledRemoteDispatchProbeTimeoutMs() + 5_000)
+}
+
 export interface AttachPowerResumeRemoteRevalidationOptions {
   log: (message: string) => void
   now?: () => number
@@ -389,7 +432,7 @@ export function attachPowerResumeRemoteRevalidation({
   const trigger = async (): Promise<void> => {
     const at = now()
 
-    if (lastKickAt !== null && at - lastKickAt < POWER_RESUME_REVALIDATION_HOLDOFF_MS) {
+    if (lastKickAt !== null && at - lastKickAt < getPowerResumeRevalidationHoldoffMs()) {
       return
     }
 
@@ -443,7 +486,7 @@ export async function revalidateRemoteConnection<TConnection extends RemoteConne
   const baseUrl = connection.baseUrl.replace(/\/+$/, '')
 
   try {
-    await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+    await probe(connection, '/api/status', { timeoutMs: getRemoteLivenessTimeoutMs() })
 
     if (currentConnectionPromise() !== connectionPromise) {
       return { ok: true, rebuilt: false }

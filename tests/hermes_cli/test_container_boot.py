@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -186,9 +187,21 @@ def test_registered_profile_has_finish_script(tmp_path: Path) -> None:
     assert "125" in text
 
 
-def test_register_service_overwrites_existing_slot(tmp_path: Path) -> None:
+def test_register_service_overwrites_existing_slot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A second reconciliation pass cleanly replaces an existing
-    slot (the tmp+rename publication overwrites the previous one)."""
+    slot (the tmp+rename publication overwrites the previous one).
+
+    The pre-deletion supervision guard is explicitly told the slot is DOWN:
+    a dev host has no s6-svstat, and the guard is fail-closed on UNKNOWN by
+    design — the rebuild contract is only valid when no supervision is live.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.container_boot.slot_supervision_state",
+        lambda scandir, name: "DOWN",
+    )
     scandir = tmp_path / "run-service"; scandir.mkdir()
     profile = _make_profile(tmp_path, "coder", state="running")
 

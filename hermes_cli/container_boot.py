@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Sequence
@@ -182,6 +183,102 @@ def _cmdline_argv(cmdline: Path) -> tuple[str, ...]:
     return tuple(part.decode("utf-8", "replace") for part in raw.split(b"\0") if part)
 
 
+def _pid_is_hermes_gateway(pid: int) -> Literal["MATCH", "STALE", "UNKNOWN"]:
+    """Read-only identity check for a recorded ``gateway.pid`` pid (anti PID-reuse).
+
+    ``os.kill(pid, 0)`` only proves *some* process exists: ``gateway.pid`` lives on the
+    persistent volume and survives container recreation, so the recorded number routinely
+    belongs to an unrelated process in the new PID namespace. Treating mere liveness as
+    "a gateway is running" would misclassify every fresh boot whose kernel happened to
+    reuse the number (boot-only reconcile refused → the container never comes up).
+
+    Identity is therefore verified against the argv the real gateways run with —
+    ``S6ServiceManager._render_run_script`` execs
+    ``hermes gateway run --replace`` (root slot) / ``hermes -p <p> gateway run --replace``
+    (named slot), and a stray manual ``hermes gateway run`` is an equally live gateway:
+
+    - MATCH:   the pid is a live Hermes gateway (boot must not reconcile);
+    - STALE:   no such process, or the process is demonstrably NOT a Hermes gateway
+               (pid reused by an unrelated binary, other python programs, ``gateway start``);
+    - UNKNOWN: the process exists but its identity cannot be read (unreadable
+               ``/proc/<pid>/cmdline``, empty argv, unexpected ``os.kill`` error).
+
+    Callers must never treat UNKNOWN as MATCH, and never treat a bare "pid exists" as
+    evidence either — STALE and UNKNOWN both let boot proceed.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "STALE"
+    except PermissionError:
+        pass  # exists, but not signallable by us — the /proc argv below still decides
+    except OSError:
+        return "UNKNOWN"
+    try:
+        argv = _cmdline_argv(Path(f"/proc/{pid}/cmdline"))
+    except OSError:
+        return "UNKNOWN"
+    if not argv:
+        return "UNKNOWN"
+    if Path(argv[0]).name != "hermes":
+        return "STALE"
+    # `... gateway run ...` — the long-running gateway process. `gateway start` is a
+    # short-lived dispatcher and never a live gateway; --replace is optional (a stray
+    # manual `hermes gateway run` is equally alive and equally protected).
+    for i in range(1, len(argv) - 1):
+        if argv[i] == "gateway" and argv[i + 1] == "run":
+            return "MATCH"
+    return "STALE"
+
+
+def _confirmed_live_gateway_pid(hermes_home: Path) -> int | None:
+    """A recorded gateway pid that is *confirmed* to be a live Hermes gateway, if any.
+
+    Mirrors the directory set ``reconcile_profile_gateways`` cleans runtime files for:
+    the root HERMES_HOME plus every named profile. A missing or garbage pid file, a dead
+    pid, or a pid reused by an unrelated process is STALE (fresh boot proceeds); only a
+    positive identity match counts. Unverifiable pids are logged and deliberately NOT
+    treated as live — at boot time the reconcile runs before any gateway could have
+    started in this PID namespace, so an unreadable cmdline belongs to an unrelated
+    process, and the deeper P0-2 guard (live-supervise refuse-rmtree) backstops the
+    pathological online case.
+    """
+    profile_dirs: list[Path] = [hermes_home]
+    profile_dirs.extend(entry for _, entry in _named_profile_dirs(hermes_home))
+    for profile_dir in profile_dirs:
+        pid_file = profile_dir / "gateway.pid"
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            continue  # missing / unreadable / garbage pid file → nothing to verify
+        state = _pid_is_hermes_gateway(pid)
+        if state == "MATCH":
+            return pid
+        if state == "UNKNOWN":
+            log.warning(
+                "reconcile: %s records pid %d whose identity cannot be verified "
+                "(unreadable /proc cmdline); continuing boot without treating it as a live gateway",
+                pid_file, pid,
+            )
+        # STALE → keep scanning; the pid number is not evidence of a live gateway.
+    return None
+
+
+def _existing_gateway_slots(scandir: Path) -> list[str]:
+    """Non-dot-prefixed ``gateway-*`` slot directories already in the scandir.
+
+    Boot-time the tmpfs scandir is empty; any such directory therefore proves an s6
+    supervision runtime is (or was) live. Dot-prefixed ``.gateway-*.tmp`` staging dirs
+    are excluded — they are this module's own atomic-publication scaffolding.
+    """
+    if not scandir.is_dir():
+        return []
+    return sorted(
+        entry.name for entry in scandir.iterdir()
+        if entry.is_dir() and entry.name.startswith("gateway-")
+    )
+
+
 def _read_container_argv() -> tuple[str, ...]:
     """Best-effort argv of the container's main program (the one holding ``main-wrapper.sh``):
     PID 1 first (s6 v2 ``/init``), then every ``/proc/*/cmdline`` (s6 v3 ``s6-svscan``)."""
@@ -290,7 +387,8 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
     import shutil
 
     from hermes_cli.service_manager import (
-        S6ServiceManager, _seed_supervise_skeleton, validate_profile_name)
+        S6ServiceManager, _seed_supervise_skeleton, slot_supervision_state,
+        validate_profile_name)
 
     validate_profile_name(profile)
     service_dir = scandir / f"gateway-{profile}"
@@ -314,6 +412,18 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
         # it and runtime s6-svc calls as the hermes user won't EACCES.
         _seed_supervise_skeleton(tmp_dir)
         if service_dir.exists():
+            # P0-2 deep defense, three-state and fail-closed: LIVE means an s6-supervise is
+            # attached (rmtree would orphan the running gateway — the 2026-09-28 full-reconcile
+            # incident); UNKNOWN means we cannot prove the slot is down, which is exactly the
+            # case where guessing is unsafe. The only legitimate teardown is
+            # unregister_profile_gateway (s6-svc -d → s6-svwait → s6-svscanctl -an → rmtree).
+            state = slot_supervision_state(scandir, service_dir.name)
+            if state != "DOWN":
+                raise RuntimeError(
+                    f"refusing to rmtree existing slot {service_dir} with {state} supervision; "
+                    "full reconcile is boot-only — use unregister_profile_gateway or restart "
+                    "the container"
+                )
             shutil.rmtree(service_dir)
         tmp_dir.replace(service_dir)  # atomic publish
     except Exception:
@@ -363,6 +473,28 @@ def main() -> int:
 
     hermes_home = Path(os.environ.get("HERMES_HOME", "/opt/data"))
     scandir = Path(os.environ.get("S6_PROFILE_GATEWAY_SCANDIR", "/run/service"))
+
+    # Boot-only guard (both signals read-only, before EVERY side effect — including
+    # _maybe_migrate_legacy_gateway_run_state and _cleanup_stale_runtime_files inside
+    # reconcile_profile_gateways). Running the full reconcile against a live s6 runtime
+    # rmtrees live slots, orphans their gateways, and crash-loops the container
+    # (2026-09-28 incident). A fresh boot presents an empty tmpfs scandir and pid files
+    # from a previous PID namespace (stale or reused by unrelated processes).
+    existing_slots = _existing_gateway_slots(scandir)
+    live_pid = _confirmed_live_gateway_pid(hermes_home)
+    if existing_slots or live_pid is not None:
+        message = (
+            "reconcile: refusing full reconcile outside boot — full reconcile is boot-only. "
+            + (f"existing s6 slots: {', '.join(existing_slots)}. " if existing_slots else "")
+            + (f"a live Hermes gateway is confirmed at pid {live_pid}. " if live_pid is not None else "")
+            + "Restart the container to reconcile; for single-slot changes use "
+            "`hermes -p <profile> gateway start` (missing slots auto-register) or "
+            "unregister_profile_gateway."
+        )
+        print(message, file=sys.stderr)
+        log.error("%s", message)
+        return 2
+
     actions = reconcile_profile_gateways(hermes_home=hermes_home, scandir=scandir)
     folded = [a.profile for a in actions if a.profile != "default" and a.folded_into_root]
     if folded:

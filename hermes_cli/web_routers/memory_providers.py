@@ -119,7 +119,26 @@ def _flat_json_path(provider: ProviderConfigSchema) -> Path:
 
 
 def _read_flat_json(provider: ProviderConfigSchema) -> Dict[str, Any]:
-    return _read_json_dict(_flat_json_path(provider), "memory provider config")
+    """The provider's own flat config, newest-source-wins.
+
+    Bundled providers keep it at ``<name>.json`` — the file their own ``save_config`` writes and their
+    loader reads (``mem0.json``, ``supermemory.json``). ``<name>/config.json`` is the historical
+    dashboard location. A provider that has not overridden ``save_config`` is written to
+    ``config.memory.<name>`` instead, so that is the fallback. Same sources, same order, as
+    ``web_server_memory._read_memory_provider_existing_values`` — the two readers must agree, or the
+    declared panel and the legacy panel would show different values for one provider.
+    """
+    home = get_hermes_home()
+    values: Dict[str, Any] = {}
+    try:
+        memory_cfg = load_config().get("memory")
+    except Exception:
+        memory_cfg = None
+    if isinstance(memory_cfg, dict) and isinstance(memory_cfg.get(provider.name), dict):
+        values.update(memory_cfg[provider.name])
+    values.update(_read_json_dict(home / f"{provider.name}.json", "memory provider config"))
+    values.update(_read_json_dict(_flat_json_path(provider), "memory provider config"))
+    return values
 
 
 def _honcho_resolvers(name: str):

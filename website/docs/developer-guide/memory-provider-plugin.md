@@ -322,6 +322,56 @@ Fields with `secret: True` and `env_var` go to `.env`. Non-secret fields are pas
 Every field in `get_config_schema()` is prompted during `hermes memory setup`. Providers with many options should keep the schema minimal — only include fields the user **must** configure (API key, required credentials). Document optional settings in a config file reference (e.g. `$HERMES_HOME/myprovider.json`) rather than prompting for them all during setup. This keeps the setup wizard fast while still supporting advanced configuration. See the Supermemory provider for an example — it only prompts for the API key; all other options live in `supermemory.json`.
 :::
 
+## Declared Config Panel {#declared-config-panel}
+
+Everything above drives the `hermes memory setup` wizard. The **Desktop config panel** is a
+separate, declarative surface: a `config_schema.py` beside your `__init__.py` exporting
+`CONFIG_SCHEMA`. Hermes reads it from disk (never imports it — the panel must not pull the agent
+runtime into the web server), so a catalog install keeps working. **A provider with no
+`config_schema.py` has no panel at all** — its fields simply do not render, even though the
+provider itself is selectable and reports status.
+
+```python title="plugins/memory/myprovider/config_schema.py"
+from plugins.memory.config_schema import (
+    KIND_SECRET, STORAGE_FLAT_JSON, ProviderConfigSchema, ProviderField,
+)
+
+CONFIG_SCHEMA = ProviderConfigSchema(
+    name="my-provider",                 # must equal provider.name
+    label="My Provider",
+    docs_url="https://docs.example.com/hermes",
+    fields=(
+        ProviderField(
+            key="api_key", label="API key", kind=KIND_SECRET,
+            env_key="MY_API_KEY",        # secrets go to the env store, never to your config file
+            inline=True,                 # the curated compact panel; the rest live in the modal
+        ),
+        ProviderField(
+            key="region", label="Region", kind=KIND_SELECT, default="us-east",
+            options=(ProviderFieldOption("us-east", "US East"), ProviderFieldOption("eu-west", "EU West")),
+        ),
+    ),
+)
+```
+
+`key` must be the key your loader reads, or the panel shows a value the provider never uses.
+`env_fallbacks` mirrors env vars the loader falls back to, and `is_set` is derived from the env
+store plus any source, so a secret still reads as configured when it lives in `.env`.
+
+### Storage
+
+| `storage` | Values read/written |
+|---|---|
+| `STORAGE_FLAT_JSON` (default) | Your own flat config, in this order: `config.memory.<name>`, then `$HERMES_HOME/<name>.json`, then `$HERMES_HOME/<name>/config.json`. Bundled providers keep their file at `<name>.json` — the one their `save_config()` writes — so declare this if that is where your config lives. |
+| `STORAGE_HONCHO_HOST_BLOCK` | Per-host blocks resolved through the provider's `client` module (`honcho/config_schema.py`). |
+
+Writes go through your provider's `save_config(values, hermes_home)` when it overrides the ABC
+default; secrets declared with `env_key` are always written to the env store.
+
+Keep `inline=True` to the handful of fields a user actually sets — `inline` is the compact panel,
+everything else is one click away in the modal. `plugins/memory/mem0/config_schema.py` is a
+smaller example; `honcho/config_schema.py` shows host-scoped fields.
+
 ## Save Config
 
 ```python

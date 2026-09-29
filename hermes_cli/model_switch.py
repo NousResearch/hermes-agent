@@ -507,12 +507,6 @@ def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
     return ModelFlagParseResult(model_input=" ".join(filtered).strip(), **values, **flags)
 
 
-def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
-    """Legacy 5-tuple ``(model_input, explicit_provider, is_global, force_refresh, is_session)``."""
-    p = parse_model_flags_detailed(raw_args)
-    return (p.model_input, p.explicit_provider, p.is_global, p.force_refresh, p.is_session)
-
-
 def resolve_persist_behavior(
     is_global: bool, is_session: bool, is_once: bool = False, explicit_provider: str = "") -> bool:
     """Decide whether a ``/model`` switch should persist to ``config.yaml``.

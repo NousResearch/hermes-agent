@@ -15,6 +15,11 @@ from plugins.platforms.matrix.reply_context import (
 from plugins.platforms.matrix.turn_context import MatrixTurnContext
 
 
+def has_media_url(content: dict[str, Any]) -> bool:
+    encrypted = content.get("file")
+    return bool(content.get("url") or (isinstance(encrypted, dict) and encrypted.get("url")))
+
+
 @dataclass
 class _MatrixAuthoredContent:
     authored: MatrixEventContext

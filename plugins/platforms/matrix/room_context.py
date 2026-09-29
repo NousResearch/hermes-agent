@@ -8,6 +8,9 @@ from typing import Any
 from gateway.session import format_untrusted_prompt_value
 
 
+_FIELD_TYPES = {"encrypted": bool, "tombstoned": bool}
+
+
 @dataclass(frozen=True)
 class RoomStateNote:
     text: str
@@ -25,6 +28,10 @@ class MatrixRoomState:
     display_name: str | None
     topic: str | None
     members_digest: str | None = None
+    join_rule: str | None = None
+    history_visibility: str | None = None
+    encrypted: bool | None = None
+    tombstoned: bool | None = None
 
     @classmethod
     def from_origin(cls, origin: Any) -> MatrixRoomState:
@@ -34,10 +41,12 @@ class MatrixRoomState:
     def from_dict(cls, value: Any) -> MatrixRoomState | None:
         if not isinstance(value, dict):
             return None
-        names = [field.name for field in fields(cls)]
-        if any(name not in value or (value[name] is not None and not isinstance(value[name], str)) for name in names):
+        if "display_name" not in value or "topic" not in value:
             return None
-        return cls(**{name: value[name] for name in names})
+        state = {field.name: value.get(field.name) for field in fields(cls)}
+        if any(not isinstance(item, (type(None), _FIELD_TYPES.get(name, str))) for name, item in state.items()):
+            return None
+        return cls(**state)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -59,6 +68,19 @@ class MatrixRoomState:
             )
         if self.members_digest and previous.members_digest and self.members_digest != previous.members_digest:
             notes.append(RoomStateNote("The joined room members or their display names changed."))
+        for name, label in (("join_rule", "join rule"), ("history_visibility", "history visibility")):
+            value, before = getattr(self, name), getattr(previous, name)
+            if value and before and value != before:
+                notes.append(RoomStateNote(
+                    f"The room {label} changed to: {format_untrusted_prompt_value(value)}.",
+                    quotes_untrusted_value=True,
+                ))
+        if self.encrypted and previous.encrypted is False:
+            notes.append(RoomStateNote("This room is now end-to-end encrypted."))
+        if self.tombstoned and previous.tombstoned is False:
+            notes.append(RoomStateNote(
+                "This room has been replaced; the conversation has moved to a successor room.",
+            ))
         return notes
 
 

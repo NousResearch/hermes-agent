@@ -17,6 +17,41 @@ from typing import Any, NoReturn
 
 _result: int | None = None
 
+# The historical updater entrypoints. `_historical_context` reads capture data
+# from these frames; `tools.lazy_deps.install_specs` hands off only inside them.
+# Keep in sync with scripts/audit-old-updater-imports.py UPDATE_ENTRYPOINTS: the
+# audit list is wider on purpose (helpers run *under* these frames and are found
+# by the frame walk).
+_HISTORICAL_UPDATE_FRAMES = (
+    ("hermes_cli.update_cmd", "hermes_cli.main"),
+    ("_cmd_update_impl", "cmd_update"),
+)
+
+
+def _is_historical_update_frame(frame: Any) -> bool:
+    modules, names = _HISTORICAL_UPDATE_FRAMES
+    return (frame.f_globals.get("__name__") in modules
+            and frame.f_code.co_name in names)
+
+
+def in_historical_update(depth: int = 1) -> bool:
+    """True when an ancestor frame is a historical updater entrypoint.
+
+    Only the old on-disk updaters define these entrypoints with
+    ``pre_update_version`` as a local; code loaded in a CURRENT tree must keep
+    running instead of handing control to a takeover child.
+    """
+    frame = sys._getframe(depth + 1)
+    try:
+        while frame is not None:
+            if (_is_historical_update_frame(frame)
+                    and "pre_update_version" in frame.f_code.co_varnames):
+                return True
+            frame = frame.f_back
+    finally:
+        del frame
+    return False
+
 
 def _historical_context() -> tuple[dict, list[dict], Any]:
     """Carry data already held by old frames, without importing their modules.
@@ -35,9 +70,7 @@ def _historical_context() -> tuple[dict, list[dict], Any]:
             # Capture hooks can be imported BEFORE the old updater has pulled.
             # A declared-but-unassigned version in its innermost known frame
             # proves early entry; a None value is still a post-capture value.
-            if (restart_update is None
-                    and frame.f_globals.get("__name__") in ("hermes_cli.update_cmd", "hermes_cli.main")
-                    and frame.f_code.co_name in ("_cmd_update_impl", "cmd_update")
+            if (restart_update is None and _is_historical_update_frame(frame)
                     and "pre_update_version" in frame.f_code.co_varnames):
                 restart_update = "pre_update_version" not in frame.f_locals
             for name in names:

@@ -16,7 +16,7 @@ def test_process_edits_requires_exact_room_ids_and_booleans(policy):
 
 
 def test_yaml_room_opt_in_remains_local_to_the_owning_adapter(monkeypatch):
-    monkeypatch.setenv("MATRIX_PROCESS_EDITS", "true")
+    monkeypatch.delenv("MATRIX_PROCESS_EDITS", raising=False)
     policies = [
         {"!first:example.org": True, "!disabled:example.org": False},
         {"!second:example.org": True},
@@ -25,6 +25,6 @@ def test_yaml_room_opt_in_remains_local_to_the_owning_adapter(monkeypatch):
     adapters = [MatrixAdapter(config) for config in configs]
 
     observed = [sorted(adapter._process_edits) for adapter in [adapters[0], adapters[1], adapters[0]]]
-    assert (observed, os.environ["MATRIX_PROCESS_EDITS"]) == (
-        [["!first:example.org"], ["!second:example.org"], ["!first:example.org"]], "true",
+    assert (observed, os.environ.get("MATRIX_PROCESS_EDITS")) == (
+        [["!first:example.org"], ["!second:example.org"], ["!first:example.org"]], None,
     )

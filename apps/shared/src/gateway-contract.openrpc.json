@@ -7849,6 +7849,11 @@
             },
             "title": "Server Requests",
             "type": "array"
+          },
+          "declines_not_shown": {
+            "default": false,
+            "title": "Declines Not Shown",
+            "type": "boolean"
           }
         },
         "required": [

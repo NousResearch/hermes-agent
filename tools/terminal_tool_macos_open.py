@@ -96,6 +96,23 @@ def _build_macos_open_raise_ladder(app: str | None, file: str) -> str:
     # by macOS as pure activation.
     reopen = f"open -a \"$_H_APP\" {file_q} 2>/dev/null"
 
+    # Outcome reporting from the FINAL observed frontmost state. The two
+    # branches are deliberately distinct so a focus race can never read as
+    # success: the tool output tells the agent (and the user) whether the
+    # opened document actually ended up in front, and if not, which
+    # application holds focus. ``file_q`` is a self-contained quoted token, so
+    # the messages survive paths with spaces or shell metacharacters.
+    frontmost_name = (
+        "osascript -e 'tell application \"System Events\" to get name of "
+        "first application process whose frontmost is true' 2>/dev/null"
+    )
+    report = (
+        f'if {frontmost}; then echo open: {file_q} is now frontmost; '
+        f'else _H_FOCUS=$({frontmost_name}); '
+        f'echo open: {file_q} opened but another application holds focus; '
+        f'echo "frontmost: $_H_FOCUS"; fi'
+    )
+
     return (
         f"{app_assign}; "
         f"if ! {frontmost}; then "
@@ -108,7 +125,8 @@ def _build_macos_open_raise_ladder(app: str | None, file: str) -> str:
         f"fi; "
         f"fi; "
         f"sleep 0.8; "
-        f"if ! {frontmost}; then {activate}; fi"
+        f"if ! {frontmost}; then {activate}; sleep 0.4; fi; "
+        f"{report}"
     )
 
 

@@ -131,3 +131,32 @@ def test_compound_command_not_transformed():
 
 def test_none_input_returns_none():
     assert macos_open._transform_macos_open_command(None, system="Darwin") is None
+
+
+# --- Outcome reporting: distinct open-but-not-front outcome ----------------
+
+def test_ladder_reports_distinct_outcomes_from_final_state():
+    transformed = _assert_transformed("open -a Preview /path/to/file.pdf")
+    # Success and open-but-not-front are two distinct, observable outcomes
+    # read from the FINAL frontmost state — a focus race can never read as
+    # plain success (issue #95261 requirement 2).
+    assert "is now frontmost" in transformed
+    assert "opened but another application holds focus" in transformed
+    # The not-front branch names whichever application actually holds focus.
+    assert "name of first application process whose frontmost is true" in transformed
+
+def test_ladder_is_valid_shell_syntax_for_quoting_edge_cases():
+    import subprocess
+
+    for command in (
+        "open /path/to/file.pdf",
+        "open '/Users/some one/file name.pdf'",
+        'open -a "Google Chrome" "/path/to/file.pdf"',
+        "open -a Preview file.txt",
+    ):
+        transformed = macos_open._transform_macos_open_command(command, system="Darwin")
+        assert transformed is not None and transformed != command, command
+        result = subprocess.run(
+            ["bash", "-n", "-c", transformed], capture_output=True, text=True
+        )
+        assert result.returncode == 0, (command, result.stderr)

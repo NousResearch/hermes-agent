@@ -47,7 +47,23 @@ Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron
 Each agent-driven job normally prepends instructions about scheduled execution,
 automatic delivery, `[SILENT]`, `[CRON_FAILURE]`, and avoiding recursive scheduling.
 For a minimal sample-message job, set `skip_cron_hint=true` on that job to omit
-this block:
+this block. Inside the interactive Hermes CLI, use `/cron list` to find the job,
+then toggle or inspect its hint without leaving the session:
+
+```text
+/cron hint <job_id> off
+/cron hint <job_id> on
+/cron hint <job_id>
+/cron hint "Sample ping" off
+```
+
+`off` skips the hint, `on` restores it, and omitting the final argument shows
+the current setting. Job names containing spaces must be quoted. If a name
+matches multiple jobs, Hermes asks you to use a job ID. The command appears in
+`/cron` help and subcommand completion. Like the existing `/cron` command, this
+shortcut is for the interactive CLI; it does not add a messaging-platform command.
+
+From a terminal, you can also choose the setting at creation or edit time:
 
 ```bash
 hermes cron create "every 5h" "Reply with pong." --skip-cron-hint --deliver local

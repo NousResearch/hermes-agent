@@ -732,6 +732,32 @@ def _print_job_details(job_data: Dict[str, Any]) -> None:
             print(template.format(job_data[key]))
 
 
+def cron_hint_command(args: List[str]) -> None:
+    """Inspect or change one job's hint from the interactive ``/cron`` command."""
+    from agent.i18n import t
+    from cron.jobs import AmbiguousJobReference, resolve_job_ref
+
+    if len(args) not in (1, 2) or (len(args) == 2 and args[1].lower() not in {"on", "off"}):
+        print(t("cli.commands.cron.hint_usage"))
+        return
+    try:
+        job = resolve_job_ref(args[0])
+    except AmbiguousJobReference as exc:
+        print(str(exc))
+        return
+    if job is None:
+        print(t("cli.commands.cron.job_not_found", job_id=args[0]))
+        return
+    if len(args) == 2:
+        result = _cron_api(action="update", job_id=job["id"], skip_cron_hint=args[1].lower() == "off")
+        if not result.get("success"):
+            print(t("cli.commands.cron.update_failed", error=result.get("error")))
+            return
+        job = result["job"]
+    key = "hint_off" if job.get("skip_cron_hint", False) else "hint_on"
+    print(t(f"cli.commands.cron.{key}", name=job["name"]))
+
+
 def cron_create(args):
     # The gateway-lifecycle guard lives in cron.jobs.create_job (every creation path); a block
     # surfaces as result["error"].

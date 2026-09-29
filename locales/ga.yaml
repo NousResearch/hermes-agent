@@ -2853,7 +2853,10 @@ cli:
     cron:
       repeat_must_be_integer: "(._.) caithfidh --repeat a bheith ina shlánuimhir"
       unknown_command: "(._.) Ordú cron anaithnid: {subcommand}"
-      available: "Ar fáil: list, add, edit, pause, resume, run, remove"
+      available: "Ar fáil: list, add, edit, hint, pause, resume, run, remove"
+      hint_usage: "Úsáid: /cron hint <job_id nó \"ainm an taisc\"> [on|off] — fágann off an leid ar lár; cuireann on ar ais í; gan rogha, taispeántar an stádas."
+      hint_on: "Leid cron do \"{name}\": on (treoracha caighdeánacha san áireamh)."
+      hint_off: "Leid cron do \"{name}\": off (treoracha caighdeánacha fágtha ar lár)."
       overview_title: "(^_^) Tascanna Sceidealta"
       overview_commands: "Orduithe:"
       overview_usage: "/cron list\n/cron add \"every 2h\" \"Seiceáil stádas an fhreastalaí\" [--skill blogwatcher]\n/cron edit <job_id> --schedule \"every 4h\" --prompt \"Tasc nua\"\n/cron edit <job_id> --skill blogwatcher --skill maps\n/cron edit <job_id> --remove-skill blogwatcher\n/cron edit <job_id> --clear-skills\n/cron pause <job_id>\n/cron resume <job_id>\n/cron run <job_id>\n/cron remove <job_id>"

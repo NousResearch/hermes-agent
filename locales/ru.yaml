@@ -2853,7 +2853,10 @@ cli:
     cron:
       repeat_must_be_integer: "(._.) --repeat должен быть целым числом"
       unknown_command: "(._.) Неизвестная команда cron: {subcommand}"
-      available: "Доступно: list, add, edit, pause, resume, run, remove"
+      available: "Доступно: list, add, edit, hint, pause, resume, run, remove"
+      hint_usage: "Использование: /cron hint <job_id или \"название\"> [on|off] — off пропускает подсказку; on восстанавливает её; без параметра показывает состояние."
+      hint_on: "Подсказка cron для «{name}»: on (стандартные инструкции включены)."
+      hint_off: "Подсказка cron для «{name}»: off (стандартные инструкции пропущены)."
       overview_title: "(^_^) Запланированные задачи"
       overview_commands: "Команды:"
       overview_usage: "/cron list\n/cron add \"every 2h\" \"Проверить состояние сервера\" [--skill blogwatcher]\n/cron edit <job_id> --schedule \"every 4h\" --prompt \"Новая задача\"\n/cron edit <job_id> --skill blogwatcher --skill maps\n/cron edit <job_id> --remove-skill blogwatcher\n/cron edit <job_id> --clear-skills\n/cron pause <job_id>\n/cron resume <job_id>\n/cron run <job_id>\n/cron remove <job_id>"

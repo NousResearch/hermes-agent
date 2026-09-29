@@ -2853,7 +2853,10 @@ cli:
     cron:
       repeat_must_be_integer: "(._.) --repeat には整数を指定してください"
       unknown_command: "(._.) 不明な cron コマンド: {subcommand}"
-      available: "利用可能: list, add, edit, pause, resume, run, remove"
+      available: "利用可能: list, add, edit, hint, pause, resume, run, remove"
+      hint_usage: "使い方: /cron hint <ジョブIDまたは\"ジョブ名\"> [on|off] — off でヒントを省略、on で復元。省略すると状態を表示します。"
+      hint_on: "「{name}」の cron ヒント: on（標準の指示を含む）。"
+      hint_off: "「{name}」の cron ヒント: off（標準の指示を省略）。"
       overview_title: "(^_^) スケジュール済みタスク"
       overview_commands: "コマンド:"
       overview_usage: "/cron list\n/cron add \"every 2h\" \"Check server status\" [--skill blogwatcher]\n/cron edit <job_id> --schedule \"every 4h\" --prompt \"New task\"\n/cron edit <job_id> --skill blogwatcher --skill maps\n/cron edit <job_id> --remove-skill blogwatcher\n/cron edit <job_id> --clear-skills\n/cron pause <job_id>\n/cron resume <job_id>\n/cron run <job_id>\n/cron remove <job_id>"

@@ -179,7 +179,7 @@ _CRON_VALUE_FLAGS = {"--name": "name", "--deliver": "deliver", "--prompt": "prom
 # /cron subcommand -> CLICommandsMixin method name.
 _CRON_SUBCOMMANDS = {
     "list": "_cron_list", "add": "_cron_add", "create": "_cron_add", "edit": "_cron_edit",
-    **{k: "_cron_job_action" for k in ("pause", "resume", "run", "remove", "rm", "delete")}}
+    **{k: "_cron_job_action" for k in ("hint", "pause", "resume", "run", "remove", "rm", "delete")}}
 
 _ON_WORDS = {"on", "enable", "true", "1"}
 _OFF_WORDS = {"off", "disable", "false", "0"}
@@ -1674,7 +1674,8 @@ class CLICommandsMixin:
     def _cron_overview(self) -> None:
         _pr("", "+" + "-" * 68 + "+", "|" + _t("cron.overview_title").center(68) + "|",
             "+" + "-" * 68 + "+", "", f"  {_t('cron.overview_commands')}",
-            *_lines(_t("cron.overview_usage"), pad="    "), "")
+            *_lines(_t("cron.overview_usage"), pad="    "),
+            f"    {_t('cron.hint_usage')}", "")
         result = _cron_api(action="list")
         jobs = result.get("jobs", []) if result.get("success") else []
         if jobs:
@@ -1776,6 +1777,9 @@ class CLICommandsMixin:
 
     def _cron_job_action(self, subcommand: str, opts: dict) -> None:
         """pause / resume / run / remove (aliases rm, delete) on one job id."""
+        if subcommand == "hint":
+            from hermes_cli.cron import cron_hint_command
+            return cron_hint_command(opts["positionals"])
         positionals = opts["positionals"]
         if not positionals:
             return print(_t("cron.usage_action", subcommand=subcommand))

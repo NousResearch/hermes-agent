@@ -2853,7 +2853,10 @@ cli:
     cron:
       repeat_must_be_integer: "(._.) --repeat bir tam sayı olmalıdır"
       unknown_command: "(._.) Bilinmeyen cron komutu: {subcommand}"
-      available: "Kullanılabilir: list, add, edit, pause, resume, run, remove"
+      available: "Kullanılabilir: list, add, edit, hint, pause, resume, run, remove"
+      hint_usage: "Kullanım: /cron hint <job_id veya \"görev adı\"> [on|off] — off yönergeleri atlar; on geri getirir; seçenek verilmezse durum gösterilir."
+      hint_on: "\"{name}\" için cron yönergeleri: on (standart yönergeler dahil)."
+      hint_off: "\"{name}\" için cron yönergeleri: off (standart yönergeler atlanır)."
       overview_title: "(^_^) Zamanlanmış Görevler"
       overview_commands: "Komutlar:"
       overview_usage: "/cron list\n/cron add \"every 2h\" \"Sunucu durumunu kontrol et\" [--skill blogwatcher]\n/cron edit <job_id> --schedule \"every 4h\" --prompt \"Yeni görev\"\n/cron edit <job_id> --skill blogwatcher --skill maps\n/cron edit <job_id> --remove-skill blogwatcher\n/cron edit <job_id> --clear-skills\n/cron pause <job_id>\n/cron resume <job_id>\n/cron run <job_id>\n/cron remove <job_id>"

@@ -2853,7 +2853,10 @@ cli:
     cron:
       repeat_must_be_integer: "(._.) --repeat는 정수여야 해요"
       unknown_command: "(._.) 알 수 없는 cron 명령: {subcommand}"
-      available: "사용 가능: list, add, edit, pause, resume, run, remove"
+      available: "사용 가능: list, add, edit, hint, pause, resume, run, remove"
+      hint_usage: "사용법: /cron hint <작업ID 또는 \"작업 이름\"> [on|off] — off는 안내를 생략하고 on은 복원합니다. 생략하면 상태를 표시합니다."
+      hint_on: "\"{name}\"의 cron 안내: on (기본 지침 포함)."
+      hint_off: "\"{name}\"의 cron 안내: off (기본 지침 생략)."
       overview_title: "(^_^) 예약된 작업"
       overview_commands: "명령:"
       overview_usage: "/cron list\n/cron add \"every 2h\" \"서버 상태 확인\" [--skill blogwatcher]\n/cron edit <job_id> --schedule \"every 4h\" --prompt \"새 작업\"\n/cron edit <job_id> --skill blogwatcher --skill maps\n/cron edit <job_id> --remove-skill blogwatcher\n/cron edit <job_id> --clear-skills\n/cron pause <job_id>\n/cron resume <job_id>\n/cron run <job_id>\n/cron remove <job_id>"

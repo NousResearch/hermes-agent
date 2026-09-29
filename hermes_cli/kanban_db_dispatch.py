@@ -1802,6 +1802,150 @@ def review_dispatch_enabled() -> bool:
         return True
 
 
+# Skills injected into a REVIEW run on top of the card's own list. These names are written by the
+# HARNESS, never by an operator at a prompt, so two rules hold (both enforced in _dispatch_lane_task
+# and agent.skill_commands): (1) the name must be RESOLVED for the assignee's profile before spawn —
+# an unresolvable injected name is skipped and recorded on the card, because the worker's preload
+# loader raises ``Unknown skill(s)`` when nothing loaded and the run then dies at INIT, burning the
+# card's failure budget without a line of substantive work; (2) the worker is told which names were
+# injected (``HERMES_KANBAN_INJECTED_SKILLS``) so its loader degrades an injected-but-missing name to
+# a warning instead of a crash. Overridable per host with ``kanban.review_skills`` (``[]`` = none).
+DEFAULT_REVIEW_SKILLS: tuple[str, ...] = ("sdlc-review",)
+
+
+def _kanban_config() -> dict:
+    """The ``kanban`` config block (empty when unreadable or malformed)."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        block = cfg.get("kanban") if isinstance(cfg, dict) else None
+        return block if isinstance(block, dict) else {}
+    except Exception:
+        return {}
+
+
+def review_injected_skills() -> tuple[str, ...]:
+    """Skill names injected into a review run (``kanban.review_skills``; default ``sdlc-review``)."""
+    configured = _kanban_config().get("review_skills", DEFAULT_REVIEW_SKILLS)
+    if isinstance(configured, str):
+        configured = [configured]
+    if not isinstance(configured, (list, tuple)):
+        return DEFAULT_REVIEW_SKILLS
+    return tuple(str(name).strip() for name in configured if str(name).strip())
+
+
+def _profile_skill_resolvable(profile_home: Optional[str], name: str) -> bool:
+    """Whether *name* would preload for the profile rooted at *profile_home*."""
+    if not profile_home or not name:
+        return False
+    try:
+        from agent.skill_commands import preload_skill_resolvable
+
+        with _worker_profile_scope(profile_home):
+            return bool(preload_skill_resolvable(name))
+    except Exception as exc:
+        _kb._log.debug("kanban dispatcher: skill probe for %r failed: %s", name, exc)
+        return False
+
+
+def resolve_review_injected_skills(assignee: Optional[str]) -> tuple[list[str], list[str]]:
+    """Split the configured review skills into ``(injectable, skipped)`` for *assignee*.
+
+    Resolution runs under the ASSIGNEE's profile scope through the same loader the worker's preload
+    path uses, so "resolvable here" means "loadable in the spawned worker".
+    """
+    names = review_injected_skills()
+    if not names:
+        return [], []
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+        profile_home = str(resolve_profile_env(normalize_profile_name(assignee or "")))
+    except Exception:
+        profile_home = None
+    injectable: list[str] = []
+    skipped: list[str] = []
+    for name in names:
+        (injectable if _profile_skill_resolvable(profile_home, name) else skipped).append(name)
+    return injectable, skipped
+
+
+def record_skipped_review_skills(
+    conn: sqlite3.Connection, task_id: str, skipped: list[str], assignee: Optional[str],
+) -> None:
+    """Record, ON THE CARD, that a harness-injected skill was not applied to this review run."""
+    names = ", ".join(skipped)
+    reason = (
+        f"review skill injection skipped: {names} does not resolve for profile "
+        f"{assignee or '?'} — this review run starts WITHOUT it. Install the skill in that "
+        f"profile's skills dir (or set kanban.review_skills) to restore it."
+    )
+    _kb._log.warning("kanban dispatcher: %s (task %s)", reason, task_id)
+    try:
+        _kb._append_event(conn, task_id, "review_skill_skipped", {"skills": skipped, "assignee": assignee})
+    except Exception as exc:
+        _kb._log.debug("kanban dispatcher: could not record review_skill_skipped for %s: %s", task_id, exc)
+    try:
+        _kb.add_comment(conn, task_id, "dispatcher", f"**{reason}**")
+    except Exception as exc:
+        _kb._log.debug("kanban dispatcher: could not comment review_skill_skipped on %s: %s", task_id, exc)
+
+
+_review_skill_readiness_checked = False
+
+
+def review_skill_readiness() -> list[dict]:
+    """Per-profile resolution of the injected review skills: ``[{profile, resolved, missing}]``.
+
+    Deterministic and read-only. A profile that cannot resolve an injected name is one whose review
+    runs would start without that skill, so the dispatcher reports it at BOOT (once per process)
+    instead of leaving each affected card to find out through two crashed runs.
+    """
+    report: list[dict] = []
+    injected = review_injected_skills()
+    if not injected:
+        return report
+    try:
+        from hermes_cli.profiles import list_profile_names, normalize_profile_name, resolve_profile_env
+    except Exception as exc:
+        _kb._log.debug("kanban dispatcher: review-skill readiness unavailable: %s", exc)
+        return report
+    for profile in list_profile_names():
+        try:
+            home = str(resolve_profile_env(normalize_profile_name(profile)))
+        except Exception:
+            home = None
+        missing = [name for name in injected if not _profile_skill_resolvable(home, name)]
+        report.append({
+            "profile": profile,
+            "resolved": [name for name in injected if name not in missing],
+            "missing": missing,
+        })
+    return report
+
+
+def check_review_skill_readiness_once() -> None:
+    """Warn once per process when a review-capable profile cannot resolve an injected review skill."""
+    global _review_skill_readiness_checked
+    if _review_skill_readiness_checked:
+        return
+    _review_skill_readiness_checked = True
+    try:
+        report = review_skill_readiness()
+    except Exception as exc:
+        _kb._log.debug("kanban dispatcher: review-skill readiness probe failed: %s", exc)
+        return
+    broken = [row for row in report if row["missing"]]
+    if broken:
+        _kb._log.warning(
+            "kanban dispatcher: review-skill readiness: %s — review runs on those profiles start "
+            "WITHOUT the missing skill(s). Install them in the profile's skills dir or set "
+            "kanban.review_skills.",
+            "; ".join(f"{row['profile']}: {', '.join(row['missing'])}" for row in broken),
+        )
+
+
 # Memory-aware dispatch guard: an uncapped board once OOM'd a 1 GiB host. Two
 # safeguards — a memory-DERIVED default cap when none is configured
 # (``resolve_max_in_progress``) and a live memory-PRESSURE guard inside the
@@ -2117,9 +2261,22 @@ def _dispatch_lane_task(
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
     if lane == "review":
-        # Force-load sdlc-review; the kanban lifecycle is already in every
-        # worker's system prompt via KANBAN_GUIDANCE.
-        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        # Inject the review skills the lane actually OWNS; the kanban lifecycle is already in every
+        # worker's system prompt via KANBAN_GUIDANCE. Only names that resolve for the assignee are
+        # injected — an unresolvable one is recorded on the card and SKIPPED, never handed to the
+        # worker's preload loader, which raises ``Unknown skill(s)`` when nothing loaded and kills
+        # the run at INIT (see DEFAULT_REVIEW_SKILLS).
+        injectable, skipped_skills = resolve_review_injected_skills(claimed.assignee)
+        if injectable:
+            claimed.skills = list(dict.fromkeys([*(claimed.skills or []), *injectable]))
+        if skipped_skills:
+            record_skipped_review_skills(conn, claimed.id, skipped_skills, claimed.assignee)
+        # Names the HARNESS chose for this run (resolved or not): the worker's loader treats them as
+        # advisory, so an injected name can never be the reason a review run dies.
+        try:
+            claimed.injected_skills = tuple(review_injected_skills())  # type: ignore[attr-defined]
+        except Exception:  # pragma: no cover - Task is a plain dataclass
+            pass
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
@@ -2360,6 +2517,12 @@ def _dispatch_once_locked(
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
     review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
+    if review_rows:
+        # Boot-time self-check (once per process, cached): a review-capable profile that cannot
+        # resolve an injected review skill must be visible BEFORE its cards discover it through two
+        # crashed runs. Cheap and read-only; the per-spawn gate in _dispatch_lane_task is the
+        # backstop.
+        check_review_skill_readiness_once()
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
     # Resolved BEFORE the review reservation so the reservation can see which
@@ -2887,6 +3050,14 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Skill names the HARNESS injected for this run (kanban review skills). The worker's preload
+    # loader treats these as advisory: an unresolvable injected name warns and continues instead of
+    # raising ``Unknown skill(s)`` and killing the run at INIT.
+    injected_skills = tuple(getattr(task, "injected_skills", ()) or ())
+    if injected_skills:
+        from agent.skill_commands import INJECTED_SKILLS_ENV as _injected_skills_env
+
+        env[_injected_skills_env] = ",".join(injected_skills)
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"

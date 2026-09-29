@@ -58,7 +58,7 @@ _OPERATIONS = {
         {"poll_id": _POLL_ID, "limit": _LIMIT}, ["poll_id"],
     ),
     "close": (
-        "Close a native Matrix poll as the bot. Requires poll ownership or permission to redact other users' events. Closing reveals undisclosed results.",
+        "Close a native Matrix poll as the bot. The requester must have created the poll, have asked Hermes to create it, or be allowed to redact other users' events. Closing another user's poll also requires the bot to have that permission. Closing reveals undisclosed results.",
         {"poll_id": _POLL_ID, "limit": _LIMIT}, ["poll_id"],
     ),
 }

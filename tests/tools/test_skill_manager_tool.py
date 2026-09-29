@@ -830,6 +830,16 @@ class TestExternalSkillMutations:
         assert not (local / "ext-skill").exists()
 
 
+    def test_foreground_refuses_to_patch_bundled_skill(self, tmp_path):
+        """Bundled skills are upstream-owned regardless of write origin."""
+        with _skill_dir(tmp_path), patch("tools.skill_usage.is_bundled", return_value=True):
+            _create_skill("bundled", VALID_SKILL_CONTENT)
+            result = _patch_skill("bundled", "Step 1", "Changed")
+
+        assert result["success"] is False
+        assert "bundled" in result["error"]
+        assert "Step 1" in (tmp_path / "bundled" / "SKILL.md").read_text()
+
     def test_background_review_refuses_to_patch_pinned_skill(self, tmp_path):
         """#25839: the autonomous review fork respects pin like the curator
         does — a pinned skill is off-limits to background maintenance, even

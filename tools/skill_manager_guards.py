@@ -175,10 +175,10 @@ def _background_review_write_guard(
             f"unpin {name}` if they want it changed.")
     try:
         from agent.skill_utils import is_external_skill_path
-        if is_external_skill_path(skill_dir):
+        if background_review and is_external_skill_path(skill_dir):
             return _refusal(
                 f"{refuse} skill '{name}': the skill lives in skills.external_dirs, which are "
-                f"externally owned and read-only.")
+                f"externally owned and read-only to autonomous curation.")
     except Exception:
         logger.debug("external skill guard lookup failed for %s", name, exc_info=True)
     try:

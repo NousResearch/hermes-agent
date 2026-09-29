@@ -20,6 +20,17 @@ from plugins.platforms.matrix.approval_cards import (
 )
 
 
+@pytest.fixture
+def german(monkeypatch):
+    from agent import i18n
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "de")
+    i18n.reset_language_cache()
+    yield
+    monkeypatch.delenv("HERMES_LANGUAGE")
+    i18n.reset_language_cache()
+
+
 class TestApprovalCardFormatting:
     def test_pending_expanded_includes_full_command_and_reason(self):
         text, html = format_pending_expanded(
@@ -29,16 +40,16 @@ class TestApprovalCardFormatting:
         )
         # Stable producer contract used by Matrix clients to render rich
         # approval controls (including the two-step permanent warning).
-        assert "Dangerous command requires approval" in text
+        assert "Hermes wants to run a command that needs your OK" in text
         assert "recursive delete" in text
         assert "rm -rf /tmp/example" in text
-        assert "✅ once" in text
-        assert "🌀 session" in text
-        assert "♾️ always" in text
-        assert "❌ deny" in text
+        assert "✅ = approve once" in text
+        assert "🌀 = approve for this session" in text
+        assert "♾️ = approve always" in text
+        assert "❌ = deny" in text
         assert "❎" not in text
         assert html is not None
-        assert "Dangerous command requires approval" in html
+        assert "Hermes wants to run a command that needs your OK" in html
         assert "<pre>" in html
         assert "rm -rf /tmp/example" in html
 
@@ -90,10 +101,10 @@ class TestApprovalCardFormatting:
             "!approve always",
             "!approve",
             "!deny",
-            "✅ once",
-            "🌀 session",
-            "♾️ always",
-            "❌ deny",
+            "✅ = approve once",
+            "🌀 = approve for this session",
+            "♾️ = approve always",
+            "❌ = deny",
         ):
             assert required in text
             assert required in html
@@ -140,16 +151,62 @@ class TestApprovalCardFormatting:
         assert "systemctl restart example.service" in html
         assert "@user:example.org" in html
         for actionable in (
-            "Dangerous command requires approval",
+            "Hermes wants to run a command that needs your OK",
             "!approve",
             "!deny",
-            "✅ once",
-            "🌀 session",
-            "♾️ always",
-            "❌ deny",
+            "✅ = approve once",
+            "🌀 = approve for this session",
+            "♾️ = approve always",
+            "❌ = deny",
         ):
             assert actionable not in text
             assert actionable not in html
+
+    def test_cards_follow_the_active_language(self, monkeypatch, german):
+        monkeypatch.setattr("gateway.platforms.base_exec_approval.approval_timeout_seconds", lambda: 300)
+        card = dict(command="rm -rf /tmp/x", description="", summary="Löscht ein Verzeichnis.")
+        cards = (
+            format_pending_summarized(**card),
+            format_terminal_compact(**card, choice="deny", actor="@owner:example.org"),
+        )
+
+        header = "Hermes möchte einen Befehl ausführen, der Ihre Zustimmung braucht"
+        typed_hint = (
+            "Antworten Sie mit `!approve session`, um dieses Muster für die Sitzung zu genehmigen, "
+            "mit `!approve always`, um es dauerhaft zu genehmigen, mit `!approve`, um einmalig auszuführen, "
+            "oder mit `!deny`, um abzubrechen."
+        )
+        deadline = "Wenn Sie nicht innerhalb von 5 Minuten antworten, wird er NICHT ausgeführt."
+        legend = [
+            "Sie können auch per Reaktion genehmigen:",
+            "✅ = einmalig genehmigen",
+            "🌀 = für diese Sitzung genehmigen",
+            "♾️ = dauerhaft genehmigen",
+            "❌ = ablehnen",
+        ]
+        assert cards == (
+            (
+                f"⚠️ **{header}**\n"
+                "Grund der Markierung: gefährlicher Befehl\n\n"
+                "```\nrm -rf /tmp/x\n```\n\n"
+                "Unverbindliche Einschätzung: Löscht ein Verzeichnis.\n\n"
+                f"{typed_hint}\n{deadline}\n\n" + "\n".join(legend),
+                f"<p>⚠️ <strong>{header}</strong><br/>Grund der Markierung: gefährlicher Befehl</p>"
+                "<pre>rm -rf /tmp/x</pre>"
+                "<blockquote><strong>Unverbindliche Einschätzung:</strong> Löscht ein Verzeichnis.</blockquote>"
+                f"<p>{typed_hint}<br/>{deadline}</p>"
+                "<p>" + "<br/>".join(legend) + "</p>",
+            ),
+            (
+                "**Abgelehnt** · @owner:example.org · gefährlicher Befehl\n\n"
+                "Unverbindliche Einschätzung: Löscht ein Verzeichnis.\n\n"
+                "Vollständiger Befehl:\n```\nrm -rf /tmp/x\n```",
+                "<p><strong>Abgelehnt</strong> · @owner:example.org · gefährlicher Befehl</p>"
+                "<blockquote><strong>Unverbindliche Einschätzung:</strong> Löscht ein Verzeichnis.</blockquote>"
+                "<details><summary>Vollständiger Befehl</summary><pre>rm -rf /tmp/x</pre>"
+                "<p>Grund der Markierung: gefährlicher Befehl · @owner:example.org</p></details>",
+            ),
+        )
 
     def test_sanitize_summary_strips_html_and_bounds_length(self):
         dirty = "<script>alert(1)</script> ```rm -rf /``` does a thing " + ("x" * 600)
@@ -385,11 +442,11 @@ class TestMatrixApprovalCardLifecycle:
         assert content["msgtype"] == "m.text"
         assert content["format"] == "org.matrix.custom.html"
         for required in (
-            "Dangerous command requires approval",
+            "Hermes wants to run a command that needs your OK",
             "run a bounded test command",
             "echo safe",
-            "✅ once",
-            "❌ deny",
+            "✅ = approve once",
+            "❌ = deny",
         ):
             assert required in content["body"]
             assert required in content["formatted_body"]
@@ -461,15 +518,15 @@ class TestMatrixApprovalCardLifecycle:
         assert content["body"] == "* " + new_content["body"]
         assert content["formatted_body"] == "* " + new_content["formatted_body"]
         for required in (
-            "Dangerous command requires approval",
+            "Hermes wants to run a command that needs your OK",
             "stop/restart system service",
             "Advisory interpretation",
             "Restarts the example service",
             "systemctl restart example.service",
             "!approve",
             "!deny",
-            "✅ once",
-            "❌ deny",
+            "✅ = approve once",
+            "❌ = deny",
         ):
             assert required in new_content["body"]
             assert required in new_content["formatted_body"]
@@ -566,13 +623,13 @@ class TestMatrixApprovalCardLifecycle:
         assert " style=" not in new_content["formatted_body"]
         assert " open" not in new_content["formatted_body"]
         for actionable in (
-            "Dangerous command requires approval",
+            "Hermes wants to run a command that needs your OK",
             "!approve",
             "!deny",
-            "✅ once",
-            "🌀 session",
-            "♾️ always",
-            "❌ deny",
+            "✅ = approve once",
+            "🌀 = approve for this session",
+            "♾️ = approve always",
+            "❌ = deny",
         ):
             assert actionable not in new_content["body"]
             assert actionable not in new_content["formatted_body"]
@@ -695,7 +752,7 @@ class TestMatrixApprovalCardLifecycle:
         assert set(content) == {"msgtype", "body", "format", "formatted_body"}
         assert content["msgtype"] == "m.text"
         assert content["format"] == "org.matrix.custom.html"
-        assert "Dangerous command requires approval" in content["body"]
+        assert "Hermes wants to run a command that needs your OK" in content["body"]
         assert "recursive delete" in content["body"]
         assert "rm -rf /tmp/test" in content["body"]
         assert "❎" not in content["body"]
@@ -1103,11 +1160,11 @@ class TestMatrixApprovalCardLifecycle:
         assert prompt.generation == 1
         assert adapter.edit_message.await_count == 1
         body = adapter.edit_message.await_args.args[2]
-        assert "Dangerous command requires approval" in body
+        assert "Hermes wants to run a command that needs your OK" in body
         assert "Advisory interpretation" in body
         assert "Restarts the example container" in body
         assert "docker restart example" in body
-        assert "✅ once" in body
+        assert "✅ = approve once" in body
         meta = adapter.edit_message.await_args.kwargs.get("metadata") or {}
         html = meta.get("matrix_formatted_body") or ""
         assert html.index("<pre>docker restart example</pre>") < html.index("Advisory interpretation")
@@ -1180,7 +1237,7 @@ class TestMatrixApprovalCardLifecycle:
         edits: list[str] = []
 
         async def _edit_message(room_id, event_id, body, metadata=None):
-            if "Dangerous command requires approval" in body:
+            if "Hermes wants to run a command that needs your OK" in body:
                 edits.append("summary")
                 summary_edit_started.set()
                 try:

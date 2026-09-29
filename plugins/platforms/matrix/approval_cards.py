@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 from urllib.parse import urlparse
 
+from agent.i18n import t
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -31,17 +32,33 @@ _DEFAULT_LOCAL_TIMEOUT = 90
 _DEFAULT_REMOTE_TIMEOUT = 10
 _DEFAULT_MAX_CHARS = 500
 
-_OUTCOME_LABELS = {
-    "once": "Approved once",
-    "session": "Approved for session",
-    "always": "Approved always",
-    "deny": "Denied",
-    "expired": "Expired",
-    "resolved": "Resolved",
-    "interrupted": "Cancelled",
-    "session_closed": "Cancelled",
-    "notify_failed": "Not delivered",
+_OUTCOME_LABEL_KEYS = {
+    "once": "platform.matrix.approval.resolved_once",
+    "session": "platform.matrix.approval.resolved_session",
+    "always": "platform.matrix.approval.resolved_always",
+    "deny": "platform.matrix.approval.resolved_deny",
+    "expired": "platform.matrix.approval.resolved_expired",
+    "interrupted": "platform.matrix.approval.resolved_cancel",
+    "session_closed": "platform.matrix.approval.resolved_cancel",
+    "notify_failed": "platform.matrix.approval.resolved_not_delivered",
 }
+_LEGEND_KEYS = {
+    "once": "platform.matrix.approval.legend_once",
+    "session": "platform.matrix.approval.legend_session",
+    "always": "platform.matrix.approval.legend_always",
+    "deny": "platform.matrix.approval.legend_deny",
+}
+# Whole sentences per offered tier (the highest tier wins) so translations never splice fragments.
+_TYPED_HINT_KEYS = {
+    "once": "platform.matrix.approval.typed_hint_once",
+    "session": "platform.matrix.approval.typed_hint_session",
+    "always": "platform.matrix.approval.typed_hint_always",
+}
+
+
+def outcome_label(choice: str) -> str:
+    """The card's label for a terminal *choice* in the active language."""
+    return t(_OUTCOME_LABEL_KEYS.get(choice, "platform.matrix.approval.resolved_fallback"))
 
 
 @dataclass(frozen=True)
@@ -135,33 +152,42 @@ def _details_block(*, summary_label: str, inner_html: str) -> str:
     )
 
 
+def _reason_text(description: str) -> str:
+    default = t("gateway.exec_approval.default_reason")
+    return force_redact_command(description or default).strip() or default
+
+
 def _pending_scope_and_reactions(
     *,
     allow_permanent: bool,
     allow_session: bool,
     smart_denied: bool,
-) -> tuple[str, str]:
-    """Return user-visible approval scope and reaction legend."""
-    if smart_denied:
-        scope = "Smart DENY: owner override applies to this one operation only."
-    elif not allow_session:
-        scope = "`!approve` once · `!deny` cancel."
-    else:
-        scope = "Reply `!approve session` for this session"
-        if allow_permanent:
-            scope += ", `!approve always` permanently"
-        scope += ". `!approve` once · `!deny` cancel."
-
-    reactions = "Reactions: ✅ once"
-    if allow_session and not smart_denied:
-        reactions += " · 🌀 session"
-        if allow_permanent:
-            reactions += " · ♾️ always"
-    reactions += " · ❌ deny"
+) -> tuple[list[str], list[str]]:
+    """Return the lines of the approval scope and of the reaction legend."""
     from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
 
-    scope += "\n" + format_approval_deadline_line(approval_timeout_seconds())
+    choices = ["once"]
+    if allow_session and not smart_denied:
+        choices.append("session")
+        if allow_permanent:
+            choices.append("always")
+
+    scope = [t("gateway.exec_approval.smart_deny_line")] if smart_denied else []
+    scope.append(t(_TYPED_HINT_KEYS[choices[-1]]))
+    scope.append(format_approval_deadline_line(approval_timeout_seconds()))
+
+    reactions = [t("platform.matrix.approval.legend_intro")]
+    reactions.extend(t(_LEGEND_KEYS[choice]) for choice in [*choices, "deny"])
     return scope, reactions
+
+
+def _advisory(summary: str) -> tuple[str, str]:
+    """Return the advisory interpretation as plain text and as HTML."""
+    label = t("platform.matrix.approval.advisory_label")
+    return (
+        f"{label}: {summary}",
+        f"<blockquote><strong>{html.escape(label)}:</strong> {html.escape(summary)}</blockquote>",
+    )
 
 
 def format_pending_expanded(
@@ -179,36 +205,30 @@ def format_pending_expanded(
     Returns (plain_text, optional_html_body).
     """
     redacted = force_redact_command(command)
-    reason = force_redact_command(description or "dangerous command").strip() or "dangerous command"
+    reason = _reason_text(description)
+    header = t("gateway.exec_approval.header")
+    reason_label = t("gateway.exec_approval.reason_label")
 
     scope, reactions = _pending_scope_and_reactions(
         allow_permanent=allow_permanent,
         allow_session=allow_session,
         smart_denied=smart_denied,
     )
-    clean_summary = sanitize_summary(summary) if summary else ""
-    advisory_text = f"Advisory interpretation: {clean_summary}\n\n" if clean_summary else ""
-    advisory_html = (
-        f"<blockquote><strong>Advisory interpretation:</strong> {html.escape(clean_summary)}</blockquote>"
-        if clean_summary else ""
-    )
+    advisory_text, advisory_html = _advisory(sanitize_summary(summary)) if summary else ("", "")
 
-    text = (
-        "⚠️ **Dangerous command requires approval**\n"
-        f"Reason: {reason}\n\n"
-        f"{_md_code_block(redacted)}\n\n"
-        f"{advisory_text}"
-        f"{scope}\n\n"
-        f"{reactions}"
-    )
+    sections = [f"⚠️ **{header}**\n{reason_label}: {reason}", _md_code_block(redacted)]
+    if advisory_text:
+        sections.append(advisory_text)
+    sections += ["\n".join(scope), "\n".join(reactions)]
+    text = "\n\n".join(sections)
 
     html_body = (
-        "<p>⚠️ <strong>Dangerous command requires approval</strong><br/>"
-        f"Reason: {html.escape(reason)}</p>"
+        f"<p>⚠️ <strong>{html.escape(header)}</strong><br/>"
+        f"{html.escape(reason_label)}: {html.escape(reason)}</p>"
         f"{_html_pre(redacted)}"
         f"{advisory_html}"
-        f"<p>{html.escape(scope)}<br/>"
-        f"{html.escape(reactions)}</p>"
+        "<p>" + "<br/>".join(html.escape(line) for line in scope) + "</p>"
+        "<p>" + "<br/>".join(html.escape(line) for line in reactions) + "</p>"
     )
     return text, html_body
 
@@ -243,29 +263,30 @@ def format_terminal_compact(
 ) -> tuple[str, Optional[str]]:
     """t2: compact outcome + primary advisory + closed command disclosure."""
     redacted = force_redact_command(command)
-    reason = force_redact_command(description or "dangerous command").strip() or "dangerous command"
-    label = _OUTCOME_LABELS.get(choice, choice or "Resolved")
+    reason = _reason_text(description)
+    label = outcome_label(choice)
+    full_command = t("platform.matrix.approval.full_command")
     actor_bit = f" · {actor}" if actor else ""
+    advisory_text, advisory_html = _advisory(sanitize_summary(summary)) if summary else ("", "")
 
     text = f"**{label}**{actor_bit} · {reason}"
-    if summary:
-        text += f"\n\nAdvisory interpretation: {sanitize_summary(summary)}"
-    text += f"\n\nFull command:\n{_md_code_block(redacted)}"
+    if advisory_text:
+        text += f"\n\n{advisory_text}"
+    text += f"\n\n{full_command}:\n{_md_code_block(redacted)}"
 
     details_inner = _html_pre(redacted)
-    details_inner += f"<p>Reason: {html.escape(reason)}{html.escape(actor_bit)}</p>"
+    details_inner += (
+        f"<p>{html.escape(t('gateway.exec_approval.reason_label'))}: "
+        f"{html.escape(reason)}{html.escape(actor_bit)}</p>"
+    )
 
     html_body = (
         f"<p><strong>{html.escape(label)}</strong>"
         f"{html.escape(actor_bit)} · {html.escape(reason)}</p>"
+        f"{advisory_html}"
     )
-    if summary:
-        html_body += (
-            f"<blockquote><strong>Advisory interpretation:</strong> "
-            f"{html.escape(sanitize_summary(summary))}</blockquote>"
-        )
     html_body += _details_block(
-        summary_label="Full command",
+        summary_label=full_command,
         inner_html=details_inner,
     )
     return text, html_body

@@ -138,7 +138,9 @@ async def test_visible_failure_notice_retains_card_until_terminal_replacement(mo
     await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="expired")
     assert not prompt.terminal_visible
     assert adapter._approval_prompts_by_event["$card"] is prompt
-    assert "expired" in adapter.send.call_args.args[1]
+    assert adapter.send.call_args.args[1] == (
+        "Approval outcome: Expired. Updating the Matrix card failed. This prompt is no longer actionable."
+    )
     adapter.edit_message = AsyncMock(return_value=SendResult(success=True, message_id="$edit"))
     await adapter._finalize_matrix_approval_prompt(prompt.chat_id, "$card", prompt, choice="expired")
     assert prompt.terminal_visible

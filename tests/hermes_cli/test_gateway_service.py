@@ -2457,11 +2457,16 @@ class TestLaunchctlBootstrapEioRetry:
 
         gateway_cli._launchctl_bootstrap(self.DOMAIN, self.PLIST, self.LABEL)
 
+        # EIO is ambiguous between a stale registration and a persistently DISABLED label (both
+        # exit 5), so the override table is read once to tell them apart before recovering. This
+        # label is not disabled, so no `enable` is issued and the bootout+retry shape is unchanged.
         assert calls == [
             ["launchctl", "bootstrap", self.DOMAIN, self.PLIST],
+            ["launchctl", "print-disabled", self.DOMAIN],
             ["launchctl", "bootout", f"{self.DOMAIN}/{self.LABEL}"],
             ["launchctl", "bootstrap", self.DOMAIN, self.PLIST],
         ]
+        assert not any(c[1] == "enable" for c in calls)
 
     def test_persistent_eio_reraises_for_domain_fallback(self, monkeypatch):
         # When the retry also fails, the error must propagate so callers apply

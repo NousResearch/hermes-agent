@@ -1547,6 +1547,21 @@ def _restart_manual_gateways(out: _GatewayRestartOutcome, _drain_budget) -> None
     # Exclude just-restarted service PIDs so we don't kill what systemd/launchd spawned.
     service_pids = _get_service_pids(all_profiles=True)
     manual_pids = find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
+    # Successors born after the pre-restart snapshot (the macOS-26 detached fallback
+    # the launchd path spawns when bootstrap fails, watcher respawns) are NOT pre-update
+    # residue. Filter BEFORE `profile_processes` is built: a newborn that is already
+    # profile-mapped would otherwise get a watcher armed and be killed a few lines down.
+    # Without this the sweep SIGTERMs the fresh fallback gateway and its wrapper as
+    # "unmapped" and the fleet probe finds no rows — every macOS-26 update exits
+    # incomplete. Snapshot None = unknown: keep stopping everything rather than risk
+    # leaving stale pre-update code running.
+    _pre_snapshot = out.pre_restart_gateway_pids
+    _pre_set = set(_pre_snapshot) if _pre_snapshot is not None else None
+    if _pre_set is not None:
+        _newborn = [pid for pid in manual_pids if pid not in _pre_set]
+        manual_pids = [pid for pid in manual_pids if pid in _pre_set]
+        for pid in _newborn:
+            logger.debug("Skipping gateway PID %s: born after the pre-restart snapshot (successor)", pid)
     profile_processes = {
         proc.pid: proc
         for proc in find_profile_gateway_processes(exclude_pids=service_pids)

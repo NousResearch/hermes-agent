@@ -131,8 +131,6 @@ def notify_approval(self, approval_data: dict) -> None:
     try:
         # Mark as approval prompt so WeCom routes through the control lane.
         metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
-        if getattr(adapter, "approval_fallback_single_event", False):
-            metadata["matrix_formatted_body"] = ""
         fut = self._schedule(
             adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
         )

@@ -230,3 +230,29 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+def test_plan_gated_branch_rules_are_not_auth(monkeypatch):
+    from hermes_cli import kanban_pr_acceptance as acceptance
+
+    sha = "a" * 40
+    def fake_api(endpoint, **kwargs):
+        if endpoint == "graphql":
+            return {"data": {"repository": {"pullRequest": {
+                "headRefOid": sha, "baseRefName": "main", "state": "MERGED",
+                "baseRef": {"branchProtectionRule": {"requiredStatusChecks": []}},
+            }}}}
+        if "/rules/branches/" in endpoint:
+            raise acceptance._PlanGatedRulesError("HTTP 403 on rules")
+        if "/check-runs" in endpoint or "/statuses" in endpoint:
+            return [[]]
+        if "/pulls/" in endpoint:
+            return {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "closed", "merged": True}
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(acceptance, "_api", fake_api)
+    receipt = acceptance.collect_acceptance(
+        "acme/repo", "https://github.com/acme/repo/pull/7")
+    assert receipt["classification"] == "missing"
+    assert receipt["ok"] is False
+    assert receipt["classification"] != "auth"

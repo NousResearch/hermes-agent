@@ -10,7 +10,7 @@ from textwrap import dedent
 from nio import RoomRedactResponse
 
 from tests.fakes.fake_llm_provider import Text, ToolCall
-from tests.integration.matrix_live.resolution_client import _client_code
+from tests.integration.matrix_live.resolution_client import _client_code, write_json
 
 
 _PREPARE = dedent("""
@@ -142,15 +142,12 @@ def check_reaction_page(tmp_path, gateway, room, observer, *, eviction):
     home = tmp_path / "hermes"
     _intake_observed(home, {targets["target"]})
     established = copy.deepcopy(gateway.model.main_requests())
-    (home / "resolution-config.json").write_text(
-        json.dumps({
-            **targets,
-            "scope": "event",
-            "barrier": "reaction",
-            "eviction": eviction,
-        }),
-        encoding="utf-8",
-    )
+    write_json(home / "resolution-config.json", {
+        **targets,
+        "scope": "event",
+        "barrier": "reaction",
+        "eviction": eviction,
+    })
     _queue_read(gateway, targets["target"])
 
     async def exchange():
@@ -271,15 +268,12 @@ def check_replacement_relation(tmp_path, gateway, room, observer, *, relation_ki
     home = tmp_path / "hermes"
     _intake_observed(home, {targets["target"], targets["replacement"]})
     established = copy.deepcopy(gateway.model.main_requests())
-    (home / "resolution-config.json").write_text(
-        json.dumps({
-            **targets,
-            "scope": "event",
-            "barrier": "relation",
-            "withdraw": "",
-        }),
-        encoding="utf-8",
-    )
+    write_json(home / "resolution-config.json", {
+        **targets,
+        "scope": "event",
+        "barrier": "relation",
+        "withdraw": "",
+    })
     _queue_read(gateway, targets["target"])
     _question(observer, code)
     decrypted = json.loads(

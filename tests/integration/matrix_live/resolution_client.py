@@ -12,6 +12,13 @@ from nio import RoomRedactResponse
 from tests.fakes.fake_llm_provider import Text, ToolCall
 
 
+def write_json(path, value):
+    """Replace a hand-off file in one rename so the other side never reads it half written."""
+    partial = path.with_name(f".{path.name}.partial")
+    partial.write_text(json.dumps(value), encoding="utf-8")
+    partial.replace(path)
+
+
 def _client_code(room):
     return (
         f"ROOM_ID = {room.room_id!r}\nBOT_USER = {room.bot.user_id!r}\nBOT_DEVICE = {room.bot.device_id!r}\n"
@@ -122,15 +129,12 @@ def check_resolution(tmp_path, gateway, room, observer, *, scope, barrier, repla
     asyncio.run(asyncio.wait_for(intake_observed(), timeout=5))
     established = copy.deepcopy(gateway.model.main_requests())
     withdraw = targets["replacement"] if replacement else targets["target"]
-    (home / "resolution-config.json").write_text(
-        json.dumps({
-            **targets,
-            "withdraw": withdraw,
-            "scope": scope,
-            "barrier": barrier,
-        }),
-        encoding="utf-8",
-    )
+    write_json(home / "resolution-config.json", {
+        **targets,
+        "withdraw": withdraw,
+        "scope": scope,
+        "barrier": barrier,
+    })
     if scope == "event":
         gateway.model.push(
             ToolCall("tool_search", {"queries": ["Matrix read event"]}),

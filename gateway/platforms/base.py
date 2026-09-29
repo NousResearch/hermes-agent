@@ -1820,6 +1820,48 @@ def resolve_channel_prompt(config_extra: dict, channel_id: str, parent_id: str |
     return None
 
 
+def resolve_channel_project(config_extra: dict, channel_id: str, parent_id: str | None = None) -> str | None:
+    """Resolve an optional project binding for a channel or thread.
+
+    Exact channel/thread ids win over the parent id, matching the prompt and skill binding
+    lookup rules.  Both ``channel_overrides`` and the Telegram-style ``group_topics`` /
+    ``dm_topics`` forms are accepted; malformed entries fail open.
+    """
+    if not isinstance(config_extra, dict):
+        return None
+    ids = [str(value) for value in (channel_id, parent_id) if value]
+
+    overrides = config_extra.get("channel_overrides") or {}
+    if isinstance(overrides, dict):
+        for key in ids:
+            entry = overrides.get(key)
+            if isinstance(entry, dict):
+                project = entry.get("project")
+                if isinstance(project, str) and (project := project.strip()):
+                    return project
+
+    for section in ("group_topics", "dm_topics"):
+        entries = config_extra.get(section) or []
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            chat_id = str(entry.get("chat_id", entry.get("id", "")))
+            topics = entry.get("topics") if isinstance(entry.get("topics"), list) else [entry]
+            for topic in topics:
+                if not isinstance(topic, dict):
+                    continue
+                topic_id = str(topic.get("thread_id", topic.get("id", chat_id)))
+                for candidate in ids:
+                    if candidate not in {topic_id, chat_id}:
+                        continue
+                    project = topic.get("project", entry.get("project"))
+                    if isinstance(project, str) and (project := project.strip()):
+                        return project
+    return None
+
+
 def resolve_channel_skills(
     config_extra: dict, channel_id: str, parent_id: str | None = None) -> list[str] | None:
     """Auto-loaded skill(s) for a channel/thread from ``channel_skill_bindings`` (entries

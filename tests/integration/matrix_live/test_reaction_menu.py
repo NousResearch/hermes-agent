@@ -10,7 +10,7 @@ import pytest
 from nio import RoomSendResponse
 
 from tests.fakes.fake_llm_provider import Text, ToolCall
-from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom, _register
+from tests.integration.matrix_live.conftest import LinuxNioObserver, LiveGateway, LiveRoom, _register
 
 
 @pytest.fixture
@@ -145,3 +145,35 @@ def test_requester_selects_once_in_original_thread(gateway: LiveGateway, live_ro
             await asyncio.gather(alice.close(), bob.close(), bot.close())
 
     asyncio.run(exchange())
+
+
+def _choice(request: dict) -> dict:
+    latest = request["messages"][-1]
+    assert latest["role"] == "user"
+    return json.loads(latest["content"].split("[menu-choice]\n", 1)[1])
+
+
+def test_requester_selects_in_encrypted_room(
+    gateway: LiveGateway, live_room: LiveRoom, linux_nio_observer: LinuxNioObserver,
+):
+    code = (
+        "import asyncio, json; from menu_client import select_menu; "
+        f"print(json.dumps(asyncio.run(select_menu({live_room.room_id!r}, {live_room.bot.user_id!r}))))"
+    )
+    result = linux_nio_observer.container.exec(["/opt/hermes/.venv/bin/python", "-c", code])
+    output = result.output.decode(errors="replace")
+    assert result.exit_code == 0, (
+        f"Encrypted menu exchange failed:\n{output}\n"
+        + gateway.container.get_wrapped_container().logs().decode(errors="replace")[-6000:]
+    )
+    assert json.loads(output.splitlines()[-1]) == {
+        "menu_body": "Choose the next route\n\n✅ First route\n❌ Second route\n\nReact to choose within five minutes.",
+        "followup_body": "Selected the first route",
+        "undecrypted": [],
+    }
+    requests = gateway.model.main_requests()
+    assert len(requests) == 4
+    assert _choice(requests[3]) == {
+        "prompt": "Choose the next route", "context_id": "live-route", "emoji": "✅",
+        "label": "First route", "payload": "Take the first route",
+    }

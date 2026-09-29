@@ -257,12 +257,15 @@ piper = [
   "piper-tts==1.8.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
 ]
 modal = ["modal==1.5.5"]
-daytona = ["daytona==0.155.0"]
+# uv sources only fork packages named in this project's requirements;
+# keep daytona's native obstore child in the same opt-in extra.
+daytona = ["daytona==0.155.0", "obstore==0.8.2"]
 vercel = ["vercel==0.7.2"]
 google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",
   "discord.py[voice]==2.7.1",
+  "davey==0.1.6",  # name the voice child so uv's win-arm64 wheel source takes effect
   "aiohttp==3.14.3",
   "brotlicffi==1.2.0.2",
   "slack-bolt==1.30.0",
@@ -330,7 +333,7 @@ honcho = ["honcho-ai==2.2.0"]
 # deliberately NOT in [all] (see tests/test_project_metadata.py's
 # lazy_covered_extras list — keep that list in sync when adding here).
 telegram = ["python-telegram-bot[webhooks]==22.8"]
-discord = ["discord.py[voice]==2.7.1"]
+discord = ["discord.py[voice]==2.7.1", "davey==0.1.6"]
 # stt-whisper + audio-io compose [voice] (faster-whisper / sounddevice / numpy).
 stt-whisper = [
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin')",
@@ -412,6 +415,7 @@ homeassistant = ["aiohttp==3.14.3"]
 sms = ["aiohttp==3.14.3"]
 teams = [
   "microsoft-teams-apps==2.0.13.4",
+  "dependency-injector==4.49.1",  # name its native child for the win-arm64 wheel source
   "aiohttp==3.14.3",
 ] # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 # Computer use talks to PM's pinned cua-driver over MCP stdio. This extra
@@ -690,6 +694,19 @@ exclude-newer = "14 days"
 # google-cloud-pubsub: same exact-pin shape (==2.39.2, google-chat adapter).
 # The pin bump WAS the review; exclude-newer only filters it because the
 # 14-day window is younger than the reviewed release.
+
+[tool.uv.sources]
+# PyPI has no native win_arm64 wheels for these locked sdists. Build once on
+# Windows ARM64, then let uv verify each fork-hosted wheel's SHA from uv.lock;
+# other hosts must keep resolving the same versions from PyPI.
+brotlicffi = [{ url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/brotlicffi-1.2.0.2-cp314-abi3-win_arm64.whl", marker = "sys_platform == 'win32' and platform_machine == 'ARM64'" }]
+cryptography = [{ url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl", marker = "sys_platform == 'win32' and platform_machine == 'ARM64'" }]
+davey = [{ url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/davey-0.1.6-cp314-cp314-win_arm64.whl", marker = "sys_platform == 'win32' and platform_machine == 'ARM64'" }]
+dependency-injector = [{ url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/dependency_injector-4.49.1-cp314-cp314-win_arm64.whl", marker = "sys_platform == 'win32' and platform_machine == 'ARM64'" }]
+firecrawl-anydoc = [{ url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/firecrawl_anydoc-0.2.4-cp310-abi3-win_arm64.whl", marker = "sys_platform == 'win32' and platform_machine == 'ARM64'" }]
+httptools = [{ url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/httptools-0.8.0-cp314-cp314-win_arm64.whl", marker = "sys_platform == 'win32' and platform_machine == 'ARM64'" }]
+obstore = [{ url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/obstore-0.8.2-cp314-cp314-win_arm64.whl", marker = "sys_platform == 'win32' and platform_machine == 'ARM64'" }]
+pilk = [{ url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/pilk-0.2.4-cp314-cp314-win_arm64.whl", marker = "sys_platform == 'win32' and platform_machine == 'ARM64'" }]
 
 [tool.uv.exclude-newer-package]
 agent-client-protocol = false

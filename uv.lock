@@ -2,7 +2,8 @@ version = 1
 revision = 3
 requires-python = ">=3.11, <3.15"
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform != 'android'",
+    "(python_full_version >= '3.14' and platform_machine != 'ARM64' and sys_platform == 'win32') or (python_full_version >= '3.14' and sys_platform != 'android' and sys_platform != 'win32')",
+    "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'android'",
 ]
 supported-markers = [
@@ -14,112 +15,113 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-agent-client-protocol = false
-aiohttp = false
-aiohttp-socks = false
-aiosqlite = false
-alibabacloud-dingtalk = false
-anthropic = false
-asyncpg = false
-azure-identity = false
-boto3 = false
-brotlicffi = false
-browser-harness = false
-certifi = false
-concurrent-log-handler = false
-croniter = false
-cryptography = false
-daytona = false
-ddgs = "2026-08-26T21:52:34Z"
-debugpy = false
-defusedxml = false
-dingtalk-stream = false
-discord-py = false
-edge-tts = false
 elevenlabs = false
-exa-py = false
-fal-client = false
-fastapi = false
-faster-whisper = false
-fire = false
-firecrawl-anydoc = false
-firecrawl-py = false
-google-api-python-client = false
+langfuse = "2026-09-09T16:01:26Z"
+setuptools = false
+modal = false
+pyyaml = false
+maturin = false
+numpy = false
+pvporcupine = false
 google-auth = false
-google-auth-httplib2 = false
-google-auth-oauthlib = false
+aiohttp = false
+starlette = false
+mistralai = false
+firecrawl-py = false
+parallel-web = false
+markdown = false
+opentelemetry-sdk = false
+prompt-toolkit = false
+fastapi = false
+anthropic = false
+pathspec = false
+ruff = false
+defusedxml = false
+websockets = false
+exa-py = false
+mcp = false
+python-olm = false
+wheel = false
+pytest = false
+pillow = false
+setuptools-rust = false
+tenacity = false
+sherpa-onnx-core = "2026-09-10T15:58:47Z"
+pyjwt = false
+slack-bolt = false
+fal-client = false
+asyncpg = false
+boto3 = false
+ruamel-yaml = false
+sherpa-onnx = "2026-09-10T17:00:04Z"
+huggingface-hub = false
+pytest-asyncio = false
 google-cloud-pubsub = false
-h2 = false
+slack-sdk = false
+discord-py = false
 honcho-ai = false
+faster-whisper = false
+certifi = false
+debugpy = false
+ddgs = "2026-08-26T21:52:34Z"
+packaging = false
+rich = false
+supermemory = false
+h2 = false
+unpaddedbase64 = false
+youtube-transcript-api = false
+edge-tts = false
+microsoft-teams-apps = false
+aiohttp-socks = false
+sentencepiece = false
+opentelemetry-exporter-otlp-proto-http = false
+croniter = false
+browser-harness = false
+azure-identity = false
+lark-oapi = false
+firecrawl-anydoc = false
+google-api-python-client = false
+brotlicffi = false
+mem0ai = false
+qrcode = false
+soundfile = "2026-06-06T08:58:48Z"
+vercel = false
+aiosqlite = false
+tzdata = false
+python-dotenv = false
+daytona = false
+uvicorn = false
+nemo-relay = false
+requests = false
 httplib2 = false
 httpx = false
-httpx2 = false
-huggingface-hub = false
-jinja2 = false
-langfuse = "2026-09-09T16:01:26Z"
-lark-oapi = false
-markdown = false
-maturin = false
-mautrix = false
-mcp = false
-mem0ai = false
-microsoft-teams-apps = false
-mistralai = false
-modal = false
-nemo-relay = false
-neutts = "2026-07-22T14:54:23Z"
-numpy = false
-openai = false
-opentelemetry-exporter-otlp-proto-http = false
-opentelemetry-sdk = false
-packaging = false
-parallel-web = false
-pathspec = false
-pillow = false
 piper-tts = "2026-09-04T16:47:32Z"
-prompt-toolkit = false
-psutil = false
-pvporcupine = false
 pyasn1 = false
-pydantic = false
-pyjwt = false
-pytest = false
-pytest-asyncio = false
-python-dotenv = false
-python-multipart = false
-python-olm = false
-python-telegram-bot = false
-pyyaml = false
-qrcode = false
-requests = false
-rich = false
-ruamel-yaml = false
-ruff = false
-sentencepiece = false
-setuptools = false
-setuptools-rust = false
-sherpa-onnx = "2026-09-10T17:00:04Z"
-sherpa-onnx-core = "2026-09-10T15:58:47Z"
-slack-bolt = false
-slack-sdk = false
 snowballstemmer = false
-sounddevice = false
-soundfile = "2026-06-06T08:58:48Z"
-starlette = false
-supermemory = false
-tenacity = false
+concurrent-log-handler = false
+cryptography = false
+pydantic = false
+agent-client-protocol = false
+fire = false
+httpx2 = false
+google-auth-oauthlib = false
+python-multipart = false
 ty = false
-tzdata = false
-unpaddedbase64 = false
-uvicorn = false
-vercel = false
-websockets = false
-wheel = false
-youtube-transcript-api = false
+openai = false
+mautrix = false
+neutts = "2026-07-22T14:54:23Z"
+google-auth-httplib2 = false
+psutil = false
+python-telegram-bot = false
+jinja2 = false
+sounddevice = false
+alibabacloud-dingtalk = false
+dingtalk-stream = false
 
 [manifest]
 overrides = [
-    { name = "cryptography", specifier = "==50.0.1" },
+    { name = "cryptography", marker = "platform_machine != 'ARM64' or sys_platform != 'win32'", specifier = "==50.0.1" },
+    { name = "cryptography", marker = "platform_machine == 'ARM64' and sys_platform == 'win32'", url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl" },
     { name = "pynacl", specifier = ">=1.6,<1.7" },
     { name = "spacy-curated-transformers", marker = "sys_platform == 'never'" },
 ]
@@ -401,7 +403,8 @@ version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "alibabacloud-tea-util" },
-    { name = "cryptography" },
+    { name = "cryptography", version = "50.0.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "cryptography", version = "50.0.1", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f6/51/be5802851a4ed20ac2c6db50ac8354a6e431e93db6e714ca39b50983626f/alibabacloud_openapi_util-0.2.4.tar.gz", hash = "sha256:87022b9dcb7593a601f7a40ca698227ac3ccb776b58cb7b06b8dc7f510995c34", size = 7981, upload-time = "2026-01-15T08:05:03.947Z" }
 wheels = [
@@ -426,7 +429,8 @@ dependencies = [
     { name = "alibabacloud-credentials" },
     { name = "alibabacloud-gateway-spi" },
     { name = "alibabacloud-tea-util" },
-    { name = "cryptography" },
+    { name = "cryptography", version = "50.0.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "cryptography", version = "50.0.1", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "darabonba-core" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ab/34/1918a2d780676494365c7f945bfab397ecddb988054d78025bd26f438977/alibabacloud_tea_openapi-0.4.6.tar.gz", hash = "sha256:dafc32401712f5b21c12dc3d05ba887a91ad156d9b49a7662279f9fd90526fb2", size = 26742, upload-time = "2026-08-17T08:34:11.55Z" }
@@ -645,7 +649,8 @@ version = "1.25.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "azure-core" },
-    { name = "cryptography" },
+    { name = "cryptography", version = "50.0.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "cryptography", version = "50.0.1", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "msal" },
     { name = "msal-extensions" },
     { name = "typing-extensions" },
@@ -753,6 +758,10 @@ wheels = [
 name = "brotlicffi"
 version = "1.2.0.2"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.14' and platform_machine != 'ARM64' and sys_platform == 'win32') or (python_full_version >= '3.14' and sys_platform != 'android' and sys_platform != 'win32')",
+    "python_full_version >= '3.14' and sys_platform == 'android'",
+]
 dependencies = [
     { name = "cffi" },
 ]
@@ -772,6 +781,26 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/e1/c7/a253288e66ee340f2f6320eda7022daa723f2918438d586a59e9c998aa27/brotlicffi-1.2.0.2-pp311-pypy311_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:dbb81489562dd5363bf86d9a8edb0ec8c97049b0819ba4936fc023e8847248bc", size = 406825, upload-time = "2026-08-21T17:29:13.992Z" },
     { url = "https://files.pythonhosted.org/packages/6e/6c/ea8e3d34e1d64c5e5a920bb0c89bf9e92badf973937a60922820395e622d/brotlicffi-1.2.0.2-pp311-pypy311_pp73-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:fc7647657e4f3d73eab591910dbecb57d1ecaea7aa3dd04e6d704a2756fe0c59", size = 402903, upload-time = "2026-08-21T17:29:15.524Z" },
     { url = "https://files.pythonhosted.org/packages/4e/17/17c22d48819001ca08cadab63b09b00e0c56a7579478aa7c2623f4280de6/brotlicffi-1.2.0.2-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:5eb5563173afb92c9111b180349ff17d7c83c79febabadca5de983b552565c3c", size = 378395, upload-time = "2026-08-21T17:29:16.857Z" },
+]
+
+[[package]]
+name = "brotlicffi"
+version = "1.2.0.2"
+source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/brotlicffi-1.2.0.2-cp314-abi3-win_arm64.whl" }
+resolution-markers = [
+    "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
+]
+dependencies = [
+    { name = "cffi" },
+]
+wheels = [
+    { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/brotlicffi-1.2.0.2-cp314-abi3-win_arm64.whl", hash = "sha256:bde1a04e5cab148c22faebbd36f88527a9dcda634474c86104df15f9e102d56e" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cffi", marker = "python_full_version < '3.13'", specifier = ">=1.0.0" },
+    { name = "cffi", marker = "python_full_version >= '3.13'", specifier = ">=1.17.0" },
 ]
 
 [[package]]
@@ -1135,6 +1164,10 @@ wheels = [
 name = "cryptography"
 version = "50.0.1"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.14' and platform_machine != 'ARM64' and sys_platform == 'win32') or (python_full_version >= '3.14' and sys_platform != 'android' and sys_platform != 'win32')",
+    "python_full_version >= '3.14' and sys_platform == 'android'",
+]
 dependencies = [
     { name = "cffi", marker = "platform_python_implementation != 'PyPy'" },
 ]
@@ -1186,6 +1219,28 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/51/cf/5b3f53a0b74d122f023476ede40ba5d3e70d5cf475f73b899740d26a4fb2/cryptography-50.0.1-pp311-pypy311_pp73-manylinux_2_34_x86_64.whl", hash = "sha256:804728ce710890870f3aaa344b2e161172d258d768ac139d02cfd9092d0d94e6", size = 4706889, upload-time = "2026-08-25T19:45:35.086Z" },
     { url = "https://files.pythonhosted.org/packages/71/44/711e61f7d014be825ef79b285b047292d1bf893732ac1bc030a351fb517f/cryptography-50.0.1-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:693c99b49bd37d0d096e4334c10232c77248c415b98d35236094cdf96d57258b", size = 3824006, upload-time = "2026-08-25T19:45:37.281Z" },
 ]
+
+[[package]]
+name = "cryptography"
+version = "50.0.1"
+source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl" }
+resolution-markers = [
+    "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
+]
+dependencies = [
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy'" },
+]
+wheels = [
+    { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl", hash = "sha256:be7d4c30659513a5869fcc5dcaa0a2bd11c98b624d21b75c0148a98d512f0beb" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "bcrypt", marker = "extra == 'ssh'", specifier = ">=3.1.5" },
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy'", specifier = ">=2.0.0" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'", specifier = ">=4.13.2" },
+]
+provides-extras = ["ssh"]
 
 [[package]]
 name = "csvw"
@@ -1417,6 +1472,10 @@ wheels = [
 name = "davey"
 version = "0.1.6"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.14' and platform_machine != 'ARM64' and sys_platform == 'win32') or (python_full_version >= '3.14' and sys_platform != 'android' and sys_platform != 'win32')",
+    "python_full_version >= '3.14' and sys_platform == 'android'",
+]
 sdist = { url = "https://files.pythonhosted.org/packages/a2/5a/fba4f241463db9cfb6ebc536147ae7820abcb9709034e12f6640e312cf14/davey-0.1.6.tar.gz", hash = "sha256:e067b22f30b27f48b28e2ab0b8d89a8f8adcfa6da3e8a0fec31a5eabbf7e9c98", size = 63144, upload-time = "2026-06-22T01:22:45.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/63/bb/7086190731a35a29f1de7ca847bdba46bfaa405e5196f727735b33573747/davey-0.1.6-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:6bce3d5c3fcb0d2d448a903dae4525b6ab4b44342d7fc90711354e3d5f8455d6", size = 843479, upload-time = "2026-06-22T01:21:38.549Z" },
@@ -1495,6 +1554,17 @@ wheels = [
 ]
 
 [[package]]
+name = "davey"
+version = "0.1.6"
+source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/davey-0.1.6-cp314-cp314-win_arm64.whl" }
+resolution-markers = [
+    "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
+]
+wheels = [
+    { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/davey-0.1.6-cp314-cp314-win_arm64.whl", hash = "sha256:11e3ff0f685e6d0732c2960ce867cbdcd2f67553474137cd71485b9cae82f495" },
+]
+
+[[package]]
 name = "daytona"
 version = "0.155.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1507,7 +1577,8 @@ dependencies = [
     { name = "deprecated" },
     { name = "environs" },
     { name = "httpx" },
-    { name = "obstore" },
+    { name = "obstore", version = "0.8.2", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "obstore", version = "0.8.2", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/obstore-0.8.2-cp314-cp314-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-instrumentation-aiohttp-client" },
@@ -1638,6 +1709,10 @@ wheels = [
 name = "dependency-injector"
 version = "4.49.1"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.14' and platform_machine != 'ARM64' and sys_platform == 'win32') or (python_full_version >= '3.14' and sys_platform != 'android' and sys_platform != 'win32')",
+    "python_full_version >= '3.14' and sys_platform == 'android'",
+]
 sdist = { url = "https://files.pythonhosted.org/packages/d1/84/5e05c2997a196155b86446d48b9e5b2a055087c574746389fdc3c530f5b5/dependency_injector-4.49.1.tar.gz", hash = "sha256:b4614fa3731ffec00a381aebc1d17317b0a3a407aa679f164a3ea03c347de691", size = 1171204, upload-time = "2026-06-18T17:51:48.221Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c0/1e/9f3abdf0ac42cac1c319b210aa060669ea9d29f06caf00c27fe72fa5335c/dependency_injector-4.49.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:b1b71d6f500c001230a53e5bee01ea01c6d3bb2089f64ecc841b42672924a19a", size = 1771519, upload-time = "2026-06-18T17:50:58.476Z" },
@@ -1652,6 +1727,28 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8d/1f/70a5107fda9ba772e5427f4a0a87c8a80e51e0dc6a10d2c2efc6cd8640ce/dependency_injector-4.49.1-pp311-pypy311_pp73-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:3c11aa23a425864443742b2487e2bbb9a0b64686aa5794982314a7cabee61a91", size = 1743046, upload-time = "2026-06-18T17:51:44.351Z" },
     { url = "https://files.pythonhosted.org/packages/96/e6/7e9cea8ad23df40bffef671175c741c9c231da524fd855677cbd2657929c/dependency_injector-4.49.1-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:e4e5aaa3bf6d6b8fc74b487ff8df3881c6efe1689a8576a45d5be76c932f6ecd", size = 1653579, upload-time = "2026-06-18T17:51:46.372Z" },
 ]
+
+[[package]]
+name = "dependency-injector"
+version = "4.49.1"
+source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/dependency_injector-4.49.1-cp314-cp314-win_arm64.whl" }
+resolution-markers = [
+    "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
+]
+wheels = [
+    { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/dependency_injector-4.49.1-cp314-cp314-win_arm64.whl", hash = "sha256:27484746b802cbaaff3cd6cfd029454478403e619525ab71033efa56bd5003c5" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", marker = "extra == 'aiohttp'" },
+    { name = "flask", marker = "extra == 'flask'" },
+    { name = "pydantic", marker = "extra == 'pydantic'" },
+    { name = "pydantic-settings", marker = "extra == 'pydantic2'" },
+    { name = "pyyaml", marker = "extra == 'yaml'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+]
+provides-extras = ["yaml", "pydantic", "pydantic2", "flask", "aiohttp"]
 
 [[package]]
 name = "deprecated"
@@ -1693,7 +1790,8 @@ wheels = [
 
 [package.optional-dependencies]
 voice = [
-    { name = "davey" },
+    { name = "davey", version = "0.1.6", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "davey", version = "0.1.6", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/davey-0.1.6-cp314-cp314-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "pynacl" },
 ]
 
@@ -1905,6 +2003,10 @@ wheels = [
 name = "firecrawl-anydoc"
 version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.14' and platform_machine != 'ARM64' and sys_platform == 'win32') or (python_full_version >= '3.14' and sys_platform != 'android' and sys_platform != 'win32')",
+    "python_full_version >= '3.14' and sys_platform == 'android'",
+]
 sdist = { url = "https://files.pythonhosted.org/packages/35/54/ee43b1661a954e53eaed85878a7ccc37ed73e02e6577bb26437ec5f9de94/firecrawl_anydoc-0.2.4.tar.gz", hash = "sha256:3e29460272fea81cde08fd5af11f6b0f1ff05919214ddc939867f72362c83032", size = 270706, upload-time = "2026-08-27T19:13:58.156Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/25/f1/5616b8d703b2bf5688eda86ede4b35620356d9c60346fe2d3efbec2a872d/firecrawl_anydoc-0.2.4-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:e3745a8b108d6575beafd37bcefe52e3f6c7ab44138e05cbdf4c6adf63caba84", size = 3441281, upload-time = "2026-08-27T19:13:43.408Z" },
@@ -1914,6 +2016,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/14/28/b4d0d3c5345cdd65c0b9113c6e6ff1b717fe360dccb658db2a9952315f9c/firecrawl_anydoc-0.2.4-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:dd162b5eb64478fcf02f53abe7765e26f4350ba657f36c25f055c4cc3dbade0a", size = 3443075, upload-time = "2026-08-27T19:13:52.417Z" },
     { url = "https://files.pythonhosted.org/packages/cb/29/50c52b0ea5dd645aea6d195da913c8d9e136601eec465bd9a590edd250c7/firecrawl_anydoc-0.2.4-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:e57c79093c1592929dd8dfaf6c60b49eefe631721d96fb833c3f465472b37b9f", size = 3742860, upload-time = "2026-08-27T19:13:54.474Z" },
     { url = "https://files.pythonhosted.org/packages/65/34/6d54fed906055e5507dd94efd63f4a05021f103dc684ea62a3b0876b7595/firecrawl_anydoc-0.2.4-cp310-abi3-win_amd64.whl", hash = "sha256:7c9ffc81946e6954c124560ed1d395e0103a1a08fdc0f6be382e2f35daf6dbc9", size = 3583555, upload-time = "2026-08-27T19:13:56.698Z" },
+]
+
+[[package]]
+name = "firecrawl-anydoc"
+version = "0.2.4"
+source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/firecrawl_anydoc-0.2.4-cp310-abi3-win_arm64.whl" }
+resolution-markers = [
+    "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
+]
+wheels = [
+    { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/firecrawl_anydoc-0.2.4-cp310-abi3-win_arm64.whl", hash = "sha256:286965ff54cea4d9947d39e39644ec7ad155747afa73183a9bde27bd2fe8a6d0" },
 ]
 
 [[package]]
@@ -2099,7 +2212,8 @@ name = "google-auth"
 version = "2.55.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography" },
+    { name = "cryptography", version = "50.0.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "cryptography", version = "50.0.1", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "pyasn1-modules" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a3/6f/f3f4ac177c67bbee8fe8e88f2ab4f36af88c44a096e165c5217accf6e5d3/google_auth-2.55.1.tar.gz", hash = "sha256:fb2d9b730f2c9b8d326ec8d7222f21aef2ead15bf0513793d6442485d87af0a1", size = 349527, upload-time = "2026-06-25T23:39:27.182Z" }
@@ -2350,11 +2464,14 @@ dependencies = [
     { name = "certifi" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'" },
     { name = "croniter" },
-    { name = "cryptography" },
+    { name = "cryptography", version = "50.0.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "cryptography", version = "50.0.1", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "fastapi" },
     { name = "fire" },
-    { name = "firecrawl-anydoc" },
-    { name = "httptools" },
+    { name = "firecrawl-anydoc", version = "0.2.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "firecrawl-anydoc", version = "0.2.4", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/firecrawl_anydoc-0.2.4-cp310-abi3-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
+    { name = "httptools", version = "0.8.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "httptools", version = "0.8.0", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/httptools-0.8.0-cp314-cp314-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
     { name = "markdown" },
@@ -2435,6 +2552,8 @@ computer-use = [
 ]
 daytona = [
     { name = "daytona" },
+    { name = "obstore", version = "0.8.2", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "obstore", version = "0.8.2", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/obstore-0.8.2-cp314-cp314-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
 ]
 ddgs = [
     { name = "ddgs" },
@@ -2445,10 +2564,13 @@ dingtalk = [
     { name = "qrcode" },
 ]
 discord = [
+    { name = "davey", version = "0.1.6", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "davey", version = "0.1.6", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/davey-0.1.6-cp314-cp314-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "discord-py", extra = ["voice"] },
 ]
 doc-extract = [
-    { name = "firecrawl-anydoc" },
+    { name = "firecrawl-anydoc", version = "0.2.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "firecrawl-anydoc", version = "0.2.4", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/firecrawl_anydoc-0.2.4-cp310-abi3-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
 ]
 edge-tts = [
     { name = "edge-tts" },
@@ -2512,7 +2634,10 @@ mem0 = [
 ]
 messaging = [
     { name = "aiohttp" },
-    { name = "brotlicffi" },
+    { name = "brotlicffi", version = "1.2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "brotlicffi", version = "1.2.0.2", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/brotlicffi-1.2.0.2-cp314-abi3-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
+    { name = "davey", version = "0.1.6", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "davey", version = "0.1.6", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/davey-0.1.6-cp314-cp314-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "discord-py", extra = ["voice"] },
     { name = "python-telegram-bot", extra = ["webhooks"] },
     { name = "qrcode" },
@@ -2536,7 +2661,8 @@ piper = [
     { name = "piper-tts", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
 ]
 silk = [
-    { name = "pilk" },
+    { name = "pilk", version = "0.2.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "pilk", version = "0.2.4", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/pilk-0.2.4-cp314-cp314-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
 ]
 slack = [
     { name = "aiohttp" },
@@ -2554,6 +2680,8 @@ supermemory = [
 ]
 teams = [
     { name = "aiohttp" },
+    { name = "dependency-injector", version = "4.49.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "dependency-injector", version = "4.49.1", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/dependency_injector-4.49.1-cp314-cp314-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "microsoft-teams-apps" },
 ]
 telegram = [
@@ -2673,15 +2801,23 @@ requires-dist = [
     { name = "asyncpg", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.31.0" },
     { name = "azure-identity", marker = "extra == 'azure-identity'", specifier = "==1.25.3" },
     { name = "boto3", marker = "extra == 'bedrock'", specifier = "==1.42.89" },
-    { name = "brotlicffi", marker = "extra == 'messaging'", specifier = "==1.2.0.2" },
+    { name = "brotlicffi", marker = "platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'messaging'", url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/brotlicffi-1.2.0.2-cp314-abi3-win_arm64.whl" },
+    { name = "brotlicffi", marker = "(platform_machine != 'ARM64' and extra == 'messaging') or (sys_platform != 'win32' and extra == 'messaging')", specifier = "==1.2.0.2" },
     { name = "browser-harness", marker = "python_full_version >= '3.14'", specifier = "==0.1.13" },
     { name = "certifi", marker = "python_full_version >= '3.14'", specifier = "==2026.5.20" },
     { name = "concurrent-log-handler", marker = "python_full_version >= '3.14' and sys_platform == 'win32'", specifier = "==0.9.29" },
     { name = "croniter", marker = "python_full_version >= '3.14'", specifier = "==6.0.0" },
-    { name = "cryptography", marker = "python_full_version >= '3.14'", specifier = "==50.0.1" },
+    { name = "cryptography", marker = "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'", url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl" },
+    { name = "cryptography", marker = "(python_full_version >= '3.14' and platform_machine != 'ARM64') or (python_full_version >= '3.14' and sys_platform != 'win32')", specifier = "==50.0.1" },
+    { name = "davey", marker = "platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'discord'", url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/davey-0.1.6-cp314-cp314-win_arm64.whl" },
+    { name = "davey", marker = "platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'messaging'", url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/davey-0.1.6-cp314-cp314-win_arm64.whl" },
+    { name = "davey", marker = "(platform_machine != 'ARM64' and extra == 'discord') or (sys_platform != 'win32' and extra == 'discord')", specifier = "==0.1.6" },
+    { name = "davey", marker = "(platform_machine != 'ARM64' and extra == 'messaging') or (sys_platform != 'win32' and extra == 'messaging')", specifier = "==0.1.6" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = "==0.155.0" },
     { name = "ddgs", marker = "extra == 'ddgs'", specifier = "==9.16.0" },
     { name = "defusedxml", marker = "extra == 'wecom'", specifier = "==0.7.1" },
+    { name = "dependency-injector", marker = "platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'teams'", url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/dependency_injector-4.49.1-cp314-cp314-win_arm64.whl" },
+    { name = "dependency-injector", marker = "(platform_machine != 'ARM64' and extra == 'teams') or (sys_platform != 'win32' and extra == 'teams')", specifier = "==4.49.1" },
     { name = "dingtalk-stream", marker = "extra == 'dingtalk'", specifier = "==0.24.3" },
     { name = "discord-py", extras = ["voice"], marker = "extra == 'discord'", specifier = "==2.7.1" },
     { name = "discord-py", extras = ["voice"], marker = "extra == 'messaging'", specifier = "==2.7.1" },
@@ -2694,8 +2830,10 @@ requires-dist = [
     { name = "faster-whisper", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'stt-whisper') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'stt-whisper') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'stt-whisper')", specifier = "==1.2.1" },
     { name = "faster-whisper", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'voice') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'voice') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'voice')", specifier = "==1.2.1" },
     { name = "fire", marker = "python_full_version >= '3.14'", specifier = "==0.7.1" },
-    { name = "firecrawl-anydoc", marker = "python_full_version >= '3.14'", specifier = "==0.2.4" },
-    { name = "firecrawl-anydoc", marker = "extra == 'doc-extract'", specifier = "==0.2.4" },
+    { name = "firecrawl-anydoc", marker = "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'", url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/firecrawl_anydoc-0.2.4-cp310-abi3-win_arm64.whl" },
+    { name = "firecrawl-anydoc", marker = "platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'doc-extract'", url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/firecrawl_anydoc-0.2.4-cp310-abi3-win_arm64.whl" },
+    { name = "firecrawl-anydoc", marker = "(python_full_version >= '3.14' and platform_machine != 'ARM64') or (python_full_version >= '3.14' and sys_platform != 'win32')", specifier = "==0.2.4" },
+    { name = "firecrawl-anydoc", marker = "(platform_machine != 'ARM64' and extra == 'doc-extract') or (sys_platform != 'win32' and extra == 'doc-extract')", specifier = "==0.2.4" },
     { name = "firecrawl-py", marker = "extra == 'firecrawl'", specifier = "==4.17.0" },
     { name = "google-api-python-client", marker = "extra == 'google'", specifier = "==2.194.0" },
     { name = "google-auth", marker = "extra == 'google'", specifier = "==2.55.1" },
@@ -2725,7 +2863,8 @@ requires-dist = [
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.2.0" },
     { name = "httplib2", marker = "extra == 'google'", specifier = "==0.32.0" },
-    { name = "httptools", marker = "python_full_version >= '3.14'", specifier = ">=0.6.3,<0.9" },
+    { name = "httptools", marker = "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'", url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/httptools-0.8.0-cp314-cp314-win_arm64.whl" },
+    { name = "httptools", marker = "(python_full_version >= '3.14' and platform_machine != 'ARM64') or (python_full_version >= '3.14' and sys_platform != 'win32')", specifier = ">=0.6.3,<0.9" },
     { name = "httpx", extras = ["socks"], marker = "python_full_version >= '3.14'", specifier = "==0.28.1" },
     { name = "httpx2", marker = "extra == 'computer-use'", specifier = "==2.7.0" },
     { name = "httpx2", marker = "extra == 'mcp'", specifier = "==2.7.0" },
@@ -2748,13 +2887,16 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'audio-io'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'voice'", specifier = "==2.4.3" },
     { name = "numpy", marker = "extra == 'wake'", specifier = "==2.4.3" },
+    { name = "obstore", marker = "platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'daytona'", url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/obstore-0.8.2-cp314-cp314-win_arm64.whl" },
+    { name = "obstore", marker = "(platform_machine != 'ARM64' and extra == 'daytona') or (sys_platform != 'win32' and extra == 'daytona')", specifier = "==0.8.2" },
     { name = "openai", marker = "python_full_version >= '3.14'", specifier = "==2.24.0" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otlp'", specifier = "==1.39.1" },
     { name = "opentelemetry-sdk", marker = "extra == 'otlp'", specifier = "==1.39.1" },
     { name = "packaging", marker = "python_full_version >= '3.14'", specifier = "==26.0" },
     { name = "parallel-web", marker = "extra == 'parallel-web'", specifier = "==0.4.2" },
     { name = "pathspec", marker = "python_full_version >= '3.14'", specifier = "==1.1.1" },
-    { name = "pilk", marker = "extra == 'silk'", specifier = "==0.2.4" },
+    { name = "pilk", marker = "platform_machine == 'ARM64' and sys_platform == 'win32' and extra == 'silk'", url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/pilk-0.2.4-cp314-cp314-win_arm64.whl" },
+    { name = "pilk", marker = "(platform_machine != 'ARM64' and extra == 'silk') or (sys_platform != 'win32' and extra == 'silk')", specifier = "==0.2.4" },
     { name = "pillow", marker = "python_full_version >= '3.14'", specifier = "==12.3.0" },
     { name = "pillow-heif", marker = "python_full_version >= '3.14'", specifier = ">=1.4.0,<2" },
     { name = "piper-tts", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'piper') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'piper') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'piper')", specifier = "==1.8.0" },
@@ -2931,6 +3073,10 @@ wheels = [
 name = "httptools"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.14' and platform_machine != 'ARM64' and sys_platform == 'win32') or (python_full_version >= '3.14' and sys_platform != 'android' and sys_platform != 'win32')",
+    "python_full_version >= '3.14' and sys_platform == 'android'",
+]
 sdist = { url = "https://files.pythonhosted.org/packages/43/e5/d471fcb0e14523fe1c3f4ba58ca52480e7bd70ad7109a3846bc75892f7fb/httptools-0.8.0.tar.gz", hash = "sha256:6b2a32f18d97e16e90827d7a819ffa8dbd8cc245fc4e1fa9d1095b54ef4bd999", size = 271342, upload-time = "2026-05-25T22:17:48.841Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/d2/c3eedaef57de65c3cc5f8dc244cf12d09c84ad258a479055aad6db23206c/httptools-0.8.0-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:ed377e64805bdba4943c82717333f8f8603a13b09aff9cead2717c6c817fb168", size = 208428, upload-time = "2026-05-25T22:16:59.717Z" },
@@ -2968,6 +3114,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/3e/b9/f5564760af99f3dbbf3f9104dc00e5da27e96cf433c6bdcf77617f70bf3f/httptools-0.8.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:88eead8ec8680a9f146c655bc88445a325bd7921cfd8194c7337e9467282427d", size = 543297, upload-time = "2026-05-25T22:17:37.08Z" },
     { url = "https://files.pythonhosted.org/packages/99/67/8d9f2c313618e161b82f3873188e7196126da1d6e29688df40eb3997c77a/httptools-0.8.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:2c032fa028f46871ec7e1fc59fc15e8023eab3e6bbe6ece786a1611719a5d081", size = 539535, upload-time = "2026-05-25T22:17:38.032Z" },
     { url = "https://files.pythonhosted.org/packages/48/63/b906c01e53f50d432c0defe43ce52764a111dc1bdd028bafbeb54dcfd008/httptools-0.8.0-cp314-cp314t-win_amd64.whl", hash = "sha256:384c17174464c8e873398b7af24f0b1f44d992c820328413951a625323155d77", size = 108209, upload-time = "2026-05-25T22:17:39.473Z" },
+]
+
+[[package]]
+name = "httptools"
+version = "0.8.0"
+source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/httptools-0.8.0-cp314-cp314-win_arm64.whl" }
+resolution-markers = [
+    "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
+]
+wheels = [
+    { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/httptools-0.8.0-cp314-cp314-win_arm64.whl", hash = "sha256:f0b2d5440ef12a5a6b3d1bd1b195ae25a26507101727d9b8e66896c335156a93" },
 ]
 
 [[package]]
@@ -3628,8 +3785,10 @@ name = "microsoft-teams-apps"
 version = "2.0.13.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography" },
-    { name = "dependency-injector" },
+    { name = "cryptography", version = "50.0.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "cryptography", version = "50.0.1", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
+    { name = "dependency-injector", version = "4.49.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "dependency-injector", version = "4.49.1", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/dependency_injector-4.49.1-cp314-cp314-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "fastapi" },
     { name = "microsoft-teams-api" },
     { name = "microsoft-teams-common" },
@@ -3743,7 +3902,8 @@ name = "msal"
 version = "1.38.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cryptography" },
+    { name = "cryptography", version = "50.0.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "cryptography", version = "50.0.1", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "requests" },
 ]
@@ -4289,6 +4449,10 @@ wheels = [
 name = "obstore"
 version = "0.8.2"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.14' and platform_machine != 'ARM64' and sys_platform == 'win32') or (python_full_version >= '3.14' and sys_platform != 'android' and sys_platform != 'win32')",
+    "python_full_version >= '3.14' and sys_platform == 'android'",
+]
 sdist = { url = "https://files.pythonhosted.org/packages/a3/8c/9ec984edd0f3b72226adfaa19b1c61b15823b35b52f311ca4af36d009d15/obstore-0.8.2.tar.gz", hash = "sha256:a467bc4e97169e2ba749981b4fd0936015428d9b8f3fb83a5528536b1b6f377f", size = 168852, upload-time = "2025-09-16T15:34:55.786Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2f/c4/018f90701f1e5ea3fbd57f61463f42e1ef5218e548d3adcf12b6be021c34/obstore-0.8.2-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:2edaa97687c191c5324bb939d72f6fe86a7aa8191c410f1648c14e8296d05c1c", size = 3622568, upload-time = "2025-09-16T15:33:14.196Z" },
@@ -4343,6 +4507,20 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/01/f9/4fd4819ad6a49d2f462a45be453561f4caebded0dc40112deeffc34b89b1/obstore-0.8.2-cp314-cp314-musllinux_1_2_i686.whl", hash = "sha256:1e4df99b369790c97c752d126b286dc86484ea49bff5782843a265221406566f", size = 3776076, upload-time = "2025-09-16T15:34:16.207Z" },
     { url = "https://files.pythonhosted.org/packages/14/dd/7c4f958fa0b9fc4778fb3d232e38b37db8c6b260f641022fbba48b049d7e/obstore-0.8.2-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:9e1c65c65e20cc990414a8a9af88209b1bbc0dd9521b5f6b0293c60e19439bb7", size = 3947445, upload-time = "2025-09-16T15:34:17.423Z" },
 ]
+
+[[package]]
+name = "obstore"
+version = "0.8.2"
+source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/obstore-0.8.2-cp314-cp314-win_arm64.whl" }
+resolution-markers = [
+    "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
+]
+wheels = [
+    { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/obstore-0.8.2-cp314-cp314-win_arm64.whl", hash = "sha256:c4ab13d64e6f2b188c3b682b93bea821cc46cf18730de0fd9679e8b16b7f210c" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "typing-extensions", marker = "python_full_version < '3.13'" }]
 
 [[package]]
 name = "onnxruntime"
@@ -4586,6 +4764,10 @@ wheels = [
 name = "pilk"
 version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "(python_full_version >= '3.14' and platform_machine != 'ARM64' and sys_platform == 'win32') or (python_full_version >= '3.14' and sys_platform != 'android' and sys_platform != 'win32')",
+    "python_full_version >= '3.14' and sys_platform == 'android'",
+]
 dependencies = [
     { name = "typing-extensions" },
 ]
@@ -4593,6 +4775,23 @@ sdist = { url = "https://files.pythonhosted.org/packages/66/bb/938dd697b6bc2d851
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ff/06/80cac61bc7f791bcaae552ba90fb868f7af7503ef1c74e423cc20fca1a53/pilk-0.2.4-cp311-cp311-win_amd64.whl", hash = "sha256:a6692096607e8d77d348aeec00df633788c85b527aa83cbd803ddf508936db7f", size = 127024, upload-time = "2023-05-26T03:32:24.524Z" },
 ]
+
+[[package]]
+name = "pilk"
+version = "0.2.4"
+source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/pilk-0.2.4-cp314-cp314-win_arm64.whl" }
+resolution-markers = [
+    "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
+]
+dependencies = [
+    { name = "typing-extensions" },
+]
+wheels = [
+    { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/pilk-0.2.4-cp314-cp314-win_arm64.whl", hash = "sha256:17465b225f9d796c583cb985603e763aef58236af5dab826f6d7dd7ef40d9c16" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "typing-extensions" }]
 
 [[package]]
 name = "pillow"
@@ -5040,7 +5239,8 @@ name = "psutil"
 version = "7.2.2"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.14' and sys_platform != 'android'",
+    "(python_full_version >= '3.14' and platform_machine != 'ARM64' and sys_platform == 'win32') or (python_full_version >= '3.14' and sys_platform != 'android' and sys_platform != 'win32')",
+    "python_full_version >= '3.14' and platform_machine == 'ARM64' and sys_platform == 'win32'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/aa/c6/d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/psutil-7.2.2.tar.gz", hash = "sha256:0746f5f8d406af344fd547f1c8daa5f5c33dbc293bb8d6a16d80b4bb88f59372", size = 493740, upload-time = "2026-01-28T18:14:54.428Z" }
 wheels = [
@@ -5318,7 +5518,8 @@ wheels = [
 
 [package.optional-dependencies]
 crypto = [
-    { name = "cryptography" },
+    { name = "cryptography", version = "50.0.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'ARM64' or sys_platform != 'win32'" },
+    { name = "cryptography", version = "50.0.1", source = { url = "https://github.com/ethernet8023/hermes-agent/releases/download/wheelhouse/cryptography-50.0.1-cp314-abi3-win_arm64.whl" }, marker = "platform_machine == 'ARM64' and sys_platform == 'win32'" },
 ]
 
 [[package]]

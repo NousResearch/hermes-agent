@@ -93,7 +93,11 @@ async function openViaWsl(url: string, deps: ExternalOpenDeps): Promise<External
   const proc = deps.spawn('cmd.exe', ['/c', 'start', '""', `"${url}"`], {
     detached: true,
     stdio: 'ignore',
-    windowsHide: true
+    windowsHide: true,
+    // The URL is deliberately pre-quoted for cmd.exe. Prevent libuv from
+    // quoting that quoted token again, which would move '&' back outside the
+    // effective quotes and recreate command splitting.
+    windowsVerbatimArguments: true
   })
 
   // 'error' only fires when the process could not be spawned. In that case

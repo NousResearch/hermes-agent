@@ -15,13 +15,22 @@ export function parseSingletonLockPid(
   linkTarget: string | null | undefined,
   hostname: string
 ): number | null {
-  if (typeof linkTarget !== 'string' || linkTarget === '') return null
+  if (typeof linkTarget !== 'string' || linkTarget === '') {
+    return null
+  }
   const prefix = `${hostname}-`
-  if (!linkTarget.startsWith(prefix)) return null
+
+  if (!linkTarget.startsWith(prefix)) {
+    return null
+  }
   const tail = linkTarget.slice(prefix.length)
   const pid = Number.parseInt(tail, 10)
+
   // Reject `123junk` / `+4`-style targets: only a bare decimal PID counts.
-  if (!Number.isInteger(pid) || pid <= 0 || String(pid) !== tail) return null
+  if (!Number.isInteger(pid) || pid <= 0 || String(pid) !== tail) {
+    return null
+  }
+
   return pid
 }
 
@@ -33,11 +42,16 @@ export function parseSingletonLockPid(
  */
 export function parseProcStateField(statLine: string): string | null {
   const close = statLine.lastIndexOf(')')
-  if (close === -1) return null
+
+  if (close === -1) {
+    return null
+  }
+
   const state = statLine
     .slice(close + 2)
     .split(' ')[0]
     .trim()
+
   return state === '' ? null : state
 }
 
@@ -51,7 +65,10 @@ export function parseProcStateField(statLine: string): string | null {
  * `/proc` entry at all) is a dead owner and equally stale.
  */
 export function isStaleSingletonLockOwner(procState: string | null | undefined): boolean {
-  if (procState === null || procState === undefined) return true
+  if (procState === null || procState === undefined) {
+    return true
+  }
+
   return procState.trim() === 'Z'
 }
 
@@ -80,11 +97,14 @@ export function removeStaleSingletonLock(
     readProcState?: (pid: number) => string | null
   } = {}
 ): number | null {
-  if ((deps.platform ?? process.platform) !== 'linux') return null
+  if ((deps.platform ?? process.platform) !== 'linux') {
+    return null
+  }
   const hostname = deps.hostname ?? os.hostname()
   const readProcState = deps.readProcState ?? readLinuxProcState
 
   let target: string
+
   try {
     target = fs.readlinkSync(path.join(userDataDir, 'SingletonLock'))
   } catch {
@@ -93,14 +113,20 @@ export function removeStaleSingletonLock(
   }
 
   const pid = parseSingletonLockPid(target, hostname)
-  if (pid === null) return null
 
-  if (!isStaleSingletonLockOwner(readProcState(pid))) return null
+  if (pid === null) {
+    return null
+  }
+
+  if (!isStaleSingletonLockOwner(readProcState(pid))) {
+    return null
+  }
 
   try {
     fs.unlinkSync(path.join(userDataDir, 'SingletonLock'))
   } catch {
     return null
   }
+
   return pid
 }

@@ -43,6 +43,7 @@ test('a zombie or missing owner is stale; kill(pid,0) alone would say alive', ()
 
 test('removeStaleSingletonLock unlinks only a provably-dead owner', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-singleton-lock-'))
+
   try {
     const lockPath = path.join(root, 'SingletonLock')
 

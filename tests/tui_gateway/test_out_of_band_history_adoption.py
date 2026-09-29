@@ -191,6 +191,65 @@ def test_unstamped_live_record_is_caught_up_from_the_store(tmp_path, monkeypatch
     assert len(session["history"]) == 44 and session["history_version"] == 1
 
 
+def _foreign_compaction(db) -> None:
+    """Another surface compacts the session under the live record, then keeps talking on it."""
+    db.archive_and_compact("s1", [
+        {"role": "assistant", "content": "summary of ask0/ask1", "_compressed_summary": True},
+        {"role": "user", "content": "KIWI"}, {"role": "assistant", "content": "MANGO"}], tail_count=2)
+
+
+def test_unstamped_record_is_rehydrated_after_a_foreign_compaction(tmp_path, monkeypatch):
+    """The store was compacted by another surface: an unstamped pre-compaction history is stale from the
+    root and must be re-hydrated from the DB exactly like the stamped path does, not kept because the
+    compacted store is shorter."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s1", source="desktop")
+    _seed_exchange(db, 0)
+    _seed_exchange(db, 1)
+    stamped, unstamped = _hydrated_record(db, stamped=True), _hydrated_record(db, stamped=False)
+    _foreign_compaction(db)
+    _bind_db(monkeypatch, db)
+
+    for session in (stamped, unstamped):
+        server._adopt_out_of_band_turns(session)
+        assert [m["content"] for m in session["history"]] == ["summary of ask0/ask1", "KIWI", "MANGO"]
+        assert session["history"][0].get("_compressed_summary") and session["history_version"] == 1
+
+
+def test_unstamped_prompt_after_a_foreign_compaction_sends_the_compacted_transcript(tmp_path, monkeypatch):
+    """Through ``prompt.submit``: the model is given the compacted transcript, not the stale pre-compaction
+    one, and this turn's own user row is not adopted."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s1", source="desktop")
+    _seed_exchange(db, 0)
+    _seed_exchange(db, 1)
+    session = _hydrated_record(db, stamped=False)
+    _foreign_compaction(db)
+
+    contents = [m.get("content") for m in _desktop_prompt(db, session, monkeypatch)]
+
+    assert contents == ["summary of ask0/ask1", "KIWI", "MANGO"]
+
+
+def test_unstamped_record_already_holding_the_summary_only_appends(tmp_path, monkeypatch):
+    """An unstamped record that already carries the compaction (its own) is not re-hydrated: rows the
+    gateway appended after it are folded in by the prefix path."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("s1", source="desktop")
+    _seed_exchange(db, 0)
+    _foreign_compaction(db)
+    session = _hydrated_record(db, stamped=False)
+    session["history"][1]["local_marker"] = True  # identity survives only if the prefix is kept
+    _bind_db(monkeypatch, db)
+    db.append_message("s1", "user", "PEAR")
+    db.append_message("s1", "assistant", "OK")
+
+    server._adopt_out_of_band_turns(session)
+
+    assert [m["content"] for m in session["history"]] == ["summary of ask0/ask1", "KIWI", "MANGO", "PEAR", "OK"]
+    assert session["history"][1].get("local_marker") and session["history_version"] == 1
+
+
 def test_unstamped_record_that_diverged_from_the_store_is_left_alone(tmp_path, monkeypatch):
     """A local rewrite the store has not caught up with must never be clobbered by the store tail."""
     db = SessionDB(tmp_path / "state.db")

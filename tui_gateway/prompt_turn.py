@@ -561,11 +561,26 @@ def _adopt_store_tail_without_row_ids(session: dict, history: list, version: int
     appends itself) must be STRICTLY longer and its head must equal the in-memory view entry for entry.
     A diverged view (prefix mismatch, e.g. a rewind that has not landed locally), a store that is not
     ahead (an unflushed local tail is the fresher record) and an empty in-memory history (no head to
-    prove against) are left alone, the same guards that keep the stamped path safe.
+    prove against) are left alone.
+
+    A compaction by another surface is the one rewrite that is NOT an append: the store then holds a
+    ``_compressed_summary`` row the in-memory view has never seen, so the view is stale from the root and
+    is re-hydrated from the DB like the stamped path does — a positional check alone would keep it because
+    the compacted store is shorter.
     """
     rows = [m for m in _load_durable_truncation_history(session, repair_alternation=True) or []
             if below_ceiling(_message_row_id(m))]
-    if not history or len(rows) <= len(history):
+    if not history:
+        return
+    known = {m.get("content") for m in history if isinstance(m, dict) and m.get("_compressed_summary")}
+    if any(m.get("_compressed_summary") and m.get("content") not in known for m in rows):
+        tail = canonicalize_replay_history(rows)
+        with session["history_lock"]:
+            if tail and int(session.get("history_version", 0)) == version:
+                session["history"] = tail
+                session["history_version"] = version + 1
+        return
+    if len(rows) <= len(history):
         return
     if not all(isinstance(mem, dict) and mem.get("role") == stored.get("role")
                and mem.get("content") == stored.get("content")

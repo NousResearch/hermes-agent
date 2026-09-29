@@ -558,8 +558,10 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
         # Requested limits can differ while EOF/byte budgeting returns the
         # same region. Only normalize stable local snapshots; changed files
         # remain progress and remote reads keep their existing fallback.
+        # Redacted or mid-line-clamped output cannot be identified by a
+        # whole-line interval (a larger budget may reveal more of that line).
         read_key = ("read", path, offset, limit)
-        if (stable and isinstance(total_lines, int) and total_lines > 0
+        if (stable and not redacted and isinstance(total_lines, int) and total_lines > 0
                 and end_line is not None and end_line >= offset):
             read_key = ("read", path, offset, end_line, version)
         count = _bump_consecutive(task_data, read_key)

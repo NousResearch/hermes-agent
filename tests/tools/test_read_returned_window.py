@@ -66,6 +66,55 @@ def test_changed_file_with_same_returned_window_is_progress(tmp_path):
         clear_file_ops_cache(task)
 
 
+def test_byte_budget_windows_count_actual_returned_lines(tmp_path, monkeypatch):
+    monkeypatch.setattr("tools.file_tools._get_max_read_chars", lambda: 40)
+    path = tmp_path / "budget.txt"
+    path.write_text("".join(f"row {i:03d} payload\n" for i in range(100)), encoding="utf-8")
+    task = "returned-window-budget"
+    try:
+        results = [json.loads(registry.dispatch(
+            "read_file", {"path": str(path), "limit": limit}, task_id=task
+        )) for limit in (10, 20, 30, 40)]
+        assert results[0]["truncated_by"] == "bytes"
+        assert results[0]["next_offset"] < 10
+        assert results[-1].get(GUARDRAIL_REFUSAL_KEY), results[-1]
+    finally:
+        clear_file_ops_cache(task)
+
+
+def test_growing_budget_on_clamped_first_line_remains_progress(tmp_path, monkeypatch):
+    path = tmp_path / "long-line.txt"
+    path.write_text("x" * 1000 + "\n", encoding="utf-8")
+    task = "returned-window-clamped"
+    try:
+        for limit, budget in zip((10, 20, 30, 40), (20, 40, 60, 80)):
+            monkeypatch.setattr("tools.file_tools._get_max_read_chars", lambda: budget)
+            result = json.loads(registry.dispatch(
+                "read_file", {"path": str(path), "limit": limit}, task_id=task))
+            assert result.get("truncated_lines"), result
+            assert len(result["content"]) == budget
+            assert not result.get(GUARDRAIL_REFUSAL_KEY), result
+    finally:
+        clear_file_ops_cache(task)
+
+
+def test_failed_read_does_not_advance_returned_window_streak(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("one\n", encoding="utf-8")
+    task = "returned-window-error"
+    try:
+        for limit in (10, 20):
+            registry.dispatch("read_file", {"path": str(path), "limit": limit}, task_id=task)
+        missing = json.loads(registry.dispatch(
+            "read_file", {"path": str(tmp_path / "absent.txt")}, task_id=task))
+        assert missing.get("error"), missing
+        third = json.loads(registry.dispatch(
+            "read_file", {"path": str(path), "limit": 30}, task_id=task))
+        assert "one" in third.get("content", ""), third
+    finally:
+        clear_file_ops_cache(task)
+
+
 def test_expanding_actual_windows_keep_returning_content(tmp_path):
     path = tmp_path / "notes.txt"
     path.write_text("".join(f"row {i}\n" for i in range(20)), encoding="utf-8")

@@ -3,7 +3,7 @@ import { type ChangeEvent, type KeyboardEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { translateNow, useI18n } from '@/i18n'
-import { ChevronDown, ExternalLink, Loader2, Save, Trash2 } from '@/lib/icons'
+import { ChevronDown, Eye, EyeOff, ExternalLink, Loader2, Save, Trash2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import type { EnvVarInfo } from '@/types/hermes'
@@ -62,6 +62,8 @@ export function KeyField({
   const { t } = useI18n()
   const { edits, onClear, onSave, saving, setEdits } = rowProps
   const editing = edits[editKey] !== undefined
+  const [showSecret, setShowSecret] = useState(false)
+  const isSecret = isKeyVar(varKey, info)
   // Bare (plain subtext) only while the group is collapsed and idle. Expanding
   // the card counts as "focused in", so it gets full input chrome too.
   const bare = !editing && !expanded
@@ -69,8 +71,14 @@ export function KeyField({
   const dirty = draft.trim().length > 0
   const busy = saving === varKey
   const masked = credentialPreview(info.redacted_value) ?? '••••••••'
-  const startEdit = () => setEdits(c => ({ ...c, [editKey]: '' }))
-  const cancel = () => setEdits(c => withoutKey(c, editKey))
+  const startEdit = () => {
+    setShowSecret(false)
+    setEdits(c => ({ ...c, [editKey]: '' }))
+  }
+  const cancel = () => {
+    setShowSecret(false)
+    setEdits(c => withoutKey(c, editKey))
+  }
   const update = (e: ChangeEvent<HTMLInputElement>) => setEdits(c => ({ ...c, [editKey]: e.target.value }))
 
   const keydown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -83,7 +91,7 @@ export function KeyField({
     }
   }
 
-  const editType = info.is_password ? 'password' : 'text'
+  const editType = isSecret && !showSecret ? 'password' : 'text'
 
   if (info.is_set && !editing) {
     return (
@@ -115,8 +123,19 @@ export function KeyField({
       {/* Inline trailing controls — mirrors SearchField's inline clear button.
           No floating hint row that reflows the grid or overlaps the card body;
           Esc still cancels via keydown. */}
-      {editing && (info.is_set || dirty) && (
+      {editing && (info.is_set || dirty || isSecret) && (
         <div className="flex items-center gap-1">
+          {isSecret && (
+            <Button
+              aria-label={showSecret ? t.settings.envActions.hideValue : t.settings.envActions.revealValue}
+              onClick={() => setShowSecret(value => !value)}
+              size="icon-xs"
+              type="button"
+              variant="ghost"
+            >
+              {showSecret ? <EyeOff /> : <Eye />}
+            </Button>
+          )}
           {info.is_set && (
             <Button
               aria-label={t.settings.credentials.remove}

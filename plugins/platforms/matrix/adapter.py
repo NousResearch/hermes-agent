@@ -909,7 +909,6 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixInvitesMixin, MatrixInboundEventM
             "✅": "once", "🌀": "session", "♾️": "always", "♾": "always", "\u267e\ufe0f": "always",
             "\u267e": "always", "❌": "deny", "❎": "deny"}
         self._approval_prompts_by_event: dict[str, _MatrixApprovalPrompt] = {}
-        self._approval_prompt_by_session: dict[str, set[str]] = {}
 
         self._approval_require_sender: bool = _env_truthy("MATRIX_APPROVAL_REQUIRE_SENDER", "true")
         self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)

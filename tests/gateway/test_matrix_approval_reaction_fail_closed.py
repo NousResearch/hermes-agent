@@ -80,7 +80,6 @@ def _make_adapter(allowed_user_ids=None):
     adapter._allowed_user_ids = set(allowed_user_ids) if allowed_user_ids else set()
     adapter._approval_reaction_map = {"✅": "once", "❎": "deny"}
     adapter._approval_prompts_by_event = {}
-    adapter._approval_prompt_by_session = {}
     adapter._processed_events = deque(maxlen=512)
     adapter._processed_events_set = set()
     return adapter

@@ -27,7 +27,6 @@ from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
-_CMD_PREVIEW_LIMIT = 2000
 _DEFAULT_LOCAL_TIMEOUT = 90
 _DEFAULT_REMOTE_TIMEOUT = 10
 _DEFAULT_MAX_CHARS = 500
@@ -120,23 +119,13 @@ def force_redact_command(command: str) -> str:
         return "[command hidden because secret redaction failed]"
 
 
-def truncate_command(command: str, limit: int = _CMD_PREVIEW_LIMIT) -> str:
-    """Return the complete audit-authoritative command.
-
-    ``limit`` remains for compatibility with callers that imported this helper
-    while approval cards transitioned away from lossy previews.
-    """
-    del limit
-    return str(command or "")
-
-
 def _md_code_block(command: str) -> str:
-    body = truncate_command(command).replace("```", "'''")
+    body = str(command or "").replace("```", "'''")
     return f"```\n{body}\n```"
 
 
 def _html_pre(command: str) -> str:
-    return f"<pre>{html.escape(truncate_command(command))}</pre>"
+    return f"<pre>{html.escape(str(command or ''))}</pre>"
 
 
 def _details_block(*, summary_label: str, inner_html: str) -> str:

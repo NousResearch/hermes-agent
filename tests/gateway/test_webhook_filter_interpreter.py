@@ -4,7 +4,7 @@ import stat
 
 import pytest
 
-from gateway.platforms.webhook_filters import WebhookRouteProcessor
+from gateway.platforms.webhook_filters import ScriptOutcome, WebhookRouteProcessor
 from tools.environments import local
 
 
@@ -32,10 +32,10 @@ def test_shell_filter_runs_under_find_bash_interpreter(tmp_path, monkeypatch):
     monkeypatch.setattr(local, "_find_bash", lambda: str(fake))
     filt = _filter_script("exit 99\n")  # would veto if run by a real bash
 
-    accepted, transformed = WebhookRouteProcessor().run_route_script(str(filt), {"a": 1})
+    result = WebhookRouteProcessor().run_route_script(str(filt), {"a": 1})
 
     assert marker.exists()
-    assert accepted is True and transformed == {"ok": True}
+    assert result.outcome is ScriptOutcome.ACCEPTED and result.payload == {"ok": True}
 
 
 @pytest.mark.platforms("linux")  # POSIX shebang fixture; the Windows half is the wine2e receipt
@@ -46,8 +46,25 @@ def test_silent_nonzero_exit_is_logged_as_warning(tmp_path, monkeypatch, caplog)
     filt = _filter_script("")
 
     with caplog.at_level(logging.INFO, logger="gateway.platforms.webhook_filters"):
-        accepted, _ = WebhookRouteProcessor().run_route_script(str(filt), {})
+        result = WebhookRouteProcessor().run_route_script(str(filt), {})
 
-    assert accepted is False
+    assert result.outcome is ScriptOutcome.FAILED
     silent = [r for r in caplog.records if "script ignored webhook path=filter.sh" in r.getMessage()]
     assert silent and silent[0].levelno == logging.WARNING
+
+
+def _no_bash():
+    raise RuntimeError("bash not found")
+
+
+@pytest.mark.parametrize("find_bash", [
+    pytest.param(_no_bash, id="interpreter-missing"),
+    pytest.param(lambda: "no-such-dir/bash", id="launch-error"),
+])
+def test_unlaunchable_filter_is_a_failure_not_a_veto(find_bash, monkeypatch):
+    """A script that never started has not decided anything: FAILED (a retry_on_script_failure route answers
+    503), never the IGNORED veto a script signals by exiting 0 silently."""
+    monkeypatch.setattr(local, "_find_bash", find_bash)
+    filt = _filter_script("exit 0\n")
+
+    assert WebhookRouteProcessor().run_route_script(str(filt), {}).outcome is ScriptOutcome.FAILED

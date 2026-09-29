@@ -1472,6 +1472,13 @@ platform_toolsets:
 #       # Route scripts default to a 30 second timeout. Scripts must live under
 #       # the active profile's scripts directory and receive webhook JSON on stdin.
 #       script_timeout_seconds: 30
+#       # Per route (routes.<name>): answer a failed script run (nonzero exit,
+#       # timeout, missing script) with HTTP 503 + Retry-After instead of 200, for
+#       # senders that retry on 5xx. The script then drops events by exiting 0 silently.
+#       # routes:
+#       #   owntracks:
+#       #     script: owntracks_filter.py
+#       #     retry_on_script_failure: true
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

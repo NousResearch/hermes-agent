@@ -84,6 +84,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. Payload fields are untrusted — see [Authenticated does not mean trusted](#authenticated-does-not-mean-trusted). |
 | `filters` | No | Declarative payload filters evaluated after auth/body/event filtering and before agent or direct delivery work. Non-matches return `{"status":"ignored","reason":"filter"}` with HTTP 200. |
 | `script` | No | Filter/transform script under `~/.hermes/scripts/`. The webhook payload is passed as JSON on stdin. JSON object stdout replaces the payload before templating; text stdout is exposed as `script_output`; empty stdout, `[SILENT]`, or a nonzero exit code ignores the webhook. |
+| `retry_on_script_failure` | No | Default `false`. When `true`, a failed `script` run (nonzero exit, timeout, missing script, interpreter not launchable) answers HTTP 503 with a `Retry-After` header instead of 200, and the delivery ID is not recorded, so senders that retry on 5xx keep the event and their retry is processed once the script works. The script then drops an event only by exiting 0 silently. See [Script Filters and Transforms](#script-filters-and-transforms). |
 | `skills` | No | List of skill names to load for the agent run. |
 | `toolsets` | No | List of toolset keys (e.g. `["terminal", "file", "web"]`) that **replaces** the platform-level webhook toolset for runs triggered by this route only. Manual config edit only — not settable via `hermes webhook subscribe`, so agent-created subscriptions cannot self-grant elevated tools. Names are validated the same way as `platform_toolsets` entries (unknown or platform-restricted names are dropped). See [Per-route toolsets](#per-route-toolsets). |
 | `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, or `log` (default). |
@@ -226,7 +227,9 @@ Script outcomes:
 
 - JSON object stdout replaces the payload used by `prompt` and `deliver_extra`.
 - Non-JSON text stdout is added to the payload as `script_output`.
-- Empty stdout, exact `[SILENT]`, `{"__hermes_ignore__": true}`, timeout, missing script, or nonzero exit code returns HTTP 200 with `{"status":"ignored","reason":"script"}`.
+- Exit code 0 with empty stdout, exact `[SILENT]`, `{"__hermes_ignore__": true}`, or `{"[SILENT]": true}` is a deliberate drop: HTTP 200 with `{"status":"ignored","reason":"script"}`.
+- A failed run — timeout, missing script, interpreter not launchable, or nonzero exit code — returns the same HTTP 200 `ignored` response by default, so the sender does not retry.
+- With `retry_on_script_failure: true` on the route, a failed run returns HTTP 503 with a `Retry-After` header and `{"status":"error","reason":"script_failed","route":"<name>"}` instead. The delivery ID is not recorded, so a retry with the same ID is processed normally once the script works again. Use it for senders that keep queued messages until they get a 2xx (the OwnTracks app, for example), where a 200 on failure loses the message. On such a route, drop events only by exiting 0 silently: a nonzero exit now asks the sender to retry.
 
 ### Prompt Templates
 
@@ -434,6 +437,7 @@ hermes webhook subscribe antenna-matches \
 | `413 Payload Too Large` | Body exceeded `max_body_bytes`. |
 | `429 Too Many Requests` | Route rate limit exceeded. |
 | `502 Bad Gateway` | Target adapter rejected the message or raised. The error is logged server-side; the response body is a generic `Delivery failed` to avoid leaking adapter internals. |
+| `503 Service Unavailable` | The route `script` failed and the route sets `retry_on_script_failure: true`. Carries a `Retry-After` header; body `{"status": "error", "reason": "script_failed", "route": "..."}`. Nothing was delivered and the delivery ID was not recorded, so retrying is safe. |
 
 ### Configuration gotchas
 

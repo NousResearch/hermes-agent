@@ -29,6 +29,22 @@ from gateway.restart import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_project_root(tmp_path, monkeypatch):
+    """Keep service-generation tests out of the production ~/.hermes.
+
+    `_prepare_service_launcher` reads `PROJECT_ROOT.parent / "manifest.json"`. In the real
+    checkout that resolves to the production `~/.hermes` and trips tests/home_io_guard.py
+    ("TEST BUG: file I/O against the REAL hermes home"). These tests assert unit/plist CONTENT
+    and never care about the install manifest, so pointing PROJECT_ROOT at tmp_path is the
+    guard's own documented remedy and matches the two tests in this file that already stub it.
+
+    Load-dependent by nature: a checkout living outside `~/.hermes` (CI, a /tmp worktree)
+    never trips the guard, so this only reproduces in a real install.
+    """
+    monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path / "hermes-agent")
+
+
 def _osascript_exec_argv(program_args: list[str]) -> list[str]:
     """The argv the launchd JXA wrapper's libc ``system()`` hands to ``exec``."""
     assert program_args[:4] == ["/usr/bin/osascript", "-l", "JavaScript", "-e"], program_args

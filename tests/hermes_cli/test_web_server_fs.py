@@ -9,6 +9,12 @@ pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient
 
 
+def _list_entries(client, path) -> list:
+    response = client.get("/api/fs/list", params={"path": str(path)})
+    assert response.status_code == 200, response.text
+    return response.json()["entries"]
+
+
 @pytest.fixture
 def client(monkeypatch):
     previous_auth_required = getattr(web_server.app.state, "auth_required", None)
@@ -43,6 +49,48 @@ def test_fs_list_sorts_and_hides_noise(client, tmp_path):
     assert [entry["name"] for entry in entries] == ["a_dir", "a.txt", "b.txt"]
     assert entries[0] == {"name": "a_dir", "path": str(root / "a_dir"), "isDirectory": True}
     assert all(entry["name"] not in {".git", "node_modules"} for entry in entries)
+
+
+@pytest.mark.require_symlinks
+def test_fs_list_reports_symlinked_directories_as_directories(client, tmp_path):
+    """A symlink pointing at a directory must be expandable in the file tree.
+
+    The remote (SSH/URL) Files panel and any client that lists through
+    /api/fs/list decides whether a row is expandable from `isDirectory`. A
+    symlinked directory reported as a file renders as a dead leaf — the user
+    cannot descend into it (e.g. a `~/code -> /mnt/data/code` checkout root).
+    """
+    root = tmp_path / "project"
+    real_dir = root / "real_dir"
+    real_dir.mkdir(parents=True)
+    (root / "link_to_dir").symlink_to(real_dir)
+    (root / "link_to_file").symlink_to(root / "a.txt")
+    (root / "a.txt").write_text("a")
+    (root / "broken_link").symlink_to(root / "does-not-exist")
+
+    entries = {entry["name"]: entry for entry in _list_entries(client, root)}
+
+    assert entries["real_dir"]["isDirectory"] is True
+    assert entries["link_to_dir"]["isDirectory"] is True
+
+    # A symlink to a FILE stays a file — the fix must not mark everything a dir.
+    assert entries["link_to_file"]["isDirectory"] is False
+    # A dangling symlink is not a directory (and must not raise).
+    assert entries["broken_link"]["isDirectory"] is False
+
+
+@pytest.mark.require_symlinks
+def test_fs_list_keeps_symlinked_directories_sorted_with_directories(client, tmp_path):
+    root = tmp_path / "project"
+    real_dir = root / "zzz_real"
+    real_dir.mkdir(parents=True)
+    (root / "aaa_link").symlink_to(real_dir)
+    (root / "mmm_file.txt").write_text("m")
+
+    names = [entry["name"] for entry in _list_entries(client, root)]
+
+    # Directory-ness drives the grouping, so the symlinked dir sorts above files.
+    assert names == ["aaa_link", "zzz_real", "mmm_file.txt"]
 
 
 def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):

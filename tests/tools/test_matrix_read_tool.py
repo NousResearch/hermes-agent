@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from gateway.relay.adapter import RelayAdapter
 from gateway.session_context import clear_session_vars, get_session_transport, set_session_vars
 from hermes_cli.tools_config import _get_platform_tools
 from tools.registry import registry
@@ -42,10 +43,15 @@ async def test_matrix_read_uses_session_owner_and_room():
     )
 
 
-def test_matrix_read_requires_live_matrix_session():
-    tokens = set_session_vars(platform="cli", chat_id="!room:server")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session", [
+    {"platform": "cli", "transport_adapter": None},
+    {"transport_adapter": object.__new__(RelayAdapter)},
+], ids=["cli", "relay-fronted-matrix"])
+async def test_matrix_read_requires_live_matrix_session(session):
+    tokens = _bind_matrix_session(None, **session)
     try:
-        result = json.loads(registry.dispatch("matrix_read", {"kind": "room"}))
+        result = json.loads(await asyncio.to_thread(registry.dispatch, "matrix_read", {"kind": "room"}))
     finally:
         clear_session_vars(tokens)
 

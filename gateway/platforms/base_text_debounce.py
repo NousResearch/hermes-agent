@@ -52,7 +52,9 @@ class BaseTextDebounceMixin:
 
 
     def _can_merge_text_debounce_events(self: BasePlatformAdapter, existing: MessageEvent, event: MessageEvent) -> bool:
-        """Whether one debounce burst can preserve both events' attribution and reply context."""
+        """Whether a burst preserves attribution, reply context and turn-boundary validation."""
+        if existing._queue_at_turn_boundary or event._queue_at_turn_boundary:
+            return False
         return (
             {existing.message_type, event.message_type} <= {MessageType.TEXT, MessageType.PHOTO}
             and _can_join_pending_event(existing, event)

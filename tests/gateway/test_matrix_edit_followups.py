@@ -207,3 +207,69 @@ async def test_pending_edits_coalesce_without_entering_the_active_turn(monkeypat
     )
     adapter._active_sessions.clear()
     adapter._session_tasks.clear()
+
+
+def cold_runner_for(monkeypatch, adapter):
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig()
+    monkeypatch.setattr(runner, "_is_user_authorized_for_source", lambda source: True)
+    monkeypatch.setattr(runner, "_intake_adapter_for", lambda source: adapter)
+    monkeypatch.setattr(runner, "_peek_session_state", lambda key: None)
+    monkeypatch.setattr(type(adapter), "fetch_inbound_context", AsyncMock(return_value=None))
+    monkeypatch.setattr(type(adapter), "fetch_mention_context", AsyncMock(return_value=None))
+    monkeypatch.setattr(type(adapter), "take_turn_channel_context", lambda *args: None)
+    return runner
+
+
+class QueueTextRunner(BusyRunner):
+    def _effective_busy_text_mode(self, source):
+        return "queue"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text_first", [False, True], ids=["text-after-correction", "text-before-correction"])
+async def test_queue_mode_text_takes_its_own_turn_beside_a_pending_correction(monkeypatch, text_first):
+    adapter = adapter_for(monkeypatch, {ROOM: True})
+    adapter._busy_text_mode = "queue"
+    runner = QueueTextRunner(adapter, "queue")
+    adapter.set_message_handler(AsyncMock())
+    adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
+    adapter._event_session_key = lambda event: "session"
+    adapter._active_sessions["session"] = asyncio.Event()
+    adapter._session_tasks["session"] = asyncio.current_task()
+
+    async def correct():
+        incoming = edit_event("latest correction", "$edit2")
+        adapter._client.events["$edit2"] = {
+            "room_id": ROOM, "sender": ALICE, "event_id": "$edit2",
+            "type": "m.room.message", "content": incoming.content,
+        }
+        await adapter._on_room_message(incoming)
+
+    async def follow_up():
+        text = await adapter._build_inbound_event(
+            ROOM, ALICE, "$new", "and one more thing", {"msgtype": "m.text", "body": "and one more thing"}, {},
+        )
+        await adapter.handle_message(text)
+
+    for step in ([follow_up, correct] if text_first else [correct, follow_up]):
+        await step()
+
+    cold_runner = cold_runner_for(monkeypatch, adapter)
+    turns = []
+    while True:
+        await adapter._flush_text_debounce_now("session")
+        event = runner._promote_queued_event("session", adapter, adapter._pending_messages.pop("session", None))
+        if event is None:
+            break
+        prepared = await cold_runner._prepare_profile_scoped_inbound_message_text(
+            event=event, source=event.source, history=[{"role": "user", "content": "previous"}],
+            session_key="session",
+        )
+        turns.append((event.message_id, prepared))
+    adapter._active_sessions.clear()
+    adapter._session_tasks.clear()
+
+    correction = ("$edit2", "[Correction to earlier message $original]\n\n[Alice] latest correction")
+    ordinary = ("$new", "and one more thing")
+    assert turns == ([ordinary, correction] if text_first else [correction, ordinary])

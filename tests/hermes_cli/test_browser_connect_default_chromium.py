@@ -184,3 +184,53 @@ class TestLinuxProfileDir:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("XDG_CONFIG_HOME", "/home/t/.config")
         assert bc.real_profile_data_dir("edge", "Linux") == "/home/t/.config/microsoft-edge"
+
+
+class TestLinuxExecutable:
+    def _no_path_bins(self, monkeypatch):
+        monkeypatch.setattr(bc.shutil, "which", lambda _name: None)
+
+    def test_snap_chromium_binary_is_found(self, monkeypatch):
+        # Ubuntu ships Chromium only as a snap; the child PATH misses /snap/bin
+        # (#128514), so the absolute fallback list must carry it.
+        self._no_path_bins(monkeypatch)
+        monkeypatch.setattr(bc.os.path, "isfile", lambda p: p == "/snap/bin/chromium")
+        assert bc.chromium_executable("chromium", "Linux") == "/snap/bin/chromium"
+
+    def test_snap_brave_binary_is_still_found(self, monkeypatch):
+        self._no_path_bins(monkeypatch)
+        monkeypatch.setattr(bc.os.path, "isfile", lambda p: p == "/snap/bin/brave")
+        assert bc.chromium_executable("brave", "Linux") == "/snap/bin/brave"
+
+
+class TestSnapProfileCopyDir:
+    def _posix_home(self, monkeypatch, home):
+        monkeypatch.setattr(bc.os.path, "expanduser", lambda _p: home.as_posix())
+
+    def test_snap_binary_copy_dir_is_not_under_a_hidden_dir(self, tmp_path, monkeypatch):
+        # snap's home interface denies dot-dirs under $HOME (#128514), so the
+        # snapshot must live in the snap's own writable data dir instead.
+        self._posix_home(monkeypatch, tmp_path)
+        dst = bc.real_profile_copy_dir("chromium", executable="/snap/bin/chromium")
+        assert dst == posixpath.join(tmp_path.as_posix(), "snap", "chromium", "common",
+                                     "hermes-browser-profile")
+
+    def test_revisioned_snap_path_resolves_the_same_dir(self, tmp_path, monkeypatch):
+        # /snap/bin/<name> is a symlink onto the revisioned /snap/<name>/<rev>/... tree.
+        self._posix_home(monkeypatch, tmp_path)
+        dst = bc.real_profile_copy_dir("brave", executable="/snap/brave/2953/usr/bin/brave-browser")
+        assert dst == posixpath.join(tmp_path.as_posix(), "snap", "brave", "common",
+                                     "hermes-browser-profile")
+
+    def test_native_binary_copy_dir_stays_in_hermes_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "hh"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        assert bc.real_profile_copy_dir("chromium", executable="/usr/bin/chromium") == \
+            str(home / "browser-profile" / "chromium")
+
+    def test_binary_is_resolved_when_not_given(self, tmp_path, monkeypatch):
+        self._posix_home(monkeypatch, tmp_path)
+        with patch.object(bc, "chromium_executable", return_value="/snap/bin/chromium"):
+            dst = bc.real_profile_copy_dir("chromium")
+        assert dst == posixpath.join(tmp_path.as_posix(), "snap", "chromium", "common",
+                                     "hermes-browser-profile")

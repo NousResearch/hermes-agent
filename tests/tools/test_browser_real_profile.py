@@ -158,6 +158,26 @@ class TestSnapshotRealProfile:
         assert err2 is None and dst2 == dst
         assert stat.S_IMODE(os.stat(cookies).st_mode) == 0o600
 
+    def test_snap_binary_snapshots_into_snap_writable_dir(self, tmp_path, monkeypatch):
+        """#128514: a snap-confined binary cannot write under ~/.hermes, so the snapshot
+        lands in ~/snap/<name>/common — and the snap-owned parent is never chmod/chown'd."""
+        import hermes_cli.browser_connect as bc
+        src = self._make_profile(tmp_path / "real")
+        home = tmp_path / "hermes-home"
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
+        monkeypatch.setattr(bc.os.path, "expanduser", lambda _p: tmp_path.as_posix())
+        secured = []
+        monkeypatch.setattr(bc, "_secure_snapshot", lambda path, contents=False: secured.append(path))
+        with patch.object(bc, "chromium_executable", return_value="/snap/bin/chromium"):
+            dst, err = bc.snapshot_real_profile("chromium", src=str(src))
+        assert err is None and dst
+        snap_store = tmp_path / "snap" / "chromium" / "common" / "hermes-browser-profile"
+        assert dst == snap_store.as_posix()
+        # The snapshot dir itself is secured; ~/snap/chromium/common is the snap's, not ours.
+        assert set(secured) == {dst}
+        assert _auth_db(snap_store / "Default" / "Cookies") == "sqlite-cookies"
+        assert not home.exists()  # a snap launch never touches HERMES_HOME
+
 
 class TestRealProfileCdpLaunch:
     """The agent-browser-based launcher in browser_tool_real_profile._real_profile_cdp."""
@@ -711,6 +731,20 @@ class TestReviewRound3:
         import hermes_cli.browser_connect as bc
         monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
         bc.cleanup_real_profile_snapshots()  # no raise
+
+    def test_cleanup_removes_snap_store_outside_hermes_home(self, tmp_path, monkeypatch):
+        """#128514: snap snapshots hold the same cookie copies but live in ~/snap/<name>/common;
+        consent-off must sweep them too, not just HERMES_HOME."""
+        import hermes_cli.browser_connect as bc
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
+        monkeypatch.setattr(bc.os.path, "expanduser", lambda _p: tmp_path.as_posix())
+        for snap in ("chromium", "brave"):
+            store = tmp_path / "snap" / snap / "common" / "hermes-browser-profile" / "Default"
+            store.mkdir(parents=True)
+            (store / "Cookies").write_text("secret")
+        bc.cleanup_real_profile_snapshots()
+        for snap in ("chromium", "brave"):
+            assert not (tmp_path / "snap" / snap / "common" / "hermes-browser-profile").exists()
 
     # ── Windows lock probe (unit; the live share-lock is proven in the
     #    windows-latest E2E — here we cover the probe's contract portably) ──

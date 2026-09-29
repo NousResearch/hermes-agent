@@ -271,6 +271,10 @@ so glass and message-bubble transparency do not reveal scrolling text.
   from the chip to the floating pill; leaving both dismisses it.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
+- Tool rows reserve destructive red for explicit failures. Missing read paths and
+  ambiguous exit-1 results use neutral notices, with details still available.
+  Errors described inside returned data are not tool failures. Expanded failures
+  show the actual explanation; supporting output keeps its normal text color.
 - Composer status groups start collapsed except todos. Progress updates and queue
   pause/resume preserve the user's disclosure choice. Error banners meet the
   stack's top edge without a blank padding strip. File and preview links remain

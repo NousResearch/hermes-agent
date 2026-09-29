@@ -49,7 +49,8 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms import helpers as _mdchunk
 from gateway.platforms._shared import get_scoped_secret as _yb_secret, profile_scoped as _profile_scoped
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.yuanbao_media import (
     download_url as media_download_url, get_cos_credentials, upload_to_cos,
     build_image_msg_body, build_file_msg_body, guess_mime_type, md5_hex,
@@ -136,13 +137,6 @@ def _cancel_all(tasks: Dict[str, asyncio.Task]) -> None:
         if not task.done():
             task.cancel()
     tasks.clear()
-
-
-async def _cancel_task(task: asyncio.Task) -> None:
-    """Cancel *task* and wait for it to unwind (swallowing the CancelledError)."""
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
 
 
 class MarkdownProcessor:
@@ -700,39 +694,30 @@ class ChatRoutingMiddleware(InboundMiddleware):
         await next_fn()
 
 
-class AccessPolicy:
+class AccessPolicy(OwnAccessPolicyMixin):
     """DM / group access rules shared by inbound middleware and outbound ``send_dm``."""
+    ALLOW_ALL_ENV_PREFIX = "YUANBAO"
+
     def __init__(self, dm_policy: str, dm_allow_from: list[str], group_policy: str, group_allow_from: list[str]) -> None:
         self._dm_policy = dm_policy
-        self._dm_allow_from = dm_allow_from
+        self._allow_from = dm_allow_from
         self._group_policy = group_policy
         self._group_allow_from = group_allow_from
 
-    def _open_dm_opted_in(self) -> bool:
-        return any((_yb_secret(k, "") or "").lower() in {"true", "1", "yes"}
-                   for k in ("GATEWAY_ALLOW_ALL_USERS", "YUANBAO_ALLOW_ALL_USERS"))
-
-    def _evaluate(self, policy: str, allow_from: list[str], principal: str, *, pairing: bool) -> bool:
-        """Shared allow/deny rule; *pairing* is the verdict for the "pairing" policy."""
-        if policy == "allowlist":
-            return principal in allow_from
-        if policy == "pairing":
-            return pairing
-        if policy == "open":
-            return self._open_dm_opted_in()
-        return False  # "disabled" or unknown
-
     def is_dm_allowed(self, sender_id: str) -> bool:
         """Strict DM authorization — pairing does not imply access."""
-        return self._evaluate(self._dm_policy, self._dm_allow_from, sender_id.strip(), pairing=False)
+        return self._is_dm_allowed(sender_id.strip())
 
     def is_dm_intake_allowed(self, sender_id: str) -> bool:
         """Whether a DM may reach gateway intake (pairing handshake path)."""
-        principal = str(sender_id or "").strip()
-        return bool(principal) and self._evaluate(self._dm_policy, self._dm_allow_from, principal, pairing=True)
+        return self._is_dm_intake_allowed(sender_id)
 
     def is_group_allowed(self, group_code: str) -> bool:
-        return self._evaluate(self._group_policy, self._group_allow_from, group_code.strip(), pairing=False)
+        """Unlike the shared rule, an ``open`` group still needs the allow-all opt-in: Yuanbao groups
+        have no runner-side mention gate, so open-without-opt-in would forward every member."""
+        if self._group_policy == "open":
+            return self._open_dm_opted_in()
+        return self._is_group_allowed(group_code.strip())
 
     @property
     def dm_policy(self) -> str:
@@ -779,16 +764,15 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     @staticmethod
     def _persist_home(adapter, ctx: InboundContext) -> None:
         try:
-            from hermes_constants import get_hermes_home
-            from hermes_cli.config import atomic_config_write, read_user_config_raw
-            config_path = get_hermes_home() / "config.yaml"
-            # Raw read: merged defaults must not be persisted to the user's file.
-            user_config: dict = read_user_config_raw(config_path)
-            user_config["YUANBAO_HOME_CHANNEL"] = ctx.chat_id
-            atomic_config_write(config_path, user_config)
-            # The profile's config.yaml (scoped home above) is the durable record. Under a multiplexed
-            # secondary's scope the process env is the DEFAULT profile's; writing there would make this
-            # tenant's chat the default profile's cron/notification home.
+            from gateway.config import HomeChannel, persist_home_channel
+            home = HomeChannel(platform=Platform.YUANBAO, chat_id=str(ctx.chat_id), name=str(ctx.chat_name or "Home"))
+            # ``platforms.yuanbao.home_channel`` in the owning profile's config.yaml is the durable record
+            # ``load_gateway_config`` reads back; the live PlatformConfig is updated so cron/home-channel
+            # delivery in THIS process has a target without a restart.
+            persist_home_channel(home)
+            adapter.config.home_channel = home
+            # Under a multiplexed secondary's scope the process env is the DEFAULT profile's; writing there
+            # would make this tenant's chat the default profile's cron/notification home.
             if not _profile_scoped():
                 os.environ["YUANBAO_HOME_CHANNEL"] = str(ctx.chat_id)
             logger.info("[%s] Auto-sethome: designated %s (%s) as Yuanbao home channel", adapter.name, ctx.chat_id, ctx.chat_name)
@@ -1877,7 +1861,7 @@ class ConnectionManager:
         for attr, _coro_name, _tag in self._LOOPS:
             task = getattr(self, attr)
             if task:
-                await _cancel_task(task)
+                await cancel_task(task)
                 setattr(self, attr, None)
         disc_exc = RuntimeError("YuanbaoAdapter disconnected")
         for fut in self._pending_acks.values():
@@ -2344,7 +2328,7 @@ class HeartbeatManager:
         """Stop the RUNNING sender and optionally send FINISH."""
         task = self._reply_heartbeat_tasks.pop(chat_id, None)
         if task and not task.done():
-            await _cancel_task(task)
+            await cancel_task(task)
         if send_finish:
             await self.send_heartbeat_once(chat_id, WS_HEARTBEAT_FINISH)
 
@@ -2681,7 +2665,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
     @property
     def enforces_own_access_policy(self) -> bool:
-        """Yuanbao gates DM/group access at intake via dm_policy/group_policy."""
+        """Intake gating lives in ``AccessPolicy`` (composed, not inherited), so the flag stays here."""
         return True
 
     def _sender_may_designate_home(self, ctx: InboundContext) -> bool:

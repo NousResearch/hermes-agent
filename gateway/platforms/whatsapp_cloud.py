@@ -39,9 +39,11 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
+from gateway.platforms.helpers import bounded_put
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms.whatsapp_common import _OPTIN_TRUTHY, WhatsAppBehaviorMixin, _get_wsecret
+from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
+from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
 from gateway.platforms.media_cache import ext_for_mime
 from gateway import rich_sent_store
 from hermes_constants import get_hermes_dir
@@ -202,7 +204,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # message_id to attach to, and the base send_typing contract has none.
         self._last_inbound_wamid_by_chat: "OrderedDict[str, str]" = OrderedDict()
         # Interactive-button state: short id (in the button payload) → session_key for
-        # the gateway resolver. Popped on tap; FIFO-capped via _bounded_put so ignored
+        # the gateway resolver. Popped on tap; FIFO-capped via bounded_put so ignored
         # prompts don't accumulate (an evicted tap degrades to text fallback).
         self._clarify_state: "OrderedDict[str, str]" = OrderedDict()
         self._exec_approval_state: "OrderedDict[str, str]" = OrderedDict()
@@ -223,13 +225,6 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         headers = {"Authorization": f"Bearer {self._access_token}"}
         return {**headers, "Content-Type": "application/json"} if json_body else headers
 
-    @staticmethod
-    def _bounded_put(cache: "OrderedDict[str, Any]", key: str, value: Any, cap: int = INTERACTIVE_STATE_CACHE_SIZE) -> None:
-        """Insert into a FIFO-capped OrderedDict, evicting oldest entries."""
-        cache[key] = value
-        while len(cache) > cap:
-            cache.popitem(last=False)
-
     def _effective_reply_prefix(self) -> str:
         """Cloud API has no self-chat concept (a Baileys-only setting) — no default prefix."""
         return self._reply_prefix.replace("\\n", "\n") if self._reply_prefix is not None else ""
@@ -239,16 +234,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         """Normalize allowlist entries to bare wa_id (digits): strip ``@...`` JID suffixes and non-digits."""
         return {re.sub(r"\D", "", entry.split("@", 1)[0]) or entry for entry in ids}
 
-    def _is_dm_allowed(self, sender_id: str) -> bool:
-        """Allowlist check against the normalized bare wa_id."""
-        if self._dm_policy == "allowlist":
-            bare = re.sub(r"\D", "", str(sender_id).split("@", 1)[0])
-            return (bare or sender_id) in self._normalize_allow_ids(self._live_dm_allow_from())
-        return super()._is_dm_allowed(sender_id)
+    def _entry_matches(self, entries, target: str) -> bool:
+        """Bare-wa_id membership first (Cloud senders are digits), then the shared WhatsApp matcher
+        so ``*`` and phone/LID aliases keep working for DM intake and groups as they always did."""
+        entries = set(entries or ())
+        bare = re.sub(r"\D", "", str(target).split("@", 1)[0]) or target
+        return bare in self._normalize_allow_ids(entries) or super()._entry_matches(entries, target)
 
-    def _open_dm_opted_in(self) -> bool:
+    def _allow_all_env_names(self) -> tuple[str, ...]:
         """Also honor the documented WHATSAPP_CLOUD_ALLOW_ALL_USERS opt-in."""
-        return _cloud_allow_all_opted_in() or super()._open_dm_opted_in()
+        return (*super()._allow_all_env_names(), "WHATSAPP_CLOUD_ALLOW_ALL_USERS")
 
     # ------------------------------------------------------------------ lifecycle
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -415,7 +410,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             reject_log="[whatsapp_cloud] interactive rejected (status=%d): %s",
         )
         if result.success:
-            self._bounded_put(state, state_id, session_key)
+            bounded_put(state, state_id, session_key, INTERACTIVE_STATE_CACHE_SIZE)
         return result
 
     @staticmethod
@@ -468,22 +463,19 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             interactive = {"type": "list", "body": {"text": body_text}, "action": {"button": "Choose", "sections": [{"title": "Options", "rows": rows}]}}
         return await self._send_interactive(chat_id, interactive, metadata, self._clarify_state, clarify_id, session_key)
 
-    async def send_exec_approval(
-        self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True,
-        allow_session: bool = True, smart_denied: bool = False,
-    ) -> SendResult:
-        """Approve / Deny buttons; a tap resolves via ``tools.approval.resolve_gateway_approval``."""
-        del allow_permanent, allow_session  # This adapter already offers one-shot Approve / Deny only.
-        # Body caps at 1024; reserve room for the framing prose.
-        cmd_preview = (command or "")[:800] + ("..." if len(command or "") > 800 else "")
-        body_text = self._truncate_body(
-            f"⚠️ *Command Approval Required*\n\n```\n{cmd_preview}\n```\n\nReason: {description}"
-            + ("\n\nSmart DENY: owner override applies to this one operation only." if smart_denied else "")
-        )
+    _EA_HEADER = "⚠️ *Command Approval Required*\n\n"
+    _EA_CODE_CLOSE = "\n```\n\n"
+    _EA_CMD_BUDGET = 800  # body caps at 1024; leave room for the framing prose
+
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Approve / Deny buttons only (a 3-button cap leaves no room for the session/always
+        tiers); a tap resolves via ``tools.approval.resolve_gateway_approval``."""
         approval_id = uuid.uuid4().hex[:12]
-        interactive = self._button_interactive(body_text, (f"appr:{approval_id}:approve", "✅ Approve"), (f"appr:{approval_id}:deny", "❌ Deny"))
-        return await self._send_interactive(chat_id, interactive, metadata, self._exec_approval_state, approval_id, session_key)
+        interactive = self._button_interactive(
+            self._truncate_body(prompt.text),
+            (f"appr:{approval_id}:approve", "✅ Approve"), (f"appr:{approval_id}:deny", "❌ Deny"))
+        return await self._send_interactive(
+            prompt.chat_id, interactive, prompt.metadata, self._exec_approval_state, approval_id, prompt.session_key)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
@@ -606,8 +598,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return await self._send_media_from_path_or_link(chat_id, audio_path, "audio", caption=caption, reply_to=reply_to, mime_type=mime_type)
 
     async def _convert_to_opus(self, mp3_path: str) -> Optional[str]:
-        """MP3 → ``audio/ogg; codecs=opus``; None if ffmpeg is missing or fails. ``-application voip``
-        tunes for speech; ``-b:a 32k -vbr on`` matches WhatsApp's native voice-note bitrate."""
+        """MP3 → ``audio/ogg; codecs=opus`` sibling file; None if ffmpeg is missing or fails. The
+        missing-ffmpeg warning fires once per adapter: it is an install hint, not a per-message error."""
         if not _FFMPEG_PATH:
             if not self._warned_no_ffmpeg:
                 self._warned_no_ffmpeg = True
@@ -617,23 +609,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`, Linux package manager."
                 )
             return None
-        out_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                _FFMPEG_PATH, "-y", "-i", mp3_path, "-c:a", "libopus", "-b:a", "32k", "-vbr", "on", "-application", "voip",
-                out_path, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-        except Exception:
-            logger.exception("[whatsapp_cloud] ffmpeg subprocess raised")
-            return None
-        if proc.returncode == 0 and Path(out_path).exists():
-            return out_path
-        logger.error(
-            "[whatsapp_cloud] ffmpeg opus conversion failed (returncode=%s): %s",
-            proc.returncode, (stderr or b"").decode("utf-8", errors="replace")[:500],
-        )
-        return None
+        return await asyncio.to_thread(transcode_to_ogg_opus, mp3_path, output_path=mp3_path.rsplit(".", 1)[0] + ".ogg")
 
     # ------------------------------------------------------------------ inbound media
     async def _graph_get(self, url: str, headers: Dict[str, str], what: str, media_id: str) -> Any:
@@ -755,7 +731,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._duplicate_count += 1
             return False
         if wamid:  # can't dedup without an id — let it through
-            self._bounded_put(self._seen_wamids, wamid, True, cap=WAMID_DEDUP_CACHE_SIZE)
+            bounded_put(self._seen_wamids, wamid, True, WAMID_DEDUP_CACHE_SIZE)
         return True
 
     async def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
@@ -1010,7 +986,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         wamid = str(raw_message.get("id") or "") or None
         if wamid and chat_id:
             # Done AFTER gating so filtered messages don't leak typing/read receipts.
-            self._bounded_put(self._last_inbound_wamid_by_chat, chat_id, wamid)
+            bounded_put(self._last_inbound_wamid_by_chat, chat_id, wamid, INTERACTIVE_STATE_CACHE_SIZE)
             if body:
                 rich_sent_store.record(chat_id, wamid, body)
             if msg_type_str in _INBOUND_MEDIA_KINDS and media_urls:

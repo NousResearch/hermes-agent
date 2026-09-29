@@ -75,7 +75,9 @@ def test_combined_openrouter_preset_reference_rejects_unknown_base_model():
     assert "openai/gpt-5.4" in result["message"]
 
 
-def test_combined_openrouter_preset_reference_preserves_suffix_on_autocorrect():
+def test_combined_preset_near_miss_base_is_not_rewritten():
+    """A base model close to a listed id is the user's pick, not a typo — the verdict rejects with a
+    suggestion instead of swapping the model under the preset."""
     with patch("hermes_cli.models.fetch_api_models", return_value=["openai/gpt-5.4"]):
         result = validate_requested_model(
             "openai/gpt-5.44@preset/email-copywriter",
@@ -84,31 +86,9 @@ def test_combined_openrouter_preset_reference_preserves_suffix_on_autocorrect():
             base_url="https://openrouter.ai/api/v1",
         )
 
-    corrected = "openai/gpt-5.4@preset/email-copywriter"
-    assert result["accepted"] is True
-    assert result["corrected_model"] == corrected
-    assert corrected in result["message"]
-
-
-def test_combined_preset_preserves_suffix_on_catalog_autocorrect():
-    with (
-        patch("hermes_cli.models.fetch_api_models", return_value=None),
-        patch(
-            "hermes_cli.models.provider_model_ids",
-            return_value=["openai/gpt-5.4"],
-        ),
-    ):
-        result = validate_requested_model(
-            "openai/gpt-5.44@preset/email-copywriter",
-            "openrouter",
-            api_key="key",
-            base_url="https://openrouter.ai/api/v1",
-        )
-
-    corrected = "openai/gpt-5.4@preset/email-copywriter"
-    assert result["accepted"] is True
-    assert result["corrected_model"] == corrected
-    assert corrected in result["message"]
+    assert result["accepted"] is False
+    assert "corrected_model" not in result
+    assert "openai/gpt-5.4" in result["message"]
 
 
 @pytest.mark.parametrize(

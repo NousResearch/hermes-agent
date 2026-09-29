@@ -21,9 +21,9 @@ import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type { SubagentListResponse } from '../gatewayTypes.js'
 import type {
+  AnyGatewayEvent,
   ClarifyRespondResponse,
   ConfigSetResponse,
-  GatewayEvent,
   SessionActiveListResponse,
   SessionCloseResponse,
   TerminalResizeResponse
@@ -231,7 +231,7 @@ export function useMainApp(gw: GatewayClient) {
   const slashRef = useRef<(cmd: string) => boolean>(() => false)
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
-  const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
+  const onEventRef = useRef<(ev: AnyGatewayEvent) => void>(() => {})
   const sysRef = useRef<(text: string) => void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
   const submitLiteralRef = useRef<(value: string) => void>(() => {})
@@ -909,7 +909,7 @@ export function useMainApp(gw: GatewayClient) {
   onEventRef.current = onEvent
 
   useEffect(() => {
-    const handler = (ev: GatewayEvent) => onEventRef.current(ev)
+    const handler = (ev: AnyGatewayEvent) => onEventRef.current(ev)
 
     const exitHandler = () => {
       turnController.reset()

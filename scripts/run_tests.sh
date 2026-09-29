@@ -17,7 +17,7 @@
 #   scripts/run_tests.sh                            # full suite
 #   scripts/run_tests.sh -j 4                       # cap parallelism
 #   scripts/run_tests.sh tests/agent/               # discover only here
-#   scripts/run_tests.sh tests/agent/ tests/acp/    # multiple roots
+#   scripts/run_tests.sh tests/agent/ tests/acp_adapter/    # multiple roots
 #   scripts/run_tests.sh tests/foo.py               # single file
 #   scripts/run_tests.sh tests/foo.py -q            # path + bare pytest flag
 #   scripts/run_tests.sh tests/foo.py -v --tb=long  # bare flags "just work"

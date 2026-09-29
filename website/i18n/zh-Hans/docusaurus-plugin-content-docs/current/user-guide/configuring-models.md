@@ -194,7 +194,9 @@ hermes config set model.aliases.grok x-ai/grok-4
 hermes model            # 交互式提供商 + 模型选择器（切换默认值的标准方式）
 ```
 
-`hermes model` 引导你选择提供商、完成认证（OAuth 流程会打开浏览器；API key 提供商会提示输入密钥），然后从该提供商的精选目录中选择具体模型。选择结果写入 `~/.hermes/config.yaml` 的 `model.provider` 和 `model.model` 字段。
+`hermes model` 引导你选择提供商、完成认证（OAuth 流程会打开浏览器；API key 提供商会提示输入密钥），然后从该提供商的精选目录中选择具体模型。选择结果写入 `~/.hermes/config.yaml` 的 `model.provider` 和 `model.model` 字段。保存新模型后会紧接一步推理强度选择（`minimal` … `ultra`、**Disable reasoning**，或 **Skip** 保留当前值），写入 `agent.reasoning_effort`；目录标记为无推理控制的模型会跳过该步。提供商列表中还有 **Reasoning effort for the current model...** 一行，可只更改推理强度。
+
+**Configure auxiliary models...** 打开各辅助任务（视觉、压缩、审批、委派等）的侧模型选择器。每个任务在选完提供商 → 模型后同样会进入推理强度步骤，存为 `auxiliary.<task>.reasoning_effort`（或 `delegation.reasoning_effort`），并多一行 **Provider default** 把强度交给提供商决定。设计上没有 `reasoning_effort` 键的任务（MoA 槽位、记忆查询改写）会跳过该步。
 
 如需在不启动选择器的情况下列出提供商/模型，请使用仪表板或下方的 REST 端点。查看 CLI 当前实际使用的配置：`hermes config get model` 和 `hermes status`。
 

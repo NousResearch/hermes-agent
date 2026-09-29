@@ -15,6 +15,7 @@ import os
 import time
 from typing import Any, Mapping, Optional
 from utils import atomic_write_text
+from agent.retry_utils import parse_retry_after_seconds
 from agent.rate_limit_tracker import (
     _BUCKET_TAGS, _fmt_seconds, _safe_float, _safe_int, has_rate_limit_headers, lower_headers,
 )
@@ -41,11 +42,12 @@ def _state_path() -> str:
 def _parse_reset_seconds(headers: Optional[Mapping[str, str]]) -> Optional[float]:
     """Best reset estimate (seconds from now) from hourly, per-minute, then retry-after headers."""
     lowered = lower_headers(headers)
-    for key in ("x-ratelimit-reset-requests-1h", "x-ratelimit-reset-requests", "retry-after"):
+    for key in ("x-ratelimit-reset-requests-1h", "x-ratelimit-reset-requests"):
         val = _safe_float(lowered.get(key), 0.0)
         if val > 0:
             return val
-    return None
+    retry_after = parse_retry_after_seconds(lowered.get("retry-after"))
+    return retry_after if retry_after else None
 
 
 def record_nous_rate_limit(

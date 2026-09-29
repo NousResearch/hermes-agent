@@ -1,6 +1,5 @@
+import type { ModelOptionProvider } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
-
-import type { ModelOptionProvider } from '@/types/hermes'
 
 import {
   collapseModelFamilies,

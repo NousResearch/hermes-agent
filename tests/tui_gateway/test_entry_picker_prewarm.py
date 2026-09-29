@@ -17,7 +17,7 @@ guard is covered in ``tests/hermes_cli/test_picker_prewarm.py``):
 - A prewarm import/start failure is swallowed (fire-and-forget contract) and
   must not prevent ``main()`` from reaching the read loop.
 
-Harness: same style as tests/test_tui_entry_mcp_owner.py — import
+Harness: same style as tests/tui_gateway/test_tui_entry_mcp_owner.py — import
 ``tui_gateway.entry`` and monkeypatch its module attributes, running the real
 ``main()`` with stubbed I/O collaborators (no subprocess, no real gateway).
 """

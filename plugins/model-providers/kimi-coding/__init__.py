@@ -4,7 +4,7 @@ redirected to api.kimi.com/coding by core)."""
 from typing import Any
 from urllib.parse import urlparse
 
-from agent.reasoning_effort import KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, clamp_effort, requested_effort
+from agent.reasoning_effort import KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, thinking_toggle_extras
 from hermes_cli import __version__ as _HERMES_VERSION
 from providers import register_provider
 from providers.base import OMIT_TEMPERATURE, ProviderProfile
@@ -52,13 +52,7 @@ class KimiProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Moonshot treats extra_body.thinking and reasoning_effort as mutually
         exclusive (400 on both): send effort when requested, else the toggle."""
-        if isinstance(reasoning_config, dict) and reasoning_config.get("enabled", True) is False:
-            return {"thinking": {"type": "disabled"}}, {}
-        effort = requested_effort(reasoning_config)
-        k3_effort = clamp_effort(effort, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES) if effort != "none" else None
-        if k3_effort in KIMI_K3_EFFORTS:
-            return {}, {"reasoning_effort": k3_effort}
-        return {"thinking": {"type": "enabled"}}, {}
+        return thinking_toggle_extras(reasoning_config, KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES)
 
 
 def _kimi(name: str, aliases: tuple, env_vars: tuple, base_url: str) -> KimiProfile:

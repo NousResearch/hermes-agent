@@ -79,13 +79,12 @@ class TestTomlValueFormatter:
         """If rename fails partway through (out of disk, permissions,
         crash), the temp file must be cleaned up. Otherwise repeated
         failed migrations would pile up .config.toml.* files."""
-        from pathlib import Path as _Path
-        original_replace = _Path.replace
+        import utils
 
-        def failing_replace(self, target):
+        def failing_replace(tmp, target):
             raise OSError("simulated disk full")
 
-        monkeypatch.setattr(_Path, "replace", failing_replace)
+        monkeypatch.setattr(utils, "atomic_replace", failing_replace)
         report = migrate(
             {"mcp_servers": {"x": {"command": "y"}}},
             codex_home=tmp_path,

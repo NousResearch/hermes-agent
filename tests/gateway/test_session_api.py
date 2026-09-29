@@ -117,6 +117,25 @@ async def test_session_messages_default_to_latest_bounded_page(adapter, session_
 
 
 @pytest.mark.asyncio
+async def test_forked_session_stays_listable_and_parent_survives_failed_fork(adapter, session_db):
+    """A fork is created before the parent is ended (#11030) and carries the explicit branch
+    marker, so it still shows in the default listing (the timestamp fallback no longer holds)."""
+    session_db.create_session("parent", "api_server")
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post("/api/sessions/parent/fork", json={"id": "child"})
+        assert resp.status == 201
+        listed = await (await cli.get("/api/sessions")).json()
+        ids = {row["id"] for row in listed["data"]}
+        assert {"parent", "child"} <= ids, ids
+
+        session_db.create_session("solo", "api_server")
+        with patch.object(session_db, "create_session", side_effect=RuntimeError("boom")):
+            resp = await cli.post("/api/sessions/solo/fork", json={"id": "never"})
+        assert resp.status >= 500
+    assert session_db.get_session("solo")["end_reason"] is None
+
+@pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):
     """API-server request sessions should reach tools and terminal subprocess env."""
     monkeypatch.setenv("HERMES_SESSION_ID", "stale-session")

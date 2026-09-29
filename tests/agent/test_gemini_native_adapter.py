@@ -675,3 +675,39 @@ def test_text_only_tool_result_has_no_parts():
     )
     fr = request["contents"][1]["parts"][0]["functionResponse"]
     assert "parts" not in fr
+
+
+class _FakeStreamResponse:
+    """Minimal httpx.Response stand-in for _iter_sse_events: text chunks only."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def iter_text(self):
+        yield from self._chunks
+
+
+def test_iter_sse_events_flushes_residual_buffer_after_eof():
+    """A final SSE frame without a trailing newline must not be dropped (pi#8997 class)."""
+    from agent.gemini_native_adapter import _iter_sse_events
+
+    resp = _FakeStreamResponse([
+        'data: {"candidates": [1]}\n',
+        'data: {"candidates": [2]}',  # no newline, then EOF
+    ])
+    events = list(_iter_sse_events(resp))
+    assert events == [{"candidates": [1]}, {"candidates": [2]}]
+
+
+def test_iter_sse_events_stops_at_done_and_ignores_trailing_frames():
+    """[DONE] terminates iteration even when more frames follow; a residual
+    [DONE] in the leftover buffer is not yielded as data."""
+    from agent.gemini_native_adapter import _iter_sse_events
+
+    resp = _FakeStreamResponse([
+        'data: {"candidates": [1]}\ndata: [DONE]\ndata: {"candidates": [3]}\n',
+    ])
+    assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]
+
+    resp = _FakeStreamResponse(['data: {"candidates": [1]}\ndata: [DONE]'])
+    assert list(_iter_sse_events(resp)) == [{"candidates": [1]}]

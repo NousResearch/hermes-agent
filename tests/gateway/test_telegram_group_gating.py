@@ -7,6 +7,23 @@ from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.event import MessageType
 from gateway.session import SessionSource
 
+import os
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_telegram_env():
+    """The YAML→env bridge tests below write TELEGRAM_* into os.environ; an explicit env value now
+    beats ``config.extra`` for the owning profile, so a leaked bridge value would silently override the
+    ``extra`` the later adapter tests construct with."""
+    saved = {k: v for k, v in os.environ.items() if k.startswith("TELEGRAM_")}
+    yield
+    for k in [k for k in os.environ if k.startswith("TELEGRAM_")]:
+        if k not in saved:
+            del os.environ[k]
+    os.environ.update(saved)
+
 
 def _make_adapter(
     require_mention=None,

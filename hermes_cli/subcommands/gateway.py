@@ -143,7 +143,7 @@ def build_gateway_parser(
     _flag(gateway_migrate, "-y", "--yes", dest="yes", help="Apply without confirmation")
 
     # enroll: redeem a single-use connector token for the per-gateway secret + per-tenant
-    # delivery key, written to .env. See docs/relay-connector-contract.md. EXPERIMENTAL.
+    # delivery key, written to .env. See website/docs/developer-guide/relay-connector-contract.md. EXPERIMENTAL.
     gateway_enroll = gateway_subparsers.add_parser("enroll",
         help="Enroll this gateway with a relay connector (writes relay auth creds to .env)",
         description="Redeem a single-use enrollment token with a relay connector. "

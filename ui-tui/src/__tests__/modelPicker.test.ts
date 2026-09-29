@@ -1,7 +1,7 @@
+import type { ModelOptionProvider } from '@hermes/shared/gateway-events'
 import { describe, expect, it } from 'vitest'
 
 import { providerIndexAfterClearingFilter } from '../components/modelPicker.js'
-import type { ModelOptionProvider } from '../gatewayTypes.js'
 
 const provider = (slug: string, name = slug): ModelOptionProvider => ({ name, slug })
 

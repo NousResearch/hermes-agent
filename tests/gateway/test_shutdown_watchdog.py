@@ -123,25 +123,15 @@ def short_home():
         shutil.rmtree(path, ignore_errors=True)
 
 
+@pytest.mark.windows_only
 @pytest.mark.asyncio
-async def test_loop_tick_witness_arms_over_tcp_on_windows(
-    short_home, caplog, monkeypatch
-):
-    """Non-POSIX never touches AF_UNIX; the witness arms over TCP loopback."""
+async def test_loop_tick_witness_arms_over_tcp_on_windows(short_home, caplog):
+    """Non-POSIX never touches AF_UNIX; the witness arms over TCP loopback.
+
+    Runs on native Windows (``os.name == "nt"`` for real) rather than faking
+    the platform from Linux — see "Don't fake the host OS" in AGENTS.md.
+    """
     tmp_path = short_home
-    # Pretend the platform is Windows as seen from the module under test.
-    # A plain monkeypatch of the global os.name would flip pathlib.Path
-    # dispatch (Path.__new__ reads os.name at runtime) and crash pytest's
-    # own tmp-dir machinery, so swap the module's `os` binding for a proxy
-    # whose `.name` is "nt" and which delegates everything else to real os.
-    class _WindowsOsProxy:
-        name = "nt"
-
-        def __getattr__(self, item):
-            return getattr(os, item)
-
-    monkeypatch.setattr(shutdown_watchdog_module, "os", _WindowsOsProxy())
-
     start_unix_server_calls = []
 
     def _forbid_start_unix_server(*args, **kwargs):
@@ -152,6 +142,11 @@ async def test_loop_tick_witness_arms_over_tcp_on_windows(
         shutdown_watchdog_module.asyncio,
         "start_unix_server",
         side_effect=_forbid_start_unix_server,
+        # ``asyncio.start_unix_server`` does not exist on native Windows, so
+        # without create=True patch.object itself raises AttributeError.
+        # create=True arms the forbidden-call tripwire anyway and mock
+        # deletes the created attribute on exit.
+        create=True,
     ), caplog.at_level(logging.DEBUG, logger="gateway.shutdown_watchdog"):
         payload = await _run_heartbeat_until_payload(tmp_path)
 

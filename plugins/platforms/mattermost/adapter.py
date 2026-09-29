@@ -10,7 +10,6 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import mimetypes
@@ -22,9 +21,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, profile_scoped as _profile_scoped_config_load
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, env_is_connected as _env_is_connected,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    send_error
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +60,6 @@ def _channel_id_set(raw: Any) -> set:
     """Parse a list or comma-separated string of channel IDs into a stripped set."""
     items = raw if isinstance(raw, list) else str(raw).split(",")
     return {str(c).strip() for c in items if str(c).strip()}
-
-
-def _csv(value: Any) -> str:
-    return ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
 
 
 def _post_result(data: Dict[str, Any], error: str) -> SendResult:
@@ -251,10 +251,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._closing = True
-        if self._ws_task and not self._ws_task.done():
-            self._ws_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._ws_task
+        await cancel_task(self._ws_task)
         if self._reconnect_task and not self._reconnect_task.done():
             self._reconnect_task.cancel()
         if self._ws:
@@ -494,23 +491,18 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.info("Mattermost: WebSocket closed (%s)", kind)
                 break
 
-    def _extra_or_env(self, key: str, env: str, default: str = "") -> Any:
-        """config.yaml ``mattermost.<key>`` (PlatformConfig.extra) first, env var fallback."""
-        raw = self.config.extra.get(key) if self.config.extra else None
-        return _get_scoped_secret(env, default) if raw is None else raw
-
     def _apply_channel_gating(self, channel_id: str, message_text: str) -> Optional[str]:
         """Mention-gate a non-DM post; return the cleaned text, or None to ignore it. allowed_channels is a
         whitelist checked first (@mentions elsewhere are ignored); require_mention (default true) is
         bypassed in free_response_channels."""
-        allowed_channels = _channel_id_set(self._extra_or_env("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS"))
+        allowed_channels = _channel_id_set(_extra_or_secret(self.config.extra, "allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", blank_is_unset=False))
         if allowed_channels and channel_id not in allowed_channels:
             logger.debug("Mattermost: ignoring message in non-allowed channel: %s", channel_id)
             return None
-        require_mention = str(self._extra_or_env("require_mention", "MATTERMOST_REQUIRE_MENTION", "true")
+        require_mention = str(_extra_or_secret(self.config.extra, "require_mention", "MATTERMOST_REQUIRE_MENTION", "true", blank_is_unset=False)
                               ).lower() not in {"false", "0", "no"}
         free_channels = _channel_id_set(
-            self._extra_or_env("free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS"))
+            _extra_or_secret(self.config.extra, "free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", blank_is_unset=False))
         mention_patterns = [f"@{self._bot_username}", f"@{self._bot_user_id}"]
         has_mention = any(pattern.lower() in message_text.lower() for pattern in mention_patterns)
         if require_mention and channel_id not in free_channels and not has_mention:
@@ -609,12 +601,12 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
 
     base_url, token = _url_and_token(pconfig)
     base_url, token = base_url.rstrip("/"), token.strip()
     if not base_url or not token:
-        return {"error": "Mattermost standalone send: MATTERMOST_URL and MATTERMOST_TOKEN must both be set"}
+        return send_error("Mattermost standalone send: MATTERMOST_URL and MATTERMOST_TOKEN must both be set")
     upload_headers = {"Authorization": f"Bearer {token}"}
     headers = {**upload_headers, "Content-Type": "application/json"}
     try:
@@ -635,7 +627,7 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
                                         **_req_kw) as upload_resp:
                     if upload_resp.status not in {200, 201}:
                         body = await upload_resp.text()
-                        return {"error": f"Mattermost file upload failed ({upload_resp.status}): {body[:400]}"}
+                        return send_error(f"Mattermost file upload failed ({upload_resp.status}): {body[:400]}")
                     upload_data = await upload_resp.json()
                     file_ids.extend(info["id"] for info in upload_data.get("file_infos", []) if info.get("id"))
             payload: Dict[str, Any] = {"channel_id": chat_id, "message": message}
@@ -646,31 +638,30 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
             async with session.post(f"{base_url}/api/v4/posts", headers=headers, json=payload, **_req_kw) as resp:
                 if resp.status not in {200, 201}:
                     body = await resp.text()
-                    return {"error": f"Mattermost API error ({resp.status}): {body[:400]}"}
+                    return send_error(f"Mattermost API error ({resp.status}): {body[:400]}")
                 data = await resp.json()
             return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
     except aiohttp.ClientError as exc:
-        return {"error": f"Mattermost send failed (network): {exc}"}
+        return send_error(f"Mattermost send failed (network): {exc}")
     except Exception as exc:  # noqa: BLE001
-        return {"error": f"Mattermost send failed: {exc}"}
+        return send_error(f"Mattermost send failed: {exc}")
 
 
 # --- Interactive setup wizard ---
 
 def interactive_setup() -> None:
     """Guide the user through Mattermost bot setup (URL + token, allowlist, home channel)."""
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
-    from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success
+    from hermes_cli.config import remove_env_value, save_env_value
+    from hermes_cli.cli_output import prompt, print_header, print_info, print_success
+    from hermes_cli.setup_platforms import declines_reconfigure
 
     def info(*lines: str) -> None:
         for line in lines:
             print_info(line)
 
     print_header("Mattermost")
-    if get_env_value("MATTERMOST_TOKEN"):
-        print_info("Mattermost: already configured")
-        if not prompt_yes_no("Reconfigure Mattermost?", False):
-            return
+    if declines_reconfigure("Mattermost", "Reconfigure Mattermost?", "MATTERMOST_TOKEN"):
+        return
     info("Works with any self-hosted Mattermost instance.",
          "   1. In Mattermost: Integrations → Bot Accounts → Add Bot Account", "   2. Copy the bot token")
     print()
@@ -706,45 +697,22 @@ def interactive_setup() -> None:
 
 # --- YAML → env config bridge (apply_yaml_config_fn) ---
 
-_YAML_BRIDGE = (  # (yaml key, env var, yaml value → env string); allowed_channels is a whitelist
-    ("require_mention", "MATTERMOST_REQUIRE_MENTION", lambda v: str(v).lower()),
-    ("free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", _csv),
-    ("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", _csv))
+_YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge; allowed_channels is a whitelist
+    ("require_mention", "MATTERMOST_REQUIRE_MENTION", "lower"),
+    ("free_response_channels", "MATTERMOST_FREE_RESPONSE_CHANNELS", "csv"),
+    ("allowed_channels", "MATTERMOST_ALLOWED_CHANNELS", "csv"))
 
 
 def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
-    """Translate ``config.yaml`` ``mattermost:`` keys into env vars + ``PlatformConfig.extra``.
-
-    Env vars win over YAML (writes guarded by ``not os.getenv``). Under a multiplexed secondary
-    profile the env write is skipped (it would leak into every profile via ``os.environ``); the
-    values are returned so the caller seeds this profile's ``extra``, which read sites check first.
-
-    Implements the ``apply_yaml_config_fn`` contract (#24836 / #25443). Mirrors the legacy
-    ``mattermost_cfg`` block that used to live in ``gateway/config.py::load_gateway_config()`` before this
-    migration.
-    """
-    skip_env_bridge = _profile_scoped_config_load()
-    seeded: dict = {}
-    for key, env, to_env in _YAML_BRIDGE:
-        value = mattermost_cfg.get(key)
-        if value is None and not (key == "require_mention" and key in mattermost_cfg):
-            continue
-        seeded[key] = value
-        if not skip_env_bridge and not os.getenv(env):
-            os.environ[env] = to_env(value)
-    return seeded or None
+    """``apply_yaml_config_fn`` (#24836 / #25443): ``config.yaml`` ``mattermost:`` keys → env vars (env wins;
+    skipped under a multiplexed secondary profile) + ``PlatformConfig.extra`` (extra-first readers)."""
+    return _apply_yaml_bridge(mattermost_cfg, _YAML_BRIDGE)
 
 
-def _is_connected(config) -> bool:
-    """Connected when BOTH MATTERMOST_TOKEN and MATTERMOST_URL are set (``get_env_value`` looked up at
-    call time so tests patching ``gateway_mod.get_env_value`` can suppress ambient env vars)."""
-    import hermes_cli.gateway as gateway_mod
-    return bool(
-        (gateway_mod.get_env_value("MATTERMOST_TOKEN") or "").strip()
-        and (gateway_mod.get_env_value("MATTERMOST_URL") or "").strip())
+
+_is_connected = _env_is_connected("MATTERMOST_TOKEN", "MATTERMOST_URL")
 
 
-# --- Plugin registration entry point ---
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""

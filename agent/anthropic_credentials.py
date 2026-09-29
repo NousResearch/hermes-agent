@@ -18,7 +18,6 @@ import logging
 import os
 import platform
 import secrets
-import stat
 import subprocess
 import threading
 import time
@@ -27,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 from agent.secret_scope import get_secret as _get_secret
 
 logger = logging.getLogger(__name__)
@@ -82,22 +82,9 @@ def _load_json_if_exists(path: Path, what: str) -> Optional[Any]:
 
 
 def _atomic_write_private_json(path: Path, payload: Any) -> None:
-    """Write *payload* via a 0o600 O_EXCL temp file + fsync + os.replace: the token is never briefly umask-readable
-    (write_text + chmod had a TOCTOU window); the random suffix avoids collisions with concurrent writers and
-    crashed leftovers. The parent dir's mode is left alone (~/.claude/ is owned by Claude Code)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
-    try:
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
-        raise
+    """0600-from-creation temp file + fsync + atomic replace (the token is never briefly umask-readable).
+    The parent dir's mode is left alone (~/.claude/ is owned by Claude Code)."""
+    atomic_json_write(path, payload, mode=0o600)
 
 
 def _commit_private_json(path: Path, payload: Any, what: str) -> None:

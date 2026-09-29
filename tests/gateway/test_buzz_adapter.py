@@ -3161,18 +3161,22 @@ class TestBuzzAdapterLifecycle:
             lambda platform, key: released.append((platform, key)),
         )
         adapter = _make_adapter()
-        adapter._lock_key = "wss://relay.example:" + SELF_PUBKEY
+        adapter._platform_lock_scope = "buzz"
+        adapter._platform_lock_identity = "wss://relay.example:" + SELF_PUBKEY
         await adapter.disconnect()
         assert released == [("buzz", "wss://relay.example:" + SELF_PUBKEY)]
-        assert adapter._lock_key is None
+        assert adapter._platform_lock_identity is None
 
     @pytest.mark.asyncio
     async def test_connect_fails_when_identity_lock_held(self, monkeypatch):
-        """A second profile using the same relay+pubkey must fail fast."""
+        """A second profile using the same relay+pubkey must fail fast. ``acquire_scoped_lock``
+        returns ``(acquired, existing_record)`` — a bare truthiness check on that tuple never
+        fires, so the mock returns the real contract."""
         import gateway.status as gateway_status
 
         monkeypatch.setattr(
-            gateway_status, "acquire_scoped_lock", lambda platform, key: False
+            gateway_status, "acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (False, {"pid": 4242, "profile": "other"}),
         )
         adapter = _make_adapter()
         adapter.cli_path = "/fake/buzz"
@@ -3184,7 +3188,11 @@ class TestBuzzAdapterLifecycle:
         )
         adapter._run_cli = cli
         assert await adapter.connect() is False
-        assert adapter._lock_key is None
+        assert adapter._fatal_error_code == "buzz_lock"
+        assert "other" in (adapter._fatal_error_message or "")
+        assert adapter._platform_lock_identity == "https://test.relay:" + SELF_PUBKEY
+        # channels list must never run: the conflict branch short-circuits connect()
+        assert not any(call[0][:2] == ["channels", "list"] for call in cli.calls)
 
 
 # ── Credentials / requirements ────────────────────────────────────────────

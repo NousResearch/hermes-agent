@@ -1,8 +1,10 @@
 import { atom } from 'nanostores'
 
-import { getActionStatus, restartGateway } from '@/hermes'
+import { getActionStatus, getStatus, restartGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { notifyError } from '@/store/notifications'
+import { sharedGatewayProfiles } from '@/lib/shared-gateway-restart'
+import { confirm } from '@/store/confirm'
+import { notify, notifyError } from '@/store/notifications'
 import type { ActionResponse } from '@/types/hermes'
 
 const POLL_ATTEMPTS = 18
@@ -34,6 +36,37 @@ async function awaitAction(name: string): Promise<void> {
   }
 }
 
+// Under `gateway.multiplex_profiles` the profile in view has no gateway of its
+// own: "Restart gateway" restarts the ONE shared multiplexer and every bot on
+// this device blips. Ask first, naming them; standalone gateways (and older
+// backends that do not report `gateway_shared_with`) keep the silent restart.
+// Resolves the served list when the user confirmed, `null` when nothing is
+// shared, `false` when they cancelled.
+export async function confirmSharedGatewayRestart(): Promise<false | null | string[]> {
+  let shared: null | string[] = null
+
+  try {
+    shared = sharedGatewayProfiles(await getStatus())
+  } catch {
+    // Status unavailable: fall back to the plain restart rather than blocking it.
+    return null
+  }
+
+  if (!shared) {
+    return null
+  }
+
+  const ok = await confirm({
+    title: translateNow('commandCenter.sharedGatewayRestartTitle'),
+    description: translateNow('commandCenter.sharedGatewayRestartDescription', shared.join(', ')),
+    confirmLabel: translateNow('commandCenter.sharedGatewayRestartConfirm'),
+    cancelLabel: translateNow('common.cancel'),
+    destructive: true
+  })
+
+  return ok ? shared : false
+}
+
 // Restart the messaging gateway, surfacing progress in the statusbar gateway
 // indicator. Self-contained and never rejects, so every trigger — Cmd+K, the
 // messaging save/toggle toasts — gets identical feedback from a plain
@@ -41,11 +74,21 @@ async function awaitAction(name: string): Promise<void> {
 // Resolves `true` when the restart child completed cleanly (callers that keep
 // a "restart needed" banner clear it on that signal only).
 export async function runGatewayRestart(): Promise<boolean> {
+  const shared = await confirmSharedGatewayRestart()
+
+  if (shared === false) {
+    return false
+  }
+
   $gatewayRestarting.set(true)
 
   try {
     const started: ActionResponse = await restartGateway()
     await awaitAction(started.name)
+
+    if (shared) {
+      notify({ kind: 'success', message: translateNow('commandCenter.sharedGatewayRestarted', shared.length) })
+    }
 
     return true
   } catch (err) {

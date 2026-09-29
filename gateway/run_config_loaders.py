@@ -45,8 +45,8 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _cfg_str(section: str, key: str) -> str:
         """``<section>.<key>`` from the gateway runtime config as a stripped string ("" when unset)."""
-        from gateway.run import _load_gateway_runtime_config
-        return str(cfg_get(_load_gateway_runtime_config(), section, key, default="") or "").strip()
+        from gateway.run import _load_gateway_config
+        return str(cfg_get(_load_gateway_config(), section, key, default="") or "").strip()
 
     @classmethod
     def _env_or_cfg_str(cls, env_var: str, section: str, key: str) -> str:
@@ -60,10 +60,10 @@ class GatewayConfigLoadersMixin:
         HERMES_PREFILL_MESSAGES_FILE env wins, then top-level prefill_messages_file in config.yaml,
         then legacy agent.prefill_messages_file. Relative paths resolve from ~/.hermes/.
         """
-        from gateway.run import _gateway_config_home, _load_gateway_runtime_config
+        from gateway.run import _gateway_config_home, _load_gateway_config
         file_path = os.getenv("HERMES_PREFILL_MESSAGES_FILE", "")
         if not file_path:
-            cfg = _load_gateway_runtime_config()
+            cfg = _load_gateway_config()
             file_path = str(
                 cfg.get("prefill_messages_file", "") or cfg_get(cfg, "agent", "prefill_messages_file", default="") or ""
             )
@@ -89,11 +89,11 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _load_ephemeral_system_prompt() -> str:
         """HERMES_EPHEMERAL_SYSTEM_PROMPT env first, then ``display.personality`` / ``agent.system_prompt``."""
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
         if prompt:
             return prompt
-        return resolve_ephemeral_system_prompt_from_config(_load_gateway_runtime_config())
+        return resolve_ephemeral_system_prompt_from_config(_load_gateway_config())
 
     def _channel_override(self, platform: Platform, chat_id: str, thread_id, parent_id):
         """``channel_overrides`` entry for this channel/thread, or None (also when no config is bound)."""
@@ -151,9 +151,9 @@ class GatewayConfigLoadersMixin:
 
         Closes #21256.
         """
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         from hermes_constants import resolve_reasoning_config
-        return resolve_reasoning_config(_load_gateway_runtime_config(), model)
+        return resolve_reasoning_config(_load_gateway_config(), model)
 
     @staticmethod
     def _parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
@@ -234,8 +234,8 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _load_show_reasoning() -> bool:
         """``display.show_reasoning`` toggle."""
-        from gateway.run import _load_gateway_runtime_config
-        return is_truthy_value(cfg_get(_load_gateway_runtime_config(), "display", "show_reasoning"), default=False)
+        from gateway.run import _load_gateway_config
+        return is_truthy_value(cfg_get(_load_gateway_config(), "display", "show_reasoning"), default=False)
 
     @classmethod
     def _load_busy_input_mode(cls) -> str:
@@ -330,12 +330,12 @@ class GatewayConfigLoadersMixin:
         """Env var (non-empty) else ``agent.<cfg_key>``; warn once when a supplied value fails to parse.
 
         ``0`` is a valid value; the parser falls back to ``default`` on garbage."""
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         env_raw = os.getenv(env_var)
         if env_raw is not None and str(env_raw).strip() != "":
             raw: object = env_raw
         else:
-            raw = cfg_get(_load_gateway_runtime_config(), "agent", cfg_key, default=None)
+            raw = cfg_get(_load_gateway_config(), "agent", cfg_key, default=None)
         value = parse(raw)
         if raw is not None and str(raw).strip() != "":
             cls._warn_unparsable_timeout(cfg_key, raw, default)
@@ -363,8 +363,8 @@ class GatewayConfigLoadersMixin:
     @classmethod
     def _load_signal_interrupt_grace_timeout(cls) -> float:
         """``gateway.signal_interrupt_grace_timeout``: unexpected-signal post-interrupt grace in seconds."""
-        from gateway.run import _load_gateway_runtime_config
-        raw = cfg_get(_load_gateway_runtime_config(), "gateway", "signal_interrupt_grace_timeout", default=None)
+        from gateway.run import _load_gateway_config
+        raw = cfg_get(_load_gateway_config(), "gateway", "signal_interrupt_grace_timeout", default=None)
         value = parse_signal_interrupt_grace_timeout(raw)
         if raw is not None and raw != "":
             cls._warn_unparsable_timeout(
@@ -385,11 +385,11 @@ class GatewayConfigLoadersMixin:
         the AMBIENT profile — callers deciding for another profile's event enter its scope first
         (``_completion_event_scope``). The env override reads through the secret scope so a served
         secondary sees its own ``.env`` value, not the launch profile's ``os.environ``."""
-        from gateway.run import _load_gateway_runtime_config
-        from gateway.authz_mixin import _platform_gate_env
+        from gateway.run import _load_gateway_config
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
         mode = _platform_gate_env("HERMES_BACKGROUND_NOTIFICATIONS")
         if not mode:
-            raw = cfg_get(_load_gateway_runtime_config(), "display", "background_process_notifications")
+            raw = cfg_get(_load_gateway_config(), "display", "background_process_notifications")
             if raw is False:
                 mode = "off"
             elif raw not in {None, ""}:
@@ -403,19 +403,19 @@ class GatewayConfigLoadersMixin:
     @staticmethod
     def _load_provider_routing() -> dict:
         """OpenRouter provider routing preferences (canonical fail-open loader: managed overlay + ${VAR})."""
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         try:
-            return _load_gateway_runtime_config().get("provider_routing", {}) or {}
+            return _load_gateway_config().get("provider_routing", {}) or {}
         except Exception:
             return {}
 
     @staticmethod
     def _load_fallback_model() -> list | None:
         """Fallback chain: ``fallback_providers`` (kept first) merged with legacy ``fallback_model``."""
-        from gateway.run import _load_gateway_runtime_config
+        from gateway.run import _load_gateway_config
         try:
             # Canonical gateway loader (fail-open): managed overlay + ${VAR} expansion apply here too.
-            return get_fallback_chain(_load_gateway_runtime_config()) or None
+            return get_fallback_chain(_load_gateway_config()) or None
         except Exception:
             return None
 
@@ -443,23 +443,14 @@ class GatewayConfigLoadersMixin:
             by_home = self._fallback_model_by_home = {}
         home_key = hermes_home_key(home)
         try:
-            from hermes_cli.config import read_user_config_raw
+            from hermes_cli.config_effective import load_user_config_effective
             cfg_path = home / "config.yaml"
             if not cfg_path.exists():
                 by_home[home_key] = self._fallback_model = None
                 return self._fallback_model
-            # Raw primitive (raises on parse failure) is required here: the canonical fail-open
-            # loader would return {} on a torn mid-edit write and WIPE the last known-good chain.
-            # The overlay/expansion below fixes the managed-scope/${VAR} drift without losing that.
-            cfg = read_user_config_raw(cfg_path)
-            with suppress(Exception):
-                from hermes_cli import managed_scope
-                cfg = managed_scope.apply_managed_overlay(cfg)
-            with suppress(Exception):
-                from hermes_cli.config import _expand_env_vars
-                expanded = _expand_env_vars(cfg)
-                if isinstance(expanded, dict):
-                    cfg = expanded
+            # fail_closed: a torn mid-edit write must raise so the per-home last known-good chain
+            # below survives, instead of being WIPED by an empty fail-open result.
+            cfg = load_user_config_effective(cfg_path, fail_closed=True)
         except Exception:
             logger.debug("fallback_providers refresh: config.yaml read failed; keeping last known-good chain", exc_info=True)
             self._fallback_model = by_home.get(home_key, self._fallback_model)

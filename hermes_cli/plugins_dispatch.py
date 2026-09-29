@@ -150,18 +150,24 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
 class PluginDispatchMixin:
     @staticmethod
     def _invoke_hook_callback(callback: Callable, payload: Dict[str, Any]) -> Any:
-        """Invoke a hook while withholding additive fields from narrow legacy callbacks."""
+        """Invoke a hook while withholding additive fields from narrow legacy callbacks.
+
+        An ``async def`` callback returns a coroutine; resolve it the way plugin slash commands
+        are (loop-safe), otherwise the bare coroutine object is appended to the results and the
+        plugin's body never runs (#12449).
+        """
+        from hermes_cli.plugins import resolve_plugin_command_result
         try:
             parameters = inspect.signature(callback).parameters
         except (TypeError, ValueError):
-            return callback(**payload)  # no introspectable signature: historical behavior
+            return resolve_plugin_command_result(callback(**payload))  # no introspectable signature
         if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-            return callback(**payload)
+            return resolve_plugin_command_result(callback(**payload))
         keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
-        return callback(**{
+        return resolve_plugin_command_result(callback(**{
             name: value for name, value in payload.items()
             if name in parameters and parameters[name].kind in keyword_kinds
-        })
+        }))
 
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.

@@ -17,8 +17,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
 from tools.daemon_pool import DaemonThreadPoolExecutor
@@ -83,14 +82,19 @@ def _db_path():
 
 
 def _connect() -> sqlite3.Connection:
+    from hermes_cli.sqlite_util import open_db
+    # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
+    # hardening so this writer doesn't create/leave the file (and its WAL
+    # sidecars) at the process umask. See hermes_state._secure_state_db_files.
+    from hermes_state import _secure_state_db_files
+
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
-    try:
-        _initialize_schema(conn)
-    except Exception:
-        conn.close()  # don't leak the connection on PRAGMA/DDL failure
-        raise
+    _secure_state_db_files(path, create_main=True)
+    # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
+    conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
+                   wal=False, row_factory=None, initialize=_initialize_schema)
+    _secure_state_db_files(path)
     return conn
 
 
@@ -110,23 +114,10 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     reconcile_state_schema(conn)
 
 
-@contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, and ALWAYS close it (``with conn:``
-    alone leaks the connection and WAL/SHM fds until GC).
+def _transaction():
+    from hermes_cli.sqlite_util import transaction
 
-    ``sqlite3.Connection.__enter__``/``__exit__`` only commit or roll back the transaction; they do not
-    close the connection. Using ``with _connect()`` alone therefore leaks a connection — and its WAL/SHM
-    file descriptors — on every durable dispatch, completion, and delivery-claim, deferring the close to the
-    garbage collector. On a long-running gateway that exhausts ``RLIMIT_NOFILE`` (the cron-ledger sibling of
-    this bug was #69567 / PR #69594).
-    """
-    conn = _connect()
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    return transaction(_connect())
 
 
 def _capture_routing_origin() -> Dict[str, Any]:

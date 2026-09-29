@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from agent.proxy_sources import iron_proxy as ip
+from agent.redact import mask_secret
 from hermes_cli.config import load_config, load_env, save_config
 
 
@@ -457,7 +458,7 @@ def format_status_text(*, show_tokens: bool = False) -> str:
     if mappings:
         lines.extend(["", "Token mappings:"])
         for m in mappings:
-            tok = m.proxy_token if show_tokens else _redact_token(m.proxy_token)
+            tok = m.proxy_token if show_tokens else mask_secret(m.proxy_token)
             lines.append(f"  - {m.real_env_name}: {tok} ({', '.join(m.upstream_hosts)})")
     uncovered = ip.discover_uncovered_providers()
     if uncovered:
@@ -594,7 +595,7 @@ def _mappings_table(mappings, env_header: str, hosts_header: str, *, show_tokens
     table.add_column(hosts_header, style="dim")
     table.add_column("Proxy token", style="green")
     for m in mappings:
-        tok = m.proxy_token if show_tokens else _redact_token(m.proxy_token)
+        tok = m.proxy_token if show_tokens else mask_secret(m.proxy_token)
         table.add_row(m.real_env_name, ", ".join(m.upstream_hosts), tok)
     return table
 
@@ -638,9 +639,3 @@ def _status_rows(proxy_cfg: dict, status, *, yn, dim) -> list[tuple[str, str]]:
         ("Credential src", str(proxy_cfg.get("credential_source", "env"))),
         ("Docker enforce", yn(bool(proxy_cfg.get("enforce_on_docker", True)))),
     ]
-
-
-def _redact_token(token: str) -> str:
-    if len(token) < 16:
-        return token
-    return f"{token[:12]}…{token[-4:]}"

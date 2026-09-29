@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { render } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
@@ -5,7 +6,6 @@ import { vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
 
@@ -16,7 +16,7 @@ export interface MessageStreamHarnessOptions extends Partial<Parameters<typeof u
 
 export interface MessageStreamHarness {
   /** Feed a gateway event into the mounted hook. */
-  handleEvent: (event: RpcEvent) => void
+  handleEvent: (event: GatewayEvent) => void
   /** Push streaming assistant text, bypassing the event envelope. For the specs
    *  about flush scheduling rather than about a particular event. */
   appendDelta: (sessionId: string, delta: string) => void
@@ -47,7 +47,7 @@ export function renderMessageStream(
   sessionId: string | null,
   { states = new Map<string, ClientSessionState>(), ...overrides }: MessageStreamHarnessOptions = {}
 ): MessageStreamHarness {
-  let dispatch: ((event: RpcEvent) => void) | null = null
+  let dispatch: ((event: GatewayEvent) => void) | null = null
   let appendDelta: ((sessionId: string, delta: string) => void) | null = null
   let latest: ClientSessionState | null = null
 

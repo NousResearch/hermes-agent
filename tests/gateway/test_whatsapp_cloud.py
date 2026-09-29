@@ -1332,14 +1332,12 @@ class TestBoundedInteractiveState:
     def test_bounded_put_evicts_oldest(self):
         from collections import OrderedDict
 
-        from gateway.platforms.whatsapp_cloud import (
-            INTERACTIVE_STATE_CACHE_SIZE,
-            WhatsAppCloudAdapter,
-        )
+        from gateway.platforms.helpers import bounded_put
+        from gateway.platforms.whatsapp_cloud import INTERACTIVE_STATE_CACHE_SIZE
 
         cache: OrderedDict = OrderedDict()
         for i in range(INTERACTIVE_STATE_CACHE_SIZE + 10):
-            WhatsAppCloudAdapter._bounded_put(cache, f"id-{i}", "sess")
+            bounded_put(cache, f"id-{i}", "sess", INTERACTIVE_STATE_CACHE_SIZE)
         assert len(cache) == INTERACTIVE_STATE_CACHE_SIZE
         assert "id-0" not in cache
         assert f"id-{INTERACTIVE_STATE_CACHE_SIZE + 9}" in cache

@@ -19,6 +19,7 @@ from hermes_constants import (
     get_hermes_home, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
 )
 
+from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
@@ -1026,9 +1027,8 @@ CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 
-# Dynamic cap (no explicit context_file_max_chars): ~4 chars/token, a small slice of the window since
-# context files share the cached prefix; small models stay at the floor.
-_CONTEXT_FILE_CHARS_PER_TOKEN = 4
+# Dynamic cap (no explicit context_file_max_chars): a small slice of the window since context files
+# share the cached prefix; small models stay at the floor.
 _CONTEXT_FILE_WINDOW_FRACTION = 0.06
 _CONTEXT_FILE_DYNAMIC_CEILING = 500_000
 
@@ -1037,7 +1037,7 @@ def _dynamic_context_file_max_chars(context_length: Optional[int]) -> int:
     """Char cap from the model's window, clamped to [20K floor, 500K ceiling]; flat default when unknown."""
     if not isinstance(context_length, int) or context_length <= 0:
         return CONTEXT_FILE_MAX_CHARS
-    budget = int(context_length * _CONTEXT_FILE_CHARS_PER_TOKEN * _CONTEXT_FILE_WINDOW_FRACTION)
+    budget = int(context_length * CHARS_PER_TOKEN * _CONTEXT_FILE_WINDOW_FRACTION)
     return max(CONTEXT_FILE_MAX_CHARS, min(budget, _CONTEXT_FILE_DYNAMIC_CEILING))
 
 

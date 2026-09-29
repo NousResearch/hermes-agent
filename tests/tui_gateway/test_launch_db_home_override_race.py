@@ -82,6 +82,72 @@ def test_background_side_agent_persists_into_the_parent_agent_store(launch_db_en
     assert server._background_agent_kwargs(agent, "bg_1")["session_db"] is parent_db
 
 
+def test_background_side_agent_holds_its_own_registry_reference(launch_db_env, tmp_path):
+    """The parent releases its registry reference from ``AIAgent.close()``; a side agent sharing
+    that object without its own reference had its store torn down under a live background turn.
+    ``prompt.background`` must acquire (and release) a separate reference on the same file."""
+    profile_home = tmp_path / "profiles" / "work"
+    profile_home.mkdir(parents=True)
+    parent_db = registry.acquire(profile_home / "state.db")
+
+    with server._side_agent_session_db(parent_db) as side_db:
+        assert side_db.db_path == parent_db.db_path
+        registry.release_or_close(parent_db)  # parent closes mid-turn
+        assert registry.stats()["live_generations"] == 1
+        assert side_db._conn is not None
+        side_db.create_session("bg_1", source="tui", model="m")
+    assert registry.stats()["live_generations"] == 0  # side agent's reference released on exit
+
+
+def test_prompt_background_turn_survives_parent_close(launch_db_env, tmp_path, monkeypatch):
+    """End to end through the RPC: the side agent's ``run_conversation`` keeps a live store after
+    the parent agent released its own reference."""
+    from unittest.mock import patch
+
+    profile_home = tmp_path / "profiles" / "work"
+    profile_home.mkdir(parents=True)
+    parent_db = registry.acquire(profile_home / "state.db")
+    parent = type("Parent", (), {"model": "m", "provider": "p", "_fallback_chain": [], "_session_db": parent_db})()
+    session = {"agent": parent, "session_key": "k", "profile_home": None}
+    seen = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            seen["db"] = kwargs["session_db"]
+
+        def run_conversation(self, **_kw):
+            registry.release_or_close(parent_db)  # parent closes / resets mid-turn
+            # Still registry-owned and open: the side agent's own reference kept the generation alive
+            # (no #94736 emergency reopen of a torn-down connection).
+            seen["still_shared"] = seen["db"]._shared_registry_owned and seen["db"]._conn is not None
+            seen["db"].create_session("bg_1", source="tui", model="m")
+            return {"final_response": "ok"}
+
+    class InlineThread:
+        def __init__(self, target=None, **_kw):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda *_a, **_kw: None)
+    with patch("tui_gateway.server.threading.Thread", InlineThread), \
+            patch("run_agent.AIAgent", FakeAgent), \
+            patch("tui_gateway.server._sess", return_value=(session, None)), \
+            patch("tui_gateway.server._set_session_context", return_value=None), \
+            patch("tui_gateway.server._clear_session_context"), \
+            patch("tui_gateway.server._session_cwd", return_value=str(tmp_path)), \
+            patch("tui_gateway.server._emit"):
+        server._methods["prompt.background"]("rid", {"text": "hi", "session_id": "ui1"})
+
+    # The registry lends ONE shared object per path; the side agent's own refcount is what kept it open.
+    assert seen["db"].db_path == parent_db.db_path
+    assert seen["still_shared"] is True
+    assert registry.stats()["live_generations"] == 0
+
+
 def test_notification_owner_gate_resolves_rotated_key_in_the_session_profile_store(launch_db_env, tmp_path):
     """A compression-rotated NAMED-PROFILE session must still claim events keyed by its compressed
     parent: the lineage lives in ``profiles/<x>/state.db``, which the launch handle cannot see, so
@@ -101,3 +167,42 @@ def test_notification_owner_gate_resolves_rotated_key_in_the_session_profile_sto
 
     assert server._session_owns_notification_event("ui1", session, evt) is True
     assert server._get_db().get_session("parent") is None  # never looked up through the launch store
+
+
+def test_foreign_profile_poller_requeues_event_owned_through_another_profiles_lineage(launch_db_env, tmp_path):
+    """Two profiles share one completion queue. Profile B's poller dequeues an event keyed on profile
+    A's compressed parent: B cannot resolve A's lineage in its own store, so both of B's ownership
+    checks were false and ``_notif_handle_event`` dropped the event. B must recognise A's live
+    continuation as the owner and hand the event back."""
+    import threading
+    from tools.process_registry import process_registry
+
+    a_home, b_home = tmp_path / "profiles" / "a", tmp_path / "profiles" / "b"
+    a_home.mkdir(parents=True)
+    b_home.mkdir(parents=True)
+    db = registry.acquire(a_home / "state.db")
+    db.create_session("parent", source="tui", model="m")
+    db.end_session("parent", "compression")
+    db.create_session("child", source="tui", model="m", parent_session_id="parent")
+    registry.release(db)
+
+    def _sess(home, key):
+        return {"profile_home": str(home), "session_key": key, "agent": None,
+                "history_lock": threading.RLock(), "running": False}
+    sess_a, sess_b = _sess(a_home, "child"), _sess(b_home, "other")
+    evt = {"type": "async_delegation", "session_key": "parent", "delegation_id": "d1", "results": []}
+    queue = process_registry.completion_queue
+    while not queue.empty():
+        queue.get_nowait()
+    with server._sessions_lock:
+        saved = dict(server._sessions)
+        server._sessions.clear()
+        server._sessions.update({"uiA": sess_a, "uiB": sess_b})
+    try:
+        assert server._notif_handle_event("uiB", sess_b, dict(evt), set(), process_registry, lambda e: "t", None) is True
+        assert queue.qsize() == 1  # requeued for A, not dropped
+        assert server._notification_event_belongs_elsewhere("uiA", sess_a, queue.get_nowait()) is False
+    finally:
+        with server._sessions_lock:
+            server._sessions.clear()
+            server._sessions.update(saved)

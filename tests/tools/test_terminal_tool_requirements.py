@@ -368,6 +368,21 @@ class TestUnscopedSecretReadLogging:
     crashed check_fn (WARNING + traceback); an unscoped read reported while
     the scope was *resolved* is a genuinely lost scope and stays loud."""
 
+    def test_raising_check_fn_logs_traceback_on_cached_path(self, caplog):
+        """A check_fn that raises is a probe bug, not "nothing configured": the verdict log must
+        carry the traceback so a silently stripped toolset is diagnosable from agent.log (#87950)."""
+        import logging
+
+        import tools.registry as reg
+
+        def probe():
+            raise RuntimeError("resolver exploded")
+
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            assert reg._check_fn_cached(probe) is False
+        verdicts = [r for r in caplog.records if "dependent tools will be unavailable" in r.getMessage()]
+        assert verdicts and all(r.exc_info and r.exc_info[0] is RuntimeError for r in verdicts)
+
     def test_expected_fail_closed_probe_is_quiet_but_lost_scope_stays_loud(self, caplog):
         import logging
 

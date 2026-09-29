@@ -49,7 +49,7 @@ class ActivityTrackingMixin:
         kanban heartbeat when this is a dispatcher-spawned worker, and to the durable SessionDB activity
         projection. ``provenance`` names special writers (compression); ``force_persist`` bypasses the
         SessionDB rate limit. Module-level lock helper, not ``self._liveness_activity_lock()``: doubles bind
-        only ``_touch_activity`` (tests/run_agent/test_session_activity_persist.py).
+        only ``_touch_activity`` (tests/agent/test_session_activity_persist.py).
 
         Bridge is rate-limited (60s) and best-effort — it never raises into the agent loop. See #31752.
         See #72016, #72039.

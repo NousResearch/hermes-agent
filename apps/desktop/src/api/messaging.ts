@@ -22,12 +22,20 @@ export function getMessagingPlatforms(profile?: null | string): Promise<Messagin
   })
 }
 
+/** `hot_served`: a live multiplexer serving this named profile rebuilt its adapters from the new
+ *  credentials right away — no gateway restart is needed for the change to take effect. */
+export interface MessagingPlatformUpdateResponse {
+  hot_served?: boolean
+  ok: boolean
+  platform: string
+}
+
 export function updateMessagingPlatform(
   platformId: string,
   body: MessagingPlatformUpdate,
   profile?: null | string
-): Promise<{ ok: boolean; platform: string }> {
-  return hermesApi<{ ok: boolean; platform: string }>({
+): Promise<MessagingPlatformUpdateResponse> {
+  return hermesApi<MessagingPlatformUpdateResponse>({
     ...profileScoped(profile),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}`,
     method: 'PUT',

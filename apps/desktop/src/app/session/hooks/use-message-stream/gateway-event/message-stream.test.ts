@@ -6,10 +6,12 @@ const { refreshSupportedSessionControlAfterTurn } = vi.hoisted(() => ({
 
 vi.mock('@/store/session-control', () => ({ refreshSupportedSessionControlAfterTurn }))
 
+import type { GatewayEventName } from '@hermes/shared'
+
 import { handleMessageStreamEvent } from './message-stream'
 import type { GatewayEventContext } from './types'
 
-function context(type: string): GatewayEventContext {
+function context(type: GatewayEventName): GatewayEventContext {
   return {
     deps: {
       activeGatewayProfile: 'default',

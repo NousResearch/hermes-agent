@@ -459,7 +459,7 @@ class CLIInfoMixin:
         Dispatched from the input loop BEFORE slash routing and before anything is queued for the
         agent, so a bang command never becomes a turn: nothing touches ``conversation_history``,
         zero tokens, role alternation / prompt caching untouched by construction
-        (tests/cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
+        (tests/hermes_cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
         bang mode is disabled for this context (gateway/cron), so the caller routes normally.
         """
         from cli import _rich_text_from_ansi

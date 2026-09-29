@@ -1,3 +1,5 @@
+import { REASONING_EFFORTS } from '@hermes/shared'
+
 import {
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -10,7 +12,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
-import { isThinkingEnabled, REASONING_EFFORTS, resolveReasoningEffort } from '@/lib/reasoning-effort'
+import { isThinkingEnabled, resolveReasoningEffort } from '@/lib/reasoning-effort'
 
 // Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
 // by the Thinking toggle, not the radio.
@@ -96,12 +98,14 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
   // row made opening the menu itself lag on large catalogs.
   return (
     <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
-      <ModelEditSubmenuBody {...props} />
+      <ModelOptionsContent {...props} />
     </DropdownMenuSubContent>
   )
 }
 
-function ModelEditSubmenuBody({
+/** The options rows themselves, container-free: the catalog mounts them in a
+ *  per-row submenu, the composer's reasoning pill in its own top-level menu. */
+export function ModelOptionsContent({
   canDisableReasoning,
   defaultEffort,
   effort,

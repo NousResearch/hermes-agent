@@ -6,7 +6,6 @@ Requires aiohttp, HASS_TOKEN (Long-Lived Access Token) and HASS_URL (default htt
 import asyncio
 import json
 import logging
-import os
 import time
 import uuid
 from datetime import datetime
@@ -22,7 +21,9 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import (
+    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
+)
 
 logger = logging.getLogger(__name__)
 
@@ -317,31 +318,28 @@ async def _standalone_send(
     ``thread_id``/``media_files``/``force_document`` are signature parity only (HA has no threads/attachments).
     """
     if not AIOHTTP_AVAILABLE:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     extra = getattr(pconfig, "extra", {}) or {}
     hass_url = (extra.get("url") or _get_scoped_secret("HASS_URL", "")).rstrip("/")
     token = (getattr(pconfig, "token", None) or _get_scoped_secret("HASS_TOKEN", "")).strip()
     if not hass_url or not token:
-        return {"error": "Home Assistant standalone send: HASS_URL and HASS_TOKEN must both be set"}
+        return send_error("Home Assistant standalone send: HASS_URL and HASS_TOKEN must both be set")
     url = f"{hass_url}/api/services/notify/notify"
     payload = {"message": message, "target": chat_id}
     try:
         async with HomeAssistantAdapter._new_session() as session:
             async with session.post(url, headers=_auth_headers(token), json=payload) as resp:
                 if resp.status not in {200, 201}:
-                    return {"error": f"Home Assistant API error ({resp.status}): {await resp.text()}"}
+                    return send_error(f"Home Assistant API error ({resp.status}): {await resp.text()}")
         return {"success": True, "platform": "homeassistant", "chat_id": chat_id}
     except asyncio.TimeoutError:
-        return {"error": "Timeout sending notification to Home Assistant"}
+        return send_error("Timeout sending notification to Home Assistant")
     except Exception as e:
-        return {"error": f"Home Assistant send failed: {e}"}
+        return send_error(f"Home Assistant send failed: {e}")
 
 
-def _is_connected(config) -> bool:
-    """Connected when ``HASS_TOKEN`` is set; read via ``hermes_cli.gateway.get_env_value`` at call
-    time so tests patching ``gateway_mod.get_env_value`` can suppress ambient env vars."""
-    import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("HASS_TOKEN") or "").strip())
+_is_connected = _env_is_connected("HASS_TOKEN")
+
 
 
 def register(ctx) -> None:

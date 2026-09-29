@@ -950,8 +950,8 @@ class GatewaySlashCommandsMixin(
             return EphemeralReply("Busy input mode could not be saved to config. Mode unchanged.")
         profile_name = self._busy_profile_name_for_source(event.source)
         if profile_name:
-            from gateway.run import _load_gateway_runtime_config
-            self._snapshot_profile_busy_modes(profile_name, _load_gateway_runtime_config())
+            from gateway.run import _load_gateway_config
+            self._snapshot_profile_busy_modes(profile_name, _load_gateway_config())
         else:
             self._busy_input_mode = arg
             # busy_input_mode is also the source of truth for the text mode — re-derive it so the

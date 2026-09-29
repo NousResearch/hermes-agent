@@ -19,7 +19,7 @@ Covers:
    kwargs — no signature change.
 
 Mirrors the ``transform_tool_result`` hook test conventions from
-``tests/test_transform_tool_result_hook.py``.
+``tests/plugins/test_transform_tool_result_hook.py``.
 """
 
 from __future__ import annotations

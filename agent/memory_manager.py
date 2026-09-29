@@ -16,7 +16,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION
+from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
 from tools.registry import tool_error
@@ -57,12 +57,6 @@ def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
         return False
     kind = getattr(params.get("require_checkpoint"), "kind", None)
     return _has_var_kwargs(params) or kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-
-
-def _ctx_bound(fn: Callable[[], Any]) -> Callable[[], Any]:
-    """Bind ``fn`` to the CALLER's contextvars for another thread: profile isolation is a
-    ContextVar-scoped HERMES_HOME override, and an unbound worker would silently use the default profile."""
-    return partial(contextvars.copy_context().run, fn)
 
 
 # -- Tool-schema plumbing -----------------------------------------------------
@@ -331,16 +325,22 @@ class MemoryManager:
 
     def add_provider(self, provider: MemoryProvider) -> None:
         """Register a provider; builtin always accepted, only ONE external allowed."""
+        if provider.name != "builtin" and self._has_external:
+            existing = next((p.name for p in self._providers if p.name != "builtin"), "unknown")
+            logger.warning(
+                "Rejected memory provider '%s' — external provider '%s' is "
+                "already registered. Only one external memory provider is "
+                "allowed at a time. Configure which one via memory.provider "
+                "in config.yaml.", provider.name, existing,
+            )
+            return
+
+        # Load schemas BEFORE mutating any manager state: a provider whose schema
+        # load raises must leave `_providers` / `_has_external` untouched, otherwise
+        # it blocks every later external provider in this process (#9948).
+        schemas = list(provider.get_tool_schemas())
+
         if provider.name != "builtin":
-            if self._has_external:
-                existing = next((p.name for p in self._providers if p.name != "builtin"), "unknown")
-                logger.warning(
-                    "Rejected memory provider '%s' — external provider '%s' is "
-                    "already registered. Only one external memory provider is "
-                    "allowed at a time. Configure which one via memory.provider "
-                    "in config.yaml.", provider.name, existing,
-                )
-                return
             self._has_external = True
             self._external_prefetch_spill_config = get_spill_config()
 
@@ -353,7 +353,7 @@ class MemoryManager:
         # registries. See #40466.
         from toolsets import _HERMES_CORE_TOOLS
 
-        for raw_schema in provider.get_tool_schemas():
+        for raw_schema in schemas:
             schema = normalize_tool_schema(raw_schema)
             if schema is None:
                 continue
@@ -372,7 +372,7 @@ class MemoryManager:
             else:
                 self._tool_to_provider[tool_name] = provider
 
-        logger.info("Memory provider '%s' registered (%d tools)", provider.name, len(provider.get_tool_schemas()))
+        logger.info("Memory provider '%s' registered (%d tools)", provider.name, len(schemas))
 
     @property
     def providers(self) -> List[MemoryProvider]:
@@ -415,7 +415,7 @@ class MemoryManager:
             except Exception as exc:  # pragma: no cover - re-raised by caller
                 result_box["error"] = exc
 
-        thread = threading.Thread(target=_ctx_bound(_run), daemon=True, name=f"memory-prefetch-{provider.name}")
+        thread = spawn_context_thread(_run, name=f"memory-prefetch-{provider.name}")
         with self._external_prefetch_lock:
             existing = self._external_prefetch_threads.get(provider.name)
             if existing is not None and existing.is_alive():
@@ -505,9 +505,9 @@ class MemoryManager:
 
     def _submit_background(self, fn, *, kind: str = "write") -> None:
         """Queue ``fn`` on the serialized worker (created lazily; None once shutting down) and track its
-        durability class. Runs under the caller's contextvars (``_ctx_bound``). If the executor is
+        durability class. Runs under the caller's contextvars (``ctx_bound``). If the executor is
         unavailable outside shutdown, run inline — the historical fail-safe."""
-        fn = _ctx_bound(fn)
+        fn = ctx_bound(fn)
         executor = None if self._shutting_down else self._sync_executor
         if executor is None and not self._shutting_down:
             with self._sync_executor_lock:

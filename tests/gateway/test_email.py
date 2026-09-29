@@ -432,6 +432,27 @@ class TestSendMethods(unittest.TestCase):
             os.unlink(tmp_path)
 
 
+    def test_send_document_threads_on_explicit_reply_to(self):
+        """An explicit reply_to wins over the cached thread context for attachment sends (#10131)."""
+        import asyncio
+        import tempfile
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {"subject": "Old", "message_id": "<cached@test.com>"}
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"doc")
+            tmp_path = f.name
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
+                result = asyncio.run(adapter.send_document("user@test.com", tmp_path, reply_to="<explicit@test.com>"))
+                self.assertTrue(result.success)
+                sent_msg = mock_server.send_message.call_args[0][0]
+                self.assertEqual(sent_msg["In-Reply-To"], "<explicit@test.com>")
+                self.assertEqual(sent_msg["References"], "<explicit@test.com>")
+        finally:
+            os.unlink(tmp_path)
+
     def test_get_chat_info(self):
         """get_chat_info should return email address as chat info."""
         import asyncio

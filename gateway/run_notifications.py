@@ -438,9 +438,10 @@ class GatewayNotificationsMixin:
         profile = str(data.get("profile") or "").strip()
         if profile:
             return profile
+        from gateway.session import profile_from_session_key_namespace
         parts = str(data.get("session_key") or "").split(":")
         if len(parts) >= 5 and parts[0] == "agent" and parts[1] not in ("main", ""):
-            return parts[1]
+            return profile_from_session_key_namespace(parts[1])
         return None
 
     def _resolve_update_target(self, paths: "_UpdatePaths") -> Optional["_UpdateTarget"]:
@@ -529,7 +530,7 @@ class GatewayNotificationsMixin:
             default_hint = f" (default: {default})" if default else ""
             _p = getattr(adapter, "typed_command_prefix", "/")
             await target.send(
-                f"⚕ **Update needs your input:**\n\n{prompt_text}{default_hint}\n\n"
+                f"☤ **Update needs your input:**\n\n{prompt_text}{default_hint}\n\n"
                 f"Reply `{_p}approve` (yes) or `{_p}deny` (no), or type your answer directly."
             )
         # Keep the prompt marker on disk until answered so a restarted watcher can re-forward it.
@@ -1644,7 +1645,8 @@ class GatewayNotificationsMixin:
     def _redacted_output_tail(session, limit: int) -> str:
         """Last ``limit`` chars of process output through the secret redactors (unconditional floor)."""
         from gateway.run import _redact_gateway_user_facing_secrets
-        new_output = session.output_buffer[-limit:] if session.output_buffer else ""
+        from tools.ansi_strip import strip_ansi
+        new_output = strip_ansi(session.output_buffer[-limit:]) if session.output_buffer else ""
         if new_output:
             from agent.redact import redact_terminal_output
             new_output = redact_terminal_output(new_output, getattr(session, "command", "") or "")
@@ -1703,19 +1705,26 @@ class GatewayNotificationsMixin:
         }
 
     def _format_process_final_message(self, session_id: str, session, notify_mode: str) -> str:
+        """Human-facing completion message. Every mode shares the one-line status header; the
+        raw-output modes (all/result/error) append the bounded output tail under it instead of the
+        old bracketed ``[Background process proc_… finished~ …]`` debug wrapper (#54266)."""
         from gateway.run import _format_concise_process_notification, _redact_gateway_user_facing_secrets
         new_output = self._redacted_output_tail(session, 1000)
-        if notify_mode != "concise":
-            return (
-                f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                f"Here's the final output:\n{new_output}]"
-            )
         _started = getattr(session, "started_at", None)
         _dur = max(0.0, time.time() - _started) if isinstance(_started, (int, float)) else None
-        return _format_concise_process_notification(
-            session_id, _redact_gateway_user_facing_secrets(getattr(session, "command", "") or ""),
-            session.exit_code, new_output, duration_seconds=_dur,
-        )
+        command = _redact_gateway_user_facing_secrets(getattr(session, "command", "") or "")
+        if notify_mode == "concise":
+            return _format_concise_process_notification(session_id, command, session.exit_code, new_output,
+                                                        duration_seconds=_dur)
+        header = _format_concise_process_notification(session_id, command, session.exit_code, "", duration_seconds=_dur)
+        return f"{header}\n\nFinal output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
+
+    def _format_process_running_message(self, session) -> str:
+        from gateway.run import _redact_gateway_user_facing_secrets, _shorten_command_for_display
+        new_output = self._redacted_output_tail(session, 500)
+        short_cmd = _shorten_command_for_display(_redact_gateway_user_facing_secrets(getattr(session, "command", "") or ""))
+        header = "⏳ Background task still running" + (f" — `{short_cmd}`" if short_cmd else "")
+        return f"{header}\n\nRecent output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """Poll a background process and push updates until it exits. Mode
@@ -1782,9 +1791,7 @@ class GatewayNotificationsMixin:
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output — deliver a status update (only in "all" mode; agent_notify watchers
                 # only care about completion).
-                new_output = self._redacted_output_tail(session, 500)
                 await self._send_watcher_message(
-                    platform_name, chat_id, thread_id,
-                    f"[Background process {session_id} is still running~ New output:\n{new_output}]", watcher,
+                    platform_name, chat_id, thread_id, self._format_process_running_message(session), watcher,
                 )
         logger.debug("Process watcher ended%s: %s", " (silent)" if silent else "", session_id)

@@ -8,15 +8,13 @@ marker" instead of raising."""
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
-import os
-import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Any
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +57,7 @@ def _store(path: Path, entries: dict[str, dict]) -> None:
     if not entries:
         path.unlink(missing_ok=True)
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".turn-marker-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(entries, f)
-        os.replace(tmp, path)
-    except Exception:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    atomic_json_write(path, entries, indent=None, mode=0o600)
 
 
 def _update(home: Path | str, session_key: str, mutate, what: str) -> None:

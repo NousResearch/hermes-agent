@@ -32,7 +32,7 @@ from hermes_cli.models import (
 
 class TestFreeRuntime:
     def test_zen_provider_free_model(self):
-        rt = opencode_zen_free_runtime("opencode-zen", "hy3-free")
+        rt = opencode_zen_free_runtime("opencode-zen", "nemotron-3.5-lightning-free")
         assert rt is not None
         assert rt["base_url"] == "https://opencode.ai/zen/v1"
         assert rt["api_key"] == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER
@@ -42,7 +42,7 @@ class TestFreeRuntime:
     def test_go_provider_heals_to_zen(self):
         # Free slugs only exist on the Zen relay; a Go selection must be
         # routed to Zen (the Go relay rejects the model outright).
-        rt = opencode_zen_free_runtime("opencode-go", "hy3-free")
+        rt = opencode_zen_free_runtime("opencode-go", "nemotron-3.5-lightning-free")
         assert rt is not None
         assert rt["base_url"] == "https://opencode.ai/zen/v1"
 
@@ -82,13 +82,13 @@ class TestRuntimeProviderKeylessRouting:
             return resolve_runtime_provider(requested=provider, target_model=model)
 
     def test_zen_free_model_resolves_keyless(self):
-        rt = self._resolve("opencode-zen", "hy3-free")
+        rt = self._resolve("opencode-zen", "nemotron-3.5-lightning-free")
         assert rt["api_key"] == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER
         assert rt["base_url"] == "https://opencode.ai/zen/v1"
         assert rt["api_mode"] == "chat_completions"
 
     def test_go_free_model_resolves_keyless_on_zen(self):
-        rt = self._resolve("opencode-go", "hy3-free")
+        rt = self._resolve("opencode-go", "nemotron-3.5-lightning-free")
         assert rt["api_key"] == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER
         assert rt["base_url"] == "https://opencode.ai/zen/v1"
 

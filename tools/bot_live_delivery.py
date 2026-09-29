@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 import time
 import uuid
 from contextlib import contextmanager
+
+from utils import atomic_json_write, fsync_directory
 from pathlib import Path
 from typing import Any
 
@@ -73,25 +74,14 @@ def _root(home: Path | str) -> Path:
     return Path(home).resolve() / "runtime" / DELIVERY_DIR_NAME
 
 
-def _fsync_dir(path: Path) -> None:
-    # Windows cannot open directories with os.open; file fsync still applies.
-    if os.name == "nt":
-        return
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 @contextmanager
 def _locked(home: Path | str):
     root = _root(home)
     root.parent.mkdir(parents=True, exist_ok=True)
     root.mkdir(mode=0o700, exist_ok=True)
     root.chmod(0o700)
-    _fsync_dir(root.parent)
-    _fsync_dir(root.parent.parent)
+    fsync_directory(root.parent)
+    fsync_directory(root.parent.parent)
     lock = root / ".lock"
     fd = os.open(lock, os.O_CREAT | os.O_WRONLY, 0o600)
     os.close(fd)
@@ -107,16 +97,7 @@ def _read(path: Path) -> dict[str, Any] | None:
 
 
 def _write(path: Path, record: dict[str, Any]) -> None:
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".delivery-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump(record, stream, ensure_ascii=False, sort_keys=True)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        _fsync_dir(path.parent)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+    atomic_json_write(path, record, indent=None, sort_keys=True, fsync_dir=True, mode=0o600)
 
 
 def deliver_to_live_owner(

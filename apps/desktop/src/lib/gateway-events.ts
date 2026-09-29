@@ -40,7 +40,6 @@ export const UNSCOPED_STREAM_EVENT_TYPES = new Set([
   'thinking.delta',
   'tool.complete',
   'tool.generating',
-  'tool.progress',
   'tool.start',
   'vault.code.expire',
   'vault.code.request',

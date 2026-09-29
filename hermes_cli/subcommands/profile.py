@@ -19,13 +19,19 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
     profile_create.add_argument("profile_name", help="Profile name (lowercase, alphanumeric)")
     profile_create.add_argument(
         "--clone", action="store_true",
-        help="Copy config.yaml, .env, SOUL.md, and skills from active profile")
+        help="Copy config.yaml, .env, SOUL.md, and skills from active profile "
+             "(messaging bot tokens/allowlists are left behind; see --clone-channels)")
     profile_create.add_argument(
         "--clone-all", action="store_true",
-        help="Full copy of active profile (all state, excluding per-profile history)")
+        help="Full copy of active profile (all state, excluding per-profile history and messaging channels)")
     profile_create.add_argument(
         "--clone-from", metavar="SOURCE",
         help="Source profile to clone from; implies --clone unless --clone-all is set")
+    profile_create.add_argument(
+        "--clone-channels", action="store_true",
+        help="Also copy the source's messaging channels (bot tokens, allowlists, platform sections). "
+             "Two profiles holding one bot token collide; refused when the source is served by a live "
+             "multiplexed gateway.")
     profile_create.add_argument(
         "--no-alias", action="store_true", help="Skip wrapper script creation")
     profile_create.add_argument(

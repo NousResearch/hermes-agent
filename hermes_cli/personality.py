@@ -3,6 +3,8 @@
 * ``display.personality`` holds the selected NAME (empty = no overlay).
 * ``agent.system_prompt`` is the user-owned manual overlay; personality code never writes it.
 * ``agent.personalities`` holds user-defined/overridden personalities, overlaying built-ins by name.
+  The schema also exposes a top-level ``personalities:`` block (the original #643 shape); both are
+  honoured, ``agent.personalities`` winning on a name clash.
 """
 
 from __future__ import annotations
@@ -82,10 +84,12 @@ def normalize_personality_name(value: Any) -> str:
 
 
 def available_personalities(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Built-ins overlaid by the user's ``agent.personalities`` (user wins)."""
+    """Built-ins overlaid by the user's personalities: root ``personalities`` then
+    ``agent.personalities`` (later wins). Root entries were silently ignored (#9636)."""
     merged: Dict[str, Any] = dict(BUILTIN_PERSONALITIES)
-    user = _get(cfg, "agent", "personalities", default={})
-    if isinstance(user, dict):
+    for user in (_get(cfg, "personalities", default={}), _get(cfg, "agent", "personalities", default={})):
+        if not isinstance(user, dict):
+            continue
         for name, definition in user.items():
             key = str(name).strip().lower()
             if key and key not in NEUTRAL_PERSONALITY_NAMES:

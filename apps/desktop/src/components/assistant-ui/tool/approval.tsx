@@ -17,6 +17,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AlertCircle, ChevronDown } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
@@ -180,7 +181,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      if (isSubmitEnter(event) && (event.metaKey || event.ctrlKey)) {
         event.preventDefault()
         void respond('once')
       } else if (event.key === 'Escape') {

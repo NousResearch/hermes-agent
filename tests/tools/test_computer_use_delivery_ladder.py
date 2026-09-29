@@ -8,8 +8,8 @@ Covers NousResearch/hermes-agent#67052:
     with foreground_unsupported on an old driver rather than silently
     downgrading to background.
   - Phase C: foreground approval is scoped by (action, delivery_mode) and by
-    session_id, so a background approval never silently authorizes foreground
-    and one run's unlock never leaks into another.
+    the shared gate's session key, so a background approval never silently
+    authorizes foreground and one run's unlock never leaks into another.
 
 Stdlib + pytest + unittest.mock only. No live cua-driver, no network.
 """
@@ -220,7 +220,7 @@ def test_bad_delivery_mode_rejected():
     assert res.code == "bad_delivery_mode"
 
 
-def test_dispatcher_threads_delivery_mode_to_backend():
+def test_dispatcher_threads_delivery_mode_to_backend(grant_computer_use_approvals):
     """End-to-end through the tool dispatcher with the noop backend."""
     from tools.computer_use import tool as cu
     with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
@@ -237,70 +237,100 @@ def test_dispatcher_threads_delivery_mode_to_backend():
 # Phase C — foreground approval scoping (action + delivery_mode + session)
 # ---------------------------------------------------------------------------
 
-def test_background_approval_does_not_authorize_foreground():
+@pytest.fixture
+def _interactive_session(monkeypatch):
+    """Interactive CLI presence for the shared gate plus a fresh approval session key; grants made here are
+    wiped from ``tools.approval``'s store afterwards so nothing leaks between tests."""
+    from tools import approval
+    from tools.approval_context import reset_current_session_key, set_current_session_key
+
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(approval, "save_permanent_allowlist", lambda patterns: None)
+    keys: list[str] = []
+
+    def use(session_key: str):
+        keys.append(session_key)
+        return set_current_session_key(session_key)
+
+    yield use
+    for key in keys:
+        approval.clear_session(key)
+    reset_current_session_key(set_current_session_key(""))
+
+
+def test_background_approval_does_not_authorize_foreground(_interactive_session):
     from tools.computer_use import tool as cu
 
     seen = []
 
-    def cb(action, args, summary):
-        seen.append((action, args.get("delivery_mode")))
-        return "approve_session"
+    def cb(command, description, **kw):
+        seen.append((command, description))
+        return "session"
 
     cu.set_approval_callback(cb)
+    _interactive_session("sess-A")
     try:
         # Background click, approve for session.
-        assert cu._request_approval("click", {}, "sess-A") is None
-        # A second background click needs no prompt (cached).
-        assert cu._request_approval("click", {}, "sess-A") is None
+        assert cu._request_approval("click", {}) is None
+        # A second background click needs no prompt (cached in the shared session store).
+        assert cu._request_approval("click", {}) is None
         assert len(seen) == 1
-        # Foreground click on the SAME action must prompt again — the
-        # background approval does not cover it.
-        assert cu._request_approval("click", {"delivery_mode": "foreground"}, "sess-A") is None
+        # Foreground click on the SAME action must prompt again — the background grant does not cover it.
+        assert cu._request_approval("click", {"delivery_mode": "foreground"}) is None
         assert len(seen) == 2
-        assert seen[-1] == ("click", "foreground")
+        assert "FOREGROUND" in seen[-1][0]
     finally:
         cu.set_approval_callback(None)
 
 
-def test_approval_state_is_session_scoped():
+def test_approval_state_is_session_scoped(_interactive_session):
     from tools.computer_use import tool as cu
 
     calls = []
 
-    def cb(action, args, summary):
-        calls.append((action, args.get("delivery_mode")))
-        return "approve_session"
+    def cb(command, description, **kw):
+        calls.append(command)
+        return "session"
 
     cu.set_approval_callback(cb)
     try:
         # Run A approves foreground click.
-        cu._request_approval("click", {"delivery_mode": "foreground"}, "run-A")
+        _interactive_session("run-A")
+        cu._request_approval("click", {"delivery_mode": "foreground"})
         # Run B has NOT — it must prompt independently.
         n_before = len(calls)
-        cu._request_approval("click", {"delivery_mode": "foreground"}, "run-B")
+        _interactive_session("run-B")
+        cu._request_approval("click", {"delivery_mode": "foreground"})
         assert len(calls) == n_before + 1
     finally:
         cu.set_approval_callback(None)
 
 
-def test_always_approve_covers_foreground():
+def test_always_grant_is_per_scope_key_and_visible_to_shared_store(_interactive_session):
+    """One grant store: an "always" answered through computer_use lands in ``tools.approval`` under the same
+    ``cua:<action>:<mode>`` key, and — unlike the old blanket unlock — covers only that scope, so the visible
+    foreground variant still prompts."""
+    from tools import approval
     from tools.computer_use import tool as cu
 
     calls = []
 
-    def cb(action, args, summary):
-        calls.append(action)
-        return "always_approve"
+    def cb(command, description, **kw):
+        calls.append(command)
+        return "always"
 
     cu.set_approval_callback(cb)
+    _interactive_session("run-C")
     try:
-        # First call unlocks everything for this session.
-        cu._request_approval("click", {}, "run-C")
-        # Foreground now sails through without another prompt.
-        cu._request_approval("click", {"delivery_mode": "foreground"}, "run-C")
-        assert len(calls) == 1
+        assert cu._request_approval("click", {}) is None
+        assert approval.is_approved("run-C", "cua:click:background")
+        assert not approval.is_approved("run-C", "cua:click:foreground")
+        assert cu._request_approval("click", {"delivery_mode": "foreground"}) is None
+        assert len(calls) == 2
     finally:
         cu.set_approval_callback(None)
+        with approval._lock:
+            approval._permanent_set().difference_update({"cua:click:background", "cua:click:foreground"})
 
 
 def test_foreground_summary_warns_about_focus_change():

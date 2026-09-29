@@ -16,7 +16,7 @@ from tools import mcp_tool_lifecycle as _lifecycle
 from tools import mcp_tool_loop as _loop
 from tools import mcp_tool_registration as _registration
 from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
-from tools.mcp_tool_scope import _key_name, _resolve_server_key, _server_key
+from tools.mcp_tool_scope import _key_name, _key_scope, _resolve_server_key, _server_key
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -255,18 +255,22 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
             if keys[k] not in _core._servers and keys[k] not in _core._server_connecting
             and keys[k] not in _core._lazy_server_configs
             and _enabled(v) and not _connect_cooldown_active(k)}
-        stale_cached = [_core._servers[keys[k]] for k in servers
-                        if keys[k] in _core._servers and getattr(_core._servers[keys[k]], "session", None) is None]
+        stale_cached = [_core._servers[keys[k]] for k, v in servers.items()
+                        if keys[k] in _core._servers and _enabled(v)
+                        and getattr(_core._servers[keys[k]], "session", None) is None]
         for srv_name in new_servers:
             _core._server_connecting.add(keys[srv_name])
             _core._server_scope_keys[keys[srv_name]] = current_scope
             _core._server_connect_errors.pop(keys[srv_name], None)
-        # Track which servers opt-in to parallel tool calls (idempotent).
+        # Track which servers opt-in to parallel tool calls (idempotent). Keyed by THIS profile's own
+        # key: the opt-in is the calling profile's policy, so B's parallel-safe `x` never makes A's
+        # same-named serial `x` (own connection or adopted) run two calls at once.
         for srv_name, srv_cfg in servers.items():
+            own_key = _server_key(srv_name, current_scope, current=False)
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
-                _core._parallel_safe_servers.add(srv_name)
+                _core._parallel_safe_servers.add(own_key)
             else:
-                _core._parallel_safe_servers.discard(srv_name)
+                _core._parallel_safe_servers.discard(own_key)
     for srv in stale_cached:
         _loop._signal_reconnect(srv)
     return new_servers
@@ -473,6 +477,52 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
             cookie.release()
 
 
+def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
+    """Bring the live server set in step with ``mcp_servers`` as it is on disk NOW: tear down
+    servers that were removed from config or set ``enabled: false`` (a parked server keeps
+    self-probing forever otherwise — for hours after the user deleted its entry), then connect
+    anything newly configured via :func:`discover_mcp_tools`. Scoped to the current registry
+    scope (one multiplexed profile's config prunes only its own connections). A lazily registered
+    (schema-cache) server loses its cached tools; one still mid-connect cannot be torn down yet and
+    is reported under ``"pending"`` so the caller retries. Returns
+    ``{"removed": [...], "added": [...], "pending": [...]}``; a no-op when nothing changed."""
+    servers = _config._load_mcp_config()
+    wanted = {name for name, cfg in servers.items() if _enabled(cfg)}
+    scope = _core._mcp_registry_scope()
+    with _core._lock:
+        owned = [key for key, owner in _core._server_scope_keys.items() if owner == scope]
+        live = {_key_name(key) for key in owned if key in _core._servers}
+        connecting = {_key_name(key) for key in owned if key in _core._server_connecting}
+        lazy = {key for key in _core._lazy_server_configs
+                if _key_scope(key) == scope and _key_name(key) not in wanted}
+    stale = sorted(live - wanted)
+    if stale:
+        logger.info("MCP server(s) %s no longer in config (or disabled); disconnecting", ", ".join(stale))
+        _lifecycle.shutdown_mcp_servers(scope=scope, names=set(stale))
+    for key in lazy:
+        _forget_lazy_server(key)
+    with _core._lock:
+        known = {_key_name(key) for key, owner in _core._server_scope_keys.items()
+                 if owner == scope and (key in _core._servers or key in _core._server_connecting)}
+        known |= {_key_name(key) for key in _core._lazy_server_configs}
+    added = sorted(wanted - known)
+    if added:
+        discover_mcp_tools()
+    return {"removed": stale + sorted(_key_name(k) for k in lazy), "added": added,
+            "pending": sorted(connecting - wanted)}
+
+
+def _forget_lazy_server(key) -> None:
+    """Drop a schema-cache (lazy) registration whose config entry is gone: its cached tools would
+    otherwise stay callable and spawn the server on first use."""
+    with _core._lock:
+        _core._lazy_server_configs.pop(key, None)
+        _core._lazy_server_fingerprints.pop(key, None)
+        cached_names = _core._lazy_server_tool_names.pop(key, None) or []
+    for tool_name in cached_names:
+        _registration._deregister_mcp_tool_all_scopes(key, tool_name)
+
+
 def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     """True when the tool's server opted into ``supports_parallel_tool_calls`` (provenance
     captured at registration, never the ambiguous ``mcp__{server}__{tool}`` shape)."""
@@ -480,7 +530,7 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return False
     with _core._lock:
         server_name = _core._mcp_tool_server_names.get(tool_name)
-        return bool(server_name and server_name in _core._parallel_safe_servers)
+        return bool(server_name and _server_key(server_name) in _core._parallel_safe_servers)
 
 
 def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runtime: bool = True) -> List[dict]:

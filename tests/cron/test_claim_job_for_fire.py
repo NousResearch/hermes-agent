@@ -325,3 +325,36 @@ def test_fresh_claim_from_a_dead_same_host_owner_is_reclaimable(temp_home):
     job["fire_claim"]["by"] = f"{socket.gethostname()}:{child.pid}:tok"
     save_jobs(jobs)
     assert claim_job_for_fire(jid) is True
+
+
+def test_heartbeat_does_not_wait_on_the_fence_its_own_run_holds(temp_home, monkeypatch):
+    """The run thread holds the per-job fire fence across delivery; the heartbeat thread must
+    refresh the claim without taking it, or every long run reads as a false ownership loss."""
+    import cron.jobs as jobs
+
+    job = jobs.create_job(prompt="x", schedule="every 5m", name="long-run")
+    assert jobs.claim_job_for_fire(job["id"]) is True
+    owner = jobs.get_job(job["id"])["fire_claim"]["by"]
+    # Keep the pre-fix path fast: the heartbeat used to block for the full fence timeout (30s).
+    monkeypatch.setattr(jobs, "_JOBS_LOCK_TIMEOUT_SECONDS", 0.2)
+
+    fence_held, release, result = threading.Event(), threading.Event(), {}
+
+    def hold_fence():
+        with jobs.fire_claim_fence(job["id"], expected_owner=owner) as owns:
+            result["owns"] = owns
+            fence_held.set()
+            release.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_fence, daemon=True)
+    holder.start()
+    try:
+        assert fence_held.wait(timeout=5)
+        assert jobs.heartbeat_fire_claim(job["id"], expected_owner=owner) is True
+        # A genuine takeover is still detected while the fence is busy.
+        assert jobs.heartbeat_fire_claim(job["id"], expected_owner="replacement-owner") is False
+    finally:
+        release.set()
+        holder.join(timeout=5)
+    assert result == {"owns": True}
+    assert holder.is_alive() is False

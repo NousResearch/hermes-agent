@@ -6,6 +6,8 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tools.registry import (
     ToolRegistry,
     _MAX_LOGGED_ERROR_CHARS,
@@ -39,6 +41,23 @@ class TestRegisterAndDispatch:
         )
         result = json.loads(reg.dispatch("alpha", {}))
         assert result == {"ok": True}
+
+    def test_register_rejects_non_dict_parameters(self):
+        """A list/str ``parameters`` fails at registration, not in a provider request (pi acaa253cc)."""
+        reg = ToolRegistry()
+        bad = {"name": "bad", "description": "x", "parameters": ["not", "an", "object"]}
+        with pytest.raises(ValueError, match="parameters"):
+            reg.register(name="bad", toolset="core", schema=bad, handler=_dummy_handler)
+        assert reg.get_entry("bad") is None
+
+    def test_register_rejects_non_dict_schema(self):
+        reg = ToolRegistry()
+        with pytest.raises(ValueError, match="schema must be a dict"):
+            reg.register(name="bad2", toolset="core", schema=None, handler=_dummy_handler)
+        # Omitted parameters stays allowed (some tools take no arguments).
+        reg.register(name="noargs", toolset="core",
+                     schema={"name": "noargs", "description": "x"}, handler=_dummy_handler)
+        assert reg.get_entry("noargs") is not None
 
 
     def test_cross_mcp_toolsets_do_not_overwrite_atomically(self, caplog):

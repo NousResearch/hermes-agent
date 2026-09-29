@@ -32,12 +32,11 @@ from hermes_cli.models import (
 _STATIC_FLOOR = list(_PROVIDER_MODELS["opencode-free"])
 
 # The live relay's current free tier. x-preview-f-free was DELISTED 2026-08-26;
-# deepseek-v4-flash-free + mimo-v2.5-free are back on the live list.
+# hy3-free and laguna-s-2.1-free were DELISTED 2026-09-09 (gone from live
+# /models, anon 401 "Model … is not supported").
 _LIVE_FREE_MODELS = [
     "deepseek-v4-flash-free",
-    "hy3-free",
     "mimo-v2.5-free",
-    "laguna-s-2.1-free",
     "nemotron-3-ultra-free",
     "nemotron-3.5-lightning-free",
     "muse-spark-1.2-contributor-free",
@@ -220,3 +219,5 @@ class TestOpencodeFreeFollowUps:
     def test_static_floor_excludes_delisted_model(self):
         """The offline floor must not offer a model known to 401 (#95914)."""
         assert "x-preview-f-free" not in _PROVIDER_MODELS["opencode-free"]
+        assert "hy3-free" not in _PROVIDER_MODELS["opencode-free"]
+        assert "laguna-s-2.1-free" not in _PROVIDER_MODELS["opencode-free"]

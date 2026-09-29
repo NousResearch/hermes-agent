@@ -313,16 +313,17 @@ def test_load_hermes_env_latin1_fallback_still_loads(tmp_path, monkeypatch):
 
 def test_load_hermes_env_latin1_fallback_overrides_shell(tmp_path, monkeypatch):
     """The stream-based latin-1 fallback must keep override=True semantics:
-    the .env value wins over a stale shell export, same as the primary path."""
+    the .env value wins over a stale shell export, same as the primary path. (A non-credential
+    key name: ``*_TOKEN`` values are ASCII-sanitized by the shared loader, by design.)"""
     import os
 
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     # 0xE9 forces the UnicodeDecodeError \u2192 latin-1 stream fallback.
-    (hermes_home / ".env").write_bytes(b"SEND_OVR_TOKEN=caf\xe9-file\n")
+    (hermes_home / ".env").write_bytes(b"SEND_OVR_LABEL=caf\xe9-file\n")
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("SEND_OVR_TOKEN", "stale-shell-value")
+    monkeypatch.setenv("SEND_OVR_LABEL", "stale-shell-value")
 
     from importlib import reload
     import hermes_cli.config as _hc_config
@@ -330,7 +331,7 @@ def test_load_hermes_env_latin1_fallback_overrides_shell(tmp_path, monkeypatch):
 
     send_cmd._load_hermes_env()
 
-    assert os.environ.get("SEND_OVR_TOKEN") == "caf\xe9-file"
+    assert os.environ.get("SEND_OVR_LABEL") == "caf\xe9-file"
 
 def test_load_hermes_env_fallback_read_error_is_swallowed(tmp_path, monkeypatch):
     """An I/O error inside the latin-1 fallback must not escape \u2014 the send

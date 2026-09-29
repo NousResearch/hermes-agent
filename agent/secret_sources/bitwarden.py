@@ -268,7 +268,7 @@ def _write_encrypted_disk_cache(*, cache_key: _CacheKey, access_token: str, entr
         ciphertext = AESGCM(key).encrypt(nonce, plaintext, serialized_key.encode("utf-8"))
         payload = {"version": _ENCRYPTED_CACHE_VERSION, "key": serialized_key,
                    "salt": _b64e(salt), "nonce": _b64e(nonce), "ciphertext": _b64e(ciphertext)}
-        atomic_write_json(_encrypted_disk_cache_path(home_path), payload, tmp_prefix=".bws_cache_enc_")
+        atomic_write_json(_encrypted_disk_cache_path(home_path), payload)
         _STORE.disk.clear(home_path)
     except Exception:  # noqa: BLE001 — best-effort cache only
         return

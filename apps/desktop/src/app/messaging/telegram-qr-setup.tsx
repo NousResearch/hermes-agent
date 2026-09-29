@@ -16,6 +16,7 @@ import {
 import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { Check, ExternalLink, QrCode, Save, X } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
@@ -326,7 +327,7 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
                       className={CREDENTIAL_CONTROL_CLASS}
                       onChange={event => setNewAllowedId(event.target.value)}
                       onKeyDown={event => {
-                        if (event.key === 'Enter') {
+                        if (isSubmitEnter(event)) {
                           event.preventDefault()
                           addAllowedId()
                         }

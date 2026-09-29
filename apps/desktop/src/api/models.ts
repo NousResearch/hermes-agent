@@ -1,11 +1,12 @@
+import type { ModelOptionsResponse } from '@hermes/shared'
+
 import type {
   AnalyticsResponse,
   AuxiliaryModelsResponse,
   MoaConfigResponse,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
-  ModelInfoResponse,
-  ModelOptionsResponse
+  ModelInfoResponse
 } from '@/types/hermes'
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped, STARTUP_REQUEST_TIMEOUT_MS } from './client'

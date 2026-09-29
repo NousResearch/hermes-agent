@@ -48,22 +48,18 @@ def _resolve_timezone_name() -> str:
     if tz_env:
         return tz_env
     try:
-        # Prefer the shared cached raw-config reader (mtime-keyed + libyaml): a direct safe_load of
-        # a large config.yaml costs ~100 ms and this ran inside the FIRST system prompt build.
+        # Prefer the shared cached effective-config loader (mtime-keyed + libyaml, managed overlay
+        # included so an administrator can pin ``timezone``): a direct safe_load of a large
+        # config.yaml costs ~100 ms and this ran inside the FIRST system prompt build. The bare
+        # parse is the stdlib-safe fallback for bootstrap consumers without hermes_cli importable.
         try:
-            from hermes_cli.config import read_raw_config
-            cfg = read_raw_config() or {}
+            from hermes_cli.config_effective import load_user_config_effective
+            cfg = load_user_config_effective(get_config_path())
         except Exception:
             import yaml
             config_path = get_config_path()
             cfg = (yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}) if config_path.exists() else {}
         if cfg:
-            # Managed scope: an administrator can pin ``timezone`` too (fail-open overlay).
-            try:
-                from hermes_cli import managed_scope
-                cfg = managed_scope.apply_managed_overlay(cfg)
-            except Exception:
-                pass
             tz_cfg = cfg.get("timezone", "")
             if isinstance(tz_cfg, str) and tz_cfg.strip():
                 return tz_cfg.strip()

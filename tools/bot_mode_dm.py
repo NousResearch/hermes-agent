@@ -53,7 +53,8 @@ _LOCAL_TARGET_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
 
 def _default_home() -> str:
-    return os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    from hermes_constants import get_process_hermes_home
+    return str(get_process_hermes_home())
 
 
 def message_agent_tool_schema() -> dict:
@@ -407,9 +408,8 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
 
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
     """Pin intent before admission; retries may inspect, never change transport."""
-    from tools.bot_live_delivery import (
-        _fsync_dir, deliver_to_live_owner, find_canonical_live_owner, read_delivery_result,
-    )
+    from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner, read_delivery_result
+    from utils import fsync_directory
 
     intent: dict[str, Any]
     intent_path = Path(dm_file + ".live.json")
@@ -432,7 +432,7 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
                 json.dump(intent, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
-            _fsync_dir(intent_path.parent)
+            fsync_directory(intent_path.parent)
     home = intent["owner"]["profile_home"]
     record = read_delivery_result(home, intent["delivery_id"])
     if record is None:

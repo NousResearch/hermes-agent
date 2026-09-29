@@ -382,5 +382,3 @@ class TestMatrixConfigBridge:
             == "!room1:example.org,!room2:example.org"
         )
         assert os.getenv("MATRIX_AUTO_THREAD") == "false"
-
-

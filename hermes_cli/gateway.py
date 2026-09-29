@@ -261,12 +261,13 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
-def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
+def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float, *, on_progress=None) -> bool:
     """SIGUSR1 (drain-aware restart) a gateway PID and wait for exit; False if unsent or it outlived the timeout.
 
     gateway/run.py maps SIGUSR1 to ``request_restart(via_service=True)``: refuse new turns, drain,
     ``stop()``, exit; the supervisor relaunches. ``drain_timeout`` must cover after-turn wait + drain
-    — pass ``resolve_restart_exit_wait_budget(...)``.
+    — pass ``resolve_restart_exit_wait_budget(...)``. ``on_progress`` (zero-arg) runs on every poll so
+    a long wait can report what the gateway is still holding for (``update_cmd_drain_report``).
     """
     if not hasattr(signal, "SIGUSR1") or pid <= 0:
         return False
@@ -277,10 +278,10 @@ def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
     except (PermissionError, OSError):
         return False
 
-    return _wait_for_pid_exit(pid, max(drain_timeout, 1.0))
+    return _wait_for_pid_exit(pid, max(drain_timeout, 1.0), on_progress=on_progress)
 
 
-def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
+def _wait_for_pid_exit(pid: int, timeout: float, *, on_progress=None) -> bool:
     """Wait up to ``timeout``s for ``pid`` to exit; True once gone. (``launchctl bootstrap`` fails EIO
     while the previous instance still drains, so teardown callers must wait for the real exit.)"""
     if pid <= 0:
@@ -293,6 +294,8 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
             return True
         if time.monotonic() >= deadline:
             return False
+        if on_progress is not None:
+            on_progress()
         time.sleep(0.5)
 
 
@@ -589,9 +592,11 @@ def _scan_gateway_pids(
                 or f"hermes_home={current_home_lc}" in command_lc
             )
 
-        # Default profile: accept unless argv advertises another profile. HERMES_HOME may come via
-        # env (invisible to wmic/CIM), so only a non-matching explicit HERMES_HOME= disqualifies.
-        if "--profile " in command_lc or " -p " in command_lc:
+        # Default profile: accept unless argv advertises another profile in any spelling the CLI
+        # pre-parser accepts (``--profile=ops`` slipped past a substring test, so a default-profile
+        # fallback stop could SIGTERM the named gateway). HERMES_HOME may come via env (invisible to
+        # wmic/CIM), so only a non-matching explicit HERMES_HOME= disqualifies.
+        if profile_flag_value(command_lc) is not None:
             return False
         return not ("hermes_home=" in command_lc and f"hermes_home={current_home_lc}" not in command_lc)
 
@@ -3234,9 +3239,12 @@ def systemd_install(
         else:
             print(f"Service already installed at: {unit_path}")
             print("Use --force to reinstall")
+        # Same post-install guarantee as a fresh install: a repaired user unit must survive logout too.
         configured_user = _read_systemd_user_from_unit(unit_path) if system else None
         if configured_user:
             _ensure_system_service_linger(configured_user)
+        elif not system:
+            _ensure_linger_enabled()
         return
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3411,7 +3419,8 @@ def _systemd_graceful_restart_action(system: bool, pid: int) -> str | None:
         f"⏳ {scope_label} service restarting gracefully (PID {pid}) — "
         f"waiting up to {wait_budget:.0f}s for in-flight turns + drain..."
     )
-    if not _graceful_restart_via_sigusr1(pid, wait_budget):
+    from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+    if not _graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
         print(f"⚠ Graceful restart did not complete within {int(wait_budget)}s; forcing a service restart...")
         return "restart"
 
@@ -4033,6 +4042,7 @@ def refresh_launchd_plist_if_needed() -> bool:
             "launchd reload of %s failed — service not registered after %ds of retries; see %s",
             target, int(_reload_budget), _launchd_reload_log_path(),
         )
+        return False
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 
@@ -4043,8 +4053,17 @@ def launchd_install(force: bool = False):
     if plist_path.exists() and not force:
         if not launchd_plist_is_current():
             print(f"↻ Repairing outdated launchd service at: {plist_path}")
-            refresh_launchd_plist_if_needed()
-            print("✓ Service definition updated")
+            if refresh_launchd_plist_if_needed():
+                print("✓ Service definition updated")
+            else:
+                # The plist was rewritten but launchd never registered it (or the write was refused):
+                # a success line here would hide an unloaded service with no KeepAlive.
+                from hermes_constants import display_hermes_home
+                print(
+                    "⚠ Service definition could not be reloaded with launchd. "
+                    "Run 'hermes gateway install --force' or check "
+                    f"{display_hermes_home()}/logs/launchd-reload.log for details."
+                )
             return
         print(f"Service already installed at: {plist_path}")
         print("Use --force to reinstall")
@@ -4227,7 +4246,8 @@ def launchd_restart():
             # surfaces with no other feedback (desktop updater) read silence as "update stuck".
             wait_budget = _get_restart_exit_wait_budget()
             print(f"→ Stopping gateway (PID {pid}) — draining in-flight runs (up to {wait_budget:.0f}s)...")
-            if _graceful_restart_via_sigusr1(pid, wait_budget):
+            from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+            if _graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
                 # KeepAlive revives a planned exit, so do NOT kickstart (-k would kill the replacement) —
                 # but a clean exit doesn't prove supervision, so verify a replacement PID appears first.
                 if _wait_for_launchd_service_pid(label, pid, timeout=15.0, domain=domain):
@@ -4730,7 +4750,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
 
     from gateway.run import start_gateway
     print("┌─────────────────────────────────────────────────────────┐")
-    print("│           ⚕ Hermes Gateway Starting...                 │")
+    print("│           ☤ Hermes Gateway Starting...                 │")
     print("├─────────────────────────────────────────────────────────┤")
     print("│  Messaging platforms + cron scheduler                    │")
     print("│  Press Ctrl+C to stop                                   │")
@@ -4986,6 +5006,10 @@ def _runtime_health_lines() -> list[str]:
         from gateway.status import parse_active_agents
         count = parse_active_agents(state.get("active_agents"))
         lines.append(f"⏳ Gateway draining for {action} ({count} active agent(s))")
+        work = state.get("active_work")
+        if isinstance(work, list) and work:
+            from hermes_cli.update_cmd_drain_report import describe_active_work_unit
+            lines.extend(f"     • {describe_active_work_unit(u)}" for u in work if isinstance(u, dict))
     elif gateway_state == "stopped" and exit_reason:
         lines.append(f"⚠ Last shutdown reason: {exit_reason}")
 
@@ -5637,7 +5661,7 @@ def _setup_service_action(
 
 _WIZARD_BANNER = (
     "┌─────────────────────────────────────────────────────────┐",
-    "│             ⚕ Gateway Setup                            │",
+    "│             ☤ Gateway Setup                            │",
     "├─────────────────────────────────────────────────────────┤",
     "│  Configure messaging platforms and the gateway service. │",
     "│  Press Ctrl+C at any time to exit.                     │",

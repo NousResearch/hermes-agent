@@ -13,8 +13,10 @@ semantics cannot be mocked.
 """
 
 import os
+import signal
 import sys
 import textwrap
+import threading
 import time
 
 import pytest
@@ -152,6 +154,42 @@ def test_fast_path_contract_unchanged(tmp_path):
     assert "errline" in r["stderr"]
     assert r["error"] is None
     assert r["timed_out"] is False
+
+
+def test_interrupt_kills_hook_and_propagates(tmp_path):
+    """Ctrl+C during a hook must reap the hook, then let KeyboardInterrupt through.
+
+    The hook leads its own process group, so the terminal's SIGINT never
+    reaches it: only ``_spawn``'s own cleanup can stop it.
+    """
+    marker = tmp_path / "hook.pid"
+    script = tmp_path / "hook.sh"
+    script.write_text(f'#!/bin/bash\necho $$ > "{marker}"\nsleep 300\n')
+    script.chmod(0o755)
+
+    def interrupt_once_running():
+        """Interrupt only once the hook is up, so the signal lands inside _spawn."""
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if marker.exists() and marker.read_text().strip():
+                os.kill(os.getpid(), signal.SIGINT)
+                return
+            time.sleep(0.05)
+
+    interrupter = threading.Thread(target=interrupt_once_running, daemon=True)
+    interrupter.start()
+    with pytest.raises(KeyboardInterrupt):
+        _spawn(_spec(str(script), timeout=300), "{}")
+    interrupter.join(timeout=5)
+
+    hook_pid = _read_marker(marker)
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and _pid_alive(hook_pid):
+        time.sleep(0.05)
+    alive = _pid_alive(hook_pid)
+    if alive:  # cleanup so a failure doesn't leak a 300s sleeper
+        os.kill(hook_pid, 9)
+    assert not alive, f"hook {hook_pid} survived the interrupt"
 
 
 def test_missing_command_still_fails_open():

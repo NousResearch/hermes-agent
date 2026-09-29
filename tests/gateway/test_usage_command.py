@@ -163,14 +163,14 @@ class TestUsageAccountSection:
         assert "📈 **Account limits**" in result
 
     @pytest.mark.asyncio
-    async def test_usage_command_prefers_dominant_persisted_route(self, monkeypatch):
+    async def test_usage_command_prefers_recent_persisted_route(self, monkeypatch):
         runner = _make_runner(SK)
         runner._session_db = AsyncSessionDB(MagicMock())
         runner._session_db._db.get_session.return_value = {
             "billing_provider": "nous",
             "billing_base_url": "https://inference-api.nousresearch.com/v1/",
         }
-        runner._session_db._db.get_dominant_session_model_route.return_value = {
+        runner._session_db._db.get_recent_session_model_route.return_value = {
             "model": "z-ai/glm-5.2",
             "billing_provider": "nvidia",
             "billing_base_url": "https://integrate.api.nvidia.com/v1/",

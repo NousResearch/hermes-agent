@@ -314,6 +314,23 @@ class TestInsightsPopulated:
         assert report["overview"]["actual_cost"] == pytest.approx(3.0)
 
 
+    def test_tool_usage_sums_disjoint_sessions_without_double_counting_pairs(self, db):
+        """One session records a call as tool_name only, another as tool_calls only: both count.
+        A session carrying BOTH representations of the same call still counts it once (#9814)."""
+        db.create_session(session_id="gw", source="gateway", model="m")
+        db.append_message("gw", role="tool", content="r", tool_name="search_files")
+        db.create_session(session_id="cli", source="cli", model="m")
+        db.append_message("cli", role="assistant", content="x",
+                          tool_calls=[{"function": {"name": "search_files", "arguments": "{}"}}])
+        db.create_session(session_id="both", source="cli", model="m")
+        db.append_message("both", role="assistant", content="x",
+                          tool_calls=[{"function": {"name": "search_files", "arguments": "{}"}}])
+        db.append_message("both", role="tool", content="r", tool_name="search_files")
+        db._conn.commit()
+
+        tools = InsightsEngine(db).generate(days=30)["tools"]
+        assert next(t["count"] for t in tools if t["tool"] == "search_files") == 3
+
     def test_tool_breakdown(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)

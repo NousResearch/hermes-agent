@@ -82,8 +82,9 @@ In the Feishu developer console, go to **Permission Management** and add the fol
 In **Events and Callbacks**:
 
 1. Set the connection mode to **Long Connection (WebSocket)** (recommended) or configure a webhook URL
-2. In the **Event Configuration** section, subscribe to:
+2. In the **Event Configuration** tab, subscribe to:
    - `im.message.receive_v1` — required for receiving messages
+3. In the **Callback Configuration** tab (a separate tab from events), set the same connection mode and add the `card.action.trigger` callback — required for the approval / update-prompt buttons. See [Required Feishu App Configuration](#required-feishu-app-configuration).
 
 ### Publish the App
 
@@ -291,20 +292,25 @@ This is also how **command approval** works — when the agent needs to run a da
 
 ### Required Feishu App Configuration
 
-Interactive cards require **three** configuration steps in the Feishu Developer Console. Missing any of them causes error **200340** when users click card buttons.
+Interactive cards need the following configuration in the Feishu Developer Console. The usual symptom of a gap here is error **200340** when users click card buttons.
 
-1. **Subscribe to the card action event:**
-   In **Event Subscriptions**, add `card.action.trigger` to your subscribed events.
+1. **Subscribe to the card action callback (not an event):**
+   In **Development Configuration > Events and Callbacks**, open the **Callback Configuration** tab — it is separate from the **Event Configuration** tab where `im.message.receive_v1` lives — and add `card.action.trigger` under *Subscribed Callbacks*. Adding it as an event does not deliver button clicks.
 
-2. **Enable the Interactive Card capability:**
-   In **App Features > Bot**, ensure the **Interactive Card** toggle is enabled. This tells Feishu that your app can receive card action callbacks.
+2. **Set the callback delivery mode:**
+   On the same tab choose **Long Connection** when Hermes runs in `websocket` mode (the Lark SDK receives the callback on the existing connection), or enter the request URL in webhook mode (the same endpoint as your event webhook, e.g. `https://your-server:8765/feishu/webhook`). Feishu must be able to reach and resolve that URL; otherwise clicks fail with 200342/200343.
 
-3. **Configure the Card Request URL (webhook mode only):**
-   In **App Features > Bot > Message Card Request URL**, set the URL to the same endpoint as your event webhook (e.g. `https://your-server:8765/feishu/webhook`). In WebSocket mode this is handled automatically by the SDK.
+3. **Enable the Interactive Card capability:**
+   In **App Features > Bot**, ensure the **Interactive Card** toggle is enabled.
+
+4. **Publish a new app version:**
+   Callback changes only take effect after **Version Management > Create version** is published (and approved, for enterprise apps). Feishu's own description of 200340 is "the application has not configured the card callback address or the configured address is invalid … ensure that you have created and published the latest version of the app".
 
 :::warning
-Without all three steps, Feishu will successfully *send* interactive cards (sending only requires `im:message:send` permission), but clicking any button will return error 200340. The card appears to work — the error only surfaces when a user interacts with it.
+Without a published card callback, Feishu will still successfully *send* interactive cards (sending only requires `im:message:send` permission), but clicking any button returns error 200340. The card appears to work — the error only surfaces when a user interacts with it, and the click never reaches Hermes (nothing is logged), because Feishu rejects it before delivering the callback.
 :::
+
+Error codes 200672 / 200673 indicate the callback *did* reach Hermes and Feishu rejected the response; if you see them, please file an issue with the matching `gateway.log` lines.
 
 ## Document Comment Intelligent Reply
 
@@ -582,7 +588,8 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | Bot identity not auto-detected | Usually a transient network issue reaching Feishu's bot info endpoint. Set `FEISHU_BOT_OPEN_ID` and `FEISHU_BOT_NAME` manually as a workaround. |
 | Peer bot messages still ignored after enabling `FEISHU_ALLOW_BOTS` | Hermes can't identify itself yet — set `FEISHU_BOT_OPEN_ID` (and `FEISHU_BOT_USER_ID` if your app uses `sender_id_type=user_id`). |
 | Peer bots show as `ou_xxxxxx` instead of by name | Grant the `application:bot.basic_info:read` scope. |
-| Error 200340 when clicking approval buttons | Enable **Interactive Card** capability and configure **Card Request URL** in the Feishu Developer Console. See [Required Feishu App Configuration](#required-feishu-app-configuration) above. |
+| Error 200340 (also seen as 220340) when clicking approval buttons | Feishu has no valid card callback for the published app version: add `card.action.trigger` under the **Callback Configuration** tab (not Event Configuration), pick Long Connection / the request URL, enable **Interactive Card**, then publish a new version. See [Required Feishu App Configuration](#required-feishu-app-configuration). The click never reaches Hermes, so nothing appears in `gateway.log`. |
+| Error 200342 / 200343 when clicking approval buttons | Webhook mode: Feishu cannot connect to / resolve the callback request URL. Fix the URL or switch to Long Connection. |
 | `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |
 
 ## Toolset

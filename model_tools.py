@@ -491,8 +491,11 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
                               quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     tools_to_include = _select_tool_names(enabled_toolsets, disabled_toolsets, quiet_mode)
-    # Registry returns only tools whose check_fn passes.
-    filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
+    # Selection is per schema, not per process/profile. Kanban's local checks
+    # are uncached; the outer definitions cache already keys on this selection.
+    from tools.kanban_toolset_context import scoped_kanban_toolset_selection
+    with scoped_kanban_toolset_selection(enabled_toolsets):
+        filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 

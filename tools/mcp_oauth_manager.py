@@ -78,22 +78,18 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         ``expires_at``) makes the SDK refresh first. Metadata is restored from disk, else discovered
         pre-flight when we hold tokens but no metadata: otherwise ``_refresh_token`` guesses
         ``{server_url}/token`` (wrong for split-origin providers), 404s, and we fall to browser reauth."""
-        await super()._initialize()
+        await super()._initialize()  # HermesProviderMixin: restores metadata from disk, enforces issuer binding
         tokens = self.context.current_tokens
         if tokens is not None and tokens.expires_in is not None:
             self.context.update_token_expiry(tokens)
-        storage = self._hermes_storage()
-        if storage is not None and self.context.oauth_metadata is None:
-            meta = storage.load_oauth_metadata()
-            if meta is not None:
-                self.context.oauth_metadata = meta
-                logger.debug("MCP OAuth '%s': restored metadata from disk (token_endpoint=%s)",
-                             self._hermes_server_name, meta.token_endpoint)
         if tokens is not None and self.context.oauth_metadata is None:
             try:
                 await self._prefetch_oauth_metadata()
             except Exception as exc:  # pragma: no cover — the SDK's 401-branch discovery runs next request
                 self._log_nonfatal("pre-flight metadata discovery", exc)
+            else:
+                from tools.mcp_oauth_provider import enforce_refresh_token_issuer
+                enforce_refresh_token_issuer(self.context)  # metadata (issuer) only just became known
 
     async def _prefetch_oauth_metadata(self) -> None:
         """Fetch PRM + ASM from the well-known endpoints before the first request, via the SDK's own URL

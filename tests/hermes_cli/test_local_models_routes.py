@@ -54,6 +54,18 @@ def test_status_shape_and_defaults(client):
     assert isinstance(data["models"], list)
 
 
+def test_status_renders_degraded_when_config_cannot_be_read(client, monkeypatch):
+    """The status pane is garnish: an unreadable/uninitialized config renders defaults, never a 500."""
+    from hermes_cli import config as config_mod
+
+    def _boom():
+        raise FileNotFoundError("profile home is gone")
+
+    monkeypatch.setattr(config_mod, "load_config_readonly", _boom)
+    r = client.get("/api/local-models/status")
+    assert r.status_code == 200 and r.json()["enabled"] is False
+
+
 def test_status_lists_staged_models_with_labels(client, tmp_path):
     from hermes_cli.local_runtime.bootstrap import models_dir
 

@@ -89,10 +89,14 @@ class TestNamedProfileMultiplexerGuard:
         monkeypatch.setattr(
             "hermes_constants.get_default_hermes_root", lambda: tmp_path
         )
-        (tmp_path / "gateway.pid").write_text("12345", encoding="utf-8")
-        monkeypatch.setattr(status, "_read_pid_record", lambda p: {"pid": 12345})
-        monkeypatch.setattr(status, "_pid_from_record", lambda rec: 12345)
-        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        import json
+        import os
+        # Liveness is a verified identity (live PID + gateway command line + home), so this pytest
+        # process stands in for the gateway by wearing a gateway command line.
+        (tmp_path / "gateway.pid").write_text(str(os.getpid()), encoding="utf-8")
+        (tmp_path / "gateway_state.json").write_text(json.dumps(
+            {"pid": os.getpid(), "hermes_home": str(tmp_path), "gateway_state": "running"}))
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
 
     def test_unset_allowlist_preserves_historical_guard(self, monkeypatch, tmp_path):
         self._fake_running_default_gateway(monkeypatch, tmp_path)
@@ -115,11 +119,11 @@ class TestNamedProfileMultiplexerGuard:
             "gateway:\n  multiplex_profiles: true\n",
             encoding="utf-8",
         )
-        import gateway.status as status
-        monkeypatch.setattr(
-            status, "read_runtime_status",
-            lambda path=None: {"gateway_state": "running", "served_profiles": ["default", "worker"]},
-        )
+        import json
+        import os
+        (tmp_path / "gateway_state.json").write_text(json.dumps({
+            "pid": os.getpid(), "hermes_home": str(tmp_path), "gateway_state": "running",
+            "served_profiles": ["default", "worker"]}))
 
         from hermes_cli import gateway as gw
 

@@ -82,6 +82,8 @@ _HARDLINE_SYSTEM_DIRS = (r'/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/
 # backslashes in replacement fields are unsupported on the 3.11 floor). _CMDPOS-anchored so `rm`
 # must be an actual command word — "rm -rf /" as DATA in `git commit -m "…rm -rf /…"` must not trip the floor.
 _RM_FLAG_PREFIX = _CMDPOS + r'rm\s+(-[^\s]*\s+)*'
+# Package-manager global options, each optionally taking ONE non-dash operand.
+_PKG_OPTS = r'(?:-[^\s]+(?:\s+[^-\s][^\s]*)?\s+)*'
 
 HARDLINE_PATTERNS = [
     # Root path: any root-anchored path whose components collapse to "/" in the shell ("/", "//",
@@ -284,6 +286,19 @@ DANGEROUS_PATTERNS = [
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     # eval/source/. $(curl ...) — equivalent to piping remote content to a shell.
     (r'(?:\beval\b|\bsource\b|\.)\s*(?:\$\(\s*|`\s*)(?:curl|wget)\b', "execute remote content via command substitution"),
+    # Cloud instance-metadata (IMDS) credential endpoints — deterministic containment-escape
+    # detection. On a cloud VM these serve live IAM/service-account credentials to ANY local
+    # process with no auth, so a fetch is credential exfiltration unless the operator expects it.
+    # The host literals have no other use, so their appearance ANYWHERE in the command (any HTTP
+    # client, env assignment, or script argument) is the signal; lookarounds keep other 169.254.x.x
+    # link-local addresses and longer dotted strings out. This prompts for approval (legit uses
+    # exist on real cloud VMs) — it is NOT a hardline block. Covers the link-local IPv4 endpoint
+    # (AWS/Azure/GCP/OpenStack), its AWS IPv6 form fd00:ec2::254, the GCP hostname, and Alibaba
+    # Cloud's 100.100.100.200.
+    (r'(?<![\d.])(?:169\.254\.169\.254|100\.100\.100\.200)(?![\d.])'
+     r'|(?<![\w.-])metadata\.google\.internal(?![\w.-])'
+     r'|fd00:ec2::254',
+     "cloud metadata endpoint access (instance credentials)"),
     # Decode-and-execute: `echo <base64> | base64 -d | bash` carries no dangerous keywords in the
     # raw text yet runs arbitrary commands.
     (r'\b(base64|base32|base16)\s+(?:-[dD]|--decode)\b.*\|\s*\b(bash|sh|zsh|ksh|dash)\b', "pipe decoded content to shell (possible command obfuscation)"),
@@ -393,6 +408,17 @@ DANGEROUS_PATTERNS = [
     (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)', "sudo with privilege flag (stdin/askpass/shell/list)"),
     # Combined short-flag form (-nS, -sa, -las).
     (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b', "sudo with combined-flag privilege escalation"),
+    # Package-manager uninstall commands can remove installed software outside
+    # the current project (notably `npm uninstall -g`). Treat their destructive
+    # subcommands like other state-removing operations while leaving installs
+    # and updates alone.
+    # _CMDPOS-anchored (quoted prose like `git commit -m "npm uninstall docs"` is data); the
+    # option group also swallows one operand (`--prefix DIR`, `--proxy URL`, `--cwd DIR`).
+    (_CMDPOS + r'npm\s+' + _PKG_OPTS + r'(?:uninstall|unlink|remove|rm|r|un)\b', "package manager uninstall"),
+    (_CMDPOS + r'pnpm\s+' + _PKG_OPTS + r'(?:uninstall|remove|rm|un)\b', "package manager uninstall"),
+    (_CMDPOS + r'yarn\s+' + _PKG_OPTS + r'(?:global\s+)?(?:uninstall|remove)\b', "package manager uninstall"),
+    (_CMDPOS + r'pip(?:3)?\s+' + _PKG_OPTS + r'uninstall\b', "package manager uninstall"),
+    (_CMDPOS + r'brew\s+' + _PKG_OPTS + r'(?:uninstall|remove|rm)\b', "package manager uninstall"),
 ]
 
 

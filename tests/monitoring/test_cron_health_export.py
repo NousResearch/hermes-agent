@@ -88,7 +88,7 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
     observable-gauge metric_names list, or the OTLP exporter never observes it.
 
     This asserts the vocabulary-registration invariant documented in
-    docs/observability/monitoring.md: an emitted-but-unregistered gauge is
+    website/docs/developer-guide/gateway-monitoring.md: an emitted-but-unregistered gauge is
     silently dropped. Regression guard for background_work / cron additions.
     """
     from agent.monitoring import gateway_health_export
@@ -128,7 +128,7 @@ def test_registered_observable_metric_names_cover_snapshot_metrics(monkeypatch):
 def test_monitoring_docs_distinguish_relay_health_scope_and_terminal_flush():
     from pathlib import Path
 
-    text = Path("docs/observability/monitoring.md").read_text(encoding="utf-8")
+    text = Path("website/docs/developer-guide/gateway-monitoring.md").read_text(encoding="utf-8")
 
     assert "Hermes Agent-owned Relay transport health" in text
     assert "authoritative shared connector/platform state" in text

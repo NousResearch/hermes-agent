@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
+from hermes_state_ids import new_session_id
 from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -106,8 +107,7 @@ class SessionPortabilityMixin:
         Reuse the portability validator and message writer so counters and FTS
         obey the same contract as ordinary transcript imports.
         """
-        import uuid
-        session_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:12]}"
+        session_id = new_session_id(hex_len=12)
         normalized, errors = self._validate_import_payload([
             {"id": session_id, "source": origin["tool"], "title": title,
              "cwd": cwd, "messages": messages}])
@@ -534,7 +534,7 @@ class SessionPortabilityMixin:
         / ``last_activity_description`` / ``last_activity_provenance``) because they are part of the durable
         row, but import deliberately RESETS them to NULL. This asymmetry is intentional and covered by
         regression
-        (tests/gateway/test_watchdog_review_76354.py::test_s4_export_includes_activity_import_resets_it).
+        (tests/gateway/test_watchdog_review.py::test_s4_export_includes_activity_import_resets_it).
         """
         if not isinstance(sessions, list):
             raise ValueError("sessions must be a list")

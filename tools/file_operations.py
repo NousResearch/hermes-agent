@@ -312,6 +312,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         A/B, while dropping numbers regressed line-referencing."""
         from tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
+        # A trailing newline terminates the final line — it does not start a new,
+        # empty one. Splitting without dropping it rendered a phantom "<N+1>|"
+        # gutter line on every newline-terminated file (`cat -n` semantics).
+        # Exactly ONE terminator is dropped, so a genuinely selected trailing
+        # blank line in a page keeps its own number.
+        if content.endswith('\n'):
+            content = content[:-1]
         return '\n'.join(
             f"{i}|{line if len(line) <= max_line_length else line[:max_line_length] + '... [truncated]'}"
             for i, line in enumerate(content.split('\n'), start=start_line))
@@ -869,6 +876,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         read path so the BOM strip, pagination hint, ``cut`` newline-artifact fix and
         the ambiguous-silence guards never drift apart. ``file_ends_with_newline`` is
         None when the caller could not tell (artifact left alone, as before)."""
+        # ``wc -l`` counts newlines, not lines: a nonempty file whose last byte
+        # is not a newline holds one more line than the count (#3907). Adjust
+        # here — the single choke point — so total_lines, truncation, and the
+        # past-EOF guard agree on every read path (compound, sequential, native).
+        if file_size > 0 and file_ends_with_newline is False:
+            total_lines += 1
         if offset == 1:  # only the first chunk can carry a BOM (byte 0)
             read_output, _ = _strip_bom(read_output)
         truncated = total_lines > end_line

@@ -52,7 +52,8 @@ export function ConnectionSwitcher({ compact = false, onConnect }: { compact?: b
     cloud: t.settings.connections.kindCloud,
     local: t.settings.connections.kindLocal,
     remote: t.settings.connections.kindRemote,
-    ssh: t.settings.connections.kindSsh
+    ssh: t.settings.connections.kindSsh,
+    tailcat: t.settings.connections.kindTailcat
   }
 
   const displayedConnections = searchable

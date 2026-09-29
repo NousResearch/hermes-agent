@@ -2268,3 +2268,40 @@ test('normalizeRegistry quarantines non-object junk items that could still be us
   assert.equal((registry.quarantined || []).length, 1)
   assert.equal(registry.quarantined![0].entry, '{ mangled json fragment }')
 })
+
+const TAILCAT_ADDRESS = `tc${'B'.repeat(150)}`
+
+test('a tailcat entry survives a disk round-trip and one share cannot be registered twice', () => {
+  let registry = emptyRegistry()
+
+  const entry = normalizeConnectionInput(
+    { kind: 'tailcat', label: 'Mini', address: TAILCAT_ADDRESS, port: 41234, deviceId: 'dev1', token: 'env' },
+    registry
+  )
+
+  registry = upsertConnection(registry, entry)
+  const restored = normalizeRegistry(JSON.parse(JSON.stringify(registry)))
+  const saved = restored.connections.find(c => c.id === entry.id)
+
+  assert.deepEqual(
+    { address: saved?.address, deviceId: saved?.deviceId, kind: saved?.kind, port: saved?.port, token: saved?.token },
+    { address: TAILCAT_ADDRESS, deviceId: 'dev1', kind: 'tailcat', port: 41234, token: 'env' }
+  )
+  assert.throws(
+    () => normalizeConnectionInput({ kind: 'tailcat', label: 'Mini again', address: TAILCAT_ADDRESS, port: 41234 }, restored),
+    /already connected as "Mini"/
+  )
+})
+
+test('a tailcat entry without a usable address is quarantined, not dialed', () => {
+  const registry = normalizeRegistry({
+    version: 2,
+    connections: [{ id: 'mini', kind: 'tailcat', label: 'Mini', address: 'not-an-address', port: 41234 }]
+  })
+
+  assert.equal(
+    registry.connections.some(c => c.id === 'mini'),
+    false
+  )
+  assert.equal(registry.quarantined?.[0]?.reason, 'entry-missing-tailcat-address')
+})

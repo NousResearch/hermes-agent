@@ -56,6 +56,10 @@ def _configure_serve_parser(parser, *, cmd_dashboard: Callable) -> None:
     parser.add_argument(
         "--ssh-owner-nonce", dest="ssh_owner_nonce", metavar="NONCE", default=None,
         help="Identify a Desktop-owned SSH backend process")
+    parser.add_argument(
+        "--share", choices=("off", "tailcat"), default="",
+        help="Share this backend with paired devices over tailcat (overrides "
+            "dashboard.share). Pair a device with `hermes share code`.")
     parser.set_defaults(func=cmd_dashboard, no_open=True, headless_backend=True, command="serve")
 
 

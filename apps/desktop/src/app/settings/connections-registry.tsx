@@ -20,7 +20,7 @@ import {
   sortConnectionsForDisplay
 } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
-import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, SearchIcon, Terminal, Trash2 } from '@/lib/icons'
+import { Cloud, Globe, Loader2, Monitor, Network, Pencil, Plus, RefreshCw, SearchIcon, Terminal, Trash2 } from '@/lib/icons'
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
@@ -31,7 +31,8 @@ const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
   cloud: Cloud,
   local: Monitor,
   remote: Globe,
-  ssh: Terminal
+  ssh: Terminal,
+  tailcat: Network
 }
 
 interface EditorState {
@@ -51,6 +52,8 @@ interface EditorState {
   // it. `stored` marks rows hydrated from headerNames so the placeholder can
   // say "saved" instead of demanding a value.
   headers: { name: string; stored: boolean; value: string }[]
+  // tailcat: the pasted one-time connection code (create only; main redeems it).
+  code: string
 }
 
 function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
@@ -67,7 +70,8 @@ function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
     keyPath: conn.keyPath || '',
     remoteHermesPath: conn.remoteHermesPath || '',
     remoteProfile: conn.remoteProfile || '',
-    headers: (conn.headerNames || []).map(name => ({ name, stored: true, value: '' }))
+    headers: (conn.headerNames || []).map(name => ({ name, stored: true, value: '' })),
+    code: ''
   }
 }
 
@@ -80,7 +84,8 @@ function emptyEditor(kind: DesktopConnectionKind): EditorState {
     keyPath: '',
     remoteHermesPath: '',
     remoteProfile: '',
-    headers: []
+    headers: [],
+    code: ''
   }
 }
 
@@ -120,7 +125,8 @@ export function sshCompositeKey(composite: string): string {
  * (normalizeConnectionInput enforces the same keys in the save path):
  *  - at most ONE local entry, ever;
  *  - remote/cloud entries are duplicates when their normalized URLs match;
- *  - ssh entries are duplicates on user@host:port + remote profile.
+ *  - ssh entries are duplicates on user@host:port + remote profile;
+ *  - tailcat entries are checked by main after pairing (by share address).
  * Returns the existing entry the candidate collides with, or null.
  */
 export function findDuplicateConnection(
@@ -144,6 +150,12 @@ export function findDuplicateConnection(
           (c.kind === 'remote' || c.kind === 'cloud') && c.id !== editor.id && normalizeGatewayUrl(c.url || '') === key
       ) ?? null
     )
+  }
+
+  // A tailcat address is only known once main redeems the code; main rejects
+  // a second entry for the same share there.
+  if (editor.kind === 'tailcat') {
+    return null
   }
 
   const key = sshCompositeKey(editor.host)
@@ -369,6 +381,11 @@ export function ConnectionsRegistrySection() {
               headerEntries.map(row => [row.name, row.value ? row.value : row.stored ? null : ''])
             )
           }
+        } else if (editor.kind === 'tailcat') {
+          // Main redeems the code for a device token; only that is stored.
+          if (editor.code.trim()) {
+            payload.code = editor.code.trim()
+          }
         } else if (editor.kind === 'ssh') {
           // The composite host string (user@host:port) is the single source
           // of truth — never send separate user/port (see editorFromConnection).
@@ -537,7 +554,8 @@ export function ConnectionsRegistrySection() {
     cloud: { desc: s.kindCloudDesc, label: s.kindCloud },
     local: { desc: s.kindLocalDesc, label: s.kindLocal },
     remote: { desc: s.kindRemoteDesc, label: s.kindRemote },
-    ssh: { desc: s.kindSshDesc, label: s.kindSsh }
+    ssh: { desc: s.kindSshDesc, label: s.kindSsh },
+    tailcat: { desc: s.kindTailcatDesc, label: s.kindTailcat }
   }
 
   const sortedConnections = useMemo(
@@ -625,11 +643,13 @@ export function ConnectionsRegistrySection() {
           const sameBackendPeer = sameBackendPeerLabel(conn, sortedConnections)
 
           const baseDescription =
-            conn.kind === 'ssh'
+            conn.kind === 'tailcat'
+              ? s.tailcatPaired(conn.addressFingerprint || '—')
+              : conn.kind === 'ssh'
               ? `${kindMeta[conn.kind].label} · ${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}`
-              : conn.url
-                ? `${kindMeta[conn.kind].label} · ${conn.url}`
-                : kindMeta[conn.kind].desc
+                : conn.url
+                  ? `${kindMeta[conn.kind].label} · ${conn.url}`
+                  : kindMeta[conn.kind].desc
 
           return (
             <ListRow
@@ -698,7 +718,7 @@ export function ConnectionsRegistrySection() {
             {/* Kind is fixed once created (buttons disable on edit). On create
                 every kind is offered; Local is disabled while the managed
                 local entry exists (the registry holds at most one). */}
-            {(editor.id ? ([editor.kind] as const) : (['local', 'cloud', 'remote', 'ssh'] as const)).map(kind => (
+            {(editor.id ? ([editor.kind] as const) : (['local', 'cloud', 'remote', 'ssh', 'tailcat'] as const)).map(kind => (
               <Button
                 disabled={Boolean(editor.id) || (kind === 'local' && hasLocal)}
                 key={kind}
@@ -860,13 +880,38 @@ export function ConnectionsRegistrySection() {
             </>
           )}
 
+          {editor.kind === 'tailcat' &&
+            (editor.id ? (
+              <p className="text-xs text-muted-foreground">{s.tailcatRepairHint}</p>
+            ) : (
+              <ListRow
+                action={
+                  <Input
+                    autoComplete="off"
+                    onChange={e => setEditor({ ...editor, code: e.target.value })}
+                    placeholder="hermes-tailcat:…"
+                    spellCheck={false}
+                    value={editor.code}
+                  />
+                }
+                description={s.tailcatCodeDesc}
+                title={s.tailcatCodeTitle}
+              />
+            ))}
+
           {dupeError ? <p className="text-xs text-destructive">{dupeError}</p> : null}
 
           <div className="flex justify-end gap-2">
             <Button disabled={saving} onClick={() => openEditor(null)} size="sm" variant="ghost">
               {s.cancel}
             </Button>
-            <Button disabled={saving || !editor.label.trim()} onClick={() => void save()} size="sm">
+            <Button
+              disabled={
+                saving || !editor.label.trim() || (editor.kind === 'tailcat' && !editor.id && !editor.code.trim())
+              }
+              onClick={() => void save()}
+              size="sm"
+            >
               {saving ? s.saving : s.save}
             </Button>
           </div>

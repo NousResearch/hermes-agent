@@ -39,6 +39,14 @@ export type DesktopRemoteRoute =
       ssh: SshRouteConfig
       token?: unknown
     }
+  | {
+      address: string
+      connectionId: string
+      kind: 'tailcat'
+      port: number
+      source: 'registry'
+      token?: unknown
+    }
 
 export interface DesktopRemoteRouteInput {
   config: Record<string, any>
@@ -100,8 +108,8 @@ export function resolveDesktopRemoteRoute({
   const override = profileRemoteOverride(config, profile)
 
   if (override) {
-    const kind = profileConfig?.mode === 'cloud' ? 'cloud' : 'remote'
-    const authMode = override.authMode === 'oauth' ? 'oauth' : 'token'
+    const kind: 'cloud' | 'remote' = profileConfig?.mode === 'cloud' ? 'cloud' : 'remote'
+    const authMode: 'oauth' | 'token' = override.authMode === 'oauth' ? 'oauth' : 'token'
     const route = { ...profileConfig, kind } as StoredRoute
 
     return withConnectionId(
@@ -159,8 +167,8 @@ export function resolveDesktopRemoteRoute({
     return resolveRegistryPrimaryRoute(registry)
   }
 
-  const kind = config.mode === 'cloud' ? 'cloud' : 'remote'
-  const authMode = normAuthMode(config.remote?.authMode)
+  const kind: 'cloud' | 'remote' = config.mode === 'cloud' ? 'cloud' : 'remote'
+  const authMode: 'oauth' | 'token' = normAuthMode(config.remote?.authMode)
   const route = { ...config.remote, kind } as StoredRoute
 
   return withConnectionId(
@@ -203,6 +211,19 @@ function resolveRegistryPrimaryRoute(registry: ConnectionRegistry): DesktopRemot
     }
 
     return { connectionId: entry.id, kind: 'ssh', source: 'registry', ssh, token: entry.token }
+  }
+
+  if (entry.kind === 'tailcat') {
+    return entry.address && entry.port
+      ? {
+          address: entry.address,
+          connectionId: entry.id,
+          kind: 'tailcat',
+          port: Number(entry.port),
+          source: 'registry',
+          token: entry.token
+        }
+      : null
   }
 
   if (entry.kind !== 'remote' && entry.kind !== 'cloud') {

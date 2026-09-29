@@ -1,4 +1,4 @@
-import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
+import { type ChildProcess, execFile, execFileSync, spawn } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -7,6 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import tls from 'node:tls'
 import { pathToFileURL } from 'node:url'
+import { promisify } from 'node:util'
 
 import {
   app,
@@ -594,6 +595,12 @@ import {
   MIN_HEIGHT as WINDOW_MIN_HEIGHT,
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
+import {
+  createTailcatForwarder,
+  pairTailcatCode,
+  resolveTailcatBinary,
+  tailcatAddressFingerprint
+} from './tailcat-connection'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 import { buildPathExtCandidates, chooseUpdaterArgs, resolveVenvHermesCommand } from './windows-hermes-path'
 import {
@@ -9107,7 +9114,7 @@ function writeDesktopConnectionsRegistry(registry) {
  * sanitizeDesktopConnectionConfig.
  */
 function sanitizeRegistryConnection(entry) {
-  const { token, headers, ...rest } = entry
+  const { token, headers, address, ...rest } = entry
   const decrypted = decryptDesktopSecret(token)
   // Last-known stable backend identity (from roster enumeration / Test) so
   // Settings can hint "Same backend as <label>" on connections that are two
@@ -9119,6 +9126,9 @@ function sanitizeRegistryConnection(entry) {
     tokenSet: Boolean(decrypted),
     tokenPreview: tokenPreview(decrypted),
     ...(knownInstallId ? { installId: knownInstallId } : {}),
+    // The tailcat address stays in main; Settings shows the same fingerprint
+    // `hermes share status` prints on the sharing machine.
+    ...(address ? { addressFingerprint: tailcatAddressFingerprint(address) } : {}),
     // Header VALUES are secrets (Cloudflare Access client secrets etc.) and
     // never cross the IPC boundary — the renderer only needs the names to
     // render the edit form.
@@ -9151,6 +9161,31 @@ function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()
   }
 }
 
+// A tailcat save carries the pasted connection code: redeem it for a device
+// token before the entry is written, so the registry never holds a code (they
+// are single-use) and never holds an entry the share has not admitted.
+async function pairTailcatForSave(input: any) {
+  const codeText = String(input.code || '').trim()
+
+  if (!codeText) {
+    return input
+  }
+
+  // Pairing is the moment the user asked for tailcat: install PM's pinned copy
+  // if nothing is on PATH yet.
+  await ensureTailcatBinary(true)
+  const pairingKey = `pairing:${crypto.randomUUID()}`
+
+  try {
+    const paired = await pairTailcatCode(tailcatForwarder, pairingKey, codeText, os.hostname() || 'Hermes Desktop')
+    const { code: _code, ...rest } = input
+
+    return { ...rest, address: paired.address, deviceId: paired.deviceId, port: paired.port, token: paired.token }
+  } finally {
+    tailcatForwarder.stop(pairingKey)
+  }
+}
+
 /**
  * Save (create or edit) a registry connection from a renderer payload.
  * Edits merge over the stored entry (mergeConnectionInput) so fields the
@@ -9161,7 +9196,8 @@ function sanitizeConnectionsRegistry(registry = readDesktopConnectionsRegistry()
  * stored envelope on edit; switching auth away from 'token' clears it
  * (normalizeConnectionInput drops tokens on non-token entries).
  */
-async function saveRegistryConnection(input: any = {}) {
+async function saveRegistryConnection(rawInput: any = {}) {
+  const input = rawInput?.kind === 'tailcat' ? await pairTailcatForSave(rawInput) : rawInput
   const registry = readDesktopConnectionsRegistry()
   const existing = input.id ? registry.connections.find(c => c.id === input.id) : null
   const incomingToken = typeof input.token === 'string' ? input.token.trim() : ''
@@ -9192,6 +9228,10 @@ async function saveRegistryConnection(input: any = {}) {
   // cloud entries authenticate via cookies/native tokens instead.
   if (entry.kind === 'remote' && entry.authMode !== 'oauth' && !decryptDesktopSecret(entry.token)) {
     throw new Error('Remote gateway session token is required.')
+  }
+
+  if (entry.kind === 'tailcat' && !decryptDesktopSecret(entry.token)) {
+    throw new Error('Paste a connection code from `hermes share code` to pair this device.')
   }
 
   if (existing && connectionDialFieldsChanged(existing, entry)) {
@@ -9670,6 +9710,61 @@ async function buildRemoteConnection(
     token,
     wsUrl
   }
+}
+
+// ── Tailcat connections (`hermes serve --share tailcat` on the other end) ────
+const execFileAsync = promisify(execFile)
+let tailcatBinary: null | string = null
+
+const tailcatBinaryDeps = {
+  findOnPath,
+  exists: fileExists,
+  runPm: async (args: string[], timeoutMs: number): Promise<string> => {
+    const backend = await resolveHermesBackend(['pm', ...args])
+
+    if (!backend.command) {
+      throw new Error('The Hermes runtime is not installed yet.')
+    }
+
+    const { stdout } = await execFileAsync(backend.command, backend.args, {
+      encoding: 'utf8',
+      env: { ...process.env, ...backend.env },
+      maxBuffer: 4 * 1024 * 1024,
+      shell: backend.shell,
+      timeout: timeoutMs,
+      windowsHide: true
+    })
+
+    return String(stdout)
+  }
+}
+
+async function ensureTailcatBinary(install = false): Promise<null | string> {
+  if (!tailcatBinary || !fileExists(tailcatBinary)) {
+    tailcatBinary = await resolveTailcatBinary(tailcatBinaryDeps, { install })
+  }
+
+  return tailcatBinary
+}
+
+const tailcatForwarder = createTailcatForwarder({
+  resolveBinary: () => ensureTailcatBinary(),
+  spawn: (command, args, options) => spawn(command, args, hiddenWindowsChildOptions(options)),
+  log: line => rememberLog(line)
+})
+
+// A tailcat source is a token-auth remote whose base URL is the local end of
+// its `tailcat forward`; the forward is shared by every profile of the source.
+async function buildTailcatConnection(source: { address: string; id: string; label?: string; port: number; token?: unknown }, routeSource: string) {
+  const token = decryptDesktopSecret(source.token)
+
+  if (!token) {
+    throw new Error('This Tailcat connection has no device token. Remove it and pair again with a new code.')
+  }
+
+  const localPort = await tailcatForwarder.ensure(source.id, source.address, Number(source.port))
+
+  return buildRemoteConnection(`http://127.0.0.1:${localPort}`, 'token', token, routeSource, source.label || 'Tailcat')
 }
 
 const sshConnections = new Map<string, any>()
@@ -10510,6 +10605,13 @@ async function resolveRemoteBackend(
         primaryRegistryScope: options.primary === true && Boolean(route.connectionId),
         registryConnectionId: route.connectionId || ''
       }
+    )
+  } else if (route.kind === 'tailcat') {
+    const entry = registry.connections.find((c: { id: string }) => c.id === route.connectionId)
+
+    connection = await buildTailcatConnection(
+      { address: route.address, id: route.connectionId, label: entry?.label, port: route.port, token: route.token },
+      route.source
     )
   } else {
     const token =
@@ -11399,21 +11501,22 @@ async function connectRegistryBackend(
     }
   }
 
-  // remote / cloud: one gateway host serves every profile of that source,
-  // scoped per request — the descriptor carries the profile + connectionId so
-  // renderer-side WS minting and REST scoping target the right agent.
-  const token = source.authMode === 'oauth' ? null : decryptDesktopSecret(source.token)
-
-  const connection = await buildRemoteConnection(
-    source.url,
-    normAuthMode(source.authMode),
-    token,
-    `registry:${source.id}`,
-    undefined,
-    source.kind === 'cloud' ? 'cloud' : 'url',
-    undefined,
-    source.headers
-  )
+  // remote / cloud / tailcat: one gateway host serves every profile of that
+  // source, scoped per request — the descriptor carries the profile +
+  // connectionId so renderer-side WS minting and REST scoping target the right agent.
+  const connection =
+    source.kind === 'tailcat'
+      ? await buildTailcatConnection(source, `registry:${source.id}`)
+      : await buildRemoteConnection(
+          source.url,
+          normAuthMode(source.authMode),
+          source.authMode === 'oauth' ? null : decryptDesktopSecret(source.token),
+          `registry:${source.id}`,
+          undefined,
+          source.kind === 'cloud' ? 'cloud' : 'url',
+          undefined,
+          source.headers
+        )
 
   await waitForRemoteHermes(connection)
   poolEntry.remoteBaseUrl = connection.baseUrl
@@ -11947,6 +12050,8 @@ async function stopRegistryConnectionBackends(connectionId) {
       stopPoolBackend(key)
     }
   }
+
+  tailcatForwarder.stop(String(connectionId))
 
   const sshScopes = new Set([
     ...[...sshConnections.keys()].filter(scope => String(scope).startsWith(prefix)),
@@ -15967,6 +16072,10 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
     baseUrl = local.baseUrl
     token = local.token
     authMode = normAuthMode(local.authMode)
+  } else if (entry.kind === 'tailcat') {
+    const tailcat = await buildTailcatConnection(entry, `registry:${entry.id}`)
+    baseUrl = tailcat.baseUrl
+    token = tailcat.token
   } else {
     baseUrl = normalizeRemoteBaseUrl(entry.url)
     authMode = normAuthMode(entry.authMode)
@@ -17819,6 +17928,7 @@ app.on('before-quit', () => {
 // hold the event loop open or leak FDs past app teardown.
 app.on('will-quit', () => {
   sshIsolatedKeepalives.stopAll()
+  tailcatForwarder.stopAll()
   destroyKeepaliveAgents()
   nativeNotifications.dispose()
   quitFinalization.arm()
@@ -19015,7 +19125,7 @@ function configureSpellChecker() {
 // A route we can't resolve counts as owned: the lost-work warning is the safe
 // side to be wrong on.
 function quitStopsBackendWork(): boolean {
-  let primaryRouteKind: 'cloud' | 'remote' | 'ssh' | null
+  let primaryRouteKind: 'cloud' | 'remote' | 'ssh' | 'tailcat' | null
 
   try {
     primaryRouteKind =

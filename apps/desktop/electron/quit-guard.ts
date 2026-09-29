@@ -71,7 +71,7 @@ export interface BackendOwnershipInput {
    */
   ownedBackendCount: number
   /** What the primary profile resolves to; null means a locally spawned backend. */
-  primaryRouteKind: 'cloud' | 'remote' | 'ssh' | null
+  primaryRouteKind: 'cloud' | 'remote' | 'ssh' | 'tailcat' | null
 }
 
 /**

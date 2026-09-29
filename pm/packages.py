@@ -726,6 +726,35 @@ class Gh(BinaryPackage):
 
 
 @register
+class Tailcat(BinaryPackage):
+    """Point-to-point tunnel CLI behind `hermes serve --share tailcat` and
+    Desktop's Tailcat connections. Installed on demand (`hermes pm install
+    tailcat`); nothing needs it until sharing is turned on."""
+
+    name = "tailcat"
+    optional = True
+    binary_rel = {"win32": "tailcat.exe", "posix": "tailcat"}
+    gaps = {
+        "darwin-x64": "tailcat publishes no macOS release archive",
+        "darwin-arm64": "tailcat publishes no macOS release archive",
+        "linux-arm64-bionic": "tailcat publishes no Android build",
+    }
+
+    def fetch_url(self, version: str, target: str) -> str:
+        osname, arch = target.split("-")
+        plat = {"win32": "windows", "linux": "linux"}[osname]
+        arch = {"x64": "amd64", "arm64": "arm64"}[arch]
+        ext = "zip" if osname == "win32" else "tar.gz"
+        return (
+            f"https://github.com/tailscale/tailcat/releases/download/v{version}/"
+            f"tailcat_{version}_{plat}_{arch}.{ext}"
+        )
+
+    def latest_versions(self, target: str, locked=None) -> list[str]:
+        return github_release_tags("tailscale/tailcat", strip_prefix="v")
+
+
+@register
 class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     """FFmpeg builds for supported targets; BtbN Linux archives require glibc.
     optional=False: ffmpeg is a required runtime tool where supported. Sealed bundles ship

@@ -1814,6 +1814,12 @@ export const frOverrides = {
       kindRemoteDesc: 'Une gateway Hermes accessible en HTTP(S), par le LAN, Tailscale ou Internet.',
       kindCloudDesc: 'Une instance hébergée découverte via votre compte Hermes Cloud.',
       kindSshDesc: 'Une installation Hermes accessible en SSH.',
+      kindTailcat: 'Tailcat',
+      kindTailcatDesc: 'Un Hermes partagé avec `hermes serve --share tailcat` — sans ports, VPN ni clés SSH.',
+      tailcatCodeTitle: 'Code de connexion',
+      tailcatCodeDesc: 'Lancez `hermes share code` sur l’autre machine et collez la ligne affichée. Un code ne sert qu’une fois et expire après 5 minutes.',
+      tailcatPaired: fingerprint => `Tailcat · adresse ${fingerprint}`,
+      tailcatRepairHint: 'Appairé. Pour appairer de nouveau, supprimez cette connexion puis ajoutez-la avec un nouveau code.',
       labelTitle: 'Nom',
       labelDesc:
         'Obligatoire. Affiché partout où cette instance apparaît et nécessairement unique (par exemple « Homelab » ou « PC professionnel »).',

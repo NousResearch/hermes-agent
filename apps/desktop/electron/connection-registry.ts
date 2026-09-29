@@ -44,7 +44,7 @@ export const LOCAL_CONNECTION_ID = 'local'
 /** Connection kinds. 'cloud' is remote-shaped (see modeIsRemoteLike) but keeps
  * its provenance so the UI can render the right card and updates can skip
  * platform-managed instances. */
-export type ConnectionKind = 'cloud' | 'local' | 'remote' | 'ssh'
+export type ConnectionKind = 'cloud' | 'local' | 'remote' | 'ssh' | 'tailcat'
 
 export interface RegistryConnection {
   id: string
@@ -73,7 +73,13 @@ export interface RegistryConnection {
   keyPath?: string
   remoteHermesPath?: string
   remoteProfile?: string
+  /** tailcat: the shared backend's tailcat address (`port` is its share port). */
+  address?: string
+  /** tailcat: the device id the share issued at pairing (what its owner revokes). */
+  deviceId?: string
 }
+
+const TAILCAT_ADDRESS_RE = /^tc[A-Za-z0-9_-]{20,}$/
 
 /**
  * A registry entry that failed normalization (#94246). The raw entry is USER
@@ -820,7 +826,7 @@ export function buildAgentRoster(
 
 /** Deterministic route priority for same-backend rows: local is definitionally
  * this box; ssh beats HTTP remotes; cloud last. */
-const CANONICAL_KIND_PRIORITY: Record<ConnectionKind, number> = { cloud: 3, local: 0, remote: 2, ssh: 1 }
+const CANONICAL_KIND_PRIORITY: Record<ConnectionKind, number> = { cloud: 3, local: 0, remote: 2, ssh: 1, tailcat: 2 }
 
 /**
  * Which connection represents a collapsed same-backend roster row: the ACTIVE
@@ -931,6 +937,26 @@ export interface ConnectionInput {
   keyPath?: string
   remoteHermesPath?: string
   remoteProfile?: string
+  address?: string
+  deviceId?: string
+}
+
+/** Dial fields of a tailcat entry, or null when the address/port are unusable. */
+function normalizeTailcatFields(source: {
+  address?: unknown
+  deviceId?: unknown
+  port?: unknown
+}): null | { address: string; deviceId?: string; port: number } {
+  const address = String(source.address ?? '').trim()
+  const port = Number(source.port)
+
+  if (!TAILCAT_ADDRESS_RE.test(address) || !Number.isInteger(port) || port <= 0 || port >= 65536) {
+    return null
+  }
+
+  const deviceId = String(source.deviceId ?? '').trim()
+
+  return deviceId ? { address, deviceId, port } : { address, port }
 }
 
 /**
@@ -1088,6 +1114,30 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
     return entry
   }
 
+  if (kind === 'tailcat') {
+    const tailcat = normalizeTailcatFields(input)
+
+    if (!tailcat) {
+      throw new Error('Tailcat connections need a connection code from `hermes share code`.')
+    }
+
+    const tailcatDupe = registry.connections.find(
+      c => c.kind === 'tailcat' && c.id !== id && c.address === tailcat.address
+    )
+
+    if (tailcatDupe) {
+      throw new Error(`This shared Hermes is already connected as "${tailcatDupe.label}".`)
+    }
+
+    const entry: RegistryConnection = { id, kind: 'tailcat', label, ...tailcat }
+
+    if (input.token !== undefined) {
+      entry.token = input.token
+    }
+
+    return entry
+  }
+
   throw new Error(`Unknown connection kind: ${String(kind)}`)
 }
 
@@ -1124,6 +1174,8 @@ export function mergeConnectionInput(input: ConnectionInput, existing?: null | R
     inherit('name')
   }
 
+  inherit('address')
+  inherit('deviceId')
   inherit('host')
   inherit('keyPath')
   inherit('remoteHermesPath')
@@ -1161,6 +1213,7 @@ export function connectionDialFieldsChanged(before: RegistryConnection, after: R
   }
 
   const fields: (keyof RegistryConnection)[] = [
+    'address',
     'url',
     'authMode',
     'org',
@@ -1259,7 +1312,7 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
       const entry = item as Record<string, unknown>
       const kind = entry.kind
 
-      if (kind !== 'local' && kind !== 'remote' && kind !== 'cloud' && kind !== 'ssh') {
+      if (kind !== 'local' && kind !== 'remote' && kind !== 'cloud' && kind !== 'ssh' && kind !== 'tailcat') {
         quarantine('entry-unrecognized-kind', item)
 
         continue
@@ -1271,7 +1324,11 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
         // Defensive: registry entries are always written with labels, but a
         // hand-edited file may drop one. Derive rather than discard.
         label =
-          kind === 'ssh' ? String(entry.host || 'ssh') : hostLabelFromBaseUrl(String(entry.url || '')) || String(kind)
+          kind === 'ssh'
+            ? String(entry.host || 'ssh')
+            : kind === 'tailcat'
+              ? 'Tailcat'
+              : hostLabelFromBaseUrl(String(entry.url || '')) || String(kind)
       }
 
       label = uniqueLabel(label, seenLabels)
@@ -1340,6 +1397,20 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
         // persistSshConnectionToken() adopted must be carried explicitly (as the
         // remote/cloud branch does). Losing it on a cold read fails the
         // remote-lifecycle reuse gate and reaps a healthy backend (#103795).
+        if (entry.token !== undefined) {
+          clean.token = entry.token
+        }
+      } else if (kind === 'tailcat') {
+        const tailcat = normalizeTailcatFields(entry)
+
+        if (!tailcat) {
+          quarantine('entry-missing-tailcat-address', item)
+
+          continue
+        }
+
+        Object.assign(clean, tailcat)
+
         if (entry.token !== undefined) {
           clean.token = entry.token
         }

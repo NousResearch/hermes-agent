@@ -5,7 +5,8 @@ sidebar_position: 5
 # Connecting Desktop to Many Hermes Instances
 
 Register every Hermes backend you own — the local runtime, remote gateways on
-your LAN or VPS, SSH hosts, and Hermes Cloud instances — in one desktop app,
+your LAN or VPS, SSH hosts, backends shared over tailcat, and Hermes Cloud
+instances — in one desktop app,
 and use the agents on all of them side by side. Connections are persistent:
 each registered gateway dials its own backends and WebSockets on demand, and
 background agents keep streaming while you look at another gateway.
@@ -43,6 +44,7 @@ Each entry is a *connection*:
 | **Local** | "The Hermes runtime managed by this app." | automatic |
 | **Remote gateway** | "A Hermes gateway reachable over HTTP(S) — LAN, Tailscale, or the internet." | session token or OAuth |
 | **SSH** | "A Hermes install reached over SSH." The app opens the tunnel and starts the dashboard for you | SSH key + adopted token |
+| **Tailcat** | "A Hermes shared with `hermes serve --share tailcat` — no ports, VPN, or SSH keys." The app runs the tunnel for you | one-time connection code → device token |
 | **Hermes Cloud** | "A hosted instance discovered through your Hermes Cloud account." | portal sign-in |
 
 Rules worth knowing:
@@ -71,7 +73,8 @@ Rules worth knowing:
   URL (trimmed, trailing slashes stripped, lowercased — and across both
   kinds, so a cloud entry and a remote entry can't point at the same URL);
   **SSH** entries are deduplicated on the normalized `user@host:port` plus
-  remote profile.
+  remote profile; **Tailcat** entries are deduplicated on the shared
+  backend's address, checked after the code is redeemed.
 - Cloud entries normally come from the Hermes Cloud sign-in/discovery flow at
   the top of the Gateways page — the **Hermes Cloud** kind in the add-connection
   editor points you there.
@@ -111,7 +114,8 @@ authentication; manage sign-in from the registered connection controls.
 1. Open **Settings → Gateways** and scroll to the connections registry (or
    click the plug in the profile rail).
 2. Click **Add connection**.
-3. Pick the kind: **Local**, **Hermes Cloud**, **Remote gateway**, or **SSH**.
+3. Pick the kind: **Local**, **Hermes Cloud**, **Remote gateway**, **SSH**, or
+   **Tailcat**.
    (**Local** is disabled while the app-managed local entry exists — which is
    almost always; **Hermes Cloud** directs you to the cloud sign-in/discovery
    flow above.)
@@ -140,6 +144,9 @@ authentication; manage sign-in from the registered connection controls.
        have `hermes` on its `PATH` and **Test** reports *"Hermes is not
        installed on the remote host"*; clearing the field restores
        auto-detection.
+   - *Tailcat only:*
+     - **Connection code** — the line `hermes share code` prints on the
+       sharing machine. See [Sharing a backend over tailcat](#sharing-a-backend-over-tailcat).
 5. Click **Save connection** (or **Cancel**).
 6. Click **Test** on the new row and wait for *"Reachable"*.
 
@@ -151,11 +158,61 @@ instance itself is not touched — you can add it again any time."*
 Nothing here works unless the backend is actually up and reachable on the
 other machine. The desktop app attaches to it; it does not start it for you
 (except for SSH connections, where the app starts the dashboard over the
-tunnel on demand). See
+tunnel on demand; Tailcat connections need `hermes serve --share tailcat`
+running on the other machine). See
 [Connecting to a remote backend](./desktop.md#connecting-to-a-remote-backend)
 for backend-side setup — auth providers, binding to a non-loopback address,
 and Tailscale guidance.
 :::
+
+## Sharing a backend over tailcat
+
+[Tailcat](https://github.com/tailscale/tailcat) connects two machines through
+Tailscale's public relays with NAT traversal, without an account, open ports,
+a VPN, or SSH keys. Hermes runs it on both ends.
+
+On the machine that runs Hermes:
+
+```bash
+hermes serve --share tailcat      # or set dashboard.share: tailcat in config.yaml
+hermes share code                 # prints a one-time code, valid for 5 minutes
+```
+
+In Desktop on the other machine: **Settings → Gateways → Add connection →
+Tailcat**, give it a name, paste the code, and **Save connection**. Desktop
+redeems the code for a device token before it saves anything, so the saved
+connection holds only the token (stored like a remote-gateway token), never
+the code. After that it connects the way a token-auth **Remote gateway**
+does, through the local end of a tunnel Desktop runs for it.
+
+How it works and what to expect:
+
+- **Tailcat is installed for you.** Both `hermes serve --share tailcat` and
+  Desktop's first Tailcat save use a `tailcat` on `PATH` if there is one;
+  otherwise they install Hermes's pinned copy (`hermes pm install tailcat`
+  does it ahead of time). The pinned copy is available for Linux and Windows;
+  on macOS, install `tailcat` yourself and put it on `PATH`.
+- **The address is stable.** The share's tailcat key, with its relay region
+  fixed, lives in `<HERMES_HOME>/tailcat/`, so restarts keep the same address
+  and paired devices reconnect on their own. `hermes share reset` gives the
+  share a new address and unpairs every device.
+- **The share has its own door.** Tunnel traffic reaches a separate loopback
+  listener, not the main one, and that listener accepts only paired device
+  tokens. The backend's own session token does not work through the tunnel,
+  and the owner commands (`/api/share/*`) are not reachable through it.
+- **A paired device has full access.** It can do anything a Remote-gateway
+  token holder can: chat, use tools on that machine, change settings, and run
+  updates. Only pair devices you would give that access to.
+- **Revoking is immediate.** `hermes share devices` lists paired devices;
+  `hermes share revoke <id>` refuses that device's requests and closes its
+  open connections within a few seconds. The tunnel itself still opens (the
+  address is not a secret you can take back), but nothing behind it answers.
+- **Settings shows a fingerprint, not the address.** A saved Tailcat
+  connection reads `Tailcat · address 1a2b3c4d`, the same 8-character
+  fingerprint `hermes share status` prints, so you can match them up. The full
+  address stays in the Desktop main process.
+- **Re-pairing** means removing the connection and adding it again with a new
+  code; editing only renames it.
 
 ### Migrating from the single-connection settings
 
@@ -368,4 +425,9 @@ multi-gateway roster is the reference consumer.
   save time. If a migrated name collided, it was suffixed (`Homelab 2`).
 - **"Could not save the connection"** — most commonly a missing **Name**, a
   name already in use, or a malformed **Gateway URL** / **SSH host**; the
-  error message names the exact violation.
+  error message names the exact violation. For Tailcat, a code works once and
+  expires after 5 minutes — run `hermes share code` again for a fresh one.
+- **A Tailcat connection stopped working** — check `hermes share status` on
+  the sharing machine (is `hermes serve --share tailcat` running?) and
+  `hermes share devices` (was this device revoked?). A revoked device needs a
+  new code.

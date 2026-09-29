@@ -1077,7 +1077,7 @@ export interface DesktopConnectionTestResult {
 
 // ── v2 multi-connection registry (named agent sources) ─────────────────────
 
-export type DesktopConnectionKind = 'cloud' | 'local' | 'remote' | 'ssh'
+export type DesktopConnectionKind = 'cloud' | 'local' | 'remote' | 'ssh' | 'tailcat'
 
 // A registered agent source as the renderer sees it: token bytes never cross
 // the IPC boundary (preview + set flag instead, like DesktopConnectionConfig).
@@ -1095,6 +1095,10 @@ export interface DesktopRegistryConnection {
   keyPath?: string
   remoteHermesPath?: string
   remoteProfile?: string
+  // tailcat: short fingerprint of the shared backend's address (matches
+  // `hermes share status`) and the device id its owner would revoke.
+  addressFingerprint?: string
+  deviceId?: string
   tokenSet: boolean
   tokenPreview: null | string
   // Names of the stored extra gateway headers (Cloudflare Access etc.);
@@ -1146,6 +1150,9 @@ export interface DesktopRegistryConnectionInput {
   keyPath?: string
   remoteHermesPath?: string
   remoteProfile?: string
+  // tailcat: one-time code from `hermes share code`; main redeems it for a
+  // device token during save and never stores it.
+  code?: string
 }
 
 // One agent in the union roster: a profile on a registered source, with the

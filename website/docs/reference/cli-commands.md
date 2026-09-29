@@ -105,6 +105,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes import-agent` | Import a Claude Code (`~/.claude`) or Codex CLI (`~/.codex`) setup. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes serve` | Start the Hermes backend server (headless; powers the desktop app and remote backends). |
+| `hermes share` | Pair devices with a backend shared over tailcat (`hermes serve --share tailcat`). Subcommands: `status`, `code`, `devices`, `revoke`, `reset`. |
 | `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
@@ -1858,6 +1859,25 @@ hermes serve [options]
 Start the Hermes **backend server** — the JSON-RPC/WebSocket gateway the [desktop app](../user-guide/desktop.md) and remote clients connect to. It is the same server `hermes dashboard` runs, but **headless**: it never opens a browser UI. The desktop app launches its own `hermes serve` backend; use this command directly when you want a headless backend on a remote host. Accepts the same `--host` / `--port` / `--insecure` / `--skip-build` / `--stop` / `--status` options as `hermes dashboard` below (a non-loopback bind engages the same auth gate). Requires the `[web]` extra; the embedded Chat socket additionally needs `[pty]` on a POSIX host.
 
 **Port conflicts:** if the requested port (default `9119`) is already held by another process (e.g. a second `hermes serve` or the gateway), the command prints a machine-readable sentinel line `BACKEND_PORT_IN_USE port=<port>` to stdout, a human hint naming the likely holder, and exits with code **75** (`EX_TEMPFAIL`) instead of a generic error — so scripts and the desktop app can tell "port occupied" apart from "backend broken". Pass `--port 0` to bind a free ephemeral port (the successful boot announces the chosen port via `HERMES_BACKEND_READY port=<port>`).
+
+
+**Sharing over tailcat:** `--share tailcat` (or `dashboard.share: tailcat` in `config.yaml`; `--share off` overrides it for one run) also publishes the backend over [tailcat](https://github.com/tailscale/tailcat), so Hermes Desktop on another machine can connect without open ports, a VPN, or SSH keys. Devices pair with one-time codes from [`hermes share`](#hermes-share). See [Sharing a backend over tailcat](../user-guide/multi-connection-desktop.md#sharing-a-backend-over-tailcat).
+
+## `hermes share`
+
+```bash
+hermes share [status|code|devices|revoke <device-id>|reset [--yes]]
+```
+
+Manage a backend shared with `hermes serve --share tailcat`. All state lives in `<HERMES_HOME>/tailcat/`; codes and device tokens are stored only as SHA-256 digests.
+
+| Subcommand | Description |
+|---|---|
+| `status` (default) | The share's address fingerprint and port, and its paired devices. |
+| `code` | Print a one-time connection code for **Settings → Gateways → Add connection → Tailcat** in Hermes Desktop. Valid for 5 minutes, redeemable once. |
+| `devices` | List paired devices with when they paired and were last seen. |
+| `revoke <device-id>` | Refuse that device from now on; its open connections close within a few seconds. |
+| `reset` | Give the share a new address and forget every paired device and unused code. Restart `hermes serve --share tailcat` afterwards. |
 
 ## `hermes dashboard`
 

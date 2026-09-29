@@ -1003,6 +1003,9 @@ DEFAULT_CONFIG = {
     "dashboard": {
         # Visual theme: "default" | "midnight" | "ember" | "mono" | "cyberpunk" | "rose"
         "theme": "default",
+        # Share this backend with paired devices: "off" | "tailcat". `hermes serve --share` overrides
+        # it per run; pair devices with `hermes share code`.
+        "share": "off",
         # Process-isolation rollout controls. Read via the raw config loader, so tui_gateway.server
         # also owns explicit defaults.
         "turn_isolation": False,

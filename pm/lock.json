@@ -542,6 +542,27 @@
       },
       "version": "15.2.0"
     },
+    "tailcat": {
+      "artifacts": {
+        "linux-arm64": {
+          "sha256": "fff48f25d223aea31f985bae8a2c01378b22e51e985e8c7d270e1a8586598506",
+          "url": "https://github.com/tailscale/tailcat/releases/download/v0.6.0/tailcat_0.6.0_linux_arm64.tar.gz"
+        },
+        "linux-x64": {
+          "sha256": "f3597a9ad02f5cca538f8f5a6f89123910bce3e9611d1e5a8e96d5f2d3cc90fd",
+          "url": "https://github.com/tailscale/tailcat/releases/download/v0.6.0/tailcat_0.6.0_linux_amd64.tar.gz"
+        },
+        "win32-arm64": {
+          "sha256": "c4acad6fa2f94f527dc0e9dce1e9adfb36ddfa3a9d43a5e8e66f872cda539362",
+          "url": "https://github.com/tailscale/tailcat/releases/download/v0.6.0/tailcat_0.6.0_windows_arm64.zip"
+        },
+        "win32-x64": {
+          "sha256": "649781e178b070a7a0635bb57408f540a1da36e224042e2cb48a6058dd7b9160",
+          "url": "https://github.com/tailscale/tailcat/releases/download/v0.6.0/tailcat_0.6.0_windows_amd64.zip"
+        }
+      },
+      "version": "0.6.0"
+    },
     "termux-docker": {
       "artifacts": {
         "linux-arm64-bionic": {

@@ -1811,6 +1811,12 @@ export const deOverrides = {
       kindRemoteDesc: 'Ein Hermes Gateway, das über HTTP(S) erreichbar ist – LAN, Tailscale oder das Internet.',
       kindCloudDesc: 'Eine gehostete Instanz, die über Ihr Hermes-Cloud-Konto gefunden wurde.',
       kindSshDesc: 'Eine Hermes-Installation, die über SSH erreicht wird.',
+      kindTailcat: 'Tailcat',
+      kindTailcatDesc: 'Ein mit `hermes serve --share tailcat` geteiltes Hermes – ohne Ports, VPN oder SSH-Schlüssel.',
+      tailcatCodeTitle: 'Verbindungscode',
+      tailcatCodeDesc: 'Führe `hermes share code` auf dem anderen Rechner aus und füge die ausgegebene Zeile ein. Codes gelten einmal und verfallen nach 5 Minuten.',
+      tailcatPaired: (fingerprint: string) => `Tailcat · Adresse ${fingerprint}`,
+      tailcatRepairHint: 'Gekoppelt. Um neu zu koppeln, entferne diese Verbindung und füge sie mit einem neuen Code hinzu.',
       labelTitle: 'Name',
       labelDesc:
         'Pflichtfeld. Wird überall angezeigt, wo diese Instanz erscheint; muss eindeutig sein (z. B. „Homelab“, „Arbeitslaptop“).',

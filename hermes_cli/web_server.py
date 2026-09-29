@@ -1004,6 +1004,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     chat_ws as _chat_ws_routes,
     chat_workspaces as _chat_workspaces_routes,
     dashboard_ui as _dashboard_ui_routes,
+    share as _share_routes,
 )
 
 app.include_router(_files_routes.router)
@@ -1036,6 +1037,7 @@ app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
+app.include_router(_share_routes.router)
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
@@ -1516,6 +1518,7 @@ def start_server(
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
+    share: str = "",
 ):
     """Start the web UI server.
 
@@ -1529,6 +1532,8 @@ def start_server(
     ``start_mcp_discovery_after_bind`` (Desktop ``serve``) defers MCP discovery
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
+    ``share`` (``--share``) overrides ``dashboard.share``; ``tailcat`` starts
+    the tailcat share once the main socket is up (``web_server_share_runtime``).
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
@@ -1618,7 +1623,13 @@ def start_server(
                 from hermes_cli.observability.shared_metrics_startup import record_process_ready
                 record_process_ready("serve_boot", background=True)
 
-            await server.main_loop()
+            from hermes_cli import web_server_share_runtime as share_runtime
+
+            await share_runtime.start_if_configured(share or share_runtime.configured_mode())
+            try:
+                await server.main_loop()
+            finally:
+                await share_runtime.stop()
             if server.started:
                 await server.shutdown()
 

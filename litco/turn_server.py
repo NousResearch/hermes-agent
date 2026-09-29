@@ -42,6 +42,8 @@ from litco import __version__
 from litco.assertion import secret_matches, verify_user_assertion
 from litco.homes import (changed_deliverables, inbox_dir, matter_home, pop_registered, resolve_deliverable,
                          safe_segment, snapshot_deliverables, thread_home)
+from litco.thread_context import (Actor, LitKitChannel, ThreadContext, parse_actor, parse_litkit_channel,
+                                  parse_thread_context, render_thread_block, strip_embedded_gap)
 
 logger = logging.getLogger("litco.turn_server")
 
@@ -71,6 +73,11 @@ class TurnRequest:
     kind: str
     budget_ms: Optional[int] = None
     acting_user: Optional[str] = None  # set only when a user assertion verified
+    # Matter channels (design 4.3), all optional: who addressed Ana, what the thread said since her
+    # last reply, and the LitKit channel the thread lives in (``channel`` above is the transport).
+    actor: Optional[Actor] = None
+    thread_context: Optional[ThreadContext] = None
+    litkit_channel: Optional[LitKitChannel] = None
 
 
 @dataclass
@@ -351,7 +358,10 @@ class TurnServer:
             return None, self._error(400, "bad_budget", "budgetMs must be a positive number")
         return TurnRequest(matter_id=matter_id, user_id=user_id, session_id=session_id, text=text,
                            attachments=attachments, channel=channel, kind=kind,
-                           budget_ms=int(budget) if budget is not None else None), None
+                           budget_ms=int(budget) if budget is not None else None,
+                           actor=parse_actor(body.get("actor")),
+                           thread_context=parse_thread_context(body.get("threadContext")),
+                           litkit_channel=parse_litkit_channel(body.get("litkitChannel"))), None
 
     # -- event plumbing ----------------------------------------------------------
     def _push(self, turn: _Turn, event_type: str, fields: Dict[str, Any]) -> None:
@@ -556,9 +566,20 @@ def _hermes_version() -> Optional[str]:
 
 
 def build_user_message(ctx: TurnContext) -> str:
-    """The text handed to the agent: the lawyer's words plus where any attachments landed."""
+    """The text handed to the agent: the lawyer's words plus where any attachments landed.
+
+    With structured ``threadContext``, the thread so far comes first as a quoted block, then
+    ``<Actor> asks:`` and the words; a copy of the thread the app embedded in the text is dropped.
+    The block becomes part of the Hermes session, so the next turn's context starts after it.
+    """
     req = ctx.request
-    lines = [req.text.strip()] if req.text.strip() else []
+    text = req.text.strip()
+    lines = [text] if text else []
+    if req.thread_context is not None and req.thread_context.messages:
+        text = strip_embedded_gap(req.text).strip()
+        asker = req.actor.name if req.actor is not None and req.actor.name else ""
+        ask = f"{asker} asks:\n{text}" if asker and text else text
+        lines = [render_thread_block(req.thread_context)] + (["", ask] if ask else [])
     if ctx.local_attachments:
         lines.append("")
         lines.append("Attached files:")

@@ -23,6 +23,8 @@ class TurnIdentity:
     # Set only when the turn's user assertion verified; the tools assert this user to LitKit.
     acting_user: Optional[str] = None
     cwd: Optional[Path] = None
+    # The slug of the LitKit matter channel the turn arrived in (``litkitChannel.slug``), if any.
+    litkit_channel: Optional[str] = None
 
 
 _TURN: ContextVar[Optional[TurnIdentity]] = ContextVar("LITCO_TURN_IDENTITY", default=None)

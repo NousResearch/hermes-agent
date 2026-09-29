@@ -31,6 +31,7 @@ provides_tools:
   - litkit_recall
   - litkit_actions
   - litkit_attachment
+  - litkit_channel_history
   - litco_deliver_local
 requires_env:
   - name: LITCO_INSTANCE_URL

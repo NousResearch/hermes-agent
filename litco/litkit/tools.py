@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import re
+from urllib.parse import quote
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -34,6 +35,8 @@ TOOLSET = "litkit"
 EXPORT_BATCH = 500
 SEARCH_MAX = 500
 DOCS_PAGE_MAX = 5000
+CHANNEL_HISTORY_MAX = 100
+CHANNEL_HISTORY_TEXT_MAX = 4000
 _UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
@@ -969,6 +972,58 @@ def litkit_notify(args: Dict[str, Any]) -> Any:
     return {"notified": target, "result": result}
 
 
+def _history_author(row: Dict[str, Any], names: Dict[str, str]) -> str:
+    if row.get("role") == "assistant":
+        return "Ana"
+    user = row.get("authorUserId")
+    if isinstance(user, str) and user:
+        return names.get(user.lower()) or "A former member"
+    ref = row.get("externalRef") if isinstance(row.get("externalRef"), dict) else {}
+    slack = ref.get("name") if isinstance(ref.get("name"), str) else ""
+    if slack.strip():
+        return f"{slack.strip()} (Slack)"
+    return "LitKit" if row.get("role") == "system" else "Someone outside LitKit"
+
+
+@_tool("litkit_channel_history")
+def litkit_channel_history(args: Dict[str, Any]) -> Any:
+    """Recent messages across a matter channel's team threads, newest first. Read-only; LitKit
+    leaves private threads out, even the acting lawyer's own."""
+    client = _client()
+    mid = _mid(client)
+    turn = current_turn()
+    slug = str(args.get("channel") or (turn.litkit_channel if turn is not None else None) or "").strip().lstrip("#")
+    if not slug:
+        raise ValueError("'channel' is required: this turn did not arrive in a LitKit channel")
+    if len(slug) > 100:
+        raise ValueError("'channel' is a channel slug such as depo-prep")
+    limit = max(1, min(int(args.get("limit") or 50), CHANNEL_HISTORY_MAX))
+    before = str(args["before"]).strip() if args.get("before") else None
+    if before:
+        try:
+            _dt.datetime.fromisoformat(before.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("'before' must be an ISO time, e.g. 2026-09-29T10:00:00Z (a page's nextBefore)")
+    body = client.get(f"/api/matters/{mid}/channels/{quote(slug, safe='')}/history",
+                      params={"before": before, "limit": limit})
+    body = body if isinstance(body, dict) else {}
+    names: Dict[str, str] = {}
+    for person in body.get("people") or []:
+        if isinstance(person, dict) and isinstance(person.get("id"), str):
+            label = (person.get("name") or "").strip() or (person.get("email") or "").strip()
+            if label:
+                names[person["id"].lower()] = label
+    rows = [{"author": _history_author(m, names), "at": m.get("createdAt"), "threadId": m.get("threadId"),
+             "text": _clip(m.get("text") or "", CHANNEL_HISTORY_TEXT_MAX)}
+            for m in body.get("messages") or [] if isinstance(m, dict)]
+    channel = body.get("channel") if isinstance(body.get("channel"), dict) else {}
+    return {"channel": {k: channel.get(k) for k in ("slug", "name", "topic") if channel.get(k)} or {"slug": slug},
+            "messages": len(rows), "nextBefore": body.get("nextBefore"),
+            "notes": ["newest first; team threads only (private threads are never listed). Page back with "
+                      "before=nextBefore."],
+            "rows": rows}
+
+
 def _actions(client: LitKitClient, action: str, action_args: Dict[str, Any]) -> Any:
     return client.post("/api/agent/actions", {"action": action, "matterId": _mid(client), "args": action_args})
 
@@ -1157,6 +1212,12 @@ SCHEMAS: Dict[str, Dict[str, Any]] = {
         {"action": {"type": "string", "enum": list(PASSTHROUGH_ACTIONS)},
          "args": {"type": "object", "description": "the action's arguments, e.g. {query, topN} for term_frequency"}},
         ["action"]),
+    "litkit_channel_history": _schema(
+        "litkit_channel_history", "Recent messages in a matter channel's team threads, newest first: author, "
+        "time, thread id, text. Private threads are never included. Read-only. Page back with before=nextBefore.",
+        {"channel": {"type": "string", "description": "channel slug, e.g. depo-prep (default: this turn's channel)"},
+         "limit": {"type": "integer", "description": "1-100, default 50"},
+         "before": {"type": "string", "description": "ISO time; only messages older than this"}}),
     "litkit_attachment": _schema(
         "litkit_attachment", "Fetch a chat attachment by its LitKit fileId into inbox/<fileId>/.",
         {"fileId": _S, "filename": _S}, ["fileId"]),
@@ -1178,7 +1239,8 @@ HANDLERS: Dict[str, Callable[..., str]] = {
     "litkit_ingest": litkit_ingest, "litkit_proposals": litkit_proposals, "litkit_tags": litkit_tags,
     "litkit_work_sets": litkit_work_sets, "litkit_litlex": litkit_litlex, "litkit_notify": litkit_notify,
     "litkit_remember": litkit_remember, "litkit_recall": litkit_recall, "litkit_actions": litkit_actions,
-    "litkit_attachment": litkit_attachment, "litco_deliver_local": litco_deliver_local,
+    "litkit_attachment": litkit_attachment, "litkit_channel_history": litkit_channel_history,
+    "litco_deliver_local": litco_deliver_local,
 }
 
 # Tools that make no LitKit call are offered on any matter host.

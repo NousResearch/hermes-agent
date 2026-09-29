@@ -154,6 +154,7 @@ def test_publisher_bot_commit_uses_git_objects_not_pr_checkout(tmp_path, monkeyp
     (repo / "scripts").mkdir()
     for name in ("gen-bootstrap-pins.py", "install.sh", "install.ps1"):
         shutil.copy2(source_root / "scripts" / name, repo / "scripts" / name)
+    (repo / "scripts/install.sh").chmod(0o755)
     git("add", "pm/lock.json", "scripts")
     git("-c", "user.name=test", "-c", "user.email=test@example.org", "commit", "-m", "main")
     trusted_sha = git("rev-parse", "HEAD")
@@ -229,6 +230,8 @@ def test_publisher_bot_commit_uses_git_objects_not_pr_checkout(tmp_path, monkeyp
     assert f'PreparedSha256 = "{git_pin["sha256"]}"' in generated
     assert f'PreparedDigest = "{git_pin["digest"]}"' in generated
     assert generated != git("show", f"{head}:scripts/install.ps1")
+    assert git("ls-tree", head, "--", "scripts/install.sh").split()[0] == "100755"
+    assert git("ls-tree", commit, "--", "scripts/install.sh").split()[0] == "100755"
     with pytest.raises(ValueError, match="branch moved"):
         prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, head, mirror=mirror)
     assert prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, commit, mirror=mirror) == commit

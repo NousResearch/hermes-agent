@@ -193,9 +193,12 @@ def _bootstrap_updates(head_sha: str, lock_path: Path, scratch: Path) -> dict[st
     result = {}
     for name, fragment in fragments.items():
         path = scratch / Path(name).name
-        path.write_bytes(_run("git", "show", f"{head_sha}:{name}", strip=False))
+        original = _run("git", "show", f"{head_sha}:{name}", strip=False)
+        path.write_bytes(original)
         methods["_splice"](path, fragment, False)
-        result[name] = path.read_bytes()
+        updated = path.read_bytes()
+        if updated != original:
+            result[name] = updated
     return result
 
 
@@ -262,7 +265,10 @@ def publish(receipts: Path, repository: str, number: int, head_sha: str,
                        env=env, check=True)
         for name, content in updates.items():
             fragment_blob = _run("git", "hash-object", "-w", "--stdin", input=content).decode()
-            subprocess.run(["git", "update-index", "--add", "--cacheinfo", f"100644,{fragment_blob},{name}"],
+            mode = _run("git", "ls-tree", head_sha, "--", name).decode().partition(" ")[0]
+            if mode not in ("100644", "100755"):
+                raise ValueError(f"invalid installer mode at PR head: {name}")
+            subprocess.run(["git", "update-index", "--add", "--cacheinfo", f"{mode},{fragment_blob},{name}"],
                            env=env, check=True)
         tree = subprocess.run(["git", "write-tree"], env=env, check=True, capture_output=True).stdout.strip().decode()
         commit = _run("git", "-c", "user.name=github-actions[bot]",

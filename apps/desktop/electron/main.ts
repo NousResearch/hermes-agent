@@ -300,6 +300,7 @@ import {
 import { assertNoSecondLocalBackend, assertNotPassiveSpawn } from './host-backend-singleton'
 import { lookupPublishedSessionToken } from './host-published-token'
 import { requestHudClose } from './hud-close'
+import { isHudSummonDeepLink } from './hud-deep-link'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
 import { applyHudResetBounds, defaultHudBounds } from './hud-geometry'
@@ -18806,7 +18807,7 @@ if (!isPrimaryInstance) {
       focusWindow,
       // HUD summon is handled entirely by the main process and must not raise
       // the main window. Other deep links still focus their destination.
-      focusExisting: !url || !url.startsWith('hermes://hud/summon')
+      focusExisting: !url || !isHudSummonDeepLink(url)
     })
   })
 }

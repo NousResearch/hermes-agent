@@ -9,6 +9,7 @@ ten minutes, so the throwaway can be the one that survives.
 
 from __future__ import annotations
 
+import json
 import types
 import weakref
 
@@ -56,6 +57,65 @@ def test_the_rename_waits_for_the_model_title(lane):
 
     callback("Fix flaky auth test", "llm")
     assert renames == ["Fix flaky auth test"]
+
+
+def test_discord_title_retry_recovers_auto_thread_origin():
+    """A fresh agent on a later thread turn still wires the semantic rename."""
+    scheduled = []
+    current = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        message_id="follow-up",
+    )
+    origin = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="thread-1",
+        chat_type="thread",
+        thread_id="thread-1",
+        message_id="opening-message",
+        auto_thread_created=True,
+        auto_thread_initial_name="Opening words",
+    )
+    session_db = types.SimpleNamespace(
+        get_session=lambda session_id: {
+            "origin_json": json.dumps(origin.to_dict()),
+        }
+    )
+    runner = types.SimpleNamespace(
+        _is_telegram_topic_lane=lambda source: False,
+        _is_discord_auto_thread_lane=lambda source: (
+            source.platform == Platform.DISCORD
+            and source.chat_type == "thread"
+            and source.auto_thread_created is True
+            and bool(source.thread_id)
+            and bool(source.auto_thread_initial_name)
+        ),
+        _is_relay_discord_channel_lane=lambda source: False,
+        _schedule_discord_semantic_thread_rename=(
+            lambda source, session_id, title: scheduled.append(
+                (source, session_id, title)
+            )
+        ),
+    )
+    holder = types.SimpleNamespace(
+        _runner=runner,
+        _attach_session_title_callback=TurnRunner._attach_session_title_callback,
+    )
+    agent = types.SimpleNamespace(session_id="sess-1", _session_db=session_db)
+
+    holder._attach_session_title_callback(
+        holder, agent, types.SimpleNamespace(source=current)
+    )
+    agent._on_session_title("Recovered semantic title", "llm")
+
+    recovered, session_id, title = scheduled[0]
+    assert recovered.message_id == "follow-up"
+    assert recovered.auto_thread_created is True
+    assert recovered.auto_thread_initial_name == "Opening words"
+    assert session_id == "sess-1"
+    assert title == "Recovered semantic title"
 
 
 @pytest.mark.anyio

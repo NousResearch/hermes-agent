@@ -1,4 +1,5 @@
-import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import { mediaDisplayLabel, mediaKind, mediaMarkdownHref, mediaName } from '@/lib/media'
+import { fileLinkMarkdownHref } from '@/lib/preview-targets'
 
 import type { ChatMessage, ChatMessagePart } from './types'
 
@@ -95,7 +96,7 @@ const _MEDIA_PATH_ANCHORED = `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*
 const _MEDIA_PATH_BARE = '[^\\s`"]+'
 
 const MEDIA_LINE_RE = new RegExp(
-  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(\\n|$)`,
+  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|${_MEDIA_PATH_BARE})[\`"']?[\\t ]*(?=\\n|$)`,
   'g'
 )
 
@@ -125,13 +126,29 @@ function mediaLink(value: string): string {
   return `[${mediaDisplayLabel(path)}](${mediaMarkdownHref(path)})`
 }
 
+// A `MEDIA:` tag written mid-sentence for a document: the model is naming the
+// file in prose, so it stays inline link text (click → preview pane) rather
+// than a block card that splits the sentence. Media (image/audio/video) keeps
+// its inline player; a `MEDIA:` line on its own always gets the full card.
+function inlineMediaLink(value: string): string {
+  const path = unquoteMediaPath(value)
+
+  if (mediaKind(path) !== 'file') {
+    return mediaLink(value)
+  }
+
+  return `[${mediaName(path).replace(/[[\]\\]/g, '\\$&')}](${fileLinkMarkdownHref(path)})`
+}
+
 export function renderMediaTags(text: string): string {
   return text
     .replace(
+      // The trailer is a lookahead so back-to-back `MEDIA:` lines each match
+      // as a line (and each get a card), not just the first.
       MEDIA_LINE_RE,
-      (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
+      (_match, lead: string, value: string) => `${lead}${mediaLink(value)}`
     )
-    .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
+    .replace(MEDIA_TAG_RE, (_match, value: string) => inlineMediaLink(value))
 }
 
 /** Raw `MEDIA:` values in `text`, quotes intact — the one parser Artifacts and chat share. */

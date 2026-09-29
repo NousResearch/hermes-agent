@@ -1,3 +1,5 @@
+# ABOUTME: Checks overwrite guards against a separate backend filesystem view.
+# ABOUTME: Drives real registry dispatch and shell file operations.
 """Binary-document overwrite guard must decide WHERE THE WRITE WILL EXECUTE.
 
 A text write can never produce a valid SQLite/PDF payload, so write_file/patch
@@ -11,6 +13,7 @@ target directory — only PATHS are substituted, never probe results.
 """
 
 import json
+import os
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -190,3 +193,64 @@ def test_remote_probe_failure_fails_closed(remote_target):
         error = result.get("error") or ""
         assert "Refusing" in error and "establish" in error, (failure_mode, result)
         assert target_path.read_bytes() == original
+
+
+def test_remote_overwrite_requires_a_current_complete_read(remote_target):
+    target = remote_target.target / "notes.txt"
+    view = remote_target.view / "notes.txt"
+    original = "first\nsecond\nthird\n"
+    target.write_text(original, encoding="utf-8")
+    task = remote_target.task_id
+
+    refused = _write_file(view, task)
+    assert refused.get("stale_write_blocked"), refused
+    assert target.read_text(encoding="utf-8") == original
+
+    for offset in (1, 2):
+        assert "error" not in _dispatch(
+            "read_file", {"path": str(view), "offset": offset, "limit": 1}, task)
+        refused = _write_file(view, task)
+        assert refused.get("stale_write_blocked"), refused
+    assert "error" not in _dispatch(
+        "read_file", {"path": str(view), "offset": 3, "limit": 1}, task)
+    assert "error" not in _write_file(view, task, original)
+
+    stamp = target.stat()
+    external = "first\nchanged\nthird\n"
+    target.write_text(external, encoding="utf-8")
+    os.utime(target, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    refused = _write_file(view, task)
+    assert refused.get("stale_write_blocked"), refused
+    assert target.read_text(encoding="utf-8") == external
+
+    assert "error" not in _dispatch("read_file", {"path": str(view)}, task)
+    assert "error" not in _write_file(view, task, "accepted\n")
+    assert "error" not in _write_file(view, task, "own next write\n")
+    assert target.read_text(encoding="utf-8") == "own next write\n"
+    assert "error" not in _write_file(remote_target.view / "created.txt", task)
+
+
+def test_remote_read_baseline_is_bound_to_the_backend(remote_target):
+    target = remote_target.target / "notes.txt"
+    view = remote_target.view / "notes.txt"
+    original = "unchanged bytes\n"
+    target.write_text(original, encoding="utf-8")
+    task = remote_target.task_id
+    assert "error" not in _dispatch("read_file", {"path": str(view)}, task)
+
+    replacement = VercelSandboxEnvironment(
+        remote_target.view, remote_target.target, remote_target.env._inner)
+    with terminal_tool._env_lock:
+        terminal_tool._active_environments[task] = replacement
+    with file_tools_mod._file_ops_lock:
+        file_tools_mod._file_ops_cache.pop(task, None)
+    refused = _write_file(view, task)
+    assert refused.get("stale_write_blocked"), refused
+    assert target.read_text(encoding="utf-8") == original
+
+    assert "error" not in _dispatch("read_file", {"path": str(view)}, task)
+    assert "error" not in _write_file(view, task, "accepted\n")
+    replacement.failure_mode = "error"
+    refused = _write_file(view, task)
+    assert "error" in refused, refused
+    assert target.read_text(encoding="utf-8") == "accepted\n"

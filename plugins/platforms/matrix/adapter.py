@@ -1503,6 +1503,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
             or meta.get("_stream_reply_to_message_id")
             or reply_to
         )
+        notice = meta.get("_notice_reply") is True
         last_event_id = None
         event_ids: list[str] = []
         formatted = self.format_message(content)
@@ -1521,7 +1522,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
                     return SendResult(success=False, error=error, error_kind="too_long")
             try:
                 last_event_id = await self._send_room_message(
-                    chat_id, msg_content, finalize=not (metadata or {}).get("expect_edits", False))
+                    chat_id, msg_content, notice=notice, finalize=not (metadata or {}).get("expect_edits", False))
                 event_ids.append(last_event_id)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
@@ -1531,7 +1532,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
                 try:  # E2EE error: retry once after sharing keys
                     await self._client.crypto.share_keys()
                     last_event_id = await self._send_room_message(
-                        chat_id, msg_content, finalize=not (metadata or {}).get("expect_edits", False))
+                        chat_id, msg_content, notice=notice, finalize=not (metadata or {}).get("expect_edits", False))
                     event_ids.append(last_event_id)
                     logger.info("Matrix: sent event %s to %s (after key share)", last_event_id, chat_id)
                 except Exception as retry_exc:
@@ -1551,7 +1552,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
 
 
     async def _send_room_message(
-        self, chat_id: str, msg_content: dict[str, Any], *, finalize: bool = True,
+        self, chat_id: str, msg_content: dict[str, Any], *, finalize: bool = True, notice: bool = False,
     ) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
         event_id = await asyncio.wait_for(
@@ -1560,7 +1561,7 @@ class MatrixAdapter(MatrixApprovalMixin, MatrixReactionPromptMixin, MatrixInvite
         self._event_context_cache.store(
             chat_id, event_id, MatrixEventContext(self._user_id or "", msg_content["body"])
         )
-        self._thread_fallbacks.remember_sent(chat_id, msg_content, event_id)
+        self._thread_fallbacks.remember_sent(chat_id, msg_content, event_id, notice=notice)
         self._remember_followup_delivery(chat_id, event_id, msg_content, finalize=finalize)
         return event_id
 

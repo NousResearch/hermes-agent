@@ -52,6 +52,10 @@ def test_len_fn_utf16_counts_code_units():
     assert a.message_len_fn("\U0001f600") == 2
 
 
+
+
+
+
 class _CaptureTransport:
     """Recording transport for outbound routing tests."""
 
@@ -152,8 +156,13 @@ def _make_scoped_event_with_author(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("door", ["send", "send_for_platform"])
-async def test_stream_request_marker_never_reaches_the_wire(door):
-    """``_stream_reply_to_message_id`` is gateway-internal, like ``_interim_send``."""
+@pytest.mark.parametrize(
+    "marker",
+    [{"_stream_reply_to_message_id": "req-1"}, {"_notice_reply": True}],
+    ids=["request", "notice"],
+)
+async def test_reply_markers_never_reach_the_wire(door, marker):
+    """Reply-reference markers are gateway-internal, like ``_interim_send``."""
     t = _CaptureTransport()
     t._identities = [("discord", "bot-1")]
     a = RelayAdapter(
@@ -171,7 +180,7 @@ async def test_stream_request_marker_never_reaches_the_wire(door):
         return t.sent["metadata"]
 
     routing = {"thread_id": "t-1", "_interim_send": True}
-    marked = await wire_metadata({**routing, "_stream_reply_to_message_id": "req-1"})
+    marked = await wire_metadata({**routing, **marker})
     unmarked = await wire_metadata(routing)
 
     assert marked == unmarked

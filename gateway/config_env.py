@@ -165,9 +165,11 @@ def _env_home_channel(config: GatewayConfig, platform: Platform, env_base: str, 
 
 
 def _env_reply_mode(config: GatewayConfig, platform: Platform, env: str) -> None:
-    mode = getenv(env).lower()
+    mode = getenv(env).strip().lower()
     if mode in {"off", "first", "all"}:
         config.platforms.setdefault(platform, PlatformConfig()).reply_to_mode = mode
+    elif mode:
+        logger.warning("Ignoring invalid %s=%r (expected off|first|all)", env, mode)
 
 
 def _loading_secondary_under_multiplexer() -> bool:

@@ -834,17 +834,21 @@ class MatrixAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.MATRIX)
         self.max_message_length = _resolve_max_message_length(config)
         self.MAX_MESSAGE_LENGTH = self.max_message_length  # mirrors other adapters for tooling
-        # reply_to_mode ("off"|"first"|"all"), mirroring Discord/Telegram: "off" sends plain
-        # messages without the m.in_reply_to quote anchor; threaded sends keep their m.thread
-        # relation (the in_reply_to fallback inside a thread relation stays, per spec it is what
-        # unthreaded clients render). YAML 1.1 parses a bare `off`/`on` as a bool — normalized.
-        # The `extra:` spelling is resolved at config-load time by the YAML bridge → env (discord
-        # pattern); the adapter reads the typed PlatformConfig key.
-        _rtm = getattr(config, "reply_to_mode", None)
+        # reply_to_mode ("off"|"first"|"all"), mirroring Discord/Telegram: "off" sends responses
+        # without any m.in_reply_to quote anchor — including the reply fallback a thread relation
+        # would otherwise carry — so no quote pill renders; threaded sends keep their m.thread
+        # relation. Read through the per-profile reader (scoped MATRIX_REPLY_TO_MODE env → the
+        # profile's extra, where the YAML bridge seeds both the top-level and `extra:` spellings →
+        # the typed PlatformConfig key), same as session_scope/auto_thread: a multiplexed secondary
+        # profile skips the env write, so extra is its only carrier. YAML 1.1 parses a bare
+        # `off`/`on` as a bool — normalized.
+        _rtm = _extra_or_secret(
+            config.extra, "reply_to_mode", "MATRIX_REPLY_TO_MODE", getattr(config, "reply_to_mode", None))
         if isinstance(_rtm, bool):
             _rtm = "all" if _rtm else "off"
         self._reply_to_mode: str = str(_rtm or "first").strip().lower()
         if self._reply_to_mode not in {"off", "first", "all"}:
+            logger.warning("Matrix: invalid reply_to_mode %r (expected off|first|all); using 'first'", _rtm)
             self._reply_to_mode = "first"
         # A chunk near the outbound limit almost certainly has a continuation.
         self._SPLIT_THRESHOLD = max(100, self.max_message_length - 100)
@@ -2849,19 +2853,24 @@ class MatrixAdapter(BasePlatformAdapter):
 
         ``reply_to`` arrives already chunk-gated from send() via _should_reply_anchor;
         the off-check below also guards single-shot callers (media/voice sends).
+
+        reply_to_mode "off" suppresses every m.in_reply_to, including the thread relation's
+        reply fallback: rooms auto-thread by default, so keeping the fallback would render the
+        same quote pill in unthreaded clients that "off" exists to remove (#7507). The m.thread
+        relation itself is always kept; without a fallback ``is_falling_back`` is omitted too.
         """
         thread_id = str((metadata or {}).get("thread_id") or "")
-        # reply_to_mode "off" drops the plain reply anchor (no quote pill); a thread relation
-        # still carries its in_reply_to fallback so non-thread clients keep rendering the pill.
-        if reply_to and self._reply_to_mode != "off":
+        reply_off = self._reply_to_mode == "off"
+        if reply_to and not reply_off:
             msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
-            relates_to["is_falling_back"] = True
-            # Non-thread clients render the reply fallback; default it to the thread root.
-            relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})
+            if not reply_off:
+                relates_to["is_falling_back"] = True
+                # Non-thread clients render the reply fallback; default it to the thread root.
+                relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})
             msg_content["m.relates_to"] = relates_to
 
     def _extract_outbound_mentions(self, text: str) -> list[str]:

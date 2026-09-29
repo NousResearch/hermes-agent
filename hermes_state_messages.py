@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
@@ -1076,7 +1076,9 @@ class SessionMessagesMixin:
         lock_holder: Optional[str] = None, tail_count: int = 0,
         carried_messages: Optional[List[Dict[str, Any]]] = None,
         covered_ids: Optional[List[int]] = None,
-        unresolved_held: Optional[List[Dict[str, Any]]] = None) -> int:
+        unresolved_held: Optional[List[Dict[str, Any]]] = None,
+        idle_claim: Optional[Tuple[int, int, str] | Tuple[int, int, str, Callable[[], bool]]] = None,
+        idle_system_prompt: Optional[str] = None) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
@@ -1104,6 +1106,8 @@ class SessionMessagesMixin:
         """
         from hermes_state import SessionCompressionInProgressError
         def _do(conn):
+            if idle_claim is not None:
+                self._check_idle_compaction_claim(conn, session_id, *idle_claim)
             if lock_holder is not None:
                 lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
                 if lock_row is None or lock_row["holder"] != lock_holder or float(lock_row["expires_at"]) <= time.time():
@@ -1115,9 +1119,16 @@ class SessionMessagesMixin:
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
             proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held)
             if proved is not None:
-                return self._archive_named_rows(
+                result = self._archive_named_rows(
                     conn, session_id, compacted_messages, proved, tail_count=tail_count,
                     carried_messages=carried_messages, patched_model_config=patched_model_config, patch=patch)
+                if idle_claim is not None:
+                    if idle_system_prompt is not None:
+                        conn.execute("UPDATE sessions SET system_prompt_hash = ?, system_prompt = NULL WHERE id = ?",
+                                     (self._store_system_prompt(conn, idle_system_prompt), session_id))
+                        self._delete_unreferenced_system_prompts(conn)
+                    self._finish_idle_compaction(conn, session_id)
+                return result
             tail_ids, tail_tool_calls = ([], 0) if watermark is None else self._tail_rows_after_watermark(
                 conn, "SELECT id, tool_calls FROM messages WHERE session_id = ? AND active = 1 AND id > ? ORDER BY id",
                 (session_id, int(watermark)))
@@ -1154,6 +1165,12 @@ class SessionMessagesMixin:
             self._reconcile_display_orders(conn, session_id)
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
+            if idle_claim is not None:
+                if idle_system_prompt is not None:
+                    conn.execute("UPDATE sessions SET system_prompt_hash = ?, system_prompt = NULL WHERE id = ?",
+                                 (self._store_system_prompt(conn, idle_system_prompt), session_id))
+                    self._delete_unreferenced_system_prompts(conn)
+                self._finish_idle_compaction(conn, session_id)
             return inserted
         return self._execute_transcript_write(_do, compacted_messages)
 

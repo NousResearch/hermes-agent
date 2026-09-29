@@ -415,7 +415,8 @@ class GatewayTurnMixin:
                 "telegram topic recovery: chat=%s user=%s %r -> %s",
                 source.chat_id, source.user_id, source.thread_id, recovered,
             )
-            source = dataclasses.replace(source, thread_id=recovered)
+            from gateway.session_identity import replace_source
+            source = replace_source(source, thread_id=recovered)
             with suppress(Exception):
                 event.source = source
 
@@ -1950,6 +1951,7 @@ class GatewayTurnMixin:
             # /loop and /goal hooks that read the return value.
             with suppress(Exception):
                 event._streamed_final_response = str(response or "")
+            event._post_reply_streamed = True
             return None
 
         return response
@@ -2131,6 +2133,71 @@ class GatewayTurnMixin:
             persist_user_display_kind, session_entry.session_id, owner,
         ), _session_env_tokens
 
+    async def _invalidate_post_reply_idle_for_turn(self, event, source, session_key, session_id=None):
+        """Fence an admitted human turn before it can race a due background summary."""
+        if event.internal:
+            return
+        from contextvars import copy_context
+        from gateway.run import _load_gateway_config
+        from gateway.session_identity import identity_of
+        from gateway.post_reply_idle_policy import resolve_post_reply_idle_policy
+
+        with self._profile_scope_for_source(source):
+            try:
+                idle_after = resolve_post_reply_idle_policy(_load_gateway_config(), source, identity_of(source))
+            except ValueError as exc:
+                logger.warning("Invalid post-reply idle policy; disabling it: %s", exc)
+                return
+            if idle_after is None:
+                return
+            if session_id is None:
+                entry = await asyncio.to_thread(self.session_store.lookup_by_session_key, session_key)
+                session_id = entry.session_id if entry else None
+            if not session_id:
+                return
+            if getattr(event, "_post_reply_idle_session_id", None) == session_id:
+                return
+            session_db = self._session_db
+            db = getattr(session_db, "_db", session_db)
+            try:
+                generation = await asyncio.to_thread(copy_context().run, db.invalidate_post_reply_idle, session_id)
+            except ValueError:
+                # A stale routing entry may already have ended; get_or_create_session
+                # below will mint the replacement and fence its new ID.
+                return
+            except Exception:
+                logger.warning("Could not invalidate optional post-reply idle job for %s", session_id,
+                               exc_info=True)
+                return
+            event._post_reply_idle_generation = generation
+            event._post_reply_idle_session_id = session_id
+
+    async def _arm_post_reply_idle(self, event, session_key):
+        """Start a durable deadline only for the turn that actually delivered."""
+        from contextvars import copy_context
+        from gateway.run import _load_gateway_config
+        from gateway.session_identity import identity_of
+        from gateway.post_reply_idle_policy import resolve_post_reply_idle_policy
+
+        source = event.source
+        generation = getattr(event, "_post_reply_idle_generation", None)
+        session_id = getattr(event, "_post_reply_session_id", None)
+        if generation is None or session_id is None or event.internal:
+            return False
+        with self._profile_scope_for_source(source):
+            try:
+                seconds = resolve_post_reply_idle_policy(_load_gateway_config(), source, identity_of(source))
+            except ValueError as exc:
+                logger.warning("Invalid post-reply idle policy; disabling it: %s", exc)
+                return False
+            if seconds is None:
+                return False
+            session_db = self._session_db
+            db = getattr(session_db, "_db", session_db)
+            return await asyncio.to_thread(copy_context().run, db.arm_post_reply_idle,
+                                           session_id, session_key, time.time() + seconds,
+                                           expected_generation=generation)
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -2147,6 +2214,7 @@ class GatewayTurnMixin:
         if resolved is None:
             return
         source, session_entry, session_key = resolved
+        await self._invalidate_post_reply_idle_for_turn(event, source, session_key, session_entry.session_id)
         prepared, _session_env_tokens = await self._hmwa_prepare_turn(
             event, source, session_entry, session_key, _quick_key, run_generation,
         )
@@ -2249,6 +2317,8 @@ class GatewayTurnMixin:
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
+            if not agent_failed_early and not hidden_reasoning_incomplete and not is_context_overflow_failure:
+                event._post_reply_session_id = session_entry.session_id
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,

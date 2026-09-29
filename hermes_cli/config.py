@@ -1225,6 +1225,17 @@ def _validate_quoted_containers(config: Dict[str, Any], issues: List[ConfigIssue
                    "or remove the quotes in config.yaml")
 
 
+def _validate_post_reply_idle(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    """Expose channel-policy typos through `hermes config check` and doctor."""
+    from gateway.post_reply_idle_policy import validate_post_reply_idle_policy
+
+    try:
+        validate_post_reply_idle_policy(config)
+    except ValueError as exc:
+        _issue(issues, "error", str(exc),
+               "Fix compression.post_reply_idle.channels in config.yaml, then run hermes config check")
+
+
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
     """Validate config.yaml structure and return detected issues (accepts a pre-loaded dict).
     Catches common YAML mistakes that otherwise surface as confusing runtime errors."""
@@ -1265,6 +1276,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
     _validate_web_backends(config, issues)
     _validate_quoted_containers(config, issues)
+    _validate_post_reply_idle(config, issues)
     return issues
 
 
@@ -3937,6 +3949,13 @@ def _cmd_config_check(args):
         for diagnostic in diagnostics:
             print(color(f"    ⚠ {diagnostic}", Colors.YELLOW))
 
+    idle_issues = [issue for issue in validate_config_structure()
+                   if issue.severity == "error" and "post_reply_idle" in issue.message]
+    if idle_issues:
+        print()
+        for issue in idle_issues:
+            print(color(f"  ✗ {issue.message}", Colors.RED))
+        raise SystemExit(1)
     print()
 
 

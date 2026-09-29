@@ -3463,6 +3463,9 @@ def _finish_compaction_boundary(
     # boundary notifications attribute prior state to (old id, or same id in-place).
     _old_sid = old_session_id
     _boundary_parent = _old_sid or agent.session_id or ""
+    # An optional idle worker must not announce a boundary if its durable claim lost.
+    # Preserve the historical non-DB behavior for other compression callers.
+    boundary_committed = session_commit_succeeded or not getattr(agent, "_post_reply_idle_claim", None)
 
     # The heartbeat's terminal stamp landed on the PARENT before the id re-pointed;
     # clear labels (keep last_activity_at) so the archived row isn't falsely fresh.
@@ -3485,7 +3488,7 @@ def _finish_compaction_boundary(
     # Providers refresh cached per-session state; reset=False, conversation goes on.
     # Fires in BOTH modes so buffers don't double-count dropped turns in-place.
     with _swallow('memory manager on_session_switch (compression): %s'):
-        if (bool(_old_sid) or in_place) and agent._memory_manager:
+        if boundary_committed and (bool(_old_sid) or in_place) and agent._memory_manager:
             agent._memory_manager.on_session_switch(
                 agent.session_id or "", parent_session_id=_boundary_parent, reset=False, reason="compression"
             )
@@ -3503,7 +3506,7 @@ def _finish_compaction_boundary(
 
     # session:compress lets hooks ingest the old session before it's lost;
     # in_place=True tells them the same id was compacted rather than rotated.
-    if getattr(agent, "event_callback", None):
+    if boundary_committed and getattr(agent, "event_callback", None):
         with _swallow('event_callback error on session:compress: %s'):
             agent.event_callback(
                 "session:compress",
@@ -3719,12 +3722,14 @@ def _commit_compaction(
     commit_started_at = time.monotonic()
     split_status = "not_applicable"
     old_session_id: Optional[str] = None  # bound only once rotation begins
+    idle_claim = getattr(agent, "_post_reply_idle_claim", None)
     if agent._session_db:
         split_status = "pending"
         try:
-            # Memory extraction runs in BOTH modes: pre-compaction turns are summarized
-            # away whether or not the id rotates.
-            agent.commit_memory_session(messages)
+            # Background idle work may lose its claim while summarizing. Do not
+            # extract memory from the old transcript until its fenced DB commit wins.
+            if not idle_claim:
+                agent.commit_memory_session(messages)
 
             # Pop _compaction_tail tags before the size estimate / rotation: they must not
             # inflate anti-growth or reach the provider. Track ids: salvage may subset list.
@@ -3775,6 +3780,8 @@ def _commit_compaction(
                     watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
                     lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
                     covered_ids=covered_ids, unresolved_held=unresolved_held,
+                    idle_claim=getattr(agent, "_post_reply_idle_claim", None),
+                    idle_system_prompt=(new_system_prompt if getattr(agent, "_post_reply_idle_claim", None) else None),
                 )
                 compressed = persisted
                 split_status = "in_place_committed"
@@ -3789,7 +3796,10 @@ def _commit_compaction(
                 # re-baseline transcript handling.
                 compacted_in_place = True
                 # In-place still updates the current row's prompt; rotation published it atomically above.
-                agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                # The idle worker committed the prompt with the transcript in the same transaction;
+                # a separate update here could race the next user's turn.
+                if not getattr(agent, "_post_reply_idle_claim", None):
+                    agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
                 agent._last_flushed_db_idx = 0
             else:
                 # Bind old_session_id first: it is the rollback key in the handler below.
@@ -3852,20 +3862,28 @@ def _commit_compaction(
             split_status = "aborted" if old_session_id is None and not in_place else "failed_not_indexed"
             # If rotation rolled back to the parent, agent.session_id is the indexed parent
             # and old_session_id was cleared: recovery, not an un-indexed orphan.
-            if old_session_id is None and not in_place:
-                logger.warning(
-                    "Compression rotation aborted and rolled back to the parent session (%s): %s",
-                    agent.session_id or "?", e,
-                )
+            from hermes_state_idle import IdleCompactionSuperseded
+            if idle_claim and isinstance(e, IdleCompactionSuperseded):
+                logger.info("Post-reply idle compaction superseded for %s: %s", agent.session_id, e)
             else:
-                logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
-            # Arm the failure cooldown so the next turn can't rerun the doomed compression;
-            # try/except so a stub compressor can't mask the original error in this handler.
-            with _swallow('could not record split-failure cooldown', exc_info=True):
-                # See #97948.
-                agent.context_compressor._record_compression_failure_cooldown(
-                    _SPLIT_FAILURE_COOLDOWN_SECONDS, f"session_split_failed: {e}"
-                )
+                if old_session_id is None and not in_place:
+                    logger.warning(
+                        "Compression rotation aborted and rolled back to the parent session (%s): %s",
+                        agent.session_id or "?", e,
+                    )
+                else:
+                    logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+                # Genuine persistence failures need backoff; an arriving human turn
+                # superseding optional idle work must never block that turn's compaction.
+                with _swallow('could not record split-failure cooldown', exc_info=True):
+                    agent.context_compressor._record_compression_failure_cooldown(
+                        _SPLIT_FAILURE_COOLDOWN_SECONDS, f"session_split_failed: {e}"
+                    )
+    if session_commit_succeeded and idle_claim:
+        # This is post-commit bookkeeping, not part of the SQLite transaction:
+        # an optional memory-provider failure cannot undo a published transcript.
+        with _swallow('post-reply idle memory extraction failed', exc_info=True):
+            agent.commit_memory_session(messages)
     return _CommitOutcome(
         compressed=compressed, commit_started_at=commit_started_at, old_session_id=old_session_id,
         split_status=split_status, session_commit_succeeded=session_commit_succeeded,

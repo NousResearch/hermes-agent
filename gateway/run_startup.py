@@ -1517,6 +1517,7 @@ class GatewayStartupMixin:
     )
     _POST_RECONNECT_WATCHERS = (
         "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",
+        "_post_reply_idle_watcher",
     )
 
     def _start_spawn_background_watchers(self) -> None:

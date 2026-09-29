@@ -4094,6 +4094,20 @@ class BasePlatformAdapter(ABC):
                     return
             if handled:
                 return
+        # A queued message has not reached runner admission yet. Fence a pending idle
+        # summary now, after the sender passes the normal gateway authorization check.
+        if not event.internal and self.gateway_runner is not None:
+            runner = self.gateway_runner
+            invalidate = getattr(runner, "_invalidate_post_reply_idle_for_turn", None)
+            authorized = getattr(runner, "_is_user_authorized", None)
+            if callable(invalidate) and callable(authorized):
+                try:
+                    if authorized(event.source):
+                        invalidated = invalidate(event, event.source, session_key)
+                        if inspect.isawaitable(invalidated):
+                            await invalidated
+                except Exception:
+                    logger.exception("[%s] Could not fence idle compaction for queued input", self.name)
         # Without a runner FIFO, do not merge a wake into an occupied human slot
         # (or collapse distinct wakes into one turn). Its caller can retry admission.
         if event.internal and session_key in self._pending_messages:
@@ -4573,6 +4587,17 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook(
                 "on_processing_complete", event,
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+            if (processing_ok and (delivery_succeeded or getattr(event, "_post_reply_streamed", False))
+                    and not event.internal and not interrupt_event.is_set()
+                    and session_key not in self._pending_messages):
+                arm_idle = getattr(self.gateway_runner, "_arm_post_reply_idle", None)
+                if callable(arm_idle) and getattr(event, "_post_reply_session_id", None):
+                    try:
+                        armed = arm_idle(event, session_key)
+                        if inspect.isawaitable(armed):
+                            await armed
+                    except Exception:
+                        logger.exception("[%s] Could not arm post-reply idle compaction", self.name)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)

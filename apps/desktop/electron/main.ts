@@ -12522,6 +12522,8 @@ async function exitAfterBackendShutdown(code) {
     // Already logged by backendShutdown; the exit must still happen.
   }
 
+  // app.exit() skips will-quit, and every in-app relaunch lands here.
+  killTimedGitChildren()
   app.exit(code)
 }
 

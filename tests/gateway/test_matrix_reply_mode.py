@@ -15,7 +15,7 @@ from gateway.run_turn import GatewayTurnMixin
 from gateway.session import SessionSource
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from gateway.turn_context import TurnContext
-from plugins.platforms.matrix.adapter import MatrixAdapter
+from plugins.platforms.matrix.adapter import _MATRIX_CHOICE_PICKER_REACTIONS, MatrixAdapter
 
 
 @pytest.mark.asyncio
@@ -372,3 +372,46 @@ def test_reply_mode_uses_highest_priority_yaml_block(monkeypatch, tmp_path, env_
     config = load_gateway_config().platforms[Platform.MATRIX]
 
     assert (config.reply_to_mode, MatrixAdapter(config)._reply_to_mode) == (expected, expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["first", "all"])
+@pytest.mark.parametrize("path", ["choice confirmation", "choice failure", "approval from another user"])
+async def test_plain_room_replies_to_a_reaction_prompt_quote_the_prompt(mode, path):
+    room_id = "!dm:example.org"
+    adapter = MatrixAdapter(PlatformConfig(
+        enabled=True, token="syt_test", reply_to_mode=mode,
+        extra={
+            "homeserver": "https://matrix.example.org", "user_id": "@bot:example.org",
+            "auto_thread": False, "e2ee_mode": "off", "allowed_users": "@alice:example.org",
+        },
+    ))
+    adapter._user_id = "@bot:example.org"
+    client = MagicMock()
+    client.send_message_event = AsyncMock(side_effect=[f"$sent{i}" for i in range(20)])
+    adapter._client = client
+
+    async def on_selected(_room_id, value):
+        if path == "choice failure":
+            raise RuntimeError("provider unavailable")
+        return f"Reasoning set to {value}."
+
+    if path == "approval from another user":
+        prompt = await adapter.send_exec_approval(room_id, "rm -rf /tmp/cache", "session-1")
+        sender, key = "@mallory:example.org", "✅"
+    else:
+        prompt = await adapter.send_choice_picker(
+            room_id, "Reasoning effort", [{"value": "high", "label": "High"}], "session-1", on_selected,
+        )
+        sender, key = "@alice:example.org", _MATRIX_CHOICE_PICKER_REACTIONS[0]
+    await adapter._on_reaction(SimpleNamespace(
+        sender=sender, event_id="$reaction", room_id=room_id,
+        content={"m.relates_to": {"rel_type": "m.annotation", "event_id": prompt.message_id, "key": key}},
+    ))
+
+    assert [
+        call.args[2].get("m.relates_to") for call in client.send_message_event.await_args_list
+        if "body" in call.args[2]
+    ] == [
+        None, {"m.in_reply_to": {"event_id": prompt.message_id}},
+    ]

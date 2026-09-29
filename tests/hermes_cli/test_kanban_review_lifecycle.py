@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -603,6 +604,132 @@ def test_active_pr_guard_lifts_for_implementer_after_changes_requested(
         with kb.write_txn(conn):
             conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (done_id,))
         assert kbd.check_respawn_guard(conn, done_id) == "recent_success"
+
+
+def _gh_shim(tmp_path: Path, *, payload: str, log: Path | None = None) -> Path:
+    """A fake ``gh`` on PATH: records its argv (when *log* is given), prints
+    *payload*, touches no network and holds no credentials."""
+    shim = tmp_path / "bin"
+    shim.mkdir(exist_ok=True)
+    gh = shim / "gh"
+    record = (
+        f"open({str(log)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n" if log else ""
+    )
+    gh.write_text(f"#!{sys.executable}\nimport sys\n{record}print({payload!r})\n")
+    gh.chmod(0o755)
+    return shim
+
+
+def test_active_pr_guard_lifts_when_referenced_pr_is_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLOSED PR must not park a finished card in ``ready`` forever.
+
+    The guard keys on the PR URL in a comment and never re-read the PR's
+    state, so a card whose PR was closed (work already landed elsewhere) sat
+    ``respawn_guarded{active_pr}`` every tick until the 24h comment window
+    elapsed: 12 consecutive events / 5.4h against a CLOSED PR. The verdict now
+    comes from ``gh api repos/<repo>/pulls/<n>`` (cached), so a terminal state
+    releases the card.
+    """
+    log = tmp_path / "gh-calls.log"
+    shim = _gh_shim(
+        tmp_path, payload='{"number": 4, "state": "closed", "merged": true}', log=log,
+    )
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="closed pr", assignee="dev")
+        kb.add_comment(
+            conn, tid, author="dev",
+            body="Opened https://github.com/example/repo/pull/4 for review.",
+        )
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+        # The verdict is cached on disk: a later tick re-uses it, no re-shell.
+        cache = kbd._pr_state_cache_path()
+        assert cache is not None and cache.exists()
+        assert json.loads(cache.read_text())["entries"]["example/repo#4"]["state"] == "merged"
+        assert kbd.check_respawn_guard(conn, tid) is None
+        assert len(log.read_text().splitlines()) == 1
+
+
+def test_active_pr_guard_lifts_when_referenced_pr_is_merged(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A MERGED PR releases the card too — the work is on the base branch."""
+    monkeypatch.setattr(kbd, "resolve_pr_state", lambda repo, number, **kw: "merged")
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="merged pr", assignee="dev")
+        kb.add_comment(
+            conn, tid, author="dev",
+            body="Opened https://github.com/example/repo/pull/7 for review.",
+        )
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_active_pr_guard_still_holds_for_open_pr_and_unknown_verdict(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Duplicate-PR protection survives: OPEN stays guarded, and an
+    unresolvable state (no gh login, network down, 404) degrades to today's
+    behaviour instead of releasing the card."""
+    with kbc.connect() as conn:
+        open_id = kb.create_task(conn, title="open pr", assignee="dev")
+        kb.add_comment(
+            conn, open_id, author="dev",
+            body="Opened https://github.com/example/repo/pull/44 for review.",
+        )
+        unknown_id = kb.create_task(conn, title="unknown pr", assignee="dev")
+        kb.add_comment(
+            conn, unknown_id, author="dev",
+            body="Opened https://github.com/example/repo/pull/45 for review.",
+        )
+
+        monkeypatch.setattr(kbd, "resolve_pr_state", lambda repo, number, **kw: "open")
+        assert kbd.check_respawn_guard(conn, open_id) == "active_pr"
+
+        monkeypatch.setattr(kbd, "resolve_pr_state", lambda repo, number, **kw: None)
+        assert kbd.check_respawn_guard(conn, unknown_id) == "active_pr"
+
+
+def test_active_pr_guard_caches_pr_state_verdict_across_ticks(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One lookup per PR per TTL — the guard runs for every ready row on every
+    dispatcher tick, so an uncached lookup would be a per-tick network call."""
+    calls: list[tuple[str, int]] = []
+
+    def fake(repo: str, number: int, **kw) -> str:
+        calls.append((repo, number))
+        return "open"
+
+    monkeypatch.setattr(kbd, "resolve_pr_state", fake)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="cached", assignee="dev")
+        kb.add_comment(
+            conn, tid, author="dev",
+            body="Opened https://github.com/example/repo/pull/44 for review.",
+        )
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        assert calls == [("example/repo", 44)]
+
+
+def test_active_pr_guard_ignores_pr_urls_it_cannot_attribute(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A URL the strict attribution pattern rejects keeps the guard armed
+    WITHOUT a lookup (a lookup would build an endpoint from unvalidated text)."""
+    called: list[object] = []
+    monkeypatch.setattr(kbd, "resolve_pr_state", lambda *a, **kw: called.append(a))
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="odd url", assignee="dev")
+        kb.add_comment(
+            conn, tid, author="dev",
+            body="Opened https://github.com/acme/repo/pull/09 for review.",
+        )
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+        assert called == []
 
 
 def test_dispatch_json_exposes_suppression_reasons(

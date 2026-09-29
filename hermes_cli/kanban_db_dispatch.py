@@ -87,6 +87,24 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ``active_pr`` re-reads the referenced PR's state: a CLOSED or MERGED PR is not
+# a duplicate-work risk (the work landed elsewhere or was abandoned), so holding
+# the card for the full comment window parks a FINISHED card in ``ready``,
+# emitting ``respawn_guarded{active_pr}`` every tick. Measured live: 12
+# consecutive events / 5.4h against a CLOSED PR whose work was already on main.
+# The verdict costs one ``gh`` call, so it is cached on disk for this long;
+# any failure (no gh, no login, no network, 404) degrades to the URL-only guard,
+# never to an unguarded spawn. Override with
+# ``HERMES_KANBAN_PR_STATE_CACHE_TTL_SECONDS`` (0 re-reads every tick).
+_RESPAWN_GUARD_PR_STATE_TTL_SECONDS = 300  # 5 minutes
+# A dispatcher tick must not block on GitHub: the read is advisory (a failure
+# keeps the guard armed), so it gets a fraction of the acceptance-boundary
+# 30s budget.
+_RESPAWN_GUARD_PR_STATE_TIMEOUT_SECONDS = 5
+_RESPAWN_GUARD_PR_STATE_CACHE_MAX = 512
+_RESPAWN_GUARD_PR_STATES = frozenset({"open", "closed", "merged"})
+_RESPAWN_GUARD_PR_TERMINAL_STATES = frozenset({"closed", "merged"})
+
 
 @dataclass
 class DispatchResult:
@@ -1522,6 +1540,149 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _pr_state_cache_path() -> Optional[Path]:
+    """``<board dir>/pr_state_cache.json`` — the ``active_pr`` verdict cache.
+
+    A file beside the board DB, not a table: the cache is disposable (losing it
+    costs one ``gh`` call) and the board schema stays untouched. Deriving it from
+    ``kanban_db_path()`` keeps two boards from sharing verdicts.
+    """
+    try:
+        return Path(_kb.kanban_db_path()).with_name("pr_state_cache.json")
+    except Exception:  # pragma: no cover - defensive: unresolvable board
+        return None
+
+
+def _read_pr_state_cache() -> dict:
+    path = _pr_state_cache_path()
+    if path is None:
+        return {}
+    try:
+        from utils import read_json_or_empty
+
+        data = read_json_or_empty(path)
+    except Exception:  # pragma: no cover - utils unavailable
+        return {}
+    entries = data.get("entries") if isinstance(data, dict) else None
+    return entries if isinstance(entries, dict) else {}
+
+
+def _write_pr_state_cache(entries: dict) -> None:
+    """Best-effort atomic write; the cache is a pure optimisation."""
+    path = _pr_state_cache_path()
+    if path is None:
+        return
+    try:
+        if len(entries) > _RESPAWN_GUARD_PR_STATE_CACHE_MAX:
+            ordered = sorted(
+                entries.items(),
+                key=lambda kv: int(kv[1].get("at") or 0) if isinstance(kv[1], dict) else 0,
+            )
+            entries = dict(ordered[-_RESPAWN_GUARD_PR_STATE_CACHE_MAX:])
+        from utils import atomic_json_write
+
+        atomic_json_write(path, {"version": 1, "entries": entries}, indent=None, sort_keys=True)
+    except Exception as exc:  # pragma: no cover - cache is best-effort
+        _kb._log.debug("kanban respawn guard: PR state cache write failed: %s", exc)
+
+
+def _pr_ref_from_comment(body: str) -> Optional["tuple[str, int]"]:
+    """``(owner/repo, number)`` for the PR URL in *body*, or None.
+
+    Comment bodies are operator/worker prose — untrusted input. Only an exact
+    ``https://github.com/<owner>/<repo>/pull/<n>`` URL is attributed (the same
+    strict pattern completion acceptance binds to), so the endpoint built from
+    the result is always ``repos/<owner>/<repo>/pulls/<n>`` and cannot be steered
+    into another path. A URL this strict pattern rejects keeps the pre-existing
+    URL-only guard rather than triggering a lookup.
+    """
+    try:
+        from hermes_cli.kanban_pr_acceptance import _PR
+    except Exception:  # pragma: no cover - defensive
+        return None
+    match = _PR.search(body or "")
+    if match is None:
+        return None
+    return match[1], int(match[2])
+
+
+def resolve_pr_state(
+    repo: str, number: int, *, assignee: Optional[str] = None,
+) -> Optional[str]:
+    """Live ``open`` / ``closed`` / ``merged`` state, else None when unknown.
+
+    Read through the same audited ``gh`` seam completion acceptance uses
+    (``kanban_pr_acceptance._api``), so a state read is attributed to the card's
+    own profile login where one is resolvable. Defensive by construction: any
+    failure — no ``gh`` on PATH, no login, network error, 404, unexpected
+    payload — returns None, which the caller treats as "no verdict" and keeps the
+    guard armed. Never returns a state it did not read.
+    """
+    try:
+        from hermes_cli.kanban_pr_acceptance import _api, _assignee_profile_home
+    except Exception as exc:  # pragma: no cover - defensive
+        _kb._log.debug("kanban respawn guard: PR state probe unavailable: %s", exc)
+        return None
+    try:
+        profile_home = _assignee_profile_home(assignee)
+    except Exception:
+        # Unlike completion acceptance (which must run AS the assignee), this is
+        # an advisory read: an unresolvable profile identity falls back to the
+        # ambient login instead of refusing the read.
+        profile_home = None
+    try:
+        payload = _api(
+            f"repos/{repo}/pulls/{int(number)}",
+            profile_home=profile_home,
+            timeout=_RESPAWN_GUARD_PR_STATE_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        _kb._log.debug(
+            "kanban respawn guard: PR state lookup failed for %s#%s: %s", repo, number, exc,
+        )
+        return None
+    if not isinstance(payload, dict):
+        return None
+    state = payload.get("state")
+    if state == "open":
+        return "open"
+    if state == "closed":
+        # Closed-with-merge is still gone from the branch: both release the card.
+        return "merged" if payload.get("merged") else "closed"
+    return None
+
+
+def _pr_state_verdict(body: str, assignee: Optional[str] = None) -> Optional[str]:
+    """Cached PR-state verdict for the PR URL in *body*, else None.
+
+    ``None`` means "no verdict" — an unattributable URL or a failed lookup — and
+    both leave the guard armed. A failure IS cached: the guard runs for every
+    ready row on every dispatcher tick, so an uncached miss would turn a broken
+    login or an unreachable GitHub into one ``gh`` spawn per tick per card.
+    """
+    ref = _pr_ref_from_comment(body)
+    if ref is None:
+        return None
+    repo, number = ref
+    key = f"{repo}#{number}"
+    now = int(time.time())
+    ttl = _kb._env_int(
+        "HERMES_KANBAN_PR_STATE_CACHE_TTL_SECONDS", _RESPAWN_GUARD_PR_STATE_TTL_SECONDS,
+    )
+    entries = _read_pr_state_cache()
+    cached = entries.get(key)
+    if isinstance(cached, dict):
+        at = cached.get("at")
+        if isinstance(at, (int, float)) and 0 <= now - int(at) < ttl:
+            value = cached.get("state")
+            if value is None or value in _RESPAWN_GUARD_PR_STATES:
+                return value
+    state = resolve_pr_state(repo, number, assignee=assignee)
+    entries[key] = {"state": state, "at": now}
+    _write_pr_state_cache(entries)
+    return state
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1539,7 +1700,9 @@ def check_respawn_guard(
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
     (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
     handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
+    PR, or the referenced PR is now CLOSED/MERGED: the work landed elsewhere and
+    the URL-only guard would park a finished card for the rest of the window).
+    The review lane skips the last two: they are the *inputs* to a review
     handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
     passes own those.
     """
@@ -1625,7 +1788,14 @@ def check_respawn_guard(
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
+    #    The URL alone is not enough: a CLOSED or MERGED PR means the work
+    #    landed elsewhere (or was abandoned), so that verdict releases the card
+    #    instead of parking it for the rest of the comment window. The verdict
+    #    is cached (``_pr_state_verdict``) — this runs for every ready row on
+    #    every tick; unattributable URLs and failed lookups keep the old guard.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    pr_assignee: Optional[str] = None
+    pr_assignee_loaded = False
     for c in conn.execute(
         "SELECT body, created_at FROM task_comments "
         "WHERE task_id = ? AND created_at >= ? ORDER BY created_at DESC",
@@ -1642,6 +1812,15 @@ def check_respawn_guard(
             (task_id, int(c["created_at"] or 0)),
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
+            return None
+        if not pr_assignee_loaded:
+            # Once per guard call, and only when a PR URL is actually in play.
+            assignee_row = conn.execute(
+                "SELECT assignee FROM tasks WHERE id = ?", (task_id,),
+            ).fetchone()
+            pr_assignee = assignee_row["assignee"] if assignee_row is not None else None
+            pr_assignee_loaded = True
+        if _pr_state_verdict(body, pr_assignee) in _RESPAWN_GUARD_PR_TERMINAL_STATES:
             return None
         return "active_pr"
 

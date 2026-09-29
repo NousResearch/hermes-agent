@@ -63,7 +63,11 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0))
 const DAY1 = Date.UTC(2026, 8, 27, 12, 0, 0)
 const DAY2 = Date.UTC(2026, 8, 28, 12, 0, 0)
 
-let bridge: { ackRendererCrashes: ReturnType<typeof vi.fn>; setEnabled: ReturnType<typeof vi.fn>; takeRendererCrashes: ReturnType<typeof vi.fn> }
+let bridge: {
+  ackRendererCrashes: ReturnType<typeof vi.fn>
+  setEnabled: ReturnType<typeof vi.fn>
+  takeRendererCrashes: ReturnType<typeof vi.fn>
+}
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -399,7 +403,10 @@ describe('dislike signals', () => {
     setDesktopMetricsGate('on')
     bindDesktopMetrics(request)
     recordSettingsSaved(
-      { display: { show_reasoning: false, skin: 'secret-skin-name' }, providers: { 'acme-internal': { api_key: 'k' } } },
+      {
+        display: { show_reasoning: false, skin: 'secret-skin-name' },
+        providers: { 'acme-internal': { api_key: 'k' } }
+      },
       SCHEMA,
       'work'
     )
@@ -513,7 +520,11 @@ describe('per profile, per window', () => {
 
     setDesktopMetricsGate('on')
     await flush()
-    expect(calls.map(([, p]) => `${p.step}:${p.event}`)).toEqual(['guide:reached', 'guide:completed', 'provider_oauth:reached'])
+    expect(calls.map(([, p]) => `${p.step}:${p.event}`)).toEqual([
+      'guide:reached',
+      'guide:completed',
+      'provider_oauth:reached'
+    ])
     expect(JSON.parse(stored()!).onboarding.open).toEqual({})
 
     setDesktopMetricsGate('off')

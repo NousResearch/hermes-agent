@@ -210,6 +210,9 @@ Parking does not delete the profile, its sessions, or its scheduled jobs.
 Without a running host it removes the marker and follows the normal start
 path; start the host from the default profile if prompted. `restart` unserves
 and serves the profile without writing a parked marker, re-reading its config.
+On a **parked** profile with no live per-profile gateway, `restart` behaves as
+`start`: it removes the marker and hot-serves the profile (a gateway started
+with `--force` beside the marker keeps its own restart instead).
 These operations do not terminate work already dispatched by a cron tick.
 
 The host also rescans every 30 seconds: adding the marker by hand unserves the

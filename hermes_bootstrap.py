@@ -518,6 +518,12 @@ if _legacy_post_swap is not None:
     raise SystemExit(_continue_legacy_post_swap(_handoff_path, argv_tail=_argv_tail))
 
 
+class RelaunchExit(SystemExit):
+    """Exit carrying a relaunched child's status: that child already produced this run's output,
+    so callers that report their own boot failures (the Bot Chat delivery runner) must not."""
+    relaunched = True
+
+
 from pm.environments import activate_dependencies, install_state_permission_message
 from hermes_cli._early_recovery import recover_if_needed
 
@@ -539,7 +545,7 @@ if not _pm_repair:
             if os.name == "nt":
                 import subprocess
 
-                raise SystemExit(subprocess.call(_command))
+                raise RelaunchExit(subprocess.call(_command))
             os.execv(str(_launch_python), _command)
     except Exception as exc:
         if isinstance(exc, PermissionError) and (message := install_state_permission_message(_root, exc)):

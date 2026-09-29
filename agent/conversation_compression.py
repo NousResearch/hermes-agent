@@ -2426,6 +2426,11 @@ def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
         _replace_message_content(target, merged)
     for flag in _SYNTHETIC_USER_FLAGS:
         target.pop(flag, None)
+    # The anchor's text leads the composite, so the fold keeps the anchor's uid and records the
+    # scaffolding turn's (merge witness).
+    from agent.message_metadata import record_absorbed_message
+
+    record_absorbed_message(target, anchor, dropped_leads=True)
 
 
 CompressedUserTurnOutcome = Literal["inserted", "merged", "already_present", "placeholder_appended"]

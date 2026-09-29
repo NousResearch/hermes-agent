@@ -15,18 +15,10 @@ interface OverlayBreadcrumbHeaderProps {
   trailing?: ReactNode
 }
 
-export function OverlayBreadcrumbHeader({
-  child,
-  group,
-  rootLabel,
-  trailing
-}: OverlayBreadcrumbHeaderProps) {
+export function OverlayBreadcrumbHeader({ child, group, rootLabel, trailing }: OverlayBreadcrumbHeaderProps) {
   return (
     <div className={cn('mb-3 flex shrink-0 items-start justify-between gap-3', PAGE_INSET_X)}>
-      <nav
-        aria-label={group.label}
-        className="flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)"
-      >
+      <nav aria-label={group.label} className="flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-tertiary)">
         <span className="shrink-0">{rootLabel}</span>
         <ChevronRight aria-hidden className="size-3 shrink-0" />
         {child ? (

@@ -324,6 +324,11 @@ class ComputeHost:
             session = self._build_server_session(server, frame, sid)
         if isinstance(frame.get("attached_images"), list):
             session["attached_images"] = list(frame.get("attached_images") or [])
+        # A model switch queued on the host side while this session was busy rides
+        # the turn frame; adopt it here so the child's turn thread applies it via
+        # _apply_pending_model_switch — in the child the live agent exists.
+        if frame.get("pending_model_switch"):
+            session["pending_model_switch"] = dict(frame["pending_model_switch"])
         return session
 
     def _build_server_session(self, server: Any, frame: dict[str, Any], sid: str) -> dict:
@@ -414,6 +419,10 @@ class ComputeHost:
             server._register_session_cwd(session)
         if frame.get("model_override") is not None:
             session["model_override"] = frame.get("model_override")
+        # See _ensure_server_session's existing-session branch — a queued model
+        # switch crosses the process boundary and applies at this child's turn start.
+        if frame.get("pending_model_switch"):
+            session["pending_model_switch"] = dict(frame["pending_model_switch"])
         return session
 
     def _handle_reload_mcp(self, frame: dict[str, Any]) -> None:

@@ -694,7 +694,7 @@ With the switch off Hermes never reads or refreshes those files: the `claude_cod
 - Credential files are mounted **read-only** into Docker containers
 - Skills Guard scans skill content for suspicious env access patterns before installation
 - Missing/unset vars are never registered (you can't leak what doesn't exist)
-- Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms
+- Hermes infrastructure secrets (provider API keys, gateway tokens) should never be added to `env_passthrough` — they have dedicated mechanisms. Such a name is refused when declared, and a declared name that a platform adapter claims later (a plugin adapter registering after the skill loaded) stops being forwarded from then on
 
 ## MCP Credential Handling
 

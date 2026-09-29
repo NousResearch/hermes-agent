@@ -12,6 +12,7 @@ import logging
 import os
 import sys
 import time
+from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
 from contextlib import suppress
 from pathlib import Path
@@ -274,7 +275,7 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
         not response and isinstance(result, dict) and result.get("error")
         and (result.get("failed") or result.get("partial"))
     ):
-        print(f"Error: {result['error']}", file=sys.stderr)
+        print(t("gateway.model.error_prefix", error=result["error"]), file=sys.stderr)
     elif response:
         print(response)
 
@@ -467,7 +468,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         from tools.kanban_tools import register_current_worker_from_env
         if not register_current_worker_from_env():
             # No exit trailer: the task log now belongs to the run that replaced this one.
-            print("kanban: this worker's run was reclaimed before it started; exiting", file=sys.stderr)
+            print(t("cli.single_query.kanban_run_reclaimed"), file=sys.stderr)
             sys.exit(0)
     if not cli._claim_active_session("cli", stderr=bool(quiet)):
         exit_single_query(1)
@@ -512,7 +513,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
         # No welcome banner (~420 ms cold); session id / resume hint come from _print_exit_summary().
         _query_label = query or ("[image attached]" if single_query_images else "")
         if _query_label:
-            cli.console.print(f"[bold blue]Query:[/] {_query_label}")
+            cli.console.print(f"[bold blue]{t('cli.single_query.query_label')}[/] {_query_label}")
         cli._show_security_advisories()
         response = cli.chat(query, images=single_query_images or None)
         # Kanban goal_mode on the `-q` path: same judge loop as `-Q`, but each follow-up turn

@@ -322,7 +322,10 @@ export async function reconcileTileTranscripts({
           // are re-grafted last: the stored page cannot carry them.
           messages: preserveLocalSystemNotices(
             preserveLocalAssistantErrors(
-              preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+              preserveLocalPendingTurnMessages(
+                graftRefreshedTailOntoBackfill(messages, state.messages),
+                state.messages
+              ),
               state.messages
             ),
             state.messages
@@ -409,7 +412,10 @@ export async function hydrateStoredSessionTranscript({
           // trailing client-local system notices (#126422).
           messages: preserveLocalSystemNotices(
             preserveLocalAssistantErrors(
-              preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
+              preserveLocalPendingTurnMessages(
+                graftRefreshedTailOntoBackfill(messages, state.messages),
+                state.messages
+              ),
               state.messages
             ),
             state.messages

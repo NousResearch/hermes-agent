@@ -690,6 +690,11 @@ def label_shared_sender(
             thread_sessions_per_user=thread_sessions_per_user)):
         return text
     name = neutralize_untrusted_inline_text(source.user_name)
+    # ``[`` ... ``]`` delimits the name, so a name holding brackets would end it early
+    # (``[Ann] Smith] ...``) or forge bracketed structure inside a gateway-built line (#127053).
+    # Stripped before the Slack append so a name-supplied ``]`` never displaces the trusted
+    # ``<@id>`` span; whitespace the removal leaves is re-collapsed.
+    name = " ".join(name.replace("[", "").replace("]", "").split())
     if source.platform == Platform.SLACK and source.user_id:
         name = f"{name} | Slack user <@{source.user_id}>"
     return f"[{name}] {text}"

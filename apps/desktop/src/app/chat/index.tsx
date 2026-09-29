@@ -32,7 +32,7 @@ import { $pinnedSessionIds } from '@/store/layout'
 import { $guideOpening, $onboardingGate } from '@/store/onboarding-gate'
 import { $petActive } from '@/store/pet'
 import { $petOverlayActive } from '@/store/pet-overlay'
-import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
+import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $newChatProfile, $profiles } from '@/store/profile'
 import {
   $connection,
   $contextSuggestions,
@@ -255,6 +255,7 @@ export function ChatRuntimeBoundary({
   const storedId = useStore(view.$storedId)
   const connection = useStore($connection)
   const activeProfile = useStore($activeGatewayProfile)
+  const newChatProfile = useStore($newChatProfile)
   const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
 
   const ownerRoute = storedId
@@ -902,7 +903,7 @@ const ChatViewContent = memo(function ChatViewContent({
                 onSteerHidden={onSteerHidden}
                 onSubmit={onSubmit}
                 onTranscribeAudio={onTranscribeAudio}
-                profile={modelOptionsProfile || activeGatewayProfile}
+                profile={newChatProfile || modelOptionsProfile || activeGatewayProfile}
                 queueSessionKey={queueSessionKey}
                 sessionId={activeSessionId}
                 state={chatBarState}

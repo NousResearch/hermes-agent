@@ -1343,6 +1343,22 @@ def test_complete_slash_scopes_skills_to_sessionless_profile_param(server, tmp_p
     assert any("b-only" in item.get("text", "") for item in resp["result"]["items"])
 
 
+def test_complete_slash_unhosted_profile_param_degrades_to_launch_scope(server, monkeypatch):
+    """A draft routed to a profile this host never hosted must still get the palette (#124651)."""
+    def _missing(name):
+        raise server.ProfileUnavailableError(f"Profile '{name}' does not exist.")
+
+    monkeypatch.setattr(server, "_profile_home", _missing)
+
+    resp = server.handle_request({
+        "id": "r1",
+        "method": "complete.slash",
+        "params": {"text": "/", "profile": "omar"},
+    })
+
+    assert "result" in resp, resp
+
+
 class _BannerWorker:
     """Stand-in for the slash worker's current skill path: ok-reply the banner."""
 

@@ -409,4 +409,15 @@ def test_command_wrapper_restores_temp_vars_after_snapshot_source():
     source = script.index("source ")
     restore = script.index('export TMPDIR=')
     assert restore > source
-    assert 'HERMES_SCRATCH_DIR=\"$__hermes_scratch\"' in script
+    assert '__hermes_tmpdir_present=' in script
+    assert 'export __hermes_tmpdir=' not in script
+    assert 'if [ "$__hermes_tmpdir_present" = x ]' in script
+
+
+def test_command_wrapper_preserves_temp_vars_without_snapshot():
+    """The fallback wrapper also carries the caller's scratch variables."""
+    env = _TestableEnv()
+    env._snapshot_ready = False
+    script = env._wrap_command("printf '%s\\n' \"$TMPDIR\"", "/tmp")
+    assert "source " not in script
+    assert script.index('__hermes_tmpdir_present=') < script.index('export TMPDIR=')

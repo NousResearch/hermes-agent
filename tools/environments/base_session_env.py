@@ -129,6 +129,21 @@ def _passthrough_save_restore(names: Iterable[str]) -> tuple[list[str], list[str
     return save, restore
 
 
+def _temp_dir_save_restore() -> tuple[list[str], list[str]]:
+    """Preserve scratch variables across startup and snapshot loading without exporting helpers."""
+    names = ("TMPDIR", "TMP", "TEMP", "HERMES_SCRATCH_DIR")
+    save: list[str] = []
+    restore: list[str] = []
+    for name in names:
+        marker = f"__hermes_{name.lower()}"
+        present, value = f"{marker}_present", f"{marker}_value"
+        save += [f'{present}="${{{name}+x}}"', f'{value}="${{{name}-}}"']
+        restore += [
+            f'if [ "${present}" = x ]; then export {name}="${value}"; else unset {name}; fi',
+            f"unset {present} {value}"]
+    return save, restore
+
+
 def _wrap_command_script(
     command: str, *, quoted_cwd: str, quoted_snap: str, snap_tmp_template: str,
     passthrough_names: Iterable[str], snapshot_ready: bool, cwd_marker: str) -> str:
@@ -144,20 +159,15 @@ def _wrap_command_script(
     """
     escaped = command.replace("'", "'\\''")
     save, restore = _passthrough_save_restore(passthrough_names)
-    parts = list(save)
+    temp_save, temp_restore = _temp_dir_save_restore()
+    parts = temp_save + list(save)
     if snapshot_ready:
         # Login startup files (notably git-bash's /etc/profile) may rewrite the
         # temp-directory variables captured in the shell snapshot. Preserve the
         # per-process values that were passed to the backend and re-assert them
         # after sourcing, so native programs see Hermes' usable scratch path.
-        parts.append(
-            'export __hermes_tmpdir="$TMPDIR" __hermes_tmp="$TMP" __hermes_temp="$TEMP" '
-            '__hermes_scratch="$HERMES_SCRATCH_DIR"')
         parts.append(f"source {quoted_snap} >/dev/null 2>&1 || true")
-        parts.append(
-            'export TMPDIR="$__hermes_tmpdir" TMP="$__hermes_tmp" TEMP="$__hermes_temp" '
-            'HERMES_SCRATCH_DIR="$__hermes_scratch"')
-    parts += restore
+    parts += temp_restore + restore
     parts += [
         'export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"',
         'export GIT_PAGER="${GIT_PAGER:-cat}" PAGER="${PAGER:-cat}"',

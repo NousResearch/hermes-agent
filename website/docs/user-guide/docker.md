@@ -541,14 +541,19 @@ sessions. The cost is image size — the full build is larger than the headless
 shell earlier images shipped.
 
 Opt-in backend SDKs (Edge TTS, Firecrawl, Exa, platform adapters, plugin
-dependencies) install on first use into PM dependency generations under
-`/opt/data/installs`, so they survive container recreation and image updates.
-The image's own `/opt/hermes/.venv` is never modified. On each boot the
-container re-resolves the recorded selection against the new image's lock
-before services start; if that fails (for example offline), it boots the
-image's own environment and keeps the recorded extras for the next boot or
-install. Set `security.allow_lazy_installs: false` to refuse on-demand
-installs. The old `lazy-packages` overlay is not used.
+dependencies) install into PM dependency generations under `/opt/data/installs`.
+The image's own `/opt/hermes/.venv` is never modified. On each boot, before
+services start, Hermes checks the recorded selection against the image's lock.
+An already-current generation starts without resolving again. A fresh volume
+with an enabled Python plugin, or an image upgrade that invalidates its
+generation, must resolve and build the entire selected plugin union first.
+Allow network access to the configured package index and enough time and disk
+for that first build (potentially minutes). A cold offline boot with a selected
+plugin and no usable generation exits nonzero; it does **not** start a gateway
+without the plugin. If only optional extras are recorded, a failed refresh
+still falls back to the image environment and retains extras for a later retry.
+Set `security.allow_lazy_installs: false` to refuse on-demand installs. The old
+`lazy-packages` overlay is not used.
 
 Image provenance lives at `/etc/hermes/image-provenance.json`, outside both the
 source and data mounts. The build stamp lives at `/opt/hermes/install-stamp.json`.
@@ -557,6 +562,13 @@ inventing a commit. `hermes update` refuses image-owned code changes; replace
 the image to update the application.
 
 The container's `ENTRYPOINT` is a small dispatcher (`docker/entrypoint-dispatch.sh`). When the container owns PID 1 (normal Docker / Podman), it exec's s6-overlay's `/init` and you get the full supervision tree described below. When a platform wraps the image entrypoint under its own PID-1 init (Fly.io Machines, `docker run --init`, some Nomad/Kubernetes setups), `/init` would abort with `s6-overlay-suexec: fatal: can only run as pid 1` — so the dispatcher instead runs the stage2 bootstrap directly and exec's the main wrapper without s6. On that fallback path the requested command still runs, but supervised services (dashboard, per-profile gateways) are unavailable.
+
+Boot is fail-closed for **every unhandled cont-init error**, not only dependency
+resolution: s6 stops before the main program and gateways start. Best-effort
+setup operations (such as ownership changes that can fail under rootless
+containers) explicitly emit warnings and continue. A read-only or
+permission-denied data volume that prevents required directory seeding or
+dependency publication is a boot failure, not a healthy degraded service.
 
 On the PID-1 path, `/init`:
 1. Runs `/etc/cont-init.d/01-hermes-setup` (= `docker/stage2-hook.sh`) as root: optional UID/GID remap, fixes volume ownership, seeds `.env` / `config.yaml` / `SOUL.md` on first boot, runs non-interactive config-schema migrations unless `HERMES_SKIP_CONFIG_MIGRATION=1`, syncs bundled skills.
@@ -645,6 +657,23 @@ docker compose up -d
 
 Set `HERMES_SKIP_CONFIG_MIGRATION=1` only if you need to inspect or migrate the
 persisted config manually before letting the new image rewrite it.
+
+### Dependency boot failure and offline recovery
+
+If the container exits during startup, inspect `docker logs hermes` (or
+`docker compose logs hermes`). The fixed message `[stage2] ERROR: dependency
+refresh failed; refusing startup` means no gateway or dashboard has started.
+Resolver output and Python tracebacks are intentionally not copied to container
+logs: package-index URLs may contain credentials. Check network/DNS and index
+access, available space and writable ownership on `/opt/data`, and the enabled
+plugins' Python requirements in the default and profile configs. Resolve a
+version conflict or restore index access, then restart the **same** volume;
+the failed build does not publish a partial generation. For planned offline
+operation, first boot the intended image and selected plugins while online,
+confirm `[stage2] dependency environment: rebuilt` (or `current` on a warm
+restart), then go offline without changing the selection or image. An image
+upgrade may need a new resolve even if the previous image ran offline. Do not
+disable an active memory provider just to make the container appear healthy.
 
 ## Skills and credential files
 

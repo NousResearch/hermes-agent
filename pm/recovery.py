@@ -64,9 +64,11 @@ def refresh_dependencies(project_root: Path) -> str:
     """Re-resolve the durable selection against inputs an external update replaced.
 
     A container image swaps the code and lock under a selection recorded on the data volume; a
-    generation resolved against the previous lock must never boot the new code. Rebuilds the
-    recorded extras and plugins, or on failure boots the image's own environment while keeping
-    them recorded, so the next boot or install rebuilds them. Returns what happened.
+    generation resolved against the previous lock must never boot the new code. Pre-generation
+    images also leave selected plugin declarations in the volume without a PM facts file. Build
+    those through the same atomic PM transaction before boot, never mutate the sealed image venv.
+    A selected plugin's failed build must stop startup rather than silently boot without its tools.
+    Extras-only failures retain the image-environment fallback for the next boot.
     """
     from hermes_cli.runtime_state import runtime_lock
     from pm.client import sync_venv
@@ -74,11 +76,25 @@ def refresh_dependencies(project_root: Path) -> str:
     from pm.install import venv_is_current
     from pm.lock import Facts
     from pm.paths import repo_root
+    from pm.plugin_declarations import read_python_declaration
+    from pm.workspace import enabled_plugin_entries, enabled_member_dirs
 
     root = Path(project_root).resolve()
     if root != repo_root().resolve():
         raise InstallError("venv", "refresh root does not match this PM installation")
-    if not runtime_facts_path(root).is_file():
+    # Unlike update eviction, Docker boot must preserve every profile's active selection.
+    # Fail on malformed secondary config rather than silently publish a smaller union.
+    selected_plugins = []
+    for _plugins_dir, name, plugin_dir in enabled_plugin_entries(skip_invalid_secondary=False):
+        declaration = read_python_declaration(plugin_dir)
+        if declaration.is_member:
+            from hermes_cli.plugins_manifest import requires_hermes_error
+            if reason := requires_hermes_error(declaration.manifest):
+                raise InstallError("venv", f"selected plugin {name!r} is incompatible: {reason}")
+            selected_plugins.append(plugin_dir)
+    # Validate manifest contracts before an image with no facts is allowed to boot its base venv.
+    enabled_member_dirs()
+    if not runtime_facts_path(root).is_file() and not selected_plugins:
         return "base"
     if venv_is_current(project_root=root):
         return "current"
@@ -86,8 +102,9 @@ def refresh_dependencies(project_root: Path) -> str:
         with contextlib.redirect_stdout(sys.stderr):
             sync_venv(explicit=True)
         return "rebuilt"
-    except Exception as exc:
-        print(f"dependency refresh failed: {exc}", file=sys.stderr)
+    except Exception:
+        if selected_plugins:
+            raise
     with runtime_lock(root, timeout=None):
         facts = Facts(runtime_facts_path(root), strict=True)
         fact = facts.get("venv") or {}

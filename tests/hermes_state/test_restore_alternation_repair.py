@@ -30,8 +30,10 @@ def _seed_adjacent_user_session(db, session_id="s1"):
     db.create_session(session_id, "system prompt")
     db.append_message(session_id=session_id, role="user", content="first ask")
     db.append_message(session_id=session_id, role="assistant", content="first reply")
-    db.append_message(session_id=session_id, role="user", content="unanswered turn")
-    db.append_message(session_id=session_id, role="user", content="next turn")
+    db.append_message(session_id=session_id, role="user", content="unanswered turn",
+                      platform_message_id="src-unanswered")
+    db.append_message(session_id=session_id, role="user", content="next turn",
+                      platform_message_id="src-next")
     db.append_message(session_id=session_id, role="assistant", content="next reply")
 
 
@@ -115,8 +117,10 @@ def _seed_wedged_acp_session(db, session_id="acp1"):
     db.create_session(session_id, "acp")
     db.append_message(session_id=session_id, role="user", content="first ask")
     db.append_message(session_id=session_id, role="assistant", content="first reply")
-    db.append_message(session_id=session_id, role="user", content="unanswered turn")
-    db.append_message(session_id=session_id, role="user", content="next turn")
+    db.append_message(session_id=session_id, role="user", content="unanswered turn",
+                      platform_message_id="acp-unanswered")
+    db.append_message(session_id=session_id, role="user", content="next turn",
+                      platform_message_id="acp-next")
     db.append_message(session_id=session_id, role="assistant", content="next reply")
 
 

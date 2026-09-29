@@ -287,6 +287,24 @@ def _ref_name(dir_hash: str) -> str:
     return f"{_REFS_PREFIX}/{dir_hash}"
 
 
+def _gitlink_paths(ls_tree_z: str) -> List[str]:
+    """Paths of gitlinks (nested repositories stored as a commit reference, not
+    their files) in ``git ls-tree -r -z`` output."""
+    return [
+        record.split("\t", 1)[1]
+        for record in ls_tree_z.split("\x00")
+        if record.startswith("160000 commit ") and "\t" in record
+    ]
+
+
+def _uncaptured_note(nested_repos: List[str]) -> str:
+    """Checkpoint-message suffix naming nested repositories whose files were
+    not captured, so every /rollback listing discloses it."""
+    shown = ", ".join(nested_repos[:3])
+    more = f" (+{len(nested_repos) - 3})" if len(nested_repos) > 3 else ""
+    return f" [nested git repos not captured: {shown}{more}]"
+
+
 def _project_meta_path(store: Path, dir_hash: str) -> Path:
     return store / _PROJECTS_DIRNAME / f"{dir_hash}.json"
 
@@ -1149,11 +1167,7 @@ class CheckpointManager:
         )
         if not ok:
             return {"success": False, "error": f"Could not inspect checkpoint: {err}"}
-        nested_repos = [
-            record.split("\t", 1)[1]
-            for record in tree_out.split("\x00")
-            if record.startswith("160000 commit ") and "\t" in record
-        ]
+        nested_repos = _gitlink_paths(tree_out)
         if nested_repos:
             blocked_repos = nested_repos
             if file_path:
@@ -1469,6 +1483,15 @@ class CheckpointManager:
         if not ok_tree or not tree_sha:
             logger.debug("Checkpoint write-tree failed: %s", err)
             return False
+
+        # A nested repository is stored as a gitlink, not its files: say so in
+        # the checkpoint itself rather than only when a rollback is refused.
+        ok_ls, tree_out, _ = _run_git(["ls-tree", "-r", "-z", tree_sha], store, working_dir)
+        nested_repos = _gitlink_paths(tree_out) if ok_ls else []
+        if nested_repos:
+            logger.info("Checkpoint of %s does not capture nested git repositories: %s",
+                        working_dir, ", ".join(nested_repos))
+            reason += _uncaptured_note(nested_repos)
 
         # Build commit (parent = current ref tip, if any).
         commit_args = ["commit-tree", tree_sha, "-m", reason, "--no-gpg-sign"]

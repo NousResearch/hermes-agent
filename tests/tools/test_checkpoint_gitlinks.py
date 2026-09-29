@@ -115,6 +115,23 @@ def test_gitlink_name_roundtrips_in_refusal(checkpoint, name):
     assert durable_state(work) == before
 
 
+def test_checkpoint_listing_discloses_uncaptured_nested_repository(checkpoint, tmp_path):
+    mgr, work, _ = checkpoint
+    entry = mgr.list_checkpoints(str(work))[0]
+    assert entry["reason"] == "baseline [nested git repos not captured: tool]"
+    assert "[nested git repos not captured: tool]" in cm.format_checkpoint_list([entry], str(work))
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "a.txt").write_text("a\n")
+    assert mgr.ensure_checkpoint(str(plain), "no nested repo")
+    assert mgr.list_checkpoints(str(plain))[0]["reason"] == "no nested repo"
+
+
+def test_checkpoint_disclosure_caps_listed_repositories(checkpoint):
+    assert cm._uncaptured_note(["a", "b", "c", "d", "e"]) == " [nested git repos not captured: a, b, c (+2)]"
+
+
 @pytest.fixture
 def deep_checkpoint(checkpoint):
     mgr, work, _ = checkpoint

@@ -239,7 +239,9 @@ Restore just one file from a checkpoint without affecting the rest of the direct
 A checkpoint of a parent directory can store a nested repository as a Git
 **gitlink** (a commit reference), not a copy of its files. Recursive capture of
 nested repositories is not supported: their uncommitted edits and untracked
-files are not recoverable from that parent checkpoint.
+files are not recoverable from that parent checkpoint. Checkpoints taken by this
+version or later are labelled in `/rollback` listings, for example
+`before write_file: app.py [nested git repos not captured: tool]`.
 
 If the selected checkpoint contains gitlinks, a full rollback (including
 `--all`) is refused before changing files or creating a pre-rollback snapshot.

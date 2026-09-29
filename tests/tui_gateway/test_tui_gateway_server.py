@@ -12123,6 +12123,28 @@ def test_rollback_restore_resolves_number_and_file_path():
     assert calls["args"][2] == "src/app.tsx"
 
 
+def test_rollback_list_carries_checkpoint_reason_as_message():
+    reason = "before write_file: a.py [nested git repos not captured: tool]"
+
+    class _Mgr:
+        enabled = True
+
+        def list_checkpoints(self, cwd):
+            return [{"hash": "aaa111", "short_hash": "aaa", "timestamp": "2026-09-29T10:00:00+00:00",
+                     "reason": reason, "files_changed": 1}]
+
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()), history=[]
+    )
+    resp = server.handle_request(
+        {"id": "1", "method": "rollback.list", "params": {"session_id": "sid"}}
+    )
+
+    row = resp["result"]["checkpoints"][0]
+    assert row["hash"] == "aaa111"
+    assert row["message"] == reason
+
+
 def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
     """rollback.restore must truncate from the last *real* user turn,
     not a display_kind timeline marker (same bug class as /undo).

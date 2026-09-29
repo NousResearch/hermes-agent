@@ -200,6 +200,7 @@ final class MobileComputeHandler: ChannelInboundHandler {
             status: "completed",
             result: result
         )
+        server.record(task: task)
         
         let response = ComputeResponse(
             success: true,
@@ -214,13 +215,13 @@ final class MobileComputeHandler: ChannelInboundHandler {
     }
     
     private func handleTasks(context: ChannelHandlerContext) {
-        let response = TasksResponse(tasks: server.tasks)
+        let response = TasksResponse(tasks: server.tasksSnapshot)
         let json = try! JSONEncoder().encode(response)
         sendResponse(context: context, status: .ok, body: json)
     }
     
     private func handleTaskStatus(context: ChannelHandlerContext, taskId: String) {
-        if let task = server.tasks.first(where: { $0.task_id.uuidString == taskId }) {
+        if let task = server.tasksSnapshot.first(where: { $0.task_id.uuidString == taskId }) {
             let response = TaskStatusResponse(
                 task_id: task.task_id.uuidString,
                 task_type: task.task_type,
@@ -260,8 +261,9 @@ final class MobileComputeHandler: ChannelInboundHandler {
 }
 
 /// Main server class
-final class MobileComputeServer {
+final class MobileComputeServer: @unchecked Sendable {
     let config: MobileComputeConfig
+    private let lock = NSLock()
     private var tasks: [MobileComputeTask] = []
     private var group: EventLoopGroup?
     private var bootstrap: ServerBootstrap?
@@ -271,6 +273,24 @@ final class MobileComputeServer {
         self.config = config
     }
     
+    /// Snapshot of completed tasks, safe to read from any NIO event loop.
+    var tasksSnapshot: [MobileComputeTask] {
+        lock.lock()
+        defer { lock.unlock() }
+        return tasks
+    }
+
+    /// Records a completed task.
+    func record(task: MobileComputeTask) {
+        lock.lock()
+        defer { lock.unlock() }
+        tasks.append(task)
+        // Keep the in-memory list bounded; this is an echo-only Phase 0 node.
+        if tasks.count > 128 {
+            tasks.removeFirst(tasks.count - 128)
+        }
+    }
+
     /// Starts the HTTP server
     func start() async throws {
         group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
@@ -292,16 +312,19 @@ final class MobileComputeServer {
         let address = try SocketAddress.makeAddressResolvingHost(config.host, port: Int(config.port))
         channel = try await bootstrap!.bind(to: address).get()
         
-        print("Mobile Compute server listening on \(config.host):\(config.port)")
+        NSLog("Mobile Compute server listening on \(config.host):\(config.port)")
     }
     
-    /// Stops the HTTP server
+    /// Stops the HTTP server and releases the EventLoopGroup.
     func stop() async throws {
-        try await channel?.close().get()
-        try await group?.shutdownGracefully().get()
-    }
-    
-    var tasksList: [MobileComputeTask] {
-        return tasks
+        if let channel = self.channel {
+            try? await channel.close().get()
+            self.channel = nil
+        }
+        if let group = self.group {
+            try? await group.shutdownGracefully()
+            self.group = nil
+        }
+        self.bootstrap = nil
     }
 }

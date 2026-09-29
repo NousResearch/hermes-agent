@@ -13,68 +13,107 @@ on:
       - ".github/workflows/ios-build.yml"
   workflow_dispatch:
 
+env:
+  PROJECT: agent/mobile_compute/ios/MobileCompute.xcodeproj
+  SCHEME: MobileCompute
+
 jobs:
   build:
+    name: Build (simulator + device archive)
     runs-on: macos-14
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Xcode
+      - name: Show Xcode / Swift toolchain
         run: |
           xcode-select --install 2>/dev/null || true
           xcodebuild -version
+          swift --version
 
-      - name: Set up Swift toolchain
-        uses: swift-actions/setup-swift@v1
-        with:
-          swift-version: "5.9"
-
-      - name: Build iOS Project
-        working-directory: ./agent/mobile_compute/ios
+      - name: Resolve SwiftNIO package dependencies
         run: |
-          xcodebuild -scheme MobileCompute -configuration Debug -sdk iphonesimulator -quiet
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -resolvePackageDependencies
 
-      - name: Archive Built Products
-        if: success()
-        working-directory: ./agent/mobile_compute/ios
+      - name: List project targets and schemes
         run: |
-          mkdir -p build_artifacts
-          xcodebuild -scheme MobileCompute -configuration Release -sdk iphoneos -archivePath build_artifacts/MobileCompute.xcarchive -quiet archive
-          xcodebuild -exportArchive -archivePath build_artifacts/MobileCompute.xcarchive -exportPath build_artifacts/MobileCompute.ipa -exportOptionsPlist build_artifacts/ExportOptions.plist -quiet 2>/dev/null || true
-          ls -la build_artifacts/ 2>/dev/null || true
+          echo "=== xcodebuild -list ==="
+          xcodebuild -project "$PROJECT" -list
 
-      - name: Upload Build Artifact
+      - name: Build for iOS Simulator
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            -quiet
+
+      - name: Build device product (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            -quiet
+
+      - name: Archive for device (unsigned, no provisioning profile)
+        # Produces MobileCompute.xcarchive so the Release/device configuration
+        # is proven to compile and package. It is NOT signed and NOT an IPA:
+        # a distributable IPA needs an Apple Developer certificate and a
+        # provisioning profile, which this CI job deliberately does not have.
+        run: |
+          set -o pipefail
+          rm -rf build_artifacts/MobileCompute.xcarchive
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -archivePath build_artifacts/MobileCompute.xcarchive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            archive
+          test -d build_artifacts/MobileCompute.xcarchive
+
+      - name: Inspect archive contents
+        run: |
+          set -o pipefail
+          APP="build_artifacts/MobileCompute.xcarchive/Products/Applications/MobileCompute.app"
+          test -d "$APP"
+          ls -la build_artifacts/MobileCompute.xcarchive/Products/Applications
+          # Prove the built bundle really carries the expected identity.
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist"
+          test -f "$APP/MobileCompute"
+          echo "   unsigned binary present (not a distributable IPA)"
+
+      - name: Upload unsigned archive
         uses: actions/upload-artifact@v4
         with:
-          name: mobile-compute-ios-build
-          path: ./agent/mobile_compute/ios/build_artifacts/
-          retention-days: 30
-
-  validate-api:
-    needs: build
-    runs-on: macos-14
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Validate API Endpoints (iOS App)
-        working-directory: ./agent/mobile_compute/ios
-        run: |
-          echo "Validating Mobile Compute iOS app API endpoints..."
-          echo "Expected endpoints:"
-          echo "  GET /health -> {\"status\": \"ok\", \"device\": \"iPhone 16e\"}"
-          echo "  GET /capabilities -> {\"device\": \"iPhone 16e\", \"compute\": [\"echo\"], \"coreml\": false, \"llm\": false}"
-          echo "  POST /compute -> {\"success\": true, \"task_id\": \"...\", \"status\": \"completed\", \"result\": \"...\"}"
-          echo "  GET /tasks -> list of tasks"
-          echo "  GET /tasks/{id} -> task status"
-          echo "Validation complete."
+          name: mobile-compute-ios-archive
+          path: agent/mobile_compute/ios/build_artifacts/MobileCompute.xcarchive
+          retention-days: 14
 
   validate-structure:
+    name: Validate project structure
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -85,87 +124,146 @@ jobs:
       - name: Validate iOS Project Structure
         working-directory: ./agent/mobile_compute/ios
         run: |
+          set -eu
           echo "=== Project Structure Validation ==="
-          
+          fail() { echo "   FAIL: $1"; exit 1; }
+
           echo "1. Checking project.pbxproj exists..."
-          if [ -f "MobileCompute.xcodeproj/project.pbxproj" ]; then
-              echo "   PASS: project.pbxproj exists"
-          else
-              echo "   FAIL: project.pbxproj not found"
-              exit 1
-          fi
+          [ -f "MobileCompute.xcodeproj/project.pbxproj" ] \
+            || fail "project.pbxproj not found"
+          echo "   PASS: project.pbxproj exists"
 
-          echo "2. Checking Info.plist exists..."
-          if [ -f "Sources/MobileCompute/Info.plist" ]; then
-              echo "   PASS: Info.plist exists"
-          else
-              echo "   FAIL: Info.plist not found"
-              exit 1
-          fi
+          echo "2. Checking Info.plist exists at ios/Info.plist..."
+          [ -f "Info.plist" ] || fail "Info.plist not found at ios/Info.plist"
+          echo "   PASS: Info.plist exists"
 
-          echo "3. Checking single @main entry point..."
-          main_count=$(grep -rn "@main" Sources/ | wc -l)
-          echo "   @main count: $main_count"
-          if [ "$main_count" -eq 1 ]; then
-              echo "   PASS: Only one @main entry point"
-          else
-              echo "   FAIL: Expected exactly 1 @main, found $main_count"
-              exit 1
-          fi
+          echo "3. Checking no stale Info.plist in Sources/..."
+          [ -f "Sources/MobileCompute/Info.plist" ] \
+            && fail "stale Info.plist still present in Sources/MobileCompute"
+          echo "   PASS: no stale Info.plist in Sources/MobileCompute"
 
-          echo "4. Checking all 5 API endpoints..."
-          endpoints=("handleHealth" "handleCapabilities" "handleCompute" "handleTasks" "handleTaskStatus")
-          for endpoint in "${endpoints[@]}"; do
-              if grep -q "$endpoint" Sources/MobileCompute/MobileComputeServer.swift; then
-                  echo "   PASS: $endpoint found"
-              else
-                  echo "   FAIL: $endpoint not found"
-                  exit 1
-              fi
+          echo "4. Checking project.pbxproj is OpenStep format (not XML plist)..."
+          head -n 1 MobileCompute.xcodeproj/project.pbxproj | grep -q '<?xml' \
+            && fail "project.pbxproj still has an XML header"
+          head -n 1 MobileCompute.xcodeproj/project.pbxproj | grep -q 'UTF8' \
+            || fail "missing Xcode encoding marker on line 1"
+          echo "   PASS: OpenStep pbxproj with UTF8 marker"
+
+          echo "5. Checking required pbxproj sections..."
+          for token in PBXProject PBXNativeTarget PBXSourcesBuildPhase \
+                      PBXResourcesBuildPhase PBXFrameworksBuildPhase PBXFileReference \
+                      PBXGroup PBXBuildFile XCBuildConfiguration XCConfigurationList; do
+              grep -q "isa = $token;" MobileCompute.xcodeproj/project.pbxproj \
+                || fail "pbxproj missing $token"
+              echo "   PASS: $token present"
           done
 
-          echo "5. Checking Swift syntax (basic brace/paren balance)..."
+          echo "6. Checking application product type and bundle id..."
+          grep -q 'productType = "com.apple.product-type.application";' \
+            MobileCompute.xcodeproj/project.pbxproj || fail "target is not an application"
+          grep -q 'PRODUCT_BUNDLE_IDENTIFIER = com.hermes.mobilecompute;' \
+            MobileCompute.xcodeproj/project.pbxproj || fail "wrong PRODUCT_BUNDLE_IDENTIFIER"
+          echo "   PASS: application target, bundle id com.hermes.mobilecompute"
+
+          echo "7. Checking rootObject points at the project object..."
+          grep -Eq 'rootObject = [0-9A-F]{24} /\* Project object \*/;' \
+            MobileCompute.xcodeproj/project.pbxproj || fail "rootObject is not the project object"
+          echo "   PASS: rootObject is the PBXProject"
+
+          echo "8. Checking INFOPLIST_FILE = Info.plist..."
+          infoplist_count=$(grep -c 'INFOPLIST_FILE = Info.plist;' MobileCompute.xcodeproj/project.pbxproj)
+          [ "$infoplist_count" -eq 2 ] \
+            || fail "expected INFOPLIST_FILE in Debug+Release, found $infoplist_count"
+          echo "   PASS: INFOPLIST_FILE set in Debug and Release"
+
+          echo "9. Checking Info.plist is NOT in the resources build phase..."
+          grep -q 'Info.plist in Resources' MobileCompute.xcodeproj/project.pbxproj \
+            && fail "Info.plist is bundled as a resource"
+          echo "   PASS: Info.plist not in resources"
+
+          echo "10. Checking no self-referencing Products group..."
+          if python3 tools/check_pbxproj.py; then
+              echo "   PASS: pbxproj static checks"
+          else
+              fail "pbxproj static checks failed"
+          fi
+
+          echo "11. Checking both Swift sources are in PBXSourcesBuildPhase..."
+          grep -q 'main.swift in Sources' MobileCompute.xcodeproj/project.pbxproj \
+            || fail "main.swift missing from sources phase"
+          grep -q 'MobileComputeServer.swift in Sources' MobileCompute.xcodeproj/project.pbxproj \
+            || fail "MobileComputeServer.swift missing from sources phase"
+          echo "   PASS: main.swift and MobileComputeServer.swift in sources phase"
+
+          echo "12. Checking source files exist on disk..."
+          [ -f "Sources/MobileCompute/main.swift" ] || fail "main.swift missing"
+          [ -f "Sources/MobileCompute/MobileComputeServer.swift" ] \
+            || fail "MobileComputeServer.swift missing"
+          echo "   PASS: main.swift and MobileComputeServer.swift exist"
+
+          echo "13. Checking single entry point..."
+          # main.swift is Swift top-level code, so it must NOT declare @main.
+          # The single entry point is UIApplicationMain. Comment lines are
+          # excluded so documentation mentioning these tokens is not counted.
+          code_only() { grep -v '^[[:space:]]*//' "$1"; }
+          at_main_count=$(for f in Sources/MobileCompute/*.swift; do code_only "$f"; done \
+            | grep -c '@main' || true)
+          [ "$at_main_count" -eq 0 ] \
+            || fail "found $at_main_count @main declarations; main.swift is top-level code"
+          uimain_count=$(for f in Sources/MobileCompute/*.swift; do code_only "$f"; done \
+            | grep -c 'UIApplicationMain(' || true)
+          [ "$uimain_count" -eq 1 ] \
+            || fail "expected exactly 1 UIApplicationMain call, found $uimain_count"
+          echo "   PASS: 0 @main, exactly 1 UIApplicationMain"
+
+          echo "14. Checking all 5 API endpoints..."
+          for endpoint in handleHealth handleCapabilities handleCompute handleTasks handleTaskStatus; do
+              grep -q "$endpoint" Sources/MobileCompute/MobileComputeServer.swift \
+                || fail "$endpoint not found"
+              echo "   PASS: $endpoint found"
+          done
+
+          echo "15. Checking server binds 0.0.0.0:8765..."
+          grep -q 'host: "0.0.0.0"' Sources/MobileCompute/MobileComputeServer.swift \
+            || fail "server host is not 0.0.0.0"
+          grep -q 'port: 8765' Sources/MobileCompute/MobileComputeServer.swift \
+            || fail "server port is not 8765"
+          echo "   PASS: 0.0.0.0:8765"
+
+          echo "16. Checking no Core ML dependencies..."
+          code_only() { grep -v '^[[:space:]]*//' "$1"; }
+          swift_code() { for f in Sources/MobileCompute/*.swift; do code_only "$f"; done; }
+          swift_code | grep -q 'CoreML\|import CoreML' && fail "CoreML reference found"
+          echo "   PASS: No Core ML dependencies"
+
+          echo "17. Checking no LLM dependencies..."
+          swift_code | grep -qE 'LLM|llm_model|MLModel|GPT|Claude|OpenAI' \
+            && fail "LLM reference found"
+          echo "   PASS: No LLM dependencies"
+
+          echo "18. Verifying echo-only compute..."
+          grep -q 'request.payload\["text"\]' Sources/MobileCompute/MobileComputeServer.swift \
+            || fail "echo compute not found"
+          echo "   PASS: Echo compute mode confirmed"
+
+          echo "19. Checking Swift brace/paren balance..."
           for swift_file in Sources/MobileCompute/*.swift; do
-              echo "   Checking: $swift_file"
-              open_braces=$(grep -o '{' "$swift_file" | wc -l)
-              close_braces=$(grep -o '}' "$swift_file" | wc -l)
-              open_parens=$(grep -o '(' "$swift_file" | wc -l)
-              close_parens=$(grep -o ')' "$swift_file" | wc -l)
-              echo "   Braces: $open_braces open / $close_braces close"
-              echo "   Parens: $open_parens open / $close_parens close"
-              if [ "$open_braces" -ne "$close_braces" ]; then
-                  echo "   FAIL: Brace count mismatch"
-                  exit 1
-              fi
-              if [ "$open_parens" -ne "$close_parens" ]; then
-                  echo "   FAIL: Paren count mismatch"
-                  exit 1
-              fi
+              open_braces=$(tr -cd '{' < "$swift_file" | wc -c)
+              close_braces=$(tr -cd '}' < "$swift_file" | wc -c)
+              open_parens=$(tr -cd '(' < "$swift_file" | wc -c)
+              close_parens=$(tr -cd ')' < "$swift_file" | wc -c)
+              [ "$open_braces" -eq "$close_braces" ] \
+                || fail "$swift_file: brace mismatch ($open_braces/$close_braces)"
+              [ "$open_parens" -eq "$close_parens" ] \
+                || fail "$swift_file: paren mismatch ($open_parens/$close_parens)"
+              echo "   PASS: $swift_file balanced"
           done
 
-          echo "6. Checking no Core ML dependencies..."
-          if grep -q "CoreML" Sources/MobileCompute/*.swift; then
-              echo "   FAIL: CoreML import found"
-              exit 1
-          else
-              echo "   PASS: No Core ML dependencies"
-          fi
-
-          echo "7. Checking no LLM dependencies..."
-          if grep -q "LLM\|llm_model\|MLModel\|GPT\|Claude\|OpenAI" Sources/MobileCompute/*.swift; then
-              echo "   FAIL: LLM dependency found"
-              exit 1
-          else
-              echo "   PASS: No LLM dependencies"
-          fi
-
-          echo "8. Verifying echo-only compute..."
-          if grep -q "request.payload\[\"text\"\]" Sources/MobileCompute/MobileComputeServer.swift; then
-              echo "   PASS: Echo compute mode confirmed"
-          else
-              echo "   FAIL: Echo compute not found"
-              exit 1
-          fi
+          echo "20. Checking pbxproj brace balance..."
+          ob=$(tr -cd '{' < MobileCompute.xcodeproj/project.pbxproj | wc -c)
+          cb=$(tr -cd '}' < MobileCompute.xcodeproj/project.pbxproj | wc -c)
+          [ "$ob" -eq "$cb" ] || fail "pbxproj brace mismatch ($ob/$cb)"
+          echo "   PASS: pbxproj braces balanced ($ob)"
 
           echo ""
           echo "=== All Structure Validations Passed ==="

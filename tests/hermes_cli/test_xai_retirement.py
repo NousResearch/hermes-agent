@@ -81,7 +81,7 @@ class TestFindRetiredPerSlot:
         assert len(issues) == 1
         assert issues[0].config_path == "principal.model"
         assert issues[0].current_model == "grok-code-fast-1"
-        assert issues[0].replacement == "grok-4.3"
+        assert issues[0].replacement == "grok-build-0.1"
         assert issues[0].reasoning_effort is None
 
 # ---------------------------------------------------------------------------

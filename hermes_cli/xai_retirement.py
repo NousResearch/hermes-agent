@@ -12,15 +12,15 @@ RETIREMENT_DATE = "May 15, 2026"
 
 
 # Official mapping per xAI migration guide. ``grok-4.3`` reasons by default, so ``*-non-reasoning``
-# variants need ``reasoning_effort="none"`` to emulate their behavior.
+# variants and ``grok-3`` (redirected at ``none`` per the guide) need ``reasoning_effort="none"``.
 _RETIRED_MODELS: dict[str, dict[str, Optional[str]]] = {
     "grok-4-0709":                  {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
     "grok-4-fast-reasoning":        {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
     "grok-4-fast-non-reasoning":    {"replacement": "grok-4.3", "reasoning_effort": "none", "note": None},
     "grok-4-1-fast-reasoning":      {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
     "grok-4-1-fast-non-reasoning":  {"replacement": "grok-4.3", "reasoning_effort": "none", "note": None},
-    "grok-code-fast-1":             {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
-    "grok-3":                       {"replacement": "grok-4.3", "reasoning_effort": None,  "note": None},
+    "grok-code-fast-1":             {"replacement": "grok-build-0.1", "reasoning_effort": None, "note": None},
+    "grok-3":                       {"replacement": "grok-4.3", "reasoning_effort": "none", "note": None},
     "grok-imagine-image-pro":       {"replacement": "grok-imagine-image-quality", "reasoning_effort": None, "note": None},
 }
 

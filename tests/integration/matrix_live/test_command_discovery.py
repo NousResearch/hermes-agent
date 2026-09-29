@@ -145,7 +145,7 @@ def test_client_discovers_native_commands_without_model_turn(
                     ]
                     if replies:
                         assert len(replies) == 1, replies
-                        assert gateway.model.main_requests() == []
+                        assert gateway.model.requests == []
                         reply = replies[0]
                         expected = expected_reply(command).strip()
                         assert (reply.body, reply.formatted_body) == (
@@ -192,7 +192,7 @@ def test_client_discovers_native_commands_without_model_turn(
                     ],
                 ]).strip()
             )
-            assert gateway.model.main_requests() == []
+            assert gateway.model.requests == []
         finally:
             await client.close()
 

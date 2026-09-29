@@ -465,6 +465,74 @@ class TestAppMentionHandler:
         assert created_handlers
         assert created_handlers[0].app_token == "xapp-default"
 
+    @pytest.mark.asyncio
+    async def test_connect_publishes_connected_status_under_profile_key(self):
+        """A successful connect() must publish the status the dashboard/`gateway status` read.
+
+        Regression: Slack was the only adapter whose connect path never called
+        ``_mark_connected()``, so a served (multiplexed) profile's Slack published no
+        ``<profile>:slack`` entry at all — the Channels page answered "Setup looks complete, but
+        the gateway has not reported a connection yet. Restart the gateway." while Socket Mode was
+        connected, and restarting could never change it (the primary-only stamps in run_startup
+        write the bare platform name).
+        """
+        config = PlatformConfig(enabled=True, token="xoxb-served")
+        adapter = SlackAdapter(config)
+        # Exactly what the runner stamps on a multiplexed adapter (run_adapters).
+        adapter._runtime_status_platform_key = "p1234:slack"
+
+        def _noop_decorator(_matcher):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        mock_app = MagicMock()
+        mock_app.event = _noop_decorator
+        mock_app.command = _noop_decorator
+        mock_app.action = _noop_decorator
+        mock_app.client = AsyncMock()
+
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(
+            return_value={
+                "user_id": "U_SERVED",
+                "user": "servedbot",
+                "bot_id": "B_SERVED",
+                "team_id": "T_SERVED",
+                "team": "ServedTeam",
+            }
+        )
+
+        class FakeSocketModeHandler:
+            def __init__(self, app, app_token, proxy=None):
+                self.client = MagicMock(proxy=None)
+
+            async def start_async(self):
+                return None
+
+            async def close_async(self):
+                return None
+
+        with (
+            patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
+            patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client),
+            patch.object(_slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler),
+            patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-served"}),
+            patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
+            patch("asyncio.create_task", side_effect=_fake_create_task),
+            patch("gateway.status.publish_runtime_status") as publish,
+        ):
+            assert await adapter.connect() is True
+
+        connected = [
+            call_ for call_ in publish.call_args_list
+            if call_.kwargs.get("platform_state") == "connected"
+        ]
+        assert connected, f"connect() published no connected status: {publish.call_args_list}"
+        assert connected[-1].kwargs["platform"] == "p1234:slack"
+
+
 
 class TestSlackConnectCleanup:
     """Regression coverage for failed connect() cleanup."""

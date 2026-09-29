@@ -1,6 +1,7 @@
 """Tests for Matrix platform adapter (mautrix-python backend)."""
 import asyncio
 import sys
+import threading
 import time
 import types
 import pytest
@@ -543,7 +544,7 @@ class TestMatrixDmDetection:
         """A configured MXID that differs in case from the server's still finds DMs."""
         self.adapter._access_token = ""
         self.adapter._password = "secret"
-        self.adapter._user_id = "@Bot:ex.org"
+        self.adapter._configured_user_id = "@Bot:ex.org"
         client = MagicMock()
 
         async def login(**kwargs):
@@ -952,6 +953,43 @@ async def test_turn_reuses_the_fresh_room_identity(tmp_path):
     message, _ = await _prepare_room_turn(runner, source, "$m")
 
     assert (message, adapter._client.get_state_event.await_count) == ("hello", reads)
+
+
+@pytest.mark.asyncio
+async def test_turn_context_session_lookup_leaves_the_event_loop_free(tmp_path, monkeypatch):
+    from gateway.platforms.event import MessageEvent
+
+    store, source = _room_session(tmp_path)
+    store.get_or_create_session(source)
+    runner = _room_context_runner(store, _room_context_adapter(_OPS_STATE))
+    lookup_started, lock_held, release = threading.Event(), threading.Event(), threading.Event()
+    lookup = store.lookup_by_session_key
+
+    def lookup_by_session_key(session_key):
+        lookup_started.set()
+        return lookup(session_key)
+
+    monkeypatch.setattr(store, "lookup_by_session_key", lookup_by_session_key)
+    released_by_loop = []
+
+    def hold_session_lock():
+        with store._lock:
+            lock_held.set()
+            released_by_loop.append(release.wait(timeout=2))
+
+    holder = threading.Thread(target=hold_session_lock)
+    holder.start()
+    lock_held.wait()
+    turn = asyncio.create_task(runner._prepare_inbound_message_text(
+        event=MessageEvent(text="hello", source=source, message_id="$m"), source=source, history=[],
+    ))
+    while not lookup_started.is_set():
+        await asyncio.sleep(0.01)
+    release.set()
+    message = await turn
+    holder.join()
+
+    assert (message, released_by_loop) == ("hello", [True])
 
 
 @pytest.mark.parametrize("event_type,before,after,note", [
@@ -4367,6 +4405,82 @@ class TestCryptoStoreResetOnDeviceChange:
         assert "MATRIX_DEVICE_ID=DEVICE_A" in caplog.text
 
         await adapter.disconnect()
+
+
+class TestCryptoStoreAccountId:
+    @pytest.mark.asyncio
+    async def test_password_login_keeps_configured_store_account_and_adopts_canonical_id(self):
+        """An E2EE store written before the upgrade is keyed by the configured MATRIX_USER_ID,
+        while self-identity checks use the homeserver's spelling of it."""
+        from types import SimpleNamespace
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        adapter = MatrixAdapter(PlatformConfig(enabled=True, extra={
+            "homeserver": "https://matrix.example.org",
+            "user_id": "@Bot:example.org",
+            "password": "secret",
+            "device_id": "STABLE",
+            "encryption": True,
+        }))
+
+        fake = _make_fake_mautrix()
+        opened = []
+        login_identifiers = []
+
+        class RecordingStore:
+            upgrade_table = MagicMock()
+
+            def __init__(self, account_id="", **_kw):
+                opened.append(account_id)
+
+            async def open(self):
+                pass
+
+            async def get_device_id(self):
+                return "STABLE"
+
+            async def put_device_id(self, device_id):
+                pass
+
+            async def get_account(self):
+                return MagicMock()
+
+        fake["mautrix.crypto.store.asyncpg"].PgCryptoStore = RecordingStore
+
+        client = MagicMock()
+        client.mxid = "@Bot:example.org"
+        client.device_id = None
+        client.crypto = None
+
+        async def login(**kwargs):
+            login_identifiers.append(kwargs["identifier"])
+            client.mxid = "@bot:example.org"
+            return SimpleNamespace(device_id="STABLE", user_id="@bot:example.org")
+
+        client.login = login
+        client.sync = AsyncMock(return_value={"rooms": {"join": {}}})
+        client.api.token = ""
+        client.api.session.close = AsyncMock()
+        olm = MagicMock()
+        olm.load = AsyncMock()
+        olm.share_keys = AsyncMock()
+        fake["mautrix.client"].Client = MagicMock(return_value=client)
+        fake["mautrix.crypto"].OlmMachine = MagicMock(return_value=olm)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
+                patch.dict("sys.modules", fake), \
+                patch.object(adapter, "_refresh_dm_cache", AsyncMock()), \
+                patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)), \
+                patch.object(adapter, "_verify_device_keys_on_server", AsyncMock(return_value=True)), \
+                patch.object(adapter, "_verify_or_bootstrap_cross_signing", AsyncMock()):
+            assert await adapter.connect() is True
+            assert await adapter.connect(is_reconnect=True) is True
+
+        await adapter.disconnect()
+        assert (login_identifiers, opened, adapter._user_id) == (
+            ["@Bot:example.org"] * 2, ["@Bot:example.org"] * 2, "@bot:example.org",
+        )
 
 
 # ---------------------------------------------------------------------------

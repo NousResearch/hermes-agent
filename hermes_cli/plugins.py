@@ -1380,7 +1380,14 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
                 # load_hermes_dotenv() ran at import, before plugin secret sources existed: re-pull.
                 # Plugin secret sources register during discover; the initial load_hermes_dotenv() already
                 # ran at import time. Re-pull so the first process sees plugin backends (tracking #64177).
-                self._refresh_secret_sources_after_discovery()
+                secret_sources_applied = self._refresh_secret_sources_after_discovery()
+                if secret_sources_applied:
+                    # Plugins may read secret-backed configuration from the environment in register().
+                    # They therefore need a second registration pass after sources have hydrated it;
+                    # reusing the normal unload path keeps registries and ownership ledgers consistent.
+                    self.unload()
+                    self._discover_and_load_inner()
+                    self._evict_stale_persistent_registrations()
                 if force:
                     # config.yaml shell hooks / outbound webhooks live in ``_hooks`` but are
                     # config-owned; unload() wiped them and cannot restore them.
@@ -1440,8 +1447,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             load_hermes_dotenv(hermes_home=home)
             logger.debug("Re-applied secret sources after plugin discovery for: %s",
                          ", ".join(sorted(enabled_names)))
+            return True
         except Exception as exc:
             logger.debug("secret source re-apply after discovery failed: %s", exc)
+        return False
 
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""

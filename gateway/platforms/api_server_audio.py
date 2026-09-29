@@ -6,8 +6,10 @@ import os
 import re
 import tempfile
 from contextlib import suppress
+from contextvars import copy_context
+from functools import partial
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 try:
     from aiohttp import web
@@ -15,6 +17,29 @@ except ImportError:  # pragma: no cover - mirrors the adapter's optional depende
     web = None
 
 logger = logging.getLogger("gateway.platforms.api_server")
+
+
+def _transcribe_upload(
+    file_path: str, *, model: str, language: Optional[str],
+    prompt: Optional[str], verbose: bool,
+) -> Dict[str, Any]:
+    """The worker owns the upload until every consumer has finished reading it."""
+    try:
+        from tools.transcription_tools import transcribe_audio
+
+        result = transcribe_audio(
+            file_path, model=model, language=language, prompt=prompt, source="api_server",
+        )
+        if result.get("success") and verbose:
+            from tools.transcription_audio import _probe_audio_duration
+
+            duration = _probe_audio_duration(file_path)
+            result = dict(result)
+            result["duration"] = float(result.get("duration") or duration or 0.0)
+        return result
+    finally:
+        with suppress(OSError):
+            os.unlink(file_path)
 
 
 class AudioTranscriptionsMixin:
@@ -141,8 +166,6 @@ class AudioTranscriptionsMixin:
                 )
 
             from tools.transcription_common import SUPPORTED_FORMATS
-            from tools.transcription_audio import _probe_audio_duration
-            from tools.transcription_tools import transcribe_audio
 
             if upload_suffix not in SUPPORTED_FORMATS and upload_suffix != ".silk":
                 return web.json_response(
@@ -152,10 +175,22 @@ class AudioTranscriptionsMixin:
                     ),
                     status=400,
                 )
-            result = await asyncio.to_thread(
-                transcribe_audio, upload_path, model=model, language=language,
-                prompt=prompt, source="api_server",
+            worker = asyncio.get_running_loop().run_in_executor(
+                None, copy_context().run,
+                partial(
+                    _transcribe_upload, upload_path, model=model, language=language,
+                    prompt=prompt, verbose=response_format == "verbose_json",
+                ),
             )
+            # Submission transfers ownership even if cancellation arrives while queued.
+            upload_path = None
+            # A disconnected requester may no longer observe the worker's exception.
+            worker.add_done_callback(
+                lambda done: done.exception() if not done.cancelled() else None,
+            )
+            # Cancelling this wait leaves queued and running workers untouched.
+            await asyncio.wait({worker})
+            result = worker.result()
             if not result.get("success"):
                 message = result.get("error") or "Audio transcription failed"
                 return web.json_response(
@@ -167,11 +202,10 @@ class AudioTranscriptionsMixin:
                 return web.Response(text=transcript, content_type="text/plain")
             if response_format == "verbose_json":
                 result_segments = result.get("segments")
-                duration = await asyncio.to_thread(_probe_audio_duration, upload_path)
                 return web.json_response({
                     "task": "transcribe",
                     "language": str(result.get("language") or language or "unknown"),
-                    "duration": float(result.get("duration") or duration or 0.0),
+                    "duration": float(result.get("duration") or 0.0),
                     "text": transcript,
                     "segments": result_segments if isinstance(result_segments, list) else [],
                 })

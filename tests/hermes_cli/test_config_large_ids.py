@@ -1,5 +1,6 @@
 import json
 import pytest
+from fastapi import HTTPException
 from hermes_cli.config import load_config, save_config, _deep_merge
 from hermes_cli.web_server_config import _normalize_config_for_web, _denormalize_config_from_web
 
@@ -68,8 +69,31 @@ def test_denormalize_config_refuses_bare_number_exceeding_safe_int(monkeypatch, 
             "home_channel": 1532136816336044000,
         }
     }
-    with pytest.raises(ValueError, match="exceeds JavaScript safe integer limit"):
+    with pytest.raises(HTTPException) as exc_info:
         _denormalize_config_from_web(corrupted_incoming)
+    assert exc_info.value.status_code == 400
+    assert "exceeds JavaScript safe integer limit" in exc_info.value.detail
+
+
+def test_denormalize_config_converts_id_keys_when_disk_missing():
+    incoming = {
+        "discord": {
+            "home_channel": "1532136816336044092",
+            "allowed_chats": ["1532136816336044092"],
+        }
+    }
+    denormalized = _denormalize_config_from_web(incoming, disk_cfg={})
+    assert denormalized["discord"]["home_channel"] == 1532136816336044092
+    assert isinstance(denormalized["discord"]["home_channel"], int)
+    assert denormalized["discord"]["allowed_chats"] == [1532136816336044092]
+    assert isinstance(denormalized["discord"]["allowed_chats"][0], int)
+
+
+def test_denormalize_config_does_not_convert_arbitrary_numeric_strings():
+    incoming = {"profile": {"name": "12345"}}
+    denormalized = _denormalize_config_from_web(incoming, disk_cfg={})
+    assert denormalized["profile"]["name"] == "12345"
+    assert isinstance(denormalized["profile"]["name"], str)
 
 
 def test_full_roundtrip_unrelated_edit_does_not_corrupt_snowflake(monkeypatch, tmp_path):

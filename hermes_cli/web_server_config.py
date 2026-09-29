@@ -546,14 +546,16 @@ def _normalize_json_safe_numbers(val: Any, parent_key: Optional[str] = None) -> 
     return val
 
 
-def _denormalize_json_safe_numbers(incoming: Any, disk: Any, path: str = "") -> Any:
+def _denormalize_json_safe_numbers(
+    incoming: Any, disk: Any, path: str = "", parent_key: Optional[str] = None
+) -> Any:
     """Validate safe precision on incoming web payloads and recover on-disk scalar types."""
     if isinstance(incoming, dict):
         disk_dict = disk if isinstance(disk, dict) else {}
         result = {}
         for k, v in incoming.items():
             subpath = f"{path}.{k}" if path else k
-            result[k] = _denormalize_json_safe_numbers(v, disk_dict.get(k), path=subpath)
+            result[k] = _denormalize_json_safe_numbers(v, disk_dict.get(k), path=subpath, parent_key=k)
         return result
     if isinstance(incoming, list):
         disk_list = disk if isinstance(disk, list) else []
@@ -561,19 +563,22 @@ def _denormalize_json_safe_numbers(incoming: Any, disk: Any, path: str = "") -> 
         for idx, item in enumerate(incoming):
             disk_item = disk_list[idx] if idx < len(disk_list) else None
             subpath = f"{path}[{idx}]"
-            result.append(_denormalize_json_safe_numbers(item, disk_item, path=subpath))
+            result.append(_denormalize_json_safe_numbers(item, disk_item, path=subpath, parent_key=parent_key))
         return result
     if isinstance(incoming, (int, float)) and not isinstance(incoming, bool):
         if incoming > _JS_MAX_SAFE_INTEGER or incoming < _JS_MIN_SAFE_INTEGER:
             field = path if path else "config"
-            raise ValueError(
-                f"Value for {field} ({incoming}) exceeds JavaScript safe integer limit (2^53 - 1). "
-                f"Large IDs and numbers must be passed as strings to prevent precision loss."
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Value for {field} ({incoming}) exceeds JavaScript safe integer limit (2^53 - 1). "
+                    f"Large IDs and numbers must be passed as strings to prevent precision loss."
+                ),
             )
     if isinstance(incoming, str):
         try:
             int_val = int(incoming)
-            if isinstance(disk, int) and not isinstance(disk, bool):
+            if (isinstance(disk, int) and not isinstance(disk, bool)) or (parent_key and parent_key in _ID_KEYS):
                 return int_val
         except (ValueError, TypeError):
             pass

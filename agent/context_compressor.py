@@ -1724,10 +1724,18 @@ def _sum_clarify(name, args, content, content_len, line_count):
     # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
-    responses = _json_dict(content).get("responses")
+    payload = _json_dict(content)
+    responses = payload.get("responses")
+    if not isinstance(responses, list) and "user_response" in payload:
+        # Clarify results written before per-response status was introduced used
+        # the response fields directly on the top-level object.
+        responses = [payload]
     answers: list = []
     for entry in responses if isinstance(responses, list) else ():
-        if isinstance(entry, dict) and entry.get("status") == "answered":
+        if isinstance(entry, dict) and (
+            entry.get("status") == "answered"
+            or ("status" not in entry and "user_response" in entry)
+        ):
             value = entry.get("user_response")
             answers.extend(value if isinstance(value, list) else [value])
     answers = [answer for answer in answers if isinstance(answer, str) and answer]

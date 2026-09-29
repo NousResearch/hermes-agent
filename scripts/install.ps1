@@ -417,9 +417,9 @@ function Invoke-VerifiedDownload {
             } else {
                 throw
             }
-            # Only missing/temporary prepared assets may fall back to the raw
-            # self-extractor. Caller/auth errors are not availability failures.
-            if ($AllowMissing -and $null -ne $statusCode -and $statusCode -notin @(404, 408, 410, 429, 500, 502, 503, 504)) {
+            # Public release CDNs can refuse anonymous requests with 401/403;
+            # the hash-pinned raw source may still work. Bad requests stay fatal.
+            if ($AllowMissing -and $null -ne $statusCode -and $statusCode -notin @(401, 403, 404, 408, 410, 429, 500, 502, 503, 504)) {
                 $fatalPreparedFailure = "$candidate : $($_.Exception.Message)"
             }
             $httpFailure = $_.Exception.Message

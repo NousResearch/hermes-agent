@@ -1,13 +1,10 @@
-"""Pinned git staging must not need a bzip2-capable tar (#122512, #122774).
+"""Pinned Git staging must not need a bzip2-capable tar (#122512, #122774).
 
-Stock Windows 10 ships a System32 tar.exe without a bzip2 filter, so the
-old .tar.bz2 pin died at stage=prerequisites ("tar.exe: Error opening
-archive: Can't initialize filter; unable to run program \"bzip2 -d\"").
-Get-PinnedGit now stages the PortableGit self-extractor, which needs
-neither tar nor bzip2. The driver below runs the real Get-PinnedGit
-against the real pinned archive with a PATH that carries no bzip2 (or
-anything else to fall back on) and demands a working git.exe plus the
-bundled bash contract pm/shell.py relies on.
+Stock Windows 10 ships a System32 tar.exe without a bzip2 filter. The
+prepared ZIP uses stock .NET extraction; a missing release asset can still
+fall back to PortableGit's own self-extractor. These tests restrict PATH so
+neither path quietly depends on a host archive utility, and require a working
+git.exe plus the bundled bash that pm/shell.py uses.
 """
 import hashlib
 import io
@@ -133,3 +130,26 @@ def test_prepared_git_http_client_error_never_runs_raw_installer(tmp_path, dl_se
     assert result.returncode == 0, (result.stdout + result.stderr).decode(errors="replace")
     assert "/prepared" in RangeHandler.requests_seen
     assert "/raw" not in RangeHandler.requests_seen
+
+
+@pytest.mark.platforms("windows")
+def test_prepared_git_http_403_permits_pinned_raw_fallback(tmp_path, dl_server):
+    RangeHandler.status_codes = {"/prepared": 403, "/backup": 404}
+    driver = tmp_path / "denied-prepared-git.ps1"
+    prepared = url(dl_server, "/prepared")
+    backup = url(dl_server, "/backup")
+    destination = tmp_path / "prepared.zip"
+    driver.write_text(textwrap.dedent(f"""
+        . '{INSTALLER}' -HermesHome '{tmp_path / "home"}'
+        Invoke-VerifiedDownload -GitHubUrl '{prepared}' -Url '{prepared}' `
+            -MirrorUrl '{backup}' -Sha256 '{"a" * 64}' `
+            -OutFile '{destination}' -AllowMissing
+        if (Test-Path -LiteralPath '{destination}') {{ exit 9 }}
+    """), encoding="ascii")
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+         "-File", str(driver)], capture_output=True, timeout=180,
+    )
+    assert result.returncode == 0, (result.stdout + result.stderr).decode(errors="replace")
+    assert "/prepared" in RangeHandler.requests_seen
+    assert "/backup" in RangeHandler.requests_seen

@@ -92,3 +92,76 @@ def test_undeclared_version_keeps_old_behavior(tmp_path, monkeypatch):
     runtime_paths.activate_dependencies(repo)
 
     assert str(site) in sys.path
+
+
+
+# ---------------------------------------------------------------------------
+# adopt_selected ABI guard (#122555 second hop via pm/extras.py:adopt_selected)
+# ---------------------------------------------------------------------------
+
+def _make_adopt_pair(tmp_path, monkeypatch, running_cfg: str, selected_cfg: str):
+    """Build two venv stubs and monkeypatch environments_adopt to return them."""
+    from pm.environments import site_packages
+
+    def _make_venv(name, cfg):
+        venv = tmp_path / name
+        (venv / "pyvenv.cfg").parent.mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text(cfg, encoding="utf-8")
+        site_packages(venv).mkdir(parents=True)
+        return venv
+
+    running = _make_venv("running_venv", running_cfg)
+    selected = _make_venv("selected_venv", selected_cfg)
+    return running, selected
+
+
+def test_adopt_selected_skips_foreign_interpreter(tmp_path, monkeypatch, caplog):
+    """adopt_selected must not rewire sys.path onto a tree built for another interpreter."""
+    import pm.environments_adopt as ea
+
+    running, selected = _make_adopt_pair(
+        tmp_path, monkeypatch,
+        running_cfg=f"version = {_running_version()}\n",
+        selected_cfg=f"version = {_other_version()}\n",
+    )
+
+    monkeypatch.setattr(ea, "_running_and_selected", lambda _root: (running, selected))
+
+    with caplog.at_level("WARNING", logger="pm.environments_adopt"):
+        result = ea.adopt_selected(tmp_path)
+
+    assert result is False
+    assert any("skipping adoption" in r.message for r in caplog.records)
+
+
+def test_adopt_selected_proceeds_for_matching_interpreter(tmp_path, monkeypatch):
+    """adopt_selected returns True when the selected tree matches this interpreter."""
+    import pm.environments_adopt as ea
+
+    running, selected = _make_adopt_pair(
+        tmp_path, monkeypatch,
+        running_cfg=f"version = {_running_version()}\n",
+        selected_cfg=f"version = {_running_version()}\n",
+    )
+
+    # Same path → adopt() sees running == selected and returns True immediately.
+    monkeypatch.setattr(ea, "_running_and_selected", lambda _root: (running, running))
+
+    result = ea.adopt_selected(tmp_path)
+    assert result is True
+
+
+def test_adopt_selected_undeclared_version_proceeds(tmp_path, monkeypatch):
+    """No declared version in selected venv: guard treats it as compatible (old behaviour)."""
+    import pm.environments_adopt as ea
+
+    running, selected = _make_adopt_pair(
+        tmp_path, monkeypatch,
+        running_cfg=f"version = {_running_version()}\n",
+        selected_cfg="home = fixture\n",
+    )
+
+    monkeypatch.setattr(ea, "_running_and_selected", lambda _root: (running, running))
+
+    result = ea.adopt_selected(tmp_path)
+    assert result is True

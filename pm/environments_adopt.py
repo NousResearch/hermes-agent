@@ -112,6 +112,32 @@ def restart_needed(project_root: Path) -> str | None:
 
 def adopt_selected(project_root: Path) -> bool:
     """Move this process onto the selected generation. True when it already runs it, adopted it,
-    or runs from no generation of this install at all (there is nothing to adopt)."""
+    or runs from no generation of this install at all (there is nothing to adopt).
+
+    ABI guard (#122555): if the selected generation was built for a different interpreter
+    version, skip adoption — activating a foreign tree onto this process would put C extensions
+    compiled for another ABI on ``sys.path``.  The guard mirrors the one in
+    ``activate_dependencies``; omitting it here would leave ``pm/extras.py:adopt_selected``
+    as a second hop past the boot-time check.
+    """
+    from pm.environments import _environment_matches_running_interpreter
+
     pair = _running_and_selected(project_root)
-    return pair is None or adopt(pair[0], pair[1], pair[0])
+    if pair is None:
+        return True
+    _running, selected = pair
+    if not _environment_matches_running_interpreter(selected):
+        import logging
+        import sys
+        from pm.environments import venv_python_version
+
+        declared = venv_python_version(selected)
+        logging.getLogger(__name__).warning(
+            "adopt_selected: skipping adoption of generation %s — built for Python %s, "
+            "this process runs %s; a restart will pick it up",
+            selected.parent.name,
+            "%d.%d" % declared if declared else "unknown",
+            "%d.%d" % (sys.version_info.major, sys.version_info.minor),
+        )
+        return False
+    return adopt(_running, selected, _running)

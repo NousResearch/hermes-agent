@@ -274,6 +274,17 @@ export function frameSizeFromMessage(data: unknown, token: string): FrameSizeRep
 
 const HTML_FILE_RE = /\.(?:html?|xhtml)$/i
 
+/** Exported for tests: the composer target a widget's intent must route to.
+ *  The widget lives in ONE session's transcript, so its intent goes to that
+ *  session's composer — never `'active'`, which resolves to whichever chat
+ *  happens to be focused. With keep-alive tabs a background tab's widget
+ *  (or any click racing a tab switch) would otherwise steer the OTHER
+ *  session's live turn — an out-of-band message leak across tabs. Same
+ *  derivation as ask-directive.tsx. */
+export function widgetIntentTarget(kind: 'primary' | 'tile', storedId: string | null): string {
+  return kind === 'tile' ? `tile:${storedId}` : 'main'
+}
+
 export function InlinePreviewDirective({
   attrs,
   streaming
@@ -305,7 +316,9 @@ function InlineHtmlFrame({
   initialHeight: number | null
   streaming: boolean
 }) {
-  const cwd = useStore(useSessionView().$cwd)
+  const view = useSessionView()
+  const cwd = useStore(view.$cwd)
+  const storedId = useStore(view.$storedId)
   const themeEpoch = useThemeEpoch()
   // vars/font/colorScheme come from one collectThemeBridge() call so they can
   // never disagree with each other, even while this lags a repaint behind
@@ -356,6 +369,10 @@ function InlineHtmlFrame({
     }
   }, [path, streaming])
 
+  // The widget's own session's composer — never `'active'` (focus-resolved),
+  // which steers whichever chat happens to be focused (#t_9867e532).
+  const target = widgetIntentTarget(view.kind, storedId)
+
   useEffect(() => {
     // Human-speed gate on widget intents. A closure local, not state: it's
     // a rate limiter read inside the handler, never rendered.
@@ -373,7 +390,7 @@ function InlineHtmlFrame({
           // through the composer's own send path (steer/queue rules apply),
           // but the row is typed hidden — no bubble, no UI space. The widget
           // updating IS the visible response.
-          requestComposerSubmit(intent, { target: 'active', displayKind: 'hidden' })
+          requestComposerSubmit(intent, { target, displayKind: 'hidden' })
         }
 
         return
@@ -405,7 +422,7 @@ function InlineHtmlFrame({
     window.addEventListener('message', onMessage)
 
     return () => window.removeEventListener('message', onMessage)
-  }, [initialHeight, token])
+  }, [initialHeight, target, token])
 
   const { vars, font, colorScheme } = bridge
 

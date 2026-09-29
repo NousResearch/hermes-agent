@@ -184,6 +184,11 @@ matrix:
 
 Unrecognised receipt modes use `immediate`.
 
+`send_read_receipts` is the read-receipt switch that WhatsApp and BlueBubbles
+also use. On Matrix, `send_read_receipts: false` turns automatic receipts off
+whatever `read_receipts` says. When it is `true` or unset, `read_receipts`
+chooses when the receipt is sent.
+
 `reactions: false` disables the processing reactions (👀/✅/❌). Approval,
 model picker and choice picker reactions remain available. Reactions default to
 `true`; completion keeps the existing success, failure and cancellation behaviour.

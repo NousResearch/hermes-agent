@@ -1,12 +1,12 @@
 name: gws-oauth
 repo: https://github.com/anpicasso/hermes-gws-oauth
-sha: 789816fe874075b1d4d68d897dc40822ef86e086
-description: Remote OAuth login from any gateway chat and profile-isolated multi-account routing for the native Google Workspace CLI, with profile client overrides and global client fallback.
+sha: dfda55922012785413ea81903867114c31d74a93
+description: Remote OAuth login from any gateway chat, including protocol-less mobile Safari callbacks, and profile-isolated multi-account routing for the native Google Workspace CLI.
 maintainer: anpicasso
 tier: community
 category: tools
 docs_url: https://github.com/anpicasso/hermes-gws-oauth
-version: "0.3.1"
+version: "0.3.2"
 platforms: [linux, macos]
 capabilities:
   provides_tools:

@@ -180,6 +180,16 @@ def _desktop_preview(agent, args: dict, ctx: InlineToolContext) -> Any:
     return _handle_preview(args)
 
 
+def _vault_page_tool(name: str) -> InlineToolExecutor:
+    def execute(agent, args: dict, ctx: InlineToolContext) -> Any:
+        from tools import browser_vault_tool  # noqa: F401 — registers the real handler
+        from tools.registry import registry
+
+        return registry.dispatch(name, args, task_id=ctx.effective_task_id,
+                                 preview_callback=getattr(agent, "drive_preview_callback", None))
+    return execute
+
+
 def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
     # The GUI callback lives on the agent; registry dispatch never forwards it.
     from tools.connectors import manage_connections
@@ -276,6 +286,9 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
         ("start_line", "start_line"), ("count", "count"),
     ),
     "desktop_preview": _desktop_preview,
+    "browser_vault_fill": _vault_page_tool("browser_vault_fill"),
+    "browser_vault_save_login": _vault_page_tool("browser_vault_save_login"),
+    "browser_vault_enter_code": _vault_page_tool("browser_vault_enter_code"),
     "drive_preview": _callback_tool(
         "tools.drive_preview_tool", "drive_preview_tool", "drive_preview_callback",
         ("action", "action", ""), ("ref", "ref"), ("selector", "selector"), ("text", "text"),

@@ -301,6 +301,31 @@ describe('useVoiceConversation full-duplex barge-in', () => {
 
     expect(monitorCalls.length).toBe(armed)
   })
+
+  it('disarms the live monitor when voice.barge_in flips off mid-turn (#126708)', async () => {
+    const { hook } = renderConversation()
+
+    try {
+      await act(async () => {
+        await hook.result.current.start()
+      })
+      await enterThinking(hook)
+      await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+      expect(stopMonitor).not.toHaveBeenCalled()
+
+      // The config refresh lands mid-turn: barge-in off must stop the LIVE
+      // monitor, not just gate future ones.
+      act(() => {
+        $bargeInEnabled.set(false)
+      })
+
+      await waitFor(() => expect(stopMonitor).toHaveBeenCalledTimes(1))
+    } finally {
+      act(() => {
+        $bargeInEnabled.set(true)
+      })
+    }
+  })
 })
 
 // #126708 — over speakers the reply bleeds into the mic and trips the

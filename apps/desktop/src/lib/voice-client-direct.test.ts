@@ -218,6 +218,23 @@ describe('transcribeAudioClientDirect', () => {
     expect(isSttSilenceHallucination('Thank you.', null)).toBe(false)
   })
 
+  it('strips only trailing .! like the relay rstrip — internal punctuation is a real turn', () => {
+    const filter = {
+      phrases: ['thank you', 'bye', 'you', 'the end'],
+      repeat_regex: '^(?:thank you|thanks|bye|you|ok|okay|the end|[.,!\\\\s])+$'
+    }
+
+    // Internal punctuation survives the strip, so `thank. you` is not the
+    // phrase `thank you` — the relay keeps it as a real turn, and the
+    // client-direct path must agree (wire parity).
+    expect(isSttSilenceHallucination('thank. you', filter)).toBe(false)
+    expect(isSttSilenceHallucination('Than-k you. thank! you', filter)).toBe(false)
+
+    // Trailing punctuation is still stripped the way `rstrip('.!')` does.
+    expect(isSttSilenceHallucination('Thank you.!', filter)).toBe(true)
+    expect(isSttSilenceHallucination('The end...', filter)).toBe(true)
+  })
+
   it('surfaces provider rejections instead of silently relaying', async () => {
     mockDesktopApi({ ok: true, stt: directStt, tts: relay })
     vi.stubGlobal(

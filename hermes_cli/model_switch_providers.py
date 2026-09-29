@@ -1261,6 +1261,36 @@ def list_authenticated_providers(
     return _finalize_picker_rows(b.results, user_providers, current_model)
 
 
+def _picker_model_family_conflicts(row: dict, model: str) -> bool:
+    """Skip a saved default only when it conflicts with a native catalog's vendors.
+
+    Custom endpoints, aggregators, and OpenCode resellers may serve families
+    beyond their catalog. Unknown model names or unrecognizable catalogs leave
+    injection unchanged so uncurated models remain selectable.
+    """
+    from hermes_cli.model_normalize import detect_vendor
+    from hermes_cli.models import _AGGREGATOR_PROVIDERS, opencode_provider_family
+
+    slug = str(row.get("slug") or "").strip().lower()
+    if (not slug or row.get("is_user_defined") or row.get("api_url")
+            or slug in _AGGREGATOR_PROVIDERS or opencode_provider_family(slug) is not None):
+        return False
+    saved_vendor = detect_vendor(model)
+    if not saved_vendor:
+        return False
+    models = row.get("models") or []
+    if row.get("total_models", len(models)) > len(models):
+        # This is a capped display slice, not the provider's full catalog.
+        # Missing vendors in the slice do not prove a family conflict.
+        return False
+    if not models and row.get("source") == "configured-current":
+        from hermes_cli.models import _PROVIDER_MODELS
+        models = _PROVIDER_MODELS.get(slug) or []
+    catalog_vendors = {detect_vendor(str(item)) for item in models}
+    catalog_vendors.discard(None)
+    return bool(catalog_vendors) and saved_vendor not in catalog_vendors
+
+
 def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
     """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
@@ -1290,7 +1320,8 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
             if current_model not in models:
                 from hermes_cli.models import _model_requires_account_discovery
 
-                if _model_requires_account_discovery(row.get("slug"), current_model):
+                if (_model_requires_account_discovery(row.get("slug"), current_model)
+                        or _picker_model_family_conflicts(row, current_model)):
                     break
                 row["models"] = [current_model, *models]
                 row["total_models"] = row.get("total_models", len(models)) + 1

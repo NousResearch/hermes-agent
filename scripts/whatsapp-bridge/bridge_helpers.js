@@ -224,6 +224,57 @@ export function addMentions(payload, mentions) {
   return payload;
 }
 
+// Group roster [{id, name}] from Baileys participants plus the bridge's pushName cache.
+// The name falls back to the contact's saved/notify name, then the bare number, so every
+// member is listed.
+export function buildGroupRoster(participants, nameCache = new Map()) {
+  return (participants || []).filter((p) => p?.id).map((p) => ({
+    id: normalizeWhatsAppId(p.id),
+    name: nameCache.get(normalizeWhatsAppId(p.id))
+      || nameCache.get(normalizeWhatsAppId(p.phoneNumber || p.jid || ''))
+      || p.name || p.notify || p.verifiedName
+      || normalizeWhatsAppId(p.id).replace(/@.*/, ''),
+  }));
+}
+
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// "@" not glued to a word before it, so e-mail addresses are never read as tags.
+const atToken = (body) => new RegExp(`(?<![\\p{L}\\p{N}_])@${body}(?![\\p{L}\\p{N}_])`, 'giu');
+
+// Turn "@Name" tags in outgoing text into native WhatsApp mentions: each tag is rewritten to
+// "@<id>" (WhatsApp renders that as the member's highlighted name) and its JID is collected.
+// Match order: full display name, then a unique first/any word of a name, then the number itself.
+// Ambiguous or unknown tags stay literal text, so a wrong person is never pinged.
+export function resolveAtNameMentions(text, roster) {
+  let out = String(text || '');
+  const members = (roster || []).filter((r) => r?.id && r?.name);
+  const mentions = [];
+  const tag = (member) => {
+    if (!mentions.includes(member.id)) mentions.push(member.id);
+    return `@${member.id.replace(/@.*/, '')}`;
+  };
+  const nameCount = new Map();
+  for (const m of members) nameCount.set(m.name.toLowerCase(), (nameCount.get(m.name.toLowerCase()) || 0) + 1);
+  // Longest names first so "@Bob Smith" wins over a member called "Bob"; shared names are skipped.
+  for (const m of [...members].sort((a, b) => b.name.length - a.name.length)) {
+    if (nameCount.get(m.name.toLowerCase()) > 1) continue;
+    out = out.replace(atToken(escapeRegExp(m.name)), () => tag(m));
+  }
+  out = out.replace(atToken('([\\p{L}\\p{N}_.-]+)'), (whole, word) => {
+    const w = word.replace(/[.-]+$/, '');
+    const byNumber = members.find((m) => m.id.replace(/@.*/, '') === w);
+    if (byNumber) return tag(byNumber) + word.slice(w.length);
+    const hits = members.filter((m) => m.name.toLowerCase().split(/\s+/).includes(w.toLowerCase()));
+    return hits.length === 1 ? tag(hits[0]) + word.slice(w.length) : whole;
+  });
+  return { text: out, mentions };
+}
+
+// Mentions that belong on one chunk: only members whose "@<id>" tag appears in that chunk.
+export function mentionsInChunk(chunk, mentions) {
+  return (mentions || []).filter((jid) => atToken(escapeRegExp(jid.replace(/@.*/, ''))).test(chunk));
+}
+
 export function buildTextSendPayload(text, { replyTo, messageStore, mentions } = {}) {
   const content = addMentions({ text }, mentions);
   const options = {};

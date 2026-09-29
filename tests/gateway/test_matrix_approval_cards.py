@@ -1266,7 +1266,7 @@ class TestMatrixApprovalCardLifecycle:
         edits: list[str] = []
 
         async def _edit_message(room_id, event_id, body, metadata=None):
-            if "Hermes wants to run a command that needs your OK" in body:
+            if "Restarts the example container." in body:
                 edits.append("summary")
                 summary_edit_started.set()
                 try:
@@ -1285,7 +1285,7 @@ class TestMatrixApprovalCardLifecycle:
         ):
             cfg = MatrixApprovalSummaryConfig(enabled=True, provider_policy="local_only")
             adapter._schedule_approval_summary(prompt, cfg)
-            await summary_edit_started.wait()
+            await asyncio.wait_for(summary_edit_started.wait(), timeout=10)
             prompt.resolved = True
             await adapter._finalize_matrix_approval_prompt(
                 prompt.chat_id,
@@ -1401,6 +1401,6 @@ async def test_resolution_watch_uses_prompt_deadline(monkeypatch):
     monkeypatch.setattr(approval_mod, "consume_gateway_approval_outcome", lambda *a, **k: "expired")
     monkeypatch.setattr(adapter, "_matrix_prompt_expired", lambda p: p.expires_at <= 10)
     adapter._schedule_approval_resolution_watch(prompt)
-    await finished.wait()
+    await asyncio.wait_for(finished.wait(), timeout=10)
     assert (prompt.resolved, prompt.terminal_choice) == (True, "expired")
     await prompt.lifecycle_task

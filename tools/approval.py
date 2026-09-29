@@ -190,7 +190,8 @@ def resolve_gateway_approval(session_key: str, choice: str,
         elif resolve_all:
             targets = live
         else:
-            targets = live[:1]
+            # An untargeted reply answers the oldest request. When that request has expired, no newer request takes the answer.
+            targets = queue[:1] if queue[0] in live else []
         if not targets:
             return 0
         queue[:] = [entry for entry in queue if entry not in targets]

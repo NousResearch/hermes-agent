@@ -14,6 +14,28 @@ This page covers:
 - go-live checks
 - rollout worksheet
 
+## Notification conversation scope
+
+By default, Microsoft Graph notifications for one subscription share a conversation.
+For independent automation jobs, opt into a fresh conversation for each accepted
+notification in the receiving profile's `config.yaml`:
+
+```yaml
+platforms:
+  msgraph_webhook:
+    extra:
+      session_per_notification: true
+```
+
+Merge this into the existing platform configuration; retain its authentication and
+source restrictions. Use a YAML boolean, not a quoted string. Apply it on the next
+gateway start. Each accepted delivery gets a separate session, including repeated
+identical payloads without an explicit notification ID. Existing receipt-ID
+in-process deduplication is unchanged; this does not add durable retry deduplication.
+The old subscription conversation is retained, not deleted or migrated. Setting
+this to `false` (or omitting it) keeps the subscription-scoped behavior. This option
+does not rotate interactive chats or introduce a time-based reset policy.
+
 ## Core Operator Commands
 
 ### Validate the config snapshot

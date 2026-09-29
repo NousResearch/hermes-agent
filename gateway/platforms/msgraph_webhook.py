@@ -11,6 +11,7 @@ import re
 from collections import deque
 from hashlib import sha1
 from typing import Any, Awaitable, Callable, Dict, Optional
+from uuid import uuid4
 
 try:
     from aiohttp import web
@@ -287,8 +288,13 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
 
     def _build_message_event(self, notification: Dict[str, Any], receipt_key: Optional[str]) -> MessageEvent:
         message_id = receipt_key or f"sha1:{sha1(json.dumps(notification, sort_keys=True).encode('utf-8')).hexdigest()}"
+        chat_id = f"msgraph:{notification.get('subscriptionId', 'unknown')}"
+        if self.config.extra.get("session_per_notification") is True:
+            # Some Graph notifications have no receipt id and identical bodies.
+            # Scope each accepted delivery, not its resource or payload hash.
+            chat_id = f"{chat_id}:{uuid4().hex}"
         source = self.build_source(
-            chat_id=f"msgraph:{notification.get('subscriptionId', 'unknown')}", chat_name="msgraph/webhook",
+            chat_id=chat_id, chat_name="msgraph/webhook",
             chat_type="webhook", user_id="msgraph", user_name="Microsoft Graph")
         return MessageEvent(
             text=self._render_prompt(notification), message_type=MessageType.TEXT, source=source,

@@ -91,7 +91,15 @@ def partition_batch(text: str) -> Tuple[List[Tuple[str, str]], bool]:
 
 
 def _owner_matches(event: Any, owner_cfg: Dict[str, str]) -> bool:
-    """Both chat ID and sender user ID must match (§4.8)."""
+    """Both chat ID and sender user ID must match (§4.8) — with a DM carve-out.
+
+    Real Telegram DM events can carry ``user_id=None`` (adapter privacy
+    normalization strips the sender on 1:1 chats); there the chat_id itself
+    IS the owner's user id (DM chat ids equal the user id), so chat match +
+    dm chat type + an owner_user_id equal to the chat id authorizes. Group
+    chats always require the explicit user match (§4.8: only the owner
+    account may answer).
+    """
     source = getattr(event, "source", None)
     if source is None:
         return False
@@ -99,9 +107,17 @@ def _owner_matches(event: Any, owner_cfg: Dict[str, str]) -> bool:
     owner_user = str(owner_cfg.get("owner_user_id") or "")
     if not owner_chat and not owner_user:
         return False
-    chat_ok = bool(owner_chat) and str(getattr(source, "chat_id", "") or "") == owner_chat
-    user_ok = bool(owner_user) and str(getattr(event, "user_id", "") or "") == owner_user
-    return chat_ok and user_ok
+    chat_id = str(getattr(source, "chat_id", "") or "")
+    chat_ok = bool(owner_chat) and chat_id == owner_chat
+    if not chat_ok:
+        return False
+    user_id = str(getattr(event, "user_id", "") or "")
+    if user_ok := (bool(owner_user) and user_id == owner_user):
+        return True
+    # DM carve-out: no sender identity on the event, but this is the owner's
+    # 1:1 chat and the configured owner_user_id IS that chat id.
+    chat_type = str(getattr(source, "chat_type", "") or "")
+    return user_id == "" and chat_type == "dm" and owner_user == chat_id
 
 
 def _resolve_token(broker, token: str):

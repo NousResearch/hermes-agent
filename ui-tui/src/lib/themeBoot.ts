@@ -18,6 +18,7 @@ import { readFileSync, renameSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
+import { detectLightMode } from '../theme.js'
 import type { Theme } from '../theme.js'
 
 interface BootThemeFile {
@@ -207,3 +208,16 @@ export const bootSeededPin: boolean = seedBootEnvironment(boot, process.env).see
 
 /** The cached theme for the first frame, or null on first launch. */
 export const bootTheme: Theme | null = boot?.theme ?? null
+
+/**
+ * The polarity `bootTheme` was resolved under, derived from the cached
+ * mode/background alone (never the live env) so a pin already exported at
+ * process start doesn't get baked in as if the cache itself had confirmed
+ * it. Callers compare this against a fresh `detectLightMode(process.env)`
+ * to tell "a live signal just confirmed the cache" (safe to keep the richer
+ * cached theme) from "a live signal disagrees with it" (the cache is stale
+ * and must not outrank the live answer — see the module contract above).
+ */
+export const bootThemeIsLight: boolean | null = boot
+  ? detectLightMode({ HERMES_TUI_BACKGROUND: boot.background, HERMES_TUI_THEME: boot.mode })
+  : null

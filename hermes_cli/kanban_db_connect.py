@@ -868,6 +868,45 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     ).fetchone() is not None
 
 
+def _ensure_idempotency_is_unique(conn: sqlite3.Connection) -> None:
+    """Make ``tasks.idempotency_key`` an identity, not a hint.
+
+    ``create_task`` reads the key *before* its write transaction, so without a constraint two
+    concurrent creators both pass the check and both INSERT — measured at 8 rows for one key
+    (``docs/acceptance/G1-hermes-board-create-or-find-race.md``). A plain index cannot prevent
+    that.
+
+    Two deliberate properties:
+
+    * PARTIAL (``status != 'archived'``) so the documented create-or-find behaviour is preserved:
+      archiving a task releases its key for reuse. A whole-column unique index would pin the key
+      to an archived row forever.
+    * FAIL-SOFT. SQLite refuses to build a unique index over existing duplicates. Letting that
+      raise here would make an affected board unopenable — strictly worse than the race being
+      fixed — so on that error we fall back to the plain lookup index and leave the duplicates
+      for an operator. The conflict handling in ``create_task`` still keeps callers correct.
+    """
+    existing = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_tasks_idempotency'"
+    ).fetchone()
+    if existing is not None and "UNIQUE" in (existing["sql"] or "").upper():
+        return
+
+    unique_sql = (
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key) "
+        "WHERE idempotency_key IS NOT NULL AND status != 'archived'"
+    )
+    plain_sql = "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
+
+    with contextlib.suppress(sqlite3.OperationalError):
+        conn.execute("DROP INDEX IF EXISTS idx_tasks_idempotency")
+    try:
+        conn.execute(unique_sql)
+    except sqlite3.IntegrityError:
+        # Pre-existing duplicates (legacy board). Keep a usable board.
+        conn.execute(plain_sql)
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns introduced after v1 to legacy DBs (called via ``init_db``)."""
     cols = _column_names(conn, "tasks")
@@ -900,7 +939,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # keeps re-running here cheap and correct on fresh DBs.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)")
+    _ensure_idempotency_is_unique(conn)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")
 
     # task_events.run_id back-fills as NULL for historical events (they predate

@@ -1320,16 +1320,14 @@ def create_task(
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
 
-    # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
-    # race may insert twice, the next lookup stabilises on the newest.
+    # Idempotency check BEFORE the write txn (no lock held): this is the fast path for the
+    # common sequential case. It cannot be the only guard — a concurrent creator can pass this
+    # same check — so the partial unique index on ``tasks.idempotency_key`` is the real arbiter
+    # and the INSERT below handles its conflict by returning the winner.
     if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
-        ).fetchone()
-        if row:
-            return row["id"]
+        existing = _existing_task_id_for_key(conn, idempotency_key)
+        if existing:
+            return existing
 
     now = int(time.time())
 
@@ -1423,9 +1421,31 @@ def create_task(
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
             return task_id
         except sqlite3.IntegrityError:
+            # A duplicate idempotency key is NOT a retryable id collision. The row already
+            # exists, so hand the caller that id — the documented create-or-find contract —
+            # instead of an IntegrityError. The unique index arbitrates; the pre-transaction
+            # check cannot, because it runs without the lock. The transaction that failed here
+            # has already rolled back, so the winner is visible to this fresh lookup.
+            winner = _existing_task_id_for_key(conn, idempotency_key) if idempotency_key else None
+            if winner is not None:
+                return winner
             if attempt == 1:
                 raise
     raise RuntimeError("unreachable")
+
+
+def _existing_task_id_for_key(conn: sqlite3.Connection, idempotency_key: str) -> Optional[str]:
+    """Create-or-find lookup: the newest non-archived task holding this key.
+
+    Single owner of the lookup rule, shared by the pre-transaction fast path and the
+    post-conflict path, so the two can never drift apart.
+    """
+    row = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? "
+        "AND status != 'archived' "
+        "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
+    ).fetchone()
+    return row["id"] if row else None
 
 
 def _board_meta_for(board: Optional[str]) -> dict:

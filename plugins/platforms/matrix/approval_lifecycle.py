@@ -140,6 +140,7 @@ class MatrixApprovalMixin:
         from plugins.platforms.matrix.approval_cards import (
             force_redact_command, format_pending_expanded, load_matrix_approval_summary_config,
         )
+        from tools.approval import gateway_approval_expires_at
         choices = prompt.choices
         owner_context = copy_context()
         allow_session = "session" in choices
@@ -153,10 +154,13 @@ class MatrixApprovalMixin:
         )
         send_meta = {**(prompt.metadata or {}), "matrix_formatted_body": html_body}
 
+        # The card expires with the core wait, so a reaction can never answer a request the core has timed out.
+        core_expires_at = gateway_approval_expires_at(session_key, approval_id)
+
         def _make(message_id, requester, expires_at):
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
-                expires_at=expires_at, approval_id=approval_id,
+                expires_at=expires_at if core_expires_at is None else core_expires_at, approval_id=approval_id,
                 command=redacted_command, description=prompt.description or "dangerous command",
                 allow_permanent=allow_permanent, allow_session=allow_session,
                 smart_denied=prompt.smart_denied, metadata=send_meta, owner_context=owner_context,

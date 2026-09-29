@@ -1086,6 +1086,15 @@ class GroupAtGuardMiddleware(InboundMiddleware):
             "and answer it directly."
         )
 
+    @staticmethod
+    def _attribution_header(nickname: str, user_id: Optional[str]) -> str:
+        """``[nickname|user_id]``. Nicknames are member-chosen: a newline or a ``[``/``|``/``]`` in one
+        would end the header early and let the line pass as another member's."""
+        from gateway.session import neutralize_untrusted_inline_text
+        uid = user_id or "unknown"
+        name = " ".join(neutralize_untrusted_inline_text(nickname or "").translate(str.maketrans("", "", "[]|")).split())
+        return f"[{name or uid}|{uid}]"
+
     @classmethod
     def _observe_group_message(cls, adapter, source, sender_display: str, text: str, *, ctx: InboundContext,
                                msg_id: Optional[str] = None, forwarded_records: Optional[dict] = None) -> None:
@@ -1102,7 +1111,7 @@ class GroupAtGuardMiddleware(InboundMiddleware):
                 if summary:
                     body_text = f"{text}\n{summary}" if text else summary
             entry: dict = {
-                "role": "user", "content": f"[{sender_display}|{source.user_id or 'unknown'}]\n{body_text}",
+                "role": "user", "content": f"{cls._attribution_header(sender_display, source.user_id)}\n{body_text}",
                 "timestamp": datetime.now(tz=timezone.utc).isoformat(), "observed": True,
             }
             if msg_id:
@@ -1132,7 +1141,8 @@ class GroupAttributionMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         if ctx.chat_type == "group" and not ctx.owner_command:
             ctx.channel_prompt = GroupAtGuardMiddleware._build_group_channel_prompt(ctx.msg_body, ctx.adapter._bot_id)
-            ctx.raw_text = f"[{ctx.sender_nickname or ctx.from_account or 'unknown'}|{ctx.from_account or 'unknown'}]\n{ctx.raw_text}"
+            header = GroupAtGuardMiddleware._attribution_header(ctx.sender_nickname or ctx.from_account, ctx.from_account)
+            ctx.raw_text = f"{header}\n{ctx.raw_text}"
             if ctx.source is not None:
                 ctx.source = dataclasses.replace(ctx.source, user_name=None)
         await next_fn()

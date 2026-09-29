@@ -713,9 +713,17 @@ def _hydrate_from_history(agent: Any, conversation_history: Optional[List[Any]])
 
 def _tick_memory_nudge(agent: Any) -> bool:
     """Advance the turn-based memory nudge counter; ``True`` when the review should fire."""
-    if (agent._memory_nudge_interval > 0
-            and "memory" in agent.valid_tool_names
-            and agent._memory_store):
+    external_writer = getattr(agent, "_external_memory_writer_tool_name", "")
+    external_writer = external_writer.strip() if isinstance(external_writer, str) else ""
+    # An application can provide an account-scoped writer (for example through
+    # MCP) and deliberately disable the native file-backed MemoryStore. A
+    # configured external writer is exclusive: if absent from this session's
+    # tool surface, fail closed rather than falling back to local files.
+    writer_available = (
+        external_writer in agent.valid_tool_names
+        if external_writer else ("memory" in agent.valid_tool_names and agent._memory_store)
+    )
+    if agent._memory_nudge_interval > 0 and writer_available:
         agent._turns_since_memory += 1
         if agent._turns_since_memory >= agent._memory_nudge_interval:
             agent._turns_since_memory = 0

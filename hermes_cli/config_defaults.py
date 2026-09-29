@@ -1322,6 +1322,10 @@ DEFAULT_CONFIG = {
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
+        # Optional application-owned account-scoped proposal writer. When set,
+        # background review exclusively uses this named existing tool instead
+        # of the native file-backed ``memory`` writer.
+        "external_writer_tool": "",
         # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
         # "mem0", "holographic", "retaindb", "byterover", or a catalog-installed one ("hindsight").
         "provider": "",

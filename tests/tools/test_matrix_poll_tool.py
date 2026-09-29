@@ -19,7 +19,7 @@ import pytest
 from gateway.session_context import clear_session_vars, set_session_vars
 from hermes_cli.tools_config import _checklist_toolset_keys, _get_platform_tools, _save_platform_tools
 from plugins.platforms.matrix.poll_actions import matrix_poll_action
-from plugins.platforms.matrix.polls import UNSTABLE
+from plugins.platforms.matrix.polls import REQUESTER, UNSTABLE
 from plugins.platforms.matrix.read_context import read_matrix_context
 from plugins.platforms.matrix.reply_context import MatrixEventContextCache
 from plugins.platforms.matrix.thread_context import history_entry
@@ -59,7 +59,12 @@ def poll_start(sender="@bot:server"):
     }
 
 
-def adapter_for(client, actor):
+def owned_start(actor):
+    start = poll_start(actor)
+    return {**start, "content": {**start["content"], REQUESTER: "@alice:server"}}
+
+
+def adapter_for(client, actor, authorized=frozenset({"@alice:server"})):
     from types import MethodType
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
@@ -69,7 +74,7 @@ def adapter_for(client, actor):
         _event_context_cache=MatrixEventContextCache(),
         _is_allowed_matrix_room_event=AsyncMock(return_value=True),
         _is_dm_room=AsyncMock(return_value=False),
-        _is_sender_authorized=lambda user, **kw: user == "@alice:server",
+        _is_sender_authorized=lambda user, **kw: user in authorized,
     )
     adapter._is_allowed_matrix_room = MethodType(
         MatrixAdapter._is_allowed_matrix_room, adapter,
@@ -118,7 +123,7 @@ async def test_registry_uses_each_receiving_adapter_and_native_sdk_types(action,
     for actor in ("@bot:server", "@second:server", "@bot:server"):
         async def request(method, path, **kwargs):
             assert asyncio.get_running_loop() is owning_loop
-            return poll_start(actor) if "/event/" in path else {"chunk": []}
+            return owned_start(actor) if "/event/" in str(path) else {"chunk": []}
 
         async def state(room_id, event_type):
             raise MNotFound(404, "Room is not encrypted")
@@ -126,7 +131,7 @@ async def test_registry_uses_each_receiving_adapter_and_native_sdk_types(action,
         async def send(room_id, event_type, content):
             assert asyncio.get_running_loop() is owning_loop
             assert event_type.t_class is EventType.Class.MESSAGE
-            raw: Any = {**poll_start(actor), "type": str(event_type), "content": content}
+            raw: Any = {**owned_start(actor), "type": str(event_type), "content": content}
             serialized = GenericEvent.deserialize(raw).serialize()
             assert isinstance(serialized, dict)
             assert serialized["content"] == content
@@ -293,3 +298,31 @@ async def test_incomplete_results_do_not_block_votes_or_closure(action, args, re
     assert result == {"poll_id": "$poll", "event_id": "$sent", "actor": "@bot:server", "action": action,
                       "complete": False, "incomplete_reasons": [reason]}
     client.send_message_event.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("creator,requester,moderators,expected", [
+    ("@carol:server", "@alice:server", {"@bot:server"}, "The requester cannot close this poll"),
+    ("@carol:server", "@carol:server", {"@bot:server"}, None),
+    ("@carol:server", "@alice:server", {"@bot:server", "@alice:server"}, None),
+    ("@carol:server", "@carol:server", set(), "The Matrix bot cannot close this poll"),
+    ("@alice:server via bot", "@alice:server", set(), None),
+    ("@alice:server via bot", "@bob:server", {"@bot:server"}, "The requester cannot close this poll"),
+    ("@alice:server via bot", "@bob:server", {"@bob:server"}, None),
+])
+async def test_close_requires_requester_to_own_the_poll_or_hold_redaction_power(creator, requester, moderators, expected):
+    everyone = frozenset({"@alice:server", "@bob:server", "@carol:server"})
+    start = poll_start(creator)
+    if creator.endswith(" via bot"):
+        creating = poll_client(start)
+        created = await dispatch_as(adapter_for(creating, "@bot:server", everyone), creator.removesuffix(" via bot"),
+                                    "matrix_poll_create", {"question": "Which?", "answers": ["A", "B"]})
+        assert "error" not in created, created
+        start = {**poll_start("@bot:server"), "content": creating.send_message_event.await_args.args[2]}
+    levels = {"users": {user: 50 for user in moderators}, "users_default": 0, "redact": 50}
+    client = poll_client(start, levels=levels)
+
+    result = await dispatch_as(adapter_for(client, "@bot:server", everyone), requester,
+                               "matrix_poll_close", {"poll_id": "$poll"})
+
+    assert (result.get("error"), client.send_message_event.await_count) == (expected, 0 if expected else 1), result

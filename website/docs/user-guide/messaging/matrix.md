@@ -71,9 +71,12 @@ the poll. Hermes casts votes as the bot account, including when a user asks it t
 vote. A new vote replaces the bot's previous vote; an empty selection withdraws
 that vote. Other room members vote through their Matrix clients.
 
-Hermes can close a poll that the bot created. Closing another user's poll requires
-the bot to have permission to redact other users' events in the room. Closure is
-explicit; Hermes does not schedule poll deadlines automatically.
+When Hermes creates a poll, it records the requesting user in the poll's start
+event, and that user can later ask Hermes to close the poll. Room members can
+also ask Hermes to close a poll that they created in their own client. Anyone
+else needs a power level that allows them to redact other users' events.
+Closing another user's poll also requires the bot to have that permission.
+Closure is explicit; Hermes does not schedule poll deadlines automatically.
 
 Poll starts, votes and closures appear in bounded room reads and catch-up context.
 These events do not start an agent turn by themselves. Mention Hermes or use the

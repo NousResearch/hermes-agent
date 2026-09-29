@@ -302,9 +302,11 @@ export function foregroundSessionScopes(): Set<string> {
 
     if (typeof owner === 'string') {
       const key = normalizeProfileKey(owner)
+
       if (key) {
         scopes.add(key)
       }
+
       return
     }
 
@@ -320,6 +322,7 @@ export function foregroundSessionScopes(): Set<string> {
 
     if (scope) {
       scopes.add(scope)
+
       return
     }
 

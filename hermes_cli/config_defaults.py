@@ -2922,6 +2922,9 @@ OPTIONAL_ENV_VARS = {
         "Browserbase API key for cloud browser (optional — local browser works without this)",
         "Browserbase API key", "https://browserbase.com/",
         tools=["browser_navigate", "browser_click"]),
+    "BW_PASSWORD": _tool(
+        "Bitwarden master password for headless browser vault unlock",
+        "Bitwarden master password", "https://bitwarden.com/help/cli/", advanced=True),
     "BROWSERBASE_PROJECT_ID": _tool(
         "Browserbase project ID (optional — only needed for cloud browser)",
         "Browserbase project ID", "https://browserbase.com/",

@@ -954,8 +954,16 @@ describe('selectConnection', () => {
       await vi.advanceTimersByTimeAsync(1_000)
       expect(ensureGatewayAgent).not.toHaveBeenCalled()
 
-      // Descriptor never arrives; deadline elapses.
-      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS + 15_000)
+      // Descriptor never arrives. The descriptor wait is pinned to the shared
+      // boot budget (see the BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS comment): one
+      // tick before it elapses, the restore is still waiting on the
+      // descriptor.
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS - 1_001)
+      expect(ensureGatewayAgent).not.toHaveBeenCalled()
+
+      // At the budget the descriptor wait gives up and the restore proceeds
+      // exactly as it did before the wait existed.
+      await vi.advanceTimersByTimeAsync(1_001)
       await restoring
 
       expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())

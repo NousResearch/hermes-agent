@@ -796,8 +796,11 @@ export function useGatewayBoot({
         // Bounded for the same reason as attemptReconnect() (#93454): a wedged
         // main-process round-trip must not latch $gatewaySwitching stuck —
         // the `finally` below only runs once this promise settles. Uses the
-        // shared backend-boot budget rather than the reconnect budget because
-        // ensureBackend may cold-spawn a pooled helper backend here.
+        // boot-class budget, not the 20s reconnect budget, deliberately:
+        // ensureBackend may cold-spawn a pooled helper here, and that spawn
+        // rides the same announce+health chain the boot budget is sized for
+        // (desktop-boot-budget.ts). A reconnect-class bound would fail a
+        // genuinely slow first dial of a pooled helper.
         const conn = await withTimeout(
           getWindowBackend(),
           BACKEND_BOOT_WAIT_TIMEOUT_MS,
@@ -1430,8 +1433,8 @@ export function useGatewayBoot({
         // Full peers use the source/profile Electron pinned before loading.
         // Bounded like the reconnect path (#93454): a wedged main-process
         // round-trip must not hang "Starting Hermes…" forever. Initial boot
-        // rides out a full backend cold spawn, so it gets the shared 45s
-        // backend-boot budget, not the 20s reconnect budget.
+        // rides out a full backend cold spawn, so it gets the shared
+        // announce-covering boot budget, not the 20s reconnect budget.
         const conn = await withTimeout(
           getWindowBackend(true),
           BACKEND_BOOT_WAIT_TIMEOUT_MS,

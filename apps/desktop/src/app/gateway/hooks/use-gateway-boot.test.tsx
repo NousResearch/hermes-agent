@@ -1785,11 +1785,15 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($desktopBoot.get().error).toBeNull()
 
-    // Advance past the shared backend-boot budget — the
-    // stalled await must reject on its own so boot()'s catch runs instead of
-    // waiting indefinitely on main.
+    // The stalled await rejects on its own at the boot budget — one tick
+    // before it elapses, boot()'s catch has not run yet.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS)
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS - 1)
+    })
+    expect($desktopBoot.get().error).toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
     })
 
     expect($desktopBoot.get().error).toBeTruthy()
@@ -1823,11 +1827,15 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     expect($gatewaySwitching.get()).toBe(true)
 
-    // Advance past the shared backend-boot budget — the
-    // stalled await must reject so the `finally` clears $gatewaySwitching
-    // instead of latching the switch UI frozen forever.
+    // The stalled switch dial rejects at the boot budget — one tick before it
+    // elapses, $gatewaySwitching is still latched.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS)
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS - 1)
+    })
+    expect($gatewaySwitching.get()).toBe(true)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
     })
 
     expect($gatewaySwitching.get()).toBe(false)

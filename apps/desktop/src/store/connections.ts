@@ -47,10 +47,14 @@ const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 // SOURCE_SWITCH_DIAL_TIMEOUT_MS in lib/with-timeout.ts for its composition.
 const SWITCH_COMMIT_TIMEOUT_MS = 20_000
 const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
-// Matches the primary spawn budget: a healthy cold boot publishes well within
-// this; anything longer means the primary is not coming and the registry
-// restore should stop waiting for it. Shared constant so the boot-class
-// budgets can't drift apart (see with-timeout.ts).
+// Boot-class, in lockstep with the primary spawn budget by design. This is
+// NOT a short registry IPC (compare REGISTRY_READ_TIMEOUT_MS below): the
+// restore runs in parallel with boot(), and this wait resolves only when
+// boot() publishes the connection descriptor — i.e. after the same
+// announce+health chain BACKEND_BOOT_WAIT_TIMEOUT_MS covers. A shorter
+// deadline would give up on slow-but-healthy boots and re-introduce the
+// double-dial the wait exists to prevent, so it aliases the shared constant
+// and cannot drift (see with-timeout.ts).
 const BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS = BACKEND_BOOT_WAIT_TIMEOUT_MS
 const REGISTRY_READ_TIMEOUT_MS = 5_000
 

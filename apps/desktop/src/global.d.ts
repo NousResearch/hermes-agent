@@ -360,6 +360,10 @@ declare global {
       guestOnboardingEnabled?: boolean
       /** Sanitized local `display.skin`, available before any gateway connects. */
       localSkin?: { profile: string; skin: HermesSkin } | null
+      /** Main's resolved port-announce deadline (default or
+       *  HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS), so the renderer boot wait
+       *  covers it. */
+      portAnnounceTimeoutMs?: number
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       minimizeToTray?: {

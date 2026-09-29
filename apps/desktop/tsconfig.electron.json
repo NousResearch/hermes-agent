@@ -15,8 +15,20 @@
     "noEmit": false,
     "declaration": true,
     "rootDir": "..",
-    "outDir": "build/electron-types"
+    "outDir": "build/electron-types",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
   },
-  "include": ["electron", "product-identity.cjs", "product-identity.d.cts", "update-feed.cjs", "update-feed.d.cts", "../shared/src/ansi.ts", "../shared/src/data-url-read-max.ts", "../shared/src/translucency.ts"],
+  "include": [
+    "electron",
+    "product-identity.cjs",
+    "product-identity.d.cts",
+    "update-feed.cjs",
+    "update-feed.d.cts",
+    "../shared/src/ansi.ts",
+    "../shared/src/data-url-read-max.ts",
+    "../shared/src/desktop-boot-budget.ts",
+    "../shared/src/translucency.ts"
+  ],
   "exclude": ["src", "electron/**/*.e2e.mts"]
 }

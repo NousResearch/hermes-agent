@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import pathlib
+import subprocess
 
 import pytest
 
@@ -10,13 +12,22 @@ from tools.computer_use import cua_backend_daemon
 
 
 class _RecordingBackend:
-    """Stands in for the cua_backend facade; records every `_run_quiet` argv."""
+    """Stands in for the cua_backend facade; records every `_run_quiet` argv. Verbs report success
+    unless the test stages `returncodes`, and `cua_daemon_listening` reports a still-answering
+    daemon by default (`listening=False` makes the CLI say "not running")."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, returncodes=None, listening=True) -> None:
         self.calls: list[list[str]] = []
+        self._returncodes = list(returncodes or [])
+        self._listening = listening
 
     def _run_quiet(self, argv, **kw):
         self.calls.append(list(argv))
+        returncode = self._returncodes.pop(0) if self._returncodes else 0
+        return subprocess.CompletedProcess(argv, returncode)
+
+    def cua_daemon_listening(self, driver_cmd, socket_path=None, *, timeout=3.0):
+        return self._listening
 
 
 def _stage_daemon(tmp_path, name, *, owner="4194304", start=None):
@@ -30,13 +41,13 @@ def _stage_daemon(tmp_path, name, *, owner="4194304", start=None):
     return sock, marker
 
 
-def _reap(monkeypatch, tmp_path, sockets, *, owner_alive=None):
+def _reap(monkeypatch, tmp_path, sockets, *, owner_alive=None, recorder=None):
     monkeypatch.setattr(cua_backend_daemon.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(cua_backend_daemon.glob, "glob", lambda pattern: list(sockets))
     # owner_alive=None runs the real `_owner_alive` (rely on the staged pid/fingerprint instead).
     if owner_alive is not None:
         monkeypatch.setattr(cua_backend_daemon, "_owner_alive", lambda pid, start: owner_alive)
-    recorder = _RecordingBackend()
+    recorder = recorder or _RecordingBackend()
     monkeypatch.setattr(cua_backend_daemon, "_cb", lambda: recorder)
     cua_backend_daemon._reap_orphaned_cua_daemons("cua-driver", {})
     return recorder
@@ -245,3 +256,114 @@ def test_stop_removes_socket_and_owner_marker(monkeypatch, tmp_path):
     assert recorder.calls == [["cua-driver", "stop", "--socket", socket_path]]
     assert not os.path.exists(socket_path)
     assert not os.path.exists(marker_path)
+
+
+def _armed_daemon(monkeypatch, tmp_path, *, returncodes=None, listening=True):
+    """A daemon whose runtime state says it owns a live daemon, with staged sidecar files."""
+    monkeypatch.setattr(cua_backend_daemon.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(cua_backend_daemon._EmbeddedCuaDaemon, "_sanitized_env", lambda self: {})
+    recorder = _RecordingBackend(returncodes=returncodes, listening=listening)
+    monkeypatch.setattr(cua_backend_daemon, "_cb", lambda: recorder)
+
+    daemon = cua_backend_daemon._EmbeddedCuaDaemon("cua-driver", "unrestricted")
+    socket_path = daemon.socket_path
+    marker_path = cua_backend_daemon._owner_marker_path(socket_path)
+    pathlib.Path(socket_path).write_text("", encoding="utf-8")
+    pathlib.Path(marker_path).write_text("", encoding="utf-8")
+    daemon._owns_runtime, daemon._running, daemon._process = True, True, None
+    return daemon, recorder, socket_path, marker_path
+
+
+@pytest.mark.platforms("posix")
+def test_stop_keeps_custody_when_exit_not_confirmed(monkeypatch, tmp_path):
+    # An unconfirmed stop must not drop ownership: the daemon may still be serving, and clearing
+    # the state and deleting the socket/marker here would strand it with no handle anywhere.
+    daemon, recorder, socket_path, marker_path = _armed_daemon(monkeypatch, tmp_path, returncodes=[1])
+
+    daemon.stop()
+
+    assert recorder.calls[0] == ["cua-driver", "stop", "--socket", socket_path]
+    assert daemon._owns_runtime and daemon._running
+    assert os.path.exists(socket_path) and os.path.exists(marker_path)
+
+
+@pytest.mark.platforms("posix")
+def test_stop_retries_stop_verb_on_second_release(monkeypatch, tmp_path):
+    # Two failed releases retry the verb instead of becoming no-ops; the confirmed one cleans up.
+    daemon, recorder, socket_path, marker_path = _armed_daemon(
+        monkeypatch, tmp_path, returncodes=[1, 1, 0])
+
+    daemon.stop()
+    daemon.stop()
+    daemon.stop()
+
+    stop_calls = [call for call in recorder.calls if call[1:2] == ["stop"]]
+    assert len(stop_calls) == 3
+    assert not daemon._owns_runtime and not daemon._running
+    assert not os.path.exists(socket_path) and not os.path.exists(marker_path)
+
+
+@pytest.mark.platforms("posix")
+def test_stop_releases_files_when_cli_reports_daemon_gone(monkeypatch, tmp_path):
+    # stop reports failure, but the CLI confirms nothing answers on the socket anymore: the daemon
+    # is already gone and the files are stale — releasing them is correct, not a custody loss.
+    daemon, recorder, socket_path, marker_path = _armed_daemon(
+        monkeypatch, tmp_path, returncodes=[1], listening=False)
+
+    daemon.stop()
+
+    assert not daemon._owns_runtime and not daemon._running
+    assert not os.path.exists(socket_path) and not os.path.exists(marker_path)
+
+
+@pytest.mark.platforms("posix")
+def test_reap_keeps_daemon_when_stop_verb_fails(monkeypatch, tmp_path):
+    # The sweep stops a dead owner's daemon but the verb fails: keep the socket and marker so the
+    # next sweep retries instead of stranding a still-serving daemon behind deleted files.
+    sock, marker = _stage_daemon(tmp_path, "hc-stopsloppy123.sock")
+    recorder = _RecordingBackend(returncodes=[1])
+
+    _reap(monkeypatch, tmp_path, [str(sock)], owner_alive=False, recorder=recorder)
+
+    assert recorder.calls == [["cua-driver", "stop", "--socket", str(sock)]]
+    assert sock.exists() and marker.exists()
+
+
+@pytest.mark.platforms("posix")
+def test_reap_cleans_stale_socket_when_cli_reports_daemon_gone(monkeypatch, tmp_path):
+    # Daemon already dead (e.g. crashed without removing its socket): stop reports not-running and
+    # the CLI confirms nothing answers — the stale socket and marker are removed, not retried forever.
+    sock, marker = _stage_daemon(tmp_path, "hc-crashed123.sock")
+    recorder = _RecordingBackend(returncodes=[1], listening=False)
+
+    _reap(monkeypatch, tmp_path, [str(sock)], owner_alive=False, recorder=recorder)
+
+    assert recorder.calls[0] == ["cua-driver", "stop", "--socket", str(sock)]
+    assert not sock.exists() and not marker.exists()
+
+
+@pytest.mark.platforms("posix")
+def test_start_writes_owner_marker_before_daemon_is_ready(monkeypatch, tmp_path):
+    # failed-start custody: a daemon that never becomes ready still gets its marker, so the
+    # next-start sweep can attribute the leftover instead of ignoring an unmarked socket.
+    import sys as _sys
+
+    monkeypatch.setattr(cua_backend_daemon.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(cua_backend_daemon._driver, "resolve_cua_driver_cmd", lambda: "cua-driver")
+    monkeypatch.setattr(cua_backend_daemon._driver, "_resolve_mcp_invocation", lambda cmd: (cmd, []))
+    # A spawn command that exits immediately with 0: on every platform that is "LaunchServices took
+    # it", so start() keeps waiting for a socket that never appears and times out.
+    monkeypatch.setattr(cua_backend_daemon, "_embedded_daemon_spawn_command",
+                        lambda driver_cmd, serve_args, *, platform: [_sys.executable, "-c", "pass"])
+    monkeypatch.setattr(cua_backend_daemon._EmbeddedCuaDaemon, "_sanitized_env", lambda self: {})
+    monkeypatch.setattr(cua_backend_daemon._EmbeddedCuaDaemon, "_socket_ready", lambda self, env: False)
+    monkeypatch.setattr(cua_backend_daemon._EmbeddedCuaDaemon, "_START_TIMEOUT_SECONDS", 0.05)
+    recorder = _RecordingBackend(returncodes=[1])  # the timeout-path stop is unconfirmed
+    monkeypatch.setattr(cua_backend_daemon, "_cb", lambda: recorder)
+
+    daemon = cua_backend_daemon._EmbeddedCuaDaemon("cua-driver", "unrestricted")
+    with pytest.raises(RuntimeError, match="startup timed out"):
+        daemon.start()
+
+    marker_path = cua_backend_daemon._owner_marker_path(daemon.socket_path)
+    assert os.path.exists(marker_path)

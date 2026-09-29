@@ -133,6 +133,16 @@ def _owner_alive(pid: int, recorded_start: Optional[int]) -> bool:
     except (TypeError, ValueError):
         return True
 
+def _stop_confirmed(driver_cmd: str, socket_path: str, stopped: Any) -> bool:
+    """Did a ``cua-driver stop`` prove the daemon exited? rc=0 is the direct answer; otherwise the CLI
+    gets one chance to confirm nothing answers on the socket anymore (a stop that failed because the
+    daemon was already gone must not strand its files as unretirable). An unknown probe outcome keeps
+    the unconfirmed verdict, so custody errs toward retention."""
+    if stopped is not None and stopped.returncode == 0:
+        return True
+    return _cb().cua_daemon_listening(driver_cmd, socket_path) is False
+
+
 def _reap_orphaned_cua_daemons(driver_cmd: str, env: Dict[str, str]) -> None:
     """Stop private daemons whose owning Hermes process is gone (#126364). On macOS the daemon is launched
     through LaunchServices, so it is a child of launchd, not of Hermes: when Hermes dies to a signal the
@@ -157,8 +167,14 @@ def _reap_orphaned_cua_daemons(driver_cmd: str, env: Dict[str, str]) -> None:
         if _owner_alive(pid, start):
             continue
         logger.info("stopping orphaned embedded cua-driver daemon %s (owner pid %s is gone)", socket_path, pid)
-        _cb()._run_quiet([driver_cmd, "stop", "--socket", socket_path], timeout=3.0, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, env=env, swallow=_QUIET_ERRORS)
+        stopped = _cb()._run_quiet([driver_cmd, "stop", "--socket", socket_path], timeout=3.0, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, env=env, swallow=_QUIET_ERRORS)
+        if not _stop_confirmed(driver_cmd, socket_path, stopped):
+            # An unconfirmed exit keeps the socket and marker so the next sweep retries, instead of
+            # stranding a still-serving daemon behind deleted files no one can attribute anymore.
+            logger.warning("orphaned cua-driver daemon %s did not confirm exit (rc=%s); leaving it for the next sweep",
+                           socket_path, None if stopped is None else stopped.returncode)
+            continue
         for stale in (socket_path, marker):
             if os.path.exists(stale):
                 with contextlib.suppress(OSError):
@@ -248,6 +264,10 @@ class _EmbeddedCuaDaemon:
                                          stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                                          env=env)
         self._owns_runtime = True
+        # The marker goes down before the readiness wait, not after: a daemon that never becomes
+        # ready (or a start aborted mid-wait) is exactly the leftover the next-start sweep must be
+        # able to attribute — an unmarked socket is invisible to it by design.
+        self._write_owner_marker()
         threading.Thread(target=self._drain_stderr, args=(self._process,), name="hermes-cua-daemon-stderr", daemon=True).start()
         deadline = time.monotonic() + self._START_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
@@ -257,7 +277,6 @@ class _EmbeddedCuaDaemon:
                 self._startup_failure("embedded cua-driver exited during startup", "no diagnostic output")
             if self._socket_ready(env):
                 self._running = True
-                self._write_owner_marker()
                 return
             time.sleep(0.1)
         self.stop()
@@ -267,8 +286,8 @@ class _EmbeddedCuaDaemon:
         raise RuntimeError(f"{what}: {'; '.join(self._stderr_tail) or fallback}")
 
     def _write_owner_marker(self) -> None:
-        """Record the owning pid and start-time fingerprint beside the socket once the daemon actually
-        listens, so a later start can reap this daemon if this process died without running the teardown
+        """Record the owning pid and start-time fingerprint beside the socket as soon as the daemon is
+        spawned, so a later start can reap this daemon if this process died without running the teardown
         (#126364); the fingerprint is what keeps a later recycled pid from being mistaken for this owner.
         Suppressed on any OSError: a daemon the marker could not be written for simply stays
         reap-eligible never, which is the pre-fix behavior, never a startup failure."""
@@ -291,10 +310,21 @@ class _EmbeddedCuaDaemon:
 
     def stop(self) -> None:
         process, self._process = self._process, None
-        owns_runtime, self._owns_runtime, self._running = self._owns_runtime, False, False
-        if owns_runtime:
-            _cb()._run_quiet([self._command, "stop", "--socket", self.socket_path], timeout=3.0, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
+        if not self._owns_runtime:
+            return
+        stopped = _cb()._run_quiet([self._command, "stop", "--socket", self.socket_path], timeout=3.0, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
+        # Custody is released only on a confirmed exit: an unconfirmed stop leaves the daemon possibly
+        # still serving, and dropping the state and deleting the socket/marker now would strand it with
+        # no handle anywhere. A second release retries the verb, and after this process is gone the
+        # next-start reap sweep retries against the retained marker.
+        if not _stop_confirmed(self._command, self.socket_path, stopped):
+            logger.warning("embedded cua-driver stop for %s did not confirm exit (rc=%s); keeping ownership for retry",
+                           self.socket_path, None if stopped is None else stopped.returncode)
+            if process is not None:
+                _wait_or_kill(process)
+            return
+        self._owns_runtime, self._running = False, False
         if process is not None:
             _wait_or_kill(process)
         if sys.platform != "win32":

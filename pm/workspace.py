@@ -283,6 +283,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                 changed = True
         if virtual:
             document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
+            document["project"].setdefault("version", "0.0.0")
         if virtual or changed:
             import tomli_w
 

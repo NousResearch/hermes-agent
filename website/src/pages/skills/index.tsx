@@ -814,6 +814,12 @@ export default function SkillsDashboard() {
               </p>
             )}
 
+            <p className={styles.heroSub} style={{ fontSize: "0.85rem", opacity: 0.85 }}>
+              <a href="https://portal.nousresearch.com/terms" target="_blank" rel="noopener noreferrer">Terms</a>
+              {" • "}
+              <a href="https://portal.nousresearch.com/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+            </p>
+
             <div className={styles.statsRow}>
               <StatCard
                 value={allSkillsLocal.filter((s) => s.source === "built-in").length}

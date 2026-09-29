@@ -23,10 +23,16 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
-import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForAgent } from '@/store/gateway'
+import {
+  activeGatewayConnectionId,
+  requestGatewayForAgent,
+  requestGatewayForProfile,
+  retainGatewayForAgent
+} from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
 import {
   $activeGatewayProfile,
+  $newChatConnectionId,
   $newChatProfile,
   $newChatRoute,
   $profiles,
@@ -123,12 +129,18 @@ vi.mock('@/store/profile', async importOriginal => ({
   ensureGatewayProfile: vi.fn().mockResolvedValue(undefined)
 }))
 
-vi.mock('@/store/gateway', async importOriginal => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  requestGatewayForAgent: vi.fn(),
-  requestGatewayForProfile: vi.fn(),
-  retainGatewayForAgent: vi.fn(async () => () => undefined)
-}))
+vi.mock('@/store/gateway', async importOriginal => {
+  const original = await importOriginal<Record<string, unknown>>()
+
+  return {
+    ...original,
+    // Default-preserving spy: tests that route by the active source override it.
+    activeGatewayConnectionId: vi.fn(original.activeGatewayConnectionId as () => null | string),
+    requestGatewayForAgent: vi.fn(),
+    requestGatewayForProfile: vi.fn(),
+    retainGatewayForAgent: vi.fn(async () => () => undefined)
+  }
+})
 
 vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -174,16 +186,24 @@ function Harness({
   navigate = vi.fn(),
   onReady,
   requestGateway,
+  runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefOverride,
   selectedStoredSessionId = null,
-  selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride
+  selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride,
+  updateSessionState: updateSessionStateOverride
 }: {
   activeSessionId?: null | string
   activeSessionIdRef?: MutableRefObject<null | string>
   navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  runtimeIdByStoredSessionIdRef?: MutableRefObject<Map<string, string>>
   selectedStoredSessionId?: null | string
   selectedStoredSessionIdRef?: MutableRefObject<null | string>
+  updateSessionState?: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: null | string
+  ) => ClientSessionState
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
 
@@ -198,12 +218,12 @@ function Harness({
     navigate: navigate as never,
     requestGateway,
     resetViewSync: vi.fn(),
-    runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
+    runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRefOverride ?? ref(new Map<string, string>()),
     selectedStoredSessionId,
     selectedStoredSessionIdRef: selectedStoredSessionIdRefOverride ?? ref(selectedStoredSessionId),
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
-    updateSessionState: () => ({}) as ClientSessionState
+    updateSessionState: updateSessionStateOverride ?? (() => ({}) as ClientSessionState)
   })
 
   useEffect(() => {
@@ -422,6 +442,100 @@ describe('connection-qualified session deletion', () => {
     })
     expect(selectedStoredSessionIdRef.current).toBeNull()
     expect(activeSessionIdRef.current).toBeNull()
+  })
+
+  // #75587: deleting a NON-selected (sidebar/background) session used to skip
+  // session.close entirely (`closingRuntimeId` was gated on selection), so its
+  // in-flight turn kept running and could surface an approval prompt for a
+  // conversation that no longer existed. The runtime must be resolved from the
+  // stored→runtime map, marked interrupted, interrupted, and closed.
+  it('interrupts and closes a non-selected session resolved from the runtime map', async () => {
+    const requestGateway = vi.fn().mockResolvedValue({})
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['background-session', 'runtime-bg']])
+    }
+
+    const updateSessionState = vi.fn((_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) =>
+      updater({ interrupted: false, needsInput: true } as ClientSessionState)
+    )
+
+    let actions: HarnessHandle | null = null
+
+    setSessions([storedSession({ id: 'background-session' })])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+    render(
+      <Harness
+        activeSessionId="runtime-foreground"
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId="foreground-session"
+        updateSessionState={updateSessionState}
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await actions?.removeSession('background-session')
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: 'runtime-bg' })
+    expect(requestGateway).toHaveBeenCalledWith('session.close', { session_id: 'runtime-bg' })
+    // The selected session's runtime must not be touched by another row's delete.
+    expect(requestGateway).not.toHaveBeenCalledWith('session.interrupt', { session_id: 'runtime-foreground' })
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', { session_id: 'runtime-foreground' })
+    // Marked interrupted BEFORE the RPCs so a queued blocking-input frame is
+    // declined instead of parked.
+    expect(updateSessionState).toHaveBeenCalledWith('runtime-bg', expect.any(Function))
+    expect(updateSessionState.mock.results[0].value).toMatchObject({ interrupted: true, needsInput: false })
+    expect(updateSessionState.mock.invocationCallOrder[0]).toBeLessThan(requestGateway.mock.invocationCallOrder[0])
+  })
+
+  it('rolls the delete back when the interrupt fails for a reason other than a gone runtime', async () => {
+    const requestGateway = vi.fn().mockImplementation(async (method: string) => {
+      if (method === 'session.interrupt') {
+        throw new Error('gateway unreachable')
+      }
+
+      return {}
+    })
+
+    const updateSessionState = vi.fn((_sessionId: string, updater: (state: ClientSessionState) => ClientSessionState) =>
+      updater({ interrupted: false, needsInput: true } as ClientSessionState)
+    )
+
+    let actions: HarnessHandle | null = null
+
+    setSessions([storedSession({ id: 'background-session' })])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+    render(
+      <Harness
+        activeSessionId="runtime-foreground"
+        onReady={value => {
+          actions = value
+        }}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={{ current: new Map([['background-session', 'runtime-bg']]) }}
+        selectedStoredSessionId="foreground-session"
+        updateSessionState={updateSessionState}
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await actions?.removeSession('background-session')
+    })
+
+    expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+    expect(deleteSession).not.toHaveBeenCalled()
+    // The live state the interrupt clobbered is restored, and the row survives.
+    expect(updateSessionState.mock.results.at(-1)?.value).toMatchObject({ interrupted: false, needsInput: true })
+    expect($sessions.get().some(session => session.id === 'background-session')).toBe(true)
   })
 })
 
@@ -5007,6 +5121,8 @@ describe('openNewSessionTile workspace target', () => {
     cleanup()
     $profiles.set([])
     $newChatProfile.set(null)
+    $newChatConnectionId.set(null)
+    vi.mocked(activeGatewayConnectionId).mockReset()
     $activeGatewayProfile.set('default')
     $projectScope.set(ALL_PROJECTS)
     $projectTree.set([])
@@ -5104,11 +5220,57 @@ describe('openNewSessionTile workspace target', () => {
       vi.mocked(requestGatewayForAgent).mockReset()
     }
 
-    expect(createParams).toMatchObject({ hidden: true, profile: 'writer' })
+    expect(createParams).toMatchObject({ profile: 'writer' })
     expect(createParams).not.toHaveProperty('model')
     expect(createParams).not.toHaveProperty('provider')
     expect(createParams).not.toHaveProperty('reasoning_effort')
     expect(createParams).not.toHaveProperty('fast')
+  })
+
+  // A Bot Mode side chat ("New chat with this bot", the tab-strip "+") is an
+  // ordinary conversation in the bot's profile, so it must be born LISTED.
+  // Only the plumbing sessions are hidden, and they mint their own rows
+  // elsewhere; hiding the whole mode here stranded every side chat — invisible
+  // in the Sessions sidebar, skipped by `/resume`, and unreachable once its tab
+  // closed, because `last_session` (what "Open recent session" opens) never
+  // reports a hidden row.
+  it('creates a Bot-workspace side chat listed, never hidden', async () => {
+    let createParams: Record<string, unknown> | undefined
+
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connectionId, _profile, method, params) => {
+      if (method === 'session.create') {
+        createParams = params as Record<string, unknown>
+
+        return {
+          info: { cwd: '', model: 'profile-default-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-bot-side-chat'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const route = { connectionId: 'local', mode: 'local' as const, profile: 'writer', targetProfile: 'writer' }
+
+    try {
+      await act(async () => {
+        await handle!.openNewSessionTile('center', {
+          listed: false,
+          route,
+          workspaceScope: { ownerRoute: route, workspaceMode: 'bots', workspaceOwnerKey: 'bot:local::writer' }
+        })
+      })
+    } finally {
+      vi.mocked(requestGatewayForAgent).mockReset()
+    }
+
+    expect(createParams).not.toHaveProperty('hidden')
   })
 
   it('keeps an unlisted named local legacy-profile tile owned by its bare profile', async () => {
@@ -5202,6 +5364,95 @@ describe('openNewSessionTile workspace target', () => {
       undefined,
       undefined
     )
+  })
+
+  // #124265: the project "+" while a chat is occupied (and project-row drags)
+  // stack a tile with the project's cwd instead of running the fresh-draft
+  // pin. The tile must still be owned by the profile the project tree is
+  // rendered under, not by a stale new-chat pin left from a profile pick.
+  it('owns a project-cwd tile by the project profile over a stale new-chat pin', async () => {
+    const storedSessionId = 'stored-project-tile-work'
+    setConnection({ mode: 'local' } as never)
+    $profiles.set([{ name: 'default' }, { name: 'work' }] as never)
+    $activeGatewayProfile.set('work')
+    $newChatProfile.set('default')
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return {
+          info: { cwd: '/repo/work', model: 'test-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: storedSessionId
+        } as never
+      }
+
+      throw new Error(`Unexpected ambient RPC: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', { cwd: '/repo/work', listed: false })
+    })
+
+    expect(createParams).toMatchObject({ cwd: '/repo/work', profile: 'work' })
+    expect($sessionTiles.get()).toContainEqual(expect.objectContaining({ ownerProfile: 'work', storedSessionId }))
+    expect(knownOwnerForSession(storedSessionId)).toBe('work')
+  })
+
+  // Review of #124265: the stale pin may also have captured ANOTHER connection
+  // ($newChatConnectionId). The project tree is rendered by the active source,
+  // so the tile must pair the project profile with that source — not with the
+  // pin's host (right profile, wrong host).
+  it('pairs the project profile with the active source, not a stale pin captured on another connection', async () => {
+    const storedSessionId = 'stored-project-tile-remote-work'
+    setConnection({ mode: 'remote' } as never)
+    $profiles.set([{ name: 'default' }, { name: 'work' }] as never)
+    $activeGatewayProfile.set('work')
+    $newChatProfile.set('work')
+    $newChatConnectionId.set('homelab')
+    vi.mocked(activeGatewayConnectionId).mockReturnValue('ssh-vps')
+
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (connectionId, profile, method) => {
+      if (connectionId === 'ssh-vps' && profile === 'work' && method === 'session.create') {
+        return {
+          info: { cwd: '/repo/work', model: 'test-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: storedSessionId
+        } as never
+      }
+
+      throw new Error(`Session create on the wrong host: ${connectionId}::${profile} (${method})`)
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      throw new Error(`Unexpected ambient RPC: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', { cwd: '/repo/work', listed: false })
+    })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'ssh-vps',
+      'work',
+      'session.create',
+      expect.objectContaining({ cwd: '/repo/work' }),
+      undefined,
+      undefined,
+      expect.anything()
+    )
+    expect(getSessionOwnerHint(storedSessionId)).toMatchObject({ connectionId: 'ssh-vps', profile: 'work' })
   })
 })
 

@@ -87,7 +87,7 @@ _TERMINAL_ENV_MAPPINGS = {
     key: f"TERMINAL_{key.upper()}"
     for key in (
         "degraded_mode", "cwd", "timeout", "home_mode", "lifetime_seconds", "docker_image",
-        "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime",
+        "docker_forward_env", "singularity_image", "modal_image", "daytona_image", "vercel_runtime", "vercel_image",
         "ssh_host", "ssh_user", "ssh_port", "ssh_key", "container_cpu", "container_memory",
         "container_disk", "container_persistent", "docker_volumes", "docker_env", "docker_extra_args",
         "docker_shm_size", "docker_mount_cwd_to_workspace", "docker_network", "docker_run_as_host_user",
@@ -184,7 +184,7 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
 
 def _cli_config_defaults():
     """Built-in defaults for every config key the CLI reads (the file overlays these)."""
-    img = "nikolaik/python-nodejs:python3.11-nodejs20"
+    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as img
     return {
         "model": {"default": "", "base_url": "", "provider": "auto"},
         "terminal": {

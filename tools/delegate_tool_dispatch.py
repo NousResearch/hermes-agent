@@ -13,6 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
 
+from hermes_cli.observability.shared_metrics_loop import begin_delegation_run, finish_delegation_unit
 from tools.async_delegation import _new_delegation_id, record_unit_child
 from tools.delegate_tool_child_run import _attach_child, _detach_child, _fabricated_entry, _signal_child_stop
 from tools.delegate_tool_progress import (
@@ -202,6 +203,7 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
             if _idx < len(batch.live_paths):
                 entry["live_transcript"] = batch.live_paths[_idx]
     update_manifest_statuses(batch.live_deleg_id, results)
+    finish_delegation_unit(batch.task_list, results, background=not honor_parent_interrupt)
 
     combined: Dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
     # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
@@ -466,6 +468,10 @@ def _dispatch_background(batch: _Batch) -> str:
 
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""
+    # Every unit of this call shares task_list, so its last joined unit emits the call's one row.
+    begin_delegation_run(
+        batch.task_list, subagents=len(batch.children), depth=getattr(batch.parent_agent, "_delegate_depth", 0) + 1,
+    )
     if background:
         return _dispatch_background(batch)
     return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)

@@ -213,6 +213,43 @@ def test_live_session_payload_replays_open_requests(server):
 # ── _emit ────────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("relayed", [False, True])
+def test_preview_vault_request_is_live_only_and_still_resolves(server, monkeypatch, relayed):
+    from tui_gateway import server_requests
+
+    sid = "preview-vault-live-only"
+    session = {"history_lock": threading.Lock()}
+    monkeypatch.setitem(server._sessions, sid, session)
+    monkeypatch.setattr(server_requests, "_answerable", lambda _sid: True)
+    monkeypatch.setattr(server, "write_json", lambda _frame: True)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: relayed)
+    monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda: types.SimpleNamespace(
+        respond=lambda _sid, params: server_requests.resolve_response(params["frame"])))
+    expression = '(() => "synthetic-secret-never-replayed")()'
+
+    def deliver(frame):
+        assert frame["params"]["vault"]["expression"] == expression
+        assert server_requests._open[frame["id"]].params == {}
+        if relayed:
+            assert server._relay_compute_host_rpc(frame)
+            assert expression not in json.dumps(session["_compute_host_open_request"])
+        assert server._open_requests(sid) == []
+        answer = {"id": frame["id"], "result": {"value": '{"success": true}'}}
+        resolve = server._relay_compute_host_response if relayed else server_requests.resolve_response
+        assert resolve(answer)
+
+    monkeypatch.setattr(server_requests, "_write", deliver)
+    try:
+        result = server._ask("preview.act", sid, {
+            "action": "vault", "vault": {"operation": "evaluate", "target": "bound-page", "expression": expression},
+        }, timeout=0)
+    finally:
+        server._sessions.pop(sid, None)
+    assert json.loads(result) == {"success": True}
+    assert server._open_requests(sid) == []
+    assert server_requests.open_request_count() == 0
+
+
 def test_emit_with_payload(capture):
     server, buf = capture
     server._emit("test.event", "s1", {"key": "val"})

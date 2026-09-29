@@ -16,6 +16,8 @@ Reconnect: unanswered requests are returned as ``open_requests`` by ``session.re
 ``session.activate`` / ``session.events.since`` (:func:`open_requests`); the shared TypeScript
 channel re-delivers them as if they had just arrived, so the notification replay ring never
 has to carry "a question still waiting for an answer".
+Vault preview operations are live-only: their script payload is discarded after
+dispatch and is never included in these reconnect snapshots.
 
 Batch clarify keeps per-question locks (``clarify.lock`` → :func:`lock_answer`): answers stay
 editable until every question is locked, locked answers survive a timeout, and the last lock
@@ -60,6 +62,7 @@ class ServerRequest:
         "on_result",
         "params",
         "qids",
+        "replayable",
         "result",
         "sid",
         "withdrawn",
@@ -72,6 +75,7 @@ class ServerRequest:
         self.sid = sid
         self.method = method
         self.params = dict(params)
+        self.replayable = can_replay_request(method, params)
         self.event = threading.Event()
         self.result: dict | None = None
         self.answered = False
@@ -101,6 +105,11 @@ class ServerRequest:
 
 _lock = threading.Lock()
 _open: dict[str, ServerRequest] = {}
+
+
+def can_replay_request(method: str, params: dict) -> bool:
+    """Secure page scripts belong only to the original live request, never a resume."""
+    return not (method == "preview.act" and params.get("action") == "vault")
 
 # Frame sinks, bound by ``bind_sinks`` from server.py at import time (like the method_ctx split
 # modules): importing server back from here would pick a different module object under the test
@@ -174,11 +183,16 @@ def _register(req: ServerRequest) -> None:
     _, problem = contracts.validate_params(contract, {"session_id": req.sid, **req.params})
     if problem is not None:
         raise ValueError(problem)  # a key the renderer's typed handler would never read: our bug
+    frame = req.frame()
+    if not req.replayable:
+        # Build the immediate wire frame first; pending state keeps only correlation
+        # and cancellation metadata, never the secret-bearing expression.
+        req.params = {}
     with _lock:
         req.writing = True
         _open[req.id] = req
     try:
-        _write(req.frame())
+        _write(frame)
     finally:
         with _lock:
             req.writing = False
@@ -365,7 +379,8 @@ def cancel(sid: str | None = None, reason: str = "interrupted", *, method: str |
 def open_requests(sid: str) -> list[dict]:
     """Unanswered requests for *sid*, oldest first."""
     with _lock:
-        reqs = sorted((req for req in _open.values() if req.sid == sid), key=lambda r: r.created_at)
+        reqs = sorted((req for req in _open.values() if req.sid == sid and req.replayable),
+                      key=lambda r: r.created_at)
     return [req.snapshot() for req in reqs]
 
 

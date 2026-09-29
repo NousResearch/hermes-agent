@@ -731,12 +731,32 @@ class _ChildRun:
     workspace_local: bool = False  # terminal backend was local when the child was seeded
     child_timeout: Optional[float] = None  # snapshot taken by await_child; correction turns get what is left
     close_deferred: bool = False  # a timed-out correction turn still owns the child (see await_child)
-    withhold_text: bool = False  # gated child: reply text is buffered until the verdict (see relay_text)
+    withhold_text: bool = False  # gated child: text AND progress are escrowed until the verdict (see relay_text)
+    # Escrowed child-authored events in arrival order: ``(callback, args, kwargs)``; ``callback`` None = a text delta.
     withheld_text: list = field(default_factory=list)
+    escrow_closed: bool = False  # settled or torn down: late events (an abandoned worker) are dropped
+
+    # Child-authored progress surfaces: tool start/progress/complete + reasoning ride tool_progress_callback,
+    # spinner/wait notices ride thinking_callback. Both are read from the child at call time.
+    _ESCROWED_CALLBACKS = ("tool_progress_callback", "thinking_callback")
 
     def __post_init__(self) -> None:
         from tools.delegation_quality_gate import GateConfig
         self.withhold_text = isinstance(getattr(self.child, "_delegate_quality_gate", None), GateConfig)
+        if self.withhold_text:
+            # A gated child is untrusted until judged: every progress surface it drives (not only its reply text)
+            # is escrowed here and replayed in order by ``settle_withheld_text`` on an accepted settlement.
+            # Lifecycle events go through ``child_progress_cb`` (captured before this swap) and stay live.
+            for attr in self._ESCROWED_CALLBACKS:
+                callback = getattr(self.child, attr, None)
+                if callable(callback):
+                    setattr(self.child, attr, self._escrow(callback))
+
+    def _escrow(self, callback: Any) -> Any:
+        def hold(*args: Any, **kwargs: Any) -> None:
+            if not self.escrow_closed:
+                self.withheld_text.append((callback, args, kwargs))
+        return hold
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
@@ -744,26 +764,43 @@ class _ChildRun:
     def relay_text(self, delta: str) -> None:
         """Stream callback forwarding the child's reply text up the progress relay so gateway watch windows mirror it
         live (subagent.text → message.delta). Inert under CLI/TUI: their progress handlers ignore non-tool events.
-        A child with a quality gate is untrusted until judged: its text is withheld here and released as one
-        ``subagent.text`` event by ``settle_withheld_text`` only when the entry is delivered, so text the gate
-        rejects (or a superseded attempt's text) never reaches the parent relay or the live transcript."""
+        A child with a quality gate is untrusted until judged: its text joins the progress escrow here and is
+        released by ``settle_withheld_text`` only when the entry is delivered, so text the gate rejects (or a
+        superseded attempt's text) never reaches the parent relay or the live transcript."""
         if not delta:
             return
         if self.withhold_text:
-            self.withheld_text.append(delta)
+            if not self.escrow_closed:
+                self.withheld_text.append((None, (delta,), {}))
             return
         _safe_progress(self.child_progress_cb, "subagent.text", preview=delta)
 
     def discard_withheld_text(self) -> None:
+        """Drop a superseded attempt's escrowed text and progress (schema retry, gate correction turn)."""
         self.withheld_text.clear()
 
     def settle_withheld_text(self, entry: Dict[str, Any]) -> None:
-        """Release the withheld reply text iff the entry is being delivered (not quarantined)."""
+        """Replay the escrow in arrival order iff the entry is being delivered (not quarantined), then close it.
+        Adjacent text deltas are released as one ``subagent.text`` event."""
         from tools.delegation_quality_gate import is_quarantined
-        text = "".join(self.withheld_text)
-        self.withheld_text.clear()
-        if text and not is_quarantined(entry):
-            _safe_progress(self.child_progress_cb, "subagent.text", preview=text)
+        events, self.withheld_text, self.escrow_closed = self.withheld_text, [], True
+        if is_quarantined(entry):
+            return
+        text: List[str] = []
+        for callback, args, kwargs in [*events, (None, None, None)]:
+            if callback is None and args is not None:
+                text.append(args[0])
+                continue
+            if text:
+                _safe_progress(self.child_progress_cb, "subagent.text", preview="".join(text))
+                text.clear()
+            if callback is not None:
+                with _quiet("Escrowed progress replay failed: %s"):
+                    callback(*args, **kwargs)
+        flush = getattr(self.child_progress_cb, "_flush", None)
+        if events and callable(flush):
+            with _quiet("Progress callback flush failed: %s"):
+                flush()
 
     def attach_worktree(self, entry_dict: Dict[str, Any]) -> Dict[str, Any]:
         """Inspect + prune the child worktree, reporting into the entry (no-op without isolation)."""
@@ -1057,16 +1094,19 @@ class _ChildRun:
 
     def account_background_processes(self, entry: Dict[str, Any]) -> None:
         """Name the child's background processes on the result BEFORE ``cleanup`` kills them: handed-off ones now
-        belong to the parent (their completion lands in the parent's chat); anything else still running is about to be
+        belong to the parent (their completion lands in the parent's chat; a gated child's reserved handoffs are
+        settled here first — transferred on acceptance, killed on quarantine); anything else still running is about to be
         terminated, and the parent must hear that from the runtime rather than trust a child's "watcher running"."""
         from tools.delegation_quality_gate import is_quarantined
         handed = list(getattr(self.child, "_handed_off_processes", None) or [])
-        if is_quarantined(entry):
+        quarantined = is_quarantined(entry)
+        revoked = self.settle_handoffs(accepted=not quarantined)
+        if quarantined:
             # Commands, purposes and output tails are child-authored: report counts only.
             with _quiet(None):
                 from tools.process_registry import process_registry
                 entry["quarantined_processes"] = {
-                    "handed_off": len(handed),
+                    "handed_off": len(handed), "revoked": revoked,
                     "orphaned": len(process_registry.running_owned_by(self.child_task_id)),
                     "unread_completions": len(process_registry.unread_completions_owned_by(self.child_task_id)),
                 }
@@ -1085,6 +1125,31 @@ class _ChildRun:
                 entry["unread_completions"] = [
                     {"session_id": s.id, "command": s.command[:200], "exit_code": s.exit_code,
                      "output_tail": _output_tail(s, 600)} for s in unread]
+
+    def settle_handoffs(self, *, accepted: bool) -> int:
+        """Settle a gated child's reserved handoffs (``process_manage(action="handoff")`` reserves, never transfers,
+        while the result is unjudged): an accepted result transfers each still-running process to the parent; a
+        blocked one (or any failure path, via ``cleanup``) kills it with its output consumed, so no completion notice
+        naming it ever reaches the parent. Returns how many were killed."""
+        reserved = list(getattr(self.child, "_pending_handoffs", None) or [])
+        if not reserved:
+            return 0
+        self.child._pending_handoffs = []
+        from tools.process_registry import process_registry
+        handed = {h.get("session_id"): h for h in getattr(self.child, "_handed_off_processes", None) or []}
+        revoked = 0
+        for pending in reserved:
+            sid = pending["session_id"]
+            with _quiet("Quality-gate handoff settlement failed for %s: %s", sid):
+                if not accepted:
+                    status = process_registry.kill_process(sid, source="quality_gate", consume_output=True).get("status")
+                    revoked += status in {"killed", "already_exited"}
+                elif process_registry.transfer_ownership(
+                        sid, **{k: v for k, v in pending.items() if k != "session_id"}) is None and sid in handed:
+                    # Exited while the result was unjudged: its completion stayed with the child (suppressed), so the
+                    # accepted entry names it here and lists it under unread_completions when it was a notify process.
+                    handed[sid]["exited_before_acceptance"] = True
+        return revoked
 
     def emit_complete(self, result: Dict[str, Any], entry: Dict[str, Any], duration: float) -> None:
         """Fire ``subagent.complete`` with the per-branch observability payload (tokens, cost, files touched,
@@ -1138,7 +1203,10 @@ class _ChildRun:
         no turn is active."""
         child = self.child
         heartbeat.stop()
-        self.withheld_text.clear()  # never released on failure paths: unjudged text stays unseen
+        self.withheld_text.clear()  # never released on failure paths: unjudged text/progress stays unseen
+        self.escrow_closed = True
+        with _quiet("Failed to revoke reserved handoffs: %s"):
+            self.settle_handoffs(accepted=False)  # never accepted on a failure path: nothing transfers
 
         # Safe even if the child was never registered (ID missing on test doubles).
         if self.subagent_id:

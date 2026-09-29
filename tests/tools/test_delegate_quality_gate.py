@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 import time
+import weakref
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,7 +21,7 @@ import pytest
 from tools import file_state
 from tools.delegate_tool import _run_single_child
 from tools.delegate_tool_child_run import _ChildRun
-from tools.delegate_tool_progress import _build_child_progress_callback
+from tools.delegate_tool_progress import _build_child_progress_callback, _safe_progress
 from tools.delegate_tool_results import _run_child_lifecycle
 from tools.delegation_live_log import LiveTranscriptWriter, wrap_progress_callback
 from tools.delegation_quality_gate import (
@@ -120,7 +121,8 @@ class _StubChild:
     session_estimated_cost_usd = 0.0
     session_reasoning_tokens = 0
 
-    def __init__(self, responses, gate=None, messages=None, streams=False, writes=()):
+    def __init__(self, responses, gate=None, messages=None, streams=False, writes=(), progress=False):
+        self.progress = progress  # drive tool/thinking progress through the child's own callbacks, like the real loop
         self.responses = list(responses)
         self.calls: list = []
         self._delegate_quality_gate = gate
@@ -147,6 +149,11 @@ class _StubChild:
             # error into final_response (see _build_result_entry's comment on this exact shape).
             return {"final_response": "internal error: rate limited", "completed": True, "failed": True,
                     "error": "rate limited", "api_calls": 1, "messages": []}
+        if self.progress:
+            # The real loop reads these attributes at call time (agent.tool_progress_callback / thinking_callback).
+            self.tool_progress_callback("tool.started", "terminal", f"cat {text}", {"command": f"cat {text}"})
+            self.thinking_callback(f"pondering {text}")
+            self.tool_progress_callback("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
         if self.streams and callable(stream_callback):
             stream_callback(f"streamed: {text}")
         for path in self.writes:
@@ -386,6 +393,8 @@ class TestStreamedTextWithheld:
         writer = LiveTranscriptWriter("deleg_test", 0, GOAL, root=tmp_path)
         relay = _build_child_progress_callback(0, GOAL, parent, 1, session_ref={})
         child.tool_progress_callback = wrap_progress_callback(relay, writer)
+        # Same wiring as _build_child_agent's thinking_callback.
+        child.thinking_callback = lambda text: _safe_progress(relay, "_thinking", text) if text else None
         with (
             patch("tools.delegate_tool._load_config", return_value={}),
             patch("hermes_cli.plugins.invoke_hook") as hook,
@@ -438,6 +447,26 @@ class TestStreamedTextWithheld:
         assert CHILD_MARKER not in live_log and STREAM_MARKER not in live_log
         assert "Berlin" in released and "Berlin" in live_log
 
+    def test_rejected_progress_never_reaches_the_parent_and_accepted_progress_replays_in_order(self, tmp_path):
+        """Tool start/complete and thinking events are child-authored too: a gated child's are escrowed with its
+        text, dropped on reject, and replayed in arrival order (before the completion event) on pass."""
+        rejected = _StubChild([f"{CHILD_MARKER} {STREAM_MARKER}"], streams=True, progress=True)
+        entry, events, live_log, _hook, _memory = self._run_streaming(tmp_path / "r", rejected, _gate(LEAKY_JUDGE))
+        assert entry["quality_gate"]["quarantined"] is True
+        assert CHILD_MARKER not in _text(events) and STREAM_MARKER not in _text(events)
+        assert CHILD_MARKER not in live_log and STREAM_MARKER not in live_log
+        assert not [e for e in events if e[0] in ("subagent.tool", "subagent.thinking", "subagent.text")]
+
+        accepted = _StubChild([f"RETRY-ME {CHILD_MARKER} v1", f"{STREAM_MARKER} done"], streams=True, progress=True)
+        entry, events, live_log, _hook, _memory = self._run_streaming(tmp_path / "a", accepted, _gate(LEAKY_JUDGE))
+        assert entry["quality_gate"]["verdict"] == "pass"
+        assert CHILD_MARKER not in _text(events) and CHILD_MARKER not in live_log  # superseded attempt discarded
+        kinds = [e[0] for e in events]
+        assert kinds.index("subagent.tool") < kinds.index("subagent.thinking") < kinds.index("subagent.text") \
+            < kinds.index("subagent.complete")
+        assert STREAM_MARKER in _text([e for e in events if e[0] == "subagent.tool"])
+        assert STREAM_MARKER in live_log
+
     def test_ungated_child_streams_unchanged(self, tmp_path):
         child = _StubChild([f"{STREAM_MARKER} done"], streams=True)
         entry, events, live_log, _hook, _memory = self._run_streaming(tmp_path, child, None)
@@ -474,6 +503,78 @@ class TestStalePaths:
         assert entry["summary"] is None
         assert entry["stale_paths"] == [str(parent_file)]  # the parent's own read, still worth re-reading
         assert CHILD_MARKER not in _text(entry)
+
+
+PROC_MARKER = "proc-output-5d2e"
+HANDOFF_NOTE = "handoff-note-8a3f"
+
+
+class _HandoffChild(_StubChild):
+    """Hands a REAL background process to its parent through process_manage(action="handoff") mid-run."""
+
+    def run_conversation(self, user_message, task_id=None, stream_callback=None, **kwargs):
+        from tools.process_registry import _handle_process, process_registry
+        proc = process_registry.spawn_local(f"sleep 1; echo {PROC_MARKER}", task_id=task_id, owner_task_id=task_id)
+        proc.notify_on_complete = True
+        out = json.loads(_handle_process(
+            {"action": "handoff", "session_id": proc.id, "data": HANDOFF_NOTE}, task_id=task_id))
+        assert out["status"] == "handed_off"
+        self.proc, self.owner_while_unjudged = proc, proc.owner_task_id
+        return super().run_conversation(user_message, task_id=task_id, stream_callback=stream_callback, **kwargs)
+
+
+class TestHandedOffProcesses:
+    """A handoff is child-to-parent authority: it transfers only on an accepted settlement, never before."""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self, monkeypatch):
+        import tools.process_registry as _pr
+        monkeypatch.setattr(_pr, "_SYSTEMD_SCOPE_AVAILABLE", False)  # plain spawn; the scope wrapper stalls pytest
+        yield
+        _pr.process_registry.kill_all(source="test")
+        _pr.process_registry.drain_notifications(owns_event=lambda e: True)
+
+    def _run(self, text, sid):
+        from tools.process_registry import process_registry
+        process_registry.drain_notifications(owns_event=lambda e: True)
+        parent = _StubParent()
+        child = _HandoffChild([text], gate=_gate(LEAKY_JUDGE))
+        child._subagent_id = sid
+        child._delegate_parent_ref = weakref.ref(parent)
+        with patch("tools.delegate_tool._load_config", return_value={}):
+            entry = _run_single_child(0, GOAL, child, parent)
+        return entry, child, parent
+
+    def _parent_notifications(self, proc, seconds):
+        from tools.process_registry import process_registry
+        deadline, seen = time.monotonic() + seconds, []
+        while time.monotonic() < deadline:
+            seen += [e for e, _text in process_registry.drain_notifications(owns_event=lambda e: True)
+                     if e.get("session_id") == proc.id]
+            if seen or (proc.exited and time.monotonic() > deadline - 1):
+                break
+            time.sleep(0.05)
+        return seen
+
+    def test_rejected_child_handoff_is_revoked_and_never_notifies_the_parent(self):
+        sid = "sa-0-qg-handoff-reject"
+        entry, child, _parent = self._run(f"{CHILD_MARKER}: handed off the watcher", sid)
+        assert entry["quality_gate"]["quarantined"] is True
+        assert child.owner_while_unjudged == sid  # reserved, not transferred, while unjudged
+        assert child.proc.owner_task_id == sid  # never became the parent's
+        assert entry["quarantined_processes"]["revoked"] == 1
+        assert child.proc.exited
+        assert self._parent_notifications(child.proc, 3.0) == []
+        assert PROC_MARKER not in _text(entry) and HANDOFF_NOTE not in _text(entry)
+
+    def test_accepted_child_handoff_transfers_and_notifies_the_parent(self):
+        entry, child, parent = self._run("handed off the watcher", "sa-0-qg-handoff-pass")
+        assert entry["quality_gate"]["verdict"] == "pass"
+        assert child.owner_while_unjudged == "sa-0-qg-handoff-pass"
+        assert child.proc.owner_task_id == parent.session_id
+        assert entry["handed_off_processes"][0]["session_id"] == child.proc.id
+        seen = self._parent_notifications(child.proc, 10.0)
+        assert len(seen) == 1 and seen[0]["handoff_note"] == HANDOFF_NOTE
 
 
 class TestCorrectionTurn:
@@ -703,6 +804,70 @@ class TestGateErrors:
         assert entry["quality_gate"]["verdict"] == "error"
         assert entry["quality_gate"]["reason"] == "judge_start_failed"
         assert "could not start" in entry["quality_gate"]["error"]
+
+
+NONZERO_PASS_JUDGE = 'import json, sys; print(json.dumps({"verdict": "pass"})); sys.exit(1)'
+
+
+class TestNonZeroExitNeverAuthorizes:
+    """Only a clean exit may authorize delivery: a crashing judge that printed ``pass`` first is a judge error."""
+
+    def test_nonzero_pass_is_quarantined_fail_closed(self):
+        child = _StubChild([GOOD], gate=_gate(NONZERO_PASS_JUDGE, on_error="closed"))
+        entry = _run(child)
+        assert entry["status"] == "failed"
+        assert entry["summary"] is None
+        assert entry["failure_reason"] == "quality_gate_error"
+        assert entry["quality_gate"]["quarantined"] is True
+        assert entry["quality_gate"]["reason"] == "judge_nonzero_exit"
+
+    def test_nonzero_pass_follows_open_error_semantics(self):
+        child = _StubChild([GOOD], gate=_gate(NONZERO_PASS_JUDGE))
+        entry = _run(child)
+        assert entry["status"] == "completed"
+        assert entry["summary"] == GOOD
+        assert entry["quality_gate"]["verdict"] == "error"
+        assert entry["quality_gate"]["reason"] == "judge_nonzero_exit"
+
+    def test_only_reject_survives_a_nonzero_exit(self):
+        for kind in ("pass", "warn", "retry"):
+            v = parse_verdict(json.dumps({"verdict": kind}), "", 1)
+            assert (v.kind, v.code) == ("error", "nonzero_exit"), kind
+        assert parse_verdict('{"verdict": "reject"}', "", 1).kind == "reject"
+        assert parse_verdict('{"verdict": "pass"}', "", 0).kind == "pass"
+
+
+# Planted by the "child" in its own workspace: proves it ran by creating a sentinel file, then says pass.
+PLANTED = (
+    "import json, pathlib, sys\n"
+    "pathlib.Path(sys.argv[-1] if len(sys.argv) > 1 else {sentinel!r}).write_text('ran')\n"
+    "print(json.dumps({{'verdict': 'pass'}}))\n"
+)
+
+
+class TestJudgeCwdIsTrusted:
+    """The judge never runs from (or imports out of) the child's workspace; the workspace is request data only."""
+
+    @pytest.mark.parametrize("argv_tail", [["gate.py"], ["-m", "judge"]])
+    def test_child_planted_judge_code_is_never_executed(self, tmp_path, monkeypatch, argv_tail):
+        child_dir = tmp_path / "child"
+        (child_dir / "judge").mkdir(parents=True)
+        sentinel = tmp_path / "PLANTED-RAN"
+        code = PLANTED.format(sentinel=str(sentinel))
+        (child_dir / "gate.py").write_text(code, encoding="utf-8")
+        (child_dir / "judge.py").write_text(code, encoding="utf-8")
+        (child_dir / "judge" / "__main__.py").write_text(code, encoding="utf-8")
+        (child_dir / "judge" / "__init__.py").write_text("", encoding="utf-8")
+        monkeypatch.setenv("PYTHONPATH", str(child_dir))  # an operator PYTHONPATH that happens to cover the workspace
+        record_session_cwd(None, str(child_dir))
+        try:
+            gate = load_gate_config({"quality_gate": {"command": [sys.executable, *argv_tail], "on_error": "closed"}})
+            entry = _run(_StubChild([GOOD], gate=gate))
+        finally:
+            clear_session_cwd("default")
+        assert not sentinel.exists()
+        assert entry["quality_gate"]["verdict"] == "error"
+        assert entry["quality_gate"]["quarantined"] is True
 
 
 class TestVerdictParsing:

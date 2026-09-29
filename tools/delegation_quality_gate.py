@@ -23,10 +23,11 @@ child's final answer after any ``output_schema`` validation:
 Reviewer feedback is untrusted external text: it reaches the child inside hard delimiters with an
 explicit "not an instruction" framing and a length bound. Children that failed, were interrupted,
 produced no text, or violated their output_schema are never judged. A judge that delivers no
-verdict (timeout, bad exit, malformed output, misconfiguration) or reports its own error follows ``on_error``: ``open``
-(default) delivers the child's result unchanged with ``quality_gate.verdict: error``; ``closed``
-quarantines it. The contract is provider-neutral — any executable that reads the result on stdin
-and prints a verdict on stdout plugs in.
+verdict (timeout, bad exit, malformed output, misconfiguration), exits non-zero with anything but ``reject``, or
+reports its own error follows ``on_error``: ``open`` (default) delivers the child's result unchanged with
+``quality_gate.verdict: error``; ``closed`` quarantines it. The judge runs from a fresh private temp dir (never the
+child's workspace, which it receives only in the request). The contract is provider-neutral — any executable that
+reads the result on stdin and prints a verdict on stdout plugs in.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -85,7 +87,7 @@ class Verdict:
     feedback: str = ""
     details: Optional[Dict[str, Any]] = None
     error: Optional[str] = None  # human detail (may carry judge bytes: never surfaces on a quarantined entry)
-    code: Optional[str] = None  # stable error class: misconfigured | start_failed | timeout | no_verdict | reported
+    code: Optional[str] = None  # stable error class: misconfigured | start_failed | timeout | no_verdict | nonzero_exit | reported
 
 
 @dataclass(frozen=True)
@@ -233,9 +235,11 @@ def _excerpt(stdout: str, stderr: str) -> str:
 
 
 def parse_verdict(stdout: str, stderr: str, returncode: Optional[int]) -> Verdict:
-    """A well-formed verdict on stdout is authoritative regardless of exit code; without one, a
-    non-zero exit is reported as the reason (``no_verdict``). An explicit ``"verdict": "error"`` is the
-    judge declining to judge (``reported``): its bounded feedback becomes the diagnostic."""
+    """Only a clean exit may authorize delivery: a non-zero exit with ``pass``/``warn``/``retry`` on stdout is a
+    judge failure (``nonzero_exit``, routed through ``on_error``), while a non-zero ``reject`` stays a usable
+    reject (it only ever withholds). Without a verdict, a non-zero exit is reported as the reason
+    (``no_verdict``). An explicit ``"verdict": "error"`` is the judge declining to judge (``reported``): its
+    bounded feedback becomes the diagnostic."""
     candidate = extract_json_candidate(stdout or "")
     parsed: Any = None
     if candidate.strip():
@@ -261,11 +265,24 @@ def parse_verdict(stdout: str, stderr: str, returncode: Optional[int]) -> Verdic
             "error", feedback, details or None, code="reported",
             error=f"judge reported an error: {feedback or 'no diagnostic given'}",
         )
+    if returncode and kind != "reject":
+        return Verdict(
+            "error", error=f"exit code {returncode} with verdict {kind!r} ({_excerpt('', stderr)})", code="nonzero_exit",
+        )
     return Verdict(kind, feedback, details or None)
 
 
-def _judge_env(config: GateConfig) -> Dict[str, str]:
-    """Secret-scrubbed env (same posture as command TTS providers) plus the explicit passthrough allowlist."""
+def _inside(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath([os.path.realpath(path), os.path.realpath(root)]) == os.path.realpath(root)
+    except ValueError:  # different drives (Windows)
+        return False
+
+
+def _judge_env(config: GateConfig, workspace: Optional[str] = None) -> Dict[str, str]:
+    """Secret-scrubbed env (same posture as command TTS providers) plus the explicit passthrough allowlist.
+    ``PYTHONPATH`` keeps only absolute entries outside the child's workspace, so ``python -m judge`` never
+    imports a module the child planted there (relative entries would resolve against the judge's cwd)."""
     from agent.delegation_context import delegated_child_subprocess_env
     from tools.environments.local import hermes_subprocess_env
     env = hermes_subprocess_env(inherit_credentials=False)
@@ -273,6 +290,13 @@ def _judge_env(config: GateConfig) -> Dict[str, str]:
         value = os.environ.get(key)
         if value is not None:
             env[key] = value
+    if env.get("PYTHONPATH"):
+        kept = [p for p in env["PYTHONPATH"].split(os.pathsep)
+                if p and os.path.isabs(p) and not (workspace and _inside(p, workspace))]
+        if kept:
+            env["PYTHONPATH"] = os.pathsep.join(kept)
+        else:
+            env.pop("PYTHONPATH")
     return delegated_child_subprocess_env(env)
 
 
@@ -303,13 +327,20 @@ def run_gate(config: GateConfig, request: Dict[str, Any]) -> Verdict:
         return Verdict("error", error=config.config_error, code="misconfigured")
     argv = list(config.command)
     workspace = request.get("workspace")
-    cwd = workspace if isinstance(workspace, str) and os.path.isdir(workspace) else None
+    # The workspace travels ONLY in the JSON request. The judge runs from a fresh, empty, private temp dir (the
+    # command TTS provider's pattern), so a relative script (``python gate.py``) or module (``python -m judge``)
+    # can never resolve to code the child planted in its own workspace.
+    with tempfile.TemporaryDirectory(prefix="hermes-quality-gate-") as cwd:
+        return _run_judge(config, argv, request, cwd, workspace if isinstance(workspace, str) else None)
+
+
+def _run_judge(config: GateConfig, argv: List[str], request: Dict[str, Any], cwd: str, workspace: Optional[str]) -> Verdict:
     group = ({"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt"
              else {"start_new_session": True})
     try:
         proc = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
-            errors="replace", env=_judge_env(config), cwd=cwd, **group,
+            errors="replace", env=_judge_env(config, workspace), cwd=cwd, **group,
         )
     except OSError as exc:
         return Verdict("error", error=f"could not start {argv[0]!r}: {exc}", code="start_failed")

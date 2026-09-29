@@ -1819,7 +1819,9 @@ delegation:
   #   command: ["/usr/local/bin/my-judge"]    # sees the result. argv list only (a shell string is refused).
   #                                           # command[0] is resolved once at load time: absolute path used
   #                                           # as-is, bare name looked up on PATH; never resolved against the
-  #                                           # child's own (possibly attacker-influenced) cwd.
+  #                                           # child's own (possibly attacker-influenced) cwd. The judge runs
+  #                                           # from a fresh private temp dir (the workspace is request data only),
+  #                                           # so keep script/module arguments absolute or installed.
   #   timeout_seconds: 120                    # Hard wall-clock cap per verdict; the judge's process tree is killed.
   #                                           # Judge time is not charged to child_timeout_seconds; in the worst
   #                                           # case the parent waits an extra (max_retries + 1) x timeout_seconds
@@ -1830,7 +1832,9 @@ delegation:
   #                                           # result: summary null, no child/judge text delivered, stored in
   #                                           # memory or passed to hooks. Contract: JSON request on stdin ->
   #                                           # {"verdict": pass|warn|retry|reject|error, "feedback": "..."} on
-  #                                           # stdout ("error" = judge could not judge; follows on_error).
+  #                                           # stdout ("error" = judge could not judge; follows on_error). A
+  #                                           # non-zero exit only keeps a "reject"; any other verdict with a
+  #                                           # non-zero exit is a judge error (follows on_error).
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

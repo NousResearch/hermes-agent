@@ -178,8 +178,9 @@ def test_text_response_surfaces_fields_additively():
 # Phase B — delivery_mode threading + capability gating
 # ---------------------------------------------------------------------------
 
-def test_verify_state_action_is_exposed_and_forwarded(noop_backend):
-    from tools.computer_use.tool import handle_computer_use
+def test_verify_state_action_is_exposed_and_forwarded():
+    from tools.computer_use.tool import _get_backend, handle_computer_use
+    noop_backend = _get_backend()
 
     payload = {"action": "verify_state", "expect": [{"element": {"exists": True}}], "pid": 7, "window_id": 9}
     result = json.loads(handle_computer_use(payload))

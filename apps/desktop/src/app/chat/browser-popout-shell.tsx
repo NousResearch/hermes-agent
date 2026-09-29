@@ -5,8 +5,8 @@ import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { useI18n } from '@/i18n'
 import { windowBrowserTabId } from '@/store/windows'
 
-import { installPopoutPreviewResponder } from './right-rail/preview-popout-bridge'
 import { PreviewTilePane } from './right-rail/preview'
+import { installPopoutPreviewResponder } from './right-rail/preview-popout-bridge'
 
 /**
  * Dedicated shell for `?win=browser`: the in-app Browser, full-window, no

@@ -582,11 +582,13 @@ public, as specified by MSC2545.
 
 Pack labels, descriptions and image bodies are untrusted data. Catalogs return
 at most 20 packs, 100 inspected images and 20 account references, with explicit
-errors and truncation indicators. Room-state discovery rejects more than 1,000
-state events. Matrix's state endpoint has no pagination, so the SDK receives the
-complete state response before Hermes applies this processing limit. Declared
-image sizes must fit the adapter's media limit; sending an existing MXC URL does
-not download or re-upload the image.
+errors and truncation indicators. When the current room has more than 1,000
+state events, or its state cannot be read, the catalog reports an error for the
+room's own packs and still lists the bot account's private pack and the packs
+that the bot account references. Matrix's state endpoint has no pagination, so
+the SDK receives the complete state response before Hermes applies this
+processing limit. Declared image sizes must fit the adapter's media limit;
+sending an existing MXC URL does not download or re-upload the image.
 
 [image-packs-msc]: https://github.com/matrix-org/matrix-spec-proposals/blob/0923024fe35068874e59b5536b793dfcfcfc96c0/proposals/2545-emotes.md
 

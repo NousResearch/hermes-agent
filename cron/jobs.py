@@ -794,17 +794,22 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     # Cron expression. Letters are allowed so named months/weekdays (JAN-DEC, MON-FRI) reach
     # croniter, which supports them.
     parts = schedule.split()
-    if len(parts) >= 5 and all(re.match(r'^[A-Za-z\d\*\-,/]+$', p) for p in parts[:5]):
+    cron_field = re.compile(r'^[A-Za-z\d\*\-,/]+$').match
+    if len(parts) >= 5 and all(cron_field(p) for p in parts[:5]):
         if len(parts) > 5:
             # croniter reads a 6th field as SECONDS and a 7th as the year, while Quartz, Spring and
             # node-cron put seconds FIRST: their daily-09:00 "0 0 9 * * *" parsed as "midnight on
             # the 9th, every second", firing twice a month and never daily. The ticker runs once a
             # minute, so no seconds field can be honoured anyway.
+            # No hint when the remaining fields are not plain cron: a Quartz '?' would fail again,
+            # and rewriting it to '*' would shift Quartz's 1-7-from-Sunday weekday numbers by a day.
+            rest = parts[1:6]
+            hint = (" If the first field is seconds (Quartz/Spring/node-cron style), drop it: "
+                    f"'{' '.join(rest)}'." if all(cron_field(p) for p in rest) else "")
             raise ValueError(
                 f"Invalid cron expression '{schedule}': cron schedules take 5 fields (minute hour "
                 f"day-of-month month day-of-week), got {len(parts)}. Seconds and year fields are "
-                "not supported. If the first field is seconds (Quartz/Spring/node-cron style), "
-                f"drop it: '{' '.join(parts[1:6])}'.")
+                f"not supported.{hint}")
         return _cron_schedule(
             schedule, schedule, "Cron expressions require 'croniter' package.", "cron expression")
 

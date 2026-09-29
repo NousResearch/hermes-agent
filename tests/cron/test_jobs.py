@@ -234,16 +234,24 @@ class TestParseSchedule:
         with pytest.raises(ValueError):
             parse_schedule("0 9 * * FUNDAY")
 
-    @pytest.mark.parametrize("expr", ["0 0 9 * * *", "0 30 9 * * MON-FRI", "0 0 9 * * * 2027"])
-    def test_cron_with_seconds_or_year_field_is_rejected_not_reinterpreted(self, expr):
+    @pytest.mark.parametrize("expr, hint", [
+        ("0 0 9 * * *", "0 9 * * *"),
+        ("0 30 9 * * MON-FRI", "30 9 * * MON-FRI"),
+        ("0 0 9 * * * 2027", "0 9 * * *"),
+        ("0 0 12 * * ?", None),
+    ])
+    def test_cron_with_seconds_or_year_field_is_rejected_not_reinterpreted(self, expr, hint):
         """croniter reads a 6th field as seconds; the seconds-first (Quartz/Spring) daily-9am
-        ``0 0 9 * * *`` used to be stored as "the 9th of each month at midnight"."""
+        ``0 0 9 * * *`` used to be stored as "the 9th of each month at midnight". Any suggested
+        replacement must itself be accepted."""
         pytest.importorskip("croniter")
         with pytest.raises(ValueError, match="5 fields") as exc:
             parse_schedule(expr)
-        suggested = " ".join(expr.split()[1:6])
-        assert f"'{suggested}'" in str(exc.value)
-        assert parse_schedule(suggested)["expr"] == suggested
+        if hint is None:
+            assert "drop it" not in str(exc.value)
+        else:
+            assert f"'{hint}'" in str(exc.value)
+            assert parse_schedule(hint)["expr"] == hint
 
     def test_iso_timestamp(self):
         result = parse_schedule("2030-01-15T14:00:00")

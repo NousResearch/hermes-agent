@@ -1488,6 +1488,8 @@ class TestBlocklistCoverage:
             "HERMES_DASHBOARD_SESSION_TOKEN",
             "GATEWAY_ALLOWED_USERS",
             "GH_TOKEN",
+            "GITLAB_TOKEN",
+            "GITLAB_CI_TOKEN",
             "GITHUB_APP_ID",
             "GITHUB_APP_PRIVATE_KEY_PATH",
             "GITHUB_APP_INSTALLATION_ID",

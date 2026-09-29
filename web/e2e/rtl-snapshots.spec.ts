@@ -169,6 +169,101 @@ export const MODELS_API_OVERRIDES: Record<string, { status: number; body: string
   }),
 };
 
+/**
+ * Channels conditional-panel fixtures — one fixture row per conditional
+ * panel pinned below. Both panels mount only when their platform id appears
+ * in `/api/messaging/platforms`, so a single fixture row list drives both
+ * tests (and the full-page channels shot stays the empty-state default).
+ *
+ * Names/URLs stay Latin: they are user data. Field copy is server-provided
+ * (`prompt`/`help`/`description`), so the Telegram allowed-users test pins
+ * the DATA side of the modal in Persian while the en.ts chrome around it is
+ * translated through t.channels.*.
+ */
+export const CHANNELS_API_OVERRIDES: Record<string, { status: number; body: string }> = {
+  "/api/messaging/platforms": stubJson({
+    env_path: "D:\\hermes-test-home\\.env",
+    gateway_start_command: "hermes gateway run",
+    platforms: [
+      {
+        id: "whatsapp",
+        name: "WhatsApp",
+        description: "هرمس را از طریق پل داخلی واتس‌اپ با اتصال مبتنی بر QR به کار ببرید.",
+        docs_url: "https://example.invalid/docs/whatsapp",
+        enabled: false,
+        configured: false,
+        gateway_running: false,
+        state: "not_configured",
+        error_code: null,
+        error_message: null,
+        updated_at: null,
+        home_channel: null,
+        whatsapp_setup: null,
+        env_vars: [],
+      },
+      {
+        id: "telegram",
+        name: "Telegram",
+        description: "هرمس را از دایرکت‌ها، گروه‌ها و تاپیک‌های تلگرام اجرا کنید.",
+        docs_url: "https://example.invalid/docs/telegram",
+        enabled: true,
+        configured: true,
+        gateway_running: false,
+        state: "not_configured",
+        error_code: null,
+        error_message: null,
+        updated_at: null,
+        home_channel: null,
+        env_vars: [
+          {
+            key: "TELEGRAM_BOT_TOKEN",
+            required: true,
+            is_set: true,
+            redacted_value: "•••••• (set — leave blank to keep)",
+            description: "",
+            prompt: "توکن بات",
+            help: "با @BotFather یک بات بسازید، سپس توکنی که می‌دهد را جای‌گذاری کنید.",
+            url: null,
+            is_password: true,
+            advanced: false,
+          },
+          {
+            key: "TELEGRAM_ALLOWED_USERS",
+            required: false,
+            is_set: true,
+            redacted_value: "8792111505",
+            description: "شناسه‌های عددی جداشده با کاما از @userinfobot.",
+            prompt: "شناسه‌های کاربر مجاز Telegram",
+            help: "توصیه‌شده. بدون این، هرکسی می‌تواند به بات شما پیام بدهد.",
+            url: null,
+            is_password: false,
+            advanced: false,
+          },
+        ],
+      },
+    ],
+  }),
+  // Telegram QR pairing flow for the allowed-users test: the start response
+  // feeds QRCode.toDataURL directly (qr_payload is required or the page
+  // throws), and the status route answers "ready" on the first poll with a
+  // detected owner — pre-filling the chip row the baseline pins. Both
+  // expires_at values sit in the future of the test's frozen clock
+  // (09:00:00Z), so the mm:ss badge renders a stable "15:00".
+  "/api/messaging/telegram/onboarding/start": stubJson({
+    pairing_id: "pair-rtl-1",
+    suggested_username: "hermes_pair_bot",
+    deep_link: "https://t.me/hermes_pair_bot?start=pair-rtl-1",
+    qr_payload: "https://t.me/HermesPairBot?start=pair-rtl-1",
+    expires_at: "2026-09-27T09:15:00Z",
+  }),
+  "/api/messaging/telegram/onboarding/pair-rtl-1": stubJson({
+    status: "ready",
+    bot_username: "hermes_pair_bot",
+    owner_user_id: "8792111505",
+    expires_at: "2026-09-27T09:15:00Z",
+  }),
+};
+
 export const MCP_API_OVERRIDES: Record<string, { status: number; body: string }> = {
   // McpServerListResponse — three server shapes so one page pins all the
   // chrome: http+oauth (Latin URL island, auth badge, env-var chip),
@@ -306,7 +401,7 @@ const PAGES: Array<{
   // RTL regressions in real content, not just empty states.
   // Dates inside rows are TZ-sensitive — the config pins timezoneId UTC.
   { path: "/docs", name: "docs" },
-  { path: "/channels", name: "channels" }, // localized since 6fef7145510 — the full-page shot only covers the default view; the conditional per-platform panels (Telegram QR flow, allowed-users field) are pinned separately by the DOM assertions in the channels test below.
+  { path: "/channels", name: "channels" }, // localized since 6fef7145510 — the full-page shot pins the empty-state default; the conditional per-platform panels (WhatsApp QR pairing, Telegram allowed-users editor) are pinned by the dedicated element-baseline tests below.
   { path: "/config", name: "config" },
   { path: "/env", name: "env" },
   // NEW-SURFACE baselines (a378d64eaf9 round). Both render meaningful rows so
@@ -801,6 +896,108 @@ test.describe("Persian RTL visual snapshots", () => {
     } finally {
       mkdirSync(info.outputDir, { recursive: true });
       writeFileSync(info.outputPath("mcp-server-card-actual.png"), shot);
+    }
+  });
+
+  test("whatsapp QR-pairing panel pins the mode picker and allowed-numbers field", async ({
+    page,
+  }) => {
+    // The WhatsApp panel mounts ONLY when the fixture carries a whatsapp row,
+    // so the full-page channels shot (empty-state default) never shows it.
+    // This element baseline pins its idle chrome: the Persian mode picker
+    // («بات» / «گفتگو با خود»), the «شماره‌های واتس‌اپ مجاز» label over a
+    // Latin phone-number placeholder — the panel's sharpest mixed-direction
+    // pair — and the create-with-QR button (t.channels.telegramCreateWithQr,
+    // shared with the Telegram flow). The clock is frozen because the panel
+    // re-renders its mm:ss expiry badge every second while a pairing is up;
+    // at real wall-clock the badge would rot the baseline within a minute.
+    await stubBackend(page, CHANNELS_API_OVERRIDES);
+    await seedPersian(page);
+    await page.setViewportSize(VIEWPORT);
+    await page.clock.setFixedTime(new Date("2026-09-27T09:00:00Z"));
+    await page.goto("/channels", { waitUntil: "domcontentloaded" });
+    await assertRtlBoot(page);
+    await page.waitForLoadState("networkidle");
+
+    // The fixture row actually rendered (localized catalog name + intro).
+    await expect(page.getByText("WhatsApp")).toBeVisible();
+    await expect(
+      page.getByText("هرمس را از طریق پل داخلی واتس‌اپ"),
+    ).toBeVisible();
+
+    const panel = page
+      .locator("div.rounded-sm.border")
+      .filter({ has: page.locator("#whatsapp-allowed-users") })
+      .first();
+    await expect(panel).toBeVisible();
+    await expect(panel.getByText("حالت", { exact: true })).toBeVisible();
+    await expect(panel.getByText("بات", { exact: true })).toBeVisible();
+    await expect(panel.getByText("گفتگو با خود")).toBeVisible();
+    await expect(panel.getByText("شماره‌های واتس‌اپ مجاز")).toBeVisible();
+
+    const shot = await panel.screenshot({ animations: "disabled" });
+    const info = test.info();
+    try {
+      await expect(shot).toMatchSnapshot("channels-whatsapp-qr-panel.png");
+    } finally {
+      mkdirSync(info.outputDir, { recursive: true });
+      writeFileSync(info.outputPath("channels-whatsapp-qr-panel-actual.png"), shot);
+    }
+  });
+
+  test("telegram allowed-users editor pins the pairing-ready state chips", async ({
+    page,
+  }) => {
+    // The Telegram quick-setup card renders on every /channels page, but its
+    // allowed-users editor appears only once a QR pairing reaches "ready" —
+    // a state the full-page shot can never reach against a stubbed backend.
+    // The stub serves the ready status directly: one poll cycle after the
+    // create click, the panel shows the «آماده» badge, the detected-owner
+    // badge («مالک شناسایی شد») and the numeric ID chip row over Persian
+    // chrome with Latin user data (bot @handle, numeric IDs, mm:ss countdown
+    // — frozen by the fixed clock so the badge never rots).
+    await stubBackend(page, CHANNELS_API_OVERRIDES);
+    await seedPersian(page);
+    await page.setViewportSize(VIEWPORT);
+    await page.clock.setFixedTime(new Date("2026-09-27T09:00:00Z"));
+    await page.goto("/channels", { waitUntil: "domcontentloaded" });
+    await assertRtlBoot(page);
+    await page.waitForLoadState("networkidle");
+
+    // Both methods of the quick-setup card rendered in Persian.
+    await expect(page.getByText("راه‌اندازی سریع")).toBeVisible();
+    await expect(page.getByText("پیشنهادشده")).toBeVisible();
+    await expect(page.getByText("بات خودتان")).toBeVisible();
+
+    // Start the QR flow; the stub's first status poll answers "ready". The
+    // WhatsApp panel shares the same create-with-Qr string, so scope to the
+    // Telegram card (its localized catalog intro) — a page-wide name query
+    // is a strict-mode violation by design.
+    const tgCard = page
+      .locator("div.border.bg-background-base\\/80")
+      .filter({ hasText: "تاپیک‌های تلگرام" })
+      .first();
+    await tgCard.getByRole("button", { name: "ساخت با QR" }).click();
+    await expect(page.getByText("@hermes_pair_bot")).toBeVisible({
+      timeout: 10_000,
+    });
+
+    const panel = page
+      .locator("div.rounded-sm.border")
+      .filter({ has: page.locator('img[alt="Telegram setup QR code"]') })
+      .first();
+    await expect(panel).toBeVisible();
+    await expect(panel.getByText("کاربران مجاز")).toBeVisible();
+    await expect(panel.getByText("مالک شناسایی شد")).toBeVisible();
+    await expect(panel.getByText("8792111505")).toBeVisible();
+
+    const shot = await panel.screenshot({ animations: "disabled" });
+    const info = test.info();
+    try {
+      await expect(shot).toMatchSnapshot("channels-telegram-allowed-users.png");
+    } finally {
+      mkdirSync(info.outputDir, { recursive: true });
+      writeFileSync(info.outputPath("channels-telegram-allowed-users-actual.png"), shot);
     }
   });
 });

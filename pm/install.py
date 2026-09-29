@@ -410,6 +410,12 @@ def _install(
                 if facts is None:
                     (staged / ".pm-stage-pin.json").write_text(pin, encoding="utf-8")
                 with _publish_entry(package, store, staged, entry, previous_entry, target):
+                    # An elevated publisher must not ship a user-unreadable entry
+                    # (#126860): the next non-elevated update would die on the
+                    # verify/replace rename and nothing would ever repair the DACL.
+                    from pm.windows_acl import ensure_user_readable
+
+                    ensure_user_readable(package.name, entry, store.root)
                     if facts is not None:
                         facts.record(
                             package.name, version, entry_name, package.env(entry, target), store.root,
@@ -419,6 +425,17 @@ def _install(
                 _remove_downloads(store, artifacts)
             except (InstallError, DownloadPaused):
                 raise
+            except OSError as e:
+                # ERROR_ACCESS_DENIED here is the poisoned-store shape (#126860): a
+                # previous elevated session published the current entry admin-owned, so
+                # the verify/replace rename dies with a raw [WinError 5]. Name the
+                # entry and the recovery instead of surfacing the bare errno.
+                from pm import windows_acl
+
+                if windows_acl.is_access_denied(e):
+                    raise windows_acl.access_denied_error(
+                        package.name, "installing", entry, e) from e
+                raise InstallError(package.name, f"install failed: {e}") from e
             except Exception as e:
                 raise InstallError(package.name, f"install failed: {e}") from e
 

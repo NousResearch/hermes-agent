@@ -77,6 +77,15 @@ class TestNormalizeCustomProviderEntry:
         assert result["catalog_provider"] == "deepseek"
         assert not [r for r in caplog.records if "unknown config keys" in r.message.lower()]
 
+    def test_enabled_is_known_but_not_copied_to_normalized_entry(self, caplog):
+        """``providers.<name>.enabled`` is a gate handled before normalization, not a runtime field."""
+        entry = {"base_url": "https://gw.example.com/v1", "enabled": True}
+        with caplog.at_level(logging.WARNING):
+            result = _normalize_custom_provider_entry(entry, provider_key="gateway")
+        assert result is not None
+        assert "enabled" not in result
+        assert not [r for r in caplog.records if "unknown config keys" in r.message.lower()]
+
 
     def test_numeric_yaml_name_and_key_become_strings(self):
         """Unquoted YAML `name: 2070` / key 2070 must not be dropped as non-str."""
@@ -96,5 +105,4 @@ class TestNormalizeCustomProviderEntry:
         stored, entry = find_provider_entry({2070: {"base_url": "http://x"}}, "2070")
         assert stored == 2070
         assert entry == {"base_url": "http://x"}
-
 

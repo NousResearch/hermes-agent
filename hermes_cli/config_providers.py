@@ -115,6 +115,8 @@ _KNOWN_PROVIDER_KEYS = {
     # ``provider`` duplicates the ``providers.<name>`` mapping key and is unused here, but Hermes'
     # own config writer has historically emitted it. Accept it so self-written configs don't warn.
     "provider",
+    # Input-only gate handled before normalization for ``providers.<name>`` entries.
+    "enabled",
     "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env", "key_cmd",
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",

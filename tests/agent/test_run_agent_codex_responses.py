@@ -977,8 +977,8 @@ def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
     assert closed.wait(1.0)
 
 
-def test_run_codex_stream_drain_timeout_closes_raw_stream_when_managed_close_raises(monkeypatch):
-    """A Relay-managed wrapper whose close() raises (running loop) must not leak the provider stream."""
+def test_run_codex_stream_owner_close_falls_back_to_raw_when_managed_close_raises(monkeypatch):
+    """If managed close fails, the owner thread must still close the captured raw stream."""
     import threading
 
     import agent.codex_runtime as codex_runtime
@@ -1038,6 +1038,128 @@ def test_run_codex_stream_drain_timeout_closes_raw_stream_when_managed_close_rai
     assert response.id == "resp_managed"
     assert raw_closed.wait(1.0)
 
+
+def test_run_codex_stream_post_terminal_timeout_keeps_close_on_reader_thread(monkeypatch):
+    """The timeout thread may shutdown the socket, but only the reader thread may release its FD."""
+    import threading
+
+    import agent.codex_runtime as codex_runtime
+
+    agent = _build_agent(monkeypatch)
+    owner = threading.current_thread().name
+    woken = threading.Event()
+    blocked = threading.Event()
+    timeline = []
+
+    class _Socket:
+        def settimeout(self, value):
+            timeline.append(("settimeout", threading.current_thread().name, value))
+
+        def shutdown(self, how):
+            timeline.append(("shutdown", threading.current_thread().name, how))
+            woken.set()
+
+    sock = _Socket()
+    network_stream = SimpleNamespace(get_extra_info=lambda key: sock if key == "socket" else None)
+    message_item = SimpleNamespace(
+        type="message", status="completed", content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+    usage = SimpleNamespace(input_tokens=10, output_tokens=6, total_tokens=16)
+
+    class _HeldOpenAfterTerminalStream:
+        def __init__(self):
+            self.response = SimpleNamespace(extensions={"network_stream": network_stream})
+            self._events = iter([
+                SimpleNamespace(type="response.output_item.done", item=message_item),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(status="completed", usage=usage, id="resp_owner_close"),
+                ),
+            ])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self._events)
+            except StopIteration:
+                blocked.set()
+                assert woken.wait(2.0)
+                raise
+
+        def close(self):
+            timeline.append(("close", threading.current_thread().name, None))
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **_kwargs: _HeldOpenAfterTerminalStream())
+    )
+    monkeypatch.setattr(codex_runtime, "_stream_drain_timeout", lambda: 0.01)
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.id == "resp_owner_close"
+    assert blocked.is_set()
+    shutdowns = [entry for entry in timeline if entry[0] == "shutdown"]
+    closes = [entry for entry in timeline if entry[0] == "close"]
+    assert shutdowns and {entry[1] for entry in shutdowns} == {"codex-post-terminal-watchdog"}
+    assert closes and {entry[1] for entry in closes} == {owner}
+    assert timeline.index(shutdowns[0]) < timeline.index(closes[0])
+
+
+def test_run_codex_stream_post_terminal_clean_drain_never_shutdowns(monkeypatch):
+    """A provider that closes inside the budget must stay on the ordinary owner-thread path."""
+    import threading
+
+    import agent.codex_runtime as codex_runtime
+
+    agent = _build_agent(monkeypatch)
+    socket_calls = []
+    close_threads = []
+
+    class _Socket:
+        def settimeout(self, value):
+            socket_calls.append(("settimeout", value))
+
+        def shutdown(self, how):
+            socket_calls.append(("shutdown", how))
+
+    sock = _Socket()
+    network_stream = SimpleNamespace(get_extra_info=lambda key: sock if key == "socket" else None)
+    message_item = SimpleNamespace(
+        type="message", status="completed", content=[SimpleNamespace(type="output_text", text="Done.")],
+    )
+    usage = SimpleNamespace(input_tokens=8, output_tokens=4, total_tokens=12)
+
+    class _ClosingStream:
+        def __init__(self):
+            self.response = SimpleNamespace(extensions={"network_stream": network_stream})
+            self._events = iter([
+                SimpleNamespace(type="response.output_item.done", item=message_item),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(status="completed", usage=usage, id="resp_clean_drain"),
+                ),
+            ])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._events)
+
+        def close(self):
+            close_threads.append(threading.current_thread().name)
+
+    agent.client = SimpleNamespace(responses=SimpleNamespace(create=lambda **_kwargs: _ClosingStream()))
+    monkeypatch.setattr(codex_runtime, "_stream_drain_timeout", lambda: 1.0)
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.id == "resp_clean_drain"
+    assert socket_calls == []
+    assert close_threads
+    assert set(close_threads) == {threading.current_thread().name}
 
 def test_codex_preflight_defangs_harmony_tokens_before_and_after_middleware(monkeypatch):
     """Both mutable request boundaries must reject literal Harmony wire tokens."""

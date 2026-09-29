@@ -1178,55 +1178,119 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         logger.debug("Codex stream opened (attempt=%s/%s, model=%s)",
             attempt + 1, max_stream_retries + 1, model)
 
+    def _post_terminal_socket(*streams: Any):
+        """Return the raw socket for the current Responses stream, if it can be interrupted safely."""
+        from agent.agent_runtime_helpers import _connection_candidates, _socket_from_candidate
+
+        try:
+            for stream in streams:
+                response = getattr(stream, "response", None)
+                if response is None:
+                    continue
+                extensions = getattr(response, "extensions", None) or {}
+                network_stream = extensions.get("network_stream") if isinstance(extensions, dict) else None
+                for root in (network_stream, getattr(response, "stream", None)):
+                    if root is None:
+                        continue
+                    for candidate in _connection_candidates(root):
+                        sock = _socket_from_candidate(candidate)
+                        if sock is not None:
+                            return sock
+        except Exception:
+            return None
+        return None
+
     def _drain_for_finalizer(event_stream: Any) -> None:
-        # ``final`` is already assembled; draining only lets Relay run its finalizer. A transport error
-        # here must NOT discard the completed, already-billed response.
+        # The final response is already assembled. Keep the finalizer drain on THIS owner thread:
+        # moving the reader to a daemon thread and later closing from here releases the FD under that
+        # thread's SSL BIO (#127390, same class as #29507). A tiny watchdog may only shutdown() the
+        # socket; shutdown wakes this owner-thread read without releasing the descriptor.
         budget = _stream_drain_timeout()
         if budget <= 0:
-            return  # the ``finally`` below closes the stream
-        drained = threading.Event()
-
-        def _drain() -> None:
-            try:
-                for _ignored in event_stream:
-                    pass
-            except (*transport_errors, _APIConnectionError) as exc:
-                if not isinstance(exc, transport_errors):
-                    _log_failure(exc)
-                logger.warning("Codex Responses stream transport finalization failed after a terminal response was already "
-                               "received; returning the completed response instead of retrying. %s error=%s",
-                               agent._client_log_context(), exc)
-            except Exception:
-                logger.debug("Codex Responses stream finalization failed after a terminal response", exc_info=True)
-            finally:
-                drained.set()
-
-        threading.Thread(target=_drain, name="codex-post-terminal-drain", daemon=True).start()
-        if drained.wait(budget):
             return
-        logger.warning(
-            "Codex Responses stream remained open %.1fs after a terminal response (agent.stream_drain_timeout); "
-            "closing it and returning the completed response instead of retrying. %s",
-            budget, agent._client_log_context(),
-        )
-        # Under a live Relay loop the managed wrapper's close() cannot reach the provider response
-        # (the loop is still running the drain); close the raw stream captured at stream creation too.
         raw_stream = writer_token.get("raw_stream")
-        if raw_stream is not None and raw_stream is not event_stream:
-            _close_event_stream(raw_stream)
-        _close_event_stream(event_stream)
+        sock = _post_terminal_socket(raw_stream, event_stream)
+        if sock is None:
+            # Without a shutdown-capable socket a synchronous drain could become unbounded. The drain
+            # is only for Relay's finalizer, so skip it and let the owner-thread finally close below.
+            with suppress(Exception):
+                logger.debug("Codex post-terminal drain skipped: no interruptible stream socket found. %s",
+                             agent._client_log_context())
+            return
 
-    def _close_event_stream(event_stream: Any) -> None:
-        close_fn = getattr(event_stream, "close", None)  # None while connect never succeeded
+        timed_out = threading.Event()
+
+        def _wake_owner() -> None:
+            timed_out.set()
+            # FD-safe from a stranger thread: never close here. The owner continues the iteration,
+            # observes EOF/error, and performs the real close from the same thread that was reading.
+            from agent.agent_runtime_helpers import _shutdown_socket
+            _shutdown_socket(sock)
+
+        watchdog = threading.Timer(budget, _wake_owner)
+        watchdog.name = "codex-post-terminal-watchdog"
+        watchdog.daemon = True
         try:
-            if callable(close_fn):
-                close_fn()
+            watchdog.start()
+        except BaseException as exc:
+            # If an interrupt lands inside start(), cancel first; if the timer thread already exists,
+            # join it before the owner can close the stream.
+            watchdog.cancel()
+            if watchdog.ident is not None:
+                with suppress(Exception):
+                    watchdog.join()
+            if not isinstance(exc, Exception):
+                raise
+            with suppress(Exception):
+                logger.debug("Codex post-terminal watchdog failed to start; skipping finalizer drain", exc_info=True)
+            return
+
+        try:
+            for _ignored in event_stream:
+                pass
+        except (*transport_errors, _APIConnectionError) as exc:
+            # A timeout-triggered shutdown is the expected wakeup, not another provider failure. Other
+            # transport failures still get the old diagnostic, but none may discard the completed response.
+            if not timed_out.is_set():
+                with suppress(Exception):
+                    if not isinstance(exc, transport_errors):
+                        _log_failure(exc)
+                    logger.warning(
+                        "Codex Responses stream transport finalization failed after a terminal response was already "
+                        "received; returning the completed response instead of retrying. %s error=%s",
+                        agent._client_log_context(), exc,
+                    )
+        except Exception:
+            with suppress(Exception):
+                logger.debug("Codex Responses stream finalization failed after a terminal response", exc_info=True)
+        finally:
+            # cancel() wins if the budget has not fired; join() also waits for an already-running shutdown
+            # callback, preserving shutdown-before-close ordering at the exact timeout boundary.
+            watchdog.cancel()
+            watchdog.join()
+
+        if timed_out.is_set():
+            with suppress(Exception):
+                logger.warning(
+                    "Codex Responses stream remained open %.1fs after a terminal response "
+                    "(agent.stream_drain_timeout); shut down its socket and completed cleanup on the owner thread. %s",
+                    budget, agent._client_log_context(),
+                )
+
+    def _close_event_stream(event_stream: Any) -> bool:
+        close_fn = getattr(event_stream, "close", None)  # None while connect never succeeded
+        if not callable(close_fn):
+            return False
+        try:
+            close_fn()
+            return True
         except Exception:
             # A failed close can leave this connection checked out of the httpx pool while the caller
-            # reuse-caches the client; poison the slot so close really closes the pool. ``client is None``
+            # reuse-caches the client; poison the slot so close really closes the pool. client is None
             # is the shared primary client — never force-shut.
             if client is not None:
                 agent._abort_request_openai_client(active_client, reason="codex_stream_close_failed")
+            return False
     show_commentary = getattr(agent, "show_commentary", True)
     wants_commentary = getattr(agent, "interim_assistant_callback", None) is not None and show_commentary
     on_commentary_message = _live(agent._fire_streamed_codex_commentary) if wants_commentary else None
@@ -1309,7 +1373,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                                sum(len(p) for p in agent._codex_streamed_text_parts), agent._client_log_context())
             return final
         finally:
-            _close_event_stream(event_stream)
+            closed_managed = _close_event_stream(event_stream)
+            raw_stream = writer_token.get("raw_stream")
+            if not closed_managed and raw_stream is not None and raw_stream is not event_stream:
+                _close_event_stream(raw_stream)
 
 
 __all__ = [

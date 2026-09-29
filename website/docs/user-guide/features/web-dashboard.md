@@ -1250,9 +1250,11 @@ The web server restricts CORS to localhost origins only:
 - `http://localhost:5173` / `http://127.0.0.1:5173` (Vite dev server)
 - `http://localhost:5174` / `http://localhost:4174` (desktop renderer dev / preview servers)
 
-If you run the server on a custom port, that origin is added automatically. Pages served from any
-other local port get no CORS headers and their WebSocket upgrades are refused, so they cannot read
-the session token or open the terminal.
+If you run the server on a custom port, that origin is added automatically. A backend spawned by a
+desktop dev build also trusts that build's own renderer (the loopback `HERMES_DESKTOP_DEV_SERVER`
+it inherits, such as an [`hgui` slot](../../developer-guide/worktree-ui-dev.md#hgui--desktop-app-from-the-worktree)
+on `5174+N`). Pages served from any other local port get no CORS headers and their WebSocket
+upgrades are refused, so they cannot read the session token or open the terminal.
 
 ## Development
 

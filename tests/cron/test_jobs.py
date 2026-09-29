@@ -876,6 +876,46 @@ class TestMarkJobRun:
         assert updated["last_error"]
         assert "croniter" in updated["last_error"].lower()
 
+    def test_transient_croniter_import_error_not_latched(self, tmp_cron_dir, monkeypatch):
+        """Regression test for issue #127182.
+
+        A single transient croniter ImportError must not latch HAS_CRONITER=False for
+        the process lifetime: once the import succeeds again (wrong interpreter
+        restarted, shadowed path fixed), _ensure_croniter() has to report True again
+        so compute_next_run() and the due-scan recovery can re-arm recurring jobs
+        without a gateway restart.
+        """
+        pytest.importorskip("croniter")  # need it to make the import succeed again
+        import builtins
+
+        import cron.jobs as jobs_mod
+
+        job = create_job(prompt="Recurring", schedule="0 7,15,23 * * *")
+        assert job["schedule"]["kind"] == "cron"
+
+        # Simulate the transient failure window: the probe import raises once.
+        real_import = builtins.__import__
+
+        def failing_import(name, *args, **kwargs):
+            if name == "croniter":
+                raise ImportError("No module named 'croniter'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", failing_import)
+        monkeypatch.setattr(jobs_mod, "croniter", None)
+        monkeypatch.setattr(jobs_mod, "HAS_CRONITER", None)
+        assert jobs_mod._ensure_croniter() is False
+        assert jobs_mod.compute_next_run(job["schedule"]) is None
+
+        # Window over (import works again): WITHOUT resetting HAS_CRONITER — the probe's
+        # cached outcome must be re-evaluated, not latched.
+        monkeypatch.setattr(builtins, "__import__", real_import)
+        assert jobs_mod._ensure_croniter() is True, (
+            "a transient ImportError was latched: every recurring job would stay "
+            "next_run_at=None until a gateway restart"
+        )
+        assert jobs_mod.compute_next_run(job["schedule"]) is not None
+
 
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""

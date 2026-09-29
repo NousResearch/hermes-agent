@@ -26,7 +26,7 @@ class MatrixEventContext:
     redacted: bool = False
     reactions: tuple[MatrixReaction, ...] = ()
     reactions_truncated: bool = False
-    reaction_keys_missing: bool = False
+    reactions_undecryptable: bool = False
     reactions_unavailable: bool = False
 
 

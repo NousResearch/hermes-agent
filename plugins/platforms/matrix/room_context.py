@@ -75,7 +75,7 @@ async def fetch_room_entries(
     snapshots = await fetch_reactions_for_events(client, room_id, [event_id for event_id, _ in entries])
     return [
         replace(entry, reactions=snapshot.reactions, reactions_truncated=snapshot.truncated,
-                reaction_keys_missing=bool(snapshot.missing_keys),
+                reactions_undecryptable=bool(snapshot.undecryptable),
                 reactions_unavailable=bool(snapshot.error))
         for (_, entry), snapshot in zip(entries, snapshots)
     ]

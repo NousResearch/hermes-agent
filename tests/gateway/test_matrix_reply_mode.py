@@ -200,6 +200,67 @@ async def test_completed_commentary_reconciles_final_with_matrix_reply_policy(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["off", "first", "all"])
 @pytest.mark.parametrize("thread_id", [None, "$root"])
+async def test_interim_commentary_quotes_the_request_once_per_turn_in_first_mode(
+    monkeypatch, mode, thread_id
+):
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", AsyncMock())
+    adapter = MatrixAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="syt_test",
+            reply_to_mode=mode,
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "auto_thread": False,
+                "e2ee_mode": "off",
+            },
+        )
+    )
+    client = MagicMock()
+    client.send_message_event = AsyncMock(side_effect=[f"$sent{i}" for i in range(10)])
+    adapter._client = client
+    metadata = {"thread_id": thread_id} if thread_id else {}
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "!room:example.org",
+        StreamConsumerConfig(cursor=""),
+        metadata=metadata,
+        initial_reply_to_id="$request",
+    )
+    consumer.on_commentary("I'll check the logs first.")
+    consumer.on_commentary("Now I'll read the config.")
+    consumer.on_delta("The config sets the wrong port.")
+    consumer.finish("The config sets the wrong port.")
+    await consumer.run()
+
+    expected = []
+    for index in range(3):
+        rich_reply = mode == "all" or (mode == "first" and index == 0)
+        relation = {"m.in_reply_to": {"event_id": "$request"}} if rich_reply else None
+        if thread_id:
+            relation = {
+                "rel_type": "m.thread",
+                "event_id": thread_id,
+                "m.in_reply_to": {
+                    "event_id": "$request"
+                    if rich_reply
+                    else (thread_id if index == 0 else f"$sent{index - 1}")
+                },
+                "is_falling_back": not rich_reply,
+            }
+        expected.append(relation)
+
+    assert [
+        call.args[2].get("m.relates_to")
+        for call in client.send_message_event.await_args_list
+        if call.args[2].get("m.relates_to", {}).get("rel_type") != "m.replace"
+    ] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "first", "all"])
+@pytest.mark.parametrize("thread_id", [None, "$root"])
 async def test_segment_tail_retry_after_failed_first_send_preserves_matrix_reply_policy(
     monkeypatch, mode, thread_id
 ):
@@ -241,7 +302,7 @@ async def test_segment_tail_retry_after_failed_first_send_preserves_matrix_reply
 
     expected = []
     for body, fallback in [(tail, thread_id), (tail, thread_id), (final_text, "$tail")]:
-        rich_reply = mode != "off"
+        rich_reply = mode == "all" or (mode == "first" and body == tail)
         relation = {"m.in_reply_to": {"event_id": "$request"}} if rich_reply else None
         if thread_id:
             relation = {

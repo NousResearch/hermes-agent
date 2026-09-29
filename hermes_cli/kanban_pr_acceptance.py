@@ -45,6 +45,10 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         # code + endpoint, never gh's stderr (credentials/host details).
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
+            if (denied[1] == "403" and endpoint.startswith("repos/")
+                    and "/rules/branches/" in endpoint
+                    and "Upgrade to GitHub Pro or make this repository public" in (exc.stderr or "")):
+                raise _PlanGatedRulesError(f"HTTP 403 on {endpoint.split('?')[0]}") from None
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
@@ -53,6 +57,14 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
+
+
+class _PlanGatedRulesError(RuntimeError):
+    """GitHub does not expose branch rules for this repository plan.
+
+    This is a capability limitation, not an authentication failure. The GraphQL
+    branch-protection evidence remains usable, so the REST rules are absent.
+    """
 
 
 class _GateAuthError(RuntimeError):
@@ -135,8 +147,11 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _PlanGatedRulesError:
+            rules = []
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":

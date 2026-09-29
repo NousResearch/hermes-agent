@@ -1273,13 +1273,15 @@ def _repeated_hour_second_pass(expr: str, base_local: datetime, zone: Any) -> Op
     and the strictly-later 01:00/01:30 EST instants were never candidates (a 90-minute silent gap).
     Following cronie, only a job with ``*`` leading its minute or hour field (MIN_STAR/HR_STAR)
     runs on the wall clock both times through; a fixed-time job such as ``30 1 * * *`` fires once.
+    croniter's single-field aliases follow the same rule: ``@hourly`` is cronie's HR_STAR job, the
+    others (``@daily``, ``@weekly``, ...) are fixed times.
     """
-    fields = str(expr).split()
-    if base_local.fold or not (fields[0].startswith("*") or fields[1].startswith("*")):
-        return None
     shift = base_local.utcoffset() - base_local.replace(fold=1).utcoffset()
-    if shift <= timedelta(0):
-        return None  # the base's wall clock is not repeated
+    if base_local.fold or shift <= timedelta(0):
+        return None  # the base's wall clock is not repeated, or the base is already in the second pass
+    fields = str(expr).lower().split()
+    if fields != ["@hourly"] and not any(field.startswith("*") for field in fields[:2]):
+        return None
     base_wall = base_local.replace(tzinfo=None)
     it = croniter(expr, base_wall - shift)  # every wall clock of the repeated span up to the base
     wall = it.get_next(datetime)

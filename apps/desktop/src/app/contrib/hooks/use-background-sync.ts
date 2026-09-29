@@ -38,6 +38,7 @@ import type { SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTiles,
+  $workingSessionIds,
   confirmReconnectSettlesExcept,
   noteSessionEvent,
   publishSessionState,
@@ -839,11 +840,7 @@ interface BackgroundSyncParams {
   ) => ClientSessionState
 }
 
-/** Poll a callback while the tab is visible, on `intervalMs`; re-checks on tab
- *  re-focus. On battery the cadence stretches (see store/power) — these are
- *  safety-net refreshes, not the live path, so they're the right thing to slow
- *  when the machine is spending its charge. Returns nothing — meant to live
- *  inside an effect. */
+/** Whether visibility-gated refreshes should run. */
 export function windowIsActivelyViewed({
   focused,
   visibilityState
@@ -854,30 +851,50 @@ export function windowIsActivelyViewed({
   return visibilityState === 'visible' && focused
 }
 
-function visiblePoll(intervalMs: number, tick: () => void): () => void {
+/** Pause idle refreshes when unfocused and slow them on battery. The live
+ * status watchdog opts into normal-cadence polling while work is in flight. */
+function visiblePoll(intervalMs: number, tick: () => void, keepAliveWhileWorking = false): () => void {
+  const needsKeepalive = () => keepAliveWhileWorking && $workingSessionIds.get().length > 0
+
   const run = () => {
     // On macOS an unfocused or app-hidden BrowserWindow commonly remains
     // `visibilityState === "visible"`. Visibility alone therefore kept every
     // safety-net gateway poll alive while the user was in another app. These
-    // are stale-data backstops, not the live event path, so pause them until
-    // the window is actually being viewed and catch up immediately on focus.
-    if (windowIsActivelyViewed({ focused: document.hasFocus(), visibilityState: document.visibilityState })) {
+    // normally pause until the window is viewed, except the live-status poll
+    // that keeps a quiet working turn's silence watchdog informed.
+    if (
+      needsKeepalive() ||
+      windowIsActivelyViewed({ focused: document.hasFocus(), visibilityState: document.visibilityState })
+    ) {
       tick()
     }
   }
 
-  let intervalId = window.setInterval(run, batteryPollInterval(intervalMs, $onBattery.get()))
+  const cadence = () => batteryPollInterval(intervalMs, !needsKeepalive() && $onBattery.get())
+  let currentInterval = cadence()
+  let intervalId = window.setInterval(run, currentInterval)
 
-  const unsubscribeBattery = $onBattery.listen(onBattery => {
+  const reschedule = () => {
+    const nextInterval = cadence()
+
+    if (nextInterval === currentInterval) {
+      return
+    }
+
+    currentInterval = nextInterval
     window.clearInterval(intervalId)
-    intervalId = window.setInterval(run, batteryPollInterval(intervalMs, onBattery))
-  })
+    intervalId = window.setInterval(run, currentInterval)
+  }
+
+  const unsubscribeBattery = $onBattery.listen(reschedule)
+  const unsubscribeWorking = keepAliveWhileWorking ? $workingSessionIds.listen(reschedule) : undefined
 
   document.addEventListener('visibilitychange', run)
   window.addEventListener('focus', run)
 
   return () => {
     unsubscribeBattery()
+    unsubscribeWorking?.()
     window.clearInterval(intervalId)
     document.removeEventListener('visibilitychange', run)
     window.removeEventListener('focus', run)
@@ -1119,7 +1136,10 @@ export function useBackgroundSync({
 
     const dispose = visiblePoll(
       changeEventsAvailable ? LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS : LIVE_SESSION_STATUS_POLL_INTERVAL_MS,
-      () => void refreshLiveStatuses()
+      () => void refreshLiveStatuses(),
+      // Healthy quiet turns rely on this snapshot to renew the 45s silence
+      // watchdog. Hiding the window or switching to battery cannot pause it.
+      true
     )
 
     void refreshLiveStatuses()

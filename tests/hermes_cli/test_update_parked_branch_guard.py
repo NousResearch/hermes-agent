@@ -25,6 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import hermes_cli.update_cmd_git as update_cmd_git
 from hermes_cli import main as hermes_main
 import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
@@ -173,6 +174,46 @@ def test_missing_origin_ref_is_unverifiable(repo_pair):
     )
     assert safe is False
     assert reason == "unverifiable"
+
+
+def test_skip_advice_reaches_current_upstream_when_followed(repo_pair, capsys):
+    """The printed remedy must actually work — executed, not asserted on text.
+
+    It used to advise a bare `git checkout main`. A local `main` that is stale
+    is exactly the situation this warning is printed in, so following that
+    advice moved the checkout *further* behind (measured on a real host: 359
+    commits; reproduced here in miniature). The remedy now re-points the local
+    branch at origin/<target> with `-B`.
+    """
+    # The hazard: rewind the clone's local `main` so it is behind origin/main.
+    _git(repo_pair, "checkout", "-q", "main")
+    _git(repo_pair, "reset", "-q", "--hard", "origin/main~1")
+    stale_main = _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip()
+    assert _git(repo_pair, "rev-parse", "origin/main", check=False).stdout.strip() != stale_main
+    _git(repo_pair, "checkout", "-q", "old-feature")
+
+    update_cmd_git._print_parked_branch_skip_warning(
+        GIT, repo_pair, "old-feature", "main", "unverifiable"
+    )
+    out = capsys.readouterr().out
+
+    # Pull the git commands out of the printed block and run them for real.
+    cmds = [
+        line.strip()[len("git -C"):].strip()
+        for line in out.splitlines()
+        if line.strip().startswith("git -C")
+    ]
+    assert cmds, f"no runnable git commands printed:\n{out}"
+    assert not any("&& hermes update" in c for c in cmds), (
+        "a trailing shell chain cannot be executed step-by-step by the user"
+    )
+    for cmd in cmds:
+        _git(repo_pair, *cmd.split()[1:])  # drop the leading 'git'
+
+    # Following the printed remedy must land on the current upstream tip.
+    assert _git(repo_pair, "rev-parse", "HEAD", check=False).stdout.strip() == (
+        _git(repo_pair, "rev-parse", "origin/main", check=False).stdout.strip()
+    )
 
 
 # ---------------------------------------------------------------------------

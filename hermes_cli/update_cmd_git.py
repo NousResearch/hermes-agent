@@ -209,8 +209,13 @@ def _print_parked_branch_skip_warning(git_cmd: list[str], cwd: Path, current_bra
     print(
         f"\n  To resolve, inspect the branch and switch back yourself:\n"
         f"    git -C {cwd} status\n"
-        f"    git -C {cwd} checkout {target_branch} && hermes update\n"
-        f"  (commit or stash your work on the branch first if you want to keep it)\n{_BAR}"
+        f"    git -C {cwd} fetch origin {target_branch}\n"
+        f"    git -C {cwd} checkout -B {target_branch} origin/{target_branch}\n"
+        f"    hermes update\n"
+        f"  (commit or stash your work on the branch first if you want to keep it)\n"
+        f"  -B re-points the local {target_branch} at origin/{target_branch} instead of\n"
+        f"  trusting it: a plain 'checkout {target_branch}' can land you on a stale local\n"
+        f"  branch and move you further behind, not closer.\n{_BAR}"
     )
 
 

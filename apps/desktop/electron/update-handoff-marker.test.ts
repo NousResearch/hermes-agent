@@ -50,6 +50,7 @@ function runPosix(installRoot: string, startedAt?: string) {
 
 function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => ReturnType<typeof spawnSync>) {
   const preserved = sandbox('preserved')
+
   try {
     const acquiredAt = Math.floor(Date.now() / 1000) - 300
     const preservedResult = run(preserved.installRoot, String(acquiredAt))
@@ -59,9 +60,11 @@ function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => R
   } finally {
     cleanupSandbox(preserved.home)
   }
+
   assert.equal(fs.existsSync(preserved.home), false, 'the self-test sandbox must not leak into the OS temp directory')
 
   const refreshed = sandbox('refreshed')
+
   try {
     fs.writeFileSync(path.join(refreshed.home, '.hermes-update-in-progress'), '999999\n1\n')
     const before = Math.floor(Date.now() / 1000)
@@ -76,9 +79,11 @@ function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => R
   } finally {
     cleanupSandbox(refreshed.home)
   }
+
   assert.equal(fs.existsSync(refreshed.home), false, 'the self-test sandbox must not leak into the OS temp directory')
 
   const oversized = sandbox('oversized')
+
   try {
     const oversizedBefore = Math.floor(Date.now() / 1000)
     const oversizedResult = run(oversized.installRoot, '99999999999999999999')
@@ -92,6 +97,7 @@ function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => R
   } finally {
     cleanupSandbox(oversized.home)
   }
+
   assert.equal(fs.existsSync(oversized.home), false, 'the self-test sandbox must not leak into the OS temp directory')
 }
 

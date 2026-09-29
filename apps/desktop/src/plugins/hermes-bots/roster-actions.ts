@@ -154,7 +154,10 @@ function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowW
   }
 
   const generation = getBotOpenGeneration()
-  void openBotCanonicalChat(bot, { background: true, openingStillCurrent: () => generation === getBotOpenGeneration() }).catch(() => {
+  void openBotCanonicalChat(bot, {
+    background: true,
+    openingStillCurrent: () => generation === getBotOpenGeneration()
+  }).catch(() => {
     /* the next click or reclaim event re-resolves it */
   })
 }

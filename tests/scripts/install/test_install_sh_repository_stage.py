@@ -141,22 +141,17 @@ def test_rerun_follows_an_explicit_repo_url(tmp_path):
     assert _git(install, "remote", "get-url", "origin") == moved.as_posix()
 
 
-@pytest.mark.parametrize("reported, accepted", [("0.6.17", False), ("99.0.0", True)])
-def test_path_uv_is_used_only_when_at_least_the_pin(tmp_path, reported, accepted):
+def test_path_uv_is_never_used_even_when_newer_than_the_pin(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     fake = bindir / "uv"
-    fake.write_text(f"#!/bin/sh\necho 'uv {reported}'\n")
+    fake.write_text("#!/bin/sh\necho 'uv 99.0.0'\n")
     fake.chmod(0o755)
-    # No pinned target: rejecting the PATH uv must surface as a failure to stage one.
+    # No pinned target: with the PATH uv ignored, the install must fail rather than adopt it.
     body = 'uv_bootstrap_target() { return 1; }\nensure_uv\necho "UV_CMD=$UV_CMD"'
     result = _run(tmp_path, body, env={"PATH": f"{bindir}:{os.environ['PATH']}"})
-    if accepted:
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert f"UV_CMD={fake}" in result.stdout
-    else:
-        assert result.returncode != 0
-        assert "older than the pinned" in result.stdout + result.stderr
+    assert result.returncode != 0
+    assert f"UV_CMD={fake}" not in result.stdout
 
 
 def test_interactive_stages_skip_without_a_terminal(tmp_path):

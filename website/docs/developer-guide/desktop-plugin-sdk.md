@@ -229,7 +229,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Sidebar nav | `SIDEBAR_NAV_AREA` | `data: { path, label, codicon }` |
 | Status bar | `STATUSBAR_AREAS.left` / `.right` | `render` (or `data` as `StatusbarItem`) |
 | Title bar | `TITLEBAR_AREAS.left` / `.center` / `.right` | `data` as `TitlebarTool`, or a mount-scoped `<Contribute>` |
-| Page header | `WORKSPACE_PAGE_HEADER_AREA` | `render` via a mount-scoped `<Contribute>` inside your page |
+| Page header | `WORKSPACE_PAGE_HEADER_AREA` | `<WorkspacePageHeaderControl>` inside your page (inline in a split tile) |
 | ⌘K palette | `PALETTE_AREA` | `data: PaletteContribution` |
 | Keybind | `KEYBINDS_AREA` | `data: KeybindContribution` |
 | Theme | `THEMES_AREA` | `data` as a `DesktopTheme` |
@@ -331,8 +331,12 @@ mid-navigation.
 
 Controls that belong to ONE page (the Kanban board switcher) go in
 `WORKSPACE_PAGE_HEADER_AREA` instead: it renders in the workspace panel's
-tab-header row while that page is on screen and is empty otherwise. Register it
-with a mount-scoped `<Contribute>` (below) so it leaves with the page.
+tab-header row while that page is on screen and is empty otherwise. Wrap the
+control in `<WorkspacePageHeaderControl>` (below) inside your page's own header
+row. In the workspace pane it projects into the page header; when the page is
+opened in a split route tile, which has no page header, it renders inline where
+you placed it. A raw `<Contribute area={WORKSPACE_PAGE_HEADER_AREA}>` only
+shows up in the workspace pane.
 
 ### Palette commands and keybinds
 
@@ -813,6 +817,27 @@ jsx(Contribute, {
 
 It registers on mount and disposes on unmount automatically.
 
+For a page-header control, use `WorkspacePageHeaderControl` instead. It picks
+the placement from where the page renders: in the workspace pane it
+contributes to `WORKSPACE_PAGE_HEADER_AREA`, and anywhere else (a split route
+tile) it renders its children in place. Put it where the control should sit
+when inline:
+
+```javascript
+import { WorkspacePageHeaderControl } from '@hermes/plugin-sdk'
+
+jsx(WorkspacePageHeaderControl, {
+  id: 'my-page:switcher', // namespace with your slug
+  children: jsx(MySwitcher, {})
+})
+```
+
+`WorkspacePageHeaderControl` is new in this release. Older desktop builds don't
+export it, and a named import of a missing SDK export stops the plugin module
+from loading. A plugin that must also run on older builds either feature-detects
+through a namespace import (`import * as sdk from '@hermes/plugin-sdk'`, then
+`sdk.WorkspacePageHeaderControl ?? …`) or keeps the raw `Contribute` form above.
+
 ### Sidebar nav visibility and order (`SIDEBAR_NAV_PREFS_AREA`)
 
 A plugin hides or re-orders the sidebar's top nav rows by **contributing a
@@ -945,6 +970,8 @@ host.toolsets.list(profile?)               // toolsets + enabled state
 host.toolsets.setEnabled(name, on, profile?)// enable/disable a toolset
 host.profiles.list(scope?: ProfileScope)   // the profile list the profile rail reads
 host.pluginDecisions                       // READ-ONLY atom: this window's plugin on/off decisions (frozen copies)
+host.i18n.registerAppLocale(id, { endonym?, rtl?, translations? })  // add a whole UI language (language pack); returns disposer
+host.i18n.languageOptions()                // [{ id, endonym, rtl, source }] — what the language switcher lists
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
@@ -1196,6 +1223,59 @@ JSON.parse(localStorage.getItem(                           host.pluginDecisions.
 localStorage.setItem('hermes.desktop.pluginDecisions.v2')  // declined — host.navigate('/capabilities?tab=plugins')
 row.querySelector('[data-slot="switch"]').click()          // same: the app's Plugins tab owns the toggle
 ```
+
+### Language packs — `host.i18n.registerAppLocale` / `ctx.i18n.registerAppLocale`
+
+`ctx.i18n.register` localizes YOUR plugin's strings. A **language pack** does the
+opposite: it adds (or extends) a language for the WHOLE app — every core label,
+dialog and tip — so a Polish user sees a Polish desktop. Registration is a
+partial catalog merged over the bundled catalog for that id (or English for a
+new language); anything the pack leaves out falls back per key, never to a raw
+key. The switcher lists the language by its endonym at once (no flags — languages
+are not countries), `<html dir>` follows `rtl`, and `display.language` stays
+whatever the user chose: registering is not selecting.
+
+```ts
+export default {
+  id: 'hermes-lang-pl',
+  register(ctx) {
+    // Attributed to this plugin and dropped on unload/disable.
+    ctx.i18n.registerAppLocale('pl', {
+      endonym: 'Polski',
+      englishName: 'Polish',        // search-only
+      rtl: false,
+      translations: {
+        // Nested like en.ts…
+        common: { save: 'Zapisz', cancel: 'Anuluj' },
+        // …or flat dotted keys (what a .desktop.yaml pack flattens to).
+        'catalog.results': '{0} wyników'
+      }
+    })
+  }
+}
+```
+
+```ts
+host.i18n.registerAppLocale(id, { endonym?, englishName?, rtl?, translations? }): () => void
+host.i18n.languageOptions(): LanguageOption[]   // bundled ∪ registered ∪ backend i18n.languages
+```
+
+Where English has a **function** entry (``results: n => `${n} results` ``), a pack
+gives a plain string with POSITIONAL placeholders — `{0}`, `{1}` in argument
+order — and the merge wraps it into the same call shape. The full key set is
+published in `locales/_keys.desktop.json` (regenerate with `npm run i18n:keys`
+in `apps/desktop` and commit it; CI pins the file to `en.ts`), which is what `hermes plugins
+validate` checks a pack's `<lang>.desktop.yaml` against.
+
+`host.i18n.registerAppLocale` is the same call for code with no `ctx` in reach;
+it returns the disposer — hand it to `ctx.onDispose`. Prefer the `ctx` form.
+
+A pack that also ships core (Python) and TUI strings needs **no desktop code**
+at all: declare `provides_locales: [pl]` in `plugin.yaml` with
+`locales/pl.yaml`, `pl.tui.yaml`, `pl.desktop.yaml`, and the gateway serves the
+desktop file over `i18n.catalog {lang, surface: 'desktop'}`; the app pulls it
+into the same registry (source `backend`) when `display.language` names it and
+re-pulls on a profile switch.
 
 ## Data layer — React Query + nanostores
 
@@ -1551,10 +1631,10 @@ pipeline as a trust boundary.
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `SessionRowSlotContribution`, `SidebarNavPrefsContribution` |
-| React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
+| React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |
-| Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness` |
+| Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness`, `catalogProviderMatches` |
 
 The canonical, always-current export list is `apps/desktop/src/sdk/index.ts`.
 

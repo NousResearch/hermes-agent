@@ -34,7 +34,10 @@ function dirtyDeck() {
 }
 
 const storedPresets = () =>
-  JSON.parse(window.localStorage.getItem(USER_KEY) ?? 'null') as Record<string, { resting?: string[]; tree: LayoutNode }>
+  JSON.parse(window.localStorage.getItem(USER_KEY) ?? 'null') as Record<
+    string,
+    { resting?: string[]; tree: LayoutNode }
+  >
 
 beforeEach(() => {
   window.localStorage.clear()

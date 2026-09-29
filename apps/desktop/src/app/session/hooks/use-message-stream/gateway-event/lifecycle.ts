@@ -1,8 +1,8 @@
 import type { GatewayEvent } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 
-import { clearClarifyRequest } from '@/store/clarify'
 import { invalidateContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
+import { clearClarifyRequest } from '@/store/clarify'
 import {
   notifyCronChanged,
   notifyPairingChanged,

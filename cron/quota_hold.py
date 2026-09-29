@@ -72,6 +72,20 @@ def clear_state(job: Dict[str, Any]) -> None:
     job.pop(BILLING_PROVIDER_KEY, None)
 
 
+def release_for_new_runtime(job: Dict[str, Any]) -> None:
+    """A hold is evidence about the runtime that was refused, not about the schedule: once the
+    job's model/provider/base_url changes, the parked instant no longer applies. The next run
+    moves only EARLIER, to the schedule's own next occurrence, so a recovery park (a sparse
+    cron's consumed fire) is never pushed later."""
+    from cron.jobs import _instant_before, _parse_aware, compute_next_run
+
+    parked = _parse_aware(job.get("next_run_at")) if hold_active(job) and job.get("state") != "paused" else None
+    clear_state(job)
+    natural = _parse_aware(compute_next_run(job.get("schedule") or {})) if parked else None
+    if natural is not None and _instant_before(natural, parked):
+        job["next_run_at"] = natural.isoformat()
+
+
 def is_recovery_fire(job: Dict[str, Any], next_run: str) -> bool:
     """True for the exact off-lattice cron fire parked by ``plan_hold``.
 

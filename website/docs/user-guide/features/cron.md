@@ -465,7 +465,9 @@ schedules, manual runs and interval jobs retain their natural next run.
 Otherwise, missed occurrences are coalesced and
 `next_run_at` moves to the first scheduled occurrence after the window. The
 parked instant is stored as `quota_hold_until`; nothing fires or alerts before
-it. Any run that reaches the model clears the hold. One-shot jobs are not held.
+it. Any run that reaches the model clears the hold, and so does changing the
+job's model, provider or base URL (the job then runs on its own schedule).
+One-shot jobs are not held.
 
 ### Holding a job while its provider is out of credits
 
@@ -495,8 +497,10 @@ time to wait for. Two things apply to these runs:
   occurrence at least an hour out, and an hourly or sparser job keeps its
   schedule. A re-check is one refused request (plus the job's pre-run script,
   if it has one), and nothing alerts while it keeps being refused. The first run that reaches the model (after you top
-  up or change the job's model) clears the hold and restores the normal
-  schedule; `hermes cron run <job_id>` retries at once. The parked instant is
+  up) clears the hold and restores the normal schedule. Changing the job's
+  model, provider or base URL (`hermes cron edit`, the `cronjob` tool) releases
+  the hold at once and puts the job back on its own schedule;
+  `hermes cron run <job_id>` retries at once. The parked instant is
   stored as `quota_hold_until` with `billing_hold_provider`, and
   `hermes cron list` shows a `Held:` row. One-shot and `no_agent` jobs are not
   held, nor is a billing verdict the provider's body leaves unverified (the

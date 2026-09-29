@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol, TypeVar
 
 from gateway.platforms.event import MessageEvent, TurnContextUpdate
+from gateway.session import SessionSource
 
 _T = TypeVar("_T")
 
@@ -26,17 +27,33 @@ class InboundContextSnapshot(Protocol):
 
     def reply_image_paths(self) -> list[str]: ...
 
+    def media_event(self, event: MessageEvent) -> MessageEvent:
+        """Return *event* with only the authored attachments that are still current."""
+        ...
+
 
 @dataclass(frozen=True)
-class QuotedImageEnrichment:
+class ImageEnrichment:
     path: str
     text: str
 
-
-@dataclass(frozen=True)
-class AuthoredImageEnrichment:
-    paths: tuple[str, ...]
-    text: str
+    @classmethod
+    async def enrich_each(
+        cls, runner: Any, source: SessionSource, session_key: str, paths: list[str]
+    ) -> tuple[ImageEnrichment, ...]:
+        """Enrich each image separately so that withdrawing one image removes only its own
+        description. The session's native image buffer keeps its paths and adds each path
+        routed natively here."""
+        native_images = runner._consume_pending_native_image_paths(session_key)
+        enrichments = []
+        for path in paths:
+            text = await runner._enrich_inbound_images(source, session_key, "", [path])
+            enrichments.append(cls(path, text))
+            native_images.extend(runner._consume_pending_native_image_paths(session_key))
+        state = runner._peek_session_state(session_key)
+        if state is not None:
+            state.persistent.native_image_paths = list(dict.fromkeys(native_images))
+        return tuple(enrichments)
 
 
 @dataclass
@@ -51,8 +68,8 @@ class PreparedInboundMessage:
     event: MessageEvent
     text: str
     redact_pii: bool = False
-    quoted_images: tuple[QuotedImageEnrichment, ...] = ()
-    authored_images: AuthoredImageEnrichment | None = None
+    quoted_images: tuple[ImageEnrichment, ...] = ()
+    authored_images: tuple[ImageEnrichment, ...] = ()
     message_text: str | None = None
     persist_user_message: str | None = None
     persist_user_timestamp: float | None = None
@@ -92,12 +109,7 @@ class PreparedInboundMessage:
     def _retained_image_paths(self, paths: list[str]) -> list[str]:
         current = self.snapshot.reply_image_paths()
         authored = self.event.authored_media().media_urls
-        media_event = getattr(self.snapshot, "media_event", None)
-        current_authored = (
-            media_event(self.event).authored_media().media_urls
-            if callable(media_event)
-            else authored
-        )
+        current_authored = self.snapshot.media_event(self.event).media_urls
         quoted = {image.path for image in self.quoted_images}
         return [
             path
@@ -117,19 +129,12 @@ class PreparedInboundMessage:
 
     def _render(self, runner: Any, timestamps: bool) -> str:
         text = self.text
-        current = self.snapshot.reply_image_paths()
+        authored = self.snapshot.media_event(self.event).media_urls
+        quoted = self.snapshot.reply_image_paths()
         descriptions = [
-            image.text
-            for image in self.quoted_images
-            if image.path in current and image.text
+            *(image.text for image in self.authored_images if image.path in authored and image.text),
+            *(image.text for image in self.quoted_images if image.path in quoted and image.text),
         ]
-        media_event = getattr(self.snapshot, "media_event", None)
-        if self.authored_images is not None and callable(media_event):
-            authored = media_event(self.event).authored_media().media_urls
-            if self.authored_images.text and all(
-                path in authored for path in self.authored_images.paths
-            ):
-                descriptions.insert(0, self.authored_images.text)
         if descriptions:
             text = "\n\n".join([*descriptions, text])
         reply = self.snapshot.reply_event(self.event)

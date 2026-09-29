@@ -108,24 +108,6 @@ def _append_exit_diag(record: Dict[str, Any], home: Optional[Path]) -> None:
         logger.debug("Failed to append unclean-exit record", exc_info=True)
 
 
-def enable_fatal_signal_dump() -> None:
-    """Arm ``faulthandler`` so an uncatchable death (SIGILL/SIGSEGV/SIGBUS/SIGABRT/SIGFPE)
-    leaves the signal name and an all-thread traceback in the gateway log.
-
-    The sentinel can only say a previous life ended *uncleanly*; it cannot say *why*. A
-    native crash runs no Python handler at all, so without this the only evidence is the
-    supervisor's own record (s6-svdt) plus the next boot's respawn-storm warning — a
-    gateway crash-looping on SIGILL looked like a silent respawn storm (#126099). Call
-    once from the gateway entry points; best-effort, never raises, never blocks startup.
-    """
-    try:
-        import faulthandler
-
-        faulthandler.enable(all_threads=True)
-    except Exception:
-        logger.debug("Failed to enable fatal-signal traceback dump", exc_info=True)
-
-
 def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
     """True when ``pid`` is a live process that is the sentinel's incarnation — guards the
     ``--replace`` race: a live matching owner mid-teardown is a handover, not a death.
@@ -275,7 +257,9 @@ def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None
     logger.warning(
         "Previous gateway life (pid=%s, started_at=%s) exited UNCLEANLY (no exit path ran — SIGKILL / OOM / "
         "VM death, or a process kill issued by the agent or one of its descendants, e.g. a pkill/taskkill of "
-        "the host interpreter image; see #113667). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
+        "the host interpreter image; see #113667). A fatal signal (SIGILL/SIGSEGV — an illegal instruction in "
+        "a native dependency, say) also lands here and leaves its traceback in the gateway log or "
+        "gateway_faulthandler.log (#126099). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
         evidence.get("prior_pid"), evidence.get("prior_started_at"), evidence.get("last_heartbeat_at"),
         evidence.get("last_heartbeat_mem"), evidence.get("suspected_oom", False),
     )

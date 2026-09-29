@@ -37,6 +37,41 @@ from typing import Any, Dict, Optional, Tuple
 logger = logging.getLogger("gateway.run")
 
 
+def _open_faulthandler_log(log_dir: Optional[str] = None):
+    """Open (append) ``<log_dir>/gateway_faulthandler.log``, creating the directory."""
+    from gateway.run import get_hermes_home
+
+    directory = log_dir or os.path.join(str(get_hermes_home()), "logs")
+    os.makedirs(directory, exist_ok=True)
+    return open(os.path.join(directory, "gateway_faulthandler.log"), "a", encoding="utf-8")  # windows-footgun: ok (append log writer, not a read)
+
+
+def _enable_faulthandler_or_log_file(log_dir: Optional[str] = None) -> None:
+    """Enable faulthandler for stack dumps on freezes/crashes (#70344). Falls back to a log file
+    when ``sys.stderr`` is None (Windows VBS / pythonw / detached service) — otherwise the gateway
+    would die here and take every adapter offline. See #71671."""
+    try:
+        faulthandler.enable()
+    except (RuntimeError, ValueError, OSError):
+        with _log_suppressed(logging.DEBUG, "faulthandler.enable() unavailable", exc_info=True):
+            faulthandler.enable(file=_open_faulthandler_log(log_dir), all_threads=True)
+
+
+def arm_faulthandler_at_process_entry() -> None:
+    """Arm faulthandler for fatal signals at the gateway process's entry point.
+
+    ``GatewayStartupMixin`` installs the same handler once config resolves (#70344); this covers
+    the window BEFORE it — module imports of C extensions, config load, the startup watchdog —
+    where a native crash (SIGILL/SIGSEGV) would otherwise leave no traceback at all and the next
+    boot's respawn-storm warning would be the only symptom (#126099). Idempotent, best-effort:
+    never raises, never blocks startup.
+    """
+    try:
+        _enable_faulthandler_or_log_file()
+    except (RuntimeError, ValueError, OSError):
+        logger.debug("faulthandler arming at process entry failed", exc_info=True)
+
+
 class GatewayStartupMixin:
     """Startup sequence, resume/restore and handoff methods for GatewayRunner."""
 
@@ -848,22 +883,12 @@ class GatewayStartupMixin:
 
     def _open_faulthandler_log(self):
         """Open (append) ``<log_dir>/gateway_faulthandler.log``, creating the directory."""
-        from gateway.run import get_hermes_home
-        log_dir = getattr(self.config, "log_dir", None) or os.path.join(str(get_hermes_home()), "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        return open(os.path.join(log_dir, "gateway_faulthandler.log"), "a", encoding="utf-8")  # windows-footgun: ok (append log writer, not a read)
+        return _open_faulthandler_log(getattr(self.config, "log_dir", None))
 
     def _start_install_faulthandler(self) -> None:
-        """Enable faulthandler (stderr or a log file) plus the SIGUSR2 stack-dump hook."""
+        """Fatal-signal dumps (#70344, also armed at process entry) plus the SIGUSR2 stack-dump hook."""
         # sys.stderr may be None (Windows VBS / pythonw / detached service): fall back to a log file.
-        try:
-            # Enable faulthandler for stack dumps on freezes/crashes (#70344). Falls back to a log file when
-            # sys.stderr is None (Windows VBS / pythonw / detached service) — otherwise the gateway would
-            # die here and take every adapter offline. See #71671.
-            faulthandler.enable()
-        except (RuntimeError, ValueError, OSError):
-            with _log_suppressed(logging.DEBUG, "faulthandler.enable() unavailable", exc_info=True):
-                faulthandler.enable(file=self._open_faulthandler_log(), all_threads=True)
+        _enable_faulthandler_or_log_file(getattr(self.config, "log_dir", None))
         # SIGUSR2 stack dump to file for service managers that drop stderr; POSIX-only.
         # chain=False: SIGUSR2's default disposition is "terminate", so chaining to it
         # dumps the stacks and then kills the gateway the operator was trying to inspect.

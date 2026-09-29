@@ -92,6 +92,8 @@ class MessageEvent:
     # knows the message was meant for someone else); None means unknown and keeps the visible
     # fallback, like True.
     reply_expected: Optional[bool] = None
+    # Whether the quoted author passed the adapter's authorisation check; None when the adapter
+    # did not check. The reply pointer identifies the author only when this is set.
     reply_to_author_authorized: Optional[bool] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.

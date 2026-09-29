@@ -84,6 +84,25 @@ class TestPlatformConfigRoundtrip:
         assert pc.reply_to_mode == "all" and pc.typing_indicator is False
         assert PlatformConfig.from_dict(pc.to_dict()).extra == pc.extra
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (False, "off"),
+            ("Off", "off"),
+            ("ALL", "all"),
+            (True, "first"),
+            ("threaded", "first"),
+            (None, "first"),
+        ],
+    )
+    def test_reply_to_mode_reads_yaml_values_like_the_platform_bridges(
+        self, raw, expected
+    ):
+        """YAML 1.1 reads a bare ``off`` as False; any other value that is not a mode keeps the default."""
+        assert (
+            PlatformConfig.from_dict({"reply_to_mode": raw}).reply_to_mode == expected
+        )
+
     def test_to_dict_from_dict(self):
         pc = PlatformConfig(
             enabled=True,
@@ -358,8 +377,9 @@ class TestLoadGatewayConfig:
 
         assert os.getenv("SLACK_IGNORED_CHANNELS") == "C0123456789,C0987654321"
 
-
-    def test_typing_status_text_from_nested_platforms_block(self, tmp_path, monkeypatch):
+    def test_typing_status_text_from_nested_platforms_block(
+        self, tmp_path, monkeypatch
+    ):
         """``platforms.slack.typing_status_text`` reaches PlatformConfig via
         _merge_platform_map + the from_dict top-level read."""
         hermes_home = tmp_path / ".hermes"
@@ -568,7 +588,9 @@ class TestLoadGatewayConfig:
         )
 
 
-    def test_non_platform_gateway_keys_not_misparsed_as_platforms(self, tmp_path, monkeypatch):
+    def test_non_platform_gateway_keys_not_misparsed_as_platforms(
+        self, tmp_path, monkeypatch
+    ):
         """Nested-platform discovery must only pick up keys matching the
         Platform enum: ``gateway.streaming`` / ``gateway.timeout`` must not
         be turned into phantom platform entries or break loading."""
@@ -595,7 +617,9 @@ class TestLoadGatewayConfig:
         assert config.platforms[Platform.API_SERVER].enabled is True
 
 
-    def test_group_sessions_per_user_from_nested_gateway_section(self, tmp_path, monkeypatch):
+    def test_group_sessions_per_user_from_nested_gateway_section(
+        self, tmp_path, monkeypatch
+    ):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -638,8 +662,9 @@ class TestLoadGatewayConfig:
 
         assert config.always_log_local is False
 
-
-    def test_unauthorized_dm_behavior_from_nested_gateway_section(self, tmp_path, monkeypatch):
+    def test_unauthorized_dm_behavior_from_nested_gateway_section(
+        self, tmp_path, monkeypatch
+    ):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -675,7 +700,9 @@ class TestLoadGatewayConfig:
         assert Platform.RELAY in config.get_connected_platforms()
 
 
-    def test_relay_env_url_disables_other_messaging_platforms(self, tmp_path, monkeypatch):
+    def test_relay_env_url_disables_other_messaging_platforms(
+        self, tmp_path, monkeypatch
+    ):
         """A GATEWAY_RELAY_URL env stamp means the connector owns all platform
         connections: directly-connected messaging platforms must be disabled,
         even when explicitly enabled in config.yaml, while non-messaging
@@ -822,8 +849,9 @@ class TestLoadGatewayConfig:
         assert relay_cfg is None or relay_cfg.enabled is False
         assert config.platforms[Platform.TELEGRAM].enabled is True
 
-
-    def test_relay_exclusive_sweep_log_levels_and_marker_cleanup(self, tmp_path, monkeypatch, caplog):
+    def test_relay_exclusive_sweep_log_levels_and_marker_cleanup(
+        self, tmp_path, monkeypatch, caplog
+    ):
         """Explicitly-enabled platforms are disabled at WARNING, auto-enabled
         ones at INFO, and the _enabled_explicit marker never survives config
         load."""
@@ -862,8 +890,9 @@ class TestLoadGatewayConfig:
         for pc in config.platforms.values():
             assert "_enabled_explicit" not in (pc.extra or {})
 
-
-    def test_thread_require_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
+    def test_thread_require_mention_yaml_does_not_overwrite_env(
+        self, tmp_path, monkeypatch
+    ):
         """Explicit env var should win over config.yaml (env > yaml precedence)."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -1008,8 +1037,9 @@ class TestLoadGatewayConfig:
         finally:
             set_multiplex_active(False)
 
-
-    def test_top_level_platforms_override_nested_gateway_platforms(self, tmp_path, monkeypatch):
+    def test_top_level_platforms_override_nested_gateway_platforms(
+        self, tmp_path, monkeypatch
+    ):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -1076,8 +1106,9 @@ class TestLoadGatewayConfig:
             "bridged into PlatformConfig.extra by the shared-key loop"
         )
 
-
-    def test_bridges_unauthorized_dm_behavior_from_config_yaml(self, tmp_path, monkeypatch):
+    def test_bridges_unauthorized_dm_behavior_from_config_yaml(
+        self, tmp_path, monkeypatch
+    ):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -1093,10 +1124,14 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.unauthorized_dm_behavior == "ignore"
-        assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+        assert (
+            config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"]
+            == "pair"
+        )
 
-
-    def test_loads_telegram_rich_messages_from_gateway_platform_extra(self, tmp_path, monkeypatch):
+    def test_loads_telegram_rich_messages_from_gateway_platform_extra(
+        self, tmp_path, monkeypatch
+    ):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -1115,8 +1150,9 @@ class TestLoadGatewayConfig:
 
         assert config.platforms[Platform.TELEGRAM].extra["rich_messages"] is False
 
-
-    def test_telegram_proxy_env_takes_precedence_over_config(self, tmp_path, monkeypatch):
+    def test_telegram_proxy_env_takes_precedence_over_config(
+        self, tmp_path, monkeypatch
+    ):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -1220,8 +1256,9 @@ class TestWebhookPortBridging:
         assert wh.extra.get("port") == 8649
         assert wh.extra.get("host") == "0.0.0.0"
 
-
-    def test_root_level_platform_block_adapter_keys_reach_extra(self, tmp_path, monkeypatch):
+    def test_root_level_platform_block_adapter_keys_reach_extra(
+        self, tmp_path, monkeypatch
+    ):
         """A ROOT-level ``webhook:`` block (not under ``platforms:``) is a supported spelling; its
         adapter keys must reach ``extra`` like the nested form, with nested ``extra:`` winning."""
         hermes_home = tmp_path / ".hermes"
@@ -1662,7 +1699,9 @@ class TestTopLevelBlockVsAuthoredExtra:
             data = {}
             load_yaml_layer(home, data)
         if block == {"reply_to_mode": "all"}:
-            assert platform not in data.get("platforms", {})
+            assert data == {
+                "platforms": {platform: {"extra": {}, "reply_to_mode": "all"}}
+            }
             return
         extra = data["platforms"][platform]["extra"]
         expected = {**block.get("extra", {}), **{k: v for k, v in block.items() if k != "extra"}, **authored}

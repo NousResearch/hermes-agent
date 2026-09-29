@@ -53,6 +53,14 @@ class Finding:
     vuln: Vulnerability
 
 
+def _running_agent_version() -> Optional[str]:
+    """Release version of the running tree (install stamp, else git), or None when unknown."""
+    from hermes_cli.version_info import get_version_info
+
+    base = get_version_info().base_version
+    return None if base == "unknown" else base
+
+
 def _discover_venv() -> list[Component]:
     """Every dist installed in the running Python's import path."""
     from importlib.metadata import distributions
@@ -64,6 +72,9 @@ def _discover_venv() -> list[Component]:
         except Exception:
             continue
         version = (dist.version or "").strip()
+        if name.lower().replace("_", "-") == "hermes-agent" and version == "0.0.0":
+            # pyproject stamps 0.0.0 in source trees; 0.0.0 would match every advisory ever filed.
+            version = _running_agent_version() or version
         if name and version:
             out.setdefault((name.lower(), version), Component(name=name, version=version, ecosystem="PyPI", source="venv"))
     return list(out.values())

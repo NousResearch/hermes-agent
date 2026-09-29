@@ -98,6 +98,34 @@ class TestSeverityExtraction:
 # ─── End-to-end orchestration with mocked OSV ─────────────────────────────────
 
 
+class TestVenvDiscovery:
+    """Regression: source/PM installs carry hermes-agent 0.0.0, which matches every advisory."""
+
+    @staticmethod
+    def _dist(name, version):
+        class _D:
+            metadata = {"Name": name}
+        _D.version = version
+        return _D()
+
+    def _versions(self, monkeypatch, base_version):
+        from hermes_cli import version_info
+
+        dists = [self._dist("hermes_agent", "0.0.0"), self._dist("requests", "0.0.0")]
+        monkeypatch.setattr("importlib.metadata.distributions", lambda: dists)
+        info = version_info.VersionInfo(base_version, base_version, None, "abc", None, "build")
+        monkeypatch.setattr(version_info, "get_version_info", lambda: info)
+        return {c.name: c.version for c in sa._discover_venv()}
+
+    def test_placeholder_agent_version_resolves_to_running_release(self, monkeypatch):
+        versions = self._versions(monkeypatch, "0.21.5")
+        assert versions["hermes_agent"] == "0.21.5"
+        assert versions["requests"] == "0.0.0"  # only the agent's own placeholder is rewritten
+
+    def test_unknown_release_keeps_metadata_version(self, monkeypatch):
+        assert self._versions(monkeypatch, "unknown")["hermes_agent"] == "0.0.0"
+
+
 class TestRunAudit:
 
     def test_findings_sorted_by_severity_desc(self, tmp_path: Path):

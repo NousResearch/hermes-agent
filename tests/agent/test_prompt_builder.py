@@ -969,6 +969,25 @@ class TestBuildSkillsSystemPromptConditional:
 
 
 
+    @pytest.mark.parametrize("in_scope, listed", [({"plugin_tool"}, True), (set(), False)])
+    def test_requires_tools_counts_tools_deferred_behind_the_bridge(self, monkeypatch, tmp_path, in_scope, listed):
+        """A skill requiring a plugin tool that tool_search defers stays listed; one whose tool is out of scope stays hidden."""
+        from types import SimpleNamespace
+
+        from agent import system_prompt, tool_executor
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "vault" / "vault-housekeeper"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: vault-housekeeper\ndescription: Housekeeping\nmetadata:\n  hermes:\n"
+            "    requires_tools: [plugin_tool, skill_view]\n---\n"
+        )
+        monkeypatch.setattr(tool_executor, "_tool_search_scoped_names", lambda agent: frozenset(in_scope))
+        agent = SimpleNamespace(valid_tool_names={"skill_view", "tool_search"}, platform="cli")
+
+        assert ("vault-housekeeper" in system_prompt._skills_prompt(agent)) is listed
+
     def test_no_args_shows_all_skills(self, monkeypatch, tmp_path):
         """Backward compat: calling with no args shows everything."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

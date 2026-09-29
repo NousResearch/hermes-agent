@@ -14,6 +14,7 @@ from urllib.parse import quote
 from agent.secret_scope import get_secret
 from gateway.config import PlatformConfig
 from gateway.platforms._shared import send_error
+from plugins.platforms.matrix.delivery import split_thread_target
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
@@ -74,7 +75,9 @@ class _HTTPDelivery:
     async def send(
         self, target: str, message: str, thread_id: str | None
     ) -> dict[str, Any]:
-        room_id = await self.resolve(target)
+        room, suffix_thread = split_thread_target(target)
+        thread_id = thread_id or suffix_thread
+        room_id = await self.resolve(room)
         try:
             await self.request(
                 "GET", f"rooms/{quote(room_id, safe='')}/state/m.room.encryption"

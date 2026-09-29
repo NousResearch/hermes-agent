@@ -17,7 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -233,7 +233,7 @@ def _maybe_mirror_cron_delivery(
         ok = mirror_to_session(
             platform_name, str(chat_id), _cron_mirror_message(job, text),
             source_label="cron", thread_id=thread_id, user_id=user_id, role="user",
-            **({"chat_type": chat_type} if platform_name == "matrix" else {}))
+            **({"chat_type": chat_type} if chat_type else {}))
         if ok:
             logger.info(
                 "Job '%s': mirrored delivery into %s:%s session transcript",
@@ -316,23 +316,14 @@ def _seed_cron_session(
                 chat_type=chat_type,
                 user_id=user_id, user_name=user_name, thread_id=thread_id,
                 scope_id=str(scope_id) if scope_id else None)
-            _entry = None
-            if platform_enum == Platform.MATRIX:
-                participant_isolated = (
-                    dest_source.chat_type != "dm"
-                    and session_store.config.group_sessions_per_user
-                    and (
-                        not dest_source.thread_id
-                        or session_store.config.thread_sessions_per_user
-                    )
-                )
-                if participant_isolated:
-                    _entry = session_store.lookup_by_session_key(
-                        session_store._generate_session_key(dest_source)
-                    )
-                    if _entry is None:
-                        return False
-            if _entry is None:
+            if destination_source is not None and session_store.config.isolates_participant(
+                    dest_source.chat_type, dest_source.thread_id):
+                # A resolved destination seeds only an existing participant session.
+                _entry = session_store.lookup_by_session_key(
+                    session_store._generate_session_key(dest_source))
+                if _entry is None:
+                    return False
+            else:
                 _entry = session_store.get_or_create_session(dest_source)
             seeded_session_id = getattr(_entry, "session_id", None)
     return mirror_to_session(
@@ -355,12 +346,12 @@ def _seed_cron_thread_session(
     text = (mirror_text or "").strip()
     if not text:
         return
-    session_config = getattr(getattr(adapter, "_session_store", None), "config", None)
+    chat_type = "dm" if is_dm else _THREAD_REPLY_CHAT_TYPE.get(platform_name.lower(), "thread")
+    session_store = getattr(adapter, "_session_store", None)
     if (
-        not is_dm
-        and getattr(session_config, "group_sessions_per_user", True) is not False
-        and getattr(session_config, "thread_sessions_per_user", False) is True
-        and not user_id
+        not user_id
+        and session_store is not None
+        and session_store.config.isolates_participant(chat_type, thread_id)
     ):
         logger.warning(
             "Job '%s': thread seed skipped for %s:%s thread=%s without an originating participant",
@@ -371,7 +362,7 @@ def _seed_cron_thread_session(
         ok = _seed_cron_session(
             job, adapter, platform_name, chat_id, text,
             thread_id=str(thread_id),
-            chat_type="dm" if is_dm else _THREAD_REPLY_CHAT_TYPE.get(platform_name.lower(), "thread"),
+            chat_type=chat_type,
             user_id=user_id or "system:cron", user_name=None if user_id else "Cron",
             chat_name=chat_name, scope_id=scope_id,
             discord_keys_on_thread=True, destination_source=destination_source)
@@ -635,18 +626,10 @@ def _origin_delivery_thread(origin: dict):
 
 def _home_target(platform_name: str, chat_id: str, resolved_from: Optional[str] = None) -> dict:
     """Target dict for a platform's configured home channel (+ optional mirror provenance)."""
-    from tools.send_message_targets import _parse_target_ref
-
-    parsed_chat_id, thread_id, is_explicit = _parse_target_ref(platform_name.lower(), chat_id)
-    if is_explicit and parsed_chat_id:
-        chat_id = parsed_chat_id
-    if thread_id is None:
-        thread_id = _get_home_target_thread_id(platform_name)
-
     target = {
         "platform": platform_name,
         "chat_id": chat_id,
-        "thread_id": thread_id}
+        "thread_id": _get_home_target_thread_id(platform_name)}
     if resolved_from:
         target["_resolved_from"] = resolved_from
     return target
@@ -1518,7 +1501,7 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
     if t.origin_target and t.origin.get("scope_id"):
         route_metadata.setdefault("scope_id", str(t.origin["scope_id"]))
         media_metadata.setdefault("scope_id", str(t.origin["scope_id"]))
-    if t.original_chat_id and t.original_chat_id != t.chat_id:
+    if t.resolved_source is not None:
         route_metadata["_original_target"] = t.original_chat_id
         media_metadata["_original_target"] = t.original_chat_id
     return route_thread_id, route_metadata, media_metadata
@@ -1606,8 +1589,9 @@ def _live_send_text(
 
 
 def _live_send_media(
-    t: _TargetDelivery, media_metadata: dict, media_files: list, delivery_errors: list) -> bool:
-    """Send extracted media as native attachments with the same routing as the text send."""
+    t: _TargetDelivery, media_metadata: dict, media_files: list, media_errors: list) -> list:
+    """Send extracted media as native attachments with the same routing as the text send. Each
+    file is sent on its own so the attachments that failed are known; they are returned."""
     routed_media_metadata = dict(media_metadata or {})
     if t.is_relay:
         routed_media_metadata["_relay_logical_platform"] = t.platform.value
@@ -1617,14 +1601,41 @@ def _live_send_media(
                 routed_media_metadata["user_id"] = logical_home.user_id
             if logical_home.scope_id:
                 routed_media_metadata["scope_id"] = logical_home.scope_id
-    _media_errors = _send_media_via_adapter(
-        t.runtime_adapter, t.chat_id, media_files, routed_media_metadata or None, t.loop, t.job,
-        platform=t.platform,
-    )
-    # Surface per-file failures into run status: text delivered but attachment lost is not ok.
-    for _me in _media_errors:
-        delivery_errors.append(f"{_me} (target {t.where})")
-    return not _media_errors
+    undelivered = []
+    for media in media_files:
+        errors = _send_media_via_adapter(
+            t.runtime_adapter, t.chat_id, [media], routed_media_metadata or None, t.loop, t.job,
+            platform=t.platform,
+        )
+        if errors:
+            undelivered.append(media)
+        media_errors.extend(f"{error} (target {t.where})" for error in errors)
+    return undelivered
+
+
+def _resolved_destination_unchanged(t: _TargetDelivery) -> bool:
+    """Whether the resolved destination still has the chat type it had before sending. The
+    seeds and the mirror use that chat type, so a changed or unconfirmed one skips them."""
+    from cron.scheduler_delivery_destination import resolve_live_destination
+
+    source = t.resolved_source
+    reason = None
+    if source.chat_type == "unknown":
+        reason = "the destination's chat type is unconfirmed"
+    else:
+        try:
+            current = resolve_live_destination(
+                t.transport, t.platform, t.chat_id, t.thread_id, source.to_dict(), t.loop,
+                refresh=True,
+            )
+        except Exception as exc:
+            reason = f"destination revalidation failed: {exc}"
+        else:
+            if current is None or current.source.chat_type != source.chat_type:
+                reason = "the destination's chat type changed during delivery"
+    if reason:
+        logger.warning("Job '%s': continuation skipped for %s: %s", t.job["id"], t.where, reason)
+    return reason is None
 
 
 def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> None:
@@ -1632,24 +1643,17 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
     Thread seeding is deferred here so open-succeeds/deliver-fails never seeds an unseen brief."""
     job = t.job
     origin = t.origin
-    if t.platform_name == "matrix":
-        from cron.scheduler_delivery_destination import resolve_live_destination
-
-        source = t.resolved_source
-        if source is None or source.chat_type not in {"dm", "group"}:
-            return
-        current = resolve_live_destination(
-            t.transport, t.platform, t.chat_id, t.thread_id, source.to_dict(), t.loop,
-        )
-        if current is None or current.source.chat_type != source.chat_type:
-            return
+    seed_thread_id = t.opened_thread_id or (
+        t.thread_id if t.resolved_source is not None and t.mirror_this_target else None
+    )
+    bookkeeping = t.mirror_text.strip() and (
+        seed_thread_id or t.mirror_this_target or (t.in_channel_surface and t.inchannel_continuable))
+    if bookkeeping and t.resolved_source is not None and not _resolved_destination_unchanged(t):
+        return
     seed_kwargs = dict(
         chat_name=origin.get("chat_name"), is_dm=t.is_dm_target, scope_id=origin.get("scope_id"))
     thread_seeded = False
     inchannel_seeded = False
-    seed_thread_id = t.opened_thread_id or (
-        t.thread_id if t.resolved_source is not None and t.mirror_this_target else None
-    )
     if seed_thread_id:
         _seed_cron_thread_session(
             job, t.runtime_adapter, t.platform_name, t.chat_id, seed_thread_id, t.mirror_text,
@@ -1691,16 +1695,26 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
         chat_type=t.resolved_source.chat_type if t.resolved_source is not None else None)
 
 
+@dataclass
+class _LiveDelivery:
+    """Outcome of the live lane for one target. ``unsent_media`` lists the attachments of a
+    media-only output that the adapter did not accept; the standalone lane sends only those."""
+
+    delivered: bool
+    unsent_media: list = field(default_factory=list)
+
+
 def _deliver_via_live_adapter(
     t: _TargetDelivery, cleaned_text: str, media_files: list, *, target_errors: list,
     delivery_errors: list, unverified_targets: list,
-) -> bool:
-    """Deliver one target via the live gateway adapter; True once delivered. ``target_errors`` =
+) -> _LiveDelivery:
+    """Deliver one target via the live gateway adapter. ``target_errors`` =
     this lane's soft failures (surfaced only if standalone also fails); ``delivery_errors`` =
     partial failures (media, thread fallback) that surface even on success."""
     job = t.job
     route_thread_id, route_metadata, media_metadata = _live_route_metadata(t)
     delivered = False
+    unsent_media: list = []
     try:
         # Send cleaned text (MEDIA tags stripped) through the gateway's DeliveryRouter so it gets
         # the same platform routing as live messages (Telegram's three-mode topic routing).
@@ -1728,9 +1742,13 @@ def _deliver_via_live_adapter(
         # payload is already assumed delivered (#38922). Record the skipped attachments so the drop is
         # visible rather than silently lost.
         if adapter_ok and not timed_out and media_files:
-            media_ok = _live_send_media(t, media_metadata, media_files, delivery_errors)
+            # Without text, the standalone lane retries the attachments that failed here, so
+            # their errors count only if that retry fails too.
+            failed_media = _live_send_media(
+                t, media_metadata, media_files, delivery_errors if text_to_send else target_errors)
             if not text_to_send:
-                adapter_ok = media_ok
+                unsent_media = failed_media
+                adapter_ok = len(failed_media) < len(media_files)
         elif timed_out and media_files:
             _note_target_error(
                 job,
@@ -1756,7 +1774,7 @@ def _deliver_via_live_adapter(
         if not any(err_msg in err for err in target_errors):
             target_errors.append(err_msg)
         _warn_live_lane_failure(job, err_msg, t.is_relay)
-    return delivered
+    return _LiveDelivery(delivered, unsent_media)
 
 
 def _standalone_send(
@@ -1884,11 +1902,10 @@ def _deliver_standalone(
         msg = f"delivery warning: {_w} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], msg)
         delivery_errors.append(msg)
-    if t.platform_name == "matrix":
-        if not isinstance(result, dict) or result.get("success") is not True:
-            return
-        t.chat_id = result.get("chat_id", t.chat_id)
-        t.thread_id = result.get("thread_id", t.thread_id)
+    from gateway.delivery import SentDestination
+    sent = SentDestination.from_result(result, t.chat_id, t.thread_id)
+    if sent.chat_type is not None:
+        t.chat_id, t.thread_id = sent.chat_id, sent.thread_id
         t.origin_target = (
             _target_matches_origin(t.origin, t.platform_name, t.chat_id, t.thread_id)
             or _target_matches_origin(t.origin, t.platform_name, t.original_chat_id or t.chat_id, t.thread_id)
@@ -1901,8 +1918,7 @@ def _deliver_standalone(
     _maybe_mirror_cron_delivery(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
         user_id=t.origin_user_id,
-        enabled=t.mirror_this_target,
-        chat_type=result.get("chat_type") if isinstance(result, dict) else None)
+        enabled=t.mirror_this_target, chat_type=sent.chat_type)
 
 
 def _prepare_target_delivery(
@@ -2015,10 +2031,7 @@ def _prepare_target_delivery(
     opened_thread_id: Optional[str] = None
     if (
         mirror_this_target
-        and (
-            platform_name != "matrix"
-            or resolved_source is not None and resolved_source.chat_type in {"dm", "group"}
-        )
+        and (resolved_source is None or resolved_source.chat_type != "unknown")
         and not in_channel_surface
         and live_adapter_ready
         and not thread_id  # never override an explicit origin thread/topic
@@ -2196,14 +2209,16 @@ def _deliver_result(
         if t is None:
             continue
         target_errors: list = [t.resolution_error] if t.resolution_error else []
-        delivered = t.live_adapter_ready and _deliver_via_live_adapter(
+        live = _deliver_via_live_adapter(
             t, cleaned_delivery_content, media_files,
             target_errors=target_errors, delivery_errors=delivery_errors,
             unverified_targets=unverified_targets,
-        )
-        if not delivered:
+        ) if t.live_adapter_ready else _LiveDelivery(delivered=False)
+        if not live.delivered:
             _deliver_standalone(
                 t, cleaned_delivery_content, media_files, target_errors, delivery_errors)
+        elif live.unsent_media:
+            _deliver_standalone(t, "", live.unsent_media, target_errors, delivery_errors)
 
     # Filter-time drops apply to every target; report them once. A run whose every target was
     # suppressed sent nothing, so there is no drop to report.

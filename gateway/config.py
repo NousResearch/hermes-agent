@@ -671,6 +671,13 @@ class GatewayConfig:
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         return self.platforms[platform].home_channel if self.platforms.get(platform) else None
 
+    def isolates_participant(self, chat_type: str, thread_id: Optional[str]) -> bool:
+        """Whether this policy puts the participant in a non-DM chat's session key."""
+        from gateway.session import isolates_participant
+        return isolates_participant(
+            chat_type, thread_id, group_sessions_per_user=self.group_sessions_per_user,
+            thread_sessions_per_user=self.thread_sessions_per_user)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "platforms": {p.value: c.to_dict() for p, c in self.platforms.items()},

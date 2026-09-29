@@ -122,8 +122,7 @@ def test_alias_send_mirrors_the_canonical_participant_thread(
             if alice is not None:
                 assert adapter._session_store._db.get_session(alice.session_id)["system_prompt"] == "Cached system prefix"
             if rejected:
-                original_target = f"{alias}/$root" if target_kind == "home" else target
-                assert original_target in result["error"]
+                assert f"{alias}/$root" in result["error"]
                 assert ("send rejected" if payload_kind == "text" else "upload rejected") in result["error"]
                 if alice is not None:
                     assert adapter._session_store.load_transcript(alice.session_id) == before

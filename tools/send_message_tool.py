@@ -234,20 +234,10 @@ def _handle_send(args):
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files, dropped=media_dropped)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
     used_home_channel = not chat_id
-    home_target = None
     if used_home_channel:
         chat_id, err = _home_chat_id(config, platform, platform_name)
         if err:
             return tool_error(err)
-        if platform_name == "matrix":
-            home_target = chat_id
-            from tools.send_message_targets import _parse_target_ref
-
-            parsed_chat_id, parsed_thread_id, explicit = _parse_target_ref(
-                platform_name, chat_id
-            )
-            if explicit:
-                chat_id, thread_id = parsed_chat_id, parsed_thread_id
     if duplicate_skip := _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id):
         return json.dumps(duplicate_skip)
     # Slack: resolve user targets to DM channel IDs before sending. _parse_target_ref emits internal
@@ -284,13 +274,12 @@ def _handle_send(args):
                                               media_files=media_files, force_document=force_document_attachments,
                                               **handler_args))
         if isinstance(result, dict) and result.get("success"):
-            if platform_name == "matrix":
-                chat_id = result.get("chat_id", chat_id)
-                thread_id = result.get("thread_id", thread_id)
+            from gateway.delivery import SentDestination
+            sent = SentDestination.from_result(result, chat_id, thread_id)
             if used_home_channel:
-                result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
-            mirror_kwargs = {"chat_type": result.get("chat_type")} if platform_name == "matrix" else {}
-            if mirror_text and _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id, **mirror_kwargs):
+                result["note"] = f"Sent to {platform_name} home channel (chat_id: {sent.chat_id})"
+            if mirror_text and _mirror_sent_message(
+                    platform_name, sent.chat_id, mirror_text, sent.thread_id, chat_type=sent.chat_type):
                 result["mirrored"] = True
             if media_dropped:
                 # The text went out but an attachment the caller asked for did not: a script reading
@@ -302,13 +291,9 @@ def _handle_send(args):
         if isinstance(result, dict) and media_dropped:
             result["media_dropped"] = media_dropped
         if isinstance(result, dict) and "error" in result:
-            if platform_name == "matrix":
-                result["error"] = f"Target '{home_target or target}': {result['error']}"
             result["error"] = _sanitize_error_text(result["error"])
         return json.dumps(result)
     except Exception as e:
-        if platform_name == "matrix":
-            return json.dumps(_error(f"Send to '{home_target or target}' failed: {e}"))
         return json.dumps(_error(f"Send failed: {e}"))
 
 
@@ -443,7 +428,7 @@ def _mirror_sent_message(platform_name, chat_id, mirror_text, thread_id, *, chat
             platform_name, chat_id, mirror_text, thread_id=thread_id,
             source_label=get_session_env("HERMES_SESSION_PLATFORM", "cli"),
             user_id=get_session_env("HERMES_SESSION_USER_ID", "") or None,
-            **({"chat_type": chat_type} if platform_name == "matrix" else {})))
+            **({"chat_type": chat_type} if chat_type else {})))
     except Exception:
         return False
 

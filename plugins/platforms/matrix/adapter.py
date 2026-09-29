@@ -1488,10 +1488,10 @@ class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
             return SendResult(success=True)
         target = (metadata or {}).get("_original_target", chat_id)
         try:
-            chat_id = await self._resolve_send_target(chat_id)
-            await self._check_room_encryption(chat_id)
+            destination = await self._resolve_send_destination(chat_id, metadata, upload=False)
         except Exception as exc:
             return SendResult(success=False, error=f"Matrix target '{target}': {exc}")
+        chat_id, metadata = destination.room_id, destination.metadata
         last_event_id = None
         for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
             msg_content = self._build_text_message_content(chunk)
@@ -1878,13 +1878,13 @@ class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
             return self._media_too_large(len(data))
         target = (metadata or {}).get("_original_target", room_id)
         try:
-            room_id = await self._resolve_send_target(room_id)
-            encrypted = await self._check_room_encryption(room_id)
+            destination = await self._resolve_send_destination(room_id, metadata, upload=True)
         except Exception as exc:
             return SendResult(success=False, error=f"Matrix target '{target}': {exc}")
+        room_id, metadata = destination.room_id, destination.metadata
         upload_data = data
         encrypted_file = None
-        if encrypted:
+        if destination.encrypted:
             try:
                 from mautrix.crypto.attachments import encrypt_attachment
                 upload_data, encrypted_file = encrypt_attachment(data)
@@ -1912,7 +1912,8 @@ class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
             if audio_metadata:
                 msg_content["org.matrix.msc1767.audio"] = audio_metadata
         self._apply_relation_metadata(room_id, msg_content, reply_to=reply_to, metadata=metadata)
-        return await self._send_content_event(room_id, msg_content, original_target=target)
+        return await self._send_content_event(
+            room_id, msg_content, original_target=target, verify_encryption=destination.delivery)
 
     def _media_too_large(self, size: int) -> SendResult:
         return SendResult(
@@ -1920,10 +1921,13 @@ class MatrixAdapter(MatrixDeliveryMixin, BasePlatformAdapter):
 
     async def _send_content_event(
         self, room_id: str, msg_content: Dict[str, Any], *, original_target: Optional[str] = None,
+        verify_encryption: bool = False,
     ) -> SendResult:
-        """Send a prebuilt m.room.message payload, mapping exceptions to SendResult."""
+        """Send a prebuilt m.room.message payload, mapping exceptions to SendResult. Encryption
+        may have started during an upload, so the room's state is read again before sending."""
         try:
-            encrypted = await self._check_room_encryption(room_id)
+            encrypted = (await self._check_room_encryption(room_id) if verify_encryption
+                         else await self._synced_room_encryption(room_id))
             if encrypted and "url" in msg_content:
                 raise ValueError("Room encryption changed during upload; plaintext attachment was not sent")
             event_id = await asyncio.wait_for(

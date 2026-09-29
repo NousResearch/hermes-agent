@@ -41,10 +41,10 @@ async def test_alias_reaches_connected_native_adapter(monkeypatch, token):
         "chat_id": alias,
         "message_id": "$sent",
         "thread_id": "$root",
-        "chat_type": "dm",
+        "chat_type": "unknown",
     }
     adapter.send.assert_awaited_once_with(
-        alias, "report", metadata={"thread_id": "$root"}
+        alias, "report", metadata={"thread_id": "$root", "_original_target": f"{alias}/$root"}
     )
     adapter.disconnect.assert_awaited_once()
 
@@ -121,6 +121,59 @@ class _MissingEncryption(Exception):
     errcode = "M_NOT_FOUND"
 
 
+@pytest.mark.parametrize("phase", ["resolution", "send", "revalidation"])
+def test_native_send_keeps_an_accepted_receipt_through_cancellation(phase):
+    """Caller cancellation stops a Matrix send before it starts. Once the send starts, the
+    send and its post-send check finish, so an accepted event is reported as sent."""
+    from gateway.session_identity import replace_source
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class FakeAdapter:
+        gateway_runner = None
+
+        def __init__(self):
+            self.resolutions = 0
+            self.sent = []
+
+        async def resolve_delivery_target(self, source, *, refresh=False):
+            self.resolutions += 1
+            if (phase, self.resolutions) in {("resolution", 1), ("revalidation", 2)}:
+                started.set()
+                await release.wait()
+            return replace_source(source, chat_type="group")
+
+        async def send(self, chat_id, content, metadata=None):
+            if phase == "send":
+                started.set()
+                await release.wait()
+            self.sent.append(chat_id)
+            return SendResult(success=True, message_id="$accepted")
+
+    async def scenario():
+        adapter = FakeAdapter()
+        task = asyncio.ensure_future(
+            senders._matrix_send_core(adapter, "!room:example.org", "hello", [], None)
+        )
+        await started.wait()
+        task.cancel()
+        release.set()
+        try:
+            result = await task
+        except asyncio.CancelledError:
+            result = "cancelled"
+        return result, adapter.sent
+
+    accepted = {
+        "success": True, "platform": "matrix", "chat_id": "!room:example.org",
+        "message_id": "$accepted", "chat_type": "group",
+    }
+    assert asyncio.run(scenario()) == (
+        ("cancelled", []) if phase == "resolution" else (accepted, ["!room:example.org"])
+    )
+
+
 def test_send_matrix_via_adapter_forwards_alias_after_connect():
     calls = []
 
@@ -160,11 +213,11 @@ def test_send_matrix_via_adapter_forwards_alias_after_connect():
         "platform": "matrix",
         "chat_id": "#general:example.com",
         "message_id": "$text",
-        "chat_type": "dm",
+        "chat_type": "unknown",
     }
     assert calls == [
         ("connect",),
-        ("send", "#general:example.com", "hello", None),
+        ("send", "#general:example.com", "hello", {"_original_target": "#general:example.com"}),
         ("disconnect",),
     ]
 

@@ -145,6 +145,11 @@ def _html_pre(command: str) -> str:
     return f"<pre>{html.escape(str(command or ''))}</pre>"
 
 
+def _html_line(line: str) -> str:
+    """Escape a catalog line for HTML and render its Markdown code spans as ``<code>``."""
+    return re.sub(r"`([^`]+)`", r"<code>\1</code>", html.escape(line))
+
+
 def _details_block(*, summary_label: str, inner_html: str) -> str:
     return (
         f"<details><summary>{html.escape(summary_label)}</summary>"
@@ -230,8 +235,8 @@ def format_pending_expanded(
         f"{html.escape(reason_label)}: {html.escape(reason)}</p>"
         f"{_html_pre(redacted)}"
         f"{advisory_html}"
-        "<p>" + "<br/>".join(html.escape(line) for line in scope) + "</p>"
-        "<p>" + "<br/>".join(html.escape(line) for line in reactions) + "</p>"
+        "<p>" + "<br/>".join(_html_line(line) for line in scope) + "</p>"
+        "<p>" + "<br/>".join(_html_line(line) for line in reactions) + "</p>"
     )
     return text, html_body
 

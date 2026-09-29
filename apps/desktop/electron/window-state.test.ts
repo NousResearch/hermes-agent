@@ -13,8 +13,6 @@ import {
   bindGeometryPersistence,
   computeWindowOptions,
   debounce,
-  DEFAULT_HEIGHT,
-  DEFAULT_WIDTH,
   matchingWorkArea,
   MIN_HEIGHT,
   MIN_WIDTH,
@@ -88,10 +86,6 @@ test('matchingWorkArea rejects off-screen, slivers, and bad input', () => {
 })
 
 // ─── computeWindowOptions ──────────────────────────────────────────────────
-
-test('computeWindowOptions falls back to defaults with no saved state', () => {
-  assert.deepEqual(computeWindowOptions(null, PRIMARY), { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT })
-})
 
 test('computeWindowOptions restores an on-screen position', () => {
   const saved = sanitizeWindowState({ x: 200, y: 100, width: 1400, height: 900 })

@@ -26,6 +26,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from agent.outbound_webhooks import WebhookTarget, _build_delivery
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
 from gateway.platforms.webhook import (
@@ -298,6 +299,30 @@ class TestValidateSignature:
         req_partial = _mock_request(headers={"webhook-id": "gl_2", "webhook-timestamp": str(int(time.time())),
                                              "webhook-signature": "v1,AAAA"})
         assert adapter._validate_signature(req_partial, b"{}", "legacy-token") is False
+
+    def test_hermes_outbound_signature_round_trip_accepts(self):
+        """A delivery signed by agent/outbound_webhooks.py (X-Hermes-Signature-256) validates on the
+        inbound adapter, so one Hermes can wake another as the hooks docs describe."""
+        adapter = _make_adapter()
+        body = b'{"hook_event_name": "post_tool_call", "delivery_id": "d-1"}'
+        secret = "shared-hermes-secret"
+        target = WebhookTarget(url="http://peer:8644/webhooks/peer", events=["post_tool_call"], secret=secret)
+        delivery = _build_delivery("post_tool_call", target, body, "d-1")
+
+        req = _mock_request(headers=delivery["headers"])
+
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_hermes_outbound_signature_wrong_secret_rejects(self):
+        """The Hermes header takes the same fail-closed path as X-Hub-Signature-256."""
+        adapter = _make_adapter()
+        body = b'{"hook_event_name": "post_tool_call"}'
+        target = WebhookTarget(url="http://peer:8644/webhooks/peer", events=["post_tool_call"], secret="sender-secret")
+        delivery = _build_delivery("post_tool_call", target, body, "d-2")
+
+        req = _mock_request(headers=delivery["headers"])
+
+        assert adapter._validate_signature(req, body, "receiver-secret") is False
 
 
 # ===================================================================

@@ -2508,12 +2508,17 @@ def _read_main_model_for_aux() -> str:
 
 
 def _read_main_api_key_if_same_host(aux_base_url: str) -> str:
-    """Main api_key only when *aux_base_url* shares the main base_url's host.
+    """Main api_key only when *aux_base_url* shares the main base_url's origin.
 
     Unconditional inheritance would leak the credential to any misconfigured host; mismatch keeps ``no-key-required`` → 401.
-    """
-    aux_host = base_url_hostname(aux_base_url)
-    if not aux_host or aux_host != base_url_hostname(_read_main_base_url()):
+    Origin — scheme, host and effective port — not just hostname (#126104): an
+    ``http://`` or different-port endpoint on the same host is a different trust
+    boundary, and handing it the main bearer key would authorise an HTTPS→HTTP
+    downgrade or an unrelated service on that host. Same comparison
+    ``hermes_cli/model_switch.py::_may_reuse_session_credential`` makes for
+    session credentials."""
+    aux_origin = base_url_origin(aux_base_url)
+    if aux_origin == ("", "", 0) or aux_origin != base_url_origin(_read_main_base_url()):
         return ""
     return _read_main_api_key()
 

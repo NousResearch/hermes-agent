@@ -36,7 +36,7 @@ jobs:
           EVENT_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          [ "$REPOSITORY" = 'NousResearch/hermes-agent' ]
+          [ "$REPOSITORY" = 'ethernet8023/hermes-agent' ]
           data=$(gh api "repos/$REPOSITORY/pulls/$NUMBER")
           sha=$(jq -r --arg repo "$REPOSITORY" 'select(.state == "open" and .head.repo.full_name == $repo) | .head.sha' <<< "$data")
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]]

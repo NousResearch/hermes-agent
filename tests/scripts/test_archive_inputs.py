@@ -307,13 +307,13 @@ def test_gh_cli_release_is_non_latest_and_reads_paginated_assets(tmp_path):
     calls = []
     def run(args, **kwargs):
         calls.append(args)
-        if args[1:3] == ["api", "repos/NousResearch/hermes-agent/releases/tags/inputs-a"]:
+        if args[1:3] == ["api", "repos/ethernet8023/hermes-agent/releases/tags/inputs-a"]:
             return subprocess.CompletedProcess(args, 0, '{"id": 12}', "")
         if args[1:3] == ["api", "--paginate"]:
             return subprocess.CompletedProcess(args, 0, '[[{"name": "a", "state": "uploaded", "size": 2}]]', "")
         return subprocess.CompletedProcess(args, 0, "", "")
 
-    api = inputs.GhCli("NousResearch/hermes-agent", run=run)
+    api = inputs.GhCli("ethernet8023/hermes-agent", run=run)
     assert api.release_assets("inputs-a") == [{"name": "a", "state": "uploaded", "size": 2}]
     api.create_release("inputs-a")
     api.upload("inputs-a", tmp_path / "a")

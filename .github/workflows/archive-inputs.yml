@@ -23,7 +23,7 @@ permissions:
 jobs:
   archive-inputs:
     name: Preserve every pinned HTTP input
-    if: github.repository == 'NousResearch/hermes-agent' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+    if: github.repository == 'ethernet8023/hermes-agent' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
     runs-on: ubuntu-24.04
     environment: release-signing
     timeout-minutes: 60

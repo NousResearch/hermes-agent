@@ -111,7 +111,7 @@ def test_publication_requires_current_head_review_by_repository_writer(monkeypat
 
     monkeypatch.setattr(prepared_tools, "_run", response)
     approved = lambda: prepared_tools._approved_head(
-        "NousResearch/hermes-agent", 1, sha, "pr-author")
+        "ethernet8023/hermes-agent", 1, sha, "pr-author")
     assert not approved()
     reviews.append({"user": {"login": "maintainer"}, "state": "APPROVED", "commit_id": sha})
     assert approved()
@@ -206,16 +206,16 @@ def test_publisher_bot_commit_uses_git_objects_not_pr_checkout(tmp_path, monkeyp
     original_archive = (directory / filename).read_bytes()
     (directory / filename).write_bytes(original_archive + b"tamper")
     with pytest.raises(ValueError, match="tampered archive"):
-        prepared_tools.publish(receipts, "NousResearch/hermes-agent", 1, head, mirror=mirror)
+        prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, head, mirror=mirror)
     assert not mirror.objects
     assert git("ls-remote", "origin", "refs/heads/feature/prepared").split()[0] == head
     (directory / filename).write_bytes(original_archive)
     monkeypatch.setattr(prepared_tools, "_approved_head", lambda *_: False)
     with pytest.raises(ValueError, match="approve the exact PR head"):
-        prepared_tools.publish(receipts, "NousResearch/hermes-agent", 1, head, mirror=mirror)
+        prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, head, mirror=mirror)
     assert not mirror.objects
     monkeypatch.setattr(prepared_tools, "_approved_head", lambda *_: True)
-    commit = prepared_tools.publish(receipts, "NousResearch/hermes-agent", 1, head, mirror=mirror)
+    commit = prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, head, mirror=mirror)
     assert git("rev-parse", "HEAD") == trusted_sha
     assert git("rev-parse", f"{commit}^") == head
     assert git("ls-remote", "origin", "refs/heads/feature/prepared").split()[0] == commit
@@ -226,5 +226,5 @@ def test_publisher_bot_commit_uses_git_objects_not_pr_checkout(tmp_path, monkeyp
     assert f'PreparedDigest = "{git_pin["digest"]}"' in generated
     assert generated != git("show", f"{head}:scripts/install.ps1")
     with pytest.raises(ValueError, match="branch moved"):
-        prepared_tools.publish(receipts, "NousResearch/hermes-agent", 1, head, mirror=mirror)
-    assert prepared_tools.publish(receipts, "NousResearch/hermes-agent", 1, commit, mirror=mirror) == commit
+        prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, head, mirror=mirror)
+    assert prepared_tools.publish(receipts, "ethernet8023/hermes-agent", 1, commit, mirror=mirror) == commit

@@ -552,9 +552,10 @@ launchers, and invokes native packaging. Maintainers can read
 
 ## Pinned artifact sources
 
-PM fetches a pinned artifact from the public Hermes Agent GitHub release first,
-then its locked upstream URL, then the content-addressed R2 archive. Release
-assets are named by the full SHA-256 digest under a release tag derived from its
+PM fetches a pinned artifact from the `ethernet8023/hermes-agent` fork's public
+GitHub input release first (the current staging destination), then its locked
+upstream URL, then the content-addressed R2 archive. Release assets are named
+by the full SHA-256 digest under a release tag derived from its
 first hex character (`inputs-<hex>`); `pm/artifact-mirror.json` defines the
 repository and tag prefix. A user-configured npm registry remains first for npm
 tarballs, ahead of the release, official registry, and R2 archive. These source

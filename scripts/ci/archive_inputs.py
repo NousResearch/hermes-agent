@@ -309,7 +309,7 @@ class Archive:
 
 
 def archive_from_env(env: Mapping[str, str] = os.environ) -> Archive:
-    """Publish only on the official repo; keep R2 optional for GitHub-only jobs."""
+    """Publish only from the configured mirror repo; R2 stays optional."""
     mirrors: list[Mirror] = []
     repository = github_repository()
     if env.get("GH_TOKEN") and env.get("GITHUB_REPOSITORY", "").lower() == repository.lower():

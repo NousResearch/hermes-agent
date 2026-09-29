@@ -338,6 +338,13 @@ def _register_session_cwd(session: dict | None) -> None:
     # Do not reinitialize memory providers or invalidate the cached system prompt.
     if hasattr(agent := session.get("agent"), "session_cwd"):
         agent.session_cwd = session.get("cwd") or None
+    # A session that adopted a real workspace out of a home-fallback cwd (#76902: the
+    # packaged Desktop pins $HOME when no default project dir is configured) resumes
+    # subdirectory-hint discovery anchored to that project. No prompt/system-prompt
+    # state changes — the tracker only scopes future tool-result hints.
+    hints = getattr(agent, "_subdirectory_hints", None) if session.get("cwd") else None
+    if hints is not None and hasattr(hints, "rebind_working_dir"):
+        hints.rebind_working_dir(str(session.get("cwd")))
     with contextlib.suppress(Exception):
         from tools.terminal_tool import register_task_env_overrides
         cwd, cwd_source = _terminal_task_cwd_with_source(session)

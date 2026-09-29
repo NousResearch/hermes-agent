@@ -941,14 +941,30 @@ class GatewayStartupMixin:
                 logger.warning("Run `hermes doctor` on the gateway host for full remediation steps.")
 
     def _start_log_retired_session_reset(self) -> None:
-        """Warn per served profile whose config still declares an idle/daily ``session_reset``,
-        unless the plugin that honours it is enabled. Never raises."""
+        """Warn per served profile about retired timer policies. Never raises.
+
+        The reset plugin may honour YAML, but does not consume legacy gateway.json policies.
+        """
         with _log_suppressed(logging.DEBUG, "retired session_reset check failed", exc_info=True):
-            from gateway.config_loader import read_yaml_layers
+            from gateway.config_loader import load_legacy_gateway_json, read_yaml_layers
             from hermes_cli.profiles import profiles_to_serve
-            from hermes_cli.session_reset_retirement import format_notice, reset_plugin_enabled, retired_reset_policy
-            hits = [(name, found) for name, home in profiles_to_serve(bool(self.config.multiplex_profiles))
-                    if (found := retired_reset_policy(read_yaml_layers(home)))]
+            from hermes_cli.session_reset_retirement import (
+                format_notice, reset_plugin_enabled, retired_legacy_reset_policies, retired_reset_policy,
+            )
+            hits = []
+            for name, home in profiles_to_serve(bool(self.config.multiplex_profiles)):
+                with _log_suppressed(logging.DEBUG, "retired session_reset profile check failed", exc_info=True):
+                    for path, mode in retired_legacy_reset_policies(load_legacy_gateway_json(home)):
+                        logger.warning(
+                            "Profile %s: %s.mode: %s is no longer applied. Core no longer rotates "
+                            "conversations on timers; the reset plugin does not read gateway.json. "
+                            "Review the retired policy and configure an explicit replacement; simply "
+                            "enabling the reset plugin does not restore this legacy policy.",
+                            name, path, mode,
+                        )
+                    found = retired_reset_policy(read_yaml_layers(home))
+                    if found:
+                        hits.append((name, found))
             if hits and not reset_plugin_enabled():
                 for name, (path, mode) in hits:
                     logger.warning("Profile %s: %s", name, format_notice(path, mode))

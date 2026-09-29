@@ -33,6 +33,22 @@ def retired_reset_policy(config: Any) -> Optional[Tuple[str, str]]:
     return None
 
 
+def retired_legacy_reset_policies(config: Any) -> list[Tuple[str, str]]:
+    """Timed policies in the retired gateway.json schema (not the plugin's YAML schema)."""
+    if not isinstance(config, dict):
+        return []
+    blocks = [("default_reset_policy", config.get("default_reset_policy"))]
+    for key in ("reset_by_platform", "reset_by_type"):
+        overrides = config.get(key)
+        if isinstance(overrides, dict):
+            blocks.extend((f"{key}.{name}", block) for name, block in overrides.items())
+    return [
+        (f"gateway.json:{path}", str(block["mode"]).strip().lower())
+        for path, block in blocks
+        if isinstance(block, dict) and str(block.get("mode") or "").strip().lower() in _TIMED_MODES
+    ]
+
+
 def reset_plugin_enabled() -> bool:
     """Whether the restoring plugin is installed and enabled in this process's plugin set."""
     from hermes_cli.plugins import discover_plugins, get_plugin_manager

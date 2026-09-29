@@ -147,33 +147,15 @@ class GatewayInboundMixin:
         return admitted
 
     async def _check_internal_admission(self, event, session_key: str) -> bool:
-        from gateway.run import _interim_metadata
         from hermes_cli.lifecycle import ainvoke_hook
         # Same contract as pre_gateway_dispatch: async callbacks are awaited on this loop (and bounded
-        # by plugins.hook_callback_timeout); sync callbacks run inline and must not block.
+        # by plugins.hook_callback_timeout); sync callbacks run inline and must not block. A plugin
+        # that wants to tell the chat why sends through ``gateway`` itself, with its own routing.
         try:
-            results = await ainvoke_hook("gateway_internal_admission", phase="admit",
-                                         event=event, session_key=session_key)
-            blocked = [r for r in results if isinstance(r, dict) and r.get("action") == "block"]
-            if not blocked:
+            results = await ainvoke_hook("gateway_internal_admission", event=event,
+                                         session_key=session_key, gateway=self)
+            if not any(isinstance(r, dict) and r.get("action") == "block" for r in results):
                 return True
-            for result in blocked:
-                text = result.get("response")
-                if not isinstance(text, str) or not text:
-                    continue
-                source = event.source
-                adapter = self._delivery_adapter_for(source)
-                if adapter is None:
-                    continue
-                # Interim: another turn may be streaming in this chat; never seal its draft.
-                metadata = _interim_metadata(self._thread_metadata_for_target(
-                    source.platform, source.chat_id, source.thread_id,
-                    chat_type=source.chat_type, adapter=adapter))
-                sent = await adapter.send(source.chat_id, text, metadata=metadata)
-                if sent is not None and getattr(sent, "success", False) is True:
-                    await ainvoke_hook("gateway_internal_admission", phase="delivered",
-                                       event=event, session_key=session_key,
-                                       receipt=result.get("receipt"))
             logger.info("Automatic event blocked before LLM: session=%s", session_key)
         except Exception:
             logger.exception("Automatic event admission failed closed: session=%s", session_key)

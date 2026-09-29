@@ -4,8 +4,7 @@
 * no ``block`` result admits the event;
 * ``/loop`` wakeups (marked exempt at injection) are not gated;
 * an automatic event dequeued behind a busy turn is re-checked before its follow-up runs;
-* ``block`` stops the turn, sends ``response`` when given, and fires ``phase="delivered"``
-  with the receipt only after a successful send;
+* ``block`` stops the turn without sending anything (plugins notify via ``gateway`` themselves);
 * a raising callback or a failing hook call blocks (fail closed);
 * slash-command events are not gated;
 * the hook is registered, timeout-bounded and fail-closed.
@@ -64,7 +63,7 @@ def _hook(monkeypatch, admit_result=None, raises=None):
         calls.append(kwargs)
         if raises is not None:
             raise raises
-        return [admit_result] if kwargs["phase"] == "admit" and admit_result is not None else []
+        return [admit_result] if admit_result is not None else []
 
     monkeypatch.setattr(lifecycle, "ainvoke_hook", fake_invoke)
     return calls
@@ -83,28 +82,8 @@ async def test_no_block_admits(monkeypatch):
     calls = _hook(monkeypatch, {"action": "allow"})
     runner, adapter = _runner()
     assert await runner._admit_internal_event(_event(), "sk") is True
-    assert [c["phase"] for c in calls] == ["admit"]
+    assert len(calls) == 1
     adapter.send.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_block_sends_notice_and_acknowledges_delivery(monkeypatch):
-    calls = _hook(monkeypatch, {"action": "block", "response": "nothing new", "receipt": {"id": 7}})
-    runner, adapter = _runner()
-    assert await runner._admit_internal_event(_event(), "sk") is False
-    adapter.send.assert_awaited_once()
-    assert adapter.send.await_args.args[:2] == ("123", "nothing new")
-    assert adapter.send.await_args.kwargs["metadata"]["_interim_send"] is True  # never seals a live stream
-    assert [c["phase"] for c in calls] == ["admit", "delivered"]
-    assert calls[1]["receipt"] == {"id": 7} and calls[1]["session_key"] == "sk"
-
-
-@pytest.mark.asyncio
-async def test_failed_send_is_not_acknowledged(monkeypatch):
-    calls = _hook(monkeypatch, {"action": "block", "response": "nothing new"})
-    runner, _ = _runner(send_ok=False)
-    assert await runner._admit_internal_event(_event(), "sk") is False
-    assert [c["phase"] for c in calls] == ["admit"]
 
 
 @pytest.mark.asyncio
@@ -112,8 +91,10 @@ async def test_silent_block_sends_nothing(monkeypatch):
     _hook(monkeypatch, {"action": "block"})
     runner, adapter = _runner()
     event = _event()
+    calls = _hook(monkeypatch, {"action": "block"})
     assert await runner._admit_internal_event(event, "sk") is False
     adapter.send.assert_not_called()
+    assert calls[0]["gateway"] is runner and calls[0]["session_key"] == "sk"
     # Consumed, and flagged so _handle_message skips post-turn (/goal, /loop) settling.
     assert event._gateway_accepted is True and event.metadata["internal_admission_blocked"] is True
 
@@ -124,14 +105,14 @@ async def test_async_callback_runs_on_the_gateway_loop():
     loop = asyncio.get_running_loop()
     seen = []
 
-    async def admit(phase, **kwargs):
+    async def admit(**kwargs):
         seen.append(asyncio.get_running_loop())
         await asyncio.sleep(0)
         return {"action": "block"}
 
     manager = PluginManager()
     manager._hooks["gateway_internal_admission"] = [admit]
-    [result] = await manager.ainvoke_hook("gateway_internal_admission", phase="admit", event=None, session_key="sk")
+    [result] = await manager.ainvoke_hook("gateway_internal_admission", event=None, session_key="sk", gateway=None)
     assert result == {"action": "block"} and seen == [loop]
 
 
@@ -187,7 +168,7 @@ async def test_blocked_wake_never_enters_the_busy_queue(monkeypatch):
     runner._queue_or_replace_pending_event = lambda key, ev: queued.append(ev)
     event = _event()
     assert await runner._handle_active_session_busy_message(event, "sk") is True
-    assert queued == [] and [c["phase"] for c in calls] == ["admit"]
+    assert queued == [] and len(calls) == 1
     assert event._gateway_accepted is True  # consumed: wake producers must not retry it
 
 
@@ -224,14 +205,14 @@ async def test_queued_followup_is_rechecked_before_it_runs(monkeypatch):
     result = {"messages": []}
     assert await runner._run_agent_queued_followup(
         turn_ctx, adapter, event.text, event, "done", result, None) is result
-    assert [c["phase"] for c in calls] == ["admit"]
+    assert len(calls) == 1
     runner._prepare_profile_scoped_inbound_message_text.assert_not_called()
 
 @pytest.mark.asyncio
 async def test_raising_callback_is_a_block_directive():
     manager = PluginManager()
     manager._hooks["gateway_internal_admission"] = [MagicMock(side_effect=RuntimeError("boom"))]
-    [result] = await manager.ainvoke_hook("gateway_internal_admission", phase="admit", event=None, session_key="sk")
+    [result] = await manager.ainvoke_hook("gateway_internal_admission", event=None, session_key="sk", gateway=None)
     assert result["action"] == "block"
 
 

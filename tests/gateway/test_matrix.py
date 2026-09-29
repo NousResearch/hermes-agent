@@ -6199,11 +6199,11 @@ class TestCryptoStoreAccountId:
         olm = MagicMock()
         olm.load = AsyncMock()
         olm.share_keys = AsyncMock()
-        fake["mautrix.client"].Client = MagicMock(return_value=client)
-        fake["mautrix.crypto"].OlmMachine = MagicMock(return_value=olm)
+        fake["mautrix.client"].Client = _client_factory(client)
 
         import plugins.platforms.matrix.adapter as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True), \
+                patch.object(matrix_mod, "create_sync_olm_machine", MagicMock(return_value=olm)), \
                 patch.dict("sys.modules", fake), \
                 patch.object(adapter, "_refresh_dm_cache", AsyncMock()), \
                 patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)), \

@@ -1582,15 +1582,19 @@ re-discovery. Every one of those paths runs a **real forced rescan** (`discover_
   by a late plugin is wired without a restart. Re-wiring is deduped per native client by `(plugin, factory
   qualname)`; on Telegram the late handlers are hoisted ahead of core's catch-all `filters.COMMAND` /
   `CallbackQueryHandler` (PTB dispatches the first match per group), exactly as they would sit at connect.
+- **Live in open chats now** — `load_and_go_live` (`hermes_cli/plugins_activation.py`) then connects
+  the `mcp_servers` named in the summary (the plugin's `mcp.json` servers, by their mcp.json names)
+  and lists the plugin's skills, pushing both to every open chat of this profile on its next turn;
+  MCP tools stay deferred behind `tool_search`/`tool_call`, so the cached prompt prefix is unchanged.
 - **Deferred** — `tools` and `prompt` sections apply from the **next session** (the running session's
-  prompt/tool schema is cache-stable, same rule as `/skills install`); `mcp_servers` (the plugin's
-  `mcp.json` servers, by their mcp.json names) connect on `mcp.reload` or the next session.
+  prompt/tool schema is cache-stable, same rule as `/skills install`).
 - There is no un-wire: disabling a plugin mid-run keeps its already-wired handlers until the gateway
   restarts, and the surfaces say so.
 
 Install surfaces report exactly this split: `hermes plugins install/enable` prints it after nudging the running
-gateway (`reload-plugins` control-socket verb), `plugins.manage install/toggle/update` returns `activation` +
-`gateway_reloaded` (`restart_required` is true only when no gateway answered).
+gateway (`reload-plugins` control-socket verb), `plugins.manage install/toggle/update` returns `activation`
+(`live_now.mcp_servers`/`skills` + `deferred` `tools`/`prompt`) + `gateway_reloaded` (`restart_required` is
+true only when no gateway answered).
 
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.

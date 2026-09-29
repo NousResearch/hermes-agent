@@ -208,9 +208,11 @@ import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
+  assertSpawnableProfileName,
   createDesktopProfilePreferences,
   DESKTOP_PROFILE_NAME_RE,
   type DesktopProfileRoute,
+  requireDesktopProfileName,
   resolveDesktopConnectionRequest,
   resolveDesktopWindowLaunch
 } from './desktop-profile'
@@ -10917,7 +10919,11 @@ async function ensureBackend(
     spawnPriority?: LocalBackendSpawnPriority
   } = {}
 ): Promise<Awaited<ReturnType<typeof backendConnectionState.getPromise>>> {
-  const key = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  // Every renderer-reachable profile path (hermes:connection, hermes:gateway:ws-url,
+  // hermes:api) lands here, so validate once at the choke point: a name that is
+  // not a canonical profile name never becomes a pool key or a spawn argument
+  // (GHSA-84j8-xmx8-jghv).
+  const key = requireDesktopProfileName(profile) ?? primaryProfileKey()
   const spawnPriority = spawnPriorityFrom(opts.spawnPriority)
   poolRetirer.assertCanOpen(key, spawnPriority)
   const passive = Boolean(opts.passive)
@@ -11044,7 +11050,7 @@ async function ensureRegistryBackend(
     managedConnectionUpdateGate.assertCanDial(id, managedUpdateCorrelation)
   }
 
-  const profileKey = String(profile ?? '').trim() || 'default'
+  const profileKey = requireDesktopProfileName(profile) ?? 'default'
   let resolvedRegistrySshConfig
   let registryEffectiveFingerprintPromise: null | Promise<string> = null
 
@@ -12166,6 +12172,12 @@ async function runPoolBackendStart(
   }
 
   profileDeletionGate.assertCanStart(profile)
+
+  // Last check before the name becomes child argv. resolveHermesBackend() may
+  // return shell: true for a Windows .cmd/.bat shim, where an unvalidated
+  // argument is command-injection-sensitive; ensureBackend() already validated,
+  // this guarantees no other caller can reach the spawn with a raw string.
+  assertSpawnableProfileName(profile)
 
   // --profile wins over the inherited HERMES_HOME env (see _apply_profile_override
   // step 3 in hermes_cli/main.py), so the child re-homes to this profile.

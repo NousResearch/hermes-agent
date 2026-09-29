@@ -1,6 +1,6 @@
 ---
 name: baoyu-infographic
-description: "Infographics: 21 layouts x 21 styles (信息图, 可视化)."
+description: "Infographics: 21 layouts x 21 styles (infografiki, wizualizacje)."
 version: 1.56.1
 author: 宝玉 (JimLiu)
 license: MIT
@@ -19,7 +19,7 @@ Two dimensions: **layout** (information structure) × **style** (visual aestheti
 
 ## When to Use
 
-Trigger this skill when the user asks to create an infographic, visual summary, information graphic, or uses terms like "信息图", "可视化", or "高密度信息大图". The user provides content (text, file path, URL, or topic) and optionally specifies layout, style, aspect ratio, or language.
+Trigger this skill when the user asks to create an infographic, visual summary, information graphic, or uses terms like "infographic", "infografika", "wizualizacja", or "visual summary". The user provides content (text, file path, URL, or topic) and optionally specifies layout, style, aspect ratio, or language.
 
 ## Options
 
@@ -118,8 +118,8 @@ If a shortcut has **Prompt Notes**, append them to the generated prompt (Step 5)
 
 | User Keyword | Layout | Recommended Styles | Default Aspect | Prompt Notes |
 |--------------|--------|--------------------|----------------|--------------|
-| 高密度信息大图 / high-density-info | `dense-modules` | `morandi-journal`, `pop-laboratory`, `retro-pop-grid` | portrait | — |
-| 信息图 / infographic | `bento-grid` | `craft-handmade` | landscape | Minimalist: clean canvas, ample whitespace, no complex background textures. Simple cartoon elements and icons only. |
+| high-density-info | `dense-modules` | `morandi-journal`, `pop-laboratory`, `retro-pop-grid` | portrait | — |
+| infographic | `bento-grid` | `craft-handmade` | landscape | Minimalist: clean canvas, ample whitespace, no complex background textures. Simple cartoon elements and icons only. |
 
 ## Output Structure
 

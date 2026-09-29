@@ -37,10 +37,11 @@ class TurnContextUpdate:
     """What ``BasePlatformAdapter.prepare_turn_context`` reports for one turn.
 
     ``note`` is prepended to the user message. ``channel_state`` is saved with the user transcript
-    row, so the change is acknowledged only when the turn that reported it is saved.
+    row, so the change is acknowledged only when the turn that reported it is saved. It is ``None``
+    when the adapter could not read the chat state, and the saved state then stays unchanged.
     """
     note: Optional[str]
-    channel_state: Dict[str, Any]
+    channel_state: Optional[Dict[str, Any]]
 
 
 @dataclass

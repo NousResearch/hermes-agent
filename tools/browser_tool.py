@@ -262,9 +262,10 @@ from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_lightpanda_fallback as _lp
 
 
-# Single shared real-profile copy-browser session: concurrent tasks reuse it
-# instead of each launching a rival Chromium on the same copied user-data-dir.
-_REAL_PROFILE_SESSION = "hermes-real-profile"
+# Each served profile needs its own attach session and endpoint; the gateway process can serve
+# multiple Hermes homes concurrently.
+_REAL_PROFILE_SESSION = f"hermes-real-profile-{hermes_home_key()}"
+_REAL_PROFILE_CACHE_KEY = f"cdp:{hermes_home_key()}"
 _real_profile_cdp_lock = threading.Lock()
 _real_profile_cdp_cache: dict = {}
 _real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers

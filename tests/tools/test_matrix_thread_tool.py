@@ -668,44 +668,103 @@ async def test_sdk_admission_never_sends_plaintext_after_learning_encryption(
         await client.api.session.close()
 
 
+_WIRE_FAILURES = {"connection", 502, 503, 504}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failed_send", [0, 1])
-async def test_sdk_connection_failure_preserves_confirmed_ids_and_uncertainty(
-    monkeypatch, failed_send
+@pytest.mark.parametrize(
+    "failure",
+    ["connection", 502, 503, 504, "state_lookup", "group_session", "admission_timeout"],
+)
+async def test_sdk_send_failure_reports_uncertainty_only_after_the_request(
+    monkeypatch, failure, failed_send
 ):
     from aiohttp import ServerDisconnectedError
     from mautrix.client import Client
     from mautrix.client.state_store.memory import MemoryStateStore
-    from mautrix.errors import MatrixConnectionError
+    from mautrix.errors import (
+        EncryptionError,
+        MatrixConnectionError,
+        make_request_error,
+    )
 
     importlib.import_module("model_tools")
     adapter = _adapter()
     store = MemoryStateStore()
-    monkeypatch.setattr(store, "is_encrypted", AsyncMock(return_value=False))
     client = Client(mxid="@bot:server", base_url="https://server", state_store=store)
     client.api.default_retry_count = 0
     adapter._client = client
     accepted = []
+    preparing = []
+
+    def failing():
+        return len(accepted) == failed_send
+
+    async def is_encrypted(room):
+        preparing.append(len(accepted))
+        if failure == "state_lookup" and failing():
+            return None
+        return failure == "group_session" and failing()
+
+    async def identify(room):
+        if failure == "admission_timeout" and failing() and failed_send in preparing:
+            raise TimeoutError("room identity lookup timed out")
+        return False
 
     async def transport(*args):
         event_id = "$root" if not accepted else "$reply"
         accepted.append(event_id)
-        if len(accepted) - 1 == failed_send:
+        if len(accepted) - 1 != failed_send:
+            return {"event_id": event_id}, SimpleNamespace(status=200)
+        if failure == "connection":
             raise ServerDisconnectedError("Response lost after acceptance")
-        return {"event_id": event_id}, SimpleNamespace(status=200)
+        raise make_request_error(failure, "<html>Gateway error</html>", None, None)
 
+    monkeypatch.setattr(store, "is_encrypted", is_encrypted)
+    monkeypatch.setattr(
+        client,
+        "get_state_event",
+        AsyncMock(side_effect=MatrixConnectionError("state lookup connection reset")),
+    )
+    monkeypatch.setattr(
+        client,
+        "crypto",
+        SimpleNamespace(
+            encrypt_megolm_event=AsyncMock(
+                side_effect=EncryptionError("no outbound session")
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        client,
+        "share_group_session",
+        AsyncMock(side_effect=MatrixConnectionError("key share connection reset")),
+    )
+    adapter._is_dm_room = identify
     monkeypatch.setattr(client.api, "_send", transport)
     try:
         result = await _dispatch(adapter, {"root_text": "Root", "message": "Reply"})
-        expected = {
+        expected: dict[str, Any] = {
             "success": False,
-            "error": f"{MatrixConnectionError.__name__}: Response lost after acceptance",
-            "delivery_uncertain": True,
+            "error": {
+                "connection": "MatrixConnectionError: Response lost after acceptance",
+                "state_lookup": "MatrixConnectionError: state lookup connection reset",
+                "group_session": "MatrixConnectionError: key share connection reset",
+                "admission_timeout": "TimeoutError: room identity lookup timed out",
+            }.get(
+                failure,
+                f"MatrixUnknownRequestError: {failure}: <html>Gateway error</html>",
+            ),
         }
+        if failure in _WIRE_FAILURES:
+            expected["delivery_uncertain"] = True
         if failed_send:
             expected.update(room_id=ROOM, root_event_id="$root", partial=True)
         assert result == expected
-        assert accepted == (["$root", "$reply"] if failed_send else ["$root"])
+        assert (
+            accepted == ["$root", "$reply"][: failed_send + (failure in _WIRE_FAILURES)]
+        )
         assert "$root" not in adapter._threads
     finally:
         await client.api.session.close()

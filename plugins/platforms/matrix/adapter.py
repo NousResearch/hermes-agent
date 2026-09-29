@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 from html import escape as _html_escape
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Dict, Optional, Set
+from typing import Any, Callable, Dict, Optional, Set
 
 from agent.secret_scope import get_secret
 from hermes_constants import get_hermes_home
@@ -1473,12 +1473,13 @@ class MatrixAdapter(MatrixThreadCreateMixin, BasePlatformAdapter):
 
     async def _send_room_message(
         self, chat_id: str, msg_content: Dict[str, Any], *, access: MatrixSessionAccess | None = None,
+        before_request: Callable[[], None] | None = None,
     ) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
         if access is not None:
             access.check()
         client = access.client if access is not None else self._client
-        delivery = access.send_message(msg_content) if access is not None else client.send_message_event(
+        delivery = access.send_message(msg_content, before_request=before_request) if access is not None else client.send_message_event(
             RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content)
         event_id = await asyncio.wait_for(delivery, timeout=45)
         event_id = str(event_id)

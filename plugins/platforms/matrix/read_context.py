@@ -148,7 +148,9 @@ class MatrixSessionAccess:
             raise MatrixSessionError("missing encryption keys")
         return encrypted
 
-    async def send_message(self, content: dict[str, Any]) -> str:
+    async def send_message(
+        self, content: dict[str, Any], *, before_request: Callable[[], None] | None = None,
+    ) -> str:
         from mautrix.types import EventType, RoomID
 
         event_type = EventType.ROOM_MESSAGE
@@ -162,6 +164,8 @@ class MatrixSessionAccess:
             self.check()
             event_type = EventType.ROOM_ENCRYPTED
             await self.admit()
+        if before_request is not None:
+            before_request()
         return await self.client.send_message_event(
             RoomID(self.room_id), event_type, content, disable_encryption=True,
         )

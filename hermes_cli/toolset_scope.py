@@ -7,6 +7,7 @@ from typing import Set
 _TOOLSET_PLATFORM_RESTRICTIONS = {
     "discord": {"discord"},
     "discord_admin": {"discord"},
+    "matrix_polls": {"matrix"},
     "matrix_read": {"matrix"},
 }
 

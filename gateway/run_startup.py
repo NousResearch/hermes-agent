@@ -112,6 +112,18 @@ class GatewayStartupMixin:
                 source.chat_id if source else "unknown",
             )
 
+    def _defer_for_startup_restore(self, event: MessageEvent) -> bool:
+        """Queue a user event for replay while the startup-restore gate is closed; True if queued.
+        Both inbound paths call this: the idle handler and the busy-session handler."""
+        if (
+            not getattr(self, "_startup_restore_in_progress", False)
+            or getattr(event, "internal", False)
+            or getattr(event, "_hermes_startup_restore_replay", False)
+        ):
+            return False
+        self._queue_startup_restore_event(event)
+        return True
+
     async def _drain_startup_restore_queue(self) -> int:
         """Replay inbound messages queued while startup auto-resume ran."""
         drained = 0

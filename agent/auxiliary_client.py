@@ -4539,10 +4539,17 @@ def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> Tuple[st
     """Step-1 target: (provider, model, base_url, api_key, api_mode) of the main runtime, after the
     fast-model opt-in and the MoA aggregator substitution."""
     main_provider = str(runtime.get("provider", "") or _read_main_provider() or "")
-    main_model = str(runtime.get("model") or _read_main_model() or "")
+    main_model = str(runtime.get("model") or "")
     runtime_base_url = str(runtime.get("base_url") or "")
     runtime_api_key = runtime.get("api_key", "")
     runtime_api_mode = str(runtime.get("api_mode") or "")
+    if not main_model:
+        main_model = _read_main_model() or ""
+        # A live runtime model is already resolved; a config default may still be a
+        # ``model_aliases:`` key, which the chat path expands at startup (#127785).
+        alias_route = _config_model_alias_route(main_model)
+        if alias_route is not None:
+            main_provider, main_model, runtime_base_url, runtime_api_key = alias_route
     # Latency-critical tasks (titling only) opt in to the provider's fast model. Opt-in only:
     # every settings surface defines "auto" as the main model.
     if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:
@@ -4559,6 +4566,22 @@ def _main_route_target(runtime: Dict[str, Any], task: Optional[str]) -> Tuple[st
             main_provider, main_model = _agg_provider, _agg_model
             runtime_base_url = runtime_api_key = runtime_api_mode = ""
     return main_provider, main_model, runtime_base_url, runtime_api_key, runtime_api_mode
+
+
+def _config_model_alias_route(model: str) -> Optional[Tuple[str, str, str, str]]:
+    """(provider, model, base_url, api_key) of the ``model_aliases:`` entry named *model*, else None."""
+    if not model:
+        return None
+    try:
+        from hermes_cli.model_switch import DIRECT_ALIASES, _ensure_direct_aliases, direct_alias_runtime_request
+    except ImportError:
+        return None
+    _ensure_direct_aliases()
+    alias = DIRECT_ALIASES.get(model.strip().lower())
+    if alias is None:
+        return None
+    provider, api_key = direct_alias_runtime_request(alias)
+    return provider, alias.model, alias.base_url, api_key or ""
 
 
 def _try_main_provider_route(
@@ -5637,6 +5660,9 @@ def _vision_auto_route(
     """Auto-detect order: 1. main provider + model, 2. OpenRouter, 3. Nous Portal, 4. DeepInfra, 5. stop."""
     main_provider = str(runtime.get("provider") or _read_main_provider())
     main_model = str(runtime.get("model") or _read_main_model())
+    if not runtime.get("model") and (alias_route := _config_model_alias_route(main_model)) is not None:
+        main_provider, main_model, alias_base_url, alias_api_key = alias_route
+        runtime = dict(runtime, base_url=alias_base_url, api_key=alias_api_key)
     if main_provider.strip().lower() == "moa":
         # MoA main_model is a preset NAME, not a wire model — unwrap to the preset's aggregator
         # slot. The moa:// facade endpoint belongs to the virtual provider, not the real one.

@@ -401,7 +401,11 @@ pty = []
 # they hand to the SDK, so it is pinned here explicitly rather than left to
 # resolution. Hermes' own `httpx[socks]==0.28.1` in [dependencies] is
 # unaffected — the two distributions install side by side under different
-# module names.
+# module names. The pin also carries a security floor: httpx2 releases below
+# 2.13.0 are affected by GHSA-7mj9-2mp8-4m2p / GHSA-8xx6-hgc6-gc2m /
+# GHSA-f2fp-rgf2-35cp / GHSA-h4x7-gw46-3wm6 / GHSA-pf96-p4fj-6566 (fixed
+# across 2.10.0–2.12.0), reachable through user-configured MCP servers and
+# multipart uploads.
 mcp = [
   "mcp==2.3.0",
   "httpx2==2.15.1",

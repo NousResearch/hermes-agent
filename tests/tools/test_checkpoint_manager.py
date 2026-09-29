@@ -326,6 +326,34 @@ class TestRestore:
             assert notes.read_text() == "pathspec attempt\n"
             assert (nested / "main.py").read_text() == "agent overwrite\n"
 
+        moved_nested = project / "nested-moved"
+        nested.rename(moved_nested)
+        (project / "other").mkdir()
+        nested.symlink_to("other", target_is_directory=True)
+        result = mgr.restore(str(project), checkpoint, file_path="nested")
+        assert result["success"] is False
+        assert result["nested_repositories"] == ["nested"]
+        assert nested.is_symlink()
+        assert nested.resolve() == project / "other"
+
+    def test_restore_accepts_literal_bracket_filename(self, mgr, tmp_path):
+        project = tmp_path / "project"
+        project.mkdir(exist_ok=True)
+        target = project / "[id].txt"
+        decoy = project / "x.txt"
+        target.write_text("before\n")
+        decoy.write_text("decoy-before\n")
+        assert mgr.ensure_checkpoint(str(project), "initial") is True
+        checkpoint = mgr.list_checkpoints(str(project))[0]["hash"]
+
+        target.write_text("after\n")
+        decoy.write_text("decoy-after\n")
+        result = mgr.restore(str(project), checkpoint, file_path="[id].txt")
+
+        assert result["success"] is True
+        assert target.read_text() == "before\n"
+        assert decoy.read_text() == "decoy-after\n"
+
     def test_restore_unknown_hash_fails(self, mgr, work_dir):
         assert mgr.restore(str(work_dir), "abc123")["success"] is False  # no checkpoints
         mgr.ensure_checkpoint(str(work_dir), "initial")

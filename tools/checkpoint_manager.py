@@ -195,10 +195,10 @@ def _validate_file_path(file_path: str, working_dir: str) -> Optional[str]:
         return "Empty file path"
     if os.path.isabs(file_path):
         return f"File path must be relative, got absolute path: {file_path!r}"
-    # ``file_path`` is passed directly to ``git checkout`` as a pathspec.
-    # Reject pathspec syntax here so a wildcard cannot select an uncaptured
-    # gitlink alongside ordinary files and report a false successful restore.
-    if any(char in file_path for char in "*?[") or file_path.startswith(":"):
+    # Wildcard and magic pathspecs could select an uncaptured gitlink alongside
+    # ordinary files and report a false successful restore. ``[`` is legal in a
+    # literal filename; checkout below uses Git's literal-pathspec mode.
+    if any(char in file_path for char in "*?") or file_path.startswith(":"):
         return f"File path must be a literal relative path, got pathspec: {file_path!r}"
     abs_workdir = _normalize_path(working_dir)
     resolved = (abs_workdir / file_path).resolve()
@@ -1154,20 +1154,20 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Could not inspect checkpoint: {err}"}
         nested_repos = [
-            record.split(b"\t", 1)[1].decode(errors="replace")
-            for record in tree_out.encode().split(b"\x00")
-            if record.startswith(b"160000 commit ") and b"\t" in record
+            record.split("\t", 1)[1]
+            for record in tree_out.split("\x00")
+            if record.startswith("160000 commit ") and "\t" in record
         ]
         if nested_repos:
             blocked_repos = nested_repos
             if file_path:
-                root_path = Path(abs_dir).resolve()
-                requested_path = (root_path / file_path).resolve()
-                try:
-                    requested_rel = requested_path.relative_to(root_path)
-                except ValueError:
-                    requested_rel = Path(file_path)
-                requested_parts = tuple(requested_rel.parts)
+                # Keep Git's checkpoint selection identity separate from the
+                # live filesystem: resolving here would let a replacement
+                # symlink redirect the guard while checkout still selects the
+                # literal checkpoint path.
+                requested_parts = tuple(
+                    PurePosixPath(os.path.normpath(file_path.replace(os.sep, "/"))).parts
+                )
 
                 def _scope_intersects_nested_repo(repo_path: str) -> bool:
                     repo_parts = tuple(PurePosixPath(repo_path).parts)
@@ -1262,13 +1262,13 @@ class CheckpointManager:
                 ok, stdout, err = True, "", ""
             else:
                 ok, stdout, err = _run_git(
-                    ["checkout", commit_hash, "--", *checkout_targets],
+                    ["--literal-pathspecs", "checkout", commit_hash, "--", *checkout_targets],
                     store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                     index_file=index_file,
                 )
         else:
             ok, stdout, err = _run_git(
-                ["checkout", commit_hash, "--", file_path if file_path else "."],
+                ["--literal-pathspecs", "checkout", commit_hash, "--", file_path if file_path else "."],
                 store, abs_dir, timeout=_GIT_TIMEOUT * 2,
                 index_file=index_file,
             )

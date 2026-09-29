@@ -1776,7 +1776,8 @@ class GatewayInboundMixin:
             if adapter is not None and hasattr(adapter, "fetch_thread_context"):
                 try:
                     thread_context = await adapter.fetch_thread_context(
-                        source.chat_id, source.thread_id, exclude_event_id=event.message_id,
+                        source.chat_id, source.thread_id,
+                        exclude_event_ids=[event.message_id, *event.merged_message_ids],
                     )
                 except Exception as exc:
                     logger.debug("Matrix thread context fetch failed: %s", exc)

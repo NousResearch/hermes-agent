@@ -42,12 +42,21 @@ def test_gateway_overlay_enables_utf8_before_interpreter_start(kind, monkeypatch
 
 
 @pytest.mark.platforms("windows")
-def test_generated_launchers_enable_utf8_with_existing_environment(monkeypatch, tmp_path):
-    monkeypatch.setattr(gateway_windows, "_resolve_detached_python", lambda path: (
-        path, tmp_path, []))
-    args = (sys.executable, str(tmp_path), str(tmp_path), "--profile work")
-    cmd = gateway_windows._build_gateway_cmd_script(*args)
-    vbs = gateway_windows._build_gateway_vbs_script(*args)
+def test_update_refreshes_existing_launchers_with_utf8(monkeypatch, tmp_path):
+    from hermes_cli.update_cmd_windows import _refresh_windows_gateway_launchers
+
+    script = tmp_path / "gateway.cmd"
+    script.write_text("old launcher", encoding="utf-8")
+    script.with_suffix(".vbs").write_text("old launcher", encoding="utf-16")
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: tmp_path / "absent.cmd")
+    monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script)
+    monkeypatch.setattr(gateway_windows, "_launcher_settings", lambda: (
+        sys.executable, str(tmp_path), str(tmp_path), "--profile work"))
+    _refresh_windows_gateway_launchers()
+    cmd = script.read_text(encoding="utf-8-sig")
+    vbs = script.with_suffix(".vbs").read_text(encoding="utf-8")
     assert 'set "PYTHONUTF8=1"' in cmd
     assert 'env.Item("PYTHONUTF8") = "1"' in vbs
     assert 'set "PYTHONIOENCODING=utf-8"' in cmd

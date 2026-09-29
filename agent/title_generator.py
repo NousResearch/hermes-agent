@@ -181,8 +181,8 @@ def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
     """True when the model title call would hit the SAME self-hosted endpoint as the turn's own request.
 
     A self-hosted main route (``_is_self_hosted_provider``: custom, lmstudio, local and their aliases)
-    whose ``auxiliary.title_generation`` is not pinned elsewhere (a pin naming the same custom route —
-    ``custom:<name>``, bare ``<name>`` or its display name — is not "elsewhere", #120558)
+    whose ``auxiliary.title_generation`` is not pinned elsewhere (``main`` or a pin naming the same
+    custom route — ``custom:<name>``, bare ``<name>`` or its display name — is not "elsewhere", #120558)
     shares one local server between the streaming main request and the
     concurrent ``response_format: json_schema`` title request. Single-slot servers then serve the
     title grammar/completion into the main turn: the user's reply arrives as ``{"title": ...}``, is
@@ -197,7 +197,7 @@ def title_upgrade_must_wait_for_turn(main_runtime: Optional[dict]) -> bool:
         cfg = _title_config()
         pinned_provider = str(cfg.get("provider") or "").strip().lower()
         main_base_url = str((main_runtime or {}).get("base_url") or "").strip().rstrip("/")
-        if pinned_provider not in ("", "auto") and not _title_pin_may_share_endpoint(
+        if pinned_provider not in ("", "auto", "main") and not _title_pin_may_share_endpoint(
                 pinned_provider, provider, main_base_url):
             return False
     except Exception:

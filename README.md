@@ -2,6 +2,12 @@
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
 
+> [!NOTE]
+> This repository is the Mithril runtime fork used by `app.mithril.fund`.
+> It preserves the MIT-licensed Hermes Agent foundation and upstream attribution while adding
+> Mithril-specific runtime identity and a boundary for future action-policy contracts. The upstream installers below
+> install Hermes Agent, not this Mithril distribution.
+
 # Hermes Agent ☤
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/">Hermes Agent</a> | <a href="https://hermes-agent.nousresearch.com/">Hermes Desktop</a>

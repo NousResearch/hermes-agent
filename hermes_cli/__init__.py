@@ -3,6 +3,9 @@
 import sys
 
 __release_date__ = "2026.9.24"
+__distribution__ = "mithril-agent"
+# Fail closed until the runtime enforces action leases, policy, budget, expiry, and receipts.
+__action_contract__ = ""
 # Declared for type checkers and the old-updater surface audit; served lazily by __getattr__.
 __version__: str
 

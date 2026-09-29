@@ -22,7 +22,7 @@ from gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
     profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
     runtime_status_heartbeat_age_s, runtime_status_is_stale)
-from hermes_cli import __release_date__
+from hermes_cli import __action_contract__, __distribution__, __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.version_info import get_version_info
 from hermes_constants import get_process_hermes_home, profile_name_for_home
@@ -501,6 +501,7 @@ async def get_status(profile: Optional[str] = None):
 
         status = {
             "version": get_version_info().base_version, "release_date": __release_date__,
+            "distribution": __distribution__, "action_contract": __action_contract__,
             "config_version": current_ver, "latest_config_version": latest_ver,
             "can_update_hermes": not _dashboard_local_update_managed_externally(),
             "gateway_running": gateway_running, "gateway_state": gateway_state,

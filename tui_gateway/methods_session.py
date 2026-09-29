@@ -112,7 +112,8 @@ def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
         return _session_info(agent, session)
     return {"cwd": cwd, "branch": git_probe.branch(cwd) if branch is None else branch,
             "project": _project_info_for_cwd(cwd), "lazy": True,
-            "desktop_contract": DESKTOP_BACKEND_CONTRACT}
+            "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+            "distribution": __distribution__, "action_contract": __action_contract__}
 
 
 def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None) -> dict:
@@ -460,6 +461,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
                  **({"provider": override["provider"]} if override.get("provider") else {}),
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+                 "distribution": __distribution__, "action_contract": __action_contract__,
                  "profile_name": _response_profile_name(profile)}})
 
 
@@ -703,6 +705,7 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
         "message_count": len(messages), "messages": messages,
         "info": {"model": model, "provider": provider, "lazy": True,
                  "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+                 "distribution": __distribution__, "action_contract": __action_contract__,
                  "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
 
 

@@ -22,6 +22,7 @@ from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable:
 # Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
+from hermes_cli import __action_contract__, __distribution__
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
@@ -2278,6 +2279,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "running": bool(sess.get("running")), "turn_started_at": _turn_started_at(session),
         "title": _session_live_title(sess, session_key) if session_key else "",
         "stored_session_id": session_key or "", "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        "distribution": __distribution__, "action_contract": __action_contract__,
         "version": "", "release_date": "", "update_behind": None, "update_command": "",
         "usage": _session_usage_snapshot(session),
         "profile_name": profile_name_for_home(sess.get("profile_home")) or _current_profile_name(),
@@ -2679,7 +2681,9 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile:
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
         "model": model or _session_default_model({"profile_home": _profile_home(profile)}),
         "tools": {}, "skills": {}, "lazy": True,
-        "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
+        "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        "distribution": __distribution__, "action_contract": __action_contract__,
+        "profile_name": _response_profile_name(profile),
         **({"provider": provider} if provider else {}),
     }
 
@@ -2941,6 +2945,7 @@ def _fallback_session_info(session: dict) -> dict:
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
         "model": _session_default_model(session), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        "distribution": __distribution__, "action_contract": __action_contract__,
     }
 
 

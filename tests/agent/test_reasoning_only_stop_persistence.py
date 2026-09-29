@@ -53,7 +53,7 @@ def _run(agent, responses, user_message="hello", conversation_history=None):
 
 
 def test_promoted_reasoning_is_returned_but_persisted_row_keeps_content_empty(loop_agent):
-    from tests.agent.test_run_agent import _mock_response
+    from tests.agent._run_agent_helpers import _mock_response
 
     result = _run(loop_agent, [_mock_response(content="", finish_reason="stop", reasoning_content=REASONING)])
 
@@ -82,7 +82,7 @@ def test_stall_guard_interim_row_carries_promoted_text_as_sidecar(loop_agent):
     row it appends must follow the same shape as the final row — ``content`` empty, the promoted
     text in ``api_content`` — so the continuation request replays a real assistant turn, not an
     empty one (#111761)."""
-    from tests.agent.test_run_agent import _mock_response
+    from tests.agent._run_agent_helpers import _mock_response
 
     stalled = "The user wants the file contents. Let me now read the file."
     loop_agent.valid_tool_names = {"read_file"}
@@ -121,7 +121,7 @@ def test_planning_tail_reasoning_only_stop_with_tools_runs_continuation_not_comp
     ("Let me batch...", "I need to check...") — the verbatim tails from the #111761 thread. This
     is a stalled model, not an answer: the stall-guard continuation must run (bounded by the same
     cap) instead of returning the monologue as a 'complete' final response."""
-    from tests.agent.test_run_agent import _mock_response
+    from tests.agent._run_agent_helpers import _mock_response
 
     loop_agent.valid_tool_names = {"terminal", "read_file"}
     loop_agent._stall_guards = True
@@ -141,7 +141,7 @@ def test_planning_tail_reasoning_only_stop_with_tools_runs_continuation_not_comp
 def test_planning_tail_stall_is_bounded_by_the_continuation_cap(loop_agent):
     """A model that never acts is nudged at most twice; the third planning-only stop is promoted
     so the turn still ends instead of looping."""
-    from tests.agent.test_run_agent import _mock_response
+    from tests.agent._run_agent_helpers import _mock_response
 
     loop_agent.valid_tool_names = {"terminal"}
     loop_agent._stall_guards = True
@@ -162,7 +162,7 @@ def test_genuine_reasoning_only_answer_with_tools_still_promotes_on_first_call(l
     """The parser-compat contract survives: reasoning that states an answer (no trailing plan) is
     returned on the first call even with tools offered, and mentioning a plan BEFORE the answer
     does not count as a stall."""
-    from tests.agent.test_run_agent import _mock_response
+    from tests.agent._run_agent_helpers import _mock_response
 
     loop_agent.valid_tool_names = {"terminal", "read_file"}
     loop_agent._stall_guards = True

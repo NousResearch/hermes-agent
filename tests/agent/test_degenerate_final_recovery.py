@@ -60,7 +60,7 @@ def _run(agent, stages):
 
 
 def _tool_round(call_id):
-    from tests.agent.test_run_agent import _mock_response, _mock_tool_call
+    from tests.agent._run_agent_helpers import _mock_response, _mock_tool_call
     return _mock_response(
         content="", finish_reason="tool_calls",
         tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id=call_id)],
@@ -68,7 +68,7 @@ def _tool_round(call_id):
 
 
 def _final(text):
-    from tests.agent.test_run_agent import _mock_response
+    from tests.agent._run_agent_helpers import _mock_response
     return _mock_response(content=text, finish_reason="stop")
 
 

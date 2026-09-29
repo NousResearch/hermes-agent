@@ -49,7 +49,7 @@ def _response(
     finish_reason=FINISH_REASON_LENGTH,
     response_id=PARTIAL_STREAM_STUB_ID,
 ):
-    from tests.agent.test_run_agent import _mock_assistant_msg
+    from tests.agent._run_agent_helpers import _mock_assistant_msg
 
     return SimpleNamespace(
         id=response_id,

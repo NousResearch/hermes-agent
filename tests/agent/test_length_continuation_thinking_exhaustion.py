@@ -128,7 +128,7 @@ def _thinking_only_length_response():
     """finish_reason='length' with reasoning but zero visible content — the
     live GLM-5.3-flash-on-ollama-cloud shape (normal response id, NOT the
     partial-stream stub)."""
-    from tests.agent.test_run_agent import _mock_assistant_msg
+    from tests.agent._run_agent_helpers import _mock_assistant_msg
 
     return SimpleNamespace(
         id="chatcmpl-thinking-exhausted",
@@ -143,13 +143,13 @@ def _thinking_only_length_response():
 
 
 def _full_response(content):
-    from tests.agent.test_run_agent import _mock_response
+    from tests.agent._run_agent_helpers import _mock_response
 
     return _mock_response(content=content, finish_reason="stop")
 
 
 def _truncated_text_response(content):
-    from tests.agent.test_run_agent import _mock_response
+    from tests.agent._run_agent_helpers import _mock_response
 
     return _mock_response(content=content, finish_reason=FINISH_REASON_LENGTH)
 

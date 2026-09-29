@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from unittest.mock import MagicMock, patch
 
-from tests.agent.test_run_agent import (  # noqa: F401  (_make_tool_defs used by the agent fixture)
+from tests.agent._run_agent_helpers import (  # noqa: F401  (_make_tool_defs used by the agent fixture)
     _make_tool_defs,
     _mock_response,
 )

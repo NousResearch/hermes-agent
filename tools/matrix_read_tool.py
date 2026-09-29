@@ -18,7 +18,8 @@ async def _matrix_read(args: dict[str, Any]) -> str:
     room_id = get_session_env("HERMES_SESSION_CHAT_ID")
     requester = get_session_env("HERMES_SESSION_USER_ID")
     adapter, owner_loop = get_session_transport()
-    if get_session_env("HERMES_SESSION_PLATFORM") != "matrix" or not room_id or not requester or adapter is None:
+    read_context = getattr(adapter, "read_matrix_context", None)
+    if get_session_env("HERMES_SESSION_PLATFORM") != "matrix" or not room_id or not requester or not callable(read_context):
         return json.dumps({"error": "Matrix reads require a live Matrix session"})
 
     kind = args.get("kind")
@@ -37,7 +38,7 @@ async def _matrix_read(args: dict[str, Any]) -> str:
     if owner_loop is None or not owner_loop.is_running():
         return json.dumps({"error": "Matrix gateway loop is unavailable"})
     future = safe_schedule_threadsafe(
-        adapter.read_matrix_context(kind, room_id, event_id, limit, requester=requester), owner_loop,
+        read_context(kind, room_id, event_id, limit, requester=requester), owner_loop,
         logger=logger, log_message="matrix_read: failed to schedule on the gateway loop",
     )
     if future is None:

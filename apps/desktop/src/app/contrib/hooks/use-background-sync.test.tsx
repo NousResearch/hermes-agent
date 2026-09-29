@@ -10,6 +10,7 @@ import {
   $sessionStates,
   clearAllSessionStates,
   LIVE_TURN_EVENT_SILENCE_MS,
+  LIVE_TURN_PROBE_GRACE_MS,
   noteSessionEvent,
   publishSessionState
 } from '@/store/session-states'
@@ -218,5 +219,37 @@ describe('useBackgroundSync keeps a quiet working turn live', () => {
 
     expect($sessionStates.get()['rt-quiet']?.busy).toBe(false)
     expect(forceSettled()).toBe(true)
+  })
+
+  it('while an earlier poll is still in flight when the silence window ends', async () => {
+    // The in-flight guard used to swallow the probe, so the grace ran out with no answer.
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    startQuietTurn()
+    let answerMountPoll!: (value: { sessions: [] }) => void
+
+    const request = vi.fn(
+      (_method: string, _params?: unknown, _timeoutMs?: number): Promise<unknown> =>
+        request.mock.calls.length === 1 ? new Promise(resolve => (answerMountPoll = resolve)) : working()
+    )
+
+    render('default', 'local', async () => undefined, request)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PAST_SILENCE_MS)
+    })
+
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(forceSettled()).toBe(false)
+
+    // The stale mount answer omits the turn; the probe's own follow-up still finds it working.
+    await act(async () => {
+      answerMountPoll({ sessions: [] })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(request.mock.calls[1]?.[2]).toBe(LIVE_TURN_PROBE_GRACE_MS)
+    expect($sessionStates.get()['rt-quiet']?.busy).toBe(true)
+    expect(forceSettled()).toBe(false)
   })
 })

@@ -39,6 +39,7 @@ import {
   $sessionStates,
   $sessionTiles,
   confirmReconnectSettlesExcept,
+  LIVE_TURN_PROBE_GRACE_MS,
   noteSessionEvent,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
@@ -1076,8 +1077,12 @@ export function useBackgroundSync({
     let cancelled = false
     let inFlight = false
     let refreshPending = false
+    // Callers waiting on the follow-up refresh, and the tightest timeout any of them asked for.
+    let pendingWaiters: (() => void)[] = []
+    let pendingTimeoutMs: number | undefined
 
-    const refreshLiveStatuses = async () => {
+    // Resolves once a snapshot requested at or after this call has been applied (or failed).
+    const refreshLiveStatuses = async (timeoutMs?: number): Promise<void> => {
       if (cancelled) {
         return
       }
@@ -1085,14 +1090,20 @@ export function useBackgroundSync({
       if (inFlight) {
         refreshPending = true
 
-        return
+        if (timeoutMs !== undefined) {
+          pendingTimeoutMs = Math.min(pendingTimeoutMs ?? timeoutMs, timeoutMs)
+        }
+
+        return new Promise<void>(resolve => {
+          pendingWaiters.push(resolve)
+        })
       }
 
       inFlight = true
       const stateAtRequest = $sessionStates.get()
 
       try {
-        const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {})
+        const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {}, timeoutMs)
 
         if (!cancelled) {
           rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile, stateAtRequest)
@@ -1111,15 +1122,21 @@ export function useBackgroundSync({
 
         if (refreshPending && !cancelled) {
           refreshPending = false
-          void refreshLiveStatuses()
+          const waiters = pendingWaiters
+          const followUpTimeoutMs = pendingTimeoutMs
+          pendingWaiters = []
+          pendingTimeoutMs = undefined
+          void refreshLiveStatuses(followUpTimeoutMs).finally(() => waiters.forEach(resolve => resolve()))
         }
       }
     }
 
     const unsubscribe = $sessionsChangeTick.listen(() => void refreshLiveStatuses())
     // The visible poll below pauses while the window is not viewed; a turn gone
-    // silent that long is checked here directly before it is settled.
-    const releaseProbe = setSilentTurnProbe(() => void refreshLiveStatuses())
+    // silent that long is checked here directly before it is settled. A poll
+    // already in flight is waited out rather than skipped, and the probe's own
+    // request is bounded by the grace.
+    const releaseProbe = setSilentTurnProbe(() => refreshLiveStatuses(LIVE_TURN_PROBE_GRACE_MS))
 
     const dispose = visiblePoll(
       changeEventsAvailable ? LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS : LIVE_SESSION_STATUS_POLL_INTERVAL_MS,
@@ -1133,6 +1150,9 @@ export function useBackgroundSync({
       unsubscribe()
       releaseProbe()
       dispose()
+      // Nothing will answer them now; let a waiting probe settle its turn.
+      pendingWaiters.forEach(resolve => resolve())
+      pendingWaiters = []
     }
     // Keep the in-flight guard alive across change ticks; a slow response must
     // not create a new request (and invalidate the old result) on every tick.

@@ -11,6 +11,7 @@ import {
   $workingSessionIds,
   clearAllSessionStates,
   LIVE_TURN_EVENT_SILENCE_MS,
+  LIVE_TURN_PROBE_BACKSTOP_MS,
   LIVE_TURN_PROBE_GRACE_MS,
   noteSessionEvent,
   publishSessionState,
@@ -271,13 +272,13 @@ describe('live turn event silence', () => {
     expect($sessionStates.get()['rt-done']?.messages.some(message => message.errorSurface)).toBe(false)
     expect($workingSessionIds.get()).not.toContain('s-done')
   })
-  it('asks the live-status probe before settling, and a working answer keeps the turn', () => {
+  it('asks the live-status probe before settling, and a working answer keeps the turn', async () => {
     publishSessionState('rt-probe', partial('long tool call', { storedSessionId: 's-probe' }))
-    const probe = vi.fn(() => noteSessionEvent('rt-probe'))
+    const probe = vi.fn(async () => noteSessionEvent('rt-probe'))
     const release = setSilentTurnProbe(probe)
     noteSessionEvent('rt-probe')
 
-    vi.advanceTimersByTime(SILENCE_MS + LIVE_TURN_PROBE_GRACE_MS)
+    await vi.advanceTimersByTimeAsync(SILENCE_MS + LIVE_TURN_PROBE_GRACE_MS)
 
     expect(probe).toHaveBeenCalledTimes(1)
     expect($workingSessionIds.get()).toContain('s-probe')
@@ -285,21 +286,63 @@ describe('live turn event silence', () => {
     release()
   })
 
-  it('settles after the grace when the probe gets no answer', () => {
+  it('settles once the probe answers without the turn', async () => {
     $activeSessionId.set('rt-dead')
     publishSessionState('rt-dead', partial('partial', { storedSessionId: 's-dead' }))
-    const probe = vi.fn()
+    let answer!: () => void
+    const probe = vi.fn(() => new Promise<void>(resolve => (answer = resolve)))
     const release = setSilentTurnProbe(probe)
     noteSessionEvent('rt-dead')
 
-    vi.advanceTimersByTime(SILENCE_MS)
+    await vi.advanceTimersByTimeAsync(SILENCE_MS)
     expect(probe).toHaveBeenCalledTimes(1)
     expect($workingSessionIds.get()).toContain('s-dead')
 
-    vi.advanceTimersByTime(LIVE_TURN_PROBE_GRACE_MS)
+    answer()
+    await vi.advanceTimersByTimeAsync(0)
     expect($workingSessionIds.get()).not.toContain('s-dead')
     expect($sessionStates.get()['rt-dead']?.messages.some(message => message.errorSurface?.retryable)).toBe(true)
     release()
+  })
+
+  it('waits for a slow probe past the grace, and the backstop still settles', async () => {
+    $activeSessionId.set('rt-slow')
+    publishSessionState('rt-slow', partial('partial', { storedSessionId: 's-slow' }))
+    const probe = vi.fn(() => new Promise<void>(() => {}))
+    const release = setSilentTurnProbe(probe)
+    noteSessionEvent('rt-slow')
+
+    await vi.advanceTimersByTimeAsync(SILENCE_MS + LIVE_TURN_PROBE_GRACE_MS)
+    expect($workingSessionIds.get()).toContain('s-slow')
+    expect($sessionStates.get()['rt-slow']?.interrupted).toBeFalsy()
+
+    await vi.advanceTimersByTimeAsync(LIVE_TURN_PROBE_BACKSTOP_MS)
+    expect($workingSessionIds.get()).not.toContain('s-slow')
+    expect($sessionStates.get()['rt-slow']?.messages.some(message => message.errorSurface?.retryable)).toBe(true)
+    release()
+  })
+
+  it('asks the replacement probe when its probe is released mid-flight', async () => {
+    publishSessionState('rt-switch', partial('partial', { storedSessionId: 's-switch' }))
+    let answerOld!: () => void
+    const oldProbe = vi.fn(() => new Promise<void>(resolve => (answerOld = resolve)))
+    const releaseOld = setSilentTurnProbe(oldProbe)
+    noteSessionEvent('rt-switch')
+
+    await vi.advanceTimersByTimeAsync(SILENCE_MS)
+    expect(oldProbe).toHaveBeenCalledTimes(1)
+
+    // A profile or connection switch re-registers the probe; the old one returns unanswered.
+    releaseOld()
+    const newProbe = vi.fn(async () => noteSessionEvent('rt-switch'))
+    const releaseNew = setSilentTurnProbe(newProbe)
+    answerOld()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(newProbe).toHaveBeenCalledTimes(1)
+    expect($workingSessionIds.get()).toContain('s-switch')
+    expect($sessionStates.get()['rt-switch']?.interrupted).toBeFalsy()
+    releaseNew()
   })
 
   it('stops using a probe once it is released', () => {

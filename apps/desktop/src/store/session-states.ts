@@ -401,16 +401,22 @@ export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
 export const LIVE_TURN_EVENT_SILENCE_MS = 45_000
 // The backstop poll pauses while the window is not being viewed and stretches
 // to 2 min on battery, so it cannot be relied on to have run inside the window
-// above. When the window runs out, ask the backend once (the probe) and give
-// its answer this long to reset the clock before settling.
+// above. When the window runs out, ask the backend once (the probe) and settle
+// only if its answer does not reset the clock. The probe's own request is
+// bounded by this.
 export const LIVE_TURN_PROBE_GRACE_MS = 15_000
+// A probe may first wait out a poll already in flight (bounded by the 120s
+// transport default) before its own request; past this, settle regardless.
+export const LIVE_TURN_PROBE_BACKSTOP_MS = 150_000
 const sessionEventSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>()
-const probedSilentTurns = new Set<string>()
-let silentTurnProbe: (() => void) | null = null
+// One token per pending probe: a late answer from an earlier probe cannot settle a later cycle.
+const probedSilentTurns = new Map<string, object>()
+let silentTurnProbe: (() => Promise<void> | void) | null = null
 
 /** Register the live-status refresh a silent turn is checked against before it
- *  is settled. Returns the unregister function. */
-export function setSilentTurnProbe(probe: () => void): () => void {
+ *  is settled; it resolves once a fresh answer has been applied. Returns the
+ *  unregister function. */
+export function setSilentTurnProbe(probe: () => Promise<void> | void): () => void {
   silentTurnProbe = probe
 
   return () => {
@@ -521,18 +527,35 @@ function onEventSilence(runtimeId: string) {
 
   // Silence alone does not prove the turn is dead: a long tool call emits
   // nothing. A poll that still lists it working resets the clock through
-  // noteSessionEvent; a dead backend fails or omits it and the grace runs out.
+  // noteSessionEvent, which drops this probe's token; a dead backend fails or
+  // omits it, and the turn settles once the probe has its answer.
   if (probe && !probedSilentTurns.has(runtimeId) && isLiveTurnAwaitingEvents($sessionStates.get()[runtimeId])) {
-    probedSilentTurns.add(runtimeId)
-    sessionEventSilenceTimers.set(
-      runtimeId,
-      setTimeout(() => {
-        sessionEventSilenceTimers.delete(runtimeId)
-        probedSilentTurns.delete(runtimeId)
+    const attempt = {}
+
+    const settle = () => {
+      if (probedSilentTurns.get(runtimeId) === attempt) {
+        clearEventSilence(runtimeId)
         settleSilentLiveTurn(runtimeId)
-      }, LIVE_TURN_PROBE_GRACE_MS)
-    )
-    probe()
+      }
+    }
+
+    const ask = (asked: () => Promise<void> | void) => {
+      const answered = () => {
+        // A probe released mid-flight (profile or connection switch) did not see this
+        // backend's current answer: ask its replacement. No probe left means no gateway.
+        if (probedSilentTurns.get(runtimeId) === attempt && silentTurnProbe && silentTurnProbe !== asked) {
+          ask(silentTurnProbe)
+        } else {
+          settle()
+        }
+      }
+
+      Promise.resolve().then(asked).then(answered, answered)
+    }
+
+    probedSilentTurns.set(runtimeId, attempt)
+    sessionEventSilenceTimers.set(runtimeId, setTimeout(settle, LIVE_TURN_PROBE_BACKSTOP_MS))
+    ask(probe)
 
     return
   }

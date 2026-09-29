@@ -7,6 +7,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Ear, EarOff, iconSize, Layers3, Loader2, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { recordAction } from '@/store/desktop-metrics'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
@@ -113,7 +114,7 @@ export function ComposerControls({
   )
 
   return (
-    <div className="ml-auto flex min-w-0 shrink items-center gap-(--composer-control-gap)">
+    <div className="flex min-w-0 shrink items-center gap-(--composer-control-gap)">
       {minimal ? null : (
         <>
           {hideModelPill ? null : (
@@ -157,6 +158,7 @@ export function ComposerControls({
             aria-label={showStop ? c.stop : c.send}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
+            onClick={() => recordAction(showStop ? 'composer.cancel' : 'composer.send', 'click')}
             type="submit"
           >
             {showStop ? (

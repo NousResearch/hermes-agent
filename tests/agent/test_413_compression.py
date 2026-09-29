@@ -1358,6 +1358,9 @@ class TestPreflightCompression:
         agent.context_compressor.threshold_tokens = 130_000
         # Exercise the idle pass too: it runs before threshold preflight and must honor
         # the same one-response checkpoint latch on a long-idle restored session.
+        from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
+
+        set_usage_anchor(agent, capture_usage_anchor(180_000, 100, history[:1]))
         agent.compression_idle_compact_after_seconds = 1
         agent._last_activity_ts = 0
         response = SimpleNamespace(

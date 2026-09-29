@@ -160,7 +160,7 @@ quick_commands:
     target: /gateway restart
 ```
 
-然后在任意聊天中输入 `/status`、`/gpu` 或 `/restart`。更多示例参见[配置指南](/user-guide/configuration#quick-commands)。
+然后在任意聊天中输入 `/status`、`/gpu` 或 `/restart`。更多示例参见[配置指南](./configuration.md#quick-commands)。
 
 ## 启动时预加载 Skill
 
@@ -310,7 +310,7 @@ CLI 在 agent 工作时显示动态反馈：
   ┊ 📄 web_extract (2.1s)
 ```
 
-使用 `/verbose` 循环切换显示模式：`off → new → all → verbose`。该命令也可为消息平台启用——参见[配置](/user-guide/configuration#display-settings)。
+使用 `/verbose` 循环切换显示模式：`off → new → all → verbose`。该命令也可为消息平台启用——参见[配置](./configuration.md#display-settings)。
 
 ### 工具预览长度
 

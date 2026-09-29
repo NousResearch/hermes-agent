@@ -189,6 +189,64 @@ accepts any `model` value (including nonexistent ids) and generates with its
 own server-managed engine, so a "selected" Flare or Sunburst tier would be a
 label with no effect. Pick the direct OpenAI API provider or FAL for 2.5.
 
+### Custom OpenAI-compatible image endpoint
+
+The **OpenAI** provider can point at any OpenAI-compatible `/v1/images/generations`
+endpoint (a local gateway, a task-scoped proxy, a third-party API gateway),
+independently of the chat provider, and take its key from a variable of your choice:
+
+```yaml
+image_gen:
+  provider: openai
+  openai:
+    model: gpt-image-2-medium
+    base_url: http://localhost:18081/v1   # → OPENAI_BASE_URL → api.openai.com
+    key_env: IMAGE_GATEWAY_TOKEN          # → OPENAI_API_KEY
+```
+
+Only the variable *name* is stored in `config.yaml`; the secret stays in `.env`
+or the process environment. Availability checks and
+generation use the same resolution, so a configured `key_env` is enough — no
+`OPENAI_API_KEY` is required. Requests go through Hermes' own HTTP client, which
+honours `HTTP(S)_PROXY`/`NO_PROXY` but ignores macOS system proxies (whose
+exception list is invisible to Python), so `localhost` endpoints connect directly.
+The `OpenAI-Project` header is sent blank on image requests: an `OPENAI_PROJECT_ID`
+set for chat otherwise makes the image endpoint return 403 `model_not_found` on
+projects with a model allow-list, while the key itself already carries the project.
+
+**Gateway model names.** Catalog ids are mapped for OpenAI: `gpt-image-2-medium`
+is sent as `model: gpt-image-2` + `quality: medium`. Any other value of
+`image_gen.openai.model` (or `OPENAI_IMAGE_MODEL`) is sent verbatim as `model`
+with **no** `quality` field, so a gateway that serves its own image model names
+(`custom-image-model`, `grok-imagine-image`, ...) receives exactly that id and
+never sees a quality enum it might reject. The shared top-level `image_gen.model`
+is never passed through — it can hold another provider's id (a FAL path, for
+instance) from an earlier selection.
+
+**Reusing a named custom endpoint.** If the gateway is already declared under
+`providers:` for chat, point the image provider at it by *name* instead of
+repeating its URL and key:
+
+```yaml
+providers:
+  my-gateway:
+    name: My Gateway
+    api: https://gateway.example.com/v1
+    key_env: MY_GATEWAY_KEY
+
+image_gen:
+  provider: openai
+  openai:
+    provider: my-gateway        # inherits api + key_env from providers.my-gateway
+    model: grok-imagine-image   # sent verbatim, no quality
+```
+
+Resolution order is `image_gen.openai.base_url` → the named endpoint's URL →
+`OPENAI_BASE_URL`, and the variable named by `image_gen.openai.key_env` → the
+named endpoint's `api_key`/`key_env` → `OPENAI_API_KEY`; an explicit `base_url`
+or `key_env` next to `provider` therefore overrides that part of the endpoint. A
+name that matches no `providers:` entry is logged as a warning and ignored.
+
 ## Usage
 
 The agent-facing schema is intentionally minimal — the model picks up whatever you've configured:
@@ -319,6 +377,7 @@ If upscaling fails (network issue, rate limit), the original image is returned a
 3. **Submission** — `_submit_fal_request()` routes via direct FAL credentials or the managed Nous gateway, according to the stored `image_gen.provider` selection.
 4. **Upscaling** — runs only when the agent passed `upscale: true`; every model's catalog default is off.
 5. **Delivery** — final image URL returned to the agent, which emits a `MEDIA:<url>` tag that platform adapters convert to native media.
+6. **Usage accounting** — token-billed image models (OpenRouter chat-image and Image API models such as `google/gemini-3.1-flash-lite-image`, OpenAI `gpt-image`) return real token counts, so each call is recorded in `session_model_usage` as task `image_generation` under the billing provider and model, and shows up in `hermes insights` and the dashboard's Usage analytics alongside other model calls. Per-image backends (FAL, xAI, Krea, ...) return no token usage and are not recorded there.
 
 ## Debugging
 

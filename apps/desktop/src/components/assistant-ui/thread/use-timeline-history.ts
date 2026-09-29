@@ -33,25 +33,27 @@ export function useTimelineHistory() {
   const [index, setIndex] = useState<{ key: string; value: TimelineIndex } | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
 
-  const loadMore = useCallback(async () => {
-    if (!storedId) {
-      return
-    }
-
-    try {
-      const value = await fetchTimelineIndex(storedId, scope)
-
-      if (view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId) {
-        setIndex({ key, value })
-        setFailed(null)
+  const loadMore = useCallback(
+    async (beyondRowId?: number) => {
+      if (!storedId) {
+        return
       }
-    } catch {
-      // Old backends keep the loaded rail and their explicit Show earlier path.
-      setFailed(key)
-    }
-    // Owner is represented by key; do not restart on object identity alone.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, storedId, runtimeId, view])
+
+      try {
+        const value = await fetchTimelineIndex(storedId, scope, beyondRowId)
+
+        if (view.$storedId.get() === storedId && view.$runtimeId.get() === runtimeId) {
+          setIndex({ key, value })
+          setFailed(null)
+        }
+      } catch {
+        // Old backends keep the loaded rail and their explicit Show earlier path.
+        setFailed(key)
+      }
+      // Owner is represented by key; do not restart on object identity alone.
+    },
+    [key, storedId, runtimeId, view]
+  )
 
   useEffect(() => {
     if (!storedId) {
@@ -66,6 +68,37 @@ export function useTimelineHistory() {
   }, [loadMore, storedId])
 
   const value = index?.key === key ? index.value : cachedTimelineIndex(key)
+
+  // The newest persisted prompt in the live tail — a scalar, so streaming
+  // deltas never re-run this. Each new turn moves it once.
+  const newestPromptRowId = useStoreSelector(view.$messages, messages => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i]!
+
+      if (message.role === 'user' && message.rowId !== undefined) {
+        return message.rowId
+      }
+    }
+
+    return undefined
+  })
+
+  // A complete index is a snapshot of the turns that existed when it was
+  // read. When the live tail grows past its last mark (entries are
+  // chronological), page it forward once per new prompt — no timer; an
+  // incomplete index still pages on demand.
+  const last = value?.entries.at(-1)?.rowId
+
+  const stale =
+    value?.complete === true && newestPromptRowId !== undefined && (last === undefined || last < newestPromptRowId)
+
+  useEffect(() => {
+    if (!stale || failed === key) {
+      return
+    }
+
+    void loadMore(newestPromptRowId)
+  }, [stale, failed, key, loadMore, newestPromptRowId])
 
   return { ...value, failed: failed === key, loadMore }
 }

@@ -26,17 +26,23 @@ def _root() -> Path:
 
 
 def read_pending(key: str) -> dict | None:
+    """Exact-id read: fails closed on anything but a JSON object, never licensing an overwrite."""
     try:
-        return json.loads((_root() / f"{key}.json").read_text(encoding="utf-8"))
+        record = json.loads((_root() / f"{key}.json").read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return None
+    if not isinstance(record, dict):
+        raise ValueError(f"deferred Bot Chat receipt {key} is not a JSON object ({type(record).__name__})")
+    return record
 
 
 def _records(root: Path) -> list[tuple[Path, dict]]:
     records = []
     for path in root.glob("*.json"):
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
+            record = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(record, dict):
+                raise ValueError(f"expected a JSON object, got {type(record).__name__}")
         except (OSError, ValueError) as exc:  # ValueError: corrupt JSON and invalid UTF-8 alike
             # Keep damaged or unreadable receipts as evidence; never replay them or block peers
             # (same rule as tools/bot_live_delivery.py::_scan_read — one bad file must not wedge the dir).
@@ -50,28 +56,42 @@ def _records(root: Path) -> list[tuple[Path, dict]]:
     return records
 
 
-def defer(key: str, job: dict, content: str, profile: str, home: Path) -> dict:
+def defer(key: str, job: dict, content: str, profile: str, home: Path, *,
+          for_failure: bool = False, suppressed: bool = False, degraded: bool = False) -> dict:
+    """``degraded`` marks the short notice queued after a CLI-lane turn timed out; the record
+    carries it so the consumer recognizes the marker by the record, never by its text."""
     root = _root()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with _FileLock(root / ".lock"):
         record = read_pending(key)
         if record is not None:
-            if record["content"] != content or record["home"] != str(home):
+            if (record["content"] != content or record["home"] != str(home)
+                    or bool(record.get("for_failure")) != for_failure):
                 raise ValueError("delivery id already belongs to a different payload")
+            if suppressed and record["status"] == "queued":
+                record.update(status="suppressed", error=None)
+                atomic_json_write(root / f"{key}.json", record, fsync_dir=True, mode=0o600)
             return record
         sequence = max((record["sequence"] for _, record in _records(root)), default=0) + 1
-        record = dict(id=key, status="queued", job=job, content=content,
+        record = dict(id=key, status="suppressed" if suppressed else "queued", job=job, content=content,
                       profile=profile, home=str(home), sequence=sequence)
+        if for_failure:
+            record["for_failure"] = True
+        if degraded:
+            record["degraded"] = True
         atomic_json_write(root / f"{key}.json", record, fsync_dir=True, mode=0o600)
         return record
 
 
 def drain(root: Path | None = None) -> None:
     """Serialize drains across processes without holding the producer lock."""
+    from hermes_cli.backend_retirement import retirement
+
     root = root if root is not None else _root()
-    if root.is_dir():
-        with _FileLock(root / ".drain.lock"):
-            _drain(root)
+    with retirement.work() as admitted:
+        if admitted and root.is_dir():
+            with _FileLock(root / ".drain.lock"):
+                _drain(root)
 
 
 def _drain(root: Path) -> None:
@@ -83,10 +103,20 @@ def _drain(root: Path) -> None:
         records = sorted(_records(root), key=lambda item: item[1]["sequence"])
     for path, _ in records:
         with _FileLock(root / ".lock"):
-            record = json.loads(path.read_text(encoding="utf-8"))
-            if record["status"] != "queued":
+            record = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(record, dict) or record["status"] != "queued":
                 continue
             home = Path(record["home"])
+            # A failure notice queued before the target profile opted out is settled as
+            # suppressed at drain time; the policy is the owner's, read from its own config.
+            from cron.scheduler_delivery import BOT_CHAT_POLICY_PLATFORM
+            from gateway.warning_notifications import warning_notifications_enabled
+            from hermes_cli.config_effective import load_user_config_effective
+            if (record.get("for_failure")
+                    and not warning_notifications_enabled(BOT_CHAT_POLICY_PLATFORM, load_user_config_effective(home / "config.yaml"))):
+                record.update(status="suppressed", error=None)
+                atomic_json_write(path, record, fsync_dir=True, mode=0o600)
+                continue
             try:
                 owner = find_canonical_owner(home)
                 if owner is not None and find_canonical_live_owner(home) is None:
@@ -107,6 +137,8 @@ def _drain(root: Path) -> None:
         receipt = job.get("_bot_chat_delivery_receipts", {}).get(
             f"bot-chat:{record['profile'] or '(own)'}")
         status = "transferred" if receipt else "ambiguous" if error else "settled"
+        if job.get("_notification_all_targets_suppressed"):
+            status = "suppressed"
         record.update(status=status, error=error)
         # A transferred live-owner receipt remains authoritative, including queued.
         atomic_json_write(path, record, fsync_dir=True, mode=0o600)
@@ -118,17 +150,27 @@ def drain_in_background() -> None:
     root = home / "cron" / "bot_chat_pending"
     if not root.is_dir():
         return
+    from hermes_cli.backend_retirement import retirement
+
     with _running_lock:
-        if home in _running:
+        if home in _running or not retirement.acquire():
             return
         _running.add(home)
+
+    def release():
+        with _running_lock:
+            _running.discard(home)
+        retirement.release()
 
     def run():
         try:
             drain(root)
         finally:
-            with _running_lock:
-                _running.discard(home)
+            release()
 
-    threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True,
-                     name="cron-bot-chat-drain").start()
+    try:
+        threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True,
+                         name="cron-bot-chat-drain").start()
+    except BaseException:
+        release()
+        raise

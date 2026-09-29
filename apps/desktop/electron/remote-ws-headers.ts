@@ -32,9 +32,7 @@ export interface RemoteHeaderSource {
 
 interface SessionLike {
   webRequest?: {
-    onBeforeSendHeaders?: (
-      listener: (details: RemoteRequestDetails, callback: RemoteRequestCallback) => void
-    ) => void
+    onBeforeSendHeaders?: (listener: (details: RemoteRequestDetails, callback: RemoteRequestCallback) => void) => void
   }
 }
 

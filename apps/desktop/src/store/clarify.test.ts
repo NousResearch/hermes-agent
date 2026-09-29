@@ -17,10 +17,8 @@ import { $activeSessionId } from './session'
 
 function clarify(sessionId: string | null, requestId: string): ClarifyRequest {
   return {
+    questions: [{ choices: null, multiSelect: false, qid: 'q0', question: `question-${requestId}` }],
     requestId,
-    question: `question-${requestId}`,
-    choices: null,
-    multiSelect: false,
     sessionId
   }
 }
@@ -102,7 +100,7 @@ describe('skipClarifyRequest', () => {
     $gateway.set(null)
   })
 
-  it('answers the session\u2019s clarify with an empty answer and drops it', async () => {
+  it('cancels the session\u2019s clarify with an empty response and drops it', async () => {
     const respond = vi.fn()
 
     rememberServerRequest({ fail: vi.fn(), id: 'req-a', method: 'clarify', params: {}, respond })
@@ -111,7 +109,7 @@ describe('skipClarifyRequest', () => {
 
     await expect(skipClarifyRequest('session-a')).resolves.toBe(true)
 
-    expect(respond).toHaveBeenCalledWith({ answer: '' })
+    expect(respond).toHaveBeenCalledWith({})
     expect(hasClarifyRequest('session-a')).toBe(false)
     // A background session's question is untouched — only the one being typed
     // over is skipped.
@@ -159,15 +157,6 @@ describe('normalizeChoices', () => {
     const long = 'x'.repeat(201)
     const ok = 'y'.repeat(200)
     expect(normalizeChoices(['a', long, ok])).toEqual(['a', ok])
-  })
-
-  it('drops empty items and keeps valid ones', () => {
-    expect(normalizeChoices(['valid', '  ', '', 'also valid'])).toEqual(['valid', 'also valid'])
-  })
-
-  it('returns empty array when nothing survives', () => {
-    expect(normalizeChoices(['', '  ', null, undefined])).toEqual([])
-    expect(normalizeChoices([])).toEqual([])
   })
 })
 

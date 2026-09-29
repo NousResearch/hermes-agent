@@ -2,7 +2,6 @@
 
 from datetime import datetime, timedelta
 
-
 from hermes_cli.logs import (
     LOG_FILES,
     _extract_level,
@@ -15,7 +14,6 @@ from hermes_cli.logs import (
     _read_tail,
 )
 
-
 # ---------------------------------------------------------------------------
 # Timestamp parsing
 # ---------------------------------------------------------------------------
@@ -26,7 +24,6 @@ class TestParseSince:
         assert cutoff is not None
         assert abs((datetime.now() - cutoff).total_seconds() - 7200) < 2
 
-
     def test_invalid_returns_none(self):
         assert _parse_since("abc") is None
         assert _parse_since("") is None
@@ -36,17 +33,14 @@ class TestParseSince:
         cutoff = _parse_since("  5m  ")
         assert cutoff is not None
 
-
 class TestParseLineTimestamp:
     def test_standard_format(self):
         ts = _parse_line_timestamp("2026-04-11 10:23:45 INFO gateway.run: msg")
         assert ts == datetime(2026, 4, 11, 10, 23, 45)
 
-
 class TestExtractLevel:
     def test_info(self):
         assert _extract_level("2026-01-01 00:00:00 INFO gateway.run: msg") == "INFO"
-
 
 # ---------------------------------------------------------------------------
 # Logger name extraction (new for component filtering)
@@ -57,10 +51,8 @@ class TestExtractLoggerName:
         line = "2026-04-11 10:23:45 INFO gateway.run: Starting gateway"
         assert _extract_logger_name(line) == "gateway.run"
 
-
     def test_no_match(self):
         assert _extract_logger_name("random text") is None
-
 
 class TestLineMatchesComponent:
 
@@ -74,13 +66,8 @@ class TestLineMatchesComponent:
         line = "2026-04-11 10:23:45 INFO plugins.platforms.telegram.adapter: msg"
         assert _line_matches_component(line, COMPONENT_PREFIXES["gateway"])
 
-
-
-
-
     def test_unparseable_line(self):
         assert not _line_matches_component("random text", ("gateway",))
-
 
 # ---------------------------------------------------------------------------
 # Combined filter
@@ -93,7 +80,6 @@ class TestMatchesFilters:
             "2026-01-01 00:00:00 WARNING x: msg", min_level="WARNING")
         assert not _matches_filters(
             "2026-01-01 00:00:00 INFO x: msg", min_level="WARNING")
-
 
     def test_combined_filters(self):
         """All filters must pass for a line to match."""
@@ -123,7 +109,6 @@ class TestMatchesFilters:
             f"{recent} INFO x: recent msg",
             since=datetime.now() - timedelta(hours=1))
 
-
 # ---------------------------------------------------------------------------
 # File reading
 # ---------------------------------------------------------------------------
@@ -138,14 +123,78 @@ class TestReadTail:
         assert len(result) == 5
         assert "line 9" in result[-1]
 
+    def test_unstamped_lines_share_the_verdict_of_the_record_above(self, tmp_path):
+        old = (datetime.now() - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S,000")
+        new = datetime.now().strftime("%Y-%m-%d %H:%M:%S,000")
+        frames = ["Traceback (most recent call last):\n", '  File "x.py", line 1, in f\n']
+        log_file = tmp_path / "errors.log"
+        log_file.write_text("".join([
+            "orphan tail of a record that started before the window\n",
+            f"{old} ERROR gateway.run: old failure\n", *frames, "ValueError: old\n",
+            f"{new} INFO tools.x: multi-line info\n", "  info continuation\n",
+            f"{new} ERROR gateway.run: new failure\n", *frames, "ValueError: new\n",
+        ]))
+        since = datetime.now() - timedelta(hours=1)
+        from hermes_logging import COMPONENT_PREFIXES
+
+        def read(**filters):
+            return "".join(_read_tail(log_file, 50, has_filters=True, **filters))
+
+        assert read(since=since) == "".join([
+            f"{new} INFO tools.x: multi-line info\n", "  info continuation\n",
+            f"{new} ERROR gateway.run: new failure\n", *frames, "ValueError: new\n",
+        ])
+        new_failure = "".join([f"{new} ERROR gateway.run: new failure\n", *frames, "ValueError: new\n"])
+        assert read(since=since, min_level="WARNING") == new_failure
+        assert read(since=since, component_prefixes=COMPONENT_PREFIXES["gateway"]) == new_failure
+        # No time/level filter: the orphan lines before the first stamp stay visible.
+        assert read(session_filter="orphan") == "orphan tail of a record that started before the window\n"
 
 # ---------------------------------------------------------------------------
 # LOG_FILES registry
 # ---------------------------------------------------------------------------
 
-class TestLogFiles:
-    def test_known_log_files(self):
-        assert "agent" in LOG_FILES
-        assert "errors" in LOG_FILES
-        assert "gateway" in LOG_FILES
-        assert "gui" in LOG_FILES
+def _python_log_line(logger_name: str) -> str:
+    import logging
+
+    from agent.redact import RedactingFormatter
+    from hermes_logging import _LOG_FORMAT
+
+    record = logging.LogRecord(logger_name, logging.WARNING, __file__, 1, "sample", None, None)
+    record.session_tag = ""
+    return RedactingFormatter(_LOG_FORMAT).format(record)
+
+
+def _mcp_output_line() -> str:
+    import io
+
+    from tools.mcp_tool_config import _StderrTee
+
+    log = io.StringIO()
+    tee = _StderrTee(log)
+    tee.sink.write(b"server says hello\n")
+    tee.close()
+    return log.getvalue()
+
+
+def _log_file_samples() -> dict:
+    """One line per LOG_FILES entry, produced by that file's real writer where Python can run it."""
+    return {
+        "agent": _python_log_line("run_agent"),
+        "errors": _python_log_line("run_agent"),
+        "gateway": _python_log_line("gateway.run"),
+        "gui": _python_log_line("hermes_cli.web_server"),
+        # Written by TypeScript; apps/desktop/electron/desktop-log-line.test.ts pins the same shape.
+        "desktop": "2026-09-28 13:18:46,062 [hermes] [boot] ready",
+        "mcp": _mcp_output_line(),
+    }
+
+
+def test_every_log_file_writes_a_stamp_hermes_logs_since_can_read():
+    samples = _log_file_samples()
+    assert set(samples) == set(LOG_FILES), "add a real sample line for each new LOG_FILES entry"
+    for name, line in samples.items():
+        assert _parse_line_timestamp(line) is not None, (name, line)
+    # gateway.error.log (launchd stderr, not in LOG_FILES) uses the shared stamper.
+    from hermes_cli.stderr_timestamp import stamp_line
+    assert _parse_line_timestamp(stamp_line("raw gateway stderr")) is not None

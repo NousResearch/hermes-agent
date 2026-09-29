@@ -21,6 +21,47 @@ def db(tmp_path):
     database.close()
 
 
+def _create_legacy_v2_topic_tables(db):
+    """Create the supported pre-profile-name topic schema without migrating it."""
+    db._write_sql("""
+        CREATE TABLE telegram_dm_topic_mode (
+            chat_id TEXT PRIMARY KEY, user_id TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            activated_at REAL NOT NULL, updated_at REAL NOT NULL,
+            has_topics_enabled INTEGER, allows_users_to_create_topics INTEGER,
+            capability_checked_at REAL, intro_message_id TEXT, pinned_message_id TEXT
+        )
+    """)
+    db._write_sql("""
+        CREATE TABLE telegram_dm_topic_bindings (
+            chat_id TEXT NOT NULL, thread_id TEXT NOT NULL, user_id TEXT NOT NULL,
+            session_key TEXT NOT NULL,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            managed_mode TEXT NOT NULL DEFAULT 'auto',
+            linked_at REAL NOT NULL, updated_at REAL NOT NULL,
+            PRIMARY KEY (chat_id, thread_id)
+        )
+    """)
+
+
+def _create_legacy_ledger_without_adapter_profile(db):
+    """The delivery_obligations shape before ``adapter_profile`` was added (ledger never reopened)."""
+    db._write_sql("""
+        CREATE TABLE delivery_obligations (
+            obligation_id TEXT PRIMARY KEY, session_key TEXT NOT NULL,
+            platform TEXT NOT NULL, chat_id TEXT NOT NULL, thread_id TEXT, content TEXT NOT NULL,
+            state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL, updated_at REAL NOT NULL,
+            owner_pid INTEGER, owner_started_at INTEGER, last_error TEXT
+        )
+    """)
+    for oid, key in (("ob_gone", "agent:gone:feishu:dm:chatA"), ("ob_keep", "agent:keepme:feishu:dm:chatB")):
+        db._write_sql(
+            "INSERT INTO delivery_obligations (obligation_id, session_key, platform, chat_id, "
+            "content, state, created_at, updated_at) VALUES (?, ?, 'feishu', 'c', 'hi', 'pending', 1, 1)",
+            (oid, key))
+
+
 def _write_obligation(db, monkeypatch, obligation_id, session_key, chat_id, profile,
                       state="pending"):
     """delivery_obligations is created lazily by the delivery ledger against the same state.db."""
@@ -150,3 +191,44 @@ class TestPurgeProfileState:
         routing = db.load_gateway_routing_entries(scope="/root/sessions")
         assert "agent:foo_bar:feishu:dm:chatA" not in routing
         assert "agent:fooXbar:feishu:dm:chatB" in routing
+
+    def test_purges_legacy_v2_topic_binding_by_session_key(self, db):
+        """Purge is safe on old tables and leaves unrelated namespace rows intact."""
+        db.create_session(
+            "sess_gone", "telegram", session_key="agent:gone:telegram:dm:chatA",
+            profile_name="gone", chat_id="chatA", chat_type="dm")
+        db.create_session(
+            "sess_keep", "telegram", session_key="agent:keepme:telegram:dm:chatB",
+            profile_name="keepme", chat_id="chatB", chat_type="dm")
+        _create_legacy_v2_topic_tables(db)
+        db._write_sql(
+            "INSERT INTO telegram_dm_topic_bindings "
+            "(chat_id, thread_id, user_id, session_key, session_id, linked_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 1, 1)",
+            ("chatA", "threadA", "userA", "agent:gone:telegram:dm:chatA", "sess_gone"))
+        db._write_sql(
+            "INSERT INTO telegram_dm_topic_bindings "
+            "(chat_id, thread_id, user_id, session_key, session_id, linked_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 1, 1)",
+            ("chatB", "threadB", "userB", "agent:keepme:telegram:dm:chatB", "sess_keep"))
+
+        counts = db.purge_profile_state("gone")
+
+        assert counts["telegram_dm_topic_bindings"] == 1
+        assert db._read_one(
+            "SELECT COUNT(*) AS n FROM telegram_dm_topic_bindings WHERE chat_id = ?", ("chatA",)
+        )["n"] == 0
+        assert db._read_one(
+            "SELECT session_key FROM telegram_dm_topic_bindings WHERE chat_id = ?", ("chatB",)
+        )["session_key"] == "agent:keepme:telegram:dm:chatB"
+
+    def test_purges_legacy_ledger_without_adapter_profile_by_session_key(self, db):
+        """A ledger created before adapter_profile existed is settled on its namespace alone."""
+        _create_legacy_ledger_without_adapter_profile(db)
+
+        counts = db.purge_profile_state("gone")
+
+        assert counts["delivery_obligations"] == 1
+        states = {row["obligation_id"]: row["state"] for row in db._read_all(
+            "SELECT obligation_id, state FROM delivery_obligations")}
+        assert states == {"ob_gone": "abandoned", "ob_keep": "pending"}

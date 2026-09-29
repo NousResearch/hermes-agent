@@ -2,10 +2,13 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { type Dispatch, type PropsWithChildren, type SetStateAction, useLayoutEffect, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import * as sessionOwnerUtils from '@/app/session/hooks/use-session-actions/utils'
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
+import { $connectionRequests, type ConnectionRequest } from '@/store/connection-request'
+import { $gateway } from '@/store/gateway'
 import {
   clearAllPrompts,
   hasBlockingPromptRequest,
@@ -357,6 +360,32 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
+  it('puts a refused steer back in the composer when there is no queue to hold it', async () => {
+    // A brand-new chat is busy while its first session.create is in flight but
+    // has no queue key yet. The steer clears the draft first, so a refusal must
+    // restore the words rather than drop the only copy (#68927).
+    const { hook, loadIntoComposer, onSteer } = renderSubmitHook({ busy: true, sessionKey: null, text: 'keep me' })
+    onSteer.mockResolvedValueOnce(false)
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('keep me', []))
+  })
+
+  it('queues a steer whose redirect RPC fails instead of losing it', async () => {
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'still here' })
+    onSteer.mockRejectedValueOnce(new Error('request timed out: session.redirect'))
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['still here']))
+    clearQueuedPrompts('stored-session')
+  })
+
   it('queues a plain-text follow-up while the active turn is compacting', () => {
     const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
       busy: true,
@@ -442,23 +471,11 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
   })
-
-  it('threads the loaded composer scope through onSubmit for the #59305 submit-time guard', async () => {
-    const { hook, onSubmit } = renderSubmitHook({ text: 'hello' })
-
-    act(() => {
-      hook.result.current.submitDraft()
-    })
-
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ composerScope: 'stored-session' }))
-    )
-  })
 })
 
 describe('useComposerSubmit with a clarify parked on the session', () => {
   // The clarify is a live server→client request: skipping it answers that
-  // request frame (`{ answer: '' }`), not a `clarify.respond` RPC.
+  // request frame (`{}`), not a `clarify.respond` RPC.
   const respond = vi.fn()
 
   const parkClarify = (sessionId: string) => {
@@ -468,9 +485,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     $clarifyRequests.set({
       [sessionId]: {
         requestId,
-        question: 'which one?',
-        choices: ['a', 'b'],
-        multiSelect: false,
+        questions: [{ choices: ['a', 'b'], multiSelect: false, qid: 'q0', question: 'which one?' }],
         sessionId
       }
     })
@@ -484,6 +499,40 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     vi.restoreAllMocks()
   })
 
+  it.each([
+    '/btw what is the task?',
+    '/BTW what is the task?',
+    '/btw',
+    '/bg summarize the logs',
+    '/background run the tests'
+  ])('keeps a pending clarify answerable while dispatching %s', async text => {
+    parkClarify('runtime-session')
+    const { hook, onSubmit, onSteer } = renderSubmitHook({ busy: true, text })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(text, expect.anything()))
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(respond).not.toHaveBeenCalled()
+    expect(hasOpenServerRequest('req-runtime-session')).toBe(true)
+    expect($clarifyRequests.get()['runtime-session']).toBeDefined()
+  })
+
+  it('still skips clarify for a different slash command', async () => {
+    parkClarify('runtime-session')
+    const { hook, onSubmit } = renderSubmitHook({ busy: true, text: '/status' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('/status', expect.anything()))
+    expect(respond).toHaveBeenCalledWith({})
+    expect(hasOpenServerRequest('req-runtime-session')).toBe(false)
+  })
+
   it('skips the question and still sends the typed message on an idle session', async () => {
     parkClarify('runtime-session')
     const { hook, onSubmit } = renderSubmitHook({ text: 'actually do this instead' })
@@ -492,7 +541,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(respond).toHaveBeenCalledWith({ answer: '' }))
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({}))
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('actually do this instead', expect.objectContaining({ attachments: [] }))
     )
@@ -509,7 +558,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     })
 
     await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
-    expect(respond).toHaveBeenCalledWith({ answer: '' })
+    expect(respond).toHaveBeenCalledWith({})
   })
 
   it('leaves the question alone for an empty Enter (Stop, not an answer)', () => {
@@ -538,6 +587,90 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     expect(respond).not.toHaveBeenCalled()
     expect(hasOpenServerRequest('req-other-session')).toBe(true)
     expect($clarifyRequests.get()['other-session']).toBeDefined()
+  })
+})
+
+describe('useComposerSubmit with a connection card parked on the session', () => {
+  afterEach(() => {
+    cleanup()
+    $connectionRequests.set({})
+    $gateway.set(null)
+    vi.restoreAllMocks()
+  })
+
+  const parkConnection = () => {
+    const connection: ConnectionRequest = {
+      toolCallId: 'call-connection',
+      opId: 'op-connection',
+      seq: 1,
+      deadlineAt: 1_800_000_000,
+      sessionId: 'runtime-session',
+      targets: [
+        {
+          name: 'gmail',
+          kind: 'connector',
+          action: 'connect',
+          state: 'pending',
+          detail: '',
+          connectUrl: null,
+          connectionId: '',
+          tools: [],
+          requiredEnv: [],
+          instructions: null,
+          discoveryError: null
+        }
+      ],
+      settled: false,
+      settledBy: null
+    }
+
+    $connectionRequests.set({ 'runtime-session': connection })
+  }
+
+  it.each([
+    '/btw what is the task?',
+    '/BTW what is the task?',
+    '/btw',
+    '/bg summarize the logs',
+    '/background run the tests'
+  ])('keeps the connection card answerable while dispatching %s', async text => {
+    parkConnection()
+    vi.spyOn(sessionOwnerUtils, 'resolveSessionOwner').mockRejectedValue(new Error('test no owner'))
+    const gatewayRequest = vi.fn(async () => ({}))
+    $gateway.set({ request: gatewayRequest } as unknown as NonNullable<ReturnType<typeof $gateway.get>>)
+    const { hook, onSubmit, onSteer } = renderSubmitHook({ busy: true, text })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(text, expect.anything()))
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(gatewayRequest).not.toHaveBeenCalledWith('connection.respond', expect.anything())
+    expect($connectionRequests.get()['runtime-session']?.settled).toBe(false)
+  })
+
+  it('still continues the connection request for an ordinary reply', async () => {
+    parkConnection()
+    vi.spyOn(sessionOwnerUtils, 'resolveSessionOwner').mockRejectedValue(new Error('test no owner'))
+    const gatewayRequest = vi.fn(async () => ({}))
+    $gateway.set({ request: gatewayRequest } as unknown as NonNullable<ReturnType<typeof $gateway.get>>)
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'continue without connecting' })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('continue without connecting'))
+    await waitFor(() =>
+      expect(gatewayRequest).toHaveBeenCalledWith(
+        'connection.respond',
+        expect.objectContaining({
+          op_id: 'op-connection',
+          result: { settled_by: 'continue' }
+        })
+      )
+    )
   })
 })
 

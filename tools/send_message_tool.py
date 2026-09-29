@@ -188,19 +188,11 @@ def _handle_react(args, remove=False):
     # for the TARGET chat_id may react to messages in that chat.  _live_adapter() is keyed by
     # PROFILE, not chat_id, so its non-None result only proves a live gateway connection exists
     # for the profile — it does NOT prove the caller is the resident session for this specific
-    # chat_id.  Two principals can share one TelegramAdapter under the default profile; without
-    # this check a non-resident session could react to either principal's messages.
+    # chat_id.  Jan and Stacy share one TelegramAdapter under the default profile; without this
+    # check a non-resident session could react to either principal's messages.
     if platform_name == "telegram" and chat_id:
         try:
-            import sys as _sys
-            import os as _os
-            _GUARD_PATH = _os.environ.get(
-                "HERMES_RESIDENT_GUARD_DIR",
-                "/etc/hermes-agent/resident-guard",
-            )
-            if _GUARD_PATH not in _sys.path:
-                _sys.path.insert(0, _GUARD_PATH)
-            import resident_guard as _rg
+            _rg = _load_resident_guard()
             _rg.check_resident_or_raise(str(chat_id))
         except PermissionError as _guard_err:
             return tool_error(str(_guard_err))
@@ -229,6 +221,53 @@ def _handle_react(args, remove=False):
     except Exception as e:
         return json.dumps(_error(f"Reaction failed: {e}"))
     return json.dumps(result if isinstance(result, dict) else {"success": bool(result)})
+
+
+def _load_resident_guard():
+    """Load ``resident_guard`` via explicit file path (never ``sys.path`` manipulation).
+
+    Resolves the module file from ``HERMES_RESIDENT_GUARD_DIR`` (env var) or the
+    install-default directory.  Refuses to load a file that is group- or world-writable
+    so an env-var redirect cannot silently substitute a stub module.
+
+    Deployment note: ``HERMES_RESIDENT_GUARD_DIR`` must be set in the hermes systemd
+    service units before this code is deployed, pointing at the directory that contains
+    ``resident_guard.py``.  Without it the hardcoded default is used.
+
+    Returns the loaded module.  Raises ``ImportError`` when the file is missing, and
+    ``PermissionError`` when the file permissions are too permissive.
+    """
+    import importlib.util
+    import os as _os
+    import stat as _stat
+    _GUARD_DIR = _os.environ.get(
+        "HERMES_RESIDENT_GUARD_DIR",
+        "/opt/data/skills/autonomous-ai-agents/sister-ping/scripts",
+    )
+    _guard_file = _os.path.join(_GUARD_DIR, "resident_guard.py")
+    if not _os.path.isfile(_guard_file):
+        raise ImportError(
+            f"Resident-session guard module not found at {_guard_file}. "
+            "Set HERMES_RESIDENT_GUARD_DIR to the directory containing resident_guard.py."
+        )
+    # Refuse a group- or world-writable file: an attacker who can write it can
+    # no-op check_resident_or_raise and bypass the guard silently.
+    try:
+        _st = _os.stat(_guard_file)
+        if _st.st_mode & (_stat.S_IWGRP | _stat.S_IWOTH):
+            raise PermissionError(
+                f"Resident-session guard file {_guard_file} is group- or world-writable "
+                "(mode {oct(_st.st_mode)}); refusing to load."
+            )
+    except OSError as _e:
+        raise ImportError(f"Cannot stat resident-session guard file {_guard_file}: {_e}") from _e
+    _spec = importlib.util.spec_from_file_location("_resident_guard_lib", _guard_file)
+    if _spec is None or _spec.loader is None:
+        raise ImportError(f"Cannot load resident-session guard from {_guard_file}.")
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    return _mod
+
 
 
 def _validate_buttons(buttons, platform_name):
@@ -345,22 +384,13 @@ def _handle_send(args):
     # chat_id may push to it; cron sessions are exempt (see resident_guard.py).
     # grep -n resident_guard tools/send_message_tool.py  <- recovery marker
     #
-    # Path resolution: HERMES_RESIDENT_GUARD_DIR env var overrides the default
-    # so the guard works on non-default installs or if the path moves.
-    # Fail-closed: any error loading or running the guard (including
-    # ModuleNotFoundError if the guard module is absent) refuses the push with
-    # a clear warning rather than silently passing through.
+    # Path resolution: HERMES_RESIDENT_GUARD_DIR env var (see _load_resident_guard).
+    # Deployment note: set HERMES_RESIDENT_GUARD_DIR in hermes systemd units before
+    # deploying this code.  See _load_resident_guard() docstring.
+    # Fail-closed: any error loading or running the guard refuses the push.
     if platform_name == "telegram" and chat_id:
         try:
-            import sys as _sys
-            import os as _os
-            _GUARD_PATH = _os.environ.get(
-                "HERMES_RESIDENT_GUARD_DIR",
-                "/etc/hermes-agent/resident-guard",
-            )
-            if _GUARD_PATH not in _sys.path:
-                _sys.path.insert(0, _GUARD_PATH)
-            import resident_guard as _rg
+            _rg = _load_resident_guard()
             _rg.check_resident_or_raise(str(chat_id))
         except PermissionError as _guard_err:
             return tool_error(str(_guard_err))

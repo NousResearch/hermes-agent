@@ -8,10 +8,30 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from gateway.shutdown_watchdog import (
     loop_heartbeat_forever,
     start_loop_liveness_watchdog,
 )
+
+
+@pytest.fixture(autouse=True)
+def _pin_host_as_unstarved():
+    """Force the WEDGED classification for every test in this file.
+
+    These tests predate host-starvation classification and all assert the wedge path (dump +
+    exit 75). Left unpinned they read the REAL load average, so on a busy CI runner (measured:
+    load1=69.69 on 24 cores) the watchdog correctly takes the starvation HOLD path and they fail —
+    a genuine environment coupling, not a flake. Starvation behavior has its own coverage in
+    tests/gateway/test_liveness_starvation_hold.py.
+    """
+    with (
+        patch("gateway.shutdown_watchdog.os.getloadavg", return_value=(0.5, 0.5, 0.5)),
+        patch("gateway.shutdown_watchdog.os.cpu_count", return_value=8),
+    ):
+        yield
+
 
 def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
@@ -287,6 +307,51 @@ def test_loop_liveness_watchdog_marks_runtime_degraded_before_restart():
     assert record["gateway_state"] == "degraded"
     assert record["exit_reason"] == "loop_liveness_watchdog"
     assert record["restart_requested"] is True
+
+
+def test_gateway_runner_liveness_guards_start_and_stop():
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._loop_floor_timer_handle = None
+    runner._loop_liveness_watchdog = None
+    runner.config = None
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    floor_timer = MagicMock()
+    watchdog = MagicMock()
+    watchdog.is_alive.return_value = True
+
+    with (
+        patch(
+            "gateway.shutdown_watchdog._arm_loop_floor_timer", return_value=floor_timer
+        ) as arm_floor,
+        patch(
+            "gateway.shutdown_watchdog.start_loop_liveness_watchdog", return_value=watchdog
+        ) as start_watchdog,
+    ):
+        runner._start_loop_liveness_guards(loop)
+
+    arm_floor.assert_called_once_with(loop)
+    start_watchdog.assert_called_once_with(
+        loop,
+        probe_interval=30.0,
+        probe_timeout=10.0,
+        max_strikes=3,
+        # The host-starvation classification knobs must reach the watchdog, or a starved gateway
+        # silently falls back to the exit-75 wedge path.
+        starvation_load_factor=2.0,
+        starvation_max_hold_s=900.0,
+    )
+    assert runner._loop_floor_timer_handle is floor_timer
+    assert runner._loop_liveness_watchdog is watchdog
+
+    runner._stop_loop_liveness_guards()
+
+    watchdog.stop.assert_called_once_with()
+    floor_timer.cancel.assert_called_once_with()
+    assert runner._loop_liveness_watchdog is None
+    assert runner._loop_floor_timer_handle is None
+
 
 def test_heartbeat_write_does_not_block_the_loop_it_monitors():
     """The heartbeat write must not freeze the loop the watchdog is watching.

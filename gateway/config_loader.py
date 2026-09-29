@@ -97,6 +97,7 @@ _TOPLEVEL_BRIDGE: tuple = (
     *_presence(
         "reset_triggers", "always_log_local", "write_sessions_json", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s", "loop_watchdog_max_strikes",
+        "liveness_starvation_load_factor", "liveness_starvation_max_hold_s",
         "filter_silence_narration",
     ),
     ("unauthorized_dm_behavior", "unauthorized_dm_behavior", "presence", None, _dm_behavior_choice),

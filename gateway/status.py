@@ -608,6 +608,12 @@ _BOOTSTRAPS = (
     ("entry", re.compile(r"import os, re, sys\s.*\bfrom\s+(?P<target>[\w.]+)\s+import\s+(?P<func>\w+)\b.*\bsys\.exit\(\s*(?P=func)\(\)\s*\)", re.S)),
     # hermes_cli._launchers._write_cmd_launcher: the launcher script, base64-encoded
     ("base64", re.compile(rf"import base64; exec\(base64\.b64decode\({_Q}(?P<target>[A-Za-z0-9+/=]+){_Q}\)\)")),
+    # scripts/build/launchers.posix_launcher: the native payload's bin/<name> (bundled and relocated
+    # installs) calls the entry point in-process, like ``python -m <module>``.
+    ("module", re.compile(
+        rf"import os, site, sys; sys\.argv\[0\]\s*=\s*{_Q}[\w.-]*{_Q}; "
+        rf"site\.addsitedir\(os\.environ\[{_Q}HERMES_SITE{_Q}\]\); "
+        r"from (?P<target>[\w.]+) import (?P<func>\w+); sys\.exit\(\s*(?P=func)\(\)\s*\)")),
 )
 _ASSIGNED_ARGV = re.compile(r"\bsys\.argv\s*=\s*\[(.*?)\]\s*;")
 

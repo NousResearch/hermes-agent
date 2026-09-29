@@ -398,7 +398,7 @@ class AppleContainerEnvironment(BaseEnvironment):
             # ``:rw,size=...`` suffix). These writable tmpfs mounts sit on top
             # of the read-only root filesystem.
             "--read-only",
-            "--tmpfs", "/tmp",
+            "--tmpfs", "/tmp",  # no-tmp: ok — mount target inside the Linux guest, not host scratch
             "--tmpfs", "/var/tmp",
             "--tmpfs", "/run",
         ]

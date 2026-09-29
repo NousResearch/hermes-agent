@@ -1,13 +1,20 @@
 name: inline-platform
 repo: https://github.com/inline-chat/inline
-sha: 63c33bc55fbcc1d1d9b4f0a62419d12e7c4a6645
+sha: df11726ed767173859af44ceee9f0442fd0a4b6d
 subdir: plugins/hermes-agent/plugin/inline
-description: Use Hermes Agent from Inline work-chat DMs, chats, and reply threads.
+description: >-
+  Use Hermes Agent from Inline work-chat DMs, chats, and reply threads.
+  Disclosure — the setup wizard can, on explicit opt-in, download
+  https://inline.chat/cli/install.sh and pipe it to sh without a checksum,
+  then run the vendor inline CLI login; on connect the adapter publishes
+  your Hermes slash-command list and the names and descriptions of installed
+  skills to the Inline server (INLINE_SYNC_COMMANDS=false disables); error
+  telemetry is off unless a Sentry DSN is set.
 maintainer: morajabi
 tier: community
 category: platform
-requires_hermes: ">=0.21.4"
-version: "0.0.19"
+requires_hermes: ">=0.21.3"
+version: "0.0.20"
 capabilities:
   provides_tools:
     - inline

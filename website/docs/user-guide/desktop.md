@@ -546,10 +546,10 @@ context cannot enumerate other apps' windows. The error and HUD log preserve
 the underlying failure reason alongside this troubleshooting guidance.
 
 If the binding is unavailable, use the x64 desktop build under Windows
-emulation, or a custom build with a matching native binding. Changing the agent backend or granting macOS screen
-permissions cannot fix a missing Windows binding; enumeration runs on the
-computer hosting the desktop app. This diagnostic does not add native ARM64
-window enumeration support.
+emulation, or a custom build with a matching native binding. Changing the agent
+backend or granting macOS screen permissions cannot fix a missing Windows
+binding; enumeration runs on the computer hosting the desktop app. This
+diagnostic does not add native ARM64 window enumeration support.
 
 - **Sign-in fails with 401 / "Invalid credentials"** — the username or password doesn't match the backend's `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. The backend returns the same generic error for an unknown user and a wrong password (no enumeration oracle), so double-check both. Confirm the gate is on with `curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'` — it should report `true` and include `"basic"`.
 - **No "Sign in" button — it asks for a session token instead** — the backend's username/password provider isn't active. `/api/status` won't list `"basic"` in `auth_providers`. Make sure both the username and a password (or password hash) are set in `~/.hermes/.env` and that the dashboard process actually loaded them.

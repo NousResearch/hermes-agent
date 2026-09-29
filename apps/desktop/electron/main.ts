@@ -18677,6 +18677,16 @@ function handleDeepLink(url) {
   })
   const payload = { kind, name, params }
 
+  // HUD summons are a window-level activation, not renderer navigation. Keep
+  // the main window unfocused so compositor launchers can reach the warm HUD
+  // without first exposing the full Desktop window.
+  if (kind === 'hud' && name === 'summon' && _rendererReadyForDeepLink) {
+    openHudWindow(null, typeof params.profile === 'string' ? params.profile : null)
+    rememberLog('[deeplink] summoned HUD')
+
+    return
+  }
+
   // Route the Windows Copilot hardware key (registered by the MSIX
   // copilotkeyprovider fragment). quick-entry is the eventual summon; for
   // now it falls through to the renderer's deep-link listener. stop and
@@ -18794,8 +18804,9 @@ if (!isPrimaryInstance) {
       isReady: app.isReady(),
       createWindow,
       focusWindow,
-      // deep-link delivery focuses a live window after its renderer is ready.
-      focusExisting: !url
+      // HUD summon is handled entirely by the main process and must not raise
+      // the main window. Other deep links still focus their destination.
+      focusExisting: !url || !url.startsWith('hermes://hud/summon')
     })
   })
 }

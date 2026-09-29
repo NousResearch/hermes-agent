@@ -158,6 +158,7 @@ def silent_wire():
 def test_cloud_stream_read_timeout_does_not_inherit_long_stale_budget(monkeypatch):
     """A long reasoning liveness budget must not make a dead body read wait for it."""
     monkeypatch.delenv("HERMES_STREAM_READ_TIMEOUT", raising=False)
+    monkeypatch.setattr(helpers, "get_provider_request_timeout", lambda *_args: None)
     call = _call(_agent())
     call._stream_stale_timeout = 609.0
 

@@ -722,3 +722,24 @@ def test_unroutable_script_hook_names_the_remediation(tmp_path):
 
     assert result["returncode"] is None
     assert "interpreter" in result["error"] and "bash" in result["error"]
+
+
+class TestToolHookIdentity:
+    def test_kanban_identity_is_payload_only(self, monkeypatch):
+        from agent.inline_tool_executors import tool_hook_ids
+
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_worker")
+        agent = type("Agent", (), {"session_id": "session-1"})()
+
+        ids = tool_hook_ids(agent, "turn-task", "call-1")
+
+        assert ids["task_id"] == "turn-task"
+        assert ids["kanban_task_id"] == "t_worker"
+
+    def test_kanban_identity_is_empty_outside_worker(self, monkeypatch):
+        from agent.inline_tool_executors import tool_hook_ids
+
+        monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+        ids = tool_hook_ids(object(), "turn-task", None)
+
+        assert ids["kanban_task_id"] == ""

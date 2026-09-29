@@ -1143,6 +1143,27 @@ class CheckpointManager:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found",
                     "debug": err or None}
 
+        ok, tree_out, err = _run_git(
+            ["ls-tree", "-r", "-z", commit_hash], store, abs_dir,
+        )
+        if not ok:
+            return {"success": False, "error": f"Could not inspect checkpoint: {err}"}
+        nested_repos = [
+            record.split(b"\t", 1)[1].decode(errors="replace")
+            for record in tree_out.encode().split(b"\x00")
+            if record.startswith(b"160000 commit ") and b"\t" in record
+        ]
+        if nested_repos:
+            paths = ", ".join(nested_repos)
+            return {
+                "success": False,
+                "error": (
+                    "Checkpoint contains nested git repositories that were not captured "
+                    f"({paths}); rollback was not performed"
+                ),
+                "nested_repositories": nested_repos,
+            }
+
         skipped_user_edits: List[str] = []
         kept_oversize: List[str] = []
         failed_deletes: List[str] = []

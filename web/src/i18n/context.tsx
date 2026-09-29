@@ -107,3 +107,16 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 export function useI18n() {
   return useContext(I18nContext);
 }
+
+/** Current catalog outside React (module-scope helpers, lib files).
+ *  Mirrors the desktop's translateNow: reads the same localStorage key the
+ *  provider persists to, so it never drifts from the rendered locale. */
+export function translateNow(): Translations {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored && isLocale(stored)) return TRANSLATIONS[stored];
+  } catch {
+    // SSR or privacy mode
+  }
+  return en;
+}

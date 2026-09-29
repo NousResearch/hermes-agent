@@ -38,7 +38,7 @@ import { Switch } from "@nous-research/ui/ui/components/switch";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
-import { useI18n } from "@/i18n";
+import { useI18n, translateNow } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
@@ -50,20 +50,33 @@ const PERIODS = [
   { label: "90d", days: 90 },
 ] as const;
 
-// Must match _AUX_TASK_SLOTS in hermes_cli/web_server.py.
-const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
-  { key: "vision", label: "Vision", hint: "Image analysis" },
-  { key: "compression", label: "Compression", hint: "Context compaction" },
-  { key: "skills_hub", label: "Skills Hub", hint: "Skill search" },
-  { key: "approval", label: "Approval", hint: "Smart auto-approve" },
-  { key: "mcp", label: "MCP", hint: "MCP tool routing" },
-  { key: "title_generation", label: "Title Gen", hint: "Session titles" },
-  { key: "review", label: "Review", hint: "/review subagent" },
-  { key: "triage_specifier", label: "Triage Specifier", hint: "Kanban spec fleshing" },
-  { key: "kanban_decomposer", label: "Kanban Decomposer", hint: "Task decomposition" },
-  { key: "profile_describer", label: "Profile Describer", hint: "Auto profile descriptions" },
-  { key: "curator", label: "Curator", hint: "Skill-usage review" },
+// Must match _AUX_TASK_SLOTS in hermes_cli/web_server.py. Labels/hints
+// localize through t.models.auxTasks[key] at render time.
+const AUX_TASKS: readonly { key: string }[] = [
+  { key: "vision" },
+  { key: "compression" },
+  { key: "skills_hub" },
+  { key: "approval" },
+  { key: "mcp" },
+  { key: "title_generation" },
+  { key: "review" },
+  { key: "triage_specifier" },
+  { key: "kanban_decomposer" },
+  { key: "profile_describer" },
+  { key: "curator" },
 ] as const;
+
+/** Localized label/hint for an aux slot; falls back to the raw key. */
+function auxTaskCopy(key: string): { label: string; hint: string } {
+  const entry = translateNow().models.auxTasks[key];
+  return entry ?? { label: key, hint: "" };
+}
+
+/** Interpolated aux-picker title. */
+function auxPickerTitle(key: string): string {
+  return translateNow()
+    .models.setAuxiliaryTask.replace("{task}", auxTaskCopy(key).label);
+}
 
 function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -298,7 +311,7 @@ function UseAsMenu({
           >
             <span className="flex items-center gap-2">
               <Star className="h-3 w-3" />
-              Main model
+              {t.models.mainModel}
             </span>
             {isMain && (
               <span className="text-display text-xs tracking-wider text-primary">
@@ -308,7 +321,7 @@ function UseAsMenu({
           </button>
 
           <div className="border-t border-border/50 px-3 py-1.5 text-display text-xs tracking-wider text-text-tertiary">
-            Auxiliary task
+            {t.models.auxiliaryTaskHeading}
           </div>
 
           <button
@@ -320,22 +333,25 @@ function UseAsMenu({
             <span>{t.models.allAuxiliaryTasks}</span>
           </button>
 
-          {AUX_TASKS.map((t) => (
+          {AUX_TASKS.map(({ key }) => {
+            const copy = auxTaskCopy(key);
+            return (
             <button
-              key={t.key}
+              key={key}
               type="button"
-              onClick={() => assign("auxiliary", t.key)}
+              onClick={() => assign("auxiliary", key)}
               disabled={busy}
               className="flex w-full items-center justify-between px-3 py-1.5 text-xs uppercase hover:bg-muted/50 disabled:opacity-40"
             >
-              <span>{t.label}</span>
-              {mainAuxTask === t.key && (
+              <span>{copy.label}</span>
+              {mainAuxTask === key && (
                 <span className="text-display text-xs tracking-wider text-primary">
                   current
                 </span>
               )}
             </button>
-          ))}
+            );
+          })}
 
           {error && (
             <div className="px-3 py-2 text-xs text-destructive border-t border-border/50">
@@ -349,7 +365,7 @@ function UseAsMenu({
         title={t.models?.expensiveWarningTitle ?? "Expensive Model Warning"}
         description={pendingConfirm?.message}
         destructive
-        confirmLabel="Switch anyway"
+        confirmLabel={t.models.switchAnyway}
         cancelLabel="Cancel"
         loading={busy}
         onCancel={() => setPendingConfirm(null)}
@@ -608,7 +624,7 @@ function AuxiliaryTasksModal({
               id="aux-modal-title"
               className="font-mondwest text-display text-base tracking-wider"
             >
-              Auxiliary Tasks
+              {t.models.auxiliaryTasksModalTitle}
             </h2>
             <Button
               size="sm"
@@ -618,32 +634,31 @@ function AuxiliaryTasksModal({
               className="h-6 text-xs uppercase"
               prefix={resetBusy ? <Spinner /> : null}
             >
-              Reset all to auto
+              {t.models.resetAllToAuto}
             </Button>
           </div>
           <p className="text-xs text-text-secondary mt-2">
-            Auxiliary tasks handle side-jobs like vision, session search, and
-            compression. <span className="font-mono">auto</span> means
-            &quot;use the main model&quot;. Override per-task when you want a
-            cheap/fast model for a specific job.
+            {t.models.auxiliaryTasksIntro} <span className="font-mono">auto</span>{" "}
+            {t.models.auxiliaryTasksAutoMeans}
           </p>
         </header>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-1">
-          {AUX_TASKS.map((task) => {
-            const cur = aux?.tasks.find((a) => a.task === task.key);
+          {AUX_TASKS.map(({ key }) => {
+            const copy = auxTaskCopy(key);
+            const cur = aux?.tasks.find((a) => a.task === key);
             const isAuto =
               !cur || cur.provider === "auto" || !cur.provider;
             return (
               <div
-                key={task.key}
+                key={key}
                 className="flex items-center justify-between gap-3 px-3 py-2 border border-border/30 bg-card/50 hover:bg-muted/20 transition-colors"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-xs font-medium">{task.label}</span>
+                    <span className="text-xs font-medium">{copy.label}</span>
                     <span className="text-xs text-text-tertiary">
-                      {task.hint}
+                      {copy.hint}
                     </span>
                   </div>
                   <div className="text-xs font-mono text-text-secondary truncate">
@@ -670,10 +685,7 @@ function AuxiliaryTasksModal({
             key={`picker-${refreshKey}`}
             loader={api.getModelOptions}
             alwaysGlobal
-            title={`Set Auxiliary: ${
-              AUX_TASKS.find((t) => t.key === picker.task)?.label ??
-              picker.task
-            }`}
+            title={auxPickerTitle(picker.task)}
             onApply={async ({ provider, model, confirmExpensiveModel }) => {
               const result = await api.setModelAssignment({
                 confirm_expensive_model: confirmExpensiveModel,
@@ -693,9 +705,9 @@ function AuxiliaryTasksModal({
           onCancel={() => setConfirmReset(false)}
           onConfirm={() => void resetAllAux()}
           title={t.models?.resetAuxiliaryModels ?? "Reset auxiliary models"}
-          description="Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set."
+          description={t.models.resetAuxiliaryConfirm}
           destructive
-          confirmLabel="Reset all"
+          confirmLabel={t.models.resetAll}
           loading={resetBusy}
         />
       </div>
@@ -828,12 +840,12 @@ function MoaModelsModal({
             id="moa-modal-title"
             className="font-mondwest text-display text-base tracking-wider"
           >
-            Configure Mixture of Agents presets
+            {t.models.moaConfigureTitle}
           </h2>
         </header>
         <div className="space-y-4 p-5">
           <p className="text-xs text-text-secondary">
-            Presets appear as models under the Mixture of Agents provider. References produce perspectives; the aggregator is the acting model that answers and calls tools.
+            {t.models.moaConfigureIntro}
           </p>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -1004,7 +1016,7 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Star className="h-3 w-3 text-primary" />
               <span className="text-display text-xs font-medium tracking-wider">
-                Main model
+                {t.models.mainModel}
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">
@@ -1054,7 +1066,7 @@ function ModelSettingsPanel({
             <div className="flex items-center gap-2 mb-0.5">
               <Brain className="h-3 w-3 text-text-tertiary" />
               <span className="text-display text-xs font-medium tracking-wider">
-                Mixture of Agents
+                {t.models.moaHeading}
               </span>
             </div>
             <div className="text-xs font-mono text-text-secondary truncate">

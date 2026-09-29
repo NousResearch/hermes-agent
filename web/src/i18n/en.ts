@@ -341,6 +341,39 @@ export const en: Translations = {
     outUnit: "{count} out",
     auxOverridesSummary: "{count} overrides · {rest} auto",
     auxAllAuto: "{count} tasks · all auto",
+    mainModel: "Main model",
+    auxiliaryTaskHeading: "Auxiliary task",
+    auxiliaryTasksModalTitle: "Auxiliary Tasks",
+    resetAllToAuto: "Reset all to auto",
+    auxiliaryTasksIntro:
+      "Auxiliary tasks handle side-jobs like vision, session search, and compression.",
+    auxiliaryTasksAutoMeans:
+      "means “use the main model”. Override per-task when you want a cheap/fast model for a specific job.",
+    resetAuxiliaryConfirm:
+      "Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set.",
+    resetAll: "Reset all",
+    switchAnyway: "Switch anyway",
+    moaConfigureTitle: "Configure Mixture of Agents presets",
+    moaConfigureIntro:
+      "Presets appear as models under the Mixture of Agents provider. References produce perspectives; the aggregator is the acting model that answers and calls tools.",
+    moaHeading: "Mixture of Agents",
+    moaSummary: "{refs} reference{plural} · {aggregator}",
+    // Keys MUST match _AUX_TASK_SLOTS in hermes_cli/web_server.py; labels and
+    // hints localize the AUX_TASKS table in ModelsPage.tsx.
+    auxTasks: {
+      vision: { label: "Vision", hint: "Image analysis" },
+      compression: { label: "Compression", hint: "Context compaction" },
+      skills_hub: { label: "Skills Hub", hint: "Skill search" },
+      approval: { label: "Approval", hint: "Smart auto-approve" },
+      mcp: { label: "MCP", hint: "MCP tool routing" },
+      title_generation: { label: "Title Gen", hint: "Session titles" },
+      review: { label: "Review", hint: "/review subagent" },
+      triage_specifier: { label: "Triage Specifier", hint: "Kanban spec fleshing" },
+      kanban_decomposer: { label: "Kanban Decomposer", hint: "Task decomposition" },
+      profile_describer: { label: "Profile Describer", hint: "Auto profile descriptions" },
+      curator: { label: "Curator", hint: "Skill-usage review" },
+    },
+    setAuxiliaryTask: "Set Auxiliary: {task}",
   },
 
   logs: {
@@ -1743,5 +1776,21 @@ export const en: Translations = {
     testButton: "Test",
     configureButton: "Configure",
     telegramChooseHow: "Choose how to connect your Telegram bot",
+    telegramFindMyUserId: "Find my user ID",
+    telegramAllowedUsersOptional:
+      "You can leave allowed users blank. Hermes will then send new DM users a code that you approve from the Pairing page.",
+    savedRestartBanner:
+      "Changes are saved. Restart the gateway for them to take effect.",
+    whatsappScanHint: "Scan with WhatsApp Linked Devices, not the camera app.",
+    whatsappAfterSavePairing:
+      "After saving, unknown DMs use Hermes pairing codes unless their number is already allowed.",
+    whatsappRestartStep: "Save and restart the gateway.",
+    whatsappOpenChatLink: "Open chat link",
+    telegramCredentialsSet:
+      "Telegram credentials are already configured. A new QR setup or bot token will replace the current bot when you save.",
+    telegramFinishOrCancel:
+      "Finish or cancel the current QR setup before switching methods.",
+    telegramUserIdPlaceholder: "Telegram user ID",
+    telegramAddAtLeastOne: "Add at least one Telegram user ID.",
   },
 };

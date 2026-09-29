@@ -362,6 +362,21 @@ export interface Translations {
     outUnit: string;
     auxOverridesSummary: string;
     auxAllAuto: string;
+    mainModel: string;
+    auxiliaryTaskHeading: string;
+    auxiliaryTasksModalTitle: string;
+    resetAllToAuto: string;
+    auxiliaryTasksIntro: string;
+    auxiliaryTasksAutoMeans: string;
+    resetAuxiliaryConfirm: string;
+    resetAll: string;
+    switchAnyway: string;
+    moaConfigureTitle: string;
+    moaConfigureIntro: string;
+    moaHeading: string;
+    moaSummary: string;
+    auxTasks: { [key: string]: { label: string; hint: string } };
+    setAuxiliaryTask: string;
   };
 
   // ── Logs page ──
@@ -1506,6 +1521,17 @@ export interface Translations {
     testButton: string;
     configureButton: string;
     telegramChooseHow: string;
+    telegramFindMyUserId: string;
+    telegramAllowedUsersOptional: string;
+    savedRestartBanner: string;
+    whatsappScanHint: string;
+    whatsappAfterSavePairing: string;
+    whatsappRestartStep: string;
+    whatsappOpenChatLink: string;
+    telegramCredentialsSet: string;
+    telegramFinishOrCancel: string;
+    telegramUserIdPlaceholder: string;
+    telegramAddAtLeastOne: string;
   };
 
   // ── Kanban ──

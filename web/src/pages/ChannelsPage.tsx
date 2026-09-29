@@ -358,7 +358,7 @@ export default function ChannelsPage() {
             <div className="flex items-center gap-2 text-sm">
               <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
               <span>
-                Changes are saved. Restart the gateway for them to take effect.
+                {t.channels.savedRestartBanner}
               </span>
             </div>
             <Button
@@ -474,12 +474,11 @@ export default function ChannelsPage() {
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1 text-primary hover:underline"
                     >
-                      Find my user ID <ExternalLink className="h-3 w-3" />
+                      {t.channels.telegramFindMyUserId} <ExternalLink className="h-3 w-3" />
                     </a>
                   </div>
                   <p className="text-xs">
-                    You can leave allowed users blank. Hermes will then send new DM
-                    users a code that you approve from the Pairing page.
+                    {t.channels.telegramAllowedUsersOptional}
                   </p>
                 </div>
               )}
@@ -1013,8 +1012,7 @@ function WhatsAppOnboardingPanel({
 
               {phase === "waiting" && (
                 <div className="text-xs text-muted-foreground">
-                  After saving, unknown DMs use Hermes pairing codes unless their
-                  number is already allowed.
+                  {t.channels.whatsappAfterSavePairing}
                 </div>
               )}
 
@@ -1028,7 +1026,7 @@ function WhatsAppOnboardingPanel({
                     </div>
                     <div className="mt-1 text-muted-foreground">{linkedAccountDetail}</div>
                     <ol className="mt-3 list-decimal space-y-1 ps-5 text-muted-foreground">
-                      <li>Save and restart the gateway.</li>
+                      <li>{t.channels.whatsappRestartStep}</li>
                       <li>{messageInstruction}</li>
                       <li>{pairingInstruction}</li>
                     </ol>
@@ -1039,7 +1037,7 @@ function WhatsAppOnboardingPanel({
                         target="_blank"
                         rel="noreferrer"
                       >
-                        Open chat link
+                        {t.channels.whatsappOpenChatLink}
                         <ExternalLink className="h-3.5 w-3.5" />
                       </a>
                     )}
@@ -1086,7 +1084,7 @@ function WhatsAppOnboardingPanel({
               )}
               {phase === "waiting" && (
                 <span className="text-center text-xs text-muted-foreground">
-                  Scan with WhatsApp Linked Devices, not the camera app.
+                  {t.channels.whatsappScanHint}
                 </span>
               )}
               <Button size="sm" ghost onClick={() => void cancel()}>
@@ -1381,15 +1379,14 @@ function TelegramOnboardingPanel({
 
       {platform.configured && (
         <div className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">
-          Telegram credentials are already configured. A new QR setup or bot token
-          will replace the current bot when you save.
+          {t.channels.telegramCredentialsSet}
         </div>
       )}
 
       {phase !== "idle" && (
         <div className="mt-4 border-t border-border pt-4">
           <span className="text-xs text-muted-foreground">
-            Finish or cancel the current QR setup before switching methods.
+            {t.channels.telegramFinishOrCancel}
           </span>
         </div>
       )}
@@ -1441,7 +1438,7 @@ function TelegramOnboardingPanel({
                     ))}
                     {allowedIds.length === 0 && (
                       <span className="text-sm text-muted-foreground">
-                        Add at least one Telegram user ID.
+                        {t.channels.telegramAddAtLeastOne}
                       </span>
                     )}
                   </div>
@@ -1451,7 +1448,7 @@ function TelegramOnboardingPanel({
                   <Input
                     value={newAllowedId}
                     onChange={(event) => setNewAllowedId(event.target.value)}
-                    placeholder="Telegram user ID"
+                    placeholder={t.channels.telegramUserIdPlaceholder}
                     className="font-courier"
                   />
                   <Button size="sm" outlined onClick={addAllowedId} prefix={<Check />}>

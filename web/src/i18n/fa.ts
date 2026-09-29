@@ -332,6 +332,37 @@ export const fa = defineLocale({
     outUnit: "{count} خروجی",
     auxOverridesSummary: "{count} سفارشی · {rest} خودکار",
     auxAllAuto: "{count} وظیفه · همه خودکار",
+    mainModel: "مدل اصلی",
+    auxiliaryTaskHeading: "وظیفهٔ کمکی",
+    auxiliaryTasksModalTitle: "وظایف کمکی",
+    resetAllToAuto: "بازنشانی همه به خودکار",
+    auxiliaryTasksIntro:
+      "وظایف کمکی کارهای جانبی مانند بینایی، جستجوی نشست و فشرده‌سازی را انجام می‌دهند.",
+    auxiliaryTasksAutoMeans:
+      "یعنی «استفاده از مدل اصلی». برای هر وظیفه جداگانه انتخاب کنید تا مدلی ارزان/سریع‌تر بگیرید.",
+    resetAuxiliaryConfirm:
+      "هر وظیفهٔ کمکی به «خودکار» بازنشانی شود؟ این کار سفارشی‌سازی‌های هر وظیفه را بازنویسی می‌کند.",
+    resetAll: "بازنشانی همه",
+    switchAnyway: "با این حال تغییر بده",
+    moaConfigureTitle: "پیکربندی پیش‌تنظیم‌های Mixture of Agents",
+    moaConfigureIntro:
+      "پیش‌تنظیم‌ها به‌صورت مدل زیر ارائه‌دهندهٔ Mixture of Agents ظاهر می‌شوند. مرجع‌ها دیدگاه می‌سازند؛ تجمیع‌گر مدل پاسخ‌دهنده است که ابزار هم فراخوانی می‌کند.",
+    moaHeading: "Mixture of Agents",
+    moaSummary: "{refs} مرجع{plural} · {aggregator}",
+    auxTasks: {
+      vision: { label: "بینایی", hint: "تحلیل تصویر" },
+      compression: { label: "فشرده‌سازی", hint: "فشرده‌سازی کانتکست" },
+      skills_hub: { label: "مرکز مهارت‌ها", hint: "جستجوی مهارت" },
+      approval: { label: "تأیید", hint: "تأیید خودکار هوشمند" },
+      mcp: { label: "MCP", hint: "مسیریابی ابزار MCP" },
+      title_generation: { label: "تولید عنوان", hint: "عنوان نشست‌ها" },
+      review: { label: "بازبینی", hint: "زیرعامل /review" },
+      triage_specifier: { label: "مشخص‌ساز اولویت", hint: "پرداخت جزئیات کانبان" },
+      kanban_decomposer: { label: "تجزیه‌گر کانبان", hint: "تجزیهٔ وظایف" },
+      profile_describer: { label: "توصیف‌گر پروفایل", hint: "توصیف خودکار پروفایل‌ها" },
+      curator: { label: "کوراتور", hint: "بازبینی استفاده از مهارت" },
+    },
+    setAuxiliaryTask: "تنظیم وظیفهٔ کمکی: {task}",
   },
 
   logs: {
@@ -1711,5 +1742,21 @@ export const fa = defineLocale({
     testButton: "آزمون",
     configureButton: "پیکربندی",
     telegramChooseHow: "روش اتصال بات تلگرام خود را انتخاب کنید",
+    telegramFindMyUserId: "شناسهٔ کاربری من را پیدا کن",
+    telegramAllowedUsersOptional:
+      "می‌توانید کاربران مجاز را خالی بگذارید. در این صورت هرمس به کاربران جدید دایرکت‌دهنده کدی می‌فرستد که از صفحهٔ جفت‌سازی تأیید می‌کنید.",
+    savedRestartBanner:
+      "تغییرات ذخیره شد. برای اعمال‌شدن، دروازه را راه‌اندازی مجدد کنید.",
+    whatsappScanHint: "با Linked Devices واتس‌اپ اسکن کنید، نه با اپ دوربین.",
+    whatsappAfterSavePairing:
+      "پس از ذخیره، دایرکت‌های ناشناس کد جفت‌سازی هرمس را می‌گیرند، مگر اینکه شماره‌شان از قبل مجاز باشد.",
+    whatsappRestartStep: "ذخیره کنید و دروازه را راه‌اندازی مجدد کنید.",
+    whatsappOpenChatLink: "باز کردن پیوند گفتگو",
+    telegramCredentialsSet:
+      "اعتبارنامه‌های تلگرام از قبل پیکربندی شده‌اند. راه‌اندازی QR جدید یا توکن بات، هنگام ذخیره، بات فعلی را جایگزین می‌کند.",
+    telegramFinishOrCancel:
+      "پیش از تغییر روش، راه‌اندازی QR فعلی را تمام یا لغو کنید.",
+    telegramUserIdPlaceholder: "شناسهٔ کاربری تلگرام",
+    telegramAddAtLeastOne: "حداقل یک شناسهٔ کاربری تلگرام اضافه کنید.",
   },
 });

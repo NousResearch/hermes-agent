@@ -379,6 +379,10 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
         return mandated
     if (provider or "").strip().lower() in {"nous", "nous-portal", "nousresearch"}:
         return nous_api_mode(model)
+    if model:
+        specific = model_specific_api_mode(provider, model)
+        if specific is not None:
+            return specific
     pdef = get_provider(provider)
     if pdef is not None:
         if pdef.transport in TRANSPORT_TO_API_MODE:
@@ -389,6 +393,92 @@ def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> st
     if provider == "bedrock":
         return "bedrock_converse"
     return "chat_completions"
+
+
+def _configured_provider_entry(provider: str) -> Optional[Dict[str, Any]]:
+    """The user's config entry backing *provider* — ``providers.<key>`` or a legacy
+    ``custom_providers`` row — matched by key/alias identity, or ``None``. Read-only: the
+    caller only inspects the returned mapping."""
+    raw = (provider or "").strip().lower()
+    if not raw:
+        return None
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+    except Exception:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    canonical = normalize_provider(provider)
+    try:
+        from hermes_cli.config_providers import stringify_provider_map
+        providers = stringify_provider_map(cfg.get("providers"))
+    except Exception:
+        providers = {}
+    for key, entry in providers.items():
+        if not isinstance(entry, dict):
+            continue
+        key_l = str(key).strip().lower()
+        if raw == key_l or canonical == normalize_provider(key_l) \
+                or raw in custom_provider_aliases(entry.get("name", ""), key):
+            return entry
+    custom = cfg.get("custom_providers")
+    if isinstance(custom, list):
+        for row in custom:
+            if not isinstance(row, dict):
+                continue
+            if raw in custom_provider_aliases(row.get("name", ""), row.get("provider_key", "")):
+                return row
+    return None
+
+
+def model_specific_api_mode(provider: str, model: str) -> Optional[str]:
+    """Per-model wire protocol declared in the user's provider config, or ``None``.
+
+    An aggregator fronting many models can declare each model's wire under its provider entry:
+    ``providers.<name>.models.<id>`` (or the legacy ``custom_providers`` row) with ``api_mode`` /
+    ``transport`` (e.g. ``anthropic_messages`` for an Anthropic-only model on an otherwise
+    OpenAI-compatible endpoint). Without this lookup the provider-level default routes such a
+    model down ``/v1/chat/completions`` and the upstream 500s (#126322). An explicit per-model
+    declaration wins over the provider's default transport; no declaration — or an unrecognized
+    value — keeps ``determine_api_mode``'s existing behavior."""
+    if not (model or "").strip():
+        return None
+    entry = _configured_provider_entry(provider)
+    if entry is None:
+        return None
+    try:
+        from hermes_cli.config_providers import _canonical_api_mode, _normalize_provider_models
+        models, _ = _normalize_provider_models(entry.get("models"))
+    except Exception:
+        return None
+    if not isinstance(models, dict) or not models:
+        return None
+    try:
+        from hermes_constants import _canonical_model_variants
+        variants = _canonical_model_variants(model.strip())
+    except Exception:
+        variants = [model.strip()]
+    for variant in variants:
+        mcfg = models.get(variant)
+        if not isinstance(mcfg, dict):
+            continue
+        raw_mode = mcfg.get("api_mode") or mcfg.get("transport")
+        if not isinstance(raw_mode, str) or not raw_mode.strip():
+            return None
+        mode = _canonical_api_mode(raw_mode)
+        if mode in TRANSPORT_TO_API_MODE.values():
+            return mode
+        # A plugin-registered dialect is a valid wire name too; anything else is a config typo
+        # and must fall through to today's logic instead of pinning a wire no transport serves.
+        try:
+            from agent.transports import registered_api_modes
+            if mode in registered_api_modes():
+                return mode
+        except Exception:
+            pass
+        return None
+    return None
 
 
 # -- Provider from user config ------------------------------------------------

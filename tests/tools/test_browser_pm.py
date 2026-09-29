@@ -208,7 +208,7 @@ def test_restricted_path_discovers_external_browser_without_execution(browser_st
 
     monkeypatch.setattr("subprocess.Popen", forbidden)
     monkeypatch.setattr(pm, "ensure", forbidden)
-    assert install._find_agent_browser(validate=False) == str(binary)
+    assert Path(install._find_agent_browser(validate=False)) == binary
     assert not store.exists()
 
 

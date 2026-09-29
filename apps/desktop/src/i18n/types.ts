@@ -926,7 +926,11 @@ export interface Translations {
         disabledDesc: string
         lockedDesc: string
         unlockedDesc: string
+        automationConfigured: string
+        authUnavailable: string
+        connectIncomplete: string
         statusLocked: string
+        statusConfigured: string
         statusNotDetected: string
         statusOff: string
         statusUnlocked: string
@@ -936,6 +940,10 @@ export interface Translations {
         unlocked: (name: string) => string
         unlockTitle: (name: string) => string
         unlockDescription: string
+        legacyRemoteUnlockDescription: string
+        unlockOnePasswordDescription: string
+        unlockWithOnePasswordApp: string
+        unlockWithPassword: string
         masterPasswordPlaceholder: string
       }
     }

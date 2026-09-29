@@ -30,12 +30,17 @@ class LoginBackend(ABC):
     display_name: str        # user-facing
     prefix: str              # handle prefix ("vault_", "op:", "bw:")
     needs_unlock: bool = False
+    supports_app_unlock: bool = False
 
     def owns(self, handle: str) -> bool:
         return handle.startswith(self.prefix)
 
     def is_unlocked(self) -> bool:
         return True
+
+    def auth_capabilities(self) -> Optional[Dict[str, object]]:
+        """Optional, configuration-only auth eligibility for backends with multiple modes."""
+        return None
 
     @abstractmethod
     def list_items(self) -> List[VaultItemMeta]:

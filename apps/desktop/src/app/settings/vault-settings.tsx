@@ -24,7 +24,7 @@ import { KeyRound, Lock, Plus, ShieldLock, Trash2 } from '@/lib/icons'
 import { $activeConnectionId } from '@/store/connections'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $gatewayState } from '@/store/session'
+import { $connection, $gatewayState } from '@/store/session'
 import { $settingsScopeProfile } from '@/store/settings-scope'
 
 import { CONTROL_TEXT } from './constants'
@@ -38,6 +38,12 @@ const vaultQueryKey = (owner: string) => ['vault-items', owner] as const
 const vaultSourcesQueryKey = (owner: string) => ['vault-sources', owner] as const
 
 export type VaultSourceName = 'bitwarden' | 'local' | 'onepassword'
+export interface VaultAuthCapabilities {
+  mode: 'interactive' | 'service_account' | 'connect' | 'unavailable'
+  methods: Array<'app' | 'password'>
+  native_app_eligible: boolean
+  reason: null | string
+}
 
 /** One login source as reported by `vault.sources` — the backend is authoritative for enabled/unlocked. */
 export interface VaultSource {
@@ -47,6 +53,8 @@ export interface VaultSource {
   needs_unlock: boolean
   unlocked: boolean
   installed: boolean
+  /** Absent when connected to a backend version that predates auth capabilities. */
+  auth_capabilities?: VaultAuthCapabilities | null
 }
 
 export type VaultKind = 'address' | 'login' | 'payment'
@@ -169,6 +177,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   // construction rather than by cleanup code.
   const scopeProfile = useStore($settingsScopeProfile)
   const connectionId = useStore($activeConnectionId)
+  const connection = useStore($connection)
   const owner = vaultOwnerKey(connectionId, scopeProfile)
 
   const requestGateway = useCallback(
@@ -188,8 +197,16 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   const [formError, setFormError] = useState<null | string>(null)
   const [pendingDelete, setPendingDelete] = useState<null | VaultItem>(null)
   const [unlockTarget, setUnlockTarget] = useState<null | VaultSource>(null)
+  const [usePasswordUnlock, setUsePasswordUnlock] = useState(false)
   const [masterPassword, setMasterPassword] = useState('')
   const [unlockError, setUnlockError] = useState<null | string>(null)
+  const unlockCapabilities = unlockTarget?.auth_capabilities
+  const legacyRemoteUnlock = Boolean(unlockTarget && !unlockCapabilities && connection?.mode === 'remote')
+  const nativeUnlockEligible = unlockCapabilities
+    ? unlockCapabilities.native_app_eligible && unlockCapabilities.methods.includes('app')
+    : unlockTarget?.name === 'onepassword' && (!connection || connection.mode === 'local')
+  const passwordUnlockEligible = unlockCapabilities ? unlockCapabilities.methods.includes('password') : true
+  const appUnlock = Boolean(nativeUnlockEligible && !usePasswordUnlock)
   // Secrets never become mutation variables (react-query retains those after settle); they live
   // in refs the mutationFn consumes and wipes.
   const pendingMasterPassword = useRef('')
@@ -232,16 +249,21 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
   // returns (success or failure) and never touches a store or the transcript.
   const closeUnlock = useCallback(() => {
     setUnlockTarget(null)
+    setUsePasswordUnlock(false)
     setMasterPassword('')
     setUnlockError(null)
   }, [])
 
   const unlockSource = useMutation({
-    mutationFn: ({ name }: { name: VaultSourceName }) => {
+    mutationFn: ({ name, method }: { name: VaultSourceName; method?: 'app' | 'password' }) => {
       const password = pendingMasterPassword.current
       pendingMasterPassword.current = ''
 
-      return requestGateway<{ unlocked: boolean }>('vault.unlock', { name, password })
+      return requestGateway<{ unlocked: boolean }>('vault.unlock', {
+        name,
+        password,
+        ...(method ? { method } : {})
+      })
     },
     onSuccess: (_result, { name }) => {
       triggerHaptic('submit')
@@ -255,6 +277,17 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
       setUnlockError(err instanceof Error ? err.message : String(err))
     }
   })
+
+  const submitUnlock = (password: string) => {
+    if (!unlockTarget || unlockSource.isPending) return
+
+    pendingMasterPassword.current = password
+    setMasterPassword('')
+    unlockSource.mutate({
+      name: unlockTarget.name,
+      ...(unlockTarget.auth_capabilities ? { method: appUnlock ? 'app' : 'password' } : {})
+    })
+  }
 
   const { data, error, isPending } = useQuery({
     enabled: gatewayState === 'open',
@@ -479,6 +512,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
               action={
                 <span className="flex items-center justify-end gap-2">
                   {source.enabled &&
+                    !['service_account', 'connect'].includes(source.auth_capabilities?.mode ?? '') &&
                     (source.unlocked ? (
                       <Button
                         className="gap-1.5"
@@ -491,7 +525,7 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
                         <Lock className="size-3.5" />
                         {v.sources.lock}
                       </Button>
-                    ) : (
+                    ) : source.auth_capabilities && source.auth_capabilities.methods.length === 0 ? null : (
                       <Button
                         className="gap-1.5"
                         onClick={() => setUnlockTarget(source)}
@@ -519,11 +553,20 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
               description={
                 !source.installed
                   ? v.sources.notInstalled(source.display_name)
-                  : source.enabled
-                    ? source.unlocked
-                      ? v.sources.unlockedDesc
-                      : v.sources.lockedDesc
-                    : v.sources.disabledDesc
+                  : !source.enabled
+                    ? v.sources.disabledDesc
+                    : source.auth_capabilities?.mode === 'service_account' ||
+                        source.auth_capabilities?.mode === 'connect'
+                      ? v.sources.automationConfigured
+                      : source.auth_capabilities?.mode === 'unavailable'
+                        ? source.auth_capabilities.reason === 'connect_incomplete'
+                          ? v.sources.connectIncomplete
+                          : v.sources.authUnavailable
+                        : source.auth_capabilities && source.auth_capabilities.methods.length === 0
+                          ? v.sources.authUnavailable
+                          : source.unlocked
+                            ? v.sources.unlockedDesc
+                            : v.sources.lockedDesc
               }
               key={source.name}
               title={
@@ -534,9 +577,12 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
                       ? v.sources.statusNotDetected
                       : !source.enabled
                         ? v.sources.statusOff
-                        : source.unlocked
-                          ? v.sources.statusUnlocked
-                          : v.sources.statusLocked}
+                        : source.auth_capabilities?.mode === 'service_account' ||
+                            source.auth_capabilities?.mode === 'connect'
+                          ? v.sources.statusConfigured
+                          : source.unlocked
+                            ? v.sources.statusUnlocked
+                            : v.sources.statusLocked}
                   </Pill>
                 </span>
               }
@@ -550,36 +596,60 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle icon={KeyRound}>{v.sources.unlockTitle(unlockTarget?.display_name ?? '')}</DialogTitle>
-            <DialogDescription>{v.sources.unlockDescription}</DialogDescription>
+            <DialogDescription>
+              {legacyRemoteUnlock
+                ? v.sources.legacyRemoteUnlockDescription
+                : appUnlock
+                  ? v.sources.unlockOnePasswordDescription
+                  : v.sources.unlockDescription}
+            </DialogDescription>
           </DialogHeader>
           <form
             className="grid gap-3"
             onSubmit={e => {
               e.preventDefault()
 
-              if (unlockTarget && masterPassword) {
-                pendingMasterPassword.current = masterPassword
-                setMasterPassword('')
-                unlockSource.mutate({ name: unlockTarget.name })
+              if (appUnlock || masterPassword) {
+                submitUnlock(appUnlock ? '' : masterPassword)
               }
             }}
           >
-            <Input
-              autoComplete="current-password"
-              autoFocus
-              disabled={unlockSource.isPending}
-              onChange={e => setMasterPassword(e.target.value)}
-              placeholder={v.sources.masterPasswordPlaceholder}
-              type="password"
-              value={masterPassword}
-            />
+            {!appUnlock && passwordUnlockEligible && (
+              <Input
+                autoComplete="current-password"
+                autoFocus
+                disabled={unlockSource.isPending}
+                onChange={e => setMasterPassword(e.target.value)}
+                placeholder={v.sources.masterPasswordPlaceholder}
+                type="password"
+                value={masterPassword}
+              />
+            )}
             {unlockError && <p className="text-xs text-destructive">{unlockError}</p>}
             <DialogFooter>
+              {nativeUnlockEligible && passwordUnlockEligible && (
+                <Button
+                  disabled={unlockSource.isPending}
+                  onClick={() => (appUnlock ? setUsePasswordUnlock(true) : submitUnlock(''))}
+                  type="button"
+                  variant="ghost"
+                >
+                  {appUnlock ? v.sources.unlockWithPassword : v.sources.unlockWithOnePasswordApp}
+                </Button>
+              )}
               <Button onClick={closeUnlock} type="button" variant="ghost">
                 {t.common.cancel}
               </Button>
-              <Button disabled={unlockSource.isPending || !masterPassword} type="submit">
-                {unlockSource.isPending ? v.sources.unlocking : v.sources.unlock}
+              <Button
+                autoFocus={appUnlock}
+                disabled={unlockSource.isPending || (!appUnlock && (!passwordUnlockEligible || !masterPassword))}
+                type="submit"
+              >
+                {unlockSource.isPending
+                  ? v.sources.unlocking
+                  : appUnlock
+                    ? v.sources.unlockWithOnePasswordApp
+                    : v.sources.unlock}
               </Button>
             </DialogFooter>
           </form>

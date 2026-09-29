@@ -2490,6 +2490,8 @@ DEFAULT_CONFIG = {
             "env": {},  # env-var name → op://vault/item/field; each resolved with one `op read`.
             # Account shorthand / sign-in address for `op read --account`; empty = default.
             "account": "",
+            # Optional op item vault selector; empty preserves the CLI's default selection.
+            "vault": "",
             # Env var holding a service-account token for headless auth (exported to op as
             # OP_SERVICE_ACCOUNT_TOKEN). Unset = interactive/desktop op session.
             "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",

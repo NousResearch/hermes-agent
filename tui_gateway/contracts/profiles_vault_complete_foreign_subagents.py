@@ -436,6 +436,15 @@ method("vault.list", params=ProfileParams, result=VaultListResult,
        doc="Metadata-only listing across the local vault and every unlocked password manager.")
 
 
+class VaultAuthCapabilities(Result):
+    """Secret-free authentication choices resolved by the serving backend."""
+
+    mode: Literal["interactive", "service_account", "connect", "unavailable"]
+    methods: list[Literal["app", "password"]]
+    native_app_eligible: bool
+    reason: str | None
+
+
 class VaultSource(Result):
     name: str
     display_name: str
@@ -443,6 +452,7 @@ class VaultSource(Result):
     needs_unlock: bool
     unlocked: bool
     installed: bool
+    auth_capabilities: VaultAuthCapabilities | None = None
 
 
 class VaultSourcesResult(Result):
@@ -472,6 +482,7 @@ class VaultUnlockParams(ProfileParams):
 
     name: str | None = None
     password: str | None = None
+    method: Literal["app", "password"] | None = None
 
 
 class VaultUnlockResult(Result):

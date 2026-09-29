@@ -1082,7 +1082,11 @@ export const en: Translations = {
         disabledDesc: 'Detected but turned off for Hermes.',
         lockedDesc: 'Detected. The agent will ask you to unlock it when it needs a login, or unlock now.',
         unlockedDesc: 'Unlocked for this session. Locks automatically after 30 minutes idle or when Hermes closes.',
+        automationConfigured: 'Automation identity is configured. It will be verified when the vault is used.',
+        authUnavailable: 'This backend does not currently support an interactive unlock method.',
+        connectIncomplete: 'Connect authentication is incomplete for this profile.',
         statusLocked: 'Locked',
+        statusConfigured: 'Identity configured',
         statusNotDetected: 'Not detected',
         statusOff: 'Off',
         statusUnlocked: 'Unlocked',
@@ -1092,7 +1096,13 @@ export const en: Translations = {
         unlocked: name => `${name} unlocked for this session.`,
         unlockTitle: name => `Unlock ${name}`,
         unlockDescription:
-          'Enter your master password. It is handed to the password manager on this machine and discarded — it is never stored, logged, or shown to the agent.',
+          'Enter your master password. It is handed to the password manager on the computer running the Hermes backend and discarded — it is never stored, logged, or shown to the agent.',
+        legacyRemoteUnlockDescription:
+          'This backend does not report which unlock methods it supports. Native app approval is unavailable here. You can try a password entered for this backend; it is never sent to this device’s password manager.',
+        unlockOnePasswordDescription:
+          'Approve sign-in in the 1Password app on the computer running the Hermes backend. You do not need to enter your master password here.',
+        unlockWithOnePasswordApp: 'Unlock with 1Password',
+        unlockWithPassword: 'Use a password instead',
         masterPasswordPlaceholder: 'Master password'
       }
     },

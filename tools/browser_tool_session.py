@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.browser_tool_origin import origin as _bt
+from tools.browser_task_identity import browser_task_key
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_install as _install
@@ -346,8 +347,7 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     """Get or create session info for a session key (thread-safe); also starts the
     inactivity thread and touches activity. A ``::local`` key forces local Chromium
     even with a cloud provider configured."""
-    if task_id is None:
-        task_id = "default"
+    task_id = browser_task_key(task_id)
 
     _lifecycle._start_browser_cleanup_thread()
     _lifecycle._update_session_activity(task_id)
@@ -402,6 +402,7 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
 
 def _discard_timed_out_browser_session(task_id: str, session_info: Dict[str, Any], task_socket_dir: str) -> None:
     """Drop a stuck client generation without losing cloud cleanup state."""
+    task_id = browser_task_key(task_id)
     with _bt._cleanup_lock:
         if _bt._active_sessions.get(task_id) is not session_info:
             return
@@ -871,6 +872,7 @@ def _run_browser_command(
     """Run one agent-browser CLI command against the task's session; returns its parsed JSON.
     ``timeout=None`` reads ``browser.command_timeout``; ``_engine_override`` forces an engine
     for this call only (Lightpanda fallback retries with Chrome without touching global state)."""
+    task_id = browser_task_key(task_id)
     if timeout is None:
         timeout = _bt._safe_command_timeout()
     args = args or []

@@ -25,6 +25,7 @@ from tools.browser_supervisor_dialogs import (
     DialogSupervisionMixin, PendingDialog,
 )
 from tools.browser_supervisor_frames import FrameInfo, FrameTrackingMixin
+from tools.browser_task_identity import browser_task_key
 
 # ``websockets`` costs ~22 ms at import and is only needed once a supervisor connects.
 if TYPE_CHECKING:
@@ -498,10 +499,12 @@ class _SupervisorRegistry:
         self._by_task: Dict[str, CDPSupervisor] = {}
 
     def get(self, task_id: str) -> Optional[CDPSupervisor]:
+        task_id = browser_task_key(task_id)
         with self._lock:
             return self._by_task.get(task_id)
 
     def _pop(self, task_id: str) -> Optional[CDPSupervisor]:
+        task_id = browser_task_key(task_id)
         with self._lock:
             return self._by_task.pop(task_id, None)
 
@@ -509,6 +512,7 @@ class _SupervisorRegistry:
                      dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
         """Idempotently ensure a supervisor runs for ``(task_id, cdp_url)``; one bound to a
         different ``cdp_url`` or unhealthy (dead thread / stopped loop) is stopped and replaced."""
+        task_id = browser_task_key(task_id)
         with self._lock:
             existing = self._by_task.get(task_id)
             if existing is not None:

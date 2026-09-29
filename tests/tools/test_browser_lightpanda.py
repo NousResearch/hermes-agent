@@ -11,6 +11,7 @@ from tools import browser_tool_session as bt_session
 from tools import browser_tool_install as bt_install
 from tools import browser_tool_cloud as bt_cloud
 from tools import browser_tool_cdp as bt_cdp
+from tools.browser_task_identity import browser_task_key
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +403,7 @@ class TestEngineOverride:
             assert "AGENT_BROWSER_CHROME_FLAGS" not in environment
 
     def test_hybrid_local_sidecar_injects_engine_even_with_cloud_provider(self):
-        """A task::local sidecar is local even when global cloud config exists."""
+        """A typed local sidecar is local even when global cloud config exists."""
         import tools.browser_tool as bt
 
         bt._cached_browser_engine = "lightpanda"
@@ -440,7 +441,7 @@ class TestEngineOverride:
              ))), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch("tools.browser_tool_lifecycle._write_owner_pid"):
-            bt_session._run_browser_command("task::local", "snapshot", [])
+            bt_session._run_browser_command(browser_task_key("task").with_local(True), "snapshot", [])
 
         assert len(captured_cmds) == 1
         assert "--engine" in captured_cmds[0]
@@ -615,6 +616,7 @@ class TestLightpandaSessionLifecycle:
         bt._cleanup_done = self.orig_cleanup_done
 
     def _seed(self, key="task-1", name="lp_dead"):
+        key = browser_task_key(key)
         info = {
             "session_name": name,
             "bb_session_id": None,
@@ -639,7 +641,8 @@ class TestLightpandaSessionLifecycle:
 
     def test_get_session_info_respawns_dead_lightpanda(self, monkeypatch):
         bt = self.bt
-        stale = self._seed()
+        task_key = browser_task_key("task-1")
+        stale = self._seed(task_key)
         fresh = {
             "session_name": "lp_fresh",
             "bb_session_id": None,
@@ -665,10 +668,10 @@ class TestLightpandaSessionLifecycle:
         supervised = []
         monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", supervised.append)
 
-        info = bt_session._get_session_info("task-1")
-        assert cleaned == ["task-1"]
+        info = bt_session._get_session_info(task_key)
+        assert cleaned == [task_key]
         assert info["session_name"] == "lp_fresh"
-        assert bt._active_sessions["task-1"]["session_name"] == "lp_fresh"
+        assert bt._active_sessions[task_key]["session_name"] == "lp_fresh"
         assert info["session_name"] != stale["session_name"]
         # Browser Use mode hides the browser_* tools that read supervisor
         # state; a Lightpanda session never attaches one.
@@ -676,17 +679,18 @@ class TestLightpandaSessionLifecycle:
 
     def test_cleanup_stops_lightpanda_without_agent_browser_close(self, monkeypatch):
         bt = self.bt
-        self._seed()
+        task_key = browser_task_key("task-1")
+        self._seed(task_key)
         stopped = []
         monkeypatch.setattr("tools.browser_lightpanda.stop_lightpanda", stopped.append)
         with patch("tools.browser_tool._maybe_stop_recording"), \
              patch("tools.browser_tool_session._run_browser_command") as run, \
              patch("tools.browser_tool.os.path.exists", return_value=False):
-            bt_lifecycle.cleanup_browser("task-1")
+            bt_lifecycle.cleanup_browser(task_key)
         run.assert_not_called()
         assert stopped == ["lp_dead"]
-        assert "task-1" not in bt._active_sessions
-        assert "task-1" not in bt._session_last_activity
+        assert task_key not in bt._active_sessions
+        assert task_key not in bt._session_last_activity
 
     def test_emergency_cleanup_stops_all_lightpanda(self, monkeypatch):
         bt = self.bt

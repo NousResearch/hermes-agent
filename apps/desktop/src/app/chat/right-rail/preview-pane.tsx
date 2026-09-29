@@ -72,7 +72,7 @@ import { LocalFilePreview, PreviewEmptyState, PreviewModeSwitcher } from './prev
 import { type PreviewInputEvent, registerPreviewInput, toWebviewInputSpace } from './preview-input'
 import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
-import { registerPreviewScriptRunner } from './preview-script-runner'
+import { registerPreviewScriptRunner, watchPreviewDocumentLifecycle } from './preview-script-runner'
 import { RealProfileConsentDialog } from './real-profile-consent-dialog'
 
 type PreviewWebview = HTMLElement & {
@@ -811,15 +811,19 @@ export function PreviewPane({
       return
     }
 
-    return registerPreviewScriptRunner(tabId, async code => {
-      const webview = webviewRef.current
+    return registerPreviewScriptRunner(
+      tabId,
+      async code => {
+        const webview = webviewRef.current
 
-      if (!webview?.executeJavaScript) {
-        throw new Error('preview webview is not ready')
-      }
+        if (!webview?.executeJavaScript) {
+          throw new Error('preview webview is not ready')
+        }
 
-      return webview.executeJavaScript(code)
-    })
+        return webview.executeJavaScript(code)
+      },
+      { initiallyReady: false }
+    )
   }, [isWebPreview, tabId])
 
   // Publish the INPUT channel for this tab. Same idea as the script runner, but
@@ -1284,6 +1288,7 @@ export function PreviewPane({
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
     webview.addEventListener('did-fail-load', onFail)
+    const stopWatchingDocumentNavigation = tabId ? watchPreviewDocumentLifecycle(webview, tabId) : undefined
     webview.addEventListener('did-navigate', onNavigate)
     webview.addEventListener('did-navigate-in-page', onNavigate)
     webview.addEventListener('did-start-loading', onStart)
@@ -1304,6 +1309,7 @@ export function PreviewPane({
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)
       webview.removeEventListener('did-fail-load', onFail)
+      stopWatchingDocumentNavigation?.()
       webview.removeEventListener('did-navigate', onNavigate)
       webview.removeEventListener('did-navigate-in-page', onNavigate)
       webview.removeEventListener('did-start-loading', onStart)

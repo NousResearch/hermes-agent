@@ -760,7 +760,7 @@ def _open_requests(sid: str) -> list[dict]:
     if (session := _sessions.get(sid)) is not None:
         with session.get("history_lock", threading.Lock()):
             mirrored = session.get("_compute_host_open_request")
-            return [dict(mirrored)] if isinstance(mirrored, dict) else []
+            return [dict(mirrored)] if isinstance(mirrored, dict) and mirrored.get("replayable", True) else []
     return []
 
 

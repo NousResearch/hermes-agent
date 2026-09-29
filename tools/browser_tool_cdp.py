@@ -8,6 +8,7 @@ from typing import Tuple
 
 from agent.proxy_bypass import loopback_request_kwargs
 from tools.browser_tool_origin import origin_module as _origin
+from tools.browser_task_identity import browser_task_key
 
 
 def _resolve_cdp_override(cdp_url: str) -> str:
@@ -107,6 +108,7 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     (cloud providers, e.g. Browserbase). Swallows all errors — a failed attach must not break the session;
     snapshots just lack ``pending_dialogs`` / ``frame_tree``.
     """
+    task_id = browser_task_key(task_id)
     _bt = _origin()
     cdp_url = _get_cdp_override()
     if not cdp_url:

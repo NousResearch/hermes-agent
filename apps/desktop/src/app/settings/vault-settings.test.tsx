@@ -81,6 +81,35 @@ describe('VaultSettings', () => {
     )
   })
 
+  it('keeps same-named profile vault data isolated when the connection changes', async () => {
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.list') {
+        const connectionId = $connection.get()?.connectionId ?? 'local'
+
+        return { items: [{ ...LOGIN_ITEM, id: connectionId, label: `${connectionId} vault` }] }
+      }
+
+      return { sources: [] }
+    })
+    $connection.set({ connectionId: 'machine-a', mode: 'local' } as never)
+    renderVault()
+
+    expect(await screen.findByText('machine-a vault')).toBeTruthy()
+    act(() => $connection.set({ connectionId: 'machine-b', mode: 'remote' } as never))
+
+    expect(await screen.findByText('machine-b vault')).toBeTruthy()
+    expect(screen.queryByText('machine-a vault')).toBeNull()
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'machine-b',
+      expect.any(String),
+      'vault.list',
+      {},
+      undefined,
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
+  })
+
   it('opens the Add dialog pre-filled from deep-link query params (never secrets)', async () => {
     requestGateway.mockResolvedValue({ items: [] })
     renderVault('/settings?tab=vault&kind=login&label=github&origin=https://github.com')
@@ -196,6 +225,7 @@ describe('VaultSettings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Unlock' }))
     await waitFor(() => expect(screen.getByText('Unlock 1Password')).toBeTruthy())
 
+    fireEvent.click(screen.getByRole('button', { name: 'Use a password instead' }))
     fireEvent.change(screen.getByPlaceholderText('Master password'), { target: { value: 'correct horse' } })
     fireEvent.click(
       screen.getByRole('button', { name: 'Unlock' }).closest('form')!.querySelector('button[type=submit]')!
@@ -207,6 +237,209 @@ describe('VaultSettings', () => {
     await waitFor(() => expect(screen.getByText('Unlocked')).toBeTruthy())
     expect(screen.queryByPlaceholderText('Master password')).toBeNull()
     expect(screen.getByRole('button', { name: 'Lock' })).toBeTruthy()
+  })
+
+  it('defaults to native 1Password approval without collecting a master password', async () => {
+    $connection.set({ connectionId: 'this-device', mode: 'local' } as never)
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.list') return { items: [] }
+      if (method === 'vault.sources') {
+        return {
+          sources: [
+            {
+              name: 'onepassword',
+              display_name: '1Password',
+              enabled: true,
+              needs_unlock: true,
+              unlocked: false,
+              installed: true
+            }
+          ]
+        }
+      }
+
+      return { unlocked: true }
+    })
+    renderVault()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Unlock' }))
+    const approve = await screen.findByRole('button', { name: 'Unlock with 1Password' })
+    expect(screen.queryByPlaceholderText('Master password')).toBeNull()
+    // Enter and a click use the same native authorization path.
+    expect(approve.getAttribute('type')).toBe('submit')
+    fireEvent.submit(approve.closest('form')!)
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('vault.unlock', { name: 'onepassword', password: '' })
+    )
+  })
+
+  it('uses backend-reported native eligibility and sends the compatible method', async () => {
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.sources') {
+        return {
+          sources: [
+            {
+              name: 'onepassword',
+              display_name: '1Password',
+              enabled: true,
+              needs_unlock: true,
+              unlocked: false,
+              installed: true,
+              auth_capabilities: {
+                mode: 'interactive',
+                methods: ['app', 'password'],
+                native_app_eligible: true,
+                reason: null
+              }
+            }
+          ]
+        }
+      }
+
+      return { items: [], unlocked: true }
+    })
+    renderVault()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Unlock' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Unlock with 1Password' }))
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('vault.unlock', { name: 'onepassword', password: '', method: 'app' })
+    )
+    // The mutation cache stores only the source and the selected non-secret method.
+    expect(
+      queryClient
+        .getMutationCache()
+        .getAll()
+        .some(mutation => {
+          const variables = mutation.state.variables
+
+          return Boolean(variables && typeof variables === 'object' && 'password' in variables)
+        })
+    ).toBe(false)
+  })
+
+  it('uses password unlock for a remote backend that does not offer a native app', async () => {
+    $connection.set({ connectionId: 'remote-a', mode: 'remote' } as never)
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.sources') {
+        return {
+          sources: [
+            {
+              name: 'onepassword',
+              display_name: '1Password',
+              enabled: true,
+              needs_unlock: true,
+              unlocked: false,
+              installed: true,
+              auth_capabilities: {
+                mode: 'interactive',
+                methods: ['password'],
+                native_app_eligible: false,
+                reason: 'The remote backend requires a password.'
+              }
+            }
+          ]
+        }
+      }
+
+      return { items: [], unlocked: true }
+    })
+    renderVault()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Unlock' }))
+    expect(await screen.findByPlaceholderText('Master password')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Unlock with 1Password' })).toBeNull()
+    fireEvent.change(screen.getByPlaceholderText('Master password'), { target: { value: 'remote password' } })
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Unlock' }).closest('form')!.querySelector('button[type=submit]')!
+    )
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('vault.unlock', {
+        name: 'onepassword',
+        password: 'remote password',
+        method: 'password'
+      })
+    )
+  })
+
+  it('shows configured service identities without claiming they have been verified', async () => {
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.sources') {
+        return {
+          sources: [
+            {
+              name: 'onepassword',
+              display_name: '1Password',
+              enabled: true,
+              needs_unlock: true,
+              unlocked: true,
+              installed: true,
+              auth_capabilities: {
+                mode: 'service_account',
+                methods: [],
+                native_app_eligible: false,
+                reason: null
+              }
+            },
+            {
+              name: 'bitwarden',
+              display_name: 'Bitwarden',
+              enabled: true,
+              needs_unlock: true,
+              unlocked: true,
+              installed: true,
+              auth_capabilities: {
+                mode: 'connect',
+                methods: [],
+                native_app_eligible: false,
+                reason: null
+              }
+            }
+          ]
+        }
+      }
+
+      return { items: [] }
+    })
+    renderVault()
+
+    expect(await screen.findAllByText('Identity configured')).toHaveLength(2)
+    expect(
+      screen.getAllByText('Automation identity is configured. It will be verified when the vault is used.')
+    ).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: 'Lock' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Unlock' })).toBeNull()
+  })
+
+  it('does not offer native approval for a legacy remote row without capability metadata', async () => {
+    $connection.set({ connectionId: 'remote-b', mode: 'remote' } as never)
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'vault.sources') {
+        return {
+          sources: [
+            {
+              name: 'onepassword',
+              display_name: '1Password',
+              enabled: true,
+              needs_unlock: true,
+              unlocked: false,
+              installed: true
+            }
+          ]
+        }
+      }
+
+      return { items: [], unlocked: true }
+    })
+    renderVault()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Unlock' }))
+    expect(await screen.findByPlaceholderText('Master password')).toBeTruthy()
+    expect(screen.getByText(/This backend does not report which unlock methods it supports/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Unlock with 1Password' })).toBeNull()
   })
 
   it('refreshes password-manager detection when the page is reopened', async () => {

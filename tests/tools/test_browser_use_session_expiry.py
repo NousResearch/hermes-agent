@@ -6,6 +6,7 @@ import tools.browser_tool as browser_tool
 from plugins.browser.browser_use import provider as browser_use_provider
 from tools import browser_tool_session as bt_session
 from tools import browser_tool_cloud as bt_cloud
+from tools.browser_task_identity import browser_task_key
 
 
 def _isolate_browser_state(monkeypatch):
@@ -45,17 +46,18 @@ def test_browser_use_preserves_provider_timeout(monkeypatch):
 
 def test_live_cloud_session_is_reused(monkeypatch):
     _isolate_browser_state(monkeypatch)
+    task_key = browser_task_key("task-1")
     existing = {
         "session_name": "existing",
         "bb_session_id": "browser-session-1",
         "cdp_url": "ws://browser-use.example/devtools/browser/1",
         "expires_at": "2999-01-01T00:05:00Z",
     }
-    browser_tool._active_sessions["task-1"] = existing
+    browser_tool._active_sessions[task_key] = existing
     provider = Mock()
     monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
 
-    session = bt_session._get_session_info("task-1")
+    session = bt_session._get_session_info(task_key)
 
     assert session is existing
     provider.create_session.assert_not_called()
@@ -63,13 +65,14 @@ def test_live_cloud_session_is_reused(monkeypatch):
 
 def test_expired_cloud_session_is_replaced_without_reusing_dead_cdp(monkeypatch):
     _isolate_browser_state(monkeypatch)
-    browser_tool._active_sessions["task-1"] = {
+    task_key = browser_task_key("task-1")
+    browser_tool._active_sessions[task_key] = {
         "session_name": "expired",
         "bb_session_id": "browser-session-old",
         "cdp_url": "ws://browser-use.example/devtools/browser/old",
         "expires_at": "2020-01-01T00:05:00Z",
     }
-    browser_tool._session_last_activity["task-1"] = 1.0
+    browser_tool._session_last_activity[task_key] = 1.0
 
     provider = Mock()
     provider.create_session.return_value = {
@@ -85,11 +88,11 @@ def test_expired_cloud_session_is_replaced_without_reusing_dead_cdp(monkeypatch)
     monkeypatch.setattr(bt_session, "_run_browser_command", Mock())
     monkeypatch.setattr(browser_tool.os.path, "exists", lambda path: False)
 
-    session = bt_session._get_session_info("task-1")
+    session = bt_session._get_session_info(task_key)
 
     assert session["bb_session_id"] == "browser-session-new"
-    assert browser_tool._active_sessions["task-1"] is session
-    assert "task-1" in browser_tool._session_last_activity
+    assert browser_tool._active_sessions[task_key] is session
+    assert task_key in browser_tool._session_last_activity
     provider.close_session.assert_called_once_with("browser-session-old")
-    provider.create_session.assert_called_once_with("task-1")
+    provider.create_session.assert_called_once_with(task_key)
     bt_session._run_browser_command.assert_not_called()

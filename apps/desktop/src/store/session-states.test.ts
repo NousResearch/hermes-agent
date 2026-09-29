@@ -13,6 +13,7 @@ import {
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { setPrimaryGateway, setPrimaryGatewayConnection } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
+import { closeRightRail, $previewTabs, openPreview, type PreviewTarget } from '@/store/preview'
 import {
   $activeSessionId,
   $connection,
@@ -1427,6 +1428,32 @@ describe('knownOwnerForSession / requestForOwnedSession (#91684 client half)', (
     setSessions([{ connection_id: 'source-b', id: 'stored-shared', profile: 'default' } as never])
 
     expect(knownOwnerForSession('stored-shared')).toEqual({ connectionId: 'source-b', profile: 'default' })
+  })
+
+  it('re-homes preview tabs when the same profile is owned by another connection', () => {
+    const fileTarget = (path: string): PreviewTarget => ({
+      kind: 'file',
+      label: path,
+      path,
+      source: path,
+      url: `file://${path}`
+    })
+
+    closeRightRail()
+    setSessionOwnerHint('runtime-preview-a', { connectionId: 'connection-a', profile: 'default' })
+    setSessionOwnerHint('runtime-preview-b', { connectionId: 'connection-b', profile: 'default' })
+    $activeSessionId.set('runtime-preview-a')
+    openPreview(fileTarget('/work/connection-a.html'))
+
+    $activeSessionId.set('runtime-preview-b')
+    expect($previewTabs.get()).toEqual([])
+    openPreview(fileTarget('/work/connection-b.html'))
+
+    $activeSessionId.set('runtime-preview-a')
+    expect($previewTabs.get().map(tab => tab.target.path)).toEqual(['/work/connection-a.html'])
+
+    $activeSessionId.set(null)
+    closeRightRail()
   })
 
   // Two connections both exposing `default`: the row only names the profile,

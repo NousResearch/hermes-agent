@@ -2,6 +2,7 @@ from unittest.mock import Mock, patch
 from tools import browser_tool_cloud as bt_cloud
 from tools import browser_tool_cdp as bt_cdp
 from tools import browser_tool_session as bt_session
+from tools.browser_task_identity import browser_task_key
 
 
 HOST = "example-host"
@@ -85,11 +86,13 @@ class TestResolveCdpOverride:
         monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
         monkeypatch.setattr(bt_cloud, "_get_cloud_provider", lambda: provider)
 
+        task_key = browser_task_key("task-browser-use")
         with patch("requests.get", return_value=response) as mock_get:
-            session_info = bt_session._get_session_info("task-browser-use")
+            session_info = bt_session._get_session_info(task_key)
 
         assert session_info["cdp_url"] == WS_URL
-        provider.create_session.assert_called_once_with("task-browser-use")
+        provider.create_session.assert_called_once_with(task_key)
+        assert session_info["session_key"] == task_key
         mock_get.assert_called_once_with(
             "https://cdp.browser-use.example/session/json/version",
             timeout=10,

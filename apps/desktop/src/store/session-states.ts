@@ -1697,14 +1697,22 @@ setSessionOwnerResolver(knownOwnerForSession)
  *  the same trap for the roster highlight and resolves it the same way. */
 function railScopeForActiveSession(): string {
   const owner = knownOwnerForSession($activeSessionId.get() ?? undefined)
-  const profile = typeof owner === 'string' ? owner : owner?.profile
+  const profile = typeof owner === 'string' ? owner : owner?.profile || $activeGatewayProfile.get()
 
-  return normalizeProfileKey(profile || $activeGatewayProfile.get())
+  if (owner && typeof owner === 'object') {
+    return registryBackendScopeKey(owner.connectionId, profile)
+  }
+
+  return normalizeProfileKey(profile)
 }
 
 /** Keep the rail on the chat in view, so switching agents re-homes it. */
 function syncPreviewScope() {
-  setPreviewScope(railScopeForActiveSession())
+  const owner = knownOwnerForSession($activeSessionId.get() ?? undefined)
+  const allowLegacyProfileTabs =
+    !owner || typeof owner === 'string' || owner.mode === 'local' || owner.connectionId === LOCAL_CONNECTION_ID
+
+  setPreviewScope(railScopeForActiveSession(), { allowLegacyProfileTabs })
 }
 
 $activeSessionId.subscribe(syncPreviewScope)
@@ -2682,9 +2690,9 @@ export function dropTilesForProfile(
   }
 
   persistTiles()
-  // The rail is a profile-keyed family too: a deleted profile's tabs must not
-  // outlive it, or a later profile of the same name inherits them.
-  dropPreviewTabsForProfile(name)
+  // The rail is scoped to its backend owner too: a deleted profile's tabs must
+  // not outlive it or leak into another connection's same-named profile.
+  dropPreviewTabsForProfile(name, route)
 }
 
 /**

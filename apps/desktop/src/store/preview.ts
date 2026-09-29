@@ -1,5 +1,7 @@
 import { atom, computed } from 'nanostores'
 
+import { LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
+
 import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
 import { readJson, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
@@ -130,7 +132,7 @@ function parseTabList(parsed: unknown): PreviewTab[] {
   )
 }
 
-/** The tabs a profile's rail is showing, keyed by profile. */
+/** The tabs a backend owner's rail is showing, keyed by connection/profile scope. */
 type TabsByProfile = Record<string, PreviewTab[]>
 
 /** Read every profile's bucket. A value written by a build that stored ONE
@@ -208,6 +210,7 @@ function persistTabs() {
 // changing, so this has to follow the rename or the persist subscriber below
 // would resurrect the bucket the rename just deleted.
 let viewKey = 'default'
+const activeTabByScope: Record<string, null | RightRailTabId> = {}
 
 export const $previewTabs = atom<PreviewTab[]>([])
 
@@ -219,6 +222,10 @@ export const $previewTabs = atom<PreviewTab[]>([])
 // this way before `pendingLegacyTabs` is ever adopted; a bucket store loses
 // its `default` bucket the same way.
 let adoptingStoredTabs = true
+
+$rightRailActiveTabId.subscribe(tabId => {
+  activeTabByScope[viewKey] = tabId
+})
 
 $previewTabs.subscribe(tabs => {
   if (adoptingStoredTabs) {
@@ -238,17 +245,24 @@ $previewTabs.subscribe(tabs => {
 $previewTabs.set(tabsByProfile[viewKey] ?? [])
 adoptingStoredTabs = false
 
-/** Re-home the rail onto the profile that owns the chat on screen. Called by
+/** Re-home the rail onto the backend identity that owns the chat on screen. Called by
  *  `session-states.ts` whenever the focused session (or its resolved owner)
  *  changes; the previous agent's tabs must not leak into the next one. */
-export function setPreviewScope(scope: string) {
-  const next = normalizeProfileKey(scope) || 'default'
+export function setPreviewScope(scope: string, options: { allowLegacyProfileTabs?: boolean } = {}) {
+  const next = scope.trim() || 'default'
+  const allowLegacyProfileTabs = options.allowLegacyProfileTabs ?? true
 
   if (next === viewKey) {
+    if (pendingLegacyTabs && allowLegacyProfileTabs) {
+      tabsByProfile[next] = [...(tabsByProfile[next] ?? []), ...pendingLegacyTabs]
+      pendingLegacyTabs = null
+      $previewTabs.set(tabsByProfile[next])
+    }
+
     return
   }
 
-  applyPreviewScope(next)
+  applyPreviewScope(next, allowLegacyProfileTabs)
 }
 
 /** Swap the view onto `next`'s bucket (legacy tabs ride along into it). Split
@@ -256,27 +270,64 @@ export function setPreviewScope(scope: string) {
  *  onto the bucket a persisted tab lives in — the same-key early return above
  *  would skip exactly that case (a fresh pop-out renderer starts on 'default'
  *  while the popped tab belongs to another profile). */
-function applyPreviewScope(next: string) {
-  if (pendingLegacyTabs) {
+function applyPreviewScope(
+  next: string,
+  allowLegacyProfileTabs = !next.startsWith('conn:') || next.startsWith('conn:local::')
+) {
+  if (pendingLegacyTabs && allowLegacyProfileTabs) {
     tabsByProfile[next] = [...(tabsByProfile[next] ?? []), ...pendingLegacyTabs]
     pendingLegacyTabs = null
     persistTabs()
   }
 
+  const legacyProfileMatch = next.match(/^conn:local::(.+)$/)
+  if (allowLegacyProfileTabs && legacyProfileMatch && !tabsByProfile[next]) {
+    const legacyKey = normalizeProfileKey(legacyProfileMatch[1])
+    const legacyTabs = tabsByProfile[legacyKey]
+
+    if (legacyTabs) {
+      tabsByProfile[next] = [...legacyTabs]
+    }
+  }
+
   viewKey = next
-  $previewTabs.set(tabsByProfile[next] ?? [])
+  const nextTabs = tabsByProfile[next] ?? []
+  $previewTabs.set(nextTabs)
+  const selected = activeTabByScope[next]
+  selectRightRailTab(nextTabs.some(tab => tab.id === selected) ? selected : (nextTabs[0]?.id ?? null))
+}
+
+/** Whether a vault request names the backend identity currently owning the rail. */
+export function isPreviewScopeActive(connectionId: null | string, profile: string): boolean {
+  return viewKey === registryBackendScopeKey(connectionId, profile)
 }
 
 /** Drop one profile's rail. Delete counterpart of the tiles store's
  *  `dropTilesForProfile`, which profile deletion calls. */
-export function dropPreviewTabsForProfile(profile: string) {
+export function dropPreviewTabsForProfile(
+  profile: string,
+  route?: { connectionId?: string; profile?: string; targetProfile?: string }
+) {
   const key = normalizeProfileKey(profile)
+  const connectionId = String(route?.connectionId ?? LOCAL_CONNECTION_ID).trim() || LOCAL_CONNECTION_ID
+  const routeProfile = normalizeProfileKey(route?.profile || profile)
+  const bucketsToDrop = new Set([registryBackendScopeKey(connectionId, routeProfile)])
 
-  delete tabsByProfile[key]
+  // Local and pre-connection buckets are two forms of the local profile's
+  // saved rail. A remote route owns exactly its connection-qualified bucket.
+  if (connectionId === LOCAL_CONNECTION_ID) {
+    bucketsToDrop.add(key)
+  }
+
+  for (const bucket of bucketsToDrop) {
+    delete tabsByProfile[bucket]
+    delete activeTabByScope[bucket]
+  }
   persistTabs()
 
-  if (key === viewKey) {
+  if (bucketsToDrop.has(viewKey)) {
     $previewTabs.set([])
+    selectRightRailTab(null)
   }
 }
 
@@ -291,26 +342,43 @@ export function migratePreviewTabsForProfile(oldProfile: string, newProfile: str
     return
   }
 
-  const moved = tabsByProfile[from]
+  const localScopedFrom = registryBackendScopeKey(LOCAL_CONNECTION_ID, from)
+  const localScopedTo = registryBackendScopeKey(LOCAL_CONNECTION_ID, to)
+  const fromKeys = [from, localScopedFrom].filter(key => key in tabsByProfile)
 
-  if (moved) {
-    delete tabsByProfile[from]
-    tabsByProfile[to] = [...(tabsByProfile[to] ?? []), ...moved]
+  if ((viewKey === from || viewKey === localScopedFrom) && !fromKeys.includes(viewKey)) {
+    fromKeys.push(viewKey)
+  }
+
+  for (const sourceKey of fromKeys) {
+    const destinationKey = sourceKey === from ? to : localScopedTo
+    const moved = tabsByProfile[sourceKey]
+
+    delete tabsByProfile[sourceKey]
+    tabsByProfile[destinationKey] = [...(tabsByProfile[destinationKey] ?? []), ...(moved ?? [])]
+
+    if (activeTabByScope[sourceKey] !== undefined) {
+      activeTabByScope[destinationKey] = activeTabByScope[sourceKey]
+      delete activeTabByScope[sourceKey]
+    }
+
+    if (viewKey === sourceKey) {
+      viewKey = destinationKey
+    }
   }
 
   // The view belongs to the renamed profile; only its NAME changed. Re-point it
   // BEFORE the atom is set, so the persist subscriber writes the new bucket
   // rather than resurrecting the one just deleted.
-  const wasInView = from === viewKey
-
-  if (wasInView) {
-    viewKey = to
-  }
+  const wasInView = fromKeys.some(key => viewKey === (key === from ? to : localScopedTo))
 
   persistTabs()
 
   if (wasInView) {
-    $previewTabs.set(tabsByProfile[to] ?? [])
+    const tabs = tabsByProfile[viewKey] ?? []
+    $previewTabs.set(tabs)
+    const selected = activeTabByScope[viewKey]
+    selectRightRailTab(tabs.some(tab => tab.id === selected) ? selected : (tabs[0]?.id ?? null))
   }
 }
 

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools import browser_supervisor as bs
+from tools.browser_task_identity import browser_task_key
 
 
 class _FakeLoop:
@@ -109,6 +110,7 @@ def test_cache_hit_returns_same_instance_when_healthy(
     first = isolated_registry.get_or_start(task_id="t1", cdp_url="http://h/1")
     second = isolated_registry.get_or_start(task_id="t1", cdp_url="http://h/1")
     assert first is second
+    assert isolated_registry._by_task[browser_task_key("t1")] is first
     # Only one CDPSupervisor was ever constructed.
     assert len(stub_cdp_supervisor) == 1
     first.stop()
@@ -125,9 +127,10 @@ def test_missing_thread_and_loop_attrs_trigger_recreate(
         _loop=None,
         stop=lambda: None,
     )
-    isolated_registry._by_task["t4"] = broken
+    task_key = browser_task_key("t4")
+    isolated_registry._by_task[task_key] = broken
 
     fresh = isolated_registry.get_or_start(task_id="t4", cdp_url=cdp_url)
     assert fresh is not broken
-    assert isolated_registry._by_task["t4"] is fresh
+    assert isolated_registry._by_task[task_key] is fresh
     fresh.stop()

@@ -23,6 +23,7 @@ from agent.redact import redact_cdp_url
 from hermes_constants import get_hermes_home, hermes_home_key
 from utils import env_int
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from tools.browser_task_identity import BrowserTaskKey, browser_task_key
 from hermes_cli.observability.shared_metrics_loop import record_browser_call
 
 
@@ -312,12 +313,11 @@ def _url_is_private(url: str) -> bool:
 
 
 def _navigation_session_key(task_id: str, url: str) -> str:
-    """Session key that should handle ``url`` for ``task_id``: ``f"{task_id}::local"`` (hybrid
-    local sidecar while the cloud session keeps serving public URLs) only when ALL hold —
+    """Profile-owned session key for ``url``; use a hybrid local sidecar while the
+    cloud session keeps serving public URLs only when ALL hold —
     cloud provider configured, ``browser.auto_local_for_private_urls`` on, private URL, no
     CDP override (it owns the whole session), Camofox off (already local-only)."""
-    if task_id is None:
-        task_id = "default"
+    task_key = browser_task_key(task_id)
     hybrid = (
         not _cdp._get_cdp_override_raw()
         and not _is_camofox_mode()
@@ -325,42 +325,51 @@ def _navigation_session_key(task_id: str, url: str) -> str:
         and _cloud._auto_local_for_private_urls()
         and _url_is_private(url)
     )
-    return f"{task_id}{_LOCAL_SUFFIX}" if hybrid else task_id
+    return task_key.with_local(hybrid)
 
 
 def _is_local_sidecar_key(session_key: str) -> bool:
+    if isinstance(session_key, BrowserTaskKey):
+        return session_key.local
     return session_key.endswith(_LOCAL_SUFFIX)
 
 
 def _bare_task_id_for_session_key(session_key: str) -> str:
+    if isinstance(session_key, BrowserTaskKey):
+        return session_key.with_local(False)
     return session_key[: -len(_LOCAL_SUFFIX)] if _is_local_sidecar_key(session_key) else session_key
 
 
 def _session_info_owned_by_task(session_info: Dict[str, Any], task_id: str, session_key: str) -> bool:
     """Ownership check; entries without metadata (older in-memory / hot-reload) pass,
     any explicit mismatch fails before a non-nav tool can act on the wrong session."""
+    owner_key = browser_task_key(task_id)
+    session_key = browser_task_key(session_key)
     owner = session_info.get("owner_task_id")
     key = session_info.get("session_key")
-    return (owner is None or owner == task_id) and (key is None or key == session_key)
+    if owner is not None:
+        owner = browser_task_key(owner)
+    if key is not None:
+        key = browser_task_key(key)
+    return (owner is None or owner == owner_key) and (key is None or key == session_key)
 
 
 def _last_session_key(task_id: str) -> str:
     """Session key a non-nav tool must use: the one that served the task's last navigation.
     If it was cleaned up or ownership no longer matches, fail closed by dropping the stale
     binding rather than recreating or mutating the wrong browser."""
-    if task_id is None:
-        task_id = "default"
-    recorded_key = _last_active_session_key.get(task_id)
+    owner_key = browser_task_key(task_id)
+    recorded_key = _last_active_session_key.get(owner_key)
     if not recorded_key:
-        return task_id
+        return owner_key
     with _cleanup_lock:
         session_info = _active_sessions.get(recorded_key)
-        if session_info and _session_info_owned_by_task(session_info, task_id, recorded_key):
+        if session_info and _session_info_owned_by_task(session_info, owner_key, recorded_key):
             return recorded_key
-        _last_active_session_key.pop(task_id, None)
+        _last_active_session_key.pop(owner_key, None)
     logger.debug("browser session ownership: dropping stale/mismatched last-active binding %s -> %s",
-                 task_id, recorded_key)
-    return task_id
+                 owner_key, recorded_key)
+    return owner_key
 
 
 def _socket_safe_tmpdir() -> str:
@@ -370,12 +379,12 @@ def _socket_safe_tmpdir() -> str:
     return socket_safe_tmpdir()
 
 
-# Active sessions keyed by "session key": the bare task_id, or f"{task_id}::local"
-# for a hybrid-routing local sidecar (opaque to _run_browser_command / cleanup_browser).
+# Active sessions keyed by the profile-owned BrowserTaskKey, including its local
+# sidecar variant (opaque to _run_browser_command / cleanup_browser).
 # Values: session_name (always), bb_session_id + cdp_url (cloud).
 _active_sessions: Dict[str, Dict[str, Any]] = {}
 _recording_sessions: set = set()  # session_keys with active recordings
-# Most recent session_key per task_id (set by browser_navigate, read by every non-nav
+# Most recent session_key per profile-owned task (set by browser_navigate, read by every non-nav
 # tool) so click/snapshot land in the session that served the last navigation.
 _last_active_session_key: Dict[str, str] = {}
 _LOCAL_SUFFIX = "::local"
@@ -784,7 +793,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         response["used_real_profile"] = True
     # Only a successful, non-blocked navigation becomes the task owner: failed opens
     # and blocked redirects must not retarget follow-up clicks to an irrelevant session.
-    _last_active_session_key[effective_task_id] = nav_session_key
+    _last_active_session_key[browser_task_key(effective_task_id)] = nav_session_key
     _lp._copy_fallback_warning(response, result)
     _add_navigate_warnings(response, title, session_info if is_first_nav else None)
     _attach_auto_snapshot(response, nav_session_key)

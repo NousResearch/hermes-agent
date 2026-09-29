@@ -1,7 +1,8 @@
 """Per-process unlock state for external password managers.
 
 An unlock is a session token minted by the manager's CLI from the master
-password (``op signin --raw`` / ``bw unlock --raw``). The token lives in
+password (``op signin --raw`` / ``bw unlock --raw``), or an empty string for
+verified tokenless desktop-app authorization. ``None`` means locked. The lease lives in
 process memory only, keyed by backend, and expires after an idle TTL or an
 explicit lock. The master password itself is consumed by the CLI call and
 dropped; nothing is written to disk or env.
@@ -100,7 +101,7 @@ def _live(backend: str, *, touch: bool) -> Optional[str]:
 
 
 def get_session_token(backend: str) -> Optional[str]:
-    """Token for a real manager call; refreshes the idle timer."""
+    """Token (possibly empty) for a manager call, or None when locked; refreshes idle time."""
     return _live(backend, touch=True)
 
 

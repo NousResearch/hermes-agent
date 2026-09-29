@@ -700,6 +700,238 @@ class TestSaveLoginPrompt:
         assert store.list_items() == []
 
 
+class TestVaultUnlockMethods:
+    def test_auto_unlock_uses_backend_capability_when_native_app_is_ineligible(self, monkeypatch):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        class OnePassword:
+            name, display_name, needs_unlock = "onepassword", "1Password", True
+            supports_app_unlock = False
+
+            def __init__(self):
+                self.method = None
+                self.password = None
+
+            def auth_capabilities(self):
+                return {"mode": "interactive", "methods": ["password"],
+                        "native_app_eligible": False, "reason": "native_app_ineligible"}
+
+            def is_unlocked(self):
+                return False
+
+            def unlock(self, password=None, *, method=None):
+                self.password, self.method = password, method
+
+        backend = OnePassword()
+        monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [backend])
+        asked = []
+        unlock_mod.set_unlock_prompt_callback(lambda *args: asked.append(args) or "masked-secret")
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool.browser_vault_unlock("onepassword"))
+        finally:
+            unlock_mod.set_unlock_prompt_callback(None)
+
+        assert out["success"] is True
+        assert backend.method == "password" and backend.password == "masked-secret"
+        assert asked == [("onepassword", "1Password")]
+
+    def test_incomplete_connect_capability_blocks_all_prompt_fallback(self, monkeypatch):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        class OnePassword:
+            name, display_name, needs_unlock = "onepassword", "1Password", True
+            supports_app_unlock = False
+
+            def auth_capabilities(self):
+                return {"mode": "unavailable", "methods": [],
+                        "native_app_eligible": False, "reason": "connect_incomplete"}
+
+            def is_unlocked(self):
+                return False
+
+            def unlock(self, *args, **kwargs):
+                raise AssertionError("partial Connect must not fall back to a prompt")
+
+        backend = OnePassword()
+        monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [backend])
+        unlock_mod.set_unlock_prompt_callback(lambda *args: pytest.fail("must not prompt"))
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool.browser_vault_unlock("onepassword"))
+        finally:
+            unlock_mod.set_unlock_prompt_callback(None)
+
+        assert out["success"] is False
+        assert out["error_type"] == "unlock_unavailable"
+        assert "both Connect host and token" in out["error"]
+
+    def test_browser_fill_defaults_to_native_onepassword_unlock(self, monkeypatch):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        class OnePassword:
+            name, display_name, needs_unlock = "onepassword", "1Password", True
+            supports_app_unlock = True
+
+            def __init__(self):
+                self.password = None
+
+            def is_unlocked(self):
+                return False
+
+            def unlock(self, password):
+                self.password = password
+
+            def get_meta(self, handle):
+                return None
+
+        backend = OnePassword()
+        monkeypatch.setattr("agent.vault_backends.backend_for_handle", lambda handle: backend)
+        monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [backend])
+        asked = []
+        unlock_mod.set_unlock_prompt_callback(lambda *args: asked.append(args) or "must-not-be-used")
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                browser_vault_tool.browser_vault_fill("op:example")
+        finally:
+            unlock_mod.set_unlock_prompt_callback(None)
+
+        assert backend.password == ""
+        assert asked == []
+
+    def test_unlock_handler_defaults_to_native_onepassword_method(self, monkeypatch):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        class OnePassword:
+            name, display_name, needs_unlock = "onepassword", "1Password", True
+            supports_app_unlock = True
+
+            def __init__(self):
+                self.password = None
+
+            def is_unlocked(self):
+                return False
+
+            def unlock(self, password):
+                self.password = password
+
+        backend = OnePassword()
+        monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [backend])
+        asked = []
+        unlock_mod.set_unlock_prompt_callback(lambda *args: asked.append(args) or "must-not-be-used")
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool._handle_vault_unlock({"backend": "onepassword"}))
+        finally:
+            unlock_mod.set_unlock_prompt_callback(None)
+
+        assert out["success"] is True
+        assert backend.password == ""
+        assert asked == []
+
+    def test_app_method_unlocks_onepassword_without_masked_password_prompt(self, monkeypatch):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        class OnePassword:
+            name, display_name, needs_unlock = "onepassword", "1Password", True
+            supports_app_unlock = True
+
+            def __init__(self):
+                self.password = None
+
+            def is_unlocked(self):
+                return False
+
+            def unlock(self, password):
+                self.password = password
+
+        backend = OnePassword()
+        monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [backend])
+        asked = []
+        unlock_mod.set_unlock_prompt_callback(lambda *args: asked.append(args) or "must-not-be-used")
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool._handle_vault_unlock(
+                    {"backend": "onepassword", "method": "app"}
+                ))
+        finally:
+            unlock_mod.set_unlock_prompt_callback(None)
+
+        assert out["success"] is True
+        assert backend.password == ""
+        assert asked == []
+
+    def test_default_method_keeps_the_masked_password_prompt(self, monkeypatch):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        class Bitwarden:
+            name, display_name, needs_unlock = "bitwarden", "Bitwarden", True
+            supports_app_unlock = False
+
+            def is_unlocked(self):
+                return False
+
+            def unlock(self, password):
+                self.password = password
+
+        backend = Bitwarden()
+        monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [backend])
+        asked = []
+        unlock_mod.set_unlock_prompt_callback(lambda *args: asked.append(args) or "masked-secret")
+        try:
+            with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                out = json.loads(browser_vault_tool.browser_vault_unlock("bitwarden"))
+        finally:
+            unlock_mod.set_unlock_prompt_callback(None)
+
+        assert out["success"] is True
+        assert backend.password == "masked-secret"
+        assert asked == [("bitwarden", "Bitwarden")]
+
+    def test_app_method_refuses_headless_before_attempting_native_unlock(self, monkeypatch):
+        from tools import browser_vault_tool
+
+        class OnePassword:
+            name, display_name, needs_unlock = "onepassword", "1Password", True
+            supports_app_unlock = True
+
+            def is_unlocked(self):
+                return False
+
+            def unlock(self, password):
+                raise AssertionError("headless session must not trigger native authorization")
+
+        monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [OnePassword()])
+        with patch("agent.vault_backends.unlock.can_prompt_here", return_value=False):
+            out = json.loads(browser_vault_tool.browser_vault_unlock("onepassword", method="app"))
+
+        assert out["success"] is False
+        assert out["error_type"] == "unlock_unavailable"
+
+    def test_app_method_is_rejected_for_bitwarden(self, monkeypatch):
+        from tools import browser_vault_tool
+
+        class Bitwarden:
+            name, display_name, needs_unlock = "bitwarden", "Bitwarden", True
+            supports_app_unlock = False
+
+            def is_unlocked(self):
+                return False
+
+        monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [Bitwarden()])
+        with patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+            out = json.loads(browser_vault_tool.browser_vault_unlock("bitwarden", method="app"))
+
+        assert out["success"] is False
+        assert out["error_type"] == "unlock_method_unsupported"
+
+
 class TestManagerAutoDetection:
     def test_installed_manager_is_a_source_without_config_and_config_can_opt_out(self):
         from agent.vault_backends import base

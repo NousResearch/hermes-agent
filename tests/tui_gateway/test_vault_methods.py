@@ -137,6 +137,144 @@ def test_undetected_manager_stays_off(home, monkeypatch):
     assert rows["bitwarden"]["installed"] is False
 
 
+def test_native_app_unlock_accepts_empty_password(home, monkeypatch):
+    class OnePassword:
+        name = "onepassword"
+        needs_unlock = True
+        supports_app_unlock = True
+
+        def auth_capabilities(self):
+            return {"mode": "interactive", "methods": ["app", "password"],
+                    "native_app_eligible": True, "reason": None}
+
+        def __init__(self):
+            self.received = None
+
+        def unlock(self, password):
+            self.received = password
+
+    backend = OnePassword()
+    monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [backend])
+
+    result = _result(srv._methods["vault.unlock"](83, {"name": "onepassword", "password": ""}))
+
+    assert backend.received == ""
+    assert result == {"name": "onepassword", "unlocked": True}
+
+
+def test_sources_include_secret_free_backend_auth_capabilities(home, monkeypatch):
+    capability = {"mode": "service_account", "methods": [],
+                  "native_app_eligible": False, "reason": None}
+
+    class OnePassword:
+        name = "onepassword"
+        needs_unlock = True
+        supports_app_unlock = True  # Legacy flag must not override host capability metadata.
+
+        def auth_capabilities(self):
+            return capability
+
+        def is_unlocked(self):
+            return False
+
+    monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [OnePassword()])
+    row = _sources_rows(home)["onepassword"]
+
+    assert row["auth_capabilities"] == capability
+    assert "token" not in json.dumps(row).lower()
+    assert "secret" not in json.dumps(row).lower()
+
+
+@pytest.mark.parametrize(
+    ("capability", "requested_method", "password", "allowed"),
+    [
+        ({"mode": "interactive", "methods": ["app", "password"], "native_app_eligible": True, "reason": None}, "app", "", True),
+        ({"mode": "interactive", "methods": ["app", "password"], "native_app_eligible": True, "reason": None}, "password", "pw", True),
+        ({"mode": "service_account", "methods": [], "native_app_eligible": False, "reason": None}, "app", "", False),
+        ({"mode": "connect", "methods": [], "native_app_eligible": False, "reason": None}, "password", "pw", False),
+    ],
+)
+def test_unlock_validates_explicit_method_against_backend_capabilities(
+    home, monkeypatch, capability, requested_method, password, allowed
+):
+    class Backend:
+        name = "onepassword"
+        needs_unlock = True
+
+        def auth_capabilities(self):
+            return capability
+
+        def unlock(self, password, *, method=None):
+            self.received = (password, method)
+
+    backend = Backend()
+    monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [backend])
+    result = srv._methods["vault.unlock"](
+        84, {"name": backend.name, "password": password, "method": requested_method}
+    )
+
+    if allowed:
+        assert _result(result) == {"name": backend.name, "unlocked": True}
+        assert backend.received == (password, requested_method)
+    else:
+        error = _error(result)
+        assert error["code"] == 5095
+        assert "not available" in error["message"].lower()
+        assert not hasattr(backend, "received")
+
+
+def test_legacy_backend_without_capability_metadata_keeps_old_unlock_request(home, monkeypatch):
+    class LegacyBackend:
+        name = "bitwarden"
+        needs_unlock = True
+        supports_app_unlock = False
+
+        def unlock(self, password):
+            self.received = password
+
+    backend = LegacyBackend()
+    monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [backend])
+    result = _result(srv._methods["vault.unlock"](
+        86, {"name": "bitwarden", "password": "old-client"}
+    ))
+    assert result == {"name": "bitwarden", "unlocked": True}
+    assert backend.received == "old-client"
+
+
+def test_native_unlock_error_with_empty_password_is_not_corrupted_by_redaction(home, monkeypatch):
+    class OnePassword:
+        name = "onepassword"
+        needs_unlock = True
+        supports_app_unlock = True
+
+        def unlock(self, password):
+            assert password == ""
+            raise RuntimeError("desktop authorization was declined")
+
+    monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [OnePassword()])
+
+    error = _error(srv._methods["vault.unlock"](85, {"name": "onepassword", "password": ""}))
+
+    assert error["message"] == "desktop authorization was declined"
+
+
+def test_empty_password_remains_rejected_for_managers_without_native_unlock(home, monkeypatch):
+    class Bitwarden:
+        name = "bitwarden"
+        needs_unlock = True
+        supports_app_unlock = False
+
+        def unlock(self, password):
+            raise AssertionError("empty password must not reach Bitwarden")
+
+    monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [Bitwarden()])
+
+    error = _error(srv._methods["vault.unlock"](84, {"name": "bitwarden", "password": ""}))
+
+    assert error["code"] == 5095
+    assert "required" in error["message"]
+
+
 def test_source_set_tolerates_scalar_vault_section(home, monkeypatch):
     """A hand-edited ``vault: true`` in config.yaml must not crash the Desktop
     Credential Vault source toggle: the malformed section is coerced to a dict

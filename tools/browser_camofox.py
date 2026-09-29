@@ -27,6 +27,7 @@ from agent.secret_scope import get_secret
 from hermes_cli.config import cfg_get, load_config, read_raw_config
 from hermes_constants import get_hermes_home_override, hermes_home_key
 from tools.browser_camofox_state import get_camofox_identity
+from tools.browser_task_identity import browser_task_key
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -235,7 +236,7 @@ def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[Dict[str,
 
 
 # ---- Session management ----
-_sessions: Dict[str, Dict[str, Any]] = {}  # task_id -> {"user_id": str, "tab_id": str|None, ...}
+_sessions: Dict[str, Dict[str, Any]] = {}  # profile-qualified task key -> Camofox session
 _sessions_lock = threading.Lock()
 
 
@@ -262,22 +263,24 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
     """Get or create the task's session. Identity precedence: external override
     (CAMOFOX_USER_ID / config) → profile-scoped identity when managed persistence
     is on → random ephemeral userId."""
-    task_id = task_id or "default"
+    cache_key = browser_task_key(task_id)
+    owner_task_id = cache_key.owner_task_id
     with _sessions_lock:
-        if task_id in _sessions:
-            return _adopt_existing_tab(_sessions[task_id])
+        if cache_key in _sessions:
+            return _adopt_existing_tab(_sessions[cache_key])
         camofox_cfg = _get_camofox_config()
-        identity = _camofox_identity_override(task_id, camofox_cfg)
+        identity = _camofox_identity_override(owner_task_id, camofox_cfg)
         if identity is None and _managed_persistence_enabled(camofox_cfg):
-            identity = get_camofox_identity(task_id)
+            identity = get_camofox_identity(owner_task_id)
         if identity is None:
-            identity = {"user_id": f"hermes_{uuid.uuid4().hex[:10]}", "session_key": f"task_{task_id[:16]}"}
+            identity = {"user_id": f"hermes_{uuid.uuid4().hex[:10]}",
+                        "session_key": f"task_{owner_task_id[:16]}"}
             managed, adopt = False, False
         else:
             managed, adopt = True, _flag("CAMOFOX_ADOPT_EXISTING_TAB", camofox_cfg, "adopt_existing_tab")
         session = {"user_id": identity["user_id"], "tab_id": None, "session_key": identity["session_key"],
                    "managed": managed, "adopt_existing_tab": adopt}
-        _sessions[task_id] = session
+        _sessions[cache_key] = session
         return _adopt_existing_tab(session)
 
 
@@ -292,18 +295,22 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
 
 def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
     """Remove and return session info."""
+    cache_key = browser_task_key(task_id)
     with _sessions_lock:
-        return _sessions.pop(task_id or "default", None)
+        return _sessions.pop(cache_key, None)
 
 
 def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
     """Drop only the local tracking entry (``True``) for managed profiles, which must
     survive across agent tasks; ``False`` for ephemeral sessions so the caller falls back
     to :func:`camofox_close`."""
+    cache_key = browser_task_key(task_id)
+    owner_task_id = cache_key.owner_task_id
     camofox_cfg = _get_camofox_config()
-    if _managed_persistence_enabled(camofox_cfg) or _camofox_identity_override(task_id, camofox_cfg):
-        _drop_session(task_id)
-        logger.debug("Camofox soft cleanup for task %s (managed persistence)", task_id)
+    if (_managed_persistence_enabled(camofox_cfg)
+            or _camofox_identity_override(owner_task_id, camofox_cfg)):
+        _drop_session(cache_key)
+        logger.debug("Camofox soft cleanup for task %s (managed persistence)", owner_task_id)
         return True
     return False
 

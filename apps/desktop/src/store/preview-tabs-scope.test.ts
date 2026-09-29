@@ -11,9 +11,11 @@
 // of this fix did not work. `session-states.ts` resolves the focused session's
 // owner and pushes it in via `setPreviewScope`.
 import { beforeEach, describe, expect, it } from 'vitest'
+import { registryBackendScopeKey } from '@hermes/shared'
 
 import {
   $previewTabs,
+  dropPreviewTabsForProfile,
   migratePreviewTabsForProfile,
   openPreview,
   type PreviewTarget,
@@ -76,5 +78,77 @@ describe('right rail follows the chat on screen', () => {
 
     expect(buckets[normalizeProfileKey('tess')]).toBeUndefined()
     expect(buckets[normalizeProfileKey('tess-renamed')]?.map(tab => tab.target.path)).toEqual(['/work/tess-model.html'])
+  })
+
+  it('keeps same-named profiles on separate connections and restores each connection tab', () => {
+    const connectionA = registryBackendScopeKey('connection-a', 'default')
+    const connectionB = registryBackendScopeKey('legacy-test-connection-b', 'default')
+
+    setPreviewScope(connectionA, { allowLegacyProfileTabs: false })
+    openPreview(fileTarget('/work/connection-a.html'))
+    setPreviewScope(connectionB, { allowLegacyProfileTabs: false })
+
+    expect($previewTabs.get()).toEqual([])
+
+    openPreview(fileTarget('/work/connection-b.html'))
+    setPreviewScope(connectionA, { allowLegacyProfileTabs: false })
+    expect(paths()).toEqual(['/work/connection-a.html'])
+    setPreviewScope(connectionB, { allowLegacyProfileTabs: false })
+    expect(paths()).toEqual(['/work/connection-b.html'])
+
+    expect(storedBuckets()[connectionA]?.map(tab => tab.target.path)).toEqual(['/work/connection-a.html'])
+    expect(storedBuckets()[connectionB]?.map(tab => tab.target.path)).toEqual(['/work/connection-b.html'])
+  })
+
+  it('does not adopt ambiguous legacy profile tabs into a remote connection', () => {
+    setPreviewScope('default')
+    openPreview(fileTarget('/work/legacy-default.html'))
+    const connectionB = registryBackendScopeKey('connection-b', 'default')
+
+    setPreviewScope(connectionB, { allowLegacyProfileTabs: false })
+    expect($previewTabs.get()).toEqual([])
+
+    // A legacy/local owner may still recover the old profile-only bucket.
+    setPreviewScope('default')
+    expect(paths()).toEqual(['/work/legacy-default.html'])
+  })
+
+  it('moves scoped tabs when the owning profile is renamed', () => {
+    const before = registryBackendScopeKey('local', 'work')
+    const after = registryBackendScopeKey('local', 'work-renamed')
+    const remote = registryBackendScopeKey('rename-test-remote', 'work')
+
+    setPreviewScope(before, { allowLegacyProfileTabs: true })
+    openPreview(fileTarget('/work/local-profile.html'))
+    setPreviewScope(remote, { allowLegacyProfileTabs: false })
+    openPreview(fileTarget('/work/remote-profile.html'))
+    migratePreviewTabsForProfile('work', 'work-renamed')
+
+    expect(storedBuckets()[before]).toBeUndefined()
+    expect(storedBuckets()[after]?.map(tab => tab.target.path)).toEqual(['/work/local-profile.html'])
+    expect(storedBuckets()[remote]?.map(tab => tab.target.path)).toEqual(['/work/remote-profile.html'])
+    expect(paths()).toEqual(['/work/remote-profile.html'])
+
+    setPreviewScope(after, { allowLegacyProfileTabs: true })
+    expect(paths()).toEqual(['/work/local-profile.html'])
+  })
+
+  it('deletes one remote owner bucket without affecting another connection with the same profile', () => {
+    const connectionA = registryBackendScopeKey('delete-test-connection-a', 'default')
+    const connectionB = registryBackendScopeKey('delete-test-connection-b', 'default')
+
+    setPreviewScope(connectionA, { allowLegacyProfileTabs: false })
+    openPreview(fileTarget('/work/delete-connection-a.html'))
+    setPreviewScope(connectionB, { allowLegacyProfileTabs: false })
+    openPreview(fileTarget('/work/delete-connection-b.html'))
+
+    dropPreviewTabsForProfile('default', {
+      connectionId: 'delete-test-connection-a',
+      profile: 'default'
+    })
+
+    expect(storedBuckets()[connectionA]).toBeUndefined()
+    expect(storedBuckets()[connectionB]?.map(tab => tab.target.path)).toEqual(['/work/delete-connection-b.html'])
+    expect(paths()).toEqual(['/work/delete-connection-b.html'])
   })
 })

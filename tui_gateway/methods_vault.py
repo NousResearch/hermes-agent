@@ -69,9 +69,15 @@ def _(rid, params: dict) -> dict:
              "unlocked": True, "installed": True}]
     for cls in external_backend_classes():
         live = enabled.get(cls.name)
-        rows.append({"name": cls.name, "display_name": cls.display_name, "enabled": live is not None,
-                     "needs_unlock": True, "unlocked": bool(live and live.is_unlocked()),
-                     "installed": is_installed(cls.name)})
+        row = {"name": cls.name, "display_name": cls.display_name, "enabled": live is not None,
+               "needs_unlock": True, "unlocked": bool(live and live.is_unlocked()),
+               "installed": is_installed(cls.name)}
+        capability_reader = getattr(live, "auth_capabilities", None)
+        if callable(capability_reader):
+            capabilities = capability_reader()
+            if capabilities is not None:
+                row["auth_capabilities"] = capabilities
+        rows.append(row)
     return _ok(rid, {"sources": rows})
 
 
@@ -102,20 +108,51 @@ def _(rid, params: dict) -> dict:
 @method("vault.unlock")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    """Unlock a manager with the master password typed in the Settings dialog (consumed by the CLI on stdin)."""
+    """Unlock a manager with a Settings password or an explicitly supported native app flow."""
     from agent.vault_backends import enabled_backends
 
     name = str(params.get("name") or "")
     password = str(params.get("password") or "")
+    requested_method = params.get("method")
     backend = next((b for b in enabled_backends() if b.name == name and b.needs_unlock), None)
     if backend is None:
         return _err(rid, 5095, f"{name} is not an enabled password manager")
-    if not password:
+
+    capability_reader = getattr(backend, "auth_capabilities", None)
+    capabilities = capability_reader() if callable(capability_reader) else None
+    if requested_method is not None:
+        if requested_method not in {"app", "password"}:
+            return _err(rid, 5095, "unlock method is not available")
+        if capabilities is None:
+            return _err(rid, 5095, "unlock method is not available on this backend")
+        methods = capabilities.get("methods", [])
+        allowed = requested_method in methods
+        if requested_method == "app":
+            allowed = allowed and bool(capabilities.get("native_app_eligible"))
+            if password:
+                return _err(rid, 5095, "clear the password to use native app approval")
+        if not allowed:
+            return _err(rid, 5095, "unlock method is not available for this profile")
+    elif capabilities is not None and not password:
+        if "app" not in capabilities.get("methods", []) or not capabilities.get("native_app_eligible"):
+            return _err(rid, 5095, "master password is required for this profile")
+    elif not password and not getattr(backend, "supports_app_unlock", False):
         return _err(rid, 5095, "master password is required")
     try:
-        backend.unlock(password)  # type: ignore[attr-defined]
+        if requested_method is not None:
+            import inspect
+
+            unlock_parameters = inspect.signature(backend.unlock).parameters
+            if "method" not in unlock_parameters and not any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in unlock_parameters.values()
+            ):
+                return _err(rid, 5095, "selected unlock method is not supported by this backend")
+            backend.unlock(password, method=requested_method)  # type: ignore[attr-defined]
+        else:
+            backend.unlock(password)  # type: ignore[attr-defined]
     except Exception as e:
-        return _err(rid, 5095, str(e).replace(password, "[REDACTED]"))
+        message = str(e).replace(password, "[REDACTED]") if password else str(e)
+        return _err(rid, 5095, message)
     finally:
         del password
     return _ok(rid, {"name": name, "unlocked": True})

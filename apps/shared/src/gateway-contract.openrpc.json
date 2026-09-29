@@ -22688,6 +22688,17 @@
             ],
             "default": null,
             "title": "Allow Shortcut"
+          },
+          "vault": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PreviewVaultOperation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -22815,6 +22826,50 @@
           "text"
         ],
         "title": "PreviewRestartProgressPayload",
+        "type": "object"
+      },
+      "PreviewVaultOperation": {
+        "additionalProperties": false,
+        "description": "Internal vault transport, never arguments exposed to the model.",
+        "properties": {
+          "operation": {
+            "enum": [
+              "open",
+              "evaluate",
+              "close"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target"
+          },
+          "expression": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Expression"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "title": "PreviewVaultOperation",
         "type": "object"
       },
       "ProcessEntry": {
@@ -37156,6 +37211,56 @@
         "title": "VaultAddResult",
         "type": "object"
       },
+      "VaultAuthCapabilities": {
+        "additionalProperties": false,
+        "description": "Secret-free authentication choices resolved by the serving backend.",
+        "properties": {
+          "mode": {
+            "enum": [
+              "interactive",
+              "service_account",
+              "connect",
+              "unavailable"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "methods": {
+            "items": {
+              "enum": [
+                "app",
+                "password"
+              ],
+              "type": "string"
+            },
+            "title": "Methods",
+            "type": "array"
+          },
+          "native_app_eligible": {
+            "title": "Native App Eligible",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "mode",
+          "methods",
+          "native_app_eligible",
+          "reason"
+        ],
+        "title": "VaultAuthCapabilities",
+        "type": "object"
+      },
       "VaultCodeRequestParams": {
         "additionalProperties": false,
         "properties": {
@@ -37438,6 +37543,17 @@
           "installed": {
             "title": "Installed",
             "type": "boolean"
+          },
+          "auth_capabilities": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VaultAuthCapabilities"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -37566,6 +37682,22 @@
             ],
             "default": null,
             "title": "Password"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "enum": [
+                  "app",
+                  "password"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Method"
           }
         },
         "title": "VaultUnlockParams",

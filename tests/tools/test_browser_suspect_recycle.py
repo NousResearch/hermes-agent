@@ -18,8 +18,9 @@ from tools import browser_tool_session as bt_session
 from tools import browser_tool_cloud as bt_cloud
 from tools import browser_tool_install as bt_install
 from tools import browser_tool_lifecycle as bt_lifecycle
+from tools.browser_task_identity import browser_task_key
 
-TASK = "suspect-task"
+TASK = browser_task_key("suspect-task")
 
 
 @pytest.fixture(autouse=True)

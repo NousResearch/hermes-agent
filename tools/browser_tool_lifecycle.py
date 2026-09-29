@@ -21,6 +21,7 @@ from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_session as _session
 from tools import browser_tool_install as _install
 from tools import browser_tool_real_profile as _real_profile
+from tools.browser_task_identity import browser_task_key
 
 
 def _session_expiry_timestamp(session_info: Dict[str, Any]) -> Optional[float]:
@@ -135,6 +136,7 @@ def _session_owner_scope(task_id: str):
 
 def _forget_session_tracking(task_id: str, *, activity: bool = True, session: bool = False) -> None:
     """Drop the janitor's bookkeeping (and optionally the session entry) for ``task_id``."""
+    task_id = browser_task_key(task_id)
     with _bt._cleanup_lock:
         if session:
             _bt._active_sessions.pop(task_id, None)
@@ -191,6 +193,7 @@ def _cleanup_inactive_browser_sessions():
 
 def _human_holds_shared_browser(task_id: str) -> bool:
     """Lease check for the janitor, under the owner's profile scope (the lease is per profile)."""
+    task_id = browser_task_key(task_id)
     with _bt._cleanup_lock:
         session_info = _bt._active_sessions.get(task_id)
     if not session_info:
@@ -472,6 +475,7 @@ def _update_session_activity(task_id: str):
 
     See #86402.
     """
+    task_id = browser_task_key(task_id)
     with _bt._cleanup_lock:
         _bt._session_last_activity[task_id] = time.time()
         _bt._session_owner_homes.setdefault(task_id, str(get_hermes_home()))
@@ -581,6 +585,7 @@ def _drop_last_active_binding(task_id: str) -> None:
     """Drop stale last-active ownership after cleaning ``task_id``: a bare task always, a
     sidecar only if it was still the recorded owner (a later click must not resurrect a
     cleaned sidecar while a primary-session binding is preserved)."""
+    task_id = browser_task_key(task_id)
     bare_task_id = _bt._bare_task_id_for_session_key(task_id)
     if bare_task_id == task_id or _bt._last_active_session_key.get(bare_task_id) == task_id:
         _bt._last_active_session_key.pop(bare_task_id, None)
@@ -589,11 +594,10 @@ def _drop_last_active_binding(task_id: str) -> None:
 def cleanup_browser(task_id: Optional[str] = None) -> None:
     """Clean up browser session(s) for a task: a bare task id reaps BOTH the primary
     session and any hybrid local sidecar; a ``::local`` key reaps only that one."""
-    if task_id is None:
-        task_id = "default"
+    task_id = browser_task_key(task_id)
 
     session_keys = [task_id]
-    sidecar_key = f"{task_id}{_bt._LOCAL_SUFFIX}"
+    sidecar_key = task_id.with_local(True)
     with _bt._cleanup_lock:
         if not _bt._is_local_sidecar_key(task_id) and sidecar_key in _bt._active_sessions:
             session_keys.append(sidecar_key)
@@ -631,6 +635,7 @@ def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> No
     force-reap path (#100738), which skips the polite agent-browser/Camofox ``close`` that kept failing but
     must still release the cloud session and the local Chromium.
     """
+    task_id = browser_task_key(task_id)
     bb_session_id = session_info.get("bb_session_id", "unknown")
     _forget_session_tracking(task_id, session=True)
 
@@ -655,6 +660,7 @@ def _force_reap_browser_session(task_id: str) -> None:
 
     Janitor last resort after repeated cleanup failures (#100738).
     """
+    task_id = browser_task_key(task_id)
     _cdp._stop_cdp_supervisor(task_id)
     with _bt._cleanup_lock:
         session_info = _bt._active_sessions.get(task_id)
@@ -667,6 +673,7 @@ def _force_reap_browser_session(task_id: str) -> None:
 
 def _cleanup_single_browser_session(task_id: str) -> None:
     """Reap a single browser session by its exact session key."""
+    task_id = browser_task_key(task_id)
     _cdp._stop_cdp_supervisor(task_id)  # close our WebSocket BEFORE the backend tears down the endpoint
 
     # Camofox: managed persistence keeps the profile (cookies) across tasks; skip the full
@@ -718,7 +725,8 @@ def cleanup_all_browsers() -> None:
     with _bt._cleanup_lock:
         task_ids = list(_bt._active_sessions.keys())
     for task_id in task_ids:
-        cleanup_browser(task_id)
+        with _session_owner_scope(task_id):
+            cleanup_browser(task_id)
 
     try:  # tear down CDP supervisors so background threads exit
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]

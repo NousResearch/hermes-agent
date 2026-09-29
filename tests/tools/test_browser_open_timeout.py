@@ -10,6 +10,7 @@ from tools import browser_tool_session as bt_session
 from tools import browser_tool_lifecycle as bt_lifecycle
 from tools import browser_tool_cloud as bt_cloud
 from tools import browser_tool_install as bt_install
+from tools.browser_task_identity import browser_task_key
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +91,7 @@ class TestTimeoutErrorFormatting:
 class TestCommandTimeoutRecovery:
     @pytest.mark.parametrize("cloud", [False, True])
     def test_timeout_replaces_only_stuck_client(self, monkeypatch, tmp_path, cloud):
-        task_id = "stuck-command"
+        task_id = browser_task_key("stuck-command")
         session_info = {
             "session_name": "stuck-session",
             "bb_session_id": "cloud-session-1" if cloud else None,
@@ -139,11 +140,12 @@ class TestCommandTimeoutRecovery:
 
     def test_stale_timeout_cannot_remove_concurrent_replacement(self, tmp_path):
         stale, replacement = {"session_name": "stale"}, {"session_name": "replacement"}
-        bt._active_sessions["race"] = replacement
+        task_id = browser_task_key("race")
+        bt._active_sessions[task_id] = replacement
 
-        bt_session._discard_timed_out_browser_session("race", stale, str(tmp_path))
+        bt_session._discard_timed_out_browser_session(task_id, stale, str(tmp_path))
 
-        assert bt._active_sessions["race"] is replacement
+        assert bt._active_sessions[task_id] is replacement
         assert tmp_path.exists()
 
 
@@ -163,7 +165,7 @@ class TestBrowserNavigateOpenTimeout:
         monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: True)
         monkeypatch.setattr(bt, "_is_local_sidecar_key", lambda key: False)
         monkeypatch.setattr(
-            bt, "_navigation_session_key", lambda task_id, url, local_browser=False: task_id
+            bt, "_navigation_session_key", lambda task_id, url, local_browser=False: browser_task_key(task_id)
         )
         monkeypatch.setattr(bt, "_maybe_start_recording", lambda *a, **kw: None)
         monkeypatch.setattr(bt, "check_website_access", lambda url: None)

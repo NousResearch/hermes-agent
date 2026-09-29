@@ -299,6 +299,33 @@ async def test_explicit_receipts_never_broaden_or_hide_partial_success(scope, vi
     assert (counts["notification_count"], counts["highlight_count"]) == (4, 1)
 
 
+def test_hermes_tools_toggles_the_toolset_only_on_matrix(capsys):
+    from argparse import Namespace
+
+    from hermes_cli.config import load_config
+    from hermes_cli.tools_config import _checklist_toolset_keys, _get_platform_tools, tools_disable_enable_command
+    from toolsets import resolve_multiple_toolsets
+
+    unread_tools = {"matrix_unread", "matrix_mark_read"}
+
+    def matrix_state() -> tuple[object, bool]:
+        config = load_config()
+        saved = (config.get("platform_toolsets") or {}).get("matrix")
+        enabled = unread_tools <= set(resolve_multiple_toolsets(list(_get_platform_tools(config, "matrix"))))
+        return "matrix_unread" in saved if isinstance(saved, list) else saved, enabled
+
+    observed = {"default": matrix_state()}
+    for action in ("disable", "enable"):
+        tools_disable_enable_command(Namespace(tools_action=action, platform="matrix", names=["matrix_unread"]))
+        observed[action] = matrix_state()
+    tools_disable_enable_command(Namespace(tools_action="disable", platform="telegram", names=["matrix_unread"]))
+
+    assert observed == {"default": (None, True), "disable": (False, False), "enable": (True, True)}
+    assert ("matrix_unread" in _checklist_toolset_keys("matrix"), "matrix_unread" in _checklist_toolset_keys("telegram")) == (True, False)
+    assert (load_config().get("platform_toolsets") or {}).get("telegram") is None
+    assert "Toolset 'matrix_unread' is not available on platform 'telegram' (only: matrix)" in capsys.readouterr().out
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cursor", [None, "saved-position"])
 async def test_initial_sync_requests_unread_counts_before_checkpointing(cursor):

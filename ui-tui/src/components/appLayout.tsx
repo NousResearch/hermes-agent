@@ -38,7 +38,7 @@ import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
-import { type InputCursorSnapshot, TextInput, type TextInputMouseApi } from './textInput.js'
+import { type InputCursorSnapshot, TextInput, type TextInputMouseApi, type VimInputMode } from './textInput.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
 // rendered overlay exactly.
@@ -306,7 +306,7 @@ const ComposerPane = memo(function ComposerPane({
   const ui = useStore($uiState)
   const T = useT()
   const isBlocked = useStore($isBlocked)
-  const [vimInputMode, setVimInputMode] = useState<'insert' | 'normal'>('insert')
+  const [vimInputMode, setVimInputMode] = useState<VimInputMode>('insert')
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
 
   const promptText = composerPromptText(
@@ -444,8 +444,8 @@ const ComposerPane = memo(function ComposerPane({
               width={Math.max(1, composer.cols - 2)}
             >
               {ui.vimEnabled && (
-                <Text bold color={vimInputMode === 'normal' ? ui.theme.color.warn : ui.theme.color.ok}>
-                  {vimInputMode === 'normal' ? 'NORMAL ' : 'INSERT '}
+                <Text bold color={vimInputMode === 'insert' ? ui.theme.color.ok : ui.theme.color.warn}>
+                  {vimInputMode === 'normal' ? 'NORMAL ' : vimInputMode === 'visual' ? 'VISUAL ' : 'INSERT '}
                 </Text>
               )}
               <Box width={promptWidth}>

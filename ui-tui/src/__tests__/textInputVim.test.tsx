@@ -49,6 +49,63 @@ describe('TextInput Vim command reducer', () => {
     expect(applyVimCommand(normal('abc', 2), 'r', key(false, true)).action).toBe('redo')
   })
 
+  it('opens a new line below with o and enters insert mode', () => {
+    expect(applyVimCommand(normal('one\ntwo', 1), 'o', key())).toMatchObject({
+      cursor: 4,
+      mode: 'insert',
+      value: 'one\n\ntwo'
+    })
+    expect(applyVimCommand(normal('one', 1), 'o', key())).toMatchObject({
+      cursor: 4,
+      mode: 'insert',
+      value: 'one\n'
+    })
+  })
+
+  it('finds the next character on the current line with f{char}', () => {
+    const pending = applyVimCommand(normal('abc def abc', 0), 'f', key())
+    expect(pending.pending).toBe('f')
+    expect(applyVimCommand(pending, 'd', key())).toMatchObject({ cursor: 4, pending: '' })
+
+    const missing = applyVimCommand(normal('abc\ndef', 0), 'f', key())
+    expect(applyVimCommand(missing, 'd', key())).toMatchObject({ cursor: 0, pending: '' })
+  })
+
+  it('composes d with motions', () => {
+    const dw = applyVimCommand(applyVimCommand(normal('one two', 0), 'd', key()), 'w', key())
+    expect(dw).toMatchObject({ cursor: 0, pending: '', value: 'two' })
+
+    const dDollar = applyVimCommand(applyVimCommand(normal('one two', 4), 'd', key()), '$', key())
+    expect(dDollar).toMatchObject({ cursor: 3, pending: '', value: 'one ' })
+
+    const dZero = applyVimCommand(applyVimCommand(normal('one two', 5), 'd', key()), '0', key())
+    expect(dZero).toMatchObject({ cursor: 0, pending: '', value: 'wo' })
+  })
+
+  it('selects with visual mode and deletes the inclusive range with d', () => {
+    const visual = applyVimCommand(normal('one two', 0), 'v', key())
+    expect(visual).toMatchObject({ anchor: 0, mode: 'visual' })
+
+    const moved = applyVimCommand(visual, 'w', key())
+    expect(moved).toMatchObject({ anchor: 0, cursor: 4, mode: 'visual' })
+    expect(applyVimCommand(moved, 'd', key())).toMatchObject({
+      anchor: undefined,
+      cursor: 0,
+      mode: 'normal',
+      value: 'wo'
+    })
+  })
+
+  it('leaves visual mode with Escape without changing text', () => {
+    const visual = applyVimCommand(normal('abc', 1), 'v', key())
+    expect(applyVimCommand(visual, '', key(true))).toMatchObject({
+      anchor: undefined,
+      cursor: 1,
+      mode: 'normal',
+      value: 'abc'
+    })
+  })
+
   it('deletes a complete logical line with dd', () => {
     const pending = applyVimCommand(normal('one\ntwo\nthree', 5), 'd', key())
     expect(pending.pending).toBe('d')
@@ -157,6 +214,40 @@ describe('TextInput Vim integration', () => {
     await settle()
     expect(modes.at(-1)).toBe('insert')
     expect(changes.at(-1)).toBe('Zbc')
+
+    view.unmount()
+    view.cleanup()
+  })
+
+  it('executes o, f, operator motions, and visual deletion in the controlled buffer', async () => {
+    const stdin = new FakeInput()
+    const stdout = Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 })
+    const stderr = Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 })
+    const changes: string[] = []
+
+    function Harness() {
+      const [value, setValue] = useState('one two')
+
+      return <TextInput columns={80} onChange={next => { changes.push(next); setValue(next) }} value={value} vim />
+    }
+
+    const view = renderSync(React.createElement(Harness), {
+      patchConsole: false,
+      stderr: stderr as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as NodeJS.WriteStream
+    })
+
+    await settle()
+    stdin.send('\x1b')
+    await settle(100)
+    stdin.send('0', 'f', 't', 'd', '$')
+    await settle()
+    expect(changes.at(-1)).toBe('one ')
+
+    stdin.send('0', 'v', 'e', 'd', 'o', 'Z')
+    await settle()
+    expect(changes.at(-1)).toBe('on \nZ')
 
     view.unmount()
     view.cleanup()

@@ -359,12 +359,13 @@ function wordRight(s: string, p: number) {
   return i
 }
 
-export type VimInputMode = 'insert' | 'normal'
+export type VimInputMode = 'insert' | 'normal' | 'visual'
 
 export interface VimCommandState {
+  anchor?: number
   cursor: number
   mode: VimInputMode
-  pending: '' | 'd'
+  pending: '' | 'd' | 'f'
   value: string
 }
 
@@ -419,6 +420,45 @@ export function applyVimCommand(
       : { ...state, handled: false }
   }
 
+  if (state.mode === 'visual') {
+    if (key.escape || input === 'v') {
+      return { ...state, anchor: undefined, handled: true, mode: 'normal', pending: '' }
+    }
+
+    if (input === 'd' || input === 'x') {
+      const anchor = state.anchor ?? cursor
+      const start = Math.min(anchor, cursor)
+      const end = nextPos(value, Math.max(anchor, cursor))
+      const next = value.slice(0, start) + value.slice(end)
+
+      return {
+        anchor: undefined,
+        cursor: normalCursor(next, start),
+        handled: true,
+        mode: 'normal',
+        pending: '',
+        value: next
+      }
+    }
+
+    if (input === 'h') {cursor = Math.max(lineStart(value, cursor), prevPos(value, cursor))}
+    else if (input === 'l') {cursor = Math.min(lineEnd(value, cursor), nextPos(value, cursor))}
+    else if (input === 'j') {cursor = lineNav(value, cursor, 1) ?? cursor}
+    else if (input === 'k') {cursor = lineNav(value, cursor, -1) ?? cursor}
+    else if (input === 'w') {cursor = wordRight(value, cursor)}
+    else if (input === 'b') {cursor = wordLeft(value, cursor)}
+    else if (input === 'e') {cursor = wordEnd(value, cursor)}
+    else if (input === '0') {cursor = lineStart(value, cursor)}
+    else if (input === '$') {
+      const end = lineEnd(value, cursor)
+      cursor = end > lineStart(value, cursor) ? prevPos(value, end) : end
+    } else {
+      return { ...state, handled: true, pending: '' }
+    }
+
+    return { ...state, cursor: normalCursor(value, cursor), handled: true, pending: '' }
+  }
+
   if (key.ctrl && input.toLowerCase() === 'r') {
     return { ...state, action: 'redo', handled: true, pending: '' }
   }
@@ -432,6 +472,18 @@ export function applyVimCommand(
     return { ...state, handled: false, pending: '' }
   }
 
+  if (state.pending === 'f') {
+    const end = lineEnd(value, cursor)
+    const found = value.indexOf(input, nextPos(value, cursor))
+
+    return {
+      ...state,
+      cursor: found >= 0 && found < end ? found : cursor,
+      handled: true,
+      pending: ''
+    }
+  }
+
   if (state.pending === 'd') {
     if (input === 'd') {
       const start = lineStart(value, cursor)
@@ -443,7 +495,25 @@ export function applyVimCommand(
       return { cursor: normalCursor(next, deleteFrom), handled: true, mode: 'normal', pending: '', value: next }
     }
 
-    return { ...state, handled: true, pending: '' }
+    let start = cursor
+    let end = cursor
+
+    if (input === 'w') {
+      end = wordRight(value, cursor)
+    } else if (input === 'e') {
+      end = nextPos(value, wordEnd(value, cursor))
+    } else if (input === '$') {
+      end = lineEnd(value, cursor)
+    } else if (input === '0') {
+      start = lineStart(value, cursor)
+      end = cursor
+    } else {
+      return { ...state, handled: true, pending: '' }
+    }
+
+    const next = value.slice(0, start) + value.slice(end)
+
+    return { cursor: normalCursor(next, start), handled: true, mode: 'normal', pending: '', value: next }
   }
 
   if (key.escape) {return { ...state, handled: true, pending: '' }}
@@ -455,6 +525,17 @@ export function applyVimCommand(
   if (input === 'I') {return { ...state, cursor: lineStart(value, cursor), handled: true, mode: 'insert', pending: '' }}
 
   if (input === 'A') {return { ...state, cursor: lineEnd(value, cursor), handled: true, mode: 'insert', pending: '' }}
+
+  if (input === 'o') {
+    const end = lineEnd(value, cursor)
+    const next = value.slice(0, end) + '\n' + value.slice(end)
+
+    return { cursor: end + 1, handled: true, mode: 'insert', pending: '', value: next }
+  }
+
+  if (input === 'v') {
+    return { ...state, anchor: cursor, handled: true, mode: 'visual', pending: '' }
+  }
 
   // h/l never leave the current line (as in Vim); the normalCursor clamp below
   // cannot express this, because a step onto the trailing newline lands exactly
@@ -490,6 +571,7 @@ export function applyVimCommand(
       value: next
     }
   } else if (input === 'd') {return { ...state, handled: true, pending: 'd' }}
+  else if (input === 'f') {return { ...state, handled: true, pending: 'f' }}
   else if (input === 'u') {return { ...state, action: 'undo', handled: true, pending: '' }}
   else {return { ...state, handled: true, pending: '' }}
 
@@ -941,7 +1023,7 @@ export function TextInput({
   )
 
   const vimModeRef = useRef<VimInputMode>(vimInputMode)
-  const vimPendingRef = useRef<'' | 'd'>('')
+  const vimPendingRef = useRef<VimCommandState['pending']>('')
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
@@ -1580,6 +1662,14 @@ export function TextInput({
         if (result.handled) {
           flushKeyBurst()
           ;(event as InputEvent & { stopImmediatePropagation?: () => void }).stopImmediatePropagation?.()
+
+          if (result.mode === 'visual' && result.anchor !== undefined) {
+            const visualSelection = { end: nextPos(result.value, result.cursor), start: result.anchor }
+            selRef.current = visualSelection
+            setSel(visualSelection)
+          } else if (vimModeRef.current === 'visual') {
+            clearSel()
+          }
 
           if (result.action === 'undo') {
             swap(undo, redo)

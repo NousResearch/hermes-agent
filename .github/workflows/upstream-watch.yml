@@ -1,0 +1,50 @@
+name: Upstream Watch
+
+# Once a week (and on demand): list what changed in upstream Hermes since the last review, grouped by
+# area, with the files BOTH repositories touched called out — those are where a merge conflicts.
+# The report lives in ONE issue that this job rewrites in place; nothing is merged or pushed.
+# Record a finished review with: python scripts/upstream_watch.py --mark-reviewed <sha>
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+
+      - name: Build the report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/upstream_watch.py --out upstream-report.md
+
+      - name: Publish it as the single upstream-watch issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create upstream-watch --color 5319e7 --description "Upstream Hermes changes to review" 2>/dev/null || true
+          title="Upstream Hermes: zmiany do przejrzenia"
+          number=$(gh issue list --label upstream-watch --state open --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --title "$title" --body-file upstream-report.md
+          else
+            gh issue create --title "$title" --label upstream-watch --body-file upstream-report.md
+          fi

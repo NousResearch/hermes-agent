@@ -178,6 +178,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
+import { distributionReleasesApi, distributionReleasesPage } from './distribution'
 import { installEmbedReferer } from './embed-referer'
 import { createAmbientClaimArbiter } from './event-dedupe'
 import {
@@ -340,6 +341,7 @@ import {
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import { createRecoveryController } from './recovery-controller'
+import { evaluateRelease } from './release-check'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
@@ -18104,6 +18106,44 @@ ipcMain.handle('hermes:updates:apply', async (_event, payload) =>
     message: error?.message || String(error)
   }))
 )
+
+// Installed builds have no git checkout to update from: they learn about a newer
+// installer from the distribution repository's latest GitHub Release. Read-only,
+// unauthenticated, 10 s budget; every failure is a typed answer, never a throw.
+ipcMain.handle('hermes:updates:release-check', async () => {
+  const currentVersion = app.getVersion()
+  const pageUrl = distributionReleasesPage()
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 10_000)
+
+  try {
+    const response = await fetch(distributionReleasesApi(), {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agent-czesiek-release-check' },
+      signal: controller.signal
+    })
+
+    // 404 is what a private repository (or one with no release yet) looks like to an anonymous caller.
+    if (response.status === 404) {
+      return { ok: false, reason: 'no-release', currentVersion, pageUrl }
+    }
+
+    if (!response.ok) {
+      return { ok: false, reason: 'http-error', detail: `HTTP ${response.status}`, currentVersion, pageUrl }
+    }
+
+    const result = evaluateRelease(await response.json(), {
+      arch: process.arch,
+      currentVersion,
+      platform: process.platform
+    })
+
+    return { ok: true, ...result }
+  } catch (error) {
+    return { ok: false, reason: 'unreachable', detail: error?.message || String(error), currentVersion, pageUrl }
+  } finally {
+    clearTimeout(timer)
+  }
+})
 
 ipcMain.handle('hermes:updates:branch:get', async () => readDesktopUpdateConfig())
 

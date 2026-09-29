@@ -542,6 +542,7 @@ declare global {
       getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
         check: () => Promise<DesktopUpdateStatus>
+        releaseCheck: () => Promise<DesktopReleaseCheck>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
@@ -654,6 +655,25 @@ export interface DesktopUpdateCommit {
   author: string
   at: number
 }
+
+export type DesktopReleaseCheck =
+  | {
+      asset: null | { name: string; size?: number; url: string }
+      currentVersion: string
+      latestVersion: string
+      notes: string
+      ok: true
+      pageUrl: string
+      publishedAt: null | string
+      updateAvailable: boolean
+    }
+  | {
+      currentVersion: string
+      detail?: string
+      ok: false
+      pageUrl: string
+      reason: 'http-error' | 'no-release' | 'unreachable'
+    }
 
 export interface DesktopUpdateStatus {
   supported: boolean

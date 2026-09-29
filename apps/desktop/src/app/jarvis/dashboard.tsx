@@ -7,10 +7,12 @@ import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
-import { Activity, ChevronLeft, ChevronRight, Maximize, Moon, Sun } from '@/lib/icons'
+import { Activity, ChevronLeft, ChevronRight, Maximize, Moon, Newspaper, Sun } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { requestBriefing } from '@/store/composer'
 
 import { JarvisCore } from './core'
+import { DesktopOrbToggle } from './desktop-orb-toggle'
 import { $jarvisFocusMode, $jarvisRailVisible, setJarvisFocusMode } from './focus-mode'
 import { JarvisInsightsPanel } from './insights-panel'
 import { deriveJarvisMetrics } from './metrics'
@@ -106,9 +108,10 @@ function useDashboardLayout(override: DashboardLayout | undefined): DashboardLay
  * Home's top bar: today's date with a sun or moon for the part of the day on
  * the left, the tips deck and focus mode on the right.
  */
-function HomeTopBar({ tips }: { tips: ReactNode }) {
+function HomeTopBar({ connected, tips }: { connected: boolean; tips: ReactNode }) {
   const { locale, t } = useI18n()
   const copy = t.jarvisShell.home
+  const briefingCopy = t.jarvisShell.briefing
   const focus = useStore($jarvisFocusMode)
   const now = new Date()
   const daypart = jarvisDaypart(now)
@@ -123,6 +126,22 @@ function HomeTopBar({ tips }: { tips: ReactNode }) {
         <span className="truncate first-letter:uppercase">{date}</span>
       </div>
       <div className="ml-auto flex items-center gap-2">
+        {/* The day report and the floating orb left the hero when it was cut down
+            to one primary action; they live here, out of the way, so neither
+            became unreachable. */}
+        <Button
+          aria-label={briefingCopy.button}
+          className="jarvis-glass jarvis-glass-hover size-10 min-h-10 min-w-10 rounded-full"
+          disabled={!connected}
+          onClick={() => requestBriefing({ speak: true })}
+          size="icon"
+          title={briefingCopy.buttonHint}
+          type="button"
+          variant="secondary"
+        >
+          <Newspaper />
+        </Button>
+        <DesktopOrbToggle compact />
         {tips}
         <Button
           aria-pressed={focus}
@@ -284,7 +303,7 @@ export function JarvisDashboard({
         {home ? null : (
           <JarvisCore compact={compactCore && !voiceActive} live taskPhase={state.task.phase} voice={state.voice} />
         )}
-        {home ? <HomeTopBar tips={tipsLauncher} /> : null}
+        {home ? <HomeTopBar connected={connected} tips={tipsLauncher} /> : null}
         <div className="flex flex-wrap items-center justify-center gap-2">
           {/* At rest on home the hero's own status line says it; the pills would
               only crowd the greeting. */}

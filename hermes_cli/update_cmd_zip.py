@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli import distribution as _distribution
 from hermes_cli.update_cmd_common import _best_effort
 
 # Log-record parity with the origin module.
@@ -379,7 +380,7 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         )
         _m().sys.exit(1)
     _abort_zip_update_if_dirty_tree()
-    _download_and_swap_zip(branch, f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip")
+    _download_and_swap_zip(branch, _distribution.branch_zip_url(branch))
     _sweep_bytecode_after_update(branch)
     # Self-lock deferral: the code swap is committed; defer only the dependency sync when this process
     # holds a native extension the sync must rewrite.

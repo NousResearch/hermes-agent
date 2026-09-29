@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react'
 
 import type { VaultGraph, VaultNoteNode } from '@/api/vault'
 
+import { applyRepulsion } from './vault-forces'
+
 interface Body {
   fx?: number
   fy?: number
@@ -135,31 +137,7 @@ export function VaultGraphCanvas({
     }
 
     const step = () => {
-      const n = bodies.length
-
-      for (let i = 0; i < n; i += 1) {
-        const a = bodies[i]!
-
-        for (let j = i + 1; j < n; j += 1) {
-          const b = bodies[j]!
-          let dx = b.x - a.x
-          let dy = b.y - a.y
-          const d2 = dx * dx + dy * dy + 0.01
-
-          if (d2 > 160000) {
-            continue
-          }
-
-          const d = Math.sqrt(d2)
-          const force = (3200 * alpha) / d2
-          dx = (dx / d) * force
-          dy = (dy / d) * force
-          a.vx -= dx
-          a.vy -= dy
-          b.vx += dx
-          b.vy += dy
-        }
-      }
+      applyRepulsion(bodies, alpha)
 
       for (const [a, b] of links) {
         const dx = b.x - a.x

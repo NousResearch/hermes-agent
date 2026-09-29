@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,7 +27,9 @@ VAULT_DIR_NAME = "Czesiek Vault"
 _SKIP_DIRS = {".obsidian", ".git", ".trash", "node_modules", ".archive"}
 _MAX_NOTES = 2000
 _MAX_NOTE_BYTES = 512 * 1024
-_WIKILINK = re.compile(r"\[\[([^\]\n|#]+)(?:#[^\]\n|]*)?(?:\|[^\]\n]*)?\]\]")
+# `![[file]]` embeds a file rather than linking a note, so it is not an edge.
+_WIKILINK = re.compile(r"(?<!!)\[\[([^\]\n|#]+)(?:#[^\]\n|]*)?(?:\|[^\]\n]*)?\]\]")
+_CODE = re.compile(r"```.*?```|`[^`\n]*`", re.DOTALL)
 _TAG = re.compile(r"(?<![\w/])#([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż][\w/-]*)")
 
 
@@ -100,6 +103,31 @@ def _title(rel: str, text: str) -> str:
     return Path(rel).stem.replace("_", " ")
 
 
+# Parsed notes keyed by absolute path and validated by (mtime, size), so a poll of an unchanged vault
+# costs one stat per note instead of a read and three regex passes each.
+_PARSE_CACHE: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+_PARSE_LOCK = threading.Lock()
+
+
+def _parse_note(rel: str, path: Path) -> dict[str, Any]:
+    stat = path.stat()
+    key = (stat.st_mtime_ns, stat.st_size)
+    with _PARSE_LOCK:
+        hit = _PARSE_CACHE.get(str(path))
+    if hit and hit[0] == key:
+        return hit[1]
+    text = _read_text(path)
+    prose = _CODE.sub(" ", text)  # links and tags inside code are examples, not references
+    parsed = {
+        "label": _title(rel, text), "timestamp": int(stat.st_mtime), "size": len(text),
+        "tags": sorted(set(_TAG.findall(prose)))[:8], "excerpt": " ".join(text.split())[:160],
+        "links": _WIKILINK.findall(prose),
+    }
+    with _PARSE_LOCK:
+        _PARSE_CACHE[str(path)] = (key, parsed)
+    return parsed
+
+
 def build_vault_graph() -> dict[str, Any]:
     """Notes as nodes, resolved wikilinks as undirected edges."""
     root = resolve_vault_path()
@@ -112,22 +140,25 @@ def build_vault_graph() -> dict[str, Any]:
     by_stem: dict[str, str] = {}
     by_rel: dict[str, str] = {}
     raw_links: dict[str, list[str]] = {}
+    seen: set[str] = set()
     for path in _iter_note_paths(root):
         rel = _rel(root, path)
         try:
-            text = _read_text(path)
-            mtime = int(path.stat().st_mtime)
+            parsed = _parse_note(rel, path)
         except OSError:
             continue
+        seen.add(str(path))
         folder = rel.rsplit("/", 1)[0] if "/" in rel else ""
         notes.append({
-            "id": rel, "label": _title(rel, text), "folder": folder, "timestamp": mtime,
-            "size": len(text), "tags": sorted(set(_TAG.findall(text)))[:8],
-            "excerpt": " ".join(text.split())[:160],
+            "id": rel, "label": parsed["label"], "folder": folder, "timestamp": parsed["timestamp"],
+            "size": parsed["size"], "tags": parsed["tags"], "excerpt": parsed["excerpt"],
         })
         by_stem.setdefault(path.stem.lower(), rel)
         by_rel[rel[:-3].lower()] = rel
-        raw_links[rel] = _WIKILINK.findall(text)
+        raw_links[rel] = parsed["links"]
+    with _PARSE_LOCK:  # forget notes that are gone, so the cache cannot outgrow the vault
+        for stale in [k for k in _PARSE_CACHE if k.startswith(str(root)) and k not in seen]:
+            del _PARSE_CACHE[stale]
 
     edges: set[tuple[str, str]] = set()
     for rel, targets in raw_links.items():

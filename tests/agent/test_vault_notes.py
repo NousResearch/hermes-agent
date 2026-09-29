@@ -62,3 +62,30 @@ def test_suffix_conflict_never_raises_for_captures(vault):
     b = vn.create_note("Notatka", "Inbox", conflict="suffix")
 
     assert a["id"] == "Inbox/Notatka.md" and b["id"] == "Inbox/Notatka (2).md"
+
+
+def test_unchanged_notes_are_not_reread_but_edited_ones_are(vault, monkeypatch):
+    vn.build_vault_graph()
+    reads = []
+    real = vn._read_text
+    monkeypatch.setattr(vn, "_read_text", lambda p: reads.append(p.name) or real(p))
+
+    vn.build_vault_graph()
+    assert reads == []
+
+    import os
+    target = vault / "B.md"
+    target.write_text("# Beta\n[[A]]\n", encoding="utf-8")
+    os.utime(target, ns=(target.stat().st_atime_ns, target.stat().st_mtime_ns + 5_000_000_000))
+    graph = vn.build_vault_graph()
+
+    assert reads == ["B.md"]
+    assert next(n for n in graph["nodes"] if n["id"] == "B.md")["label"] == "Beta"
+
+
+def test_links_in_code_and_file_embeds_are_not_edges(vault):
+    (vault / "C.md").write_text("# C\n`[[A]]`\n```\n[[B]]\n```\n![[A]]\nreal: [[04_PROJEKTY/Proj]]\n", encoding="utf-8")
+    edges = {(e["source"], e["target"]) for e in vn.build_vault_graph()["edges"]}
+
+    assert ("04_PROJEKTY/Proj.md", "C.md") in edges
+    assert not any("C.md" in e and ("A.md" in e or "B.md" in e) for e in edges)

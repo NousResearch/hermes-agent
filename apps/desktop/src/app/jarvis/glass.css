@@ -120,8 +120,8 @@
   border-radius: 1rem;
   background: color-mix(in srgb, var(--glass-bg-strong) 72%, transparent);
   box-shadow: inset 0 1px 0 var(--glass-highlight);
-  backdrop-filter: blur(var(--glass-blur)) saturate(150%);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+  /* No backdrop-filter of its own: the rail that holds these cards already
+     frosts what is behind it, and nesting blurs repaints the GPU twice. */
 }
 
 .jarvis-well {

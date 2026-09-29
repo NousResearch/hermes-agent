@@ -13,6 +13,20 @@ if TYPE_CHECKING:
 
 MAX_PENDING_MENUS = 64
 MENU_TIMEOUT_SECONDS = 300.0
+EXPIRED_NOTICE = "This menu has expired. Ask for a new menu if you still want to choose."
+
+
+def withdraw_menu(adapter: MatrixAdapter, prompt) -> None:
+    """Remove the seeded reactions so an inactive menu no longer offers choices."""
+    prompt.resolved = True
+    for reaction_event_id in prompt.bot_reaction_events.values():
+        adapter._schedule_reaction_redaction(prompt.chat_id, reaction_event_id, "menu no longer active")
+
+
+async def expire_menu(adapter: MatrixAdapter, prompt) -> None:
+    adapter._choice_picker_prompts_by_event.pop(prompt.message_id, None)
+    withdraw_menu(adapter, prompt)
+    await adapter._send_invalid_reaction_feedback(prompt.chat_id, prompt.message_id, EXPIRED_NOTICE)
 
 
 async def send_reaction_menu(
@@ -31,6 +45,7 @@ async def _send_menu_picker(adapter: MatrixAdapter, menu: ReactionMenu, session_
             continue
         if adapter._matrix_prompt_expired(prompt) or prompt.session_key == session_key:
             registry.pop(event_id)
+            withdraw_menu(adapter, prompt)
     if sum(prompt.is_menu for prompt in registry.values()) >= MAX_PENDING_MENUS:
         return SendResult(success=False, error="Too many pending Matrix menus")
 

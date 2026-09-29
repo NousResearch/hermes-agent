@@ -66,6 +66,8 @@ vi.mock('@/store/gateway', async importOriginal => ({
 // the stored sessions table and 404s on a runtime id. session.title accepts
 // the runtime id directly.
 const RUNTIME_SESSION_ID = 'rt-abc123'
+// Every typed command also fires this (fire-and-forget); these tests assert the command's own traffic.
+const SLASH_METRIC = 'shared_metrics.slash_command'
 
 function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -341,6 +343,10 @@ describe('usePromptActions /stop', () => {
     const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
       calls.push({ method, params })
 
       if (method === 'session.interrupt') {
@@ -473,6 +479,10 @@ describe('usePromptActions slash session targeting', () => {
     const createBackendSessionForSend = vi.fn(async () => 'rt-brand-new-WRONG')
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
       calls.push({ method, params })
 
       if (method === 'session.resume') {
@@ -653,7 +663,11 @@ describe('usePromptActions /wake', () => {
 
     await handle!.submitText('/wake')
 
-    expect(requestGateway.mock.calls.map(([method]) => method)).toEqual(['wake.status', 'wake.stop', 'wake.status'])
+    expect(requestGateway.mock.calls.map(([method]) => method).filter(m => m !== SLASH_METRIC)).toEqual([
+      'wake.status',
+      'wake.stop',
+      'wake.status'
+    ])
     expect(requestGateway).toHaveBeenCalledWith('wake.stop', { persist: true })
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
@@ -680,6 +694,7 @@ describe('usePromptActions /compress', () => {
     const requestGateway = vi.fn(async (method: string, _params?: Record<string, unknown>, _timeoutMs?: number) => {
       if (method === 'session.compress') {
         return {
+          info: { usage: { compressions: 1 } },
           removed: 8,
           summary: {
             headline: 'Compressed: 234 → 226 messages',
@@ -714,6 +729,7 @@ describe('usePromptActions /compress', () => {
     )
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+    expect($currentUsage.get().compressions).toBe(1)
   })
 
   it('replaces the transcript from the response messages', async () => {
@@ -1344,6 +1360,10 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     const states: Record<string, unknown>[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
       calls.push({ method, params })
 
       if (method === 'slash.exec') {
@@ -1472,6 +1492,10 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     const busyRef = { current: true }
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
       calls.push({ method, params })
 
       if (method === 'slash.exec') {
@@ -1634,6 +1658,10 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     const busyRef = { current: false }
 
     const requestGateway = vi.fn(async (method: string) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
       calls.push(method)
 
       return (method === 'slash.exec' ? { type: 'send', message: 'audit the session states' } : {}) as never
@@ -1853,6 +1881,10 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     const states: Record<string, unknown>[] = []
 
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
       calls.push({ method, params })
 
       if (method === 'slash.exec') {
@@ -1967,6 +1999,36 @@ describe('usePromptActions desktop slash pickers', () => {
     expect(openMemoryGraph).toHaveBeenCalledTimes(3)
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
     expect(requestGateway).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+  })
+
+  it('reports each typed command to shared metrics once, locally handled ones included, never alias re-dispatches', async () => {
+    const openMemoryGraph = vi.fn()
+
+    const requestGateway = vi.fn(
+      async (method: string, _params?: Record<string, unknown>) =>
+        (method === 'slash.exec' ? { type: 'alias', target: 'journey' } : {}) as never
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        openMemoryGraph={openMemoryGraph}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/journey') // desktop-local: never reaches the gateway's slash.exec
+    await handle!.submitText('/mg') // user alias: the backend answers "run /journey"
+
+    expect(openMemoryGraph).toHaveBeenCalledTimes(2)
+    expect(requestGateway.mock.calls.filter(([method]) => method === SLASH_METRIC).map(([, params]) => params)).toEqual(
+      [
+        { command: 'journey', session_id: RUNTIME_SESSION_ID },
+        { command: 'mg', session_id: RUNTIME_SESSION_ID }
+      ]
+    )
   })
 
   it('marks a timed-out handoff as failed so the next attempt can retry', async () => {
@@ -5583,14 +5645,16 @@ describe('uploadComposerAttachment remote read failures', () => {
   })
 })
 
-describe('uploadComposerAttachment preview reuse', () => {
+describe('uploadComposerAttachment image cache contract', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  it('reuses the chip previewUrl instead of re-reading the image off disk', async () => {
-    // attachImagePath already read the full file for the thumbnail; submit
-    // must not pay the disk read + IPC round-trip a second time.
+  it('always re-reads the image from disk, even when a stale previewUrl is cached', async () => {
+    // attachImagePath drops `previewUrl` as soon as a thumbnail exists, so a
+    // populated `previewUrl` here does not mean it holds full-resolution
+    // bytes (#93324) — the upload must never trust it and must always read
+    // the on-disk file for the bytes the model receives.
     const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,ZnJvbS1kaXNr')
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
@@ -5611,44 +5675,7 @@ describe('uploadComposerAttachment preview reuse', () => {
         kind: 'image',
         label: 'shot.png',
         path: '/local/shot.png',
-        previewUrl: 'data:image/png;base64,ZnJvbS1wcmV2aWV3'
-      },
-      { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
-    )
-
-    expect(readFileDataUrl).not.toHaveBeenCalled()
-    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
-      content_base64: 'ZnJvbS1wcmV2aWV3',
-      filename: 'shot.png',
-      session_id: RUNTIME_SESSION_ID
-    })
-    expect(uploaded.path).toBe('/gw/images/shot.png')
-  })
-
-  it('falls back to the disk read when previewUrl is not a base64 data URL', async () => {
-    // A non-data previewUrl (e.g. a gateway media URL) carries no bytes —
-    // the upload must still read the real file.
-    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,ZnJvbS1kaXNr')
-    Object.defineProperty(window, 'hermesDesktop', {
-      configurable: true,
-      value: { readFileDataUrl }
-    })
-
-    const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'image.attach_bytes') {
-        return { attached: true, path: '/gw/images/shot.png' } as never
-      }
-
-      return {} as never
-    })
-
-    await uploadComposerAttachment(
-      {
-        id: 'image:shot.png',
-        kind: 'image',
-        label: 'shot.png',
-        path: '/local/shot.png',
-        previewUrl: 'https://gateway.example/media/shot.png'
+        previewUrl: 'data:image/png;base64,c3RhbGUtY2FjaGVk'
       },
       { remote: true, requestGateway, sessionId: RUNTIME_SESSION_ID }
     )
@@ -5659,6 +5686,7 @@ describe('uploadComposerAttachment preview reuse', () => {
       filename: 'shot.png',
       session_id: RUNTIME_SESSION_ID
     })
+    expect(uploaded.path).toBe('/gw/images/shot.png')
   })
 })
 

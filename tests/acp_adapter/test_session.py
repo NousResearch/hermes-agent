@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import re
 from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch
@@ -543,6 +544,8 @@ class TestPersistence:
         # Load-time durability stamp (#92231): rows materialized from the DB
         # are marked persisted so a later flush can't re-append them.
         assert msg.pop("_db_persisted", None) is True
+        # The durable per-message id rides on every restored row, like the timestamp.
+        assert re.fullmatch(r"[0-9a-f]{32}", msg.pop("message_uid", ""))
         assert restored.history == [{
             "role": "assistant",
             "content": "hello",

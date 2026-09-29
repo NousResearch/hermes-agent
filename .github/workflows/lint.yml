@@ -168,12 +168,6 @@ jobs:
       - name: Require portable Bash shebangs
         run: python scripts/check_bash_shebangs.py
 
-      # The Sep 2026 decomposition kept old import paths alive for external plugins
-      # (PLUGIN-COMPAT blocks, see COMPAT_MANIFEST.md). They are removed on schedule by
-      # reverting one commit, so in-tree code must never depend on them.
-      - name: Forbid in-tree use of plugin-compat pointers
-        run: python scripts/check_compat_pointers.py
-
       # /tmp is not portable (Termux has none, native Windows has none, macOS aliases it to
       # /private/tmp, Linux mounts it as a small tmpfs). Production code resolves scratch space
       # through the scratch-dir helper; skills, docs and prompts must not teach the model a

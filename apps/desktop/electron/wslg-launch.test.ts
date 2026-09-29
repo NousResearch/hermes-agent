@@ -76,4 +76,24 @@ describe('native Wayland launch arguments', () => {
     expect(wslgLaunchArgs([], { XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' }, 'linux')).toBeNull()
     expect(wslgLaunchArgs([], { ...nativeWayland, SSH_CONNECTION: 'remote' }, 'linux')).toBeNull()
   })
+
+  // #126013: the NVIDIA proprietary driver's GPU process dies on Wayland ozone.
+  it('defaults the NVIDIA proprietary driver to x11 unless the user chose wayland', () => {
+    expect(wslgLaunchArgs(['.'], nativeWayland, 'linux', [], true)).toEqual(['.', '--ozone-platform=x11'])
+    expect(wslgLaunchArgs([], { ...nativeWayland, ELECTRON_OZONE_PLATFORM_HINT: 'auto' }, 'linux', [], true)).toEqual([
+      '--ozone-platform=x11'
+    ])
+
+    expect(
+      wslgLaunchArgs([], { ...nativeWayland, ELECTRON_OZONE_PLATFORM_HINT: 'wayland' }, 'linux', [], true)
+    ).toEqual(['--ozone-platform=wayland'])
+    expect(wslgLaunchArgs([], nativeWayland, 'linux', ['--ozone-platform-hint=wayland'], true)).toEqual([
+      '--ozone-platform=wayland'
+    ])
+    expect(wslgLaunchArgs([], nativeWayland, 'linux', ['--ozone-platform=wayland'], true)).toEqual([
+      '--ozone-platform=wayland'
+    ])
+    expect(wslgLaunchArgs(['--ozone-platform=wayland'], nativeWayland, 'linux', [], true)).toBeNull()
+    expect(wslgLaunchArgs([], { XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' }, 'linux', [], true)).toBeNull()
+  })
 })

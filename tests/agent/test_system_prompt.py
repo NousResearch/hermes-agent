@@ -153,10 +153,42 @@ class TestContextFileCwd:
         with (
             patch("agent.prompt_builder.load_soul_md", return_value=""),
             patch("agent.prompt_builder.build_environment_hints", return_value=""),
-            patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+            patch("agent.system_prompt.resolve_context_cwd", return_value=None),
         ):
             context = build_system_prompt_parts(agent)["context"]
 
+        assert "bundled contributor instructions" not in context
+
+    def test_desktop_launch_artifact_uses_profile_configured_cwd(
+        self, monkeypatch, tmp_path
+    ):
+        import agent.runtime_cwd as runtime_cwd
+
+        launch = tmp_path / "launch"
+        workspace = tmp_path / "workspace"
+        launch.mkdir()
+        workspace.mkdir()
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", launch.resolve())
+        monkeypatch.chdir(launch)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        (launch / "AGENTS.md").write_text("bundled contributor instructions")
+        (workspace / "AGENTS.md").write_text("operator workspace rules")
+
+        token = runtime_cwd.set_session_cwd(str(launch))
+        try:
+            agent = _make_agent(
+                platform="desktop",
+                _context_cwd_is_launch_artifact=True,
+            )
+            with (
+                patch("agent.prompt_builder.load_soul_md", return_value=""),
+                patch("agent.prompt_builder.build_environment_hints", return_value=""),
+            ):
+                context = build_system_prompt_parts(agent)["context"]
+        finally:
+            runtime_cwd.reset_session_cwd(token)
+
+        assert "operator workspace rules" in context
         assert "bundled contributor instructions" not in context
 
     def test_desktop_explicit_install_tree_workspace_still_loads_agents_md(
@@ -449,6 +481,23 @@ class TestNamedProfileHintIntegration:
 
         assert "Active Hermes profile: default." in prompt
         assert f"under {root}/profiles/<name>/." in prompt
+
+
+def test_stable_tier_is_identical_across_homes(tmp_path, monkeypatch):
+    """The profile line names the home path, so it must live outside the stable tier:
+    every home/profile on a host then shares one cacheable stable prefix."""
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    tiers = []
+    for name in ("a", "b"):
+        root = tmp_path / name / ".hermes"
+        root.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda root=root: root.parent)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        with patch("agent.coding_context._coding_mode", return_value="off"):
+            parts = _prompt_parts(_make_agent(valid_tool_names=["read_file"]))
+        assert f"under {root}/profiles/<name>/." in parts["volatile"]
+        tiers.append(parts["stable"])
+    assert tiers[0] == tiers[1]
 
 
 def test_build_system_prompt_records_stable_prefix():

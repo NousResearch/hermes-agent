@@ -6,6 +6,7 @@ import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
 import type { ConfigSetResponse, VoiceRecordResponse } from '../gatewayTypes.js'
+import { t } from '../i18n/runtime.js'
 import { isAction, isCopyShortcut, isMac, isMacActionFallback, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
@@ -27,7 +28,6 @@ import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
-const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
 
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
@@ -56,7 +56,7 @@ export function handleIdleHotkeyExit(
   if (!shouldAllowIdleHotkeyExit(dashboardTuiMode)) {
     requestDashboardNewSession?.()
 
-    return actions.sys(DASHBOARD_NEW_SESSION_MESSAGE)
+    return actions.sys(t('session.input.dashboardNewSession'))
   }
 
   return actions.die()
@@ -159,7 +159,7 @@ export function applyVoiceRecordResponse(
 
   if (response?.status === 'busy') {
     voice.setProcessing(true)
-    sys('voice: still transcribing; try again shortly')
+    sys(t('session.input.voiceStillTranscribing'))
   } else {
     voice.setProcessing(false)
   }
@@ -174,7 +174,7 @@ export function dismissSensitivePrompt(
     const requestId = overlay.sudo.requestId
 
     patchOverlayState({ sudo: null })
-    sys('sudo cancelled')
+    sys(t('session.input.sudoCancelled'))
 
     respondToServerRequest(requestId, { value: '' })
 
@@ -185,7 +185,7 @@ export function dismissSensitivePrompt(
     const requestId = overlay.secret.requestId
 
     patchOverlayState({ secret: null })
-    sys('secret entry cancelled')
+    sys(t('session.input.secretCancelled'))
 
     respondToServerRequest(requestId, { value: '' })
 
@@ -196,7 +196,7 @@ export function dismissSensitivePrompt(
     const requestId = overlay.vaultUnlock.requestId
 
     patchOverlayState({ vaultUnlock: null })
-    sys(`${overlay.vaultUnlock.displayName} stays locked`)
+    sys(t('session.input.vaultStaysLocked', overlay.vaultUnlock.displayName))
 
     respondToServerRequest(requestId, { value: '' })
   }
@@ -251,13 +251,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
   const cancelOverlayFromCtrlC = () => {
     if (overlay.clarify) {
-      return actions.answerClarify('')
+      return actions.cancelClarify()
     }
 
     if (overlay.approval) {
       respondToServerRequest(overlay.approval.requestId, { choice: 'deny' })
       patchOverlayState({ approval: null })
-      patchTurnState({ outcome: 'denied' })
+      patchTurnState({ outcome: t('session.approval.denied') })
 
       return
     }
@@ -387,7 +387,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // createGatewayEventHandler turns into UI badges and composer injection.
   const voiceRecordToggle = () => {
     if (!voice.enabled) {
-      return actions.sys('voice: mode is off — enable with /voice on')
+      return actions.sys(t('session.input.voiceModeOff'))
     }
 
     const starting = !voice.recording
@@ -412,7 +412,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
           voice.setRecording(false)
         }
 
-        actions.sys(`voice error: ${e.message}`)
+        actions.sys(t('session.input.voiceError', e.message))
       })
   }
 
@@ -798,29 +798,33 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     // arrives as meta+g across platforms).
     if (ch.toLowerCase() === 'g' && (isAction(key, ch, 'g') || key.meta)) {
       return void cActions.openEditor().catch((err: unknown) => {
-        actions.sys(err instanceof Error ? `failed to open editor: ${err.message}` : 'failed to open editor')
+        actions.sys(
+          err instanceof Error
+            ? t('session.input.failedToOpenEditorWith', err.message)
+            : t('session.input.failedToOpenEditor')
+        )
       })
     }
 
     // shift-tab flips yolo without spending a turn (claude-code parity)
     if (key.shift && key.tab && !cState.completions.length) {
       if (!live.sid) {
-        return void actions.sys('yolo needs an active session')
+        return void actions.sys(t('session.input.yoloNeedsSession'))
       }
 
       // gateway.rpc swallows errors with its own sys() message and resolves to null,
       // so we only speak when it came back with a real shape. null = rpc already spoke.
       return void gateway.rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid }).then(r => {
         if (r?.value === '1') {
-          return actions.sys('yolo on')
+          return actions.sys(t('session.input.yoloOn'))
         }
 
         if (r?.value === '0') {
-          return actions.sys('yolo off')
+          return actions.sys(t('session.input.yoloOff'))
         }
 
         if (r) {
-          actions.sys('failed to toggle yolo')
+          actions.sys(t('session.input.yoloToggleFailed'))
         }
       })
     }

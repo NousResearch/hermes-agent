@@ -10,6 +10,7 @@ import {
 import { useEffect, useRef } from 'react'
 
 import { createGatewayEventDedupe } from '@/app/gateway/gateway-event-dedupe'
+import { reportStartupLatency } from '@/app/gateway/report-startup-latency'
 import { shouldApplyPostBootProgressError } from '@/components/boot-failure-reauth'
 import type { DesktopBootProgress, HermesConnection, HermesWindowState } from '@/global'
 import { HermesGateway } from '@/hermes'
@@ -31,6 +32,7 @@ import {
   setDesktopBootStep
 } from '@/store/boot'
 import { resetBackgroundPollingGuard } from '@/store/composer-status'
+import { noteBackendDrop, noteBackendExited } from '@/store/desktop-metrics'
 import {
   $gateway,
   activeGateway,
@@ -54,7 +56,7 @@ import {
   setPrimaryGatewayConnection,
   touchSecondaryGateways
 } from '@/store/gateway'
-import { reconnectGateway, registerGatewayReconnect } from '@/store/gateway-reconnect'
+import { type GatewayReconnectOptions, reconnectGateway, registerGatewayReconnect } from '@/store/gateway-reconnect'
 import {
   $gatewaySwitching,
   beginGatewaySwitch,
@@ -329,6 +331,9 @@ export function useGatewayBoot({
     // reconnectAttempt, reconnectFailingSince and escalated reset only once an
     // open proves stable (isStableOpen), judged when the socket closes.
     let openedAt: number | null = null
+    // Why the next post-open close happens, when this hook closes the socket itself
+    // (friction telemetry): a liveness timeout is a real drop, a manual reconnect is not.
+    let ownCloseReason: 'manual' | 'timeout' | null = null
     // Consecutive unanswered liveness probes (#95327): a busy-but-healthy
     // backend can fail one probe; only a STREAK proves a genuinely dead
     // socket while turns are in flight. Reset on any successful probe or a
@@ -671,6 +676,7 @@ export function useGatewayBoot({
         }
 
         livenessProbeFailures = 0
+        ownCloseReason = 'timeout'
         gateway.close()
       }
     }
@@ -1068,6 +1074,12 @@ export function useGatewayBoot({
           resetReconnectBackoff()
         }
 
+        // The connected→disconnected edge after a healthy boot, not a switch or our own manual close.
+        if (openedAt !== null && bootCompleted && !$gatewaySwitching.get() && ownCloseReason !== 'manual') {
+          noteBackendDrop(ownCloseReason === 'timeout' ? 'timeout' : null)
+        }
+
+        ownCloseReason = null
         openedAt = null
 
         if (bootCompleted && !$gatewaySwitching.get()) {
@@ -1152,7 +1164,7 @@ export function useGatewayBoot({
     const offPowerResume = desktop.onPowerResume?.(() => void forceReconnectNow())
     const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
 
-    const offGatewayReconnect = registerGatewayReconnect(async () => {
+    const offGatewayReconnect = registerGatewayReconnect(async (options?: GatewayReconnectOptions) => {
       if (cancelled || !bootCompleted || $gatewaySwitching.get()) {
         return
       }
@@ -1169,9 +1181,66 @@ export function useGatewayBoot({
         return
       }
 
-      // Only explicit recovery may retry a credential that requires sign-in.
-      primaryReauthError = null
-      reauthNotified = false
+      // Only MANUAL recovery may retry a credential that requires sign-in;
+      // it keeps the unconditional re-dial as the escape hatch for a socket
+      // the probe path cannot certify.
+      if (options?.source !== 'restart-followthrough') {
+        primaryReauthError = null
+        reauthNotified = false
+        ownCloseReason = 'manual'
+        gateway.close()
+        clearReconnectTimer()
+        resetReconnectBackoff()
+
+        await attemptReconnect({
+          profile: normalizeProfileKey($activeGatewayProfile.get()),
+          activationEpoch: gatewayActivationEpoch()
+        })
+
+        return
+      }
+
+      // A restart follow-through does not automatically need a teardown.
+      // `serve` dies with the app but the messaging gateway survives it
+      // (apps/desktop/AGENTS.md), so in the common case this socket is still
+      // healthy — force-closing it would reject every in-flight RPC and
+      // self-inflict the reconnect the follow-through is meant to perform.
+      // Probe first: a provably-alive transport is left alone, and while a
+      // turn is in flight an inconclusive probe defers behind the same
+      // bounded re-probe the wake path uses (#95327) instead of
+      // deterministically killing it. A probe that stays unanswered with no
+      // work in flight still closes and re-dials, so a restart that DID take
+      // this socket down is recovered here and now.
+      try {
+        await gateway.request('ping', {}, LIVENESS_PROBE_TIMEOUT_MS)
+        livenessProbeFailures = 0
+
+        return
+      } catch (probeErr) {
+        // A version-skewed backend that predates the ping method answers
+        // -32601 (method not found) — a HEALTHY response, not a dead socket.
+        if (probeErr instanceof JsonRpcGatewayError && probeErr.code === -32601) {
+          livenessProbeFailures = 0
+
+          return
+        }
+
+        const decision = decideLivenessForceClose({
+          workingSessionCount: $workingSessionIds.get().length,
+          consecutiveFailures: livenessProbeFailures + 1
+        })
+
+        if (!decision.close) {
+          livenessProbeFailures += 1
+          scheduleLivenessReprobe()
+
+          return
+        }
+
+        livenessProbeFailures = 0
+      }
+
+      ownCloseReason = 'manual'
       gateway.close()
       clearReconnectTimer()
       resetReconnectBackoff()
@@ -1315,6 +1384,8 @@ export function useGatewayBoot({
         return
       }
 
+      noteBackendExited()
+
       // While the boot overlay is up it already shows the failure with its own
       // Retry, and the reconnect handler below is a no-op before boot completes
       // — a toast whose button does nothing would only mislead. Fail the
@@ -1451,6 +1522,8 @@ export function useGatewayBoot({
         if (cancelled) {
           return
         }
+
+        void reportStartupLatency(desktop, (method, params) => gateway.request(method, params))
 
         // Profile adoption must land first: refreshSessions scopes its fetch by
         // $profileScope ← $activeGatewayProfile. The remaining three fetches

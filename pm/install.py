@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import threading
 from contextlib import ExitStack, contextmanager, nullcontext
@@ -66,6 +67,19 @@ def _store() -> Store:
     return Store(paths.store_root())
 
 
+def _heal_exec_bit(binary: Path) -> bool:
+    """agent-browser entries staged before stage() set the exec bit sit at 0644 and fail every
+    launch with PermissionError. Modes are not part of the pinned digest, so restore it in place;
+    an entry we cannot chmod (sealed store) is treated as not installed."""
+    if os.name == "nt" or os.access(binary, os.X_OK):
+        return True
+    try:
+        binary.chmod(binary.stat().st_mode | 0o111)
+    except OSError:
+        return False
+    return os.access(binary, os.X_OK)
+
+
 def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
                         verify: bool = False, allow_outdated: bool = False,
                         roots: tuple[Path, ...] | None = None):
@@ -80,6 +94,8 @@ def _installed_location(package: Package, lockfile: Lockfile, target: str, *,
             continue
         binary = package.binary(store.entry(fact["entry"]), target)
         if binary is not None and not binary.is_file():
+            continue
+        if binary is not None and target == current_target() and not _heal_exec_bit(binary):
             continue
         if verify and not _entry_verified(package, fact, store, target):
             continue

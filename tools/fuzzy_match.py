@@ -367,12 +367,14 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             continue
 
         if len(matches) > 1 and not replace_all:
+            _note_edit_match(None, "ambiguous")
             locations = _format_match_locations(content, matches)
             return content, 0, None, (
                 f"Found {len(matches)} matches for old_string. "
                 f"Provide more context to make it unique, or use replace_all=True. "
                 f"Matches:\n{locations}")
         if replace_all and len(matches) > 1 and strategy_name in SIMILARITY_STRATEGIES:
+            _note_edit_match(None, "ambiguous")
             return content, 0, None, (
                 f"Found {len(matches)} approximate matches via the "
                 f"'{strategy_name}' strategy; replace_all only applies to exact "
@@ -392,9 +394,21 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         new_content = _apply_replacements(
             content, matches, effective_new,
             old_string=old_string if strategy_name != "exact" else None)
+        _note_edit_match(strategy_name)
         return new_content, len(matches), strategy_name, None
 
+    _note_edit_match(None, "no_match")
     return content, 0, None, "Could not find a match for old_string in the file"
+
+
+def _note_edit_match(strategy: Optional[str], miss: Optional[str] = None) -> None:
+    """Report to shared metrics which strategy landed (or why none did); a no-op unless a
+    metered patch tool call is in progress."""
+    try:
+        from hermes_cli.observability.shared_metrics_harness import note_edit_match
+    except Exception:
+        return
+    note_edit_match(strategy, miss)
 
 
 # ── Escape-drift guards ──────────────────────────────────────────────────
@@ -596,12 +610,3 @@ def format_no_match_hint(error: Optional[str], match_count: int,
         return ""
     hint = find_closest_lines(old_string, content)
     return "\n\nDid you mean one of these sections?\n" + hint if hint else ""
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

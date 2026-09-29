@@ -294,7 +294,8 @@ class SessionMaintenanceMixin:
             ORDER BY s.started_at ASC
             """, (self.CANONICAL_BOT_CHAT_TITLE, cutoff))
         for row in rows:
-            self.set_session_archived(row[0], True)
+            # Sweep provenance: a later compression/resume of this lineage un-hides it (#117713).
+            self._auto_archive_lineage(row[0])
         return len(rows)
 
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: str = None,

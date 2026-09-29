@@ -71,6 +71,25 @@ export interface VersionStatusResult {
   unknown: boolean
 }
 
+/**
+ * The one "Last checked …" label for every update surface (statusbar pills,
+ * command palette). `fetchedAt` is stamped on the failure paths too (renderer
+ * catch fallbacks, the IPC catch, the source-check error results), so it must
+ * never be rendered for a reading that did not actually run — an offline
+ * failure would otherwise read as a fresh check.
+ */
+export function lastCheckedLabel(
+  status: { error?: string; fetchedAt?: number } | null | undefined,
+  lastChecked: (age: string) => string,
+  format: (ms: number) => string
+): string | undefined {
+  if (!status || status.error || !status.fetchedAt) {
+    return undefined
+  }
+
+  return lastChecked(format(status.fetchedAt))
+}
+
 export function resolveVersionStatus({
   applyMessage,
   applying,

@@ -16,6 +16,7 @@ import {
 } from '@/store/session'
 import { $focusedTreePaneId as $focusedTreePaneIdMock } from '@/store/session-focus'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
+import { $backendUpdateStatus, $desktopVersion, $updateStatus } from '@/store/updates'
 
 import { useStatusbarItems } from './use-statusbar-items'
 
@@ -225,5 +226,58 @@ describe('useStatusbarItems session timer — runtime cache anchor', () => {
 
     expect(since).toBe(branchRuntimeStartedAt)
     expect(since).not.toBe(parentRowStartedAt * 1000)
+  })
+})
+
+describe('statusbar version pills — a failed check never reads as fresh (#120035)', () => {
+  const clientItem = () => {
+    const { result } = renderHook(() => useStatusbarItems(statusbarOptions), { wrapper })
+
+    return result.current.statusbarItems.find(item => item.id === 'version-client')
+  }
+
+  const backendItem = () => {
+    const { result } = renderHook(
+      () => useStatusbarItems({ ...statusbarOptions, statusSnapshot: { version: '0.4.2' } as never }),
+      { wrapper }
+    )
+
+    return result.current.statusbarItems.find(item => item.id === 'version-backend')
+  }
+
+  beforeEach(() => {
+    $desktopVersion.set({ appVersion: '0.4.2+1913.gabc1234' } as never)
+  })
+
+  afterEach(() => {
+    $desktopVersion.set(null)
+    $updateStatus.set(null)
+    $backendUpdateStatus.set(null)
+  })
+
+  it('labels the client pill tooltip with the cached reading time', () => {
+    $updateStatus.set({ supported: true, fetchedAt: 1_000, behind: 2, branch: 'main' } as never)
+
+    expect(clientItem()?.title).toContain('Last checked')
+  })
+
+  // FAIL-BEFORE: fetchedAt is stamped on the renderer catch path too, so
+  // without an error gate an offline failure renders "Last checked <now>"
+  // beside a version that was never re-checked.
+  it('drops the label when the cached reading is a check failure', () => {
+    $updateStatus.set({ supported: true, fetchedAt: 1_000, error: 'check-failed', behind: 2, branch: 'main' } as never)
+
+    expect(clientItem()?.title).not.toContain('Last checked')
+  })
+
+  it('labels the remote backend pill too — its cached reading ages the same way', () => {
+    $connection.set({ mode: 'remote' } as never)
+    $backendUpdateStatus.set({ supported: true, fetchedAt: 1_000, behind: 1 } as never)
+
+    expect(backendItem()?.title).toContain('Last checked')
+
+    $backendUpdateStatus.set({ supported: true, fetchedAt: 1_000, error: 'check-failed' } as never)
+
+    expect(backendItem()?.title).not.toContain('Last checked')
   })
 })

@@ -62,7 +62,7 @@ import { getServers } from '@/lib/mcp-servers'
 import { normalize } from '@/lib/text'
 import { fmtDateTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { resolveVersionStatus } from '@/lib/version-status'
+import { lastCheckedLabel, resolveVersionStatus } from '@/lib/version-status'
 import { $repoWorktrees } from '@/store/coding-status'
 import {
   $commandPaletteOpen,
@@ -589,8 +589,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     const apply = backend ? backendApply : clientApply
     const status = backend ? backendStatus : clientStatus
 
-    const checkedAt =
-      !backend && status?.fetchedAt ? t.settings.about.lastChecked(fmtDateTime.format(status.fetchedAt)) : undefined
+    const checkedAt = !backend ? lastCheckedLabel(status, t.updates.lastChecked, fmtDateTime.format) : undefined
 
     const versionStatus = resolveVersionStatus({
       applying: apply.applying || apply.stage === 'restart',

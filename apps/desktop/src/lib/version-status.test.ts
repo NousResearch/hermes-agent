@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { en } from '@/i18n/en'
 
-import { resolveVersionStatus } from './version-status'
+import { lastCheckedLabel, resolveVersionStatus } from './version-status'
 
 const copy = en.shell.statusbar
 
@@ -118,5 +118,28 @@ describe('resolveVersionStatus', () => {
 
     expect(tooltip).not.toContain('main')
     expect(tooltip).toContain(`${copy.releaseAvailable('v0.18.0')}`)
+  })
+})
+
+describe('lastCheckedLabel', () => {
+  const lastChecked = (age: string) => `Last checked ${age}`
+  const format = (ms: number) => `@${ms}`
+
+  it('labels a cached reading that actually ran', () => {
+    expect(lastCheckedLabel({ fetchedAt: 123 }, lastChecked, format)).toBe('Last checked @123')
+  })
+
+  // FAIL-BEFORE (#120035 review): every failure path (renderer catch
+  // fallbacks, the IPC catch in main, source_check error results) stamps
+  // fetchedAt too, so an unguarded label renders "Last checked <now>" for a
+  // check that never reached the network.
+  it('never labels a failed check as a fresh one', () => {
+    expect(lastCheckedLabel({ error: 'check-failed', fetchedAt: 123 }, lastChecked, format)).toBeUndefined()
+  })
+
+  it('is undefined without a reading', () => {
+    expect(lastCheckedLabel(null, lastChecked, format)).toBeUndefined()
+    expect(lastCheckedLabel(undefined, lastChecked, format)).toBeUndefined()
+    expect(lastCheckedLabel({}, lastChecked, format)).toBeUndefined()
   })
 })

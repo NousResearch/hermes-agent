@@ -1522,6 +1522,26 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
 def _build_cli_from_args(model, toolsets, provider, reasoning, api_key, base_url, max_turns, run_budget, verbose, compact, resume, checkpoints, pass_session_id, ignore_rules, skills):
     """Resolve the toolset list (explicit / coding posture / platform default), construct HermesCLI, and start the background skills preload."""
+    from hermes_cli.oneshot import _normalize_toolsets
+    from toolsets import ZERO_TOOLSET
+
+    # A flag that was PASSED but names nothing is not "unspecified". `hermes chat -q ... -t ""`
+    # must not silently receive the coding posture or the platform default, which is the same
+    # footgun -z had: the caller asked for a restricted session and got a fully equipped one.
+    # The parser already distinguishes absent (None) from empty (""), so the resolver must too.
+    explicit = toolsets is not None
+    normalized = _normalize_toolsets(toolsets) if explicit else None
+    if explicit and not normalized:
+        raise ValueError(
+            "--toolsets was passed an empty value, which means \"unspecified\" — "
+            f"pass a toolset name, or '{ZERO_TOOLSET}' for an explicitly tool-less session."
+        )
+    if normalized and ZERO_TOOLSET in normalized and len(normalized) > 1:
+        raise ValueError(
+            f"--toolsets: '{ZERO_TOOLSET}' means zero tools and cannot be combined with "
+            f"other toolsets: {', '.join(n for n in normalized if n != ZERO_TOOLSET)}"
+        )
+
     toolsets_list = None
     if isinstance(toolsets, str) and toolsets:
         toolsets_list = [t.strip() for t in toolsets.split(",")]

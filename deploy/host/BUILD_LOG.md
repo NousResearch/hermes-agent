@@ -86,3 +86,17 @@ These items are unchanged from rc1:
 - Cron jobs through `systemd-run --user`.
 - A real model turn, the browser tool from a turn, and the approval path.
 - Booting the `s-4vcpu-8gb` size.
+
+## 2026-09-29: `litco-agent-host-2026.09.29-rc3` (Ana: thread context, actor, channel; litkit_channel_history)
+
+rc3 adds PR #8 (`feat/ana-thread-context`): `actor` / `threadContext` / `litkitChannel` on `POST /turn`, Ana's framing in the turn prompt and SOUL.md, and the `litkit_channel_history` tool. rc2 (image `247411090`) is kept until rc3 passes a real-turn smoke on a re-provisioned matter host; delete it then.
+
+| Item | Value |
+|---|---|
+| Snapshot | `litco-agent-host-2026.09.29-rc3`, id `247594520`, 6.26 GiB, region `sfo3`, status available |
+| litco-agent ref | `da57a7de6d`, the merge of PR #8 into `main` |
+| Command | `deploy/host/build-image.sh --version 2026.09.29-rc3 --ref da57a7de6d --size s-2vcpu-4gb --region sfo3 --ssh-key 56833384` (dry-run plan read first) |
+| Builder | droplet `604732141` (`litco-agent-builder-2026-09-29-rc3`, `s-2vcpu-4gb`, tag `litco-host-builder`, 146.190.165.170). Ran 18:18:04Z → 18:24:28Z (about 6.5 minutes); shutdown 18:23:07Z, snapshot 18:23:18Z–18:24:25Z. Exit 0 on the first attempt; the builder was deleted by step 11 (no builder or verify droplet remains). |
+| Cost | Under $0.01 of droplet time; the snapshot costs about $0.38 a month while it exists. |
+| Pre-flight | `pytest tests/litco tests/host`: 150 passed, 1 skipped (`systemd-analyze`, macOS). `ruff check litco tests/litco` clean. |
+| Not verified | No real turn ran from this image yet. The control plane still points at rc2 (`platform_agent_fleet`); switching it, re-provisioning the demo host and running the wave-3 smoke ("@Ana what did Jane ask for?" names Jane; `litkit_channel_history` tool pill visible) is the next step in the litkit-notes ledger. |

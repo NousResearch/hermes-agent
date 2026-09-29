@@ -7,20 +7,31 @@ to init and keeps the worker's whole environment. ``terminate_worker_scope`` is 
 kill. These tests exercise it against REAL spawned children and pin the two properties that
 make it safe to call from a signal handler: coverage is registered leader-only (never a group
 the worker does not own), and the kill is scoped to THIS worker's identities, so a sibling
-worker's child is left running.
+worker's child is left running. The other half is the out-of-process parent-death supervisor: one
+test drives a REAL worker subprocess and pins that a SIGKILLed worker — no handler, no ``atexit``,
+no ``AIAgent.close()`` — still gets its child's group reaped.
 """
 
 import os
+import select
+import signal
+import subprocess
+import sys
 import time
+from contextlib import suppress
+from pathlib import Path
 
 import pytest
 
 from tools.process_registry import ProcessRegistry, _supervise_child_group
 
-pytestmark = pytest.mark.skipif(os.name != "posix", reason="process-group kill is POSIX-only")
+# Process groups and ``killpg`` are POSIX-only; on Windows the cleanup paths' ``taskkill /T``
+# remains the backstop.
+pytestmark = pytest.mark.platforms("posix")
 
 WORKER_TASK = "t_worker_scope_test"
 SIBLING_TASK = "t_sibling_worker_test"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _spawn(registry, task_id, session_key="", owner_task_id=""):
@@ -90,7 +101,11 @@ def test_terminate_worker_scope_kills_its_own_children_only(registry, worker_env
         assert receipt["survivors"] == []
         assert not _group_alive(mine.pid), "the worker's own child group must be reaped"
         assert _pid_alive(others.pid), "a sibling worker's child must still be running"
-        assert others.pid not in receipt.get("escalated", [])
+        # The sibling was never a target, so it must carry neither the escalation nor the receipt
+        # the exit kill stamps on what it actually signalled.
+        assert others.id not in receipt.get("escalated", [])
+        assert others.completion_reason != "killed"
+        assert others.termination_source != "worker_exit"
         # The durable receipt says why it ended, not a bare exit.
         assert mine.completion_reason == "killed"
         assert mine.termination_source == "worker_exit"
@@ -153,3 +168,68 @@ def test_scope_is_dropped_when_the_session_finishes(registry):
         time.sleep(0.05)
     assert session.supervised_pgid == 0
     assert not _group_alive(session.pid)
+
+
+# A real worker process: spawn a background child through the registry, report the child's process
+# group, then sit there waiting to be killed the way a worker actually dies.
+_PARENT_DEATH_WORKER = r"""
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+from tools.process_registry import ProcessRegistry
+
+session = ProcessRegistry().spawn_local("sleep 300", task_id="t_parent_death")
+print(f"PGID={os.getpgid(session.pid)}", flush=True)
+time.sleep(120)
+"""
+
+
+@pytest.mark.live_system_guard_bypass  # the child is spawned by a worker subprocess, so it is reparented out of the test subtree by design
+def test_parent_death_reaps_a_child_group_when_the_worker_is_sigkilled():
+    """SIGKILL and the OOM killer run no teardown at all — no handler, no ``atexit``, no
+    ``AIAgent.close()`` — so the only thing that can reap a terminal child's process group is the
+    out-of-process supervisor bound to the worker's own lifetime.
+
+    This drives a REAL worker: it spawns a child through the registry, the test SIGKILLs it, and the
+    child's process group must be gone within the supervisor's own grace window.
+    """
+    pgid = 0
+    worker = subprocess.Popen(
+        [sys.executable, "-c", _PARENT_DEATH_WORKER, str(REPO_ROOT)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        cwd=str(REPO_ROOT), start_new_session=True,
+    )
+    try:
+        # The worker's stdout can carry interpreter warnings before the line we want; scan for the
+        # PGID marker until the deadline instead of trusting the first line.
+        line = ""
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and not line.startswith("PGID="):
+            ready, _, _ = select.select([worker.stdout], [], [], 0.5)
+            if not ready:
+                continue
+            candidate = worker.stdout.readline()
+            if not candidate:
+                break
+            if candidate.startswith("PGID="):
+                line = candidate
+        assert line.startswith("PGID="), f"worker never reported a pgid: {line!r}"
+        pgid = int(line.strip().split("=", 1)[1])
+        assert pgid > 1
+        assert _group_alive(pgid), "precondition: the child's group is alive before the worker dies"
+
+        worker.kill()  # SIGKILL: nothing in the worker runs after this
+        worker.wait(timeout=10)
+
+        # The supervisor SIGTERMs, waits its grace window, then SIGKILLs; allow that plus margin.
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline and _group_alive(pgid):
+            time.sleep(0.1)
+        assert not _group_alive(pgid), (
+            f"process group {pgid} outlived the SIGKILLed worker: the parent-death supervisor did "
+            f"not reap it")
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+        if pgid > 1:
+            with suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(pgid, signal.SIGKILL)

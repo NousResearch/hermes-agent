@@ -628,7 +628,7 @@ _CHECKPOINT_DEFAULTS = {
 # group: the group can be killed, but nothing kills it when THIS process dies without running a
 # teardown path. SIGKILL, the OOM killer and the kanban worker's ``os._exit(0)`` all skip
 # ``AIAgent.close()`` -> ``kill_process()``, so the group reparents to init and keeps the worker's
-# entire environment (dashboard drain bearer, RAILWAY_TOKEN, ...).
+# entire environment, credentials and tokens included.
 # We hand the child's pgid to the shared parent-death supervisor the MCP path already uses
 # (``tools/mcp_death_supervisor.py``): it holds a pipe whose write end belongs to THIS process, so
 # any death — SIGKILL and OOM included — arrives there as EOF and it then TERM/KILLs the group.

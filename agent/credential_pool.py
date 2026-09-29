@@ -2254,10 +2254,14 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         )
         self._current_id = None
         next_entry, _pending = self._select_unlocked(refresh=False)
-        if next_entry is not None and len(self._available_entries()[0]) == 1:
+        if next_entry is not None and len(self._entries) == 1:
             # A single-entry pool cannot rotate: returning its only entry would
             # report a recovery without changing the credential, and the
-            # caller retries the same 401 indefinitely.
+            # caller retries the same 401 indefinitely. Key on pool size, not
+            # availability (#127722): a multi-entry pool with benched siblings
+            # still has a live entry that differs from the unmatched failed
+            # identity, so decline would strand it idle; repeats stay bounded
+            # by the streak cap above.
             self._unmatched_rotation_streak = 0
             self._current_id = None
             return None

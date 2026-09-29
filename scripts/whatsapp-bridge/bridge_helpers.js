@@ -1,6 +1,7 @@
 import path from 'path';
 import { mkdirSync, writeFileSync } from 'fs';
 import { randomBytes } from 'crypto';
+import { expandWhatsAppIdentifiers, normalizeWhatsAppIdentifier } from './allowlist.js';
 
 export const MIME_MAP = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
@@ -170,7 +171,7 @@ export function buildTextSendPayload(text, { replyTo, messageStore } = {}) {
   return { content, options };
 }
 
-export function buildReactionPayload({ chatId, messageId, emoji, fromMe = false } = {}, { messageStore } = {}) {
+export function buildReactionPayload({ chatId, messageId, emoji, fromMe = false } = {}, { messageStore, sessionDir } = {}) {
   if (!chatId) throw new Error('chatId is required');
   if (!messageId) throw new Error('messageId is required');
   // An empty string is a valid emoji here: WhatsApp retracts an existing
@@ -183,7 +184,16 @@ export function buildReactionPayload({ chatId, messageId, emoji, fromMe = false 
   const cachedMessage = messageStore?.get(messageId);
   const cachedKey = cachedMessage?.key;
   if (cachedKey && chatId !== cachedKey.remoteJid && chatId !== cachedKey.remoteJidAlt) {
-    throw new Error('Reaction target belongs to another chat');
+    // The adapter can resolve a phone/LID alias from session files even
+    // when this particular message has no remoteJidAlt. Use that same map.
+    const requestedId = normalizeWhatsAppIdentifier(chatId);
+    const targetId = normalizeWhatsAppIdentifier(cachedKey.remoteJid);
+    const mappedDM = sessionDir
+      && ((chatId.endsWith('@s.whatsapp.net') && cachedKey.remoteJid.endsWith('@lid'))
+        || (chatId.endsWith('@lid') && cachedKey.remoteJid.endsWith('@s.whatsapp.net')))
+      && requestedId !== targetId
+      && expandWhatsAppIdentifiers(cachedKey.remoteJid, sessionDir).has(requestedId);
+    if (!mappedDM) throw new Error('Reaction target belongs to another chat');
   }
   const key = cachedKey ? { ...cachedKey } : {
     remoteJid: chatId,

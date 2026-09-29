@@ -891,7 +891,7 @@ app.post('/react', async (req, res) => {
   const { chatId, messageId, emoji, fromMe } = req.body;
   let payload;
   try {
-    payload = buildReactionPayload({ chatId, messageId, emoji, fromMe }, { messageStore });
+    payload = buildReactionPayload({ chatId, messageId, emoji, fromMe }, { messageStore, sessionDir: SESSION_DIR });
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }

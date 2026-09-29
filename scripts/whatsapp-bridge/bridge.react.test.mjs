@@ -7,6 +7,9 @@
 
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
+import os from 'node:os';
+import path from 'node:path';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { generateWAMessageContent, proto } from '@whiskeysockets/baileys';
 
 import { buildReactionPayload, createBoundedMessageStore } from './bridge_helpers.js';
@@ -70,6 +73,48 @@ test('reaction targets reject another chat or a group without a known participan
   assert.throws(() => buildReactionPayload({
     chatId: '123456789@g.us', messageId: 'uncached-message', emoji: '👍',
   }, { messageStore }), /participant/);
+});
+
+test('react and unreact resolve saved phone/LID mappings without an alternate message JID', async () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-reaction-'));
+  try {
+    writeFileSync(path.join(sessionDir, 'lid-mapping-15551234567.json'), JSON.stringify('987654321'));
+    writeFileSync(path.join(sessionDir, 'lid-mapping-987654321_reverse.json'), JSON.stringify('15551234567'));
+    const messageStore = createBoundedMessageStore();
+    const pairs = [
+      ['987654321@lid', '15551234567@s.whatsapp.net'],
+      ['15551234567@s.whatsapp.net', '987654321@lid'],
+    ];
+    for (const [remoteJid, chatId] of pairs) {
+      const key = { remoteJid, id: `mapped-${remoteJid}`, fromMe: true };
+      messageStore.remember({ key, message: { conversation: 'original message' } });
+      for (const emoji of ['👍', '']) {
+        const payload = buildReactionPayload({ chatId, messageId: key.id, emoji }, { messageStore, sessionDir });
+        assert.deepEqual(payload.react, { text: emoji, key });
+        const message = await generateWAMessageContent(payload, {});
+        const wire = proto.Message.decode(proto.Message.encode(message).finish()).reactionMessage;
+        assert.equal(wire.key.remoteJid, remoteJid);
+        assert.equal(wire.key.fromMe, true);
+        assert.equal(wire.text, emoji);
+      }
+      const sameDomainCollision = chatId.split('@')[0] + '@' + remoteJid.split('@')[1];
+      for (const otherChat of ['15557654321@s.whatsapp.net', '15551234567@g.us', sameDomainCollision]) {
+        assert.throws(() => buildReactionPayload({
+          chatId: otherChat, messageId: key.id, emoji: '👍',
+        }, { messageStore, sessionDir }), /another chat/);
+      }
+    }
+    // Equal bare numbers in different JID domains are not a saved mapping.
+    messageStore.remember({
+      key: { remoteJid: '123456789@lid', id: 'unmapped-lid', fromMe: false },
+      message: { conversation: 'unmapped message' },
+    });
+    assert.throws(() => buildReactionPayload({
+      chatId: '123456789@s.whatsapp.net', messageId: 'unmapped-lid', emoji: '👍',
+    }, { messageStore, sessionDir }), /another chat/);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
 });
 
 {

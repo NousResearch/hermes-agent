@@ -274,6 +274,15 @@ def _finalize_child_env(env: dict) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
     bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
     Kanban scrub. Returns the (possibly new) dict."""
+    # Windows UTF-8 pipe contract, structural instead of inherited: every child env built
+    # here gets the same setdefault hermes_bootstrap.apply_windows_utf8_bootstrap() puts in
+    # os.environ at entry points, so a spawn that pipes raw non-ASCII into a text-reading
+    # child survives a GBK-locale parent (cron/CI/service-manager) whose environ never
+    # carried the pin. setdefault keeps an explicit user opt-out (PYTHONUTF8=0,
+    # PYTHONIOENCODING=...) authoritative; POSIX is unaffected because the vars are inert
+    # there. Precedent: _run_delivery's stdin branch (tools/bot_mode_dm.py).
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     _apply_profile_home(env)
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)

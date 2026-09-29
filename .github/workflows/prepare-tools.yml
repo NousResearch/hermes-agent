@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   identify:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.repository == 'ethernet8023/hermes-agent' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     outputs:
       number: ${{ steps.pr.outputs.number }}

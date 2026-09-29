@@ -167,7 +167,8 @@ def test_bounded_digests_seed_every_reference(tmp_path, upstream, r2_server, mon
     for name, body in bodies.items():
         (root / f"{name}.deb").write_bytes(body)
         digest = hashlib.sha256(body).hexdigest()
-        for kind, label in (("tool", name), ("library", name), ("library", f"{name}-alias")):
+        for kind, label in (("tool", name), ("library", name), ("library", f"{name}-alias"),
+                            ("prepared", f"{name}-prepared")):
             pins.append(inputs.InputPin(label, f"{server.url}/{name}.deb", digest, kind))
 
     # Hold the first two mirror requests and prove a third cannot reach the
@@ -209,6 +210,7 @@ def test_bounded_digests_seed_every_reference(tmp_path, upstream, r2_server, mon
         assert (store.entry(f"fetch-{digest}") / f"{name}.deb").read_bytes() == body
         for label in (name, f"{name}-alias"):
             assert download_path(payload, label).read_bytes() == body
+        assert not download_path(payload, f"{name}-prepared").exists()
 
 
 def test_parallel_readback_failure_reaches_cli_and_preserves_destination(tmp_path, upstream, r2_server, monkeypatch, capsys):

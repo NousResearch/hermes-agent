@@ -354,7 +354,7 @@ def stage_inputs(pins: list[InputPin], *, archive: Archive, store: Store | None 
             local = Path(temporary) / "input"
             origin = archive.fetch(references[0], local)
             for pin in references:
-                if pin.kind != "tool" and payload is not None:
+                if pin.kind in ("library", "license") and payload is not None:
                     dest = download_path(payload, pin.name)
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(local, dest)

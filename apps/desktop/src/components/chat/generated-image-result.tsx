@@ -8,7 +8,7 @@ import { useImageDownload } from '@/hooks/use-image-download'
 import { useMediaImage } from '@/hooks/use-media-image'
 import { useI18n } from '@/i18n'
 import { generatedImageDimensionsFromResult, generatedImageFromResult } from '@/lib/generated-images'
-import { mediaExternalUrl, mediaName } from '@/lib/media'
+import { mediaName, openMediaExternally } from '@/lib/media'
 import { cn } from '@/lib/utils'
 
 // A hint is only a placeholder shape, not a promise about the delivered image.
@@ -57,7 +57,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
         href="#"
         onClick={event => {
           event.preventDefault()
-          void window.hermesDesktop?.openExternal(mediaExternalUrl(image))
+          void openMediaExternally(image)
         }}
       >
         {copy.openImage}: {mediaName(image)}

@@ -12,7 +12,7 @@ from agent.i18n import t
 from utils import base_url_host_matches
 
 
-def _single_query_clarify_callback(question: str, choices=None, multi_select=False) -> str:
+def _single_query_clarify_callback(questions: list) -> dict:
     """Headless clarify answer for ``hermes chat -q``.
 
     A -q turn never builds the prompt_toolkit app, so the interactive clarify modal
@@ -23,11 +23,9 @@ def _single_query_clarify_callback(question: str, choices=None, multi_select=Fal
     The oneshot path answers immediately via ``_oneshot_clarify_callback``; single-query turns need the same
     headless behavior (#94943).
     """
-    prefix = f"[single-query mode: no user available to answer {question!r}. "
-    if choices:
-        what = "subset" if multi_select else "option"
-        return f"{prefix}Pick the best {what} from {choices} using your own judgment and continue.]"
-    return f"{prefix}Make the most reasonable assumption you can and continue.]"
+    return {"answers": {}, "outcome": "undelivered", "notice": (
+        "single-query mode: no user available to answer. Pick the best choices using your own "
+        "judgment, or make the most reasonable assumption you can, and continue.")}
 
 
 def _current_runtime(cli) -> dict:

@@ -1824,6 +1824,18 @@ async def _catch_up_trigger(adapter, relates_to: dict):
     )
 
 
+def _catch_up_runner(adapter):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = types.SimpleNamespace(multiplex_profiles=False)
+    runner.adapters = {Platform.MATRIX: adapter}
+    runner._model = "test-model"
+    runner._base_url = ""
+    runner._session_key_for_source = lambda source: "matrix-session"
+    return runner
+
+
 @pytest.mark.parametrize("scope", ["room", "thread"])
 @pytest.mark.parametrize("latest_turn_event", ["bot_reply", "admitted_mention"])
 @pytest.mark.asyncio
@@ -1881,6 +1893,50 @@ async def test_mention_catch_up_skips_scopes_where_every_message_starts_a_turn(s
     context = await adapter.fetch_mention_context(event)
 
     assert (context, adapter._client.api.request.await_count) == (None, 0)
+
+
+@pytest.mark.asyncio
+async def test_room_note_and_mention_catch_up_share_one_new_message_marker():
+    from plugins.platforms.matrix.room_context import RoomStateNote
+
+    adapter = _catch_up_adapter(
+        [_catch_up_message("$earlier", "@bob:example.org", "Earlier", {})], thread=False,
+    )
+    adapter._pending_room_notes.stash(_CATCH_UP_ROOM, "topic", RoomStateNote("The room topic changed"))
+    event = await _catch_up_trigger(adapter, {})
+
+    message = await _catch_up_runner(adapter)._prepare_inbound_message_text(
+        event=event, source=event.source, history=[{"role": "user", "content": "earlier"}],
+    )
+
+    assert message == (
+        "[The room topic changed]\n\n"
+        "[Recent room messages]\n[bob] Earlier\n\n"
+        "[New message]\n[alice] next"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mention_in_new_thread_session_fetches_the_thread_once():
+    adapter = _catch_up_adapter(
+        [_catch_up_message("$earlier", "@bob:example.org", "Earlier", _CATCH_UP_THREAD)], thread=True,
+    )
+    event = await _catch_up_trigger(adapter, _CATCH_UP_THREAD)
+
+    message = await _catch_up_runner(adapter)._prepare_inbound_message_text(
+        event=event, source=event.source, history=[],
+    )
+
+    assert message == (
+        "[Earlier messages in this thread]\n[alice] Thread root\n[bob] Earlier\n\n"
+        "[New message]\n[alice] next"
+    )
+    room = "/_matrix/client/v3/rooms/%21room%3Aexample.org"
+    assert [call.args[1] for call in adapter._client.api.request.await_args_list] == [
+        f"{room}/context/%24current",
+        f"{room}/messages",
+        "/_matrix/client/v1/rooms/%21room%3Aexample.org/relations/%24root/m.thread",
+    ]
 
 
 @pytest.mark.asyncio

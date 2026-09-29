@@ -1762,12 +1762,10 @@ class GatewayInboundMixin:
         # Earlier thread messages are external text; append them after @ reference expansion.
         if thread_context:
             message_text = f"{thread_context}\n\n{message_text}"
-        if mention_context:
-            message_text = f"{mention_context}\n\n[New message]\n{message_text}"
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
         message_text = self._prepend_inbound_reply_context(event, source, message_text)
-        adapter = self._intake_adapter_for(source)
+        context_blocks: list[str] = []
         take_channel_context = getattr(type(adapter), "take_turn_channel_context", None)
         if callable(take_channel_context):
             entry = getattr(getattr(self, "session_store", None), "_entries", {}).get(session_key)
@@ -1800,7 +1798,11 @@ class GatewayInboundMixin:
             else:
                 context = take_channel_context(adapter, event, session_key, created_at)
             if context:
-                message_text = f"{context}\n\n[New message]\n{message_text}"
+                context_blocks.append(context)
+        if mention_context:
+            context_blocks.append(mention_context)
+        if context_blocks:
+            message_text = "\n\n".join([*context_blocks, f"[New message]\n{message_text}"])
         return message_text
 
     async def _prepare_profile_scoped_inbound_message_text(

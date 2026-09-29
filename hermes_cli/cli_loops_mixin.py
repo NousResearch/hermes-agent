@@ -723,6 +723,15 @@ class CLILoopsMixin:
             prompt = decision.get("continuation_prompt")
             if prompt:
                 try:
-                    self._pending_input.put(prompt)
+                    from tools.process_registry_notifications import TimelineNotification
+                    # Self-injected continuation, not an authored user turn: the staged row persists
+                    # ``display_kind="hidden"`` (#125477) while the model still sees the prompt text;
+                    # the scrollback paints the compact marker instead of a fake user bubble.
+                    self._pending_input.put(TimelineNotification(
+                        prompt,
+                        display_text="goal continuation",
+                        display_kind="hidden",
+                        notification_category="result",
+                    ))
                 except Exception as exc:
                     logging.debug("goal continuation enqueue failed: %s", exc)

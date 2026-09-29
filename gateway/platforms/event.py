@@ -97,6 +97,10 @@ class MessageEvent:
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    # Self-injected /goal continuation prompt (gateway FIFO enqueue, mirrors the heartbeat's
+    # ``_heartbeat_session_id`` provenance): read by display_kind_for_event so the persisted row
+    # is machinery (``hidden``), never an authored user turn (#125477).
+    _goal_continuation: bool = field(default=False, init=False, repr=False, compare=False)
 
     def absorb_reply_expected(self, other: "MessageEvent") -> None:
         """One turn now answers *other* too: an addressed message wins, then an unknown one."""

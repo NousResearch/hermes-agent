@@ -1491,12 +1491,13 @@ class MatrixAdapter(BasePlatformAdapter):
         # The stream consumer chains reply_to through its own chunks and omits it on
         # interim sends; reply_to_mode applies to the request that the turn answers.
         reply_to = meta.get("reply_to_message_id") or meta.get("_stream_reply_to_message_id") or reply_to
+        notice = meta.get("_notice_reply") is True
         last_event_id = None
         for chunk in self.truncate_message(self.format_message(content), self.max_message_length):
             msg_content = self._build_text_message_content(chunk)
             self._apply_relation_metadata(chat_id, msg_content, reply_to=reply_to, metadata=metadata)
             try:
-                last_event_id = await self._send_room_message(chat_id, msg_content)
+                last_event_id = await self._send_room_message(chat_id, msg_content, notice=notice)
                 logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
             except Exception as exc:
                 if not (self._encryption and getattr(self._client, "crypto", None)):
@@ -1504,14 +1505,14 @@ class MatrixAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=str(exc))
                 try:  # E2EE error: retry once after sharing keys
                     await self._client.crypto.share_keys()
-                    last_event_id = await self._send_room_message(chat_id, msg_content)
+                    last_event_id = await self._send_room_message(chat_id, msg_content, notice=notice)
                     logger.info("Matrix: sent event %s to %s (after key share)", last_event_id, chat_id)
                 except Exception as retry_exc:
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
                     return SendResult(success=False, error=str(retry_exc))
         return SendResult(success=True, message_id=last_event_id)
 
-    async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any]) -> str:
+    async def _send_room_message(self, chat_id: str, msg_content: Dict[str, Any], *, notice: bool = False) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
         event_id = await asyncio.wait_for(
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
@@ -1519,7 +1520,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._event_context_cache.store(
             chat_id, event_id, MatrixEventContext(self._user_id or "", msg_content["body"])
         )
-        self._thread_fallbacks.remember_sent(chat_id, msg_content, event_id)
+        self._thread_fallbacks.remember_sent(chat_id, msg_content, event_id, notice=notice)
         return event_id
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:

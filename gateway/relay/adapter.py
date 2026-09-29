@@ -1357,6 +1357,7 @@ class RelayAdapter(BasePlatformAdapter):
         # Gateway-internal interim marker (see send()): strip before the wire.
         _interim = bool(_sfp_metadata.pop("_interim_send", False))
         _sfp_metadata.pop("_stream_reply_to_message_id", None)
+        _sfp_metadata.pop("_notice_reply", None)
         # The delivery resolver calls THIS method directly, bypassing send() — an
         # open native stream must absorb the turn-final here too.
         seal = await self._absorb_into_open_draft(chat_id, content, _sfp_metadata, _interim)
@@ -1451,6 +1452,7 @@ class RelayAdapter(BasePlatformAdapter):
         # Gateway-internal marker; strip before the wire.
         _interim = bool(send_metadata.pop("_interim_send", False))
         send_metadata.pop("_stream_reply_to_message_id", None)
+        send_metadata.pop("_notice_reply", None)
         # Seal-interception is checked BEFORE the explicit-platform branch: an open
         # stream absorbs the turn-final whichever door it arrives through.
         seal = await self._absorb_into_open_draft(chat_id, content, send_metadata, _interim)

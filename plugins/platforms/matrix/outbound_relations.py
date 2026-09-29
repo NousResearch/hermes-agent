@@ -32,12 +32,13 @@ class ThreadFallbackTracker:
     def remember(self, room_id: str, thread_id: str, event_id: str) -> None:
         self._update(room_id, thread_id, event_id, own=False, answered=None)
 
-    def remember_sent(self, room_id: str, content: dict[str, Any], event_id: str) -> None:
+    def remember_sent(self, room_id: str, content: dict[str, Any], event_id: str, *, notice: bool = False) -> None:
         relation = MatrixRelation.from_content(content.get("m.relates_to"))
         if relation.is_edit:
             return
 
-        self._update(room_id, relation.thread_root or "", event_id, own=True, answered=relation.reply_target)
+        answered = None if notice else relation.reply_target
+        self._update(room_id, relation.thread_root or "", event_id, own=True, answered=answered)
 
     def latest(self, room_id: str, thread_id: str) -> str | None:
         events = self._threads.get((room_id, thread_id))

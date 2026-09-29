@@ -415,3 +415,43 @@ async def test_plain_room_replies_to_a_reaction_prompt_quote_the_prompt(mode, pa
     ] == [
         None, {"m.in_reply_to": {"event_id": prompt.message_id}},
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["first", "all"])
+@pytest.mark.parametrize("thread_id", [None, "$root"])
+async def test_busy_acknowledgement_leaves_the_quote_for_the_answer(monkeypatch, mode, thread_id):
+    from gateway.platforms.event import MessageEvent
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setattr("gateway.stream_consumer.asyncio.sleep", AsyncMock())
+    room_id = "!dm:example.org"
+    adapter = MatrixAdapter(PlatformConfig(
+        enabled=True, token="syt_test", reply_to_mode=mode,
+        extra={
+            "homeserver": "https://matrix.example.org", "user_id": "@bot:example.org",
+            "auto_thread": False, "e2ee_mode": "off",
+        },
+    ))
+    client = MagicMock()
+    client.send_message_event = AsyncMock(side_effect=[f"$sent{i}" for i in range(10)])
+    adapter._client = client
+    source = SessionSource(platform=Platform.MATRIX, chat_id=room_id, chat_type="dm", thread_id=thread_id)
+    queued = MessageEvent(text="And the staging config?", source=source, message_id="$queued")
+
+    await object.__new__(GatewayRunner)._send_busy_ack_reply(queued, adapter, "Queued for the next turn.")
+    consumer = GatewayStreamConsumer(
+        adapter, room_id, StreamConsumerConfig(cursor=""),
+        metadata={"thread_id": thread_id} if thread_id else None, initial_reply_to_id="$queued",
+    )
+    consumer.on_delta("Staging uses the same port.")
+    consumer.finish()
+    await consumer.run()
+
+    quote = {"m.in_reply_to": {"event_id": "$queued"}}
+    if thread_id:
+        quote = {"rel_type": "m.thread", "event_id": thread_id, **quote, "is_falling_back": False}
+    assert [
+        (call.args[2]["body"], call.args[2].get("m.relates_to"))
+        for call in client.send_message_event.await_args_list
+    ] == [("Queued for the next turn.", quote), ("Staging uses the same port.", quote)]

@@ -83,7 +83,7 @@ class SessionSource:
     guild_id: Optional[str] = None
     parent_chat_id: Optional[str] = None  # parent channel when chat_id is a thread
     message_id: Optional[str] = None  # triggering message (pin/reply/react)
-    # Permalink to the triggering conversation, provided to the model with the current turn.
+    # Permalink to the triggering event, provided to the model with the current turn.
     source_permalink: Optional[str] = None
     role_authorized: bool = False  # adapter granted access via role, not user ID
     # Multiplex profile this message routes to (None => active/default); namespaces the key.

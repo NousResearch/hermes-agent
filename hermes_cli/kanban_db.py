@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
 import subprocess
 import sys
 import logging
@@ -3109,7 +3110,7 @@ def _persist_scratch_completion_artifacts(
         try:
             attachment_dir.mkdir(parents=True, exist_ok=True)
             dest = _unique_attachment_path(attachment_dir, resolved_src.name, used_destinations)
-            _copy_capped(resolved_src, dest, artifact)
+            _copy_capped(resolved_src, dest, artifact, workspace_root=workspace_root)
         except Exception as exc:
             if dest is not None:
                 with contextlib.suppress(OSError):
@@ -3141,9 +3142,76 @@ def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None
         attachment_dir.rmdir()
 
 
-def _copy_capped(src: Path, dest: Path, artifact: str) -> None:
-    """Chunked copy that aborts if the file grows past the attachment cap mid-copy."""
-    with src.open("rb") as source_file, dest.open("xb") as destination_file:
+def _copy_capped(
+    src: Path, dest: Path, artifact: str, *, workspace_root: Optional[Path] = None,
+) -> None:
+    """Copy one artifact without following a path swapped after validation.
+
+    On POSIX, reopen the source relative to an already-open workspace directory
+    and reject symlinks at every component. This closes the resolve/check/open
+    race where a writable worker could replace a validated file (or one of its
+    parent directories) with a symlink before the copy re-opened it by path.
+
+    Platforms without dir_fd/O_NOFOLLOW retain the existing path-open behavior;
+    the surrounding containment checks still apply there.
+    """
+    source_file = None
+    if (
+        workspace_root is not None
+        and os.name != "nt"
+        and hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+        and os.open in getattr(os, "supports_dir_fd", set())
+    ):
+        try:
+            relative = src.relative_to(workspace_root)
+        except ValueError as exc:
+            raise ArtifactPreservationError(
+                f"declared scratch artifact escaped its workspace: {artifact}"
+            ) from exc
+        if not relative.parts:
+            raise ArtifactPreservationError(
+                f"declared scratch artifact is not a regular file: {artifact}"
+            )
+
+        opened_dirs: list[int] = []
+        try:
+            dir_fd = os.open(
+                workspace_root,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            opened_dirs.append(dir_fd)
+            for component in relative.parts[:-1]:
+                dir_fd = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=dir_fd,
+                )
+                opened_dirs.append(dir_fd)
+            file_fd = os.open(
+                relative.parts[-1],
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=dir_fd,
+            )
+            mode = os.fstat(file_fd).st_mode
+            if not stat.S_ISREG(mode):
+                os.close(file_fd)
+                raise ArtifactPreservationError(
+                    f"declared scratch artifact is not a regular file: {artifact}"
+                )
+            source_file = os.fdopen(file_fd, "rb", closefd=True)
+        except OSError as exc:
+            raise ArtifactPreservationError(
+                f"declared scratch artifact changed during preservation: {artifact}"
+            ) from exc
+        finally:
+            for fd in reversed(opened_dirs):
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+    else:
+        source_file = src.open("rb")
+
+    with source_file, dest.open("xb") as destination_file:
         copied = 0
         while chunk := source_file.read(1024 * 1024):
             copied += len(chunk)
@@ -3152,7 +3220,6 @@ def _copy_capped(src: Path, dest: Path, artifact: str) -> None:
                     f"declared scratch artifact grew beyond the size limit: {artifact}"
                 )
             destination_file.write(chunk)
-
 
 def _insert_completion_attachment(
     conn: sqlite3.Connection, task_id: str, *, filename: str, stored_path: str, size: int,

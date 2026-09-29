@@ -18,6 +18,15 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 #: (producer _stash_local_changes_if_needed, consumer _warn_orphaned_update_autostashes).
 _AUTOSTASH_NAME_PREFIX = "hermes-update-autostash-"
 
+#: Every Hermes-owned stash name the age check recognizes. The installer
+#: (scripts/install.sh, scripts/install.ps1) parks a dirty tree under its own
+#: prefix with the same stamp before it switches or resets branches, and that
+#: park is as unrestored and as invisible as an update's — so the check reads
+#: both. A plugin update's ``hermes-plugin-update-autostash`` carries no stamp
+#: and is deliberately absent: an entry with no readable age is left alone
+#: rather than guessed at.
+_AUTOSTASH_NAME_PREFIXES = (_AUTOSTASH_NAME_PREFIX, "hermes-install-autostash-")
+
 #: Age past which a leftover autostash is called out. Younger entries are normal
 #: (recent --keep-stash park); older ones are almost always forgotten.
 # Entries younger than this are normal (a parked stash from : the desktop updater's --keep-stash run minutes
@@ -186,19 +195,19 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
         if stash_list.returncode != 0:
             return 0
         cutoff = datetime.now(timezone.utc) - timedelta(days=_AUTOSTASH_WARN_AGE_DAYS)
-        stale: list[tuple[str, str]] = []
+        stale: list[tuple[str, str, str]] = []
         for line in stash_list.stdout.splitlines():
             selector, _, subject = line.strip().partition(" ")
-            pos = subject.find(_AUTOSTASH_NAME_PREFIX)
-            if pos < 0:
+            prefix = next((p for p in _AUTOSTASH_NAME_PREFIXES if p in subject), None)
+            if prefix is None:
                 continue
-            stamp = subject[pos + len(_AUTOSTASH_NAME_PREFIX):][:15]  # "YYYYMMDD-HHMMSS"
+            stamp = subject[subject.index(prefix) + len(prefix):][:15]  # "YYYYMMDD-HHMMSS"
             try:
                 stash_time = datetime.strptime(stamp, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
             except ValueError:
                 continue  # age unknown — leave it alone rather than guess
             if stash_time < cutoff:
-                stale.append((selector, stamp))
+                stale.append((selector, prefix, stamp))
         if not stale:
             return 0
         print()
@@ -207,8 +216,8 @@ def _warn_orphaned_update_autostashes(git_cmd: list[str], cwd: Path) -> int:
             f"{'y is' if len(stale) == 1 else 'ies are'} more than "
             f"{_AUTOSTASH_WARN_AGE_DAYS} days old:"
         )
-        for selector, stamp in stale:
-            print(f"    {selector}  ({_AUTOSTASH_NAME_PREFIX}{stamp})")
+        for selector, prefix, stamp in stale:
+            print(f"    {selector}  ({prefix}{stamp})")
         print("  These hold local changes stashed by earlier updates and never")
         print("  restored. Review with: git stash show -p <entry>")
         print("  Restore with: git stash apply <entry>   Discard with: git stash drop <entry>")

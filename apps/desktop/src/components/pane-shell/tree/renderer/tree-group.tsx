@@ -29,6 +29,7 @@ import {
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
+import { isEditableTarget } from '@/lib/keybinds/combo'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 import { closeAllOpenSessionTiles, setZoneParkedTiles } from '@/store/session-states'
@@ -96,9 +97,29 @@ import { paneChrome } from './track-model'
  *  tab's menu, so every tab in a strip answers a right-click the same way —
  *  a pane with no domain menu of its own (the file tree, a terminal, the main
  *  tab on a fresh draft) falls through to this one. */
+/** True when a gesture landed in a text surface the pane's own menu must not
+ *  swallow. The zone menu wraps the WHOLE pane body (composer included), and a
+ *  radix `ContextMenuTrigger` unconditionally preventDefaults + opens on
+ *  right-click — so without this a field never reaches the app-level menu that
+ *  carries Cut/Copy/Paste/Select all. Editable wins: a right-click inside a
+ *  field belongs to the field. The contenteditable attribute is checked
+ *  explicitly so the rule holds in engines that do not derive
+ *  `isContentEditable` from it (jsdom). */
+function editableGestureTarget(target: EventTarget | null): boolean {
+  if (isEditableTarget(target)) {
+    return true
+  }
+
+  const element = target instanceof Element ? target : null
+  const host = element?.closest('[contenteditable]')
+
+  return Boolean(host && host.getAttribute('contenteditable') !== 'false')
+}
+
 function ZoneMenu({
   children,
   closable,
+  disabled,
   minimizable = true,
   minimizeLabel,
   minimized,
@@ -108,6 +129,8 @@ function ZoneMenu({
   targetPane
 }: {
   children: ReactNode
+  /** Render the area bare (no right-click menu) — an editable owns the gesture. */
+  disabled?: boolean
   /** The pane the menu closes (the right-clicked chip / the active pane);
    *  undefined = not closable (the main zone). */
   closable?: () => string | undefined
@@ -217,7 +240,7 @@ function ZoneMenu({
   }
 
   return (
-    <ActionsContextMenu contentClassName="w-40" items={items}>
+    <ActionsContextMenu contentClassName="w-40" disabled={disabled} items={items}>
       {children}
     </ActionsContextMenu>
   )
@@ -251,6 +274,8 @@ export function TreeGroup({
   // missing on an inactive tile tab whose zone-active was the uncloseable
   // workspace).
   const [menuPane, setMenuPane] = useState<string | undefined>(undefined)
+  // Right-click inside a text field belongs to the field, not the zone menu.
+  const [editableGesture, setEditableGesture] = useState(false)
   const panes = useContributions('panes')
   const stableHosts = useStablePaneHosts()
   // Coarse drag flag only (set once at drag start/end). The per-frame drop
@@ -473,14 +498,21 @@ export function TreeGroup({
       // Advertises the visible tab strip so panes can drop their own
       // self-naming labels (see [data-pane-self-label] in styles.css).
       data-zone-header={headerVisible || undefined}
+      onContextMenu={e => {
+        if (editableGestureTarget(e.target)) {
+          return
+        }
+
+        setMenuPane((e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined)
+      }}
       // The zone menu opens from the strip, the rail, the edit veil and the
       // body. Only the strip can name a chip, so resolve the target HERE for
       // every one of them — otherwise a right-click off the strip reused the
       // PREVIOUS target, and landing on the uncloseable workspace dropped
       // Close from the menu for a pane that closes fine.
-      onContextMenu={e => {
-        setMenuPane((e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined)
-      }}
+      // Pointer down precedes the context-menu event, so the gesture's target is
+      // known before radix decides to open (capture phase: pane body included).
+      onPointerDownCapture={e => setEditableGesture(editableGestureTarget(e.target))}
       ref={ref}
       style={
         wcOverlap
@@ -502,7 +534,7 @@ export function TreeGroup({
           the horizontal strip, just `vertical`. Click a tab to restore +
           activate; click anywhere else on the rail to restore. */}
       {verticalCollapse && (
-        <ZoneMenu {...zoneMenu}>
+        <ZoneMenu {...zoneMenu} disabled={editableGesture}>
           <div
             className={cn(
               'flex h-full min-h-7 w-7 min-w-7 shrink-0 cursor-pointer select-none flex-col items-stretch bg-(--ui-sidebar-surface-background)',
@@ -782,9 +814,12 @@ export function TreeGroup({
         <PaneBody
           hidden={Boolean(node.minimized)}
           wrap={
+            // An editable gesture (composer right-click) must reach the
+            // app-level menu with the clipboard verbs instead of this zone
+            // menu — see editableGestureTarget.
             !isEmpty
               ? body => (
-                  <ZoneMenu {...zoneMenu}>
+                  <ZoneMenu {...zoneMenu} disabled={editableGesture}>
                     <div
                       aria-label={t.zones.zoneMenuLabel(String(tabLabel(activeId)))}
                       data-zone-body={node.id}

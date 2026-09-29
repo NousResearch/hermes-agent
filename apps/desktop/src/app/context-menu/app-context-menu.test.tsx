@@ -611,3 +611,31 @@ describe('ContextMenuTrigger asChild', () => {
     expect(footer.hasAttribute(HERMES_CONTEXT_MENU_TRIGGER_ATTR)).toBe(true)
   })
 })
+
+// #127313: the pane-body zone menu swallowed right-clicks on transcript text, so
+// the only Copy affordance a mouse user had disappeared. A live text selection
+// belongs to the app menu even though the target sits inside a zone trigger.
+it('offers Copy for text selected inside a component-owned zone trigger', async () => {
+  installBridge()
+  mountMenu()
+
+  const host = attach('<div data-slot="context-menu-trigger"><p>selected reply text</p></div>')
+  const paragraph = host.querySelector('p')!
+  const range = document.createRange()
+
+  range.selectNodeContents(paragraph.firstChild!)
+
+  const selection = window.getSelection()!
+
+  selection.removeAllRanges()
+  selection.addRange(range)
+
+  fireEvent.contextMenu(paragraph, { clientX: 30, clientY: 30 })
+  const copy = (await screen.findByText('Copy')).closest('[data-slot="dropdown-menu-item"]') as HTMLElement
+
+  expect(copy.getAttribute('data-disabled')).toBeNull()
+
+  fireEvent.click(copy)
+
+  await waitFor(() => expect(desktopWindow.hermesDesktop!.writeClipboard).toHaveBeenCalledWith('selected reply text'))
+})

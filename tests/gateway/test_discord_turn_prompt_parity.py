@@ -129,7 +129,9 @@ async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch: pytest.Monke
         SimpleNamespace(channel=channel, channel_id=channel.id, guild=parent.guild, guild_id=1, user=_USER),
         "/voice join")
     adapter._voice_text_channels = {1: channel.id}
-    adapter._voice_sources = {1: join.source.to_dict()}
+    # A typed `/voice join` binds that message's source, id included; a voice turn must not inherit it
+    # as its own trigger.
+    adapter._voice_sources = {1: {**join.source.to_dict(), "message_id": "1554000000000000000"}}
     adapter._client.get_channel = {channel.id: channel}.get
     if case == "renamed-after-join":
         channel.name, channel.topic = "renamed", "New topic"
@@ -148,6 +150,7 @@ async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch: pytest.Monke
     spoken = adapter.handle_message.await_args.args[0]
     assert spoken is not typed
     _assert_same_prompt_inputs(typed, spoken)
+    assert spoken.source.message_id is None
     # The join-time name belongs to the joiner only; another uncached speaker never borrows it.
     other = runner._voice_input_source(adapter, 1, 43, channel.id).user_name
     assert other == ("43" if case == "speaker-uncached" else "Alice")

@@ -255,6 +255,9 @@ class GatewayVoiceMixin:
             if user_name is None and source.user_id == str(user_id):
                 user_name = source.user_name
             source.user_id, source.user_name = str(user_id), user_name or str(user_id)
+            # The bound source is the `/voice join` message's; its id is not this turn's trigger
+            # (run.py exports it as HERMES_SESSION_MESSAGE_ID for reply anchoring).
+            source.message_id = None
         else:
             source = SessionSource(
                 platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),

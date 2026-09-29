@@ -106,6 +106,13 @@ def _drain(root: Path) -> None:
             record = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(record, dict) or record["status"] != "queued":
                 continue
+            # Optional, off-by-default: settle a queued item as suppressed when local
+            # backlog triage classifies it as noise. Never suppresses on error (fail-open).
+            from cron.backlog_triage import should_suppress
+            if should_suppress(record.get("content", ""), source="bot_chat_pending"):
+                record.update(status="suppressed", error="triage: suppress")
+                atomic_json_write(path, record, fsync_dir=True, mode=0o600)
+                continue
             home = Path(record["home"])
             # A failure notice queued before the target profile opted out is settled as
             # suppressed at drain time; the policy is the owner's, read from its own config.

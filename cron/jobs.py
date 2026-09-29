@@ -3043,11 +3043,19 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
             "Skipping missed occurrence because cron.catch_up_missed is false; next run: %s",
             d.label, d.next_run, grace, new_next)
         return True
+    # Record the miss regardless; optional, off-by-default triage may only decide
+    # whether the accumulated catch-up actually fires. Fail-open: never skips on error.
+    record_catch_up_occurrence()
+    from cron.backlog_triage import should_suppress
+    if should_suppress(
+            f"Missed occurrence for job {d.label!r}: scheduled {d.next_run}, grace {grace}s; "
+            f"firing as catch-up now.", source="catch_up"):
+        logger.info("backlog triage: skipping catch-up fire for job '%s'", d.label)
+        return True
     logger.info(
         "Job '%s' missed its scheduled time (%s, grace=%ds). "
         "Running now; next run provisionally set to: %s (re-anchored on completion)",
         d.label, d.next_run, grace, new_next)
-    record_catch_up_occurrence()
     return False
 
 

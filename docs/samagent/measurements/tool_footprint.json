@@ -1,0 +1,308 @@
+{
+  "method": "chars/4 proxy",
+  "scope": "tool schemas + full AIAgent system-prompt prefix (no model API calls)",
+  "postures": {
+    "core_all": {
+      "tools": 59,
+      "registered": 59,
+      "schema_tokens": 24882
+    },
+    "coding_posture": {
+      "tools": 37,
+      "registered": 37,
+      "schema_tokens": 14435
+    },
+    "lean_5": {
+      "tools": 5,
+      "registered": 5,
+      "schema_tokens": 2576
+    },
+    "lean_8": {
+      "tools": 8,
+      "registered": 8,
+      "schema_tokens": 3992
+    }
+  },
+  "groups_in_core": {
+    "browser_*": {
+      "tools": 18,
+      "registered": 18,
+      "schema_tokens": 4695
+    },
+    "kanban_*": {
+      "tools": 14,
+      "registered": 14,
+      "schema_tokens": 6012
+    }
+  },
+  "per_tool_top12": [
+    [
+      1732,
+      "cronjob_manage"
+    ],
+    [
+      1428,
+      "computer_use"
+    ],
+    [
+      1322,
+      "kanban_create"
+    ],
+    [
+      1200,
+      "terminal"
+    ],
+    [
+      985,
+      "session_search"
+    ],
+    [
+      895,
+      "manage_connections"
+    ],
+    [
+      887,
+      "skill_manage"
+    ],
+    [
+      881,
+      "browser_cdp"
+    ],
+    [
+      879,
+      "kanban_complete"
+    ],
+    [
+      863,
+      "memory"
+    ],
+    [
+      767,
+      "execute_code"
+    ],
+    [
+      735,
+      "browser_exec"
+    ]
+  ],
+  "resolved_here_coding_toolset": {
+    "assembly_on": {
+      "tools": 17,
+      "schema_tokens": 8291,
+      "names": [
+        "clarify",
+        "delegate_task",
+        "execute_code",
+        "memory",
+        "patch",
+        "read_file",
+        "search_files",
+        "skill_manage",
+        "skill_view",
+        "skills_list",
+        "terminal",
+        "web_extract",
+        "web_search",
+        "write_file",
+        "tool_search",
+        "tool_describe",
+        "tool_call"
+      ]
+    },
+    "assembly_off": {
+      "tools": 17,
+      "schema_tokens": 9121,
+      "names": [
+        "clarify",
+        "delegate_task",
+        "execute_code",
+        "memory",
+        "patch",
+        "process_manage",
+        "read_file",
+        "search_files",
+        "session_search",
+        "skill_manage",
+        "skill_view",
+        "skills_list",
+        "terminal",
+        "todo_list",
+        "web_extract",
+        "web_search",
+        "write_file"
+      ]
+    }
+  },
+  "full_request_prefix": {
+    "clean_project": {
+      "hermes_cli_default": {
+        "resolved_tools": 18,
+        "tool_names": [
+          "clarify",
+          "delegate_task",
+          "execute_code",
+          "memory",
+          "patch",
+          "read_file",
+          "search_files",
+          "skill_manage",
+          "skill_view",
+          "skills_list",
+          "terminal",
+          "text_to_speech",
+          "web_extract",
+          "web_search",
+          "write_file",
+          "tool_search",
+          "tool_describe",
+          "tool_call"
+        ],
+        "tool_schema_tokens": 8752,
+        "system_prompt_tokens": 1761,
+        "system_stable_tokens": 1550,
+        "system_context_tokens": 0,
+        "total_prefix_tokens": 10513
+      },
+      "hermes_coding": {
+        "resolved_tools": 17,
+        "tool_names": [
+          "clarify",
+          "delegate_task",
+          "execute_code",
+          "memory",
+          "patch",
+          "read_file",
+          "search_files",
+          "skill_manage",
+          "skill_view",
+          "skills_list",
+          "terminal",
+          "web_extract",
+          "web_search",
+          "write_file",
+          "tool_search",
+          "tool_describe",
+          "tool_call"
+        ],
+        "tool_schema_tokens": 8291,
+        "system_prompt_tokens": 1761,
+        "system_stable_tokens": 1550,
+        "system_context_tokens": 0,
+        "total_prefix_tokens": 10052
+      },
+      "samagent_lean_worker": {
+        "resolved_tools": 8,
+        "tool_names": [
+          "patch",
+          "read_file",
+          "search_files",
+          "terminal",
+          "write_file",
+          "tool_search",
+          "tool_describe",
+          "tool_call"
+        ],
+        "tool_schema_tokens": 3392,
+        "system_prompt_tokens": 1269,
+        "system_stable_tokens": 1057,
+        "system_context_tokens": 0,
+        "total_prefix_tokens": 4661
+      }
+    },
+    "hermes_repo_root": {
+      "hermes_cli_default": {
+        "resolved_tools": 18,
+        "tool_names": [
+          "clarify",
+          "delegate_task",
+          "execute_code",
+          "memory",
+          "patch",
+          "read_file",
+          "search_files",
+          "skill_manage",
+          "skill_view",
+          "skills_list",
+          "terminal",
+          "text_to_speech",
+          "web_extract",
+          "web_search",
+          "write_file",
+          "tool_search",
+          "tool_describe",
+          "tool_call"
+        ],
+        "tool_schema_tokens": 8752,
+        "system_prompt_tokens": 11628,
+        "system_stable_tokens": 1964,
+        "system_context_tokens": 9462,
+        "total_prefix_tokens": 20380
+      },
+      "hermes_coding": {
+        "resolved_tools": 17,
+        "tool_names": [
+          "clarify",
+          "delegate_task",
+          "execute_code",
+          "memory",
+          "patch",
+          "read_file",
+          "search_files",
+          "skill_manage",
+          "skill_view",
+          "skills_list",
+          "terminal",
+          "web_extract",
+          "web_search",
+          "write_file",
+          "tool_search",
+          "tool_describe",
+          "tool_call"
+        ],
+        "tool_schema_tokens": 8291,
+        "system_prompt_tokens": 11628,
+        "system_stable_tokens": 1964,
+        "system_context_tokens": 9462,
+        "total_prefix_tokens": 19919
+      },
+      "samagent_lean_worker": {
+        "resolved_tools": 8,
+        "tool_names": [
+          "patch",
+          "read_file",
+          "search_files",
+          "terminal",
+          "write_file",
+          "tool_search",
+          "tool_describe",
+          "tool_call"
+        ],
+        "tool_schema_tokens": 3392,
+        "system_prompt_tokens": 11136,
+        "system_stable_tokens": 1472,
+        "system_context_tokens": 9462,
+        "total_prefix_tokens": 14528
+      }
+    }
+  },
+  "context_share": {
+    "32k_window": {
+      "core_all": 0.759,
+      "coding_posture": 0.441,
+      "lean_5": 0.079,
+      "lean_8": 0.122
+    },
+    "64k_window": {
+      "core_all": 0.38,
+      "coding_posture": 0.22,
+      "lean_5": 0.039,
+      "lean_8": 0.061
+    },
+    "128k_window": {
+      "core_all": 0.19,
+      "coding_posture": 0.11,
+      "lean_5": 0.02,
+      "lean_8": 0.03
+    }
+  }
+}

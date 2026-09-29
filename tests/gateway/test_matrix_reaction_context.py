@@ -4,7 +4,7 @@ import asyncio
 import sys
 import types
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -117,12 +117,33 @@ async def test_encrypted_reaction_requires_decryption_and_uses_outer_cleartext_r
 
 
 @pytest.mark.asyncio
-async def test_catch_up_reports_failed_reaction_lookup():
+@pytest.mark.parametrize(("relations", "expected"), [
+    pytest.param(
+        RuntimeError("reaction lookup failed"),
+        "[Recent room messages]\n[Some reactions could not be read.]\n[Alice] Earlier",
+        id="lookup-failed",
+    ),
+    pytest.param(
+        {"chunk": [], "next_batch": "more"},
+        "[Recent room messages]\n[Alice] Earlier\n[More reactions were omitted from this bounded context.]",
+        id="truncated",
+    ),
+    pytest.param(
+        {"chunk": [{
+            "type": "m.room.encrypted", "event_id": "$encrypted-reaction", "sender": "@bob:example.org",
+            "content": {"m.relates_to": {"rel_type": "m.annotation", "event_id": "$earlier", "key": "👍"}},
+        }]},
+        "[Recent room messages]\n[Alice] Earlier\n[Some reactions could not be decrypted.]",
+        id="undecryptable",
+    ),
+])
+async def test_catch_up_reports_incomplete_reactions(relations, expected):
     from tests.gateway.test_matrix import _make_adapter
 
     room_id = "!room:example.org"
     adapter = _make_adapter()
     adapter._client = MagicMock()
+    adapter._client.crypto = None
 
     async def request(_method, path, **_kwargs):
         if "/context/" in path:
@@ -132,7 +153,10 @@ async def test_catch_up_reports_failed_reaction_lookup():
                 "type": "m.room.message", "event_id": "$earlier", "sender": "@alice:example.org",
                 "content": {"msgtype": "m.text", "body": "Earlier"},
             }]}
-        raise RuntimeError("reaction lookup failed")
+        assert path.endswith("/relations/%24earlier/m.annotation")
+        if isinstance(relations, Exception):
+            raise relations
+        return relations
 
     adapter._client.api.request = AsyncMock(side_effect=request)
     adapter._is_dm_room = AsyncMock(return_value=True)
@@ -141,9 +165,7 @@ async def test_catch_up_reports_failed_reaction_lookup():
 
     context = await adapter.fetch_room_context(room_id, "$current")
 
-    assert context == (
-        "[Recent room messages]\n[Some reactions could not be read.]\n[Alice] Earlier"
-    )
+    assert context == expected
 
 
 @pytest.mark.asyncio
@@ -255,3 +277,30 @@ async def test_event_read_reports_incomplete_reactions_against_the_target():
         ],
     }
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claimed_by", [
+    None, "_handle_approval_reaction", "_handle_model_picker_reaction", "_handle_choice_picker_reaction",
+])
+async def test_reaction_reaches_prompt_handlers_without_starting_a_turn(claimed_by):
+    from tests.gateway.test_matrix import _make_adapter
+
+    adapter = _make_adapter()
+    adapter._user_id = "@bot:example.org"
+    adapter.handle_message = AsyncMock()
+    handlers = ("_handle_approval_reaction", "_handle_model_picker_reaction", "_handle_choice_picker_reaction")
+    for name in handlers:
+        setattr(adapter, name, AsyncMock(return_value=name == claimed_by))
+    event = SimpleNamespace(
+        sender="@alice:example.org", event_id="$reaction", room_id="!room:example.org",
+        content={"m.relates_to": {"rel_type": "m.annotation", "event_id": "$message", "key": "👍"}},
+    )
+
+    await adapter._on_reaction(event)
+
+    reached = handlers if claimed_by is None else handlers[:handlers.index(claimed_by) + 1]
+    assert {name: getattr(adapter, name).await_args_list for name in handlers} == {
+        name: [call("!room:example.org", "$message", "👍", "@alice:example.org")] if name in reached else []
+        for name in handlers
+    }
+    adapter.handle_message.assert_not_awaited()

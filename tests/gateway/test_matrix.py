@@ -388,7 +388,7 @@ class TestMatrixResolveSendTarget:
         self.adapter._client = client
 
         result = await self.adapter._resolve_send_target("!room:example.org")
-        assert result == "!room:example.org"
+        assert result == ("!room:example.org", None)
         client.resolve_room_alias.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -413,7 +413,7 @@ class TestMatrixResolveSendTarget:
         self.adapter._client = client
 
         result = await self.adapter._resolve_send_target("#general:example.org")
-        assert result == "!resolved:example.org"
+        assert result == ("!resolved:example.org", None)
         client.resolve_room_alias.assert_awaited_once_with("#general:example.org")
 
     @pytest.mark.asyncio
@@ -446,7 +446,7 @@ class TestMatrixResolveSendTarget:
         self.adapter._joined_rooms = {"!resolved:example.org"}
 
         result = await self.adapter._resolve_send_target("#general:example.org")
-        assert result == "!resolved:example.org"
+        assert result == ("!resolved:example.org", None)
         client.join_room.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -1630,7 +1630,6 @@ async def test_sent_matrix_message_is_available_as_reply_context():
 
     adapter = _make_adapter()
     adapter._client = MagicMock()
-    adapter._client.get_state_event = AsyncMock(side_effect=_MissingEncryption())
     adapter._client.send_message_event = AsyncMock(return_value="$sent")
 
     result = await adapter.send("!room:example.org", "hello from the bot")
@@ -1647,7 +1646,6 @@ async def test_successful_matrix_edit_updates_cached_reply_target():
 
     adapter = _make_adapter()
     adapter._client = MagicMock()
-    adapter._client.get_state_event = AsyncMock(side_effect=_MissingEncryption())
     adapter._client.send_message_event = AsyncMock(side_effect=[
         "$sent", "$edit", RuntimeError("send failed"),
     ])
@@ -2040,7 +2038,6 @@ class TestMatrixRenderingPayloads:
     def setup_method(self):
         self.adapter = _make_adapter()
         self.mock_client = MagicMock()
-        self.mock_client.get_state_event = AsyncMock(side_effect=_MissingEncryption())
         self.mock_client.send_message_event = AsyncMock(return_value="$evt")
         self.adapter._client = self.mock_client
 
@@ -2954,7 +2951,6 @@ class TestMatrixUploadAndSend:
         mock_client.state_store = MagicMock()
         mock_client.state_store.is_encrypted = AsyncMock(return_value=True)
         mock_client.upload_media = AsyncMock(return_value="mxc://example.org/enc")
-        mock_client.get_state_event = AsyncMock(return_value={"algorithm": "m.megolm.v1.aes-sha2"})
         mock_client.send_message_event = AsyncMock(return_value="$event")
         adapter._client = mock_client
 
@@ -2978,7 +2974,6 @@ class TestMatrixUploadAndSend:
         adapter = _make_adapter()
         mock_client = MagicMock()
         mock_client.upload_media = AsyncMock(return_value="mxc://example.org/plain")
-        mock_client.get_state_event = AsyncMock(side_effect=_MissingEncryption())
         mock_client.send_message_event = AsyncMock(return_value="$event")
         adapter._client = mock_client
 
@@ -3006,16 +3001,13 @@ class TestMatrixUploadAndSend:
         adapter._encryption = True
         mock_client = MagicMock()
         mock_client.crypto = object()
-        mock_client.state_store.is_encrypted = AsyncMock(return_value=True)
+        # Synced state: encrypted for the text send and the first upload, then unencrypted.
+        mock_client.state_store.is_encrypted = AsyncMock(side_effect=[True, True, True, *[False] * 6])
         mock_client.upload_media = AsyncMock(side_effect=[
             "mxc://example.org/secret", "mxc://example.org/plain",
             "mxc://example.org/one", "mxc://example.org/two",
         ])
-        mock_client.get_state_event = AsyncMock(side_effect=[
-            _MissingEncryption(), {"algorithm": "m.megolm.v1.aes-sha2"},
-            {"algorithm": "m.megolm.v1.aes-sha2"},
-            *[_MissingEncryption() for _ in range(6)],
-        ])
+        mock_client.get_state_event = AsyncMock(side_effect=AssertionError("live state request"))
         mock_client.send_message_event = AsyncMock(side_effect=[
             "$text", "$encrypted", "$plain", "$image-one", "$image-two",
         ])
@@ -3171,8 +3163,6 @@ class TestMatrixEncryptedSendFallback:
         adapter._encryption = True
 
         fake_client = MagicMock()
-        fake_client.get_state_event = AsyncMock(return_value={"algorithm": "m.megolm.v1.aes-sha2"})
-        fake_client.state_store.is_encrypted = AsyncMock(return_value=True)
         fake_client.send_message_event = AsyncMock(side_effect=[
             Exception("encryption error"),
             "$event123",  # mautrix returns EventID string directly

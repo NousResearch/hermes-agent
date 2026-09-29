@@ -672,6 +672,16 @@ def _canonical_participant(source: SessionSource) -> Optional[str]:
     return participant_id
 
 
+def isolates_participant(
+    chat_type: str, thread_id: Optional[str], *, group_sessions_per_user: bool,
+    thread_sessions_per_user: bool,
+) -> bool:
+    """Whether the session key of a non-DM chat includes the participant. Threads are shared
+    unless ``thread_sessions_per_user`` is set."""
+    return (chat_type != "dm" and group_sessions_per_user
+            and (not thread_id or thread_sessions_per_user))
+
+
 def build_session_key(
     source: SessionSource, group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False, profile: Optional[str] = None,
@@ -698,9 +708,9 @@ def build_session_key(
         # chat_id-less DM shares one agent.
         isolate_user = not chat_id
     else:
-        # Threads are shared by default; per-user isolation only via thread_sessions_per_user or
-        # outside a thread.
-        isolate_user = group_sessions_per_user and not (thread_id and not thread_sessions_per_user)
+        isolate_user = isolates_participant(
+            source.chat_type, thread_id, group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user)
     # Duck-typed sources may lack user_id_alt: read the participant only when it matters.
     participant_id = _canonical_participant(source) if (isolate_user or not is_dm) else None
 

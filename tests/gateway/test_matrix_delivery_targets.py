@@ -328,3 +328,105 @@ async def test_native_delivery_bounds_resolution_and_rejects_upload_state_change
     release.set()
     await asyncio.sleep(0)
     adapter._client.send_message_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "stored", "crypto", "expected"),
+    [
+        ("text", None, False, (True, [{"body"}])),
+        ("text", True, False, (False, [])),
+        ("media", False, True, (True, [{"body", "url"}])),
+        ("media", True, True, (True, [{"body", "file"}])),
+    ],
+)
+async def test_ordinary_sends_use_the_synced_encryption_state(
+    monkeypatch, tmp_path, kind, stored, crypto, expected
+):
+    """An ordinary reply reads the encryption state that sync maintains, so a failing live
+    state request cannot fail it. A room known to be encrypted still refuses plaintext."""
+    import sys
+
+    room = "!reports:remote.test"
+    adapter = MatrixAdapter(PlatformConfig(
+        enabled=True, extra={"e2ee_mode": "optional" if crypto else "off"},
+    ))
+    adapter._encryption = crypto
+    client = SimpleNamespace(
+        get_state_event=AsyncMock(side_effect=RuntimeError("502 Bad Gateway")),
+        send_message_event=AsyncMock(return_value="$sent"),
+        upload_media=AsyncMock(return_value="mxc://remote.test/file"),
+        state_store=SimpleNamespace(is_encrypted=AsyncMock(return_value=stored)),
+        crypto=SimpleNamespace() if crypto else None,
+    )
+    adapter._client = client
+    adapter._is_dm_room = AsyncMock(return_value=False)
+    monkeypatch.setitem(sys.modules, "mautrix.crypto.attachments", SimpleNamespace(
+        encrypt_attachment=lambda data: (b"ciphertext", SimpleNamespace(serialize=lambda: {})),
+    ))
+    if kind == "text":
+        result = await adapter.send(room, "Reply")
+    else:
+        attachment = tmp_path / "report.txt"
+        attachment.write_text("Report", encoding="utf-8")
+        result = await adapter.send_document(room, str(attachment))
+
+    sent = [
+        set(call.args[2]) & {"body", "url", "file"}
+        for call in client.send_message_event.await_args_list
+    ]
+    assert (result.success, sent) == expected, result.error
+    client.get_state_event.assert_not_awaited()
+    if not result.success:
+        assert "encrypted" in result.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "thread_id", "expected_thread"),
+    [
+        ("!reports:remote.test/$root", None, "$root"),
+        ("!reports:remote.test:$root", None, "$root"),
+        ("#reports:remote.test/$root", None, "$root"),
+        ("!reports:remote.test/$root", "$route", "$route"),
+    ],
+)
+async def test_configured_thread_suffix_reaches_the_room_thread(
+    target, thread_id, expected_thread
+):
+    """Webhook and other home-channel senders pass ``MATRIX_HOME_ROOM`` unchanged. The adapter
+    sends into the thread that its suffix names unless the caller passed a thread."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    room = "!reports:remote.test"
+    adapter = MatrixAdapter(PlatformConfig(enabled=True, extra={"e2ee_mode": "off"}))
+    adapter._user_id = "@bot:remote.test"
+    adapter._joined_rooms.add(room)
+    client = SimpleNamespace(
+        resolve_room_alias=AsyncMock(
+            return_value=SimpleNamespace(room_id=room, servers=["remote.test"])
+        ),
+        get_state_event=AsyncMock(side_effect=_MissingEncryption()),
+        send_message_event=AsyncMock(return_value="$sent"),
+        crypto=None,
+    )
+    adapter._client = client
+    adapter._get_room_members = AsyncMock(
+        return_value={adapter._user_id, "@alice:remote.test", "@bob:remote.test"}
+    )
+    adapter._get_room_member_profiles = AsyncMock(return_value=None)
+    adapter._get_room_state_value = AsyncMock(return_value=None)
+
+    source = await adapter.resolve_delivery_target(SessionSource(
+        platform=Platform.MATRIX, chat_id=target, thread_id=thread_id,
+    ))
+    result = await adapter.send(
+        target, "Report", metadata={"thread_id": thread_id} if thread_id else None,
+    )
+
+    args = client.send_message_event.await_args.args
+    assert (
+        source.chat_id, source.thread_id, result.success,
+        str(args[0]), args[2]["m.relates_to"]["event_id"],
+    ) == (room, expected_thread, True, room, expected_thread)

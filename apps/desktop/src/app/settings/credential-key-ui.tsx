@@ -60,7 +60,7 @@ export function KeyField({
   varKey: string
 }) {
   const { t } = useI18n()
-  const { edits, onClear, onSave, saving, setEdits } = rowProps
+  const { edits, onClear, onReveal, onSave, revealed, saving, setEdits } = rowProps
   const editing = edits[editKey] !== undefined
   const [showSecret, setShowSecret] = useState(false)
   const isSecret = isKeyVar(varKey, info)
@@ -94,13 +94,28 @@ export function KeyField({
   const editType = isSecret && !showSecret ? 'password' : 'text'
 
   if (info.is_set && !editing) {
+    const valueRevealed = revealed[varKey] !== undefined
     return (
-      <Input
-        className={cn(CREDENTIAL_CONTROL_CLASS, bare && CRED_BARE, 'cursor-pointer text-muted-foreground')}
-        onFocus={startEdit}
-        readOnly
-        value={masked}
-      />
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1">
+        <Input
+          className={cn(CREDENTIAL_CONTROL_CLASS, bare && CRED_BARE, 'cursor-pointer text-muted-foreground')}
+          onFocus={startEdit}
+          readOnly
+          type={isSecret && !valueRevealed ? 'password' : 'text'}
+          value={valueRevealed ? revealed[varKey] : masked}
+        />
+        {isSecret && (
+          <Button
+            aria-label={valueRevealed ? t.settings.envActions.hideValue : t.settings.envActions.revealValue}
+            onClick={() => void onReveal(varKey)}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            {valueRevealed ? <EyeOff /> : <Eye />}
+          </Button>
+        )}
+      </div>
     )
   }
 

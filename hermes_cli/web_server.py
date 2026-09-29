@@ -557,20 +557,27 @@ async def _dashboard_health_middleware(request: Request, call_next):
     return response
 
 
-# CORS: restrict to localhost origins only.  The web UI is intended to run
-# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
-# read/modify config and secrets.
+def _is_trusted_local_origin(origin: str) -> bool:
+    """The dashboard app's :func:`hermes_cli.web_server_boundary.is_trusted_local_origin`."""
+    from hermes_cli.web_server_boundary import is_trusted_local_origin
+    return is_trusted_local_origin(origin, app.state)
+
+
+class _LocalOriginCORSMiddleware(CORSMiddleware):
+    def is_allowed_origin(self, origin: str) -> bool:
+        return _is_trusted_local_origin(origin)
+
+
+# CORS: the trusted loopback origins only (web_server_boundary.is_trusted_local_origin, the same
+# rule the WebSocket Origin gate applies). allow_origins=["*"] on 0.0.0.0 would let any website
+# read/modify config and secrets; any local port would let a page on another port read
+# index.html's session token.
 #
 # Registered AFTER all ``@app.middleware("http")`` decorators so it is the
 # *outermost* middleware (Starlette's onion: last-added runs first).
 # Without this, an OPTIONS preflight from a cross-origin SPA hits the auth
 # middlewares before CORS can answer, producing 401 instead of 204 + headers.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(_LocalOriginCORSMiddleware, allow_methods=["*"], allow_headers=["*"])
 
 
 # Authenticated-route self-test: one in-process request per minute against a

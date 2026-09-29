@@ -194,6 +194,26 @@ def ws_client_reason(ws, state) -> Optional[str]:
     return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
 
 
+# CORS: the documented loopback origins only (web-dashboard.md § CORS) — :9119, :3000, the dashboard
+# Vite dev server :5173, the desktop renderer's dev/preview servers :5174/:4174 (strictPort in
+# apps/desktop/vite.config.ts), plus the port actually bound. allow_origins=["*"] on 0.0.0.0 would let
+# any website read/modify config and secrets; ANY local port would let a page previewed from another
+# port (an agent-built site, Live Server, a compromised dev app) read index.html's session token and
+# drive /api/pty. The WebSocket Origin gate applies the same rule (ws_host_origin_reason).
+_TRUSTED_LOCAL_ORIGIN_PORTS = frozenset({9119, 3000, 5173, 5174, 4174})
+
+
+def is_trusted_local_origin(origin: str, state) -> bool:
+    """True for an http(s) loopback origin on a documented dashboard port or *state*'s bound port."""
+    try:
+        parsed = urllib.parse.urlparse(origin)
+        port = parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
+    except ValueError:  # malformed authority, out-of-range / non-numeric port
+        return False
+    return (parsed.scheme in {"http", "https"} and parsed.hostname in _LOOPBACK_HOST_VALUES
+            and (port in _TRUSTED_LOCAL_ORIGIN_PORTS or port == getattr(state, "bound_port", None)))
+
+
 def ws_host_origin_reason(ws, state) -> Optional[str]:
     """``host_mismatch …`` / ``origin_mismatch …`` under listener *state*, or None when allowed.
 
@@ -219,5 +239,9 @@ def ws_host_origin_reason(ws, state) -> Optional[str]:
     if parsed is not None and parsed.scheme not in {"http", "https"}:
         return None
     if parsed is None or not parsed.netloc or not _is_accepted_host(parsed.netloc, bound_host, trusted_public_hosts):
+        return f"origin_mismatch origin={origin} bound={bound_host}"
+    # _is_accepted_host drops the port: a page on ANOTHER loopback port is a different origin, the
+    # same one CORS refuses — without this it opens /api/pty with a token it read off index.html.
+    if parsed.hostname in _LOOPBACK_HOST_VALUES and not is_trusted_local_origin(origin, state):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None

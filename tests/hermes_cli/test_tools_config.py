@@ -150,7 +150,7 @@ def test_discord_toolsets_do_not_leak_to_other_platforms():
     assert "discord_admin" not in enabled
 
 
-_MATRIX_TOOLSETS = ["matrix_read", "matrix_image_packs"]
+_MATRIX_TOOLSETS = ["matrix_read", "matrix_image_packs", "matrix_reaction"]
 
 
 def _matrix_toolset_enabled(config: dict, toolset: str) -> bool:

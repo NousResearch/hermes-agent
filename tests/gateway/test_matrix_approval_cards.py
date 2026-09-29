@@ -319,6 +319,35 @@ class TestApprovalCardFormatting:
         assert kwargs["base_url"] == "http://192.0.2.10:8000/v1"
         assert kwargs["allow_provider_fallback"] is False
 
+    @pytest.mark.parametrize("reply", ["```\nrm -rf /tmp/x\n```", "<b></b><i></i>"])
+    def test_advisory_that_sanitises_to_nothing_is_left_out(self, reply):
+        response = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=reply))]
+        )
+        private_route = {
+            "provider": "custom",
+            "model": "local-model",
+            "base_url": "http://192.0.2.10:8000/v1",
+            "api_key": "test-key",
+            "api_mode": "chat_completions",
+        }
+        with (
+            patch(
+                "plugins.platforms.matrix.approval_cards._resolve_approval_summary_route",
+                return_value=private_route,
+                create=True,
+            ),
+            patch("agent.auxiliary_client.call_llm", return_value=response),
+        ):
+            generated = generate_command_summary(command="rm -rf /tmp/x", description="d")
+        card = dict(command="rm -rf /tmp/x", description="d")
+
+        assert (
+            generated,
+            format_pending_summarized(**card, summary=reply),
+            format_terminal_compact(**card, choice="deny", summary=reply),
+        ) == (None, format_pending_expanded(**card), format_terminal_compact(**card, choice="deny"))
+
     def test_generate_summary_force_redacts_before_llm_boundary(self):
         token = "sk-proj-" + ("X" * 40)
         response = types.SimpleNamespace(

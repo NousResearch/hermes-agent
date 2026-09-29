@@ -61,6 +61,7 @@ async def _dispatch(adapter, arguments):
         user_id=USER,
         thread_id="$original",
         transport_adapter=adapter,
+        transport_loop=asyncio.get_running_loop(),
     )
     try:
         response = await asyncio.to_thread(
@@ -560,23 +561,14 @@ async def test_registry_thread_refusals_and_partial_delivery(
         finally:
             set_interrupt(False)
 
+    stopped_loop = asyncio.new_event_loop() if failure == "stopped_loop" else None
     tokens = set_session_vars(
         platform="cli" if failure == "wrong_surface" else "matrix",
         chat_id=ROOM,
         user_id=USER,
         transport_adapter=adapter,
+        transport_loop=stopped_loop or asyncio.get_running_loop(),
     )
-    if failure == "stopped_loop":
-        from gateway import session_context
-
-        stopped_loop = asyncio.new_event_loop()
-        from contextvars import ContextVar
-
-        monkeypatch.setattr(
-            session_context,
-            "_SESSION_TRANSPORT_LOOP",
-            ContextVar("stopped_owner", default=stopped_loop),
-        )
     try:
         pending = asyncio.create_task(asyncio.to_thread(dispatch))
         if failure in {"cancel", "cancel_reply"}:
@@ -593,7 +585,7 @@ async def test_registry_thread_refusals_and_partial_delivery(
         assert isinstance(response, str)
         result = json.loads(response)
     finally:
-        if failure == "stopped_loop":
+        if stopped_loop is not None:
             stopped_loop.close()
         clear_session_vars(tokens)
         if native_client is not None:
@@ -781,9 +773,6 @@ async def test_owner_loop_stop_bounds_waits_and_preserves_delivery_progress(
 ):
     import threading
 
-    from gateway import session_context
-    from contextvars import ContextVar
-
     importlib.import_module("model_tools")
     adapter = _adapter()
     adapter.max_message_length = 120
@@ -834,12 +823,11 @@ async def test_owner_loop_stop_bounds_waits_and_preserves_delivery_progress(
     thread = threading.Thread(target=owner.run_forever)
     thread.start()
     tokens = set_session_vars(
-        platform="matrix", chat_id=ROOM, user_id=USER, transport_adapter=adapter
-    )
-    monkeypatch.setattr(
-        session_context,
-        "_SESSION_TRANSPORT_LOOP",
-        ContextVar[asyncio.AbstractEventLoop | None]("stopping_owner", default=owner),
+        platform="matrix",
+        chat_id=ROOM,
+        user_id=USER,
+        transport_adapter=adapter,
+        transport_loop=owner,
     )
     try:
         result = await asyncio.wait_for(

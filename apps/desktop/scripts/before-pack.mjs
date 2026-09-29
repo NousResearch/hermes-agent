@@ -122,7 +122,10 @@ export default async function beforePack(context) {
     // through to the plain wipe when the old tree is partial/corrupt or the
     // rename fails.
     const productExe = `${(context && context.packager?.appInfo?.productFilename) || 'Hermes'}.exe`
-    if (platformName === 'win32' && preserveRollbackBackup(appOutDir, productExe)) {
+    // A HUD retry contains partial output; keep the first attempt's rollback backup.
+    if (platformName === 'win32'
+      && process.env.HERMES_PACKAGING_OMIT_HUD_HELPER !== '1'
+      && preserveRollbackBackup(appOutDir, productExe)) {
       console.log(`[before-pack] preserved previous unpacked dir for rollback: ${appOutDir}.bak`)
     } else if (cleanStaleAppOutDir(appOutDir)) {
       console.log(`[before-pack] removed stale unpacked dir before staging: ${appOutDir}`)

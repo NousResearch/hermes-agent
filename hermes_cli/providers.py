@@ -135,6 +135,7 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "actual": ("actual-computer", "actualcomputer", "aci"),
     "nebius-token-factory": ("nebius", "nebius-tokenfactory", "nebius-tf", "token-factory", "tokenfactory"),
     "lmstudio": ("lmstudio", "lm-studio", "lm_studio"),
+    "google-antigravity": ("agy", "antigravity"),
     # Local OpenAI-compatible servers route through the generic "custom" provider,
     # matching hermes_cli.auth and hermes_cli.models so every layer agrees. Issue #62213.
     "custom": ("ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp"),

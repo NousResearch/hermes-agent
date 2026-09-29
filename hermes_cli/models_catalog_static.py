@@ -401,6 +401,7 @@ def sync_plugin_provider_catalog() -> int:
 
 _PROVIDER_LABELS: dict[str, str] = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
+_PROVIDER_LABELS["google-antigravity"] = "Google Antigravity"
 sync_plugin_provider_catalog()
 
 
@@ -501,6 +502,7 @@ _PROVIDER_ALIASES = dict((
     ("xai-grok-oauth", "xai-oauth"), ("x-ai", "xai"), ("x.ai", "xai"), ("nim", "nvidia"), ("nvidia-nim", "nvidia"),
     ("build-nvidia", "nvidia"), ("nemotron", "nvidia"), ("lmstudio", "lmstudio"), ("lm-studio", "lmstudio"),
     ("lm_studio", "lmstudio"), ("chatgpt", "openai-codex"), ("chatgpt-codex", "openai-codex"),
+    ("agy", "google-antigravity"), ("antigravity", "google-antigravity"),
     ("ollama", "custom"),  # bare "ollama" = local; use "ollama-cloud" for cloud
     ("ollama_cloud", "ollama-cloud"),
     # Local OpenAI-compatible servers route through the generic "custom" provider

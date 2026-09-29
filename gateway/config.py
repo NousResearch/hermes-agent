@@ -393,6 +393,8 @@ class PlatformConfig:
     # Working-state text for text-rendering indicators (Slack status, Google Chat marker); None = platform default.
     typing_status_text: Optional[str] = None
     channel_overrides: Dict[str, ChannelOverride] = field(default_factory=dict)
+    model: Optional[str] = None
+    provider: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict)  # Platform-specific settings
 
     def to_dict(self) -> Dict[str, Any]:
@@ -401,7 +403,7 @@ class PlatformConfig:
             "gateway_restart_notification": self.gateway_restart_notification,
             "typing_indicator": self.typing_indicator,
             **({"typing_status_text": self.typing_status_text} if self.typing_status_text is not None else {}),
-            **{k: v for k in ("token", "api_key") if (v := getattr(self, k))},
+            **{k: v for k in ("token", "api_key", "model", "provider") if (v := getattr(self, k))},
         }
         if self.home_channel:
             result["home_channel"] = self.home_channel.to_dict()
@@ -413,7 +415,7 @@ class PlatformConfig:
     # config and belongs in ``extra`` (see from_dict).
     _TYPED_KEYS = frozenset({
         "enabled", "token", "api_key", "home_channel", "reply_to_mode", "channel_overrides", "extra",
-        "gateway_restart_notification", "typing_indicator", "typing_status_text",
+        "gateway_restart_notification", "typing_indicator", "typing_status_text", "model", "provider",
     })
 
     @classmethod
@@ -447,6 +449,8 @@ class PlatformConfig:
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
             typing_status_text=toplevel_or_extra("typing_status_text"),  # string passthrough, no coercion
             channel_overrides=channel_overrides,
+            model=toplevel_or_extra("model"),
+            provider=toplevel_or_extra("provider"),
             extra=extra,
         )
 

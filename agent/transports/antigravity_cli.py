@@ -195,7 +195,7 @@ class AntigravityClient:
             executable = self.executable
         except AntigravityNotFoundError as exc:
             return AntigravityCapabilities(False, None, None, False, False, False, str(exc))
-        env = hermes_subprocess_env(inherit_credentials=False)
+        env = hermes_subprocess_env(inherit_credentials=True)
         env.update(self._env)
         try:
             completed = subprocess.run(
@@ -323,7 +323,7 @@ class AntigravityClient:
         argv.append("--print=")
         if conversation_id:
             argv.extend(("--conversation", conversation_id))
-        env = hermes_subprocess_env(inherit_credentials=False)
+        env = hermes_subprocess_env(inherit_credentials=True)
         env.update(self._env)
         popen_kwargs: dict[str, Any] = {"start_new_session": os.name == "posix"}
         if os.name == "nt":

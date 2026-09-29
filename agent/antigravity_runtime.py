@@ -47,6 +47,9 @@ def _ensure_antigravity_session(agent) -> None:
         def default_client_factory(**kwargs):
             binary = config.get("binary")
             debug_log = get_hermes_home() / "logs" / "antigravity-protocol.log" if config["debug_protocol"] else None
+            raw_skip = config.get("dangerously_skip_permissions")
+            is_headless = getattr(agent, "platform", None) not in (None, "cli")
+            skip_perms = bool(raw_skip) if raw_skip is not None else is_headless
             return AntigravityClient(
                 None if binary in {None, "", "auto"} else binary,
                 cwd=kwargs.get("cwd"),
@@ -54,7 +57,7 @@ def _ensure_antigravity_session(agent) -> None:
                 request_timeout=float(config["request_timeout_seconds"]),
                 shutdown_timeout=float(config["shutdown_timeout_seconds"]),
                 sandbox=bool(config["sandbox"]),
-                dangerously_skip_permissions=bool(config["dangerously_skip_permissions"]),
+                dangerously_skip_permissions=skip_perms,
                 debug_log=debug_log,
             )
         configured_client_factory = default_client_factory
@@ -114,9 +117,15 @@ def _record_usage(agent, usage: Any) -> dict[str, Any]:
     return out
 
 
-def _restore_conversation_id(session: AntigravitySession, messages: List[Dict[str, Any]]) -> None:
+def _restore_conversation_id(session: AntigravitySession, messages: List[Dict[str, Any]], *, agent: Any = None) -> None:
     if session.conversation_id:
         return
+    if agent is not None and getattr(agent, "_session_db", None) is not None and getattr(agent, "session_id", None):
+        with suppress(Exception):
+            cid = agent._session_db.get_session_model_config_value(agent.session_id, "antigravity_conversation_id")
+            if isinstance(cid, str) and cid.strip():
+                session.conversation_id = cid.strip()
+                return
     for message in reversed(messages):
         sidecar = message.get("_antigravity") if isinstance(message, dict) else None
         conversation_id = sidecar.get("conversation_id") if isinstance(sidecar, dict) else None
@@ -129,8 +138,28 @@ def run_antigravity_turn(agent, *, user_message: Any, original_user_message: Any
                           effective_task_id: str, should_review_memory: bool = False) -> Dict[str, Any]:
     """Run one external turn and return the standard conversation-loop result shape."""
     _ensure_antigravity_session(agent)
-    _restore_conversation_id(agent._antigravity_session, messages)
-    turn = agent._antigravity_session.run_turn(user_message)
+    _restore_conversation_id(agent._antigravity_session, messages, agent=agent)
+    prompt = user_message
+    if not getattr(agent._antigravity_session, "conversation_id", None) and messages:
+        try:
+            from agent.codex_runtime_history_seed import render_history_seed
+            history_seed = render_history_seed(messages)
+            if history_seed:
+                if isinstance(prompt, str):
+                    prompt = f"{history_seed}\n\n{prompt}"
+                elif isinstance(prompt, list):
+                    prompt = [{"type": "text", "text": f"{history_seed}\n\n"}, *prompt]
+        except Exception as exc:
+            logger.debug("Failed to render history seed for fresh Antigravity session: %s", exc)
+    turn = agent._antigravity_session.run_turn(prompt)
+    if turn.conversation_id:
+        agent._antigravity_session.conversation_id = turn.conversation_id
+        if getattr(agent, "_session_db", None) is not None and getattr(agent, "session_id", None):
+            with suppress(Exception):
+                agent._session_db.patch_session_model_config(
+                    agent.session_id,
+                    {"antigravity_conversation_id": turn.conversation_id}
+                )
     if turn.should_retire:
         _close_antigravity_session(agent)
     persisted = _persist_projected_messages(agent, turn, messages)

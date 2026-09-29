@@ -813,6 +813,49 @@ def _lap_lmstudio_row(b: _PickerBuild, user_providers: dict) -> None:
     b.add_builtin_row("lmstudio", get_label("lmstudio"), is_current, model_ids, "hermes")
 
 
+_ANTIGRAVITY_PROBE_CACHE: tuple[float, Any] = (0.0, None)
+_ANTIGRAVITY_CACHE_TTL: float = 60.0
+
+
+def _lap_antigravity_row(b: _PickerBuild) -> None:
+    """Section 0b: the Antigravity local runtime (agy) row."""
+    global _ANTIGRAVITY_PROBE_CACHE
+    slug = "google-antigravity"
+    if slug in b.excluded or slug in b.seen_slugs or "agy" in b.excluded or "antigravity" in b.excluded:
+        return
+    is_current = b.current_provider_norm in (slug, "agy", "antigravity")
+    capabilities = None
+    now = time.monotonic()
+    last_probe_time, cached_caps = _ANTIGRAVITY_PROBE_CACHE
+    if not b.refresh and (now - last_probe_time) < _ANTIGRAVITY_CACHE_TTL and cached_caps is not None:
+        capabilities = cached_caps
+    else:
+        try:
+            from agent.transports.antigravity_cli import AntigravityClient
+            from hermes_cli.runtime_provider import get_antigravity_runtime_config
+            runtime_config = get_antigravity_runtime_config()
+            binary = runtime_config.get("binary")
+            client = AntigravityClient(None if binary in {None, "", "auto"} else binary)
+            should_probe = is_current
+            if not should_probe:
+                try:
+                    client.executable
+                    should_probe = True
+                except Exception:
+                    pass
+            if should_probe:
+                capabilities = client.probe(timeout=5.0)
+                if capabilities is not None:
+                    _ANTIGRAVITY_PROBE_CACHE = (now, capabilities)
+        except Exception:
+            capabilities = None
+
+    if is_current or (capabilities is not None and capabilities.available):
+        runtime_models = ["auto", *(capabilities.models if capabilities is not None and capabilities.models else ())]
+        runtime_models = list(dict.fromkeys(runtime_models))
+        b.add_builtin_row(slug, "Google Antigravity", is_current, runtime_models, "local-runtime")
+
+
 def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
     """Section 1: models.dev-mapped providers with api_key auth."""
     from hermes_cli.model_switch import _declared_model_ids, _scoped_key_env
@@ -1249,6 +1292,7 @@ def list_authenticated_providers(
             pass  # best-effort; serial path still works
 
     _lap_lmstudio_row(b, user_providers if isinstance(user_providers, dict) else {})
+    _lap_antigravity_row(b)
     _lap_builtin_rows(b, data, user_providers)
     _lap_overlay_rows(b, data, user_providers)
     _lap_canonical_rows(b)

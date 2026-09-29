@@ -971,7 +971,7 @@ def _resolve_requested_shortcuts(requested_provider, explicit_api_key, explicit_
     if requested_provider == "moa":
         return _runtime("moa", "chat_completions", "moa://local", "moa-virtual-provider", source="moa-virtual-provider",
                         requested_provider=requested_provider)
-    if requested_provider == _ANTIGRAVITY_PROVIDER:
+    if requested_provider in (_ANTIGRAVITY_PROVIDER, "agy", "antigravity"):
         return _resolve_antigravity_runtime(requested_provider)
     # Azure Anthropic short-circuit: an explicit Azure endpoint with provider="anthropic" must
     # bypass _resolve_named_custom_runtime (which would yield custom/chat_completions/no key).

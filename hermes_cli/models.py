@@ -1025,7 +1025,7 @@ def _resolve_provider_prefix(model_name: str) -> Optional[tuple[str, str]]:
     # An explicitly named provider block (``ollama:``) wins over the alias table, which may
     # canonicalize the same name elsewhere (``ollama`` → ``custom``).
     for candidate in (vendor, _PROVIDER_ALIASES.get(vendor, vendor)):
-        if candidate in configured:
+        if candidate in configured or candidate == "google-antigravity":
             return (candidate, model)
     return None
 

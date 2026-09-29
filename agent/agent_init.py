@@ -1220,10 +1220,19 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
 
     agent._session_db = session_db  # optional SQLite store (CLI/gateway-provided)
     agent._parent_session_id = parent_session_id
+    route = {
+        "provider": agent.provider or None,
+        "base_url": agent.base_url or None,
+        "api_mode": agent.api_mode or None,
+    }
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
+        "provider": agent.provider or None,
+        "base_url": agent.base_url or None,
+        "api_mode": agent.api_mode or None,
+        "gateway_runtime": route if agent.provider else None,
     }
     # Process-scoped --yolo is persisted so `hermes --resume` restores the bypass
     # (SessionDB.session_yolo_enabled); session-scoped /yolo toggles persist separately.

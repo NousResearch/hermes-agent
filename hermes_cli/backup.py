@@ -501,12 +501,14 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
 
 def _write_zip_entries(
     zf: zipfile.ZipFile, files_to_add: List[Tuple[Path, Path]], out_path: Path,
-    *, on_db_failure, on_error, on_progress, track_bytes: bool) -> int:
+    *, on_db_failure, on_error, on_progress, track_bytes: bool,
+    on_vanish: Callable[[Path], None] = lambda rel_path: None) -> int:
     """Add every ``(abs_path, rel_path)`` to *zf*, WAL-safe for ``*.db``; return bytes archived.
 
     ``on_db_failure(rel_path)`` runs when a SQLite snapshot fails (may raise to abort);
     ``on_error(rel_path, exc)`` records a read failure; ``on_progress(i)`` fires every 500 files;
-    ``track_bytes`` stats plain files for the size total.
+    ``track_bytes`` stats plain files for the size total. ``on_vanish(rel_path)`` records a file
+    deleted between the scan and this read — a skip, not a failure (see #127731).
     """
     total_bytes = 0
     for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
@@ -521,6 +523,12 @@ def _write_zip_entries(
                 _write_zip_file(zf, abs_path, str(rel_path))
                 if track_bytes:
                     total_bytes += abs_path.stat().st_size
+        except FileNotFoundError:
+            # A live tree cannot be scanned and read atomically, so a member vanishing
+            # between the two (cron prunes a run receipt every minute, #127731) means the
+            # archive is still complete for everything that existed at read time.
+            on_vanish(rel_path)
+            continue
         except (PermissionError, OSError, ValueError) as exc:
             on_error(rel_path, exc)
             continue
@@ -586,10 +594,11 @@ def _collect_external_entries() -> tuple[list[tuple[Path, str]], list[str]]:
 def run_backup(args) -> bool:
     """Create a zip backup of the Hermes home directory.
 
-    True when every selected file landed in the archive (or there was nothing to back up); False
-    when the zip was written but is incomplete — it is kept so the rest can still be restored, and
-    the caller turns False into exit status 1 so a cron/systemd timer never publishes a "successful"
-    archive that is missing state.db. Hard failures keep raising ``SystemExit``.
+    True when every selected file that still existed at read time landed in the archive (or there
+    was nothing to back up); False when the zip was written but is incomplete — it is kept so the
+    rest can still be restored, and the caller turns False into exit status 1 so a cron/systemd
+    timer never publishes a "successful" archive that is missing state.db. Hard failures keep
+    raising ``SystemExit``.
     """
     hermes_root = get_default_hermes_root()
 
@@ -625,6 +634,7 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
     logger.info("backup phase=archive status=started files=%d", file_count)
     print(f"Backing up {file_count} files ...")
     errors = []
+    vanished = []
     t0 = time.monotonic()
 
     def _progress(i: int) -> None:
@@ -636,13 +646,16 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
         total_bytes = _write_zip_entries(
             zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
-            on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"))
+            on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
+            on_vanish=lambda rel: vanished.append(str(rel)))
         # External memory-provider state never includes ``.db`` files in practice, so no
         # SQLite snapshot is needed; _write_zip_file still drops a failed partial member.
         for abs_path, arcname in external_to_add:
             try:
                 _write_zip_file(zf, abs_path, arcname)
                 total_bytes += abs_path.stat().st_size
+            except FileNotFoundError:
+                vanished.append(arcname)
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"{arcname}: {exc}")
     elapsed = time.monotonic() - t0
@@ -661,6 +674,9 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
               "(not portable):\n" + "\n".join(f"    {p}" for p in sorted(skipped_external)[:10]))
     if skipped_dirs:
         print("\n  Excluded directories:\n" + "\n".join(f"    {d}/" for d in sorted(skipped_dirs)))
+    if vanished:
+        _print_capped(f"\n  {len(vanished)} file(s) were deleted while the backup ran (skipped):",
+                      vanished, "  ")
     if errors:
         _print_capped(f"\n  Archive kept, but {len(errors)} file(s) could not be added:", errors, "  ")
     else:
@@ -2007,11 +2023,12 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         raise _SQLiteSnapshotError(str(rel_path))
 
     errors: list[str] = []
+    vanished: list[str] = []
 
-    def _capped_errors() -> str:
+    def _capped(items: list[str]) -> str:
         # Cap the logged list: a broken tree can fail thousands of entries in one run.
-        shown = "; ".join(errors[:10])
-        return f"{shown} (+{len(errors) - 10} more)" if len(errors) > 10 else shown
+        shown = "; ".join(items[:10])
+        return f"{shown} (+{len(items) - 10} more)" if len(items) > 10 else shown
 
     # Salvage name keeps an incomplete archive out of normal retention (otherwise the next
     # complete run would prune the last complete backups by count) and, because the partial is
@@ -2037,6 +2054,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
             _write_zip_entries(
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
                 on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
+                on_vanish=lambda rel: vanished.append(str(rel)),
                 on_progress=lambda i: logger.info(
                     "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))
     except (OSError, _SQLiteSnapshotError) as exc:
@@ -2045,7 +2063,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
         return None
 
     if published is None:
-        logger.warning("Full-zip backup: every entry failed, nothing salvaged: %s", _capped_errors())
+        logger.warning("Full-zip backup: every entry failed, nothing salvaged: %s", _capped(errors))
         return None
     zip_size = published.stat().st_size
     if published != out_path:
@@ -2053,11 +2071,14 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
             "automatic backup phase=archive status=incomplete duration_ms=%.1f files=%d errors=%d "
             "bytes=%d salvage=%s skipped=%s",
             (time.monotonic() - archive_started) * 1000, len(files_to_add), len(errors), zip_size,
-            salvage_path, _capped_errors())
+            salvage_path, _capped(errors))
         return None
 
-    logger.info("automatic backup phase=archive status=complete duration_ms=%.1f files=%d bytes=%d",
-                (time.monotonic() - archive_started) * 1000, len(files_to_add), zip_size)
+    logger.info("automatic backup phase=archive status=complete duration_ms=%.1f files=%d bytes=%d "
+                "vanished=%d",
+                (time.monotonic() - archive_started) * 1000, len(files_to_add), zip_size, len(vanished))
+    if vanished:
+        logger.info("automatic backup deleted-mid-archive members (skipped): %s", _capped(vanished))
     return out_path
 
 

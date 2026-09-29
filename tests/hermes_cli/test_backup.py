@@ -1849,6 +1849,88 @@ class TestFailedZipMemberRecovery:
         assert len(list(backup_dir.glob("pre-update-*.incomplete.zip"))) == 1
 
 
+def _prune_between_scan_and_archive(monkeypatch, victim: Path) -> None:
+    """Make the backup walk list *victim*, then delete it before the archive reads it —
+    the race a 1-minute cron job's retention sweep guarantees (#127731)."""
+    import hermes_cli.backup as bk
+    real_iter = bk._iter_backup_files
+
+    def _iter_then_prune(root, out_path, skipped_dirs=None):
+        files = list(real_iter(root, out_path, skipped_dirs))
+        victim.unlink()
+        return files
+
+    monkeypatch.setattr(bk, "_iter_backup_files", _iter_then_prune)
+
+
+class TestVanishedMemberTolerance:
+    def test_automatic_backup_publishes_when_a_member_vanishes_mid_archive(self, tmp_path, monkeypatch):
+        """#127731: a file deleted between the scan and the archive walk is a skip, not a
+        failure, so the automatic backup still publishes instead of being classified
+        incomplete (which silently disabled the pre-update rollback zip every run)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        receipt = hermes_home / "cron" / "output" / "job-1" / "2026-09-29_06-29-46.md"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text("**Status:** silent (empty output)\n")
+        archive = tmp_path / "automatic.zip"
+
+        _prune_between_scan_and_archive(monkeypatch, receipt)
+
+        from hermes_cli.backup import _write_full_zip_backup
+
+        assert _write_full_zip_backup(archive, hermes_home) == archive
+        assert not (tmp_path / "automatic.incomplete.zip").exists()
+        with zipfile.ZipFile(archive) as zf:
+            assert zf.read("config.yaml") == b"model: test\n"
+            assert zf.namelist() == ["config.yaml"]
+
+    def test_pre_update_backup_publishes_despite_cron_receipt_churn(self, tmp_path, monkeypatch):
+        """End to end: create_pre_update_backup returns a published rollback zip even when
+        the cron output retention sweep races the archive."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        receipt = hermes_home / "cron" / "output" / "job-1" / "2026-09-29_06-29-46.md"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text("**Status:** silent (empty output)\n")
+
+        _prune_between_scan_and_archive(monkeypatch, receipt)
+
+        from hermes_cli.backup import create_pre_update_backup
+
+        out = create_pre_update_backup(hermes_home=hermes_home)
+        assert out is not None and out.exists()
+        assert not list((hermes_home / "backups").glob("*.incomplete.zip"))
+        with zipfile.ZipFile(out) as zf:
+            assert zf.read("config.yaml") == b"model: test\n"
+
+    def test_manual_backup_reports_vanished_file_and_still_succeeds(self, tmp_path, monkeypatch, capsys):
+        """The manual CLI path stays consistent with the automatic one: the vanished file is
+        reported as skipped and the run is complete (exit 0), unlike a genuine read failure."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+        receipt = hermes_home / "cron" / "output" / "job-1" / "2026-09-29_06-29-46.md"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text("**Status:** silent (empty output)\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        _prune_between_scan_and_archive(monkeypatch, receipt)
+
+        from hermes_cli.backup import run_backup
+
+        out_zip = tmp_path / "out.zip"
+        assert run_backup(Namespace(output=str(out_zip))) is True
+        out = capsys.readouterr().out
+        assert "deleted while the backup ran" in out
+        assert "could not be added" not in out
+        with zipfile.ZipFile(out_zip) as zf:
+            assert zf.read("config.yaml") == b"model: test\n"
+
+
 class TestPreUpdateBackup:
     """Tests for create_pre_update_backup — the auto-backup ``hermes update``
     runs before touching anything."""

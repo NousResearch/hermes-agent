@@ -10,6 +10,7 @@ import pytest
 
 from hermes_cli import main, update_cmd, update_cmd_windows
 from tests.compat.old_updater_support import fresh_child as fresh_child, no_external_work as no_external_work  # noqa: F401
+from tests.hermes_cli.test_old_updater_shims import _run_in_historical_frame
 
 
 @pytest.mark.real_concurrent_gate
@@ -42,8 +43,15 @@ def test_historical_holder_hooks_hand_off_without_inspecting_or_killing(
     monkeypatch.setattr(psutil, "process_iter", forbidden)
     monkeypatch.setattr(psutil, "Process", forbidden)
     before = deepcopy((args, kwargs))
+    # Frame-scoped handoffs (#124881): these two gates only stop an old
+    # updater inside a historical updater frame; a live caller gets the
+    # inert answer. The historical contract is exercised through one.
+    target = getattr(module, name)
+    wrapped = target if name not in (
+        "_filter_non_gateway_concurrent_instances", "_detect_concurrent_hermes_instances",
+    ) else _run_in_historical_frame(target, "hermes_cli.main")
     with fresh_child.exits():
-        getattr(module, name)(*args, **kwargs)
+        wrapped(*args, **kwargs)
     assert (args, kwargs) == before
     forbidden.assert_not_called()
 

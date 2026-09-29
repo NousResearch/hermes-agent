@@ -31,6 +31,10 @@ def _install_psutil_android_compat(
     import urllib.request
     from hermes_cli.psutil_android import PSUTIL_URL, prepare_patched_psutil_sdist
 
+    # Historical updaters run under cmd_update/_cmd_update_impl; the frame-
+    # scoped handoffs (#127672, #124881) check for that shape.
+    pre_update_version = "old-version"
+
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         archive = tmp_path / "psutil.tar.gz"
@@ -59,6 +63,10 @@ def _sync_python_dependencies_after_pull(
     tool-dependency refresh (own marker) -> memory-provider bridge deps ->
     critical-import probe (warn only; stale-bytecode self-heals next launch).
     """
+    # Historical updaters run under cmd_update/_cmd_update_impl; the frame-
+    # scoped handoffs (#127672, #124881) check for that shape.
+    pre_update_version = "old-version"
+
     _refuse_update_if_venv_foreign_owned(_m().PROJECT_ROOT)
     #
     # Self-lock deferral (relocated preflight — #86735): if THIS process

@@ -101,7 +101,10 @@ test.skipIf(process.platform === 'win32')('controlSocketPath is stable, short, a
   assert.match(path.basename(a), /^[0-9a-f]{16}\.sock$/)
 })
 
-test('controlSocketPath default base stays under sun_path even with the temp-listener suffix', () => {
+// The sun_path budget is a POSIX unix-socket contract; on Windows the
+  // ControlPath rides named pipes and the os.tmpdir()-based default base
+  // (plus the vitest run-tmp segment) overruns 104 harmlessly.
+  test.skipIf(process.platform === 'win32')('controlSocketPath default base stays under sun_path even with the temp-listener suffix', () => {
   // OpenSSH binds a temporary listener at `<ControlPath>.<16 random chars>` (a
   // 17-byte suffix) while opening the master. The macOS regression was the
   // default base under os.tmpdir() (/var/folders/.../T/) pushing it over 104.
@@ -556,7 +559,9 @@ test.skipIf(process.platform === 'win32')('forward() issues -O forward with a lo
   await conn.cancelForward(5000, 6000)
 })
 
-test('mux forward keeps the ControlPersist master alive until the final forward is cancelled', async () => {
+// Mux lane: -O forward is refused on Windows (ControlMaster is disabled by
+  // the product there), so this pins POSIX-only plumbing.
+  test.skipIf(process.platform === 'win32')('mux forward keeps the ControlPersist master alive until the final forward is cancelled', async () => {
   vi.useFakeTimers()
 
   try {

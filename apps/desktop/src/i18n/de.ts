@@ -2843,6 +2843,8 @@ export const deOverrides = {
       emptyHint: 'Durchsuchen Sie unten den Katalog und installieren Sie ein geprüftes Plugin mit einem Klick.',
       loadFailed: 'Agent-Plugins konnten nicht geladen werden',
       toggleFailed: name => `${name} konnte nicht umgeschaltet werden`,
+      enabledRestartRequired: (name: string) =>
+        `${name} ist aktiviert. Seine Python-Abhängigkeiten wurden für den nächsten Start installiert; starten Sie Hermes neu, um es zu laden.`,
       toolsetOn: (name: string, profile: string) => `${name}-Agent-Tools für ${profile} aktiviert`,
       toolsetOff: (name: string, profile: string) => `${name}-Agent-Tools für ${profile} deaktiviert`,
       toolsetToggleFailed: (name: string) =>

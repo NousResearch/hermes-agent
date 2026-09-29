@@ -6,7 +6,8 @@ import {
   installAgentPlugin,
   isDesktopRelevantPlugin,
   normalizeAgentPluginRow,
-  saveAgentPluginSettings
+  saveAgentPluginSettings,
+  toggleAgentPlugin
 } from './agent-plugins'
 
 const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
@@ -147,4 +148,27 @@ it('preserves installed-but-not-enabled setup refusal so the UI can offer enable
   const result = await installAgentPlugin(request, { identifier: 'owner/native-fixture', enable: true })
   expect(result).toMatchObject({ ok: false, installed: true, pluginName: 'native-fixture', error: 'Review setup' })
   expect(request).toHaveBeenCalledOnce()
+})
+
+describe('toggleAgentPlugin restart notice', () => {
+  const enable = async (response: Record<string, unknown>) => {
+    const onRestartRequired = vi.fn()
+    const request = vi.fn().mockResolvedValue({ ok: true, name: 'dep-fixture', plugin: null, ...response })
+
+    const ok = await toggleAgentPlugin(request, 'dep-fixture', true, 'Could not toggle', null, { onRestartRequired })
+
+    return { ok, onRestartRequired }
+  }
+
+  it('asks for a restart when the backend enabled the plugin but could not load it', async () => {
+    const { ok, onRestartRequired } = await enable({ restart_required: true, gateway_reloaded: false, activation: null })
+    expect(ok).toBe(true)
+    expect(onRestartRequired).toHaveBeenCalledOnce()
+  })
+
+  it('stays quiet when the backend loaded the plugin, even with no messaging gateway running', async () => {
+    const activation = { name: 'dep-fixture', key: 'dep-fixture', activated_now: {}, deferred: {} }
+    const { onRestartRequired } = await enable({ restart_required: true, gateway_reloaded: false, activation })
+    expect(onRestartRequired).not.toHaveBeenCalled()
+  })
 })

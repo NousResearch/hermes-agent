@@ -117,6 +117,9 @@ export function pluginSetupReview(error: unknown): PluginSetupReview | null {
 interface ToggleOptions {
   setupConsent?: PluginSetupConsent
   onSetupRequired?: (review: PluginSetupReview) => void
+  /** The plugin is enabled but this backend could not load it (e.g. its Python
+   *  dependencies landed in an environment only a restarted backend imports). */
+  onRestartRequired?: () => void
   throwOnError?: boolean
 }
 
@@ -233,7 +236,12 @@ export async function toggleAgentPlugin(
   $agentPluginBusy.set(key)
 
   try {
-    const result = await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
+    const result = await request<{
+      ok?: boolean
+      plugin?: AgentPluginRow | null
+      restart_required?: boolean | null
+      activation?: unknown
+    }>(
       'plugins.manage',
       withProfile(
         {
@@ -249,6 +257,12 @@ export async function toggleAgentPlugin(
 
     if (!result?.ok) {
       throw Object.assign(new Error(failMessage), { data: result })
+    }
+
+    // `restart_required` alone also means "no messaging gateway answered", while this backend
+    // did load the plugin; only an enable that loaded nothing here needs a restart to finish.
+    if (enable && result.restart_required && !result.activation) {
+      options.onRestartRequired?.()
     }
 
     if (generation !== loadGeneration) {

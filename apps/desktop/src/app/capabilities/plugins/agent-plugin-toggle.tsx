@@ -11,6 +11,7 @@ import {
   type PluginSetupReview,
   toggleAgentPlugin
 } from '@/store/agent-plugins'
+import { notify, RECOVERY_ACTIONS } from '@/store/notifications'
 
 interface AgentPluginToggleProps {
   row: AgentPluginRow
@@ -38,6 +39,13 @@ export function AgentPluginToggle({ row, profile, label, busy, size, onToggle }:
   const key = row.key
   const failMessage = t.skills.plugins.toggleFailed(row.name)
 
+  const onRestartRequired = () =>
+    notify({
+      kind: 'info',
+      message: t.skills.plugins.enabledRestartRequired(row.name),
+      action: RECOVERY_ACTIONS.restartHermes()
+    })
+
   // Capture before requesting the proposal. Consent must never reconnect onto
   // a different backend, even if the active socket changes while reviewing.
   const request: GatewayRequest = gateway ? gateway.request.bind(gateway) : requestGateway
@@ -56,7 +64,8 @@ export function AgentPluginToggle({ row, profile, label, busy, size, onToggle }:
           onToggle?.(enable)
           triggerHaptic('selection')
           void toggleAgentPlugin(request, key, enable, failMessage, profile, {
-            onSetupRequired: review => setSetup({ review, request, profile })
+            onSetupRequired: review => setSetup({ review, request, profile }),
+            onRestartRequired
           })
         }}
         size={size}
@@ -83,6 +92,7 @@ export function AgentPluginToggle({ row, profile, label, busy, size, onToggle }:
             const ok = await toggleAgentPlugin(setup.request, key, true, failMessage, setup.profile, {
               setupConsent: setup.review.consent,
               onSetupRequired: review => setSetup({ ...setup, review }),
+              onRestartRequired,
               throwOnError: true
             })
 

@@ -2552,6 +2552,8 @@ export const en: Translations = {
       emptyHint: 'Browse the catalog below and install a reviewed plugin with one click.',
       loadFailed: 'Could not load agent plugins',
       toggleFailed: (name: string) => `Could not toggle ${name}`,
+      enabledRestartRequired: (name: string) =>
+        `${name} is enabled. Its Python dependencies were installed for the next start, so restart Hermes to load it.`,
       toolsetOn: (name: string, profile: string) => `${name} agent tools enabled for ${profile}`,
       toolsetOff: (name: string, profile: string) => `${name} agent tools disabled for ${profile}`,
       toolsetToggleFailed: (name: string) =>

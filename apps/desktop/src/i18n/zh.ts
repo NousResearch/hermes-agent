@@ -2389,6 +2389,7 @@ export const zh = defineLocale({
       emptyHint: '在下方目录中浏览，一键安装经过审核的插件。',
       loadFailed: '无法加载 agent 插件',
       toggleFailed: (name: string) => `无法切换 ${name}`,
+      enabledRestartRequired: (name: string) => `${name} 已启用。其 Python 依赖已为下次启动安装，请重启 Hermes 以加载它。`,
       legacyBackend: '此后端版本较旧，不支持按键名切换插件 — 请更新 Hermes 后再在此管理。',
       portableBadge: '便携',
       catalogTitle: '插件目录',

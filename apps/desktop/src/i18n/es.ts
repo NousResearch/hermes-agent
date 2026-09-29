@@ -2836,6 +2836,8 @@ export const esOverrides = {
       emptyHint: 'Explora el catálogo de abajo e instala un plugin revisado con un clic.',
       loadFailed: 'No se pudieron cargar los plugins del agente',
       toggleFailed: (name: string) => `No se pudo cambiar ${name}`,
+      enabledRestartRequired: (name: string) =>
+        `${name} está activado. Sus dependencias de Python se instalaron para el próximo inicio: reinicia Hermes para cargarlo.`,
       toolsetOn: (name: string, profile: string) => `Herramientas de agente de ${name} activadas para ${profile}`,
       toolsetOff: (name: string, profile: string) => `Herramientas de agente de ${name} desactivadas para ${profile}`,
       toolsetToggleFailed: (name: string) =>

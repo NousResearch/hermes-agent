@@ -6,6 +6,8 @@ install time (method_ctx.bind_module), so they reference server.py globals bare.
 from __future__ import annotations
 
 import contextlib
+from typing import Any
+
 from tui_gateway import git_probe
 
 from .method_ctx import bind_module
@@ -48,7 +50,7 @@ def _completion_cwd(params: dict | None = None) -> str:
     raw = str(client_cwd or session_cwd or _profile_workspace_cwd(profile_home)
               # A named ssh profile never inherits the LAUNCH profile's host cwd: its remote default is ~.
               or ("~" if named_ssh else "") or _launch_configured_cwd()
-              or os.environ.get("TERMINAL_CWD") or os.getcwd())
+              or os.environ.get("TERMINAL_CWD") or _sandbox_workspace_cwd(None) or os.getcwd())
     # An ssh cwd lives on the remote host: host expansion/isdir cannot vouch for it, and ``~`` names the REMOTE
     # user's home, never this host's. The launch profile keeps main's host fast path for everything else.
     if named_ssh:
@@ -60,6 +62,11 @@ def _completion_cwd(params: dict | None = None) -> str:
         if os.path.isdir(resolved):
             return resolved
     if profile_home is None and _is_remote_cwd_shape(raw) and _cwd_is_remote(None):
+        return raw
+    # A container backend's cwd (docker ``/workspace``) lives inside the sandbox, like ``_terminal_task_cwd``'s: the
+    # host has no such dir. Falling back to the gateway's own cwd ($HOME for the desktop) made every host file look
+    # "inside the workspace", so attachments were never staged into the mounted dir (#103147).
+    if _is_container_path(raw) and _bound_terminal_backend(profile_home) != "local":
         return raw
     return os.getcwd()
 
@@ -122,9 +129,32 @@ def _is_remote_cwd_shape(raw: str) -> bool:
     return _is_ssh_remote_tilde_cwd("ssh", raw) or os.path.isabs(raw)
 
 
+def _is_container_path(raw: str) -> bool:
+    """An absolute POSIX path, the only shape a container backend's working directory takes."""
+    return raw.startswith("/") and not raw.startswith("//")
+
+
+def _sandbox_workspace_cwd(profile_home) -> str | None:
+    """A container backend's configured ``terminal.cwd`` (docker ``/workspace``), unchecked against this host.
+
+    ``_profile_configured_cwd``/``_launch_configured_cwd`` require ``os.path.isdir``, which a path inside the
+    sandbox fails. Only a path missing on the host qualifies: an existing host dir keeps the host path (it is the
+    ``docker_mount_cwd_to_workspace`` source). ssh has its own remote-cwd rules above."""
+    if profile_home:
+        policy = _profile_terminal_policy(profile_home)
+        backend, raw = _policy_backend(policy), str(policy.get("TERMINAL_CWD") or "").strip()
+    else:
+        backend = _effective_terminal_backend()
+        raw = os.environ.get("TERMINAL_CWD", "").strip() or _workdir_terminal_cfg("cwd")
+    if backend in {"local", "ssh"} or not _is_container_path(raw) or os.path.isdir(raw):
+        return None
+    return raw
+
+
 def _profile_workspace_cwd(profile_home) -> str | None:
-    """A named profile's configured workspace: an ssh profile's remote dir, else a host dir."""
-    return _declared_remote_profile_cwd(profile_home) or _profile_configured_cwd(profile_home)
+    """A named profile's configured workspace: an ssh profile's remote dir, a host dir, else a container dir."""
+    return (_declared_remote_profile_cwd(profile_home) or _profile_configured_cwd(profile_home)
+            or (_sandbox_workspace_cwd(profile_home) if profile_home else None))
 
 
 def _workspace_cwd(profile_home, raw: str) -> str:
@@ -222,11 +252,11 @@ def _session_is_local_backend(session: dict | None) -> bool:
     whatever the launch process runs (one multiplexed gateway serves many profiles), and a per-profile gateway
     (``hermes -p x``) may set ``terminal.backend: ssh`` in config without ``TERMINAL_ENV``: an env-only check would
     heal a live remote cwd to its nearest host ancestor (``/home``) and persist that."""
-    if session and session.get("profile_home") and _cwd_is_remote(session["profile_home"]):
+    if session and session.get("profile_home") and _bound_terminal_backend(session["profile_home"]) != "local":
         return False
-    # Otherwise main's env check, plus a per-profile gateway whose config (not env) says ssh.
-    env_backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
-    return env_backend in ("", "local") and _effective_terminal_backend() != "ssh"
+    # Otherwise the launch backend, env or config: an in-process gateway (no TERMINAL_ENV bridge) under
+    # ``terminal.backend: docker`` holds a container cwd (``/workspace``) that healing would walk up to ``/``.
+    return _effective_terminal_backend() == "local"
 
 
 def _effective_terminal_backend() -> str:
@@ -254,11 +284,16 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     """Re-anchor a session that SETTLED in another worktree of the SAME repo. Returns moved. An agent told to work in
     a fresh worktree `git worktree add`s and `cd`s in while the session stays pinned (labelled with the primary
     checkout's branch). A plain `cd` is deliberately NOT a workspace move (see ``_apply_project_workspace``): a non-git
-    workspace stepping into a repo or a visit to an unrelated repo is browsing, and an explicitly chosen workspace is
-    never overridden. Local backends only (a remote cwd cannot be stat'ed or git-probed here)."""
-    # An explicit choice only moves by another explicit action; a cwd adopted HERE is marked `cwd_from_settle` so
-    # successive settles keep following.
-    if not session or (session.get("explicit_cwd") and not session.get("cwd_from_settle")):
+    workspace stepping into a repo or a visit to an unrelated repo is browsing, and a workspace the user deliberately
+    moved the chat into is never overridden. Local backends only (a remote cwd cannot be stat'ed or git-probed
+    here)."""
+    # A workspace the USER put the chat in (the composer's folder picker -> session.cwd.set, the sidebar's
+    # move-to-project -> session.workspace.move) only moves by another deliberate action; a cwd adopted HERE is
+    # marked `cwd_from_settle` so successive settles keep following. NOT `explicit_cwd`: session.create sets that for
+    # ANY session whose cwd exists on disk, so keying the pin on it made every desktop session — all of which are
+    # created with a workspace — unfollowable, which is exactly the agent-made-a-worktree case this reconcile exists
+    # for.
+    if not session or (session.get("cwd_pinned") and not session.get("cwd_from_settle")):
         return False
     if not _session_is_local_backend(session):
         return False
@@ -310,6 +345,13 @@ def _register_session_cwd(session: dict | None) -> None:
     # Do not reinitialize memory providers or invalidate the cached system prompt.
     if hasattr(agent := session.get("agent"), "session_cwd"):
         agent.session_cwd = session.get("cwd") or None
+    # A session that adopted a real workspace out of a home-fallback cwd (#76902: the
+    # packaged Desktop pins $HOME when no default project dir is configured) resumes
+    # subdirectory-hint discovery anchored to that project. No prompt/system-prompt
+    # state changes — the tracker only scopes future tool-result hints.
+    hints = getattr(agent, "_subdirectory_hints", None) if session.get("cwd") else None
+    if hints is not None and hasattr(hints, "rebind_working_dir"):
+        hints.rebind_working_dir(str(session.get("cwd")))
     with contextlib.suppress(Exception):
         from tools.terminal_tool import register_task_env_overrides
         cwd, cwd_source = _terminal_task_cwd_with_source(session)
@@ -422,11 +464,26 @@ def _ensure_session_db_row(session: dict) -> bool:
                         session.pop("pending_archived", None)
                 except Exception:
                     logger.debug("failed to apply pending archived flag", exc_info=True)
+            _schedule_row_git_meta(session, key, db)
         except Exception as exc:
             # Disk-full is not a soft failure: swallowed here, prompt.submit returns {"status":"streaming"} and the
             # message vanishes silently.
             _workdir_reraise_disk_full(exc, "failed to persist desktop session row")
     return True
+
+
+def _schedule_row_git_meta(session: dict, key: str, db) -> None:
+    """Git-enrich a lazily created row once per live session. The row lands here with its cwd on the first submit, so
+    ``_hydrate_session_cwd`` (which ran when no row existed) never claimed a probe, and a desktop row kept NULL
+    git_branch/git_repo_root for life: its lane fell back to a fake ``main`` label (#108784). Probes the row's own
+    cwd (the upsert never overwrites it), and only when enrichment is missing."""
+    if session.get("row_git_meta_checked"):
+        return
+    session["row_git_meta_checked"] = True
+    row = (db.get_session(key) if hasattr(db, "get_session") else None) or {}
+    cwd = str(row.get("cwd") or "").strip()
+    if cwd and not (row.get("git_branch") and row.get("git_repo_root")):
+        _persist_session_cwd_and_schedule_git_meta(session, cwd, db=db)
 
 
 def _workdir_reraise_disk_full(exc: BaseException, log_msg: str) -> None:
@@ -454,9 +511,11 @@ def _persist_branch_seed(session: dict) -> None:
     if not (key := session.get("session_key")) or not session.get("seeded") or session.get("_branch_seed_persisted"):
         return
     from agent.message_metadata import message_identity
+    from agent.transcript_repair import sync_flushed_message_markers
     with session["history_lock"]:  # message_identity stamps the live dicts
+        live = list(session.get("history") or [])
         seed = [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
-                 **message_identity(msg)} for msg in (session.get("history") or [])]
+                 **message_identity(msg)} for msg in live]
     if not seed:
         return
     with _session_db(session) as db:
@@ -468,16 +527,21 @@ def _persist_branch_seed(session: dict) -> None:
             # Bounded-chunk transactions (see #23254): a branch seed can be hundreds of rows; chunking keeps
             # each BEGIN IMMEDIATE short so concurrent writers aren't starved.
             db.append_messages_batch(key, seed, chunk_rows=500)
+            with session["history_lock"]:
+                sync_flushed_message_markers(live, seed)
             session["_branch_seed_persisted"] = True
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "branch seed persist failed")
 
 
-def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -> dict | None:
+def _write_submit_user_row(session: dict, text: Any, display_kind: str | None,
+                           accept_metadata: dict | None = None) -> dict | None:
     """Write the submitted user turn to the transcript and RETURN the durable dict (stamped
     ``_DB_PERSISTED_MARKER``/``_row_id``) WITHOUT slotting it on the session. The write half of
     :func:`_persist_submit_user_row`, shared by the busy-queue accept (which attaches the dict to
     the queue envelope, never the shared session slot a possibly-still-staged in-flight turn owns).
+    ``accept_metadata`` merges into ``display_metadata`` (the busy-queue accept's never-drained
+    marker, retired by ``reopen_session`` — #125577).
     Returns None when nothing was written (no key / non-text / store unavailable / failed write)."""
     key = session.get("session_key")
     if not key or not isinstance(text, str) or not text.strip():
@@ -487,13 +551,16 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -
     staged = stamp_message_timestamp({"role": "user", "content": text})
     if display_kind:
         staged["display_kind"] = display_kind
+    if accept_metadata:
+        staged["display_metadata"] = {**accept_metadata}
     with _session_db(session) as db:
         if db is None:
             return None
         try:
             staged["_row_id"] = db.append_message(
                 key, "user", content=text, display_kind=display_kind, timestamp=staged["timestamp"],
-                message_uid=stamp_message_uid(staged))  # the live dict the turn adopts carries the row's uid
+                message_uid=stamp_message_uid(staged),  # the live dict the turn adopts carries the row's uid
+                display_metadata=staged.get("display_metadata"))
         except Exception as exc:
             _workdir_reraise_disk_full(exc, "submit-time user row persist failed")
             return None
@@ -501,15 +568,17 @@ def _write_submit_user_row(session: dict, text: Any, display_kind: str | None) -
     return staged
 
 
-def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None) -> None:
+def _persist_submit_user_row(session: dict, text: Any, display_kind: str | None,
+                             accept_metadata: dict | None = None) -> None:
     """Write the submitted user turn at send time, before the agent build and turn: the agent's own
     crash persist only runs once the build finished, so quitting a frozen app during a slow first build
     left a session row with no message (#111868). The dict is staged on the session already stamped
     durable (the shape ``quiet_single_query`` re-stages an unanswered DM in) so the turn adopts it via
     ``_stage_turn_user_message`` and the flush writes no second row. A failed write stages nothing:
-    the turn's crash persist then writes the row as before."""
+    the turn's crash persist then writes the row as before. ``accept_metadata`` marks a row that
+    belongs to a still-QUEUED envelope (#125577); a dispatching turn's row is never marked."""
     session.pop("_submit_user_row", None)  # a failed/unsupported write must not acknowledge an older send
-    if (staged := _write_submit_user_row(session, text, display_kind)) is not None:
+    if (staged := _write_submit_user_row(session, text, display_kind, accept_metadata)) is not None:
         session["_submit_user_row"] = staged
 
 
@@ -669,8 +738,9 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     from hermes_constants import translate_cwd_for_wsl_backend
     cwd = translate_cwd_for_wsl_backend(str(cwd))
     resolved = _workspace_cwd(session.get("profile_home"), cwd)
-    # An explicit user choice: persisted as the workspace (not the launch-dir fallback), superseding a settle-adopted cwd.
-    session.update(cwd=resolved, explicit_cwd=True, cwd_from_settle=False)
+    # An explicit user choice: persisted as the workspace (not the launch-dir fallback), superseding a settle-adopted
+    # cwd — and PINNED, so the settle reconcile cannot drag it to another worktree the agent merely visited.
+    session.update(cwd=resolved, explicit_cwd=True, cwd_pinned=True, cwd_from_settle=False)
     _register_session_cwd(session)
     # The synchronous DB write claims ordering authority; git probes may publish only for that exact generation.
     _persist_session_cwd_and_schedule_git_meta(session, resolved)

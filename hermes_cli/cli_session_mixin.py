@@ -296,10 +296,9 @@ class CLISessionMixin:
 
         lines = [t("cli.session.status_title"), "", *status_lines(fields, "session_id", "path", "title", "model")]
         try:
-            from hermes_cli.auth import resolve_provider
-            from hermes_cli.anon_auth import guest_carries_inference
+            from hermes_cli.anon_auth import free_tier_route
 
-            if resolve_provider("auto") == "nous" and guest_carries_inference():
+            if free_tier_route():
                 lines.append(t("gateway.status.free_tier"))
         except Exception:
             pass

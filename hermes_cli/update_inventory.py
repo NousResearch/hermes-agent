@@ -388,13 +388,14 @@ def match_runtime_outcomes(
     plan: "UpdatePlan", *, restarted_services: list, relaunched_profiles: list,
     externally_supervised_profiles: list, killed_pids: set, failed_units: list,
     stale_serve_pids: "set | None" = None, failed_respawn_pids: "set | None" = None,
+    external_gateway_pids: "set | None" = None,
 ) -> list[dict[str, Any]]:
     """Reconcile the plan's runtimes against what the restart phase DID.
 
     The platform restart branches each re-discover their own targets, so a runtime the plan saw can
     be missed with no signal. Returns one ``{kind, profile, pid, mechanism, outcome}`` row per
-    planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred`` or
-    ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
+    planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred``, ``external``
+    or ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
     Serve/dashboard runtimes are reconciled in their OWN vocabulary and never borrow the gateway's
     outcome: with ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as
     ``restarted``, one still alive is ``unaccounted``; without the probe an untouched serve stays
@@ -410,6 +411,11 @@ def match_runtime_outcomes(
     See #91277.
     They never borrow the gateway's outcome: ``relaunched_profiles`` and ``hermes-gateway*`` name a
     different process that shares the profile, nothing more. See #100479.
+
+    ``external_gateway_pids``: gateway pids the post-restart fleet probe verified as serving a
+    DIFFERENT checkout than this updater (a ``profiles/<name>`` symlinked to a separate install).
+    An untouched gateway in that set is ``external`` — another install owns its restart — instead
+    of ``unaccounted``. No evidence keeps the tripwire armed. See #120240.
     """
     outcomes: list[dict[str, Any]] = []
     try:
@@ -419,6 +425,7 @@ def match_runtime_outcomes(
         killed = {int(p) for p in (killed_pids or set())}
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
         failed_respawns = {int(p) for p in (failed_respawn_pids or set())}
+        external = {p for p in (external_gateway_pids or ()) if isinstance(p, int)}
 
         def _outcome(r: RuntimeRecord) -> str:
             killed_here = r.pid is not None and r.pid in killed
@@ -446,7 +453,9 @@ def match_runtime_outcomes(
                 return "stopped"
             if _gateway_named_in(r, failed_set):
                 return "failed"
-            return "restarted" if _gateway_named_in(r, restarted_set) else "unaccounted"
+            if _gateway_named_in(r, restarted_set):
+                return "restarted"
+            return "external" if r.pid in external else "unaccounted"
 
         for r in plan.runtimes:
             if isinstance(r, RuntimeRecord):
@@ -481,6 +490,13 @@ def report_unaccounted_runtimes(outcomes: list[dict[str, Any]]) -> bool:
             action = ("owned by a Desktop connected over SSH; it picks up the update when that Desktop reconnects"
                       if o.get("mechanism") == "desktop-ssh" else "relaunch the Desktop app to pick up the update")
             print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']} — {action}")
+    external = [o for o in outcomes if o.get("outcome") == "external"]
+    if external:
+        # Surfaced but not escalated: another install's updater owns these restarts. See #120240.
+        print()
+        print("  ℹ Left to their own install (separate checkout, not restarted by this update):")
+        for o in external:
+            print(f"    • {o['kind']} [{o['profile']}] pid {o['pid']}")
     missed = [o for o in outcomes if o.get("outcome") == "unaccounted"]
     if not missed:
         return False

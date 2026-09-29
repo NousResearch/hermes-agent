@@ -233,7 +233,7 @@ def _cfg_get_fast(params):
             else session.get("create_service_tier_override"))
     if tier is None:
         tier = _load_service_tier()
-    return {"value": "fast" if tier == "priority" else "normal"}
+    return {"value": {"priority": "fast", "ultrafast": "ultrafast"}.get(tier, "normal")}
 
 
 def _cfg_get_thinking_mode(params):
@@ -390,8 +390,10 @@ def _(rid, params: dict) -> dict:
     added after boot — the Models page, a picker key, ``hermes setup`` from a shell — flips it
     without a restart. If the record
     is still missing after the wait, or a named profile is asked about, today's live probe answers.
-    The record's fields ride along additively (``ready``, ``free_tier``, ``other_providers``)."""
+    The record's fields ride along additively (``ready``, ``free_tier_account``, ``free_tier_route``,
+    ``other_providers``)."""
     try:
+        from hermes_cli.anon_auth import free_tier_route
         from hermes_cli.main import _has_any_provider_configured
         from hermes_cli.free_tier_bootstrap import wait_for_record
 
@@ -404,12 +406,14 @@ def _(rid, params: dict) -> dict:
                 # setup-profile probe lands here, and its kickoff requires ``ready``.
                 launch = wait_for_record() if profile else None
                 return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
-                        **({"ready": True, "free_tier": launch.free_tier} if launch is not None else {}),
+                        **({"ready": True, "free_tier_account": launch.free_tier_account,
+                            "free_tier_route": free_tier_route()} if launch is not None else {}),
                         **scoped}
             # ``failure_fields`` rides along only when the free-tier mint did not happen: the code,
             # the sentence, and whether / when a retry can succeed (``free_tier.provision``).
             return {"provider_configured": record.provider_configured, "ready": True,
-                    "free_tier": record.free_tier, "other_providers": record.other_providers,
+                    "free_tier_account": record.free_tier_account, "free_tier_route": record.free_tier_route,
+                    "other_providers": record.other_providers,
                     "inference_provider": record.inference_provider, **record.failure_fields(), **scoped}
         return _readiness_check(rid, params, probe, probe_key="status",
                                 wait_seconds=_READINESS_STATUS_SHARE_WAIT_SECONDS)
@@ -456,11 +460,11 @@ def _(rid, params: dict) -> dict:
                     or has_usable_secret(api_key_text) or bool(runtime.get("command"))):
                 return fail(f"No usable credentials found for {provider}.", runtime.get("source"))
             from hermes_cli.anon_auth import route_is_welcome_host
-            # free_tier is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
+            # free_tier_route is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
             # on profile state: a paid Nous key beside a free-tier identity must not read as free.
             return {"ok": True, "provider": runtime.get("provider"), "model": model,
                     "source": runtime.get("source"),
-                    "free_tier": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
+                    "free_tier_route": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
                     **scoped}
         return _readiness_check(rid, params, probe, probe_key=f"runtime:{requested or ''}",
                                 wait_seconds=_READINESS_SHARE_WAIT_SECONDS)

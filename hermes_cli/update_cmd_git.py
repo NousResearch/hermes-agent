@@ -209,7 +209,14 @@ def _print_parked_branch_skip_warning(git_cmd: list[str], cwd: Path, current_bra
     print(
         f"\n  To resolve, inspect the branch and switch back yourself:\n"
         f"    git -C {cwd} status\n"
-        f"    git -C {cwd} checkout {target_branch} && hermes update\n"
+        f"    git -C {cwd} fetch origin {target_branch}\n"
+        f"    git -C {cwd} switch -c {target_branch}-at-upstream origin/{target_branch}\n"
+        f"    hermes update\n"
+        f"  This creates a new branch at the current upstream commit. Your local\n"
+        f"  '{target_branch}' and any commits on it are left untouched; rebase them\n"
+        f"  onto '{target_branch}-at-upstream' yourself if you still want them.\n"
+        f"  If a branch named '{target_branch}-at-upstream' already exists, git will\n"
+        f"  refuse rather than touch it — delete or rename that branch, then re-run.\n"
         f"  (commit or stash your work on the branch first if you want to keep it)\n{_BAR}"
     )
 

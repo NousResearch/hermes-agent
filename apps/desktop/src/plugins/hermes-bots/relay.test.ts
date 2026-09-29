@@ -24,6 +24,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { RELAY_DELIVER_TIMEOUT_MS } from './relay-budget'
 import type { ProfileRoute } from './types'
 
 const { clearBotAttentionMock, hostMock, noteBotAttentionMock, UnboundedCache } = vi.hoisted(() => ({
@@ -645,6 +646,13 @@ describe('the drain loop wires drain → deliver → reply', () => {
       connectionId: 'b',
       params: { message: 'status?', profile: 'ops' }
     })
+
+    // #93911: the deliver deadline must outlive the backend's own turn bound.
+    const deliverCall = (hostMock.requestProfile as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([, method]) => method === 'bot_relay.deliver'
+    )
+
+    expect(deliverCall?.[3]).toBe(RELAY_DELIVER_TIMEOUT_MS)
     expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
       connectionId: 'a',
       params: { id: 'env-1', reply: 'all green' }

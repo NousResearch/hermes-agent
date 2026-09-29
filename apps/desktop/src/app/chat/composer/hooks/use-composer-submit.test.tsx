@@ -475,7 +475,7 @@ describe('useComposerSubmit busy-turn routing', () => {
 
 describe('useComposerSubmit with a clarify parked on the session', () => {
   // The clarify is a live server→client request: skipping it answers that
-  // request frame (`{ answer: '' }`), not a `clarify.respond` RPC.
+  // request frame (`{}`), not a `clarify.respond` RPC.
   const respond = vi.fn()
 
   const parkClarify = (sessionId: string) => {
@@ -485,9 +485,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     $clarifyRequests.set({
       [sessionId]: {
         requestId,
-        question: 'which one?',
-        choices: ['a', 'b'],
-        multiSelect: false,
+        questions: [{ choices: ['a', 'b'], multiSelect: false, qid: 'q0', question: 'which one?' }],
         sessionId
       }
     })
@@ -531,7 +529,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     })
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('/status', expect.anything()))
-    expect(respond).toHaveBeenCalledWith({ answer: '' })
+    expect(respond).toHaveBeenCalledWith({})
     expect(hasOpenServerRequest('req-runtime-session')).toBe(false)
   })
 
@@ -543,7 +541,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() => expect(respond).toHaveBeenCalledWith({ answer: '' }))
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({}))
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('actually do this instead', expect.objectContaining({ attachments: [] }))
     )
@@ -560,7 +558,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     })
 
     await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
-    expect(respond).toHaveBeenCalledWith({ answer: '' })
+    expect(respond).toHaveBeenCalledWith({})
   })
 
   it('leaves the question alone for an empty Enter (Stop, not an answer)', () => {

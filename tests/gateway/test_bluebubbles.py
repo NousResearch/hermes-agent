@@ -583,3 +583,249 @@ class TestBlueBubblesGateBeforeDownload:
         assert response.status == 200
         assert download.await_count == downloads
         assert len(handled) == handled_count
+
+
+class TestBlueBubblesAttachmentDownloadRetry:
+    """_download_attachment retries a bounded number of times (attachments sync to disk late)."""
+
+    @pytest.mark.asyncio
+    async def test_download_retries_until_success(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr("gateway.platforms.bluebubbles._ATTACHMENT_DOWNLOAD_RETRY_DELAYS", (0.0, 0.0, 0.0))
+        calls = {"count": 0}
+
+        class MockResponse:
+            status_code = 200
+            content = b"png-bytes"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] < 3:
+                raise RuntimeError("500 Internal Server Error")
+            return MockResponse()
+
+        adapter.client = type("MockClient", (), {"get": mock_get})()
+
+        async def mock_cache_image(data, ext):
+            return f"/tmp/retried{ext}"
+
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.cache_image_from_bytes_async",
+            mock_cache_image,
+        )
+
+        result = await adapter._download_attachment(
+            "att-retry-1", {"mimeType": "image/png", "transferName": "photo.png"})
+        assert result == "/tmp/retried.png"
+        assert calls["count"] == 3  # two failures, then success
+
+    @pytest.mark.asyncio
+    async def test_download_gives_up_after_retry_budget(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr("gateway.platforms.bluebubbles._ATTACHMENT_DOWNLOAD_RETRY_DELAYS", (0.0, 0.0, 0.0))
+        calls = {"count": 0}
+
+        async def mock_get(*args, **kwargs):
+            calls["count"] += 1
+            raise RuntimeError("500 Internal Server Error")
+
+        adapter.client = type("MockClient", (), {"get": mock_get})()
+
+        result = await adapter._download_attachment("att-retry-2", {"mimeType": "image/jpeg"})
+        assert result is None
+        assert calls["count"] == 4  # initial attempt + 3 retries
+
+    @pytest.mark.asyncio
+    async def test_download_without_client_returns_none(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = None
+        assert await adapter._download_attachment("att-1", {}) is None
+
+
+class TestBlueBubblesAttachmentFailureDelivery:
+    """A failed attachment download must not drop the message or stay silent."""
+
+    @pytest.mark.asyncio
+    async def test_image_only_message_with_failed_download_is_delivered(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", AsyncMock(return_value=None))
+        recovery = AsyncMock()
+        monkeypatch.setattr(adapter, "_recover_late_attachments", recovery)
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-att-fail-1",
+                "text": "",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;+;dm-chat"}],
+                "attachments": [{"guid": "att-fail-1", "mimeType": "image/heic",
+                                 "transferName": "IMG_0001.HEIC"}],
+            },
+        }))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        assert "attachment download failed" in handled[0].text
+        assert "IMG_0001.HEIC" in handled[0].text
+        assert handled[0].media_urls == []
+        assert recovery.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_text_message_with_failed_download_gets_notice_appended(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", AsyncMock(return_value=None))
+        monkeypatch.setattr(adapter, "_recover_late_attachments", AsyncMock())
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-att-fail-2",
+                "text": "look at this",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;+;dm-chat"}],
+                "attachments": [{"guid": "att-fail-2", "mimeType": "image/jpeg"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        assert handled[0].text.startswith("look at this\n[attachment download failed:")
+
+    @pytest.mark.asyncio
+    async def test_successful_attachment_delivers_without_notice_or_recovery(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", AsyncMock(return_value="/tmp/cached.jpg"))
+        recovery = AsyncMock()
+        monkeypatch.setattr(adapter, "_recover_late_attachments", recovery)
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-att-ok-1",
+                "text": "",
+                "handle": {"address": "+155****0100"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;+;dm-chat"}],
+                "attachments": [{"guid": "att-ok-1", "mimeType": "image/jpeg"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        assert handled[0].media_urls == ["/tmp/cached.jpg"]
+        assert "failed" not in handled[0].text
+        assert recovery.await_count == 0
+
+
+class TestBlueBubblesLateAttachmentRecovery:
+    """Background recovery for attachments that sync to disk after the webhook was handled."""
+
+    @staticmethod
+    def _source(adapter):
+        return adapter.build_source(chat_id="iMessage;+;dm-chat", chat_name="+155****0100",
+                                    chat_type="dm", user_id="+155****0100", user_name="+155****0100")
+
+    @pytest.mark.asyncio
+    async def test_late_recovery_delivers_follow_up(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        adapter.client = object()  # non-None: the recovery loop requires a live client
+        monkeypatch.setattr("gateway.platforms.bluebubbles._LATE_ATTACHMENT_RECOVERY_INTERVAL_S", 0.01)
+        monkeypatch.setattr("gateway.platforms.bluebubbles._LATE_ATTACHMENT_RECOVERY_WINDOW_S", 2.0)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        fetch = AsyncMock(side_effect=[RuntimeError("still syncing"), "/tmp/late.jpg"])
+        monkeypatch.setattr(adapter, "_fetch_attachment_once", fetch)
+        adapter._late_recovery_pending.add("att-late-1")
+
+        await adapter._recover_late_attachments(
+            [{"guid": "att-late-1", "mimeType": "image/jpeg", "transferName": "late.jpg"}],
+            source=self._source(adapter), reply_to_message_id="msg-42")
+        await asyncio.sleep(0.05)
+
+        assert fetch.await_count == 2
+        assert len(handled) == 1
+        assert handled[0].media_urls == ["/tmp/late.jpg"]
+        assert handled[0].media_types == ["image/jpeg"]
+        assert "late attachment" in handled[0].text
+        assert handled[0].reply_to_message_id == "msg-42"
+        assert "att-late-1" in adapter._late_recovery_done
+        assert "att-late-1" not in adapter._late_recovery_pending
+
+    @pytest.mark.asyncio
+    async def test_late_recovery_stops_after_window(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        adapter.client = object()
+        monkeypatch.setattr("gateway.platforms.bluebubbles._LATE_ATTACHMENT_RECOVERY_INTERVAL_S", 0.01)
+        monkeypatch.setattr("gateway.platforms.bluebubbles._LATE_ATTACHMENT_RECOVERY_WINDOW_S", 0.05)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        fetch = AsyncMock(side_effect=RuntimeError("never synced"))
+        monkeypatch.setattr(adapter, "_fetch_attachment_once", fetch)
+        adapter._late_recovery_pending.add("att-late-2")
+
+        await adapter._recover_late_attachments(
+            [{"guid": "att-late-2", "mimeType": "image/jpeg"}], source=self._source(adapter))
+        await asyncio.sleep(0.05)
+
+        assert fetch.await_count >= 1
+        assert handled == []
+        assert "att-late-2" not in adapter._late_recovery_pending
+
+    @pytest.mark.asyncio
+    async def test_late_recovery_skips_already_delivered_guid(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        adapter.client = object()
+        monkeypatch.setattr("gateway.platforms.bluebubbles._LATE_ATTACHMENT_RECOVERY_INTERVAL_S", 0.01)
+        monkeypatch.setattr("gateway.platforms.bluebubbles._LATE_ATTACHMENT_RECOVERY_WINDOW_S", 0.05)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        fetch = AsyncMock(return_value="/tmp/dup.jpg")
+        monkeypatch.setattr(adapter, "_fetch_attachment_once", fetch)
+        adapter._remember_delivered_attachment("att-done-1")
+
+        await adapter._recover_late_attachments(
+            [{"guid": "att-done-1", "mimeType": "image/jpeg"}], source=self._source(adapter))
+        await asyncio.sleep(0.02)
+
+        assert fetch.await_count == 0
+        assert handled == []

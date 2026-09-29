@@ -29,6 +29,11 @@ import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 
+export const isSessionModelHopHotkey = (
+  ch: string,
+  key: { ctrl: boolean; meta: boolean; shift: boolean; super: boolean }
+): boolean => key.meta && !key.ctrl && !key.shift && !key.super && ch.toLowerCase() === 'p'
+
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
 /** Text or attachments in the composer: Ctrl+D must not exit over an unsent draft (#116443). */
@@ -739,6 +744,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (isCtrl(key, ch, 'o')) {
       return patchOverlayState({ modelPicker: true })
+    }
+
+    if (isSessionModelHopHotkey(ch, key)) {
+      if (!live.sid) {
+        return actions.sys('model hop needs an active session')
+      }
+
+      return patchOverlayState({ modelPicker: { sessionHop: true } })
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {

@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
+import { invalidateModelOptions, rememberModelOptions } from '../lib/modelOptionsCache.js'
 import { messages } from '../i18n/runtime.js'
 import { useT } from '../i18n/useT.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -109,6 +110,11 @@ export function ModelPicker({
   const preferredWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
   const width = clampOverlayWidth(preferredWidth, maxWidth)
 
+  const selectModel = (value: string) => {
+    invalidateModelOptions(sessionId)
+    onSelect(value)
+  }
+
   // "persist: global · ^g toggle" / "persist: session only" footer shared by the list stages.
   const persistLine =
     M.persist.label(allowPersistGlobal && persistGlobal ? M.persist.scopeGlobal : M.persist.scopeSession) +
@@ -134,6 +140,7 @@ export function ModelPicker({
           return
         }
 
+        rememberModelOptions(sessionId, r)
         const next = r.providers ?? []
         setProviders(next)
         setCurrentModel(String(r.model ?? ''))
@@ -281,6 +288,7 @@ export function ModelPicker({
               return
             }
 
+            invalidateModelOptions(sessionId)
             // Update the provider in our list with fresh data
             setProviders(prev => prev.map(p => (p.slug === r.provider!.slug ? r.provider! : p)))
             setKeyInput('')
@@ -334,6 +342,7 @@ export function ModelPicker({
             const r = asRpcResult<{ disconnected?: boolean }>(raw)
 
             if (r?.disconnected) {
+              invalidateModelOptions(sessionId)
               // Mark provider as unauthenticated in local state
               setProviders(prev =>
                 prev.map(p =>
@@ -403,7 +412,7 @@ export function ModelPicker({
       }
 
       if (key.return && provider && pendingModel) {
-        onSelect(
+        selectModel(
           modelPickerCommand(
             pendingModel,
             provider.slug,
@@ -493,7 +502,7 @@ export function ModelPicker({
           setReasoningIdx(0)
           setStage('reasoning')
         } else {
-          onSelect(modelPickerCommand(model, provider.slug, allowPersistGlobal && persistGlobal))
+          selectModel(modelPickerCommand(model, provider.slug, allowPersistGlobal && persistGlobal))
         }
       } else {
         setStage('provider')

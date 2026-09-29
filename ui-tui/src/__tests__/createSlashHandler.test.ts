@@ -1,3 +1,4 @@
+import type { ModelOptionsResult } from '@hermes/shared/gateway-events'
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -9,6 +10,11 @@ import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import { applyLocale, resetLocale, t } from '../i18n/runtime.js'
 import * as ClipboardModule from '../lib/clipboard.js'
 import * as Osc52Module from '../lib/osc52.js'
+import {
+  cachedModelOptions,
+  rememberModelOptions,
+  resetModelOptionsCacheForTests
+} from '../lib/modelOptionsCache.js'
 import * as TerminalSetupModule from '../lib/terminalSetup.js'
 
 // DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
@@ -31,6 +37,7 @@ describe('createSlashHandler', () => {
     vi.restoreAllMocks()
     resetOverlayState()
     resetUiState()
+    resetModelOptionsCacheForTests()
     envState.dashboardTuiMode = false
   })
 
@@ -201,13 +208,87 @@ describe('createSlashHandler', () => {
     })
   })
 
-  it('opens the model picker with refresh for /model --refresh', () => {
+  it('invalidates a cached hop receipt after a typed model switch succeeds', async () => {
     patchUiState({ sid: 'sid-abc' })
+    rememberModelOptions('sid-abc', { model: 'old-model', providers: [] } as ModelOptionsResult)
+    const rpc = vi.fn(() => Promise.resolve({ value: 'x-model' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/model x-model')).toBe(true)
+
+    await vi.waitFor(() => expect(cachedModelOptions('sid-abc')).toBeNull())
+  })
+
+  it('opens bare /model on the flat fuzzy hop', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model')).toBe(true)
+    expect(getOverlayState().modelPicker).toEqual({ sessionHop: true })
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('keeps bare /model on provider setup when there is no active session', () => {
+    patchUiState({ sid: null })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model')).toBe(true)
+    expect(getOverlayState().modelPicker).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('refreshes provider setup when there is no active session', () => {
+    patchUiState({ sid: null })
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/model --refresh')).toBe(true)
     expect(getOverlayState().modelPicker).toEqual({ refresh: true })
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('keeps /model --provider on the full provider/setup picker', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --provider')).toBe(true)
+    expect(getOverlayState().modelPicker).toBe(true)
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('refreshes the flat hop for /model --refresh', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --refresh')).toBe(true)
+    expect(getOverlayState().modelPicker).toEqual({ refresh: true, sessionHop: true })
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('refreshes the full picker only when --provider is explicit', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --provider --refresh')).toBe(true)
+    expect(getOverlayState().modelPicker).toEqual({ refresh: true })
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('opens the same flat hop for /model --session', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --session')).toBe(true)
+    expect(getOverlayState().modelPicker).toEqual({ sessionHop: true })
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('requires an active session for explicit /model --session', () => {
+    patchUiState({ sid: null })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/model --session')).toBe(true)
+    expect(getOverlayState().modelPicker).toBe(false)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('model hop needs an active session')
   })
 
   it('honors TUI picker session scope without adding --global', async () => {

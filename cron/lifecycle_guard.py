@@ -415,9 +415,12 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # Heredoc bodies that are provably inert data (quoted delimiter, data-sink consumer like `cat > file
     # <<'EOF'`) are masked before scanning (#88336): a runbook line "a human can run: hermes gateway
     # restart" inside such a body is documentation, not a command this shell will execute.
+    # ``mask_code_consumers=False`` keeps python/osascript bodies visible: their payload reaches a
+    # shell at runtime (``os.system``, ``do shell script``), so masking it here would let an inline
+    # lifecycle command hide in the blanked body (#127698).
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
-    text = strip_inert_heredoc_bodies(text)
+    text = strip_inert_heredoc_bodies(text, mask_code_consumers=False)
     normalized = _SHELL_LINE_CONTINUATION.sub(" ", text)
     if _GATEWAY_LIFECYCLE_PATTERN.search(normalized):
         return True
@@ -1103,9 +1106,13 @@ def _contains_unsafe_gateway_action(
             read_remote_script=read_remote_script, executed=executed,
         )
 
-    # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
-    # path or `sh -c` payload inside a provably-inert heredoc body is never shell-executed, and an
-    # oversized data file mentioned there otherwise fails closed as a "script".
+    # The walks below keep the lenient masked view — NOT the stricter one `_direct_lifecycle_scan`
+    # now uses (#127698): the mask boundary is what separates "executed" from "mentioned" path
+    # candidates below. A path or `sh -c` payload inside a provably-inert heredoc body is never
+    # shell-executed, and an oversized data file mentioned there otherwise fails closed as a
+    # "script" (#110422). Code-bearing bodies do not need walk visibility: an inline payload in
+    # them is already caught by the direct scan, and a path they merely mention must stay a
+    # mention (#113944).
     from tools.shell_heredoc import strip_inert_heredoc_bodies
 
     walk_command = strip_inert_heredoc_bodies(command)

@@ -599,6 +599,16 @@ class TestFindAllSkillsPlatformFiltering:
 
         assert names == {"universal-skill", "cross-plat"}
 
+    def test_frontmatter_longer_than_4000_chars_keeps_its_gates(self, tmp_path):
+        padding = "metadata:\n  notes: " + "x" * 5000 + "\n"
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "other-only-long", frontmatter_extra=padding + "platforms: [plan9]\n")
+            _make_skill(tmp_path, "host-long", frontmatter_extra=padding)
+            skills = {s["name"]: s for s in _find_all_skills()}
+
+        assert set(skills) == {"host-long"}
+        assert skills["host-long"]["description"] == "Description for host-long."
+
 
 # ---------------------------------------------------------------------------
 # _find_all_skills — env-var prerequisites must not change the listing

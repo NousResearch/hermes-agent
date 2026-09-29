@@ -3,6 +3,66 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { fileDigest, treeDigest, preparationRequired } from './prepared-packaging.mjs'
 
+// ─── libuv-safe fs primitives ────────────────────────────────────────
+//
+// Node's native (non-libuv) rewrite of fs.cpSync/fs.rmSync mishandles
+// non-ASCII Windows paths (stage-native-deps.mjs has the full write-up: a
+// recursive cpSync fails with EIO, an overwriting one with a bogus errno-0
+// unlink error, and rmSync silently deletes nothing — leaving a half-staged
+// tree). The installer builds on whatever Node the user already has, so the
+// packaging copies stick to libuv-backed primitives too: beforePack wipes
+// dist/native and re-copies the prepared helpers with these, because the
+// silent no-op left electron-builder with no hud-modifier-monitor.exe to
+// package (#127420).
+
+/** Recursively delete a path without fs.rmSync (missing paths are fine). */
+export function removeTreeSync(target) {
+  let stats
+  try {
+    stats = fs.lstatSync(target)
+  } catch {
+    return
+  }
+  if (!stats.isDirectory()) {
+    fs.unlinkSync(target)
+    return
+  }
+  for (const entry of fs.readdirSync(target)) {
+    removeTreeSync(path.join(target, entry))
+  }
+  fs.rmdirSync(target)
+}
+
+/** Recursively copy a tree without fs.cpSync, following symlinks (cpSync dereference).
+ * *skip* receives each absolute source path and excludes it (with its subtree). */
+export function copyTreeSync(srcDir, destDir, skip = () => false) {
+  fs.mkdirSync(destDir, { recursive: true })
+  for (const entry of fs.readdirSync(srcDir)) {
+    const src = path.join(srcDir, entry)
+    if (skip(src)) continue
+    const dest = path.join(destDir, entry)
+    if (fs.statSync(src).isDirectory()) {
+      copyTreeSync(src, dest, skip)
+    } else {
+      fs.copyFileSync(src, dest)
+    }
+  }
+}
+
+/** Relative file paths under *root*, for post-copy verification. */
+function relativeFiles(root) {
+  const found = []
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const full = path.join(root, entry.name)
+    if (entry.isDirectory()) {
+      for (const relative of relativeFiles(full)) found.push(path.join(entry.name, relative))
+    } else {
+      found.push(entry.name)
+    }
+  }
+  return found
+}
+
 /** @typedef {{ source: string, nativeDeps: string, platform?: string, arch?: string, nativeToolchain?: string }} NativeSelection */
 /** @param {string} source @returns {string} */
 function nativeIdentity(source) {
@@ -66,10 +126,19 @@ export function copyNativeTree({ nativeDeps, out }) {
       throw preparationRequired('Native input and product directories overlap')
     }
   }
-  fs.rmSync(destination, { recursive: true, force: true })
-  fs.rmSync(helpers, { recursive: true, force: true })
+  removeTreeSync(destination)
+  removeTreeSync(helpers)
   const preparedHelpers = path.join(nativeDeps, 'native')
-  fs.cpSync(nativeDeps, destination, { recursive: true, dereference: true,
-    filter: file => file !== preparedHelpers })
-  if (fs.existsSync(preparedHelpers)) fs.cpSync(preparedHelpers, helpers, { recursive: true, dereference: true })
+  copyTreeSync(nativeDeps, destination, src => src === preparedHelpers)
+  if (fs.existsSync(preparedHelpers)) {
+    copyTreeSync(preparedHelpers, helpers)
+    // A silent copy failure surfaced only later, as an inexplicable
+    // ENOENT inside electron-builder (#127420): verify every prepared
+    // helper actually landed before declaring the copy done.
+    const missing = relativeFiles(preparedHelpers).filter(relative => !fs.existsSync(path.join(helpers, relative)))
+    if (missing.length > 0) {
+      throw preparationRequired(
+        `Native helper copy is incomplete (missing ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', …' : ''}); run preparation again`)
+    }
+  }
 }

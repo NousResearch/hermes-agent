@@ -571,6 +571,9 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
         except OSError:
             pass
         baselines = task_data["full_write_baselines"]
+        # Refusing another copy does not undo bytes already returned at this
+        # exact version. Do not establish NEW knowledge from a blocked read.
+        complete = stable and version is not None and baselines.get(resolved_str) == version
         if stable and version is not None and count < 4:
             task_data["dedup"][dedup_key] = version_before
             # A narrower view does not undo knowledge of these same bytes. Do

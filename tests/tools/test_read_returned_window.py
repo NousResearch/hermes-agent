@@ -28,6 +28,12 @@ def test_limit_jitter_cannot_disguise_identical_returned_windows(tmp_path, monke
             assert results[0]["truncated_by"] == "bytes"
             assert results[0]["next_offset"] < 10
         assert results[-1].get(GUARDRAIL_REFUSAL_KEY), results[-1]
+        if budget is None:
+            written = json.loads(registry.dispatch("write_file", {
+                "path": str(path), "content": "replacement\n",
+            }, task_id=task))
+            assert written.get("verified"), written
+            assert path.read_text(encoding="utf-8") == "replacement\n"
     finally:
         clear_file_ops_cache(task)
 

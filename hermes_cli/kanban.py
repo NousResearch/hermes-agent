@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import difflib
 import json
 import os
 import shlex
@@ -39,6 +40,37 @@ from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: h
 def _none_profile(value: str) -> Optional[str]:
     """``none`` / ``-`` / ``null`` mean "unassign"."""
     return None if value.lower() in {"none", "-", "null"} else value
+
+
+def _resolve_assignee(value: Optional[str]) -> Optional[str]:
+    """Resolve a kanban assignee to a canonical profile id, or raise a useful CLI error."""
+    if value is None:
+        return None
+    from hermes_cli.profiles import get_profile_dir, profile_exists, read_profile_meta
+
+    wanted = value.strip()
+    if not wanted:
+        return None
+    profiles = ["default", *kb.list_profiles_on_disk()]
+    labels = {}
+    for name in dict.fromkeys(profiles):
+        if not profile_exists(name):
+            continue
+        meta = read_profile_meta(get_profile_dir(name))
+        labels[name] = [name, meta.get("display_name", ""), *meta.get("previous_names", [])]
+        if any(wanted.casefold() == candidate.strip().casefold() for candidate in labels[name] if candidate):
+            return name
+    choices = [f"{name} ({vals[1]})" if vals[1] else name for name, vals in labels.items()]
+    suggestion = difflib.get_close_matches(wanted, [c for vals in labels.values() for c in vals if c], n=1)
+    hint = f" Did you mean {choices[list(labels).index(next(n for n, vals in labels.items() if suggestion[0] in vals))]}?" if suggestion else ""
+    raise ValueError(f"no profile named {wanted!r}.{hint}")
+
+
+def _assignee_or_error(value: Optional[str]) -> tuple[Optional[str], Optional[int]]:
+    try:
+        return _resolve_assignee(_none_profile(value)), None
+    except ValueError as exc:
+        return None, _err(f"kanban: {exc}", 2)
 
 
 def _parse_metadata_flag(raw: Optional[str]) -> tuple[Optional[dict], int]:
@@ -327,7 +359,10 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
     print(f"{'NAME':20s}  {'ON DISK':8s}  COUNTS")
     for entry in data:
         on_disk = "yes" if entry["on_disk"] else "no"
-        print(f"{entry['name']:20s}  {on_disk:8s}  {_fmt_counts(entry['counts'] or {}, '(idle)')}")
+        from hermes_cli.profiles import get_profile_dir, read_profile_meta, format_profile_label
+        meta = read_profile_meta(get_profile_dir(entry["name"])) if entry["on_disk"] else {}
+        label = format_profile_label(entry["name"], meta.get("display_name"))
+        print(f"{label:28s}  {on_disk:8s}  {_fmt_counts(entry['counts'] or {}, '(idle)')}")
     return 0
 
 
@@ -360,8 +395,11 @@ def _cmd_create(args: argparse.Namespace) -> int:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
     with kbc.connect_closing() as conn:
+        resolved_assignee, error = _assignee_or_error(args.assignee)
+        if error is not None:
+            return error
         task_id = kb.create_task(
-            conn, title=args.title, body=body, assignee=args.assignee,
+            conn, title=args.title, body=body, assignee=resolved_assignee,
             created_by=args.created_by or _profile_author(),
             workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
             project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
@@ -570,7 +608,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 
 def _cmd_assign(args: argparse.Namespace) -> int:
-    profile = _none_profile(args.profile)
+    profile, error = _assignee_or_error(args.profile)
+    if error is not None:
+        return error
     with kbc.connect_closing() as conn:
         ok = kb.assign_task(conn, args.task_id, profile)
     return _ok_or_err(ok, f"no such task: {args.task_id}",
@@ -605,7 +645,9 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
 
 
 def _cmd_reassign(args: argparse.Namespace) -> int:
-    profile = _none_profile(args.profile)
+    profile, error = _assignee_or_error(args.profile)
+    if error is not None:
+        return error
     reclaim = bool(getattr(args, "reclaim", False))
     with kbc.connect_closing() as conn:
         ok = kb.reassign_task(conn, args.task_id, profile, reclaim_first=reclaim, reason=getattr(args, "reason", None))

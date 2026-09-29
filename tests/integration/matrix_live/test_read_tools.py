@@ -13,7 +13,7 @@ from tests.fakes.fake_llm_provider import Text, ToolCall
 from tests.integration.matrix_live.conftest import LiveGateway, LiveRoom
 
 
-def test_model_reads_an_event_from_its_live_matrix_session(
+def test_model_reads_an_event_and_the_room_from_its_live_matrix_session(
     gateway: LiveGateway,
     live_room: LiveRoom,
     record_property: Callable[[str, object], None],
@@ -62,6 +62,17 @@ def test_model_reads_an_event_from_its_live_matrix_session(
                         ]
                     },
                 ),
+                ToolCall(
+                    "tool_call",
+                    {
+                        "calls": [
+                            {
+                                "name": "matrix_read",
+                                "arguments": {"kind": "room", "limit": 10},
+                            }
+                        ]
+                    },
+                ),
                 Text("Read complete"),
             )
             await asyncio.wait_for(
@@ -69,7 +80,7 @@ def test_model_reads_an_event_from_its_live_matrix_session(
             )
 
             requests = gateway.model.main_requests()
-            assert len(requests) == 4
+            assert len(requests) == 5
             search_messages = [
                 message
                 for message in requests[2]["messages"]
@@ -79,10 +90,28 @@ def test_model_reads_an_event_from_its_live_matrix_session(
             assert "matrix_read" in json.loads(search_messages[0]["content"])["tools"]
             tool_messages = [
                 message
-                for message in requests[3]["messages"]
+                for message in requests[4]["messages"]
                 if message["role"] == "tool"
             ]
-            assert len(tool_messages) == 2
+            assert len(tool_messages) == 3
+            room = json.loads(tool_messages[2]["content"])
+            timestamps = [event["timestamp"] for event in room["events"]]
+            observer_bodies = [
+                event["body"]
+                for event in room["events"]
+                if event["sender"] == live_room.observer.user_id
+            ]
+            assert (
+                observer_bodies,
+                timestamps == sorted(timestamps),
+                room["errors"],
+                room["skipped"],
+            ) == (
+                ["Read target [history:blue]", "Read the earlier Matrix event"],
+                True,
+                [],
+                0,
+            )
             result = json.loads(tool_messages[1]["content"])
             assert isinstance(result["events"][0]["timestamp"], int)
             assert {
@@ -101,6 +130,7 @@ def test_model_reads_an_event_from_its_live_matrix_session(
                     }
                 ],
                 "errors": [],
+                "skipped": 0,
             }
         finally:
             await client.close()

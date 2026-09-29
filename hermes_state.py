@@ -24,7 +24,7 @@ from collections import deque
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, mkdir_under_hermes_home
+from hermes_constants import assert_named_profile_home_live, get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
 from hermes_state_common import (
@@ -958,6 +958,17 @@ class SessionDB(
                 f"SessionDB for {self.db_path} was closed (read-only handle); "
                 f"cannot serve a {context} after close()"
             )
+        # A deleted named profile's store must not come back. The first open already refuses it
+        # (``_open_writer`` → ``mkdir_under_hermes_home``, #94590); without the same check here, a
+        # handle the profile-delete sweep closed reopened a writer that took writes after the
+        # tombstone and held the file open under the removal (#127811).
+        try:
+            assert_named_profile_home_live(self.db_path.parent)
+        except FileNotFoundError as exc:
+            raise sqlite3.OperationalError(
+                f"state.db at {self.db_path} belongs to a named profile that was deleted or no "
+                f"longer exists; refusing to reopen it for a {context} after close()"
+            ) from exc
         # A reopen resolves the PATH again: a replaced file would be written through stale WAL/shm
         # assumptions; a quarantined handle must never hand a fresh connection to a damaged file.
         if self._db_corrupt and not (self._db_replaced or self._db_file_was_replaced()):

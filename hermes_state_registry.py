@@ -369,33 +369,44 @@ def close_all_under(directory: str | Path) -> int:
     A final ``release()`` can drop the generation and admit teardown before the physical
     close finishes. Wait for those directory-matching barriers even when no generation
     remains, otherwise rmtree still sees the open handle.
+
+    An ``acquire`` still constructing a generation under *directory* (``_opening``: its writer
+    is connected but not yet installed) is waited for too, then swept on the next pass;
+    otherwise it installed after a sweep that reported 0 and kept the file open (#127811).
     """
     try:
         root = Path(directory).expanduser().resolve()
     except OSError:
         root = Path(directory).expanduser()
-    teardown_barriers: Dict[Path, _TeardownBarrier] = {}
-    with _lock:
-        generations = [
-            generation
-            for generation in list(_generations.values()) + list(_retired.values())
-            if _path_is_under(generation.path, root)
-        ]
-        # Collect by directory, not by remaining generations: a last release already
-        # popped the generation and left only ``_tearing_down``.
-        active_teardowns = [
-            barrier for path, barrier in _tearing_down.items()
-            if _path_is_under(path, root)
-        ]
-        selected_paths = {generation.path for generation in generations}
-        for path in selected_paths:
-            teardown_barriers[path] = _admit_teardown_locked(path)
-        for generation in generations:
-            generation.retired = True
-            if _generations.get(generation.path) is generation:
-                _generations.pop(generation.path, None)
-            _retired.pop(id(generation.db), None)
-    return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
+    closed = 0
+    while True:
+        teardown_barriers: Dict[Path, _TeardownBarrier] = {}
+        with _lock:
+            generations = [
+                generation
+                for generation in list(_generations.values()) + list(_retired.values())
+                if _path_is_under(generation.path, root)
+            ]
+            # Collect by directory, not by remaining generations: a last release already
+            # popped the generation and left only ``_tearing_down``.
+            active_teardowns = [
+                barrier for path, barrier in _tearing_down.items()
+                if _path_is_under(path, root)
+            ]
+            openings = [event for path, event in _opening.items() if _path_is_under(path, root)]
+            selected_paths = {generation.path for generation in generations}
+            for path in selected_paths:
+                teardown_barriers[path] = _admit_teardown_locked(path)
+            for generation in generations:
+                generation.retired = True
+                if _generations.get(generation.path) is generation:
+                    _generations.pop(generation.path, None)
+                _retired.pop(id(generation.db), None)
+        closed += _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
+        if not openings:
+            return closed
+        for event in openings:
+            event.wait()
 
 
 def other_generations_for_path(

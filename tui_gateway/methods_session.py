@@ -1924,6 +1924,65 @@ def _(rid, params: dict, session: dict) -> dict:
     return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
 
 
+@method("session.append_message")
+def _(rid, params: dict) -> dict:
+    """Persist a user/assistant line without starting a turn.
+
+    Plugins use this to print a teammate ask/answer into the origin chat
+    so a later session.activate REST refresh does not wipe it.
+
+    ``role`` must be ``user`` or ``assistant`` — unknown values are a 4000,
+    not silently coerced. A consecutive same-role append is merged into the
+    last live history entry so the next model turn still sees alternation.
+    Persist runs before the in-memory write; a disk failure returns an error
+    and does not paint a line that ``session.activate`` would later wipe.
+    """
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    raw_role = str(params.get("role") or "").strip().lower()
+    if raw_role not in ("user", "assistant"):
+        return _err(rid, 4000, "role must be 'user' or 'assistant'")
+    role = raw_role
+    content = str(params.get("content") or params.get("text") or "").strip()
+    if not content:
+        return _err(rid, 4000, "empty message")
+    try:
+        key = session.get("session_key")
+        _ensure_session_db_row(session)
+        with _session_db(session) as db:
+            if db is not None and key:
+                db.append_message(
+                    session_id=key,
+                    role=role,
+                    content=content,
+                    observed=bool(params.get("observed", True)),
+                )
+    except Exception:
+        logger.warning("session.append_message persist failed", exc_info=True)
+        return _err(rid, 5007, "persist failed")
+
+    entry = {"role": role, "content": content}
+
+    def _apply(history: list) -> None:
+        if history and history[-1].get("role") == role:
+            prev = history[-1]
+            prev_text = str(prev.get("content") or "").rstrip()
+            prev["content"] = f"{prev_text}\n\n{content}" if prev_text else content
+            return
+        history.append(entry)
+
+    lock = session.get("history_lock")
+    if lock is not None:
+        with lock:
+            _apply(session.setdefault("history", []))
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+    else:
+        _apply(session.setdefault("history", []))
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+    return _ok(rid, {"ok": True, "role": role})
+
+
 @_session_method("session.undo", live=True)
 def _(rid, params: dict, session: dict) -> dict:
     # Under a running turn the post-run write would clobber the undo — stop the reply first.

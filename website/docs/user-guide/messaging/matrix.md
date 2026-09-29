@@ -1098,16 +1098,25 @@ With concurrent requests, a reaction targets the exact card; a typed command
 without an explicit target answers the oldest pending request. The card stays in
 the room and thread of the original request.
 
-When the core approval wait ends, Hermes replaces the original card with its
-outcome through `m.replace`. Approved and denied cards record the decision;
+When the core approval wait ends, Hermes edits the original card through
+`m.replace` to show the outcome. Approved and denied cards record the decision;
 unanswered cards expire according to `approvals.timeout`. An interrupted or
 closed session cancels the request. The full redacted command remains in the
 plaintext body and in an HTML disclosure section. Clients that cannot display
 HTML disclosures can still show the complete plaintext command.
 
-If a replacement fails, Hermes reports the outcome and retries the original card.
-The card is no longer actionable after the core decision. Disconnecting the
-Matrix adapter withdraws unanswered requests and stops its presentation tasks.
+The card is no longer actionable after the core decision, even if the edit
+fails. When an edit fails, Hermes posts the outcome once as a reply to the card
+and retries the edit with an increasing delay for up to 10 minutes. It stops at
+once if the homeserver refuses the edit (for example, because the bot is no
+longer in the room) or if the edited card would exceed the message size limit.
+
+When the Matrix adapter disconnects, for example during a restart, Hermes
+withdraws unanswered requests and makes one short attempt to mark each card as
+cancelled. If that attempt fails or the gateway stops without disconnecting,
+such as after a crash, the card still looks pending. Reactions on it do
+nothing, and the command does not run, because its request ended with the
+connection.
 
 ### Optional advisory interpretation
 

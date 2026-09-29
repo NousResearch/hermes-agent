@@ -584,6 +584,28 @@ const localPendingSupersedes = (local: ChatMessage, authoritative: ChatMessage):
   return localText.length > authoritativeText.length && isStrictAnswerTextExtension(localText, authoritativeText)
 }
 
+const answerText = (message: ChatMessage) => textWithoutReferenceLines(chatMessageText(message)).trim()
+
+/**
+ * A committed tool round with no prose (`content = ''`, `tool_calls` set)
+ * hydrates as a text-less shell. When no later prose row folds into it, the
+ * settled local final bubble is the only copy of the answer the user watched
+ * stream, and dropping it for the shell deletes the reply on sync (#123047).
+ * Interim narration and structural-only local rows never claim the slot, and
+ * a retained error row is never a shell. Kept apart from
+ * `localPendingSupersedes`, whose stricter live-only rule also gates resume.
+ */
+const settledReplyOverEmptyShell = (local: ChatMessage, authoritative: ChatMessage): boolean =>
+  local.role === 'assistant' &&
+  local.pending !== true &&
+  local.interim !== true &&
+  !local.error &&
+  authoritative.role === 'assistant' &&
+  !isLiveTailRow(authoritative) &&
+  !authoritative.error &&
+  answerText(authoritative).length === 0 &&
+  answerText(local).length > 0
+
 /**
  * Take the cached row's content, but never its liveness. The renderer holds the
  * only copy of the streamed parts; the gateway remains the authority on whether
@@ -931,8 +953,9 @@ export function preserveLocalPendingTurnMessages(
       if (isPendingAssistant) {
         // Keep the local pending row when it is the same reply further along
         // and the authoritative row is an empty projection shell or a prefix.
-        // #75825
-        if (!localPendingSupersedes(message, authoritative)) {
+        // #75825. A settled final over a committed text-less tool shell is
+        // the only copy of the answer (#123047).
+        if (!localPendingSupersedes(message, authoritative) && !settledReplyOverEmptyShell(message, authoritative)) {
           continue
         }
 

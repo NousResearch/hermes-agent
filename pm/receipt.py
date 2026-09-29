@@ -191,10 +191,23 @@ def record_platform(platform_id: str) -> None:
 
 def record_plugin_checks(results: list) -> None:
     """Plugin update-check results (the cadence's receipt section).
-    Each item is a plugins_updates.CheckResult.to_json() dict."""
+    Each item is a plugins_updates.CheckResult.to_json() dict. External
+    fetch errors and saved update URLs must not reach persistent receipts."""
+    def safe_result(item):
+        data = item.to_json() if hasattr(item, "to_json") else item
+        if not isinstance(data, dict):
+            return {"reason": "check unavailable"}
+        safe = {key: _safe_detail(value) if isinstance(value, str) else value
+                for key, value in data.items()}
+        if data.get("reason"):
+            safe["reason"] = "check unavailable"
+        if data.get("needs_fixing"):
+            safe["needs_fixing"] = "plugin provenance requires review"
+        return safe
+
     _record(
         lambda r: r.__setitem__(
-            "plugin_checks", [r.to_json() if hasattr(r, "to_json") else r for r in results]
+            "plugin_checks", [safe_result(item) for item in results]
         )
     )
 

@@ -156,6 +156,26 @@ def test_receipt_details_always_redact_url_credentials(homed, monkeypatch):
     assert data["refusal"]["detail"] != unsafe
 
 
+def test_plugin_check_receipt_does_not_persist_fetch_errors_or_saved_urls(homed):
+    from hermes_cli.plugins_updates import CheckResult
+
+    marker = "synthetic-password-for-test"
+    unsafe = f"https://demo:{marker}@index.invalid/simple"
+    receipt.begin("plugin-check")
+    receipt.record_plugin_checks([
+        CheckResult(name="example", klass="git", reason=f"feed fetch failed: {unsafe}"),
+        CheckResult(name="other", klass="git", needs_fixing=f"saved update_url {unsafe}"),
+    ])
+    path = receipt.finalize("failed", 1)
+    assert path is not None
+    assert marker not in path.read_text(encoding="utf-8")
+    data = receipt.latest()
+    assert data is not None
+    checks = data["plugin_checks"]
+    assert checks[0]["reason"] == "check unavailable"
+    assert checks[1]["needs_fixing"] == "plugin provenance requires review"
+
+
 def test_concurrent_finalize_writes_unique_names(homed):
     """Overlapping syncs (threaded cadence/ensure) must each get their own
     receipt file — no stamp collision overwrites."""

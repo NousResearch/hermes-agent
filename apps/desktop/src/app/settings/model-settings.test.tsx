@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import type * as ConfigApi from '@/api/config'
 import { I18nProvider, TRANSLATIONS } from '@/i18n'
+import { $notifications, clearNotifications } from '@/store/notifications'
 
 import { ModelSettings } from './model-settings'
 
@@ -280,6 +281,41 @@ describe('ModelSettings', () => {
     )
   })
 
+  it('matches a saved custom:<key> main provider to its catalog row', async () => {
+    // model.info reports a user-defined provider as `custom:<key>`, while the
+    // catalog row carries the bare key as its slug plus the alias list.
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'custom:lab', model: 'lab-large' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'Lab',
+          slug: 'lab',
+          aliases: ['custom:lab', 'lab'],
+          models: ['lab-small', 'lab-large'],
+          authenticated: true,
+          is_user_defined: true,
+          api_url: 'http://lab.local/v1'
+        }
+      ]
+    })
+
+    renderModelSettings()
+
+    await waitFor(() => expect(screen.getAllByRole('combobox')[0].textContent).toBe('Lab'))
+    expect(screen.queryByRole('button', { name: 'Set up provider' })).toBeNull()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'lab-large',
+        provider: 'custom:lab',
+        scope: 'main',
+        base_url: 'http://lab.local/v1'
+      })
+    )
+  })
+
   it('writes the profile default speed (service_tier) as a sparse patch, never the cached snapshot', async () => {
     // The cached record is a default-expanded snapshot; a CLI pin made after it
     // loaded is not in it. Echoing the whole record back would reset that
@@ -409,6 +445,32 @@ describe('ModelSettings', () => {
         task: 'vision',
         base_url: 'http://localhost:11434/v1'
       })
+    )
+  })
+
+  it('confirms a main model apply with a success notification', async () => {
+    clearNotifications()
+    setModelAssignment.mockResolvedValueOnce({
+      ok: true,
+      provider: 'nous',
+      model: 'hermes-4',
+      gateway_tools: [],
+      stale_aux: []
+    })
+
+    renderModelSettings()
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect($notifications.get()).toContainEqual(
+        expect.objectContaining({
+          kind: 'success',
+          title: 'Main model updated',
+          message: 'New sessions will use hermes-4.'
+        })
+      )
     )
   })
 
@@ -716,6 +778,65 @@ describe('ModelSettings MoA preset editor', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('ModelSettings stale-aux banner dismissal', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+  })
+
+  const staleAux = {
+    main: { provider: 'nous', model: 'hermes-4' },
+    tasks: [{ task: 'vision', provider: 'alibaba', model: 'qwen3.6-flash', base_url: '' }]
+  }
+
+  it('hides the persistent stale-aux banner after acknowledging it, and re-arms when the main provider changes', async () => {
+    getAuxiliaryModels.mockResolvedValue(staleAux)
+
+    // First visit: the deliberate cross-provider pin surfaces the banner.
+    renderModelSettings()
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    fireEvent.click(await screen.findByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss }))
+
+    await waitFor(() => expect(screen.queryByText(/still run on/)).toBeNull())
+
+    // Second visit (fresh mount): the acknowledgement persists.
+    cleanup()
+    renderModelSettings()
+    await waitFor(() => expect(getAuxiliaryModels).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByText(/still run on/)).toBeNull())
+
+    // A main-provider switch re-arms the banner: the acknowledged
+    // configuration no longer matches what is running.
+    cleanup()
+    getGlobalModelInfo.mockResolvedValue({ provider: 'openrouter', model: 'hermes-4' })
+    renderModelSettings()
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    // The dismiss affordance is offered again for the new configuration.
+    expect(screen.getByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss })).toBeTruthy()
+  })
+
+  it('keeps the post-switch notice undismissable — it announces a change that just happened', async () => {
+    setModelAssignment.mockResolvedValueOnce({
+      ok: true,
+      provider: 'openrouter',
+      model: 'anthropic/claude-opus-4.7',
+      gateway_tools: [],
+      stale_aux: [{ task: 'compression', provider: 'nous', model: 'hermes-4' }]
+    })
+
+    renderModelSettings()
+    await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+
+    expect(await screen.findByText(/still run on/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: TRANSLATIONS.en.settings.model.staleAuxDismiss })).toBeNull()
   })
 })
 

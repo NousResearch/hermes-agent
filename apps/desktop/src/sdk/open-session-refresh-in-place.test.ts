@@ -215,9 +215,6 @@ describe('host.openSession refreshInPlace — background re-resume never navigat
   it('stamps the owner hint so the resume routes to the owning backend', async () => {
     await host.openSession('bot-chat-ops', { profile: 'ops', refreshInPlace: true })
 
-    expect(setSessionOwnerHint).toHaveBeenCalledWith(
-      'bot-chat-ops',
-      expect.objectContaining({ profile: 'ops' })
-    )
+    expect(setSessionOwnerHint).toHaveBeenCalledWith('bot-chat-ops', expect.objectContaining({ profile: 'ops' }))
   })
 })

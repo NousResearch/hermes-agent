@@ -10,11 +10,7 @@ const { bridge } = vi.hoisted(() => ({ bridge: vi.fn() }))
 
 vi.mock('./wsl-path-bridge', () => ({ resolveLocalReadPath: bridge }))
 
-import {
-  resolveIpcFileReadPath,
-  resolveMediaStreamFile,
-  resolvePreviewTargetPath
-} from './local-read-path'
+import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
 
 const BRIDGED = '\\\\wsl.localhost\\Ubuntu\\home\\alex\\file'
 

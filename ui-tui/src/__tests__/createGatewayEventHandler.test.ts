@@ -35,7 +35,7 @@ const buildCtx = (appended: Msg[]) =>
       setInput: vi.fn()
     },
     gateway: {
-      gw: { request: vi.fn() },
+      gw: { request: vi.fn(async () => null) },
       rpc: vi.fn(async () => null)
     },
     session: {

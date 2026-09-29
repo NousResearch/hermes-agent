@@ -113,9 +113,7 @@ export function urlSlugTitleLabel(value: string): string {
     const looksLikeIdentifier = /\d/.test(cleaned) || /[A-Z]/.test(cleaned) || cleaned.includes('.')
 
     const label =
-      looksLikeIdentifier && !cleaned.includes(' ')
-        ? cleaned
-        : cleaned.replace(/\b[a-z]/g, c => c.toUpperCase())
+      looksLikeIdentifier && !cleaned.includes(' ') ? cleaned : cleaned.replace(/\b[a-z]/g, c => c.toUpperCase())
 
     if (label.length >= 4) {
       return label

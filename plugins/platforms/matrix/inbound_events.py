@@ -105,14 +105,15 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
         self: MatrixAdapter, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
         relates_to: dict, mention_claimed: bool = False,
         voice_gate: Optional[VoiceGate] = None, *, allow_gateway_control: bool = True,
-        reply_fallback: bool = True) -> Optional[tuple]:
+        reply_fallback: bool = True, record: bool = True) -> Optional[tuple]:
         """Shared mention/thread/DM gating. Returns (body, is_dm, chat_type, thread_id,
         display_name, requires_mention, source) or None when the message should be dropped.
         ``requires_mention`` is true when this room or thread drops messages that do not
         mention the bot. ``mention_claimed``
         marks a parked voice claimed by the sender's follow-up bare @mention; ``voice_gate`` is
         the in-flight mark of a parkable voice, released once the park decision is made.
-        ``reply_fallback=False`` treats the whole body as typed text, as in ``m.new_content``."""
+        ``reply_fallback=False`` treats the whole body as typed text, as in ``m.new_content``.
+        ``record=False`` leaves the thread trackers and read receipts to the caller."""
         from plugins.platforms.matrix.adapter import logger, _strip_reply_fallback, _normalize_matrix_bang_command
         identity = await self._resolve_room_identity(room_id)
         is_dm = await self._is_dm_room(room_id)
@@ -186,11 +187,12 @@ class MatrixInboundEventMixin(BasePlatformAdapter):
             chat_id=room_id, chat_name=identity.display_name, chat_type=chat_type, user_id=sender,
             user_name=display_name, thread_id=thread_id, chat_topic=identity.room_topic,
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
-        if thread_id:
-            await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
-            self._thread_fallbacks.remember(room_id, thread_id, event_id)
-        if self._read_receipts_mode == ReadReceiptMode.IMMEDIATE:
-            self._background_read_receipt(room_id, event_id)
+        if record:
+            if thread_id:
+                await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
+                self._thread_fallbacks.remember(room_id, thread_id, event_id)
+            if self._read_receipts_mode == ReadReceiptMode.IMMEDIATE:
+                self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, requires_mention, source
 
     async def _build_inbound_event(

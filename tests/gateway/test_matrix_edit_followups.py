@@ -306,3 +306,26 @@ async def test_correction_reaches_the_turn_as_typed(monkeypatch, body, original_
     assert (event.text, event.message_type, event.get_command(), await adapter.validate_inbound_event(event)) == (
         body, MessageType.TEXT, None, True,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authorized", [True, False], ids=["authorized", "unauthorized"])
+async def test_correction_leaves_thread_fallback_and_receipts_the_edit(monkeypatch, authorized):
+    adapter = adapter_for(monkeypatch, {ROOM: True})
+    adapter.set_authorization_check(lambda *args, **kwargs: authorized)
+    adapter.handle_message = AsyncMock()
+    receipts = []
+    monkeypatch.setattr(adapter, "_background_read_receipt", lambda room_id, event_id: receipts.append((room_id, event_id)))
+    adapter._thread_fallbacks.remember(ROOM, "$original-thread", "$latest-reply")
+    incoming = edit_event()
+    adapter._client.events["$edit"] = {
+        "room_id": ROOM, "sender": ALICE, "event_id": "$edit",
+        "type": "m.room.message", "content": incoming.content,
+    }
+
+    await adapter._on_room_message(incoming)
+    validated = [await adapter.validate_inbound_event(call.args[0]) for call in adapter.handle_message.await_args_list]
+
+    assert (validated, receipts, adapter._thread_fallbacks.latest(ROOM, "$original-thread")) == (
+        [True] if authorized else [], [(ROOM, "$edit")] if authorized else [], "$latest-reply",
+    )

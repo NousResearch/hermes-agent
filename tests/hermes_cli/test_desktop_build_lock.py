@@ -152,6 +152,15 @@ def test_gui_releases_lock_before_packaged_electron_handoff(tmp_path, monkeypatc
     executable.write_text("", encoding="utf-8")
 
     monkeypatch.setattr("hermes_cli.main.PROJECT_ROOT", root, raising=False)
+    # The lock is checkout-keyed via the profile-common Hermes root; pin it so
+    # the holder and the handoff probe agree regardless of the runner's home.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    # The fake executable has no Electron sandbox helper; the platform launch
+    # fixups are environment-dependent (sudo tty, userns policy), not the test's
+    # subject — a Linux CI runner exits 1 in _packaged_desktop_launch_command.
+    monkeypatch.setattr(cli_desktop, "_desktop_linux_sandbox_fixup", lambda _exe: True, raising=False)
+    monkeypatch.setattr(
+        cli_desktop, "_installed_desktop_launch_target", lambda _dir, exe: exe, raising=False)
 
     def launch_after_lock_release(*_args, **_kwargs):
         handoff_probe = DesktopBuildLock(root)
@@ -164,7 +173,7 @@ def test_gui_releases_lock_before_packaged_electron_handoff(tmp_path, monkeypatc
          patch("hermes_cli.main_desktop.subprocess.run", side_effect=launch_after_lock_release), \
          patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
          pytest.raises(SystemExit) as exc:
-        cli_desktop.cmd_gui(_args(skip_build=True))
+        cli_desktop.cmd_gui(_args())
 
     assert exc.value.code == 0
 

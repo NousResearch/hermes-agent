@@ -477,8 +477,11 @@ def test_respawn_guard_defers_rate_limited_within_cooldown(
         ("Workstream C items C-3 and C-4: author t  (90.59s)", None),
         ("docs authored by the previous cycle", None),
         ("relying on an authoritative source", None),
+        # A filename or other ordinary token containing ``auth`` is not an
+        # authentication failure.
+        ("worker failed while reading server/auth.go", None),
         # Genuine auth failures must still trip the guard, one row per
-        # curated stem family (bare, -ate, -ize, -ise).
+        # curated stem family and failure-oriented auth phrase.
         ("401 auth failed", "blocker_auth"),
         ("authentication error from provider", "blocker_auth"),
         ("still authorizing the request", "blocker_auth"),

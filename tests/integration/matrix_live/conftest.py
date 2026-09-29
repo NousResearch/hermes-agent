@@ -34,7 +34,7 @@ from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
 from tests.integration.matrix_live.image_build import REPO_ROOT, build_command
 
 
-PREBUILT_IMAGE_VARIABLE = "HERMES_TEST_MATRIX_IMAGE"
+PREBUILT_IMAGE_VARIABLE = "HERMES_TEST_MATRIX_GATEWAY_IMAGE"
 SYNAPSE_IMAGE = "matrixdotorg/synapse:v1.158.0@sha256:5f868df1f5772907c6dbe973a9b69ab530a5d6bb317c011a3788f7ad78eb1292"
 RYUK_IMAGE = "testcontainers/ryuk:0.8.1@sha256:bf3f74a47dee0acda89aba4b2fc9c7fdcf994a084db02a2d06566f07baae022e"
 
@@ -344,7 +344,7 @@ def _host_route(network: Network) -> HostRoute:
 
 def _host_user() -> str:
     """Return the container user that lets this user delete what a container writes to a bind mount."""
-    if facts.os_family() == "windows":
+    if facts.os_family() == "win32":
         return "10000:10000"
     return f"{os.getuid()}:{os.getgid()}"
 

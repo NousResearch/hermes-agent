@@ -21,14 +21,13 @@ class TestGetToolEmoji:
             # get_tool_emoji will try to import registry — mock that
             mock_reg = MagicMock()
             mock_reg.get_emoji.return_value = "📖"
-            with mock_patch.dict("sys.modules", {}):
-                import sys
-                # Patch tools.registry module
-                mock_module = MagicMock()
-                mock_module.registry = mock_reg
-                with mock_patch.dict(sys.modules, {"tools.registry": mock_module}):
-                    result = get_tool_emoji("read_file")
-                    assert result == "📖"
+            import sys
+            # Patch tools.registry module
+            mock_module = MagicMock()
+            mock_module.registry = mock_reg
+            with mock_patch.dict(sys.modules, {"tools.registry": mock_module}):
+                result = get_tool_emoji("read_file")
+                assert result == "📖"
 
     def test_skin_override_takes_precedence(self):
         """Skin tool_emojis override registry defaults."""

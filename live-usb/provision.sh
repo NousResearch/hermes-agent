@@ -52,9 +52,23 @@ done
 [[ $EUID -ne 0 ]]     && { echo "❌  Run as root";      exit 1; }
 [[ ! -b "$DEVICE" ]]  && { echo "❌  Not a block device: $DEVICE"; exit 1; }
 
-PROVISION_PART="${DEVICE}3"
-if [[ ! -b "$PROVISION_PART" ]]; then
-  echo "❌  Config partition ${PROVISION_PART} not found."
+PROVISION_PART=""
+if [[ -b "${DEVICE}3" ]]; then
+  PROVISION_PART="${DEVICE}3"
+elif [[ -b "${DEVICE}p3" ]]; then
+  PROVISION_PART="${DEVICE}p3"
+else
+  # Check if a partition with label HERMESCFG exists on this device
+  if command -v lsblk &>/dev/null; then
+    _PART_NAME=$(lsblk -ln -o NAME,LABEL "$DEVICE" 2>/dev/null | grep -i "HERMESCFG" | awk '{print $1}' | head -1)
+    if [[ -n "$_PART_NAME" && -b "/dev/${_PART_NAME}" ]]; then
+      PROVISION_PART="/dev/${_PART_NAME}"
+    fi
+  fi
+fi
+
+if [[ -z "$PROVISION_PART" || ! -b "$PROVISION_PART" ]]; then
+  echo "❌  Config partition on ${DEVICE} (e.g. ${DEVICE}3 or ${DEVICE}p3) not found."
   echo "    Write the ISO first (./write_usb.sh) — it creates a config partition."
   exit 1
 fi

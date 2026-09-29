@@ -131,3 +131,69 @@ def test_no_caption_non_forum_keeps_separate_text():
         assert calls[1][0].endswith("/messages")
     finally:
         os.unlink(img)
+
+
+def _payload_json(form_data):
+    """Return the parsed payload_json dict from a FormData, if any."""
+    for field in getattr(form_data, "_fields", []):
+        try:
+            type_opts = field[0]
+            value = field[2]
+        except (IndexError, TypeError):
+            continue
+        if type_opts.get("name") == "payload_json":
+            return json.loads(value)
+    return None
+
+
+def test_forum_media_caption_derives_thread_name_from_caption():
+    """#127814: a captioned forum post is titled from the caption text (the body
+    source), not from the emptied message string ("New Post")."""
+    chat_id = "999000333"
+    _remember_channel_is_forum(chat_id, True)
+    img = _tmpfile(".png")
+    try:
+        session_ctx, calls = _session_with(
+            [_resp(200, {"id": "t9", "message": {"id": "m9"}})]
+        )
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            res = asyncio.run(
+                _standalone_send(
+                    _pconfig(),
+                    chat_id,
+                    "",
+                    media_files=[(img, False)],
+                    caption="# Nightly report\n\nBody text",
+                )
+            )
+        assert res["success"] is True
+        assert len(calls) == 1
+        url, _json, data = calls[0]
+        assert url.endswith(f"/channels/{chat_id}/threads")
+        payload = _payload_json(data)
+        assert payload is not None
+        # The name comes from the caption's first line (heading marker stripped),
+        # exactly like the starter body content.
+        assert payload["name"] == "Nightly report"
+        assert payload["message"]["content"] == "# Nightly report\n\nBody text"
+    finally:
+        os.unlink(img)
+
+
+def test_forum_text_only_keeps_message_derived_thread_name():
+    """Uncaptioned forum posts keep deriving the name from the message itself."""
+    chat_id = "999000444"
+    _remember_channel_is_forum(chat_id, True)
+    session_ctx, calls = _session_with(
+        [_resp(200, {"id": "t8", "message": {"id": "m8"}})]
+    )
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        res = asyncio.run(
+            _standalone_send(_pconfig(), chat_id, "Plain title line\nmore")
+        )
+    assert res["success"] is True
+    assert len(calls) == 1
+    url, json_body, _data = calls[0]
+    assert url.endswith(f"/channels/{chat_id}/threads")
+    assert json_body["name"] == "Plain title line"
+    assert json_body["message"]["content"] == "Plain title line\nmore"

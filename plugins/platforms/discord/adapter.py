@@ -7086,7 +7086,9 @@ async def _standalone_send(
         else:
             # Forum channels (type 15) reject POST /messages — create a thread post.
             if await _standalone_is_forum(aiohttp, chat_id, json_headers, _sess_kw, _req_kw):
-                thread_name = _derive_forum_thread_name(message)
+                # Captioned media arrives as message="" + caption=<full text>; the thread
+                # name must come from the same text the starter body shows, not "New Post".
+                thread_name = _derive_forum_thread_name(caption or message)
                 thread_url = f"https://discord.com/api/v10/channels/{chat_id}/threads"
                 # Filter readable media first to pick JSON vs multipart before opening a session.
                 valid_media = []

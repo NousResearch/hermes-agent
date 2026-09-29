@@ -1683,6 +1683,11 @@ DEFAULT_CONFIG = {
         "cron_mode": "deny",
         "single_query_mode": "deny",
         "unattended_mode": "deny",
+        # Profiles treated as unattended surfaces no matter which platform they run on: no
+        # approval prompt is ever published for them, and dangerous commands are decided by
+        # unattended_mode above. For agents whose channel has no /approve route — where a
+        # prompt would only block the turn until the timeout and then fail closed anyway.
+        "unattended_profiles": [],
         # Extra rules appended to the smart-approval guardian's SYSTEM prompt, e.g. "Always ESCALATE
         # commands touching /etc".
         "smart_policy": "",

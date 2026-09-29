@@ -241,11 +241,12 @@ def test_external_worker_refuses_to_run_without_durable_ownership(
 def _stub_external_worker_launch(scheduler, monkeypatch):
     """Fake Popen that acks the handoff and reports running -> completed.
 
-    Returns ``(spawned, payloads, handoff, get)`` for the caller's assertions.
+    Returns ``(spawned, payloads, handoff, get, record_worker)`` for the caller's assertions.
     """
 
     class FakeProcess:
         returncode = None
+        pid = 4321
 
         def poll(self):
             return self.returncode
@@ -271,7 +272,10 @@ def _stub_external_worker_launch(scheduler, monkeypatch):
 
     handoff = Mock(return_value={"id": "exec-1", "handoff_pending": 1})
     monkeypatch.setattr(scheduler, "mark_execution_handoff_pending", handoff)
+    record_worker = Mock(return_value={"id": "exec-1", "handoff_worker_pid": 4321})
+    monkeypatch.setattr(scheduler, "record_handoff_worker", record_worker)
     monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
+    monkeypatch.setattr("gateway.status.get_process_start_time", lambda pid: None)
     observed_statuses = iter(
         [
             {"id": "exec-1", "status": "running"},
@@ -280,7 +284,7 @@ def _stub_external_worker_launch(scheduler, monkeypatch):
     )
     get = Mock(side_effect=lambda _execution_id: next(observed_statuses))
     monkeypatch.setattr(scheduler, "get_execution", get)
-    return spawned, payloads, handoff, get
+    return spawned, payloads, handoff, get, record_worker
 
 
 def test_scoped_wrapper_exit_without_user_bus_names_the_cause_and_invalidates_probe(
@@ -304,6 +308,7 @@ def test_scoped_wrapper_exit_without_user_bus_names_the_cause_and_invalidates_pr
 
     class DeadWrapper:
         returncode = 1
+        pid = 4321
 
         def poll(self):
             return 1
@@ -342,7 +347,7 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
         "tools.process_registry.restart_safe_gateway_child_argv", wrap
     )
 
-    spawned, payloads, handoff, get = _stub_external_worker_launch(scheduler, monkeypatch)
+    spawned, payloads, handoff, get, record_worker = _stub_external_worker_launch(scheduler, monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "should-not-cross-profile")
     monkeypatch.setenv("SERVICE_TOKEN", "default-profile-token")
     from agent.secret_scope import set_multiplex_active
@@ -359,6 +364,7 @@ def test_launch_external_worker_uses_restart_safe_scope_and_acknowledges(
     assert "ANTHROPIC_API_KEY" not in spawned[0][1]["env"]
     assert spawned[0][1]["env"]["SERVICE_TOKEN"] == "target-profile-token"
     handoff.assert_called_once_with("exec-1")
+    record_worker.assert_called_once_with("exec-1", 4321, None)
     assert get.call_count == 2
     assert payloads[0]["multiplex_active"] is True
     # Once the attempt is terminal the parent reaps its own handoff artifacts.
@@ -572,7 +578,7 @@ def test_launch_external_worker_degrades_by_default_with_real_helper(
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
     monkeypatch.setenv("INVOCATION_ID", "managed-service")
     monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
-    spawned, payloads, handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+    spawned, payloads, handoff, _get, _record_worker = _stub_external_worker_launch(scheduler, monkeypatch)
 
     assert scheduler._launch_external_cron_worker(job) is True
     # Direct command, NOT a systemd-run wrapper — but still an external Popen.
@@ -600,7 +606,7 @@ def test_launch_external_worker_pins_the_gateways_tree_on_pythonpath(
         lambda command, **_: GatewayChildDispatch("degraded", command),
     )
     monkeypatch.setenv("PYTHONPATH", str(tmp_path / "user-libs"))
-    spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+    spawned, _payloads, _handoff, _get, _record_worker = _stub_external_worker_launch(scheduler, monkeypatch)
 
     assert scheduler._launch_external_cron_worker(job) is True
     repo_root = Path(scheduler.__file__).resolve().parent.parent
@@ -634,7 +640,7 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
         lambda **_: {"PATH": os.environ.get("PATH", ""),
                      "PYTHONPATH": str(tmp_path / "kept-by-sanitizer")},
     )
-    spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+    spawned, _payloads, _handoff, _get, _record_worker = _stub_external_worker_launch(scheduler, monkeypatch)
     repo_root = Path(scheduler.__file__).resolve().parent.parent
 
     assert scheduler._launch_external_cron_worker(job) is True

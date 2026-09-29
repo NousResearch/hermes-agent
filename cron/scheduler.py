@@ -543,7 +543,7 @@ from cron.jobs import (
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
-    recover_interrupted_executions)
+    record_handoff_worker, recover_interrupted_executions)
 
 # Response marker that suppresses delivery (output is still saved locally for audit).
 SILENT_MARKER = "[SILENT]"
@@ -3590,6 +3590,12 @@ def _launch_external_cron_worker(job: dict) -> bool:
         payload_path.unlink(missing_ok=True)
         stderr_path.unlink(missing_ok=True)
         raise
+
+    from gateway.status import get_process_start_time
+
+    record_handoff_worker(
+        execution_id, process.pid, get_process_start_time(process.pid)
+    )
 
     with _running_lock:
         _restart_safe_waiter_job_ids.add(_inflight_key(job_id))

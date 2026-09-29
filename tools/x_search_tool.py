@@ -328,8 +328,26 @@ def x_search_tool(
     if not query or not query.strip():
         return tool_error("query is required for x_search")
 
+    # Validate filters before dispatching a direct status read. A status URL
+    # cannot honor search filters, so reject those arguments rather than
+    # silently dropping them.
+    try:
+        allowed = _normalize_handles(allowed_x_handles, "allowed_x_handles")
+        excluded = _normalize_handles(excluded_x_handles, "excluded_x_handles")
+        if allowed and excluded:
+            return tool_error(
+                "allowed_x_handles and excluded_x_handles cannot be used together"
+            )
+        _validate_date_range(from_date, to_date)
+    except ValueError as exc:
+        return tool_error(str(exc))
+
     status_url = _extract_x_status_url(query.strip())
     if status_url:
+        if allowed or excluded or from_date.strip() or to_date.strip():
+            return tool_error(
+                "X status URL reads do not support handle or date filters"
+            )
         try:
             return _read_x_status_via_jina(status_url)
         except requests.HTTPError as e:

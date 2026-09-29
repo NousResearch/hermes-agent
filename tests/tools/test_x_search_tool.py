@@ -508,6 +508,42 @@ def test_x_search_uses_jina_when_query_mentions_status_url_inside_text(monkeypat
     assert result["query"] == "https://x.com/example/status/456"
 
 
+def test_x_search_validates_status_url_filters_before_jina(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setattr(
+        "requests.get", lambda *a, **k: pytest.fail("Jina must not run")
+    )
+
+    result = json.loads(
+        x_search_tool(
+            query="https://x.com/example/status/456",
+            allowed_x_handles=["example"],
+        )
+    )
+
+    assert result["success"] is False
+    assert "do not support handle or date filters" in result["error"]
+
+
+def test_x_search_rejects_invalid_date_on_status_url_before_jina(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    monkeypatch.setattr(
+        "requests.get", lambda *a, **k: pytest.fail("Jina must not run")
+    )
+
+    result = json.loads(
+        x_search_tool(
+            query="https://x.com/example/status/456",
+            from_date="not-a-date",
+        )
+    )
+
+    assert result["success"] is False
+    assert "from_date must be YYYY-MM-DD" in result["error"]
+
+
 def test_x_search_jina_status_url_extractor_rejects_non_x_handle_shapes():
     """Only canonical X/Twitter status URLs should reach the public reader."""
     from tools.x_search_tool import _extract_x_status_url

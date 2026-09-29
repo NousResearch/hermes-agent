@@ -1,8 +1,4 @@
-"""Fireworks GLM reasoning must survive tool results and resumed history.
-
-Fireworks documents reasoning_content replay for interleaved thinking:
-https://docs.fireworks.ai/guides/reasoning#interleaved-thinking
-"""
+"""Fireworks GLM reasoning must survive tool results and resumed history."""
 from copy import deepcopy
 import json
 
@@ -35,7 +31,6 @@ def _agent(provider, base_url=BASE_URL):
 @pytest.mark.parametrize("provider", ["fireworks", "fireworks-ai", "fw", "custom"])
 @pytest.mark.parametrize("effort", ["medium", "none"])
 def test_glm_tool_round_trip_keeps_reasoning_on_wire(provider, effort):
-    """Real SDK serialization + Hermes storage/replay + provider transport, no live API."""
     agent = _agent(provider)
     transport = ChatCompletionsTransport()
     captured = []
@@ -63,7 +58,6 @@ def test_glm_tool_round_trip_keeps_reasoning_on_wire(provider, effort):
                 http_client=httpx.Client(transport=httpx.MockTransport(serve))) as client:
         first = client.chat.completions.create(model=MODEL, messages=history)
         stored = agent._build_assistant_message(first.choices[0].message, "tool_calls")
-        # Exercise the same dict representation used when loading persisted history.
         stored = json.loads(json.dumps(stored))
         unchanged = deepcopy(stored)
         history += [stored, {"role": "tool", "tool_call_id": "call_calc", "content": "42"}]
@@ -79,11 +73,10 @@ def test_glm_tool_round_trip_keeps_reasoning_on_wire(provider, effort):
     assert "reasoning" not in sent["messages"][1]
     assert sent["reasoning_effort"] == effort
     assert "reasoning" not in sent and "thinking" not in sent
-    assert stored == unchanged  # replay must not mutate the cached/persisted prefix
+    assert stored == unchanged
 
 
 def test_fireworks_replay_and_context_accounting_follow_active_route():
-    """Fallback strips the field on strict endpoints; restoration replays saved reasoning."""
     source = {"role": "assistant", "content": None, "reasoning_content": "Use the result.",
               "tool_calls": [{"id": "call_calc", "type": "function",
                               "function": {"name": "calculator", "arguments": "{}"}}]}
@@ -101,5 +94,5 @@ def test_fireworks_replay_and_context_accounting_follow_active_route():
         agent._reapply_reasoning_echo_for_provider(replay)
         assert (replay[0].get("reasoning_content") == source["reasoning_content"]) is expected
         assert stale_thinking_reaches_wire("chat_completions", provider, MODEL, url) is expected
-        assert agent._reapply_reasoning_echo_for_provider(replay) == 0  # idempotent
+        assert agent._reapply_reasoning_echo_for_provider(replay) == 0
     assert source == original

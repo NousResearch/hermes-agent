@@ -594,10 +594,6 @@ _REASONING_ECHO_RULES: tuple = (
     ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), (), ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
     ("deepseek", frozenset(), frozenset({"deepseek"}), ("deepseek",), ("api.deepseek.com",)),
     ("mimo", frozenset(), frozenset({"xiaomi"}), ("mimo",), ("api.xiaomimimo.com", "xiaomimimo.com")),
-    # Fireworks consumes reasoning_content for interleaved/preserved thinking (including GLM).
-    # Match the host for custom endpoints too; a GLM model name alone says nothing about
-    # whether another host accepts this field. Non-reasoning Fireworks models ignore it.
-    # https://docs.fireworks.ai/guides/reasoning#interleaved-thinking
     ("fireworks", frozenset(), frozenset({"fireworks", "fireworks-ai", "fw"}), (), ("api.fireworks.ai",)),
 )
 _REASONING_ECHO_RULE_BY_FAMILY = {rule[0]: rule for rule in _REASONING_ECHO_RULES}

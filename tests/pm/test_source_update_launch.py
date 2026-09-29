@@ -197,6 +197,23 @@ def test_launcher_publication_failure_retries_without_rebuilding_dependencies(so
 
 
 @pytest.mark.platforms("posix")
+def test_desktop_serve_does_not_retry_pending_product_tail(source_launch, tmp_path):
+    root, _, _ = source_launch
+
+    # Establish a current install, then leave only the post-sync completion
+    # obligation pending, as an interrupted source update would.
+    venv_sync.prepare_launch(root, [])
+    calls = (tmp_path / "completion-calls").read_text(encoding="utf-8")
+    pending = venv_sync.completion_pending_path(root)
+    pending.write_text("source update tail not finished\n", encoding="utf-8")
+
+    venv_sync.prepare_launch(root, ["serve"])
+
+    assert (tmp_path / "completion-calls").read_text(encoding="utf-8") == calls
+    assert pending.is_file()
+
+
+@pytest.mark.platforms("posix")
 @pytest.mark.parametrize("checkout", [False, True])
 def test_source_publication_leaves_external_install_launchers_alone(source_launch, checkout):
     root, _, _ = source_launch

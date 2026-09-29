@@ -248,7 +248,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     current = pm.venv_is_current(project_root=root)
     pending = completion_pending_path(root)
-    if not current or pending.is_file():
+    # The Desktop backend is a requester, not an update owner. Retrying a
+    # pending product build here lets the tail stop the very app that spawned
+    # this ``serve`` process while it frees the packaged output directory.
+    desktop_backend = command_argv(argv)[:1] == ["serve"]
+    if not (desktop_backend and current and pending.is_file()) and (not current or pending.is_file()):
         lock = UpdateLock()
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")

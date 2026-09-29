@@ -1912,10 +1912,6 @@ class BasePlatformAdapter(ABC):
     # ``hermes gateway migrate`` can tell "URL changes" from "this profile would be skipped" as new
     # HTTP-inbound adapters gain the prefix.
     serves_profile_prefix: bool = False
-    # ``prepare_turn_context`` reports chat name and topic changes in the user message. The
-    # session-context prompt then keeps the name, topic and user name from the session origin, so a
-    # rename does not rewrite the system prompt of a running conversation.
-    reports_chat_changes_in_turn: bool = False
     # Back-reference to the running ``GatewayRunner`` (set by gateway/run.py); ``build_source``
     # resolves the inbound profile via ``runner._profile_name_for_source``.
     gateway_runner = None  # type: ignore[assignment]
@@ -3498,7 +3494,12 @@ class BasePlatformAdapter(ABC):
         origin source, or ``None`` before the session exists. ``acknowledged_state`` is the
         ``channel_state`` saved with the most recent user transcript row that has one.
         ``first_turn`` is true when the session transcript is empty. Return ``None`` to add no note
-        and leave the saved state unchanged."""
+        and leave the saved state unchanged.
+
+        For an adapter that overrides this hook, the session-context prompt keeps the chat name,
+        topic and user name from the session origin, so a rename does not rewrite the system prompt
+        of a running conversation. An override must therefore report name and topic changes in its
+        note."""
         return None
 
     async def on_processing_start(self, event: MessageEvent) -> None:

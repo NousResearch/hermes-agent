@@ -7,6 +7,7 @@ import ipaddress
 import json
 import os
 import shutil
+import shlex
 import socket
 import subprocess
 import time
@@ -36,7 +37,7 @@ from testcontainers.core.labels import LABEL_SESSION_ID, SESSION_ID
 from testcontainers.core.network import Network
 
 from hermes_platform.host import facts
-from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
+from tests.fakes.fake_llm_provider import FakeLLMServer, Response, Text, write_hermes_home
 from tests.integration.matrix_live.image_build import REPO_ROOT, build_command
 
 
@@ -247,8 +248,8 @@ def gateway_image(docker_engine: None) -> Iterator[str]:
         client.close()
 
 
-@pytest.fixture
-def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network]]:
+@contextmanager
+def _synapse_server(*, extra_config: str = "") -> Iterator[tuple[DockerContainer, str, Network]]:
     # Start Ryuk before creating the volume so a killed worker cannot leave it behind.
     Reaper.get_instance()
     client = docker.from_env()
@@ -263,12 +264,15 @@ def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network
             exit_state = generator.get_wrapped_container().wait(timeout=90)
             assert exit_state["StatusCode"] == 0, generator.get_wrapped_container().logs().decode(errors="replace")
 
+        command = "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\nrc_message:\\n  per_second: 100\\n  burst_count: 100\\n' >> /data/homeserver.yaml"
+        if extra_config:
+            command += f"; printf %s {shlex.quote(extra_config)} >> /data/homeserver.yaml"
+
         with DockerContainer(
             SYNAPSE_IMAGE,
             entrypoint="/bin/sh",
         ).with_command([
-            "-c",
-            "printf '\\nenable_registration: true\\nenable_registration_without_verification: true\\nrc_message:\\n  per_second: 100\\n  burst_count: 100\\n' >> /data/homeserver.yaml",
+            "-c", command,
         ]).with_volume_mapping(volume.name, "/data", "rw") as configure:
             exit_state = configure.get_wrapped_container().wait(timeout=30)
             assert exit_state["StatusCode"] == 0, configure.get_wrapped_container().logs().decode(errors="replace")
@@ -293,7 +297,16 @@ def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network
         client.close()
 
 
-async def _register(url: str, localpart: str) -> MatrixAccount:
+@pytest.fixture
+def synapse(docker_engine: None) -> Iterator[tuple[DockerContainer, str, Network]]:
+    with _synapse_server() as server:
+        yield server
+
+
+async def _register(url: str, localpart: str, *, unique: bool = False) -> MatrixAccount:
+    if unique:
+        localpart = f"{localpart}-{uuid.uuid4().hex}"
+
     client = AsyncClient(
         url,
         f"@{localpart}:matrix.test",
@@ -311,13 +324,12 @@ async def _register(url: str, localpart: str) -> MatrixAccount:
         await client.close()
 
 
-@pytest.fixture
-def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
+def _create_live_room(synapse: tuple[DockerContainer, str, Network], *, unique_accounts: bool = False) -> LiveRoom:
     _, url, _ = synapse
 
     async def create() -> LiveRoom:
-        bot = await _register(url, "hermes")
-        alice = await _register(url, "alice")
+        bot = await _register(url, "hermes", unique=unique_accounts)
+        alice = await _register(url, "alice", unique=unique_accounts)
         client = alice.client(url)
         try:
             response = await client.room_create(name="Matrix live test", invite=[bot.user_id])
@@ -327,6 +339,11 @@ def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
             await client.close()
 
     return asyncio.run(create())
+
+
+@pytest.fixture
+def live_room(synapse: tuple[DockerContainer, str, Network]) -> LiveRoom:
+    return _create_live_room(synapse)
 
 
 @pytest.fixture
@@ -652,3 +669,116 @@ def gateway(
     # container wrote and this user cannot delete would remain on the host. Removing the home here
     # makes such files fail the test.
     shutil.rmtree(home)
+
+
+@dataclass(frozen=True)
+class ApprovalGateway:
+    container: DockerContainer
+    model: FakeLLMServer
+    other_user: MatrixAccount
+    encrypted: bool
+    decision: str
+    home: Path
+
+    def diagnostics(self) -> str:
+        from plugins.platforms.matrix.approval_cards import force_redact_command
+
+        requests = [
+            {"kind": record["kind"], "model": request.get("model"), "tools": [tool["function"]["name"] for tool in request.get("tools", [])],
+             "messages": [message for message in request.get("messages", []) if message.get("role") != "system"][-8:]}
+            for record in self.model.requests
+            for request in [record["body"]]
+        ]
+        logs = {}
+        for filename in ("gateway.log", "agent.log", "errors.log"):
+            path = self.home / "logs" / filename
+            if path.exists():
+                logs[filename] = path.read_text(encoding="utf-8", errors="replace")[-8000:]
+        stdout = self.container.get_wrapped_container().logs().decode(errors="replace")[-8000:]
+        return force_redact_command(json.dumps({"model_requests": requests, "logs": logs, "stdout": stdout}, indent=2))
+
+
+@pytest.fixture
+def approval_gateway(
+    request: pytest.FixtureRequest,
+    tmp_path: Path,
+    gateway_image: str,
+    synapse: tuple[DockerContainer, str, Network],
+    live_room: LiveRoom,
+) -> Iterator[ApprovalGateway]:
+    from tests.fakes.fake_llm_provider import ToolCall
+    from nio import RoomPutStateResponse, RoomInviteResponse, JoinResponse
+
+    encrypted, decision = request.param
+    _, url, network = synapse
+
+    async def prepare() -> MatrixAccount:
+        other = await _register(url, "other", unique=True)
+        alice = live_room.observer.client(url)
+        other_client = other.client(url)
+        try:
+            invited = await alice.room_invite(live_room.room_id, other.user_id)
+            assert isinstance(invited, RoomInviteResponse), invited
+            joined = await other_client.join(live_room.room_id)
+            assert isinstance(joined, JoinResponse), joined
+            if encrypted:
+                response = await alice.room_put_state(
+                    live_room.room_id, "m.room.encryption", {"algorithm": "m.megolm.v1.aes-sha2"},
+                )
+                assert isinstance(response, RoomPutStateResponse), response
+            return other
+        finally:
+            await alice.close()
+            await other_client.close()
+
+    other = asyncio.run(prepare())
+    script: list[Response] = [
+        ToolCall("terminal", {"command": "python3 -c \"print('approval-first-ran')\""}),
+    ]
+    if decision == "once":
+        script.append(ToolCall("terminal", {"command": "python3 -c \"print('approval-second-ran')\""}))
+    script.extend(Text("Matrix approval live reply") for _ in range(2 if decision == "once" else 1))
+    home = tmp_path / "approval-home"
+    home.mkdir(mode=0o777)
+    with FakeLLMServer(script, bind_host="0.0.0.0", aux=lambda _req: Text("Prints a test marker through Python.")) as model:
+        summary = decision == "summarized"
+        write_hermes_home(
+            home, f"http://host.docker.internal:{model.port}/v1",
+            extra_config=(
+                "platforms:\n  matrix:\n    enabled: true\n"
+                "updates:\n  check: false\n"
+                "approvals:\n  mode: manual\n"
+                f"  timeout: {3 if decision == 'expired' else 60}\n"
+                "auxiliary:\n  title_generation:\n    enabled: false\n    model_upgrade_enabled: false\n"
+                "  background_review:\n    enabled: false\n"
+                "memory:\n  memory_enabled: false\n  user_profile_enabled: false\n"
+                "compression:\n  enabled: false\n"
+                "matrix:\n  approvals:\n    llm_summary:\n"
+                f"      enabled: {str(summary).lower()}\n"
+                "      provider_policy: remote_redacted\n"
+            ),
+        )
+        with (home / ".env").open("a", encoding="utf-8") as stream:
+            stream.write(
+                "MATRIX_HOMESERVER=http://synapse:8008\n"
+                f"MATRIX_ACCESS_TOKEN={live_room.bot.access_token}\n"
+                f"MATRIX_ALLOWED_USERS={live_room.observer.user_id},{other.user_id}\n"
+                f"MATRIX_HOME_ROOM={live_room.room_id}\n"
+                "MATRIX_E2EE_MODE=optional\nMATRIX_REACTIONS=false\nMATRIX_AUTO_THREAD=false\nMATRIX_REQUIRE_MENTION=false\nMATRIX_THREAD_REQUIRE_MENTION=false\n"
+            )
+        with DockerContainer(
+            gateway_image, network=network,
+            entrypoint="/opt/hermes/.venv/bin/python", user="10000:10000", working_dir="/opt/hermes",
+            extra_hosts={"host.docker.internal": "host-gateway"},
+        ).with_command("-m hermes_cli.main gateway run").with_volume_mapping(home, "/opt/data", "rw") as container:
+            launcher = container.get_wrapped_container().exec_run(["python3", "-c", "import sys; print(sys.executable)"])
+            assert (launcher.exit_code, launcher.output) == (0, b"/usr/local/bin/python3\n"), launcher
+            def connected() -> bool:
+                gateway_log = home / "logs" / "gateway.log"
+                return gateway_log.exists() and f"Matrix: joined {live_room.room_id}" in gateway_log.read_text(errors="replace")
+
+            _wait_for(
+                connected, "approval gateway sync", timeout=120,
+                details=lambda: container.get_wrapped_container().logs().decode(errors="replace")[-6000:],
+            )
+            yield ApprovalGateway(container, model, other, encrypted, decision, home)

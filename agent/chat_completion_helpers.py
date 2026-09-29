@@ -3703,8 +3703,10 @@ class _StreamingCall(StreamingWaitMonitor):
             return True
 
         if _is_transient or _is_empty_stream:
-            # Transient network / timeout error: retry with a fresh connection first.
-            if attempt < max_retries:
+            # Empty stream (0 bytes returned) should not retry repeatedly: 1 attempt is enough
+            # to rule out transient drops without creating a retry storm.
+            _allowed_attempts = 1 if _is_empty_stream else max_retries
+            if attempt < _allowed_attempts:
                 self._retry_after_drop(e, attempt, max_retries, mid_tool_call=False, reason="stream_retry_cleanup")
                 return True
             # Exhausted: log full diagnostics (chain, headers, bytes/elapsed).

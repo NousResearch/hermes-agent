@@ -70,8 +70,9 @@ jobs:
           - { name: linux-arm64-bionic, runner: ubuntu-24.04-arm, musl: false }
           - { name: darwin-x64, runner: macos-15-intel, musl: false }
           - { name: darwin-arm64, runner: macos-15, musl: false }
-          - { name: win32-x64, runner: windows-latest-32-core, musl: false }
-          - { name: win32-arm64, runner: windows-latest-32-arm-core, musl: false }
+          # The fork cannot schedule the organization's larger Windows runners.
+          - { name: win32-x64, runner: windows-latest, musl: false }
+          - { name: win32-arm64, runner: windows-11-arm, musl: false }
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

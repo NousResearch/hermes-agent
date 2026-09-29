@@ -31,7 +31,12 @@ function mount(push = true) {
   })
   const bell = vi.fn()
   useConfigSync({ gw: gw as any, sid: 's', setBellOnComplete: bell, setVoiceEnabled: vi.fn() })
-  cleanup = effects.map(fn => fn()).filter((fn): fn is () => void => typeof fn === 'function')
+  cleanup.push(
+    ...effects
+      .splice(0)
+      .map(fn => fn())
+      .filter((fn): fn is () => void => typeof fn === 'function')
+  )
   return { gw, data, config, reload, full, bell }
 }
 
@@ -43,6 +48,22 @@ it('uses a slow backstop instead of steady five-second config polling', async ()
   expect(gw.request.mock.calls.filter(([, params]) => params.key === 'mtime')).toHaveLength(0)
   await vi.advanceTimersByTimeAsync(30_000)
   expect(gw.request.mock.calls.filter(([, params]) => params.key === 'mtime')).toHaveLength(1)
+})
+
+it('keeps multiple idle clients off the five-second polling clock', async () => {
+  const first = mount()
+  const second = mount()
+  await vi.advanceTimersByTimeAsync(0)
+  first.gw.request.mockClear()
+  second.gw.request.mockClear()
+  await vi.advanceTimersByTimeAsync(30_000)
+  expect(first.gw.request).not.toHaveBeenCalled()
+  expect(second.gw.request).not.toHaveBeenCalled()
+  first.gw.emit('event', { type: 'config.changed' })
+  second.gw.emit('event', { type: 'config.changed' })
+  await vi.advanceTimersByTimeAsync(0)
+  expect(first.full).toHaveBeenCalledTimes(2)
+  expect(second.full).toHaveBeenCalledTimes(2)
 })
 
 it('rehydrates cosmetic events without MCP reconnection', async () => {

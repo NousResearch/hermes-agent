@@ -112,3 +112,36 @@ def test_ensure_panel_skipped_off_macos(status_file, tmp_path, monkeypatch):
 
     assert called == []
     assert update_stage.UI_SPAWNED_ENV not in os.environ
+
+
+@pytest.mark.platforms("macos")
+@pytest.mark.parametrize(
+    ("marker", "clock"),
+    [
+        ("80335\n1790719921\n", ["1790719921"]),  # the shim's STARTED_AT: counted from there
+        ("80335\n", []),  # an old marker without the line: stage only, no invented clock
+        ("80335\nnot-a-time\n", []),
+    ],
+)
+def test_ensure_panel_counts_from_the_handoff_clock(status_file, tmp_path, monkeypatch, marker, clock):
+    """A panel spawned mid-update (old shim) must count from when the update began.
+
+    The marker's second line is the hand-off's own clock, the value posix.sh passes to
+    its panel; a clock started at spawn would read minutes short.
+    """
+    import subprocess
+
+    monkeypatch.setenv(update_stage.STATUS_FILE_ENV, str(status_file))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / update_stage.MARKER_NAME).write_text(marker, encoding="utf-8")
+    panel = tmp_path / "scripts" / "desktop-update" / "update-panel.js"
+    panel.parent.mkdir(parents=True)
+    panel.write_text("", encoding="utf-8")
+    spawned = []
+    monkeypatch.setattr(subprocess, "Popen", lambda argv, **_kw: spawned.append(argv))
+
+    update_stage.ensure_panel(tmp_path)
+
+    assert spawned == [
+        ["/usr/bin/osascript", "-l", "JavaScript", str(panel), str(status_file), *clock]
+    ]

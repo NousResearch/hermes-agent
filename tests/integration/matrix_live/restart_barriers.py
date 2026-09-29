@@ -24,7 +24,7 @@ def register(ctx) -> None:
     def attach(client, adapter):
         home = get_hermes_home()
         receive_key = client.crypto._receive_room_key
-        accept_intake = client.sync_store.accept_intake
+        accept_intakes = client.sync_store.accept_intakes
         accepted: dict[str, asyncio.Event] = {}
 
         async def diagnostics(marker, event_id):
@@ -58,10 +58,11 @@ def register(ctx) -> None:
                 encoding="utf-8",
             )
 
-        async def receipt(event_id):
-            await accept_intake(event_id)
-            await diagnostics("intake-accepted", event_id)
-            accepted.setdefault(event_id, asyncio.Event()).set()
+        async def receipt(event_ids):
+            await accept_intakes(event_ids)
+            for event_id in event_ids:
+                await diagnostics("intake-accepted", event_id)
+                accepted.setdefault(event_id, asyncio.Event()).set()
 
         async def incomplete_sibling(event):
             if (
@@ -134,7 +135,7 @@ def register(ctx) -> None:
         adapter.handle_message = startup_replay
         adapter.send_final_ledgered = replacement_final
         client.crypto._receive_room_key = import_key
-        client.sync_store.accept_intake = receipt
+        client.sync_store.accept_intakes = receipt
         client.add_event_handler(EventType.ROOM_MESSAGE, incomplete_sibling)
 
     ctx.register_platform_handler("matrix", attach)

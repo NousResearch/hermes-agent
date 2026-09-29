@@ -15,15 +15,21 @@ from __future__ import annotations
 
 import copy
 import logging
+import time
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 logger = logging.getLogger(__name__)
+
+# How long the audio path reuses a speaker verdict. A change to the room's call state or
+# to the binding discards verdicts at once. The expiry covers changes that happen without a
+# state event, such as a membership reaching its expiry time or a change to the allowlist.
+VERDICT_TTL_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -75,10 +81,12 @@ def split_identity(identity: str) -> tuple[str, str]:
 class MatrixRTCSessions:
     """For each room, the ``SessionSource`` that call audio in that room speaks into."""
 
-    def __init__(self, adapter):
+    def __init__(self, adapter, clock: Callable[[], float] = time.monotonic):
         self._adapter = adapter
+        self._clock = clock
         self._sources: dict[str, SessionSource] = {}
         self._bindings: dict[str, _CallBinding] = {}
+        self._verdicts: dict[str, dict[tuple[str, str], tuple[bool, float]]] = {}
 
     # --- binding ---
 
@@ -94,11 +102,13 @@ class MatrixRTCSessions:
         self._bindings[room_id] = _CallBinding(
             source, _source_fields(source), client, getattr(client, "api", None),
             self._account(), home)
+        self.invalidate(room_id)
         logger.info("MatrixRTC: call in %s bound to %s", room_id, source.description)
 
     def unbind(self, room_id: str) -> None:
         """Drop the bind on leave. Later audio for the room is discarded, not guessed at."""
         self._bindings.pop(room_id, None)
+        self.invalidate(room_id)
         if self._sources.pop(room_id, None) is not None:
             logger.info("MatrixRTC: call in %s unbound", room_id)
 
@@ -162,9 +172,33 @@ class MatrixRTCSessions:
         return resolve is None or Path(resolve(bound.source)) == bound.home
 
     def is_authorized(self, room_id: str, identity: str) -> bool:
-        """Allowlist verdict for one LiveKit participant, cheap enough to run before STT."""
+        """Allowlist verdict for one LiveKit participant."""
         user_id, device = split_identity(identity)
         return self.is_user_authorized(room_id, user_id, device)
+
+    def audio_allowed(self, room_id: str, identity: str) -> bool:
+        """``is_authorized`` for one audio frame, reusing a recent verdict for the participant."""
+        user_id, device = split_identity(identity)
+        return self.user_audio_allowed(room_id, user_id, device)
+
+    def user_audio_allowed(self, room_id: str, user_id: str, device: str = "") -> bool:
+        """``is_user_authorized`` for one audio frame or chunk, reusing a recent verdict.
+
+        The full verdict scans the room's state and runs the gateway's allowlist, which
+        is too much work to repeat for every 10 ms frame.
+        """
+        verdicts = self._verdicts.setdefault(room_id, {})
+        now = self._clock()
+        cached = verdicts.get((user_id, device))
+        if cached is not None and cached[1] > now:
+            return cached[0]
+        verdict = self.is_user_authorized(room_id, user_id, device)
+        verdicts[(user_id, device)] = (verdict, now + VERDICT_TTL_SECONDS)
+        return verdict
+
+    def invalidate(self, room_id: str) -> None:
+        """Discard the room's reused verdicts after its call state or binding changes."""
+        self._verdicts.pop(room_id, None)
 
     def is_user_authorized(self, room_id: str, user_id: str, device: str = "") -> bool:
         """Allowlist verdict for one Matrix user, and for one device when *device* is set.

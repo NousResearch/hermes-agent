@@ -150,7 +150,7 @@ class MatrixRTCVoiceMixin:
                 self._check_call(room_id)
             receiver = MatrixRTCReceiver(
                 on_transcript=functools.partial(self.rtc_sessions.on_transcript, room_id),
-                is_authorized=functools.partial(self.rtc_sessions.is_authorized, room_id),
+                is_authorized=functools.partial(self.rtc_sessions.audio_allowed, room_id),
                 # The room plays the bot's own reply back to it. While the publisher is
                 # speaking, the receiver drops that audio, and speech loud enough to pass
                 # the gate is a barge-in.
@@ -266,6 +266,7 @@ class MatrixRTCVoiceMixin:
         states[room_id] = {(event.get("type"), event.get("state_key")): event
                            for event in events if isinstance(event, dict)
                            and event.get("type") in _TRACKED_STATE_TYPES}
+        self.rtc_sessions.invalidate(room_id)
 
     def update_rtc_call_state(self, sync_data: dict) -> None:
         """Apply call and room membership changes from a sync to rooms with a known call.
@@ -289,9 +290,11 @@ class MatrixRTCVoiceMixin:
                         states[room_id][event.get("type"), event.get("state_key")] = event
                         changed.add(room_id)
         leases = getattr(self, "_rtc_leases", {})
-        for room_id in changed & set(leases):
-            with self.rtc_sessions.scope_for(room_id):
-                leases[room_id].recheck()
+        for room_id in changed:
+            self.rtc_sessions.invalidate(room_id)
+            if room_id in leases:
+                with self.rtc_sessions.scope_for(room_id):
+                    leases[room_id].recheck()
 
     def get_voice_channel_info(self, room_id: str) -> Optional[Dict[str, Any]]:
         """``/voice status``: who else is on the call, or None when we are not in one.

@@ -49,8 +49,9 @@ class MatrixRTCReceiver:
     ``identity`` is the LiveKit participant identity, which the Matrix JWT service
     derives as ``{matrix_user_id}:{device_id}``.
 
-    *is_authorized(identity)* is consulted once per utterance *before* transcription, so
-    audio from a participant the operator never allowed is never sent to STT at all.
+    *is_authorized(identity)* is consulted for every audio frame and again *before*
+    transcription, so audio from a participant the operator never allowed is never sent to
+    STT at all. It runs about 100 times a second per speaker, so it has to be cheap.
     Omitting it transcribes every speaker and leaves the allowlist entirely to the caller.
 
     *is_speaking()* is the echo gate: while it is true the bot's own voice is in the room, so

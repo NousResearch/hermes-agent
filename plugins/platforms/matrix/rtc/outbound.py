@@ -190,7 +190,7 @@ class MatrixRTCOutboundMixin:
         if sessions is None:
             return True
         binding = sessions.binding_for(room_id)
-        return binding is not None and sessions.is_user_authorized(room_id, binding.source.user_id)
+        return binding is not None and sessions.user_audio_allowed(room_id, binding.source.user_id)
 
     # --- whole-file fallback ---
 

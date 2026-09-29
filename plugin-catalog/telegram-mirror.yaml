@@ -1,0 +1,18 @@
+name: telegram-mirror
+repo: https://github.com/PatroniousGrendopolies/hermes-telegram-mirror
+sha: 4062872e2603b3a04c1f6c3c08d6aa11e4b927c7
+description: Live two-way mirror of a profile's canonical Bot Chat into a dedicated Telegram bot. Typing,
+  interim messages, redacted tool cards and Telegram HTML; hooks only enqueue (sub-microsecond), one
+  rate-limited background sender; allowlisted to the owner's Telegram id.
+maintainer: PatroniousGrendopolies
+tier: community
+category: platform
+requires_hermes: ">=0.21"
+version: "0.3.1"
+docs_url: https://github.com/PatroniousGrendopolies/hermes-telegram-mirror#readme
+platforms: [macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, on_stream_start, on_interim_message, pre_tool_call, post_tool_call, post_llm_call, on_session_end, on_session_finalize, agent_loop_stopped]
+  provides_middleware: []
+  requires_env: []

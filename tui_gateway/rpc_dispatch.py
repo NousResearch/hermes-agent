@@ -25,8 +25,13 @@ def _handle_admitted_request(req: dict) -> dict | None:
     # Test doubles register straight into ``_methods`` without a contract; every production
     # handler comes through ``register_method`` and therefore has one.
     contract = _contracts.METHODS.get(method)
+    # ``_model_runtime_snapshot`` is dispatch-frozen internal state for the model.options pool
+    # worker (``_freeze_model_options_request`` overwrites it before queueing), never client wire
+    # surface: the handler reads it off ``params``, but the contract only sees what a client sends.
+    wire_params = ({k: v for k, v in params.items() if k != _MODEL_OPTIONS_RUNTIME_SNAPSHOT}
+                   if contract is not None else params)
     if contract is not None:
-        params, problem = _contracts.validate_params(contract, params)
+        _, problem = _contracts.validate_params(contract, wire_params)
         if problem is not None:
             return _err(rid, 4000, problem)
     token = _current_rpc_method.set(method)
@@ -37,7 +42,7 @@ def _handle_admitted_request(req: dict) -> dict | None:
     finally:
         _current_rpc_method.reset(token)
     if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):
-        _contracts.check_params_accepted(contract, params)
+        _contracts.check_params_accepted(contract, wire_params)
         _contracts.check_result(contract, response["result"])
     return response
 

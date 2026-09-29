@@ -57,7 +57,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, is_scratch_path
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
 from typing import Dict, List, Optional, Set, Tuple
@@ -906,6 +906,13 @@ class CheckpointManager:
             return False
 
         abs_dir = str(_normalize_path(working_dir))
+
+        # Hermes' own scratch tree is throwaway by definition — the runtime-environment block
+        # sends the model there for helper scripts and probes — so a snapshot of it stages temp
+        # files nobody rolls back to, and the cost scales with whatever else the tree holds.
+        if is_scratch_path(abs_dir):
+            logger.debug("Checkpoint skipped: scratch path (%s)", abs_dir)
+            return False
 
         # Skip root, home, and other overly broad directories
         if abs_dir in {"/", str(Path.home())}:

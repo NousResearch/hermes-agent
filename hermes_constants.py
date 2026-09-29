@@ -953,14 +953,95 @@ def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:
     return total
 
 
+# --- Session-scoped scratch lanes ---
+# One shared scratch dir cannot attribute a file to the session that wrote it, and concurrent
+# sessions contend on the same lane (a runaway writer fills it for everyone, and a snapshot or a
+# cleanup that touches one session's temp tree touches them all).  When a session id is bound,
+# the scratch dir -- and the ``TMPDIR`` that follows it -- is therefore scoped to
+# ``<scratch>/session-<id>/``.  Lanes are ordinary top-level entries, so the idle pruning above
+# reclaims them individually without knowing about this module.
+SCRATCH_SESSION_PREFIX = "session-"
+# Escape hatch: any of these values in HERMES_SCRATCH_SCOPE restores the shared, unscoped lane
+# (operators who script against one fixed temp dir, and the multi-session-lane workflows above).
+HERMES_SCRATCH_SCOPE_ENV = "HERMES_SCRATCH_SCOPE"
+_SCRATCH_SCOPE_SHARED_VALUES = frozenset({"shared", "flat", "off", "0", "false", "no"})
+# Component budget: session ids are already filesystem-safe, but an imported/custom id must
+# never escape the scratch root, and a deep home still has to leave room for AF_UNIX sockets.
+_SCRATCH_SESSION_COMPONENT_MAX = 64
+
+
+def scratch_scope_is_shared() -> bool:
+    """True when ``HERMES_SCRATCH_SCOPE`` asks for the unscoped, shared scratch dir."""
+    return os.environ.get(HERMES_SCRATCH_SCOPE_ENV, "").strip().lower() in _SCRATCH_SCOPE_SHARED_VALUES
+
+
+def scratch_session_id() -> str | None:
+    """Session id this process is serving, or ``None`` when no session is bound.
+
+    The gateway's task-local ContextVar wins (its ``os.environ`` mirror is last-writer-wins and
+    may belong to a concurrent session); a plain CLI/cron falls back to the env mirror.
+    ``None`` means "no session": callers then use the shared scratch dir rather than guessing one.
+    """
+    try:
+        from gateway.session_context import get_session_env
+        bound = get_session_env("HERMES_SESSION_ID", "")
+    except Exception:  # noqa: BLE001 — CLI/cron without the gateway context module
+        bound = os.environ.get("HERMES_SESSION_ID", "")
+    return (bound or "").strip() or None
+
+
+def _scratch_session_component(session_id: str) -> str:
+    """Filesystem-safe directory component for *session_id* (never empty, never a path)."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", session_id).strip("._-")
+    return cleaned[:_SCRATCH_SESSION_COMPONENT_MAX] or "session"
+
+
+def session_scratch_dir(home: str | Path | None = None, session_id: str | None = None,
+                        *, create: bool = True) -> Path | None:
+    """``<scratch>/session-<id>`` for the bound (or given) session, else ``None``.
+
+    ``None`` -- no session bound, or ``HERMES_SCRATCH_SCOPE=shared`` -- leaves every caller on the
+    shared scratch dir, which is also what an unscoped CLI/cron keeps doing.  The lane is created
+    on demand; a lane we cannot create is not reported (the caller falls back to the shared dir).
+    """
+    if scratch_scope_is_shared():
+        return None
+    sid = (session_id or "").strip() or scratch_session_id()
+    if not sid:
+        return None
+    lane = get_scratch_dir(home, prune=False) / (SCRATCH_SESSION_PREFIX + _scratch_session_component(sid))
+    if create:
+        try:
+            lane.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
+    return lane
+
+
+def is_scratch_path(path: object) -> bool:
+    """True when *path* is the scratch root or anything inside it (never raises).
+
+    Used to keep Hermes' own temp tree out of filesystem checkpoints: the prompt sends the model
+    here, so a snapshot of this tree is a snapshot of throwaway files.
+    """
+    try:
+        resolved = Path(str(path)).expanduser().resolve()
+        root = get_scratch_dir(prune=False).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return resolved == root or root in resolved.parents
+
+
 def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
     """Point ``TMPDIR``/``TMP``/``TEMP`` in *env* at the scratch dir of ``env["HERMES_HOME"]``.
 
     A temp var the user (or the OS: macOS ``/var/folders``, Windows ``%TEMP%``) set is
     respected and nothing changes. A value Hermes itself exported earlier — recognisable
     because it equals ``HERMES_SCRATCH_DIR`` — is re-derived, so a child running under another
-    profile's home gets that home's scratch dir rather than its parent's. Returns True when
-    the vars were (re)written.
+    profile's home gets that home's scratch dir rather than its parent's.  When the child env
+    carries a session id, the session's own lane is used (see :func:`session_scratch_dir`), so
+    everything a session's tools drop in ``$TMPDIR`` stays attributable and isolated.  Returns
+    True when the vars were (re)written.
     """
     ours = env.get(SCRATCH_DIR_MARKER_ENV, "")
     for key in SCRATCH_TMP_ENV_VARS:
@@ -969,7 +1050,12 @@ def apply_scratch_tmp_env(env: MutableMapping[str, str]) -> bool:
             return False
     home = env.get("HERMES_HOME", "").strip()
     try:
-        scratch = str(get_scratch_dir(_expand_hermes_home(home) if home else get_process_hermes_home()))
+        base = _expand_hermes_home(home) if home else get_process_hermes_home()
+        # The child env is the source of truth: a session id it does not carry means "no session"
+        # (the shared scratch dir), never the ambient one of the process building the env.
+        session = (env.get("HERMES_SESSION_ID", "") or "").strip()
+        lane = session_scratch_dir(base, session) if session else None
+        scratch = str(lane if lane is not None else get_scratch_dir(base))
     except (RuntimeError, OSError):
         # No HERMES_HOME and no resolvable user home (a child env built from nothing on
         # Windows): there is no scratch dir to point at; the child keeps the OS default.

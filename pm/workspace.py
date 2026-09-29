@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -130,6 +131,14 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
 
         document = tomllib.loads(core_text)
         _core_release_quarantine(document, source / "uv.lock")
+        # Plugin generations are installed/replayed on this host, not shipped
+        # as cross-platform release locks. Keep core's support predicates but
+        # avoid resolving unrelated wheel-only extras for other platforms.
+        settings = document.setdefault("tool", {}).setdefault("uv", {})
+        host = f"sys_platform == '{sys.platform}'"
+        settings["environments"] = [
+            f"({marker}) and {host}" for marker in settings.get("environments", [])
+        ] or [host]
         document.setdefault("tool", {}).setdefault("uv", {})["workspace"] = {"members": sorted(members)}
         text = tomli_w.dumps(document)
     else:
@@ -369,7 +378,26 @@ def lock_and_sync(
     if replay is None:
         _generate_pyproject(plugin_dirs, root, source=source)
         if seed_lock is not None:
-            (root / "uv.lock").write_bytes(seed_lock.read_bytes())
+            import tomllib
+            seed_bytes = seed_lock.read_bytes()
+            seed_document = tomllib.loads(seed_bytes.decode('utf-8-sig'))
+            # A plugin can change from a manifest-only member to a pyproject
+            # member (or be removed). uv tries loading old path metadata before
+            # relocking, even though that member no longer exists. In that case
+            # seed from the reviewed release lock, not a stale local workspace.
+            missing_member = any(
+                isinstance(value, str) and not Path(value).is_absolute()
+                and value.startswith(('plugin-deps/', 'plugin-sources/'))
+                and not (root / value / 'pyproject.toml').is_file()
+                for package in seed_document.get('package', [])
+                for key, value in package.get('source', {}).items()
+                if key in ('virtual', 'editable', 'directory')
+            )
+            if missing_member:
+                release_lock = source / 'uv.lock'
+                seed_bytes = release_lock.read_bytes() if release_lock.is_file() else None
+            if seed_bytes is not None:
+                (root / "uv.lock").write_bytes(seed_bytes)
     else:
         if not (replay / "pyproject.toml").is_file() or not (replay / "uv.lock").is_file():
             raise InstallError("venv", f"recorded workspace is missing: {replay}")

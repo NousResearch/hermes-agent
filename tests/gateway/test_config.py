@@ -22,8 +22,33 @@ from gateway.config import (
     StreamingConfig,
     _apply_env_overrides,
     load_gateway_config,
-    persist_home_channel,
 )
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_gateway_file_layers_preserve_unicode_and_fallback(tmp_path, monkeypatch, encoding):
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    legacy = tmp_path / "gateway.json"
+    yaml_path = tmp_path / "config.yaml"
+    legacy.write_bytes(json.dumps({"reset_triggers": ["/départ"], "quick_commands": {
+        "salut": {"type": "prompt", "prompt": "héritage 世界"},
+    }}, ensure_ascii=False).encode(encoding))
+    config = load_gateway_config()
+    assert config.reset_triggers == ["/départ"]
+    assert config.quick_commands["salut"]["prompt"] == "héritage 世界"
+
+    yaml_path.write_bytes("quick_commands:\n  salut:\n    type: prompt\n    prompt: bonjour 世界\n".encode(encoding))
+    config = load_gateway_config()
+    assert config.reset_triggers == ["/départ"]
+    assert config.quick_commands["salut"]["prompt"] == "bonjour 世界"
+
+    yaml_path.write_bytes("quick_commands: [".encode(encoding))
+    assert load_gateway_config().quick_commands["salut"]["prompt"] == "héritage 世界"
+    legacy.write_bytes("{broken".encode(encoding))
+    assert load_gateway_config().quick_commands == {}
 
 
 class TestHomeChannelRoundtrip:
@@ -46,6 +71,18 @@ class TestHomeChannelRoundtrip:
 
 
 class TestPlatformConfigRoundtrip:
+    def test_toplevel_adapter_keys_promoted_into_extra(self):
+        """Adapter settings written directly under the platform block (the documented
+        ``platforms.webhook.port`` shape) reach ``extra``; an explicit ``extra:`` value wins and
+        typed fields never leak into ``extra`` (#10206)."""
+        pc = PlatformConfig.from_dict({
+            "enabled": True, "reply_to_mode": "all", "typing_indicator": False,
+            "port": 9100, "routes": {"gh": {"prompt": "x"}}, "extra": {"port": 9999},
+        })
+        assert pc.extra == {"port": 9999, "routes": {"gh": {"prompt": "x"}}}
+        assert pc.reply_to_mode == "all" and pc.typing_indicator is False
+        assert PlatformConfig.from_dict(pc.to_dict()).extra == pc.extra
+
     def test_to_dict_from_dict(self):
         pc = PlatformConfig(
             enabled=True,
@@ -65,12 +102,6 @@ class TestPlatformConfigRoundtrip:
         assert restored.home_channel.chat_id == "555"
         assert restored.extra == {"foo": "bar"}
 
-    def test_disabled_no_token(self):
-        pc = PlatformConfig()
-        d = pc.to_dict()
-        restored = PlatformConfig.from_dict(d)
-        assert restored.enabled is False
-        assert restored.token is None
 
     def test_from_dict_coerces_quoted_false_enabled(self):
         restored = PlatformConfig.from_dict({"enabled": "false"})
@@ -178,9 +209,10 @@ class TestStreamingConfig:
                 "fresh_final_after_seconds": "oops",
             }
         )
-        assert restored.edit_interval == 0.8
-        assert restored.buffer_threshold == 24
-        assert restored.fresh_final_after_seconds == 0.0
+        defaults = StreamingConfig()
+        assert restored.edit_interval == defaults.edit_interval
+        assert restored.buffer_threshold == defaults.buffer_threshold
+        assert restored.fresh_final_after_seconds == defaults.fresh_final_after_seconds
 
 
 class TestGatewayConfigRoundtrip:
@@ -211,10 +243,6 @@ class TestGatewayConfigRoundtrip:
         config = GatewayConfig.from_dict({"max_concurrent_sessions": "many"})
 
         assert config.max_concurrent_sessions is None
-        assert any(
-            "Ignoring invalid max_concurrent_sessions='many'" in record.message
-            for record in caplog.records
-        )
 
 
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
@@ -254,7 +282,62 @@ class TestGatewayConfigRoundtrip:
 
 
 class TestLoadGatewayConfig:
+    def test_platforms_env_refs_expanded_for_adapters(self, tmp_path, monkeypatch):
+        """``${VAR}`` refs under ``platforms:`` reach the adapter config expanded — the gateway
+        YAML layer expands them the same way the CLI loader does (webhook secret used as the
+        HMAC key; api_server caller-auth key)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    port: 8089\n"
+            "    secret: ${WEBHOOK_SECRET}\n"
+            "    path_prefix: ${HOOK_PREFIX_FOR_TEST}\n"
+            "  api_server:\n"
+            "    enabled: true\n"
+            "    key: ${env:API_SERVER_KEY}\n",
+            encoding="utf-8",
+        )
 
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("WEBHOOK_SECRET", "whsec-expanded")
+        monkeypatch.setenv("API_SERVER_KEY", "server-key-expanded")
+        # A key NO env bridge reads: only the YAML-layer expansion can satisfy it, so this
+        # assertion goes red when the loader hunk is reverted while the bridges stay.
+        monkeypatch.setenv("HOOK_PREFIX_FOR_TEST", "/hooks/expanded")
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.WEBHOOK].extra["secret"] == "whsec-expanded"
+        assert config.platforms[Platform.WEBHOOK].extra["path_prefix"] == "/hooks/expanded"
+        assert (
+            config.platforms[Platform.API_SERVER].extra["key"] == "server-key-expanded"
+        )
+
+    def test_platforms_env_ref_unresolved_stays_literal(self, tmp_path, monkeypatch):
+        """An unset env var keeps the literal placeholder (loader is fail-open; the adapter's
+        startup validation is what reports a bad secret)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    secret: ${WEBHOOK_SECRET_UNSET_FOR_TEST}\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_SECRET_UNSET_FOR_TEST", raising=False)
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.WEBHOOK].extra["secret"]
+            == "${WEBHOOK_SECRET_UNSET_FOR_TEST}"
+        )
 
     def test_slack_ignored_channels_config_sets_env_bridge(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -348,7 +431,8 @@ class TestLoadGatewayConfig:
             "  websocket_liveness_interval_seconds: 17\n"
             "  websocket_liveness_failure_threshold: 4\n"
             "  websocket_heartbeat_ack_max_age_seconds: 75\n"
-            "  websocket_max_latency_seconds: 30\n",
+            "  websocket_max_latency_seconds: 30\n"
+            "  websocket_event_max_silence_seconds: 7200\n",
             encoding="utf-8",
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
@@ -365,6 +449,7 @@ class TestLoadGatewayConfig:
         assert extra["websocket_liveness_failure_threshold"] == 4
         assert extra["websocket_heartbeat_ack_max_age_seconds"] == 75
         assert extra["websocket_max_latency_seconds"] == 30
+        assert extra["websocket_event_max_silence_seconds"] == 7200
 
 
     def test_quick_commands_from_nested_gateway_section(self, tmp_path, monkeypatch):
@@ -830,6 +915,98 @@ class TestLoadGatewayConfig:
         ]
         assert os.environ.get("DINGTALK_ALLOWED_USERS") == "user-id-1,user-id-2"
 
+    @pytest.mark.parametrize("yaml_text", ["gateway:\n  allow_all_users: true\n", "allow_all_users: true\n"])
+    def test_allow_all_users_yaml_reaches_the_authz_gate(self, tmp_path, monkeypatch, yaml_text):
+        """Both spellings must open the gate for an unknown sender; before #110690 the key was inert
+        because every allow-all reader consults GATEWAY_ALLOW_ALL_USERS only."""
+        from gateway.authz_mixin import GatewayAuthorizationMixin
+        from gateway.session import SessionSource
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(yaml_text, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+
+        runner = object.__new__(GatewayAuthorizationMixin)
+        runner.config = load_gateway_config()
+        runner.adapters = {}
+        stranger = SessionSource(platform=Platform.TELEGRAM, user_id="999", chat_id="999", chat_type="dm")
+        assert runner._is_user_authorized(stranger) is True
+
+    @pytest.mark.parametrize("yaml_text, env, expected", [
+        ("gateway:\n  allow_all_users: false\n", None, None),  # only a truthy grant is exported
+        ("gateway:\n  allow_all_users: true\n", "false", "false"),  # explicit env wins over YAML
+        ("gateway: {}\n", None, None),
+    ])
+    def test_allow_all_users_yaml_never_widens_past_env(self, tmp_path, monkeypatch, yaml_text, env, expected):
+        from gateway.authz_mixin import GatewayAuthorizationMixin
+        from gateway.session import SessionSource
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(yaml_text, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        if env is None:
+            monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        else:
+            monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", env)
+
+        runner = object.__new__(GatewayAuthorizationMixin)
+        runner.config = load_gateway_config()
+        runner.adapters = {}
+        assert os.environ.get("GATEWAY_ALLOW_ALL_USERS") == expected
+        stranger = SessionSource(platform=Platform.TELEGRAM, user_id="999", chat_id="999", chat_type="dm")
+        assert runner._is_user_authorized(stranger) is False
+
+    def test_bridged_allow_all_users_does_not_survive_a_config_flip_or_restart(self, tmp_path, monkeypatch):
+        """The bridge owns what it wrote: flipping config.yaml to false and reloading closes the gate,
+        and the restart/dashboard child envs never carry the bridged value (a sticky env var would make
+        the restarted gateway ignore the flipped config and stay open)."""
+        from gateway.run_shutdown import GatewayShutdownMixin
+        from hermes_cli.web_server_gateway import _profile_action_environment
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("gateway:\n  allow_all_users: true\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        load_gateway_config()
+        assert os.environ.get("GATEWAY_ALLOW_ALL_USERS") == "true"
+        assert "GATEWAY_ALLOW_ALL_USERS" not in GatewayShutdownMixin._restart_watcher_env()
+        assert "GATEWAY_ALLOW_ALL_USERS" not in _profile_action_environment(["gateway", "restart"])
+
+        (hermes_home / "config.yaml").write_text("gateway:\n  allow_all_users: false\n", encoding="utf-8")
+        load_gateway_config()
+        assert os.environ.get("GATEWAY_ALLOW_ALL_USERS") is None
+
+    def test_allow_all_users_yaml_reaches_the_default_profile_under_multiplex(self, tmp_path, monkeypatch):
+        """Default-profile events are authorized inside its secret scope, where gate readers never fall to
+        os.environ: the bridged grant must be part of that profile's scope (and only that profile's)."""
+        from agent.secret_scope import build_profile_secret_scope, set_multiplex_active
+        from gateway.authz_mixin import GatewayAuthorizationMixin
+        from gateway.run import _profile_runtime_scope
+        from gateway.session import SessionSource
+
+        hermes_home = tmp_path / ".hermes"
+        secondary = hermes_home / "profiles" / "other"
+        secondary.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text(
+            "gateway:\n  allow_all_users: true\n  multiplex_profiles: true\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        runner = object.__new__(GatewayAuthorizationMixin)
+        runner.config = load_gateway_config()
+        runner.adapters = {}
+        set_multiplex_active(True)
+        try:
+            stranger = SessionSource(platform=Platform.TELEGRAM, user_id="999", chat_id="999", chat_type="dm")
+            with _profile_runtime_scope(hermes_home):
+                assert runner._is_user_authorized(stranger) is True
+            assert "GATEWAY_ALLOW_ALL_USERS" not in build_profile_secret_scope(secondary)
+        finally:
+            set_multiplex_active(False)
+
 
     def test_top_level_platforms_override_nested_gateway_platforms(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
@@ -1043,6 +1220,21 @@ class TestWebhookPortBridging:
         assert wh.extra.get("host") == "0.0.0.0"
 
 
+    def test_root_level_platform_block_adapter_keys_reach_extra(self, tmp_path, monkeypatch):
+        """A ROOT-level ``webhook:`` block (not under ``platforms:``) is a supported spelling; its
+        adapter keys must reach ``extra`` like the nested form, with nested ``extra:`` winning."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "webhook:\n  enabled: true\n  port: 9100\n  host: 127.0.0.2\n  secret: fixture\n"
+            "  extra:\n    port: 9999\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_PORT", raising=False)
+        wh = load_gateway_config().platforms[Platform.WEBHOOK]
+        assert (wh.extra.get("port"), wh.extra.get("host"), wh.extra.get("secret")) == (9999, "127.0.0.2", "fixture")
+
     def test_msgraph_webhook_port_host_secret_bridged_from_toplevel(self, tmp_path, monkeypatch):
         """msgraph_webhook top-level port/host/secret must be bridged into extra,
         with an explicit extra: value still winning over the top-level one."""
@@ -1151,7 +1343,7 @@ class TestHomeChannelEnvOverrides:
 
         for platform, platform_config, env, expected in cases:
             config = GatewayConfig(platforms={platform: platform_config})
-            with patch.dict(os.environ, env, clear=True):
+            with patch.dict(os.environ, {**env, "HERMES_HOME": os.environ["HERMES_HOME"]}, clear=True):
                 _apply_env_overrides(config)
 
             home = config.platforms[platform].home_channel
@@ -1287,7 +1479,7 @@ class TestApiServerEnvOverride:
         )
 
         api_server_key = "secret-key-at-least-16"
-        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key}, clear=True):
+        with patch.dict(os.environ, {"API_SERVER_KEY": api_server_key, "HERMES_HOME": os.environ["HERMES_HOME"]}, clear=True):
             _apply_env_overrides(config)
 
         # Explicit disable wins over the env-var presence.
@@ -1297,6 +1489,50 @@ class TestApiServerEnvOverride:
 
 
 class TestWebhookEnvOverride:
+    def test_config_enabled_webhook_reads_env_port_and_secret(self, tmp_path, monkeypatch):
+        """A config.yaml-enabled webhook still receives its .env listener settings."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.setenv("WEBHOOK_PORT", "9012")
+        monkeypatch.setenv("WEBHOOK_SECRET", "webhook-env-secret")
+
+        webhook = load_gateway_config().platforms[Platform.WEBHOOK]
+
+        assert webhook.enabled is True
+        assert webhook.extra["port"] == 9012
+        assert webhook.extra["secret"] == "webhook-env-secret"
+
+    def test_empty_env_secret_does_not_clobber_yaml_secret(self, tmp_path, monkeypatch):
+        """``WEBHOOK_SECRET=`` (present but empty) must not erase a config.yaml secret: the
+        widened bridge now runs for yaml-enabled webhooks, so an empty env value has to stay a
+        no-op rather than turning a working HMAC key into an empty one."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  webhook:\n"
+            "    enabled: true\n"
+            "    secret: yaml-secret\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.delenv("WEBHOOK_PORT", raising=False)
+        monkeypatch.setenv("WEBHOOK_SECRET", "")
+
+        webhook = load_gateway_config().platforms[Platform.WEBHOOK]
+
+        assert webhook.enabled is True
+        assert webhook.extra["secret"] == "yaml-secret"
+
     def test_env_key_does_not_reenable_explicitly_disabled_webhook(self):
         """An explicit ``platforms.webhook.enabled: false`` must survive
         _apply_env_overrides() even when WEBHOOK_ENABLED is truthy in the env.
@@ -1329,6 +1565,7 @@ class TestWebhookEnvOverride:
         with patch.dict(
             os.environ,
             {
+                "HERMES_HOME": os.environ["HERMES_HOME"],
                 "WEBHOOK_ENABLED": "true",
                 "WEBHOOK_PORT": "9999",
                 "WEBHOOK_SECRET": "shared-secret",

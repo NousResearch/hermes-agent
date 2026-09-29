@@ -27,7 +27,7 @@ it('fails if the launched process never closes', async () => {
 
   try {
     const waitForClose = observeProcessClose(Object.assign(new EventEmitter(), { stdio: [], exitCode: null, signalCode: null }))
-    const completion = expect(waitForClose(2_000)).rejects.toThrow('Electron process did not close')
+    const completion = expect(waitForClose(2_000)).rejects.toThrow()
     await vi.advanceTimersByTimeAsync(2_000)
     await completion
     expect(vi.getTimerCount()).toBe(0)

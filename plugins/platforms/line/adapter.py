@@ -35,12 +35,16 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import quote as _urlquote
 
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from agent.i18n import t
+from gateway.platforms._shared import (
+    get_scoped_secret as _get_scoped_secret, seed_extra_from_env as _seed_extra_from_env, send_error
+)
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
     cache_video_from_bytes_async,
 )
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform
 
@@ -65,11 +69,13 @@ DEFAULT_MEDIA_PATH_PREFIX = "/line/media"
 DEFAULT_HOST = None
 _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})  # LINE can't fetch media from these → public URL required
 DEFAULT_SLOW_RESPONSE_THRESHOLD = 45.0  # seconds; 0 disables the postback button
-DEFAULT_PENDING_REPLY_TEXT = "🤔 Still thinking. Tap below to fetch the answer when it's ready."
-DEFAULT_BUTTON_LABEL = "Get answer"
-DEFAULT_DELIVERED_TEXT = "Already replied ✅"
-DEFAULT_INTERRUPTED_TEXT = "Run was interrupted before completion."
-DEFAULT_EXPIRED_TEXT = "That request has expired — send your message again."
+# Catalog keys of the default copy (operators override per key via LINE_*_TEXT / extra.*);
+# resolved through ``t()`` in ``__init__``/at send time, never at import.
+DEFAULT_PENDING_REPLY_TEXT_KEY = "platform.line.pending.still_thinking"
+DEFAULT_BUTTON_LABEL_KEY = "platform.line.pending.button_label"  # LINE caps postback labels at 20 chars
+DEFAULT_DELIVERED_TEXT_KEY = "platform.line.pending.delivered"
+DEFAULT_INTERRUPTED_TEXT_KEY = "platform.line.pending.interrupted"
+DEFAULT_EXPIRED_TEXT_KEY = "platform.line.pending.expired"
 MEDIA_TOKEN_TTL_SECONDS = 1800  # 30 minutes; LINE caches the URL aggressively
 LINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per LINE docs
 LINE_AV_MAX_BYTES = 200 * 1024 * 1024  # 200 MB for voice/video
@@ -190,25 +196,6 @@ class RequestCache:
         self._transition(request_id, {State.READY, State.ERROR}, State.DELIVERED)
 
 
-class _MessageDeduplicator:
-    """Bounded LRU of LINE webhook event IDs to ignore at-least-once retries."""
-
-    def __init__(self, max_size: int = 1000) -> None:
-        self._seen: Dict[str, float] = {}
-        self._max = max_size
-
-    def is_duplicate(self, event_id: str) -> bool:
-        if not event_id:
-            return False
-        if event_id in self._seen:
-            return True
-        if len(self._seen) >= self._max:  # drop the oldest 10% so we don't trim every insert
-            cutoff = sorted(self._seen.values())[len(self._seen) // 10 or 1]
-            self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
-        self._seen[event_id] = time.time()
-        return False
-
-
 # LINE source type → (id key, normalized chat_type)
 _SOURCE_KINDS = {"group": ("groupId", "group"), "room": ("roomId", "room"), "user": ("userId", "dm")}
 
@@ -312,15 +299,17 @@ def build_postback_button_message(text: str, button_label: str, request_id: str)
     alt = text if len(text) <= 400 else text[:397] + "..."
     action = {
         "type": "postback",
-        "label": button_label[:20] or "Get answer",
+        "label": button_label[:20] or t(DEFAULT_BUTTON_LABEL_KEY)[:20],
         "data": json.dumps({"action": "show_response", "request_id": request_id}),
-        "displayText": button_label[:300] or "Get answer"}
+        "displayText": button_label[:300] or t(DEFAULT_BUTTON_LABEL_KEY)[:300]}
     return {"type": "template", "altText": alt, "template": {"type": "buttons", "text": truncated, "actions": [action]}}
 
 
 # Gateway busy-ack prefixes (interrupting / queued / steered / background review / working
-# heartbeat); these bypass a PENDING postback cache so they land as visible bubbles.
-_SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = ("⚡ Interrupting", "⏳ Queued", "⏩ Steered", "💾", "⏳ Working")
+# heartbeat); these bypass a PENDING postback cache so they land as visible bubbles. Matched on
+# the leading emoji marker only: the words behind it are localized (``gateway.busy.*``) and every
+# translation keeps the marker, so the fallback keeps firing in any language.
+_SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = ("⚡", "⏳", "⏩", "💾")
 
 
 def _is_system_bypass(content: str) -> bool:
@@ -378,7 +367,7 @@ _OUTBOUND_MEDIA = {
 _INBOUND_MEDIA_EXT = {"image": ".jpg", "audio": ".m4a", "video": ".mp4", "file": ".bin"}
 _INBOUND_AV_CACHERS = {"audio": cache_audio_from_bytes_async, "video": cache_video_from_bytes_async}
 _LIFECYCLE_EVENTS = frozenset({"follow", "unfollow", "join", "leave"})
-_ENV_SEED_KEYS = (("LINE_HOST", "host"), ("LINE_PUBLIC_URL", "public_url"), ("LINE_HOME_CHANNEL", "home_channel"))
+_ENV_SEED_KEYS = (("LINE_PORT", "port", int), ("LINE_HOST", "host", None), ("LINE_PUBLIC_URL", "public_url", None))
 
 
 class LineAdapter(BasePlatformAdapter):
@@ -411,21 +400,21 @@ class LineAdapter(BasePlatformAdapter):
         # Slow-LLM postback button threshold + user-overridable copy
         threshold = env_or("LINE_SLOW_RESPONSE_THRESHOLD", "slow_response_threshold", DEFAULT_SLOW_RESPONSE_THRESHOLD)
         self.slow_response_threshold = _coerce(float, threshold, DEFAULT_SLOW_RESPONSE_THRESHOLD)
-        for attr, env, default in (
-            ("pending_text", "LINE_PENDING_TEXT", DEFAULT_PENDING_REPLY_TEXT),
-            ("button_label", "LINE_BUTTON_LABEL", DEFAULT_BUTTON_LABEL),
-            ("delivered_text", "LINE_DELIVERED_TEXT", DEFAULT_DELIVERED_TEXT),
-            ("interrupted_text", "LINE_INTERRUPTED_TEXT", DEFAULT_INTERRUPTED_TEXT),
-            ("expired_text", "LINE_EXPIRED_TEXT", DEFAULT_EXPIRED_TEXT)):
-            setattr(self, attr, env_or(env, attr, default))
+        for attr, env, default_key in (
+            ("pending_text", "LINE_PENDING_TEXT", DEFAULT_PENDING_REPLY_TEXT_KEY),
+            ("button_label", "LINE_BUTTON_LABEL", DEFAULT_BUTTON_LABEL_KEY),
+            ("delivered_text", "LINE_DELIVERED_TEXT", DEFAULT_DELIVERED_TEXT_KEY),
+            ("interrupted_text", "LINE_INTERRUPTED_TEXT", DEFAULT_INTERRUPTED_TEXT_KEY),
+            ("expired_text", "LINE_EXPIRED_TEXT", DEFAULT_EXPIRED_TEXT_KEY)):
+            setattr(self, attr, env_or(env, attr, t(default_key)))
         # Runtime state
         self._client: Optional[_LineClient] = None
         self._app = self._runner = self._site = None  # aiohttp web.Application / AppRunner / TCPSite
         self._reply_tokens: Dict[str, Tuple[str, float]] = {}  # chat_id → (token, expiry)
         self._cache = RequestCache()
-        self._dedup = _MessageDeduplicator()
+        # LINE redelivers webhooks for up to a day on non-2xx; no TTL, just a size bound.
+        self._dedup = MessageDeduplicator(max_size=1000, ttl_seconds=float("inf"))
         self._bot_user_id: Optional[str] = None
-        self._lock_key: Optional[str] = None
         self._media_tokens: Dict[str, Tuple[str, float]] = {}  # token → (path, expiry)
         self._media_temp_paths: Set[str] = set()
         self._media_ttl = MEDIA_TOKEN_TTL_SECONDS
@@ -439,14 +428,9 @@ class LineAdapter(BasePlatformAdapter):
         if not self.channel_access_token or not self.channel_secret:
             return self._fail("config_missing", "LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET must be set")
         # One profile per channel token; lock on a hash so the secret never hits disk.
-        try:
-            from gateway.status import acquire_scoped_lock
-            tok_hash = hashlib.sha256(self.channel_access_token.encode()).hexdigest()[:16]
-            if not acquire_scoped_lock("line", tok_hash):
-                return self._fail("lock_conflict", "LINE channel already in use by another profile")
-            self._lock_key = tok_hash
-        except ImportError:
-            self._lock_key = None
+        tok_hash = hashlib.sha256(self.channel_access_token.encode()).hexdigest()[:16]
+        if not self._acquire_platform_lock("line", tok_hash, "LINE channel"):
+            return False
         self._client = _LineClient(self.channel_access_token)
         try:  # best-effort self-userId for self-echo filtering (LINE rarely echoes anyway)
             self._bot_user_id = await self._client.get_bot_user_id()
@@ -500,11 +484,8 @@ class LineAdapter(BasePlatformAdapter):
             _unlink_quietly(path)
         self._media_temp_paths.clear()
         self._media_tokens.clear()
-        if self._lock_key:
-            with contextlib.suppress(Exception):
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("line", self._lock_key)
-            self._lock_key = None
+        with contextlib.suppress(Exception):
+            self._release_platform_lock()
 
     async def _handle_health(self, request) -> Any:
         from aiohttp import web
@@ -582,7 +563,8 @@ class LineAdapter(BasePlatformAdapter):
         if chat_type == "dm" and self._client:  # best-effort typing indicator (DM only)
             asyncio.create_task(self._client.loading(chat_id))
         source_obj = self.build_source(
-            chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_id, chat_name=chat_id)
+            chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_id, chat_name=chat_id,
+            message_id=message_id)
         await self.handle_message(MessageEvent(
             text=text, message_type=_LINE_MESSAGE_TYPES.get(msg_type, MessageType.TEXT), source=source_obj,
             raw_message=event, message_id=message_id, media_urls=media_urls, media_types=media_types))
@@ -736,10 +718,7 @@ class LineAdapter(BasePlatformAdapter):
         try:
             await super()._keep_typing(chat_id, *args, **kwargs)
         finally:
-            if not post_task.done():
-                post_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await post_task
+            await cancel_task(post_task)
 
     async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
         """Resolve any orphan PENDING postback so the button doesn't loop."""
@@ -825,7 +804,7 @@ class LineAdapter(BasePlatformAdapter):
         except Exception:
             hermes_home = Path.home().joinpath(".hermes").resolve()
         resolved = path.resolve()
-        if not any(resolved.is_relative_to(r) for r in (Path(tempfile.gettempdir()).resolve(), Path("/tmp").resolve(), hermes_home)):
+        if not any(resolved.is_relative_to(r) for r in (Path(tempfile.gettempdir()).resolve(), Path("/tmp").resolve(), hermes_home)):  # no-tmp: ok — macOS /private/tmp alias in the allowed-roots check, not a write target
             logger.warning("LINE: refusing to serve outside allowed roots: %s", resolved)
             return web.Response(status=403, text="forbidden")
         content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
@@ -844,7 +823,8 @@ class LineAdapter(BasePlatformAdapter):
         return await self._send_messages(chat_id, msgs + ([_text_message(caption)] if caption else []))
 
     async def send_voice(
-        self, chat_id: str, audio_path: str, duration_ms: int = 1000, metadata: Optional[Dict[str, Any]] = None
+        self, chat_id: str, audio_path: str, duration_ms: int = 1000, metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
     ) -> SendResult:
         path, err = self._check_media_file("audio", audio_path)
         if err:
@@ -938,15 +918,11 @@ def is_connected(config) -> bool:
 
 
 def _env_enablement() -> Optional[Dict[str, Any]]:
-    """Seed PlatformConfig.extra from env-only setups so ``hermes status`` sees them."""
+    """``env_enablement_fn``: seed ``PlatformConfig.extra`` from env-only setups so ``hermes status`` sees them."""
     if not _env_credentials_present():
         return None
-    seeded: Dict[str, Any] = {}
-    if _get_scoped_secret("LINE_PORT"):
-        with contextlib.suppress(ValueError):
-            seeded["port"] = int(_get_scoped_secret("LINE_PORT"))
-    seeded.update({key: _get_scoped_secret(env) for env, key in _ENV_SEED_KEYS if _get_scoped_secret(env)})
-    return seeded
+    return _seed_extra_from_env(_ENV_SEED_KEYS, home_env="LINE_HOME_CHANNEL")
+
 
 
 async def _standalone_send(
@@ -958,16 +934,17 @@ async def _standalone_send(
     extra = getattr(pconfig, "extra", {}) or {}
     token = _get_scoped_secret("LINE_CHANNEL_ACCESS_TOKEN") or extra.get("channel_access_token", "")
     if not token or not chat_id:
-        return {"error": "LINE standalone send: missing token or chat_id"}
+        return send_error("LINE standalone send: missing token or chat_id")
     messages = _text_messages(message or "") or [_text_message("")]
     if media_files:  # tell the recipient media was generated but not delivered
-        messages.append(_text_message(f"[{len(media_files)} attachment(s) generated; not deliverable from cron]"))
+        messages.append(_text_message(
+            t("platform.line.standalone.attachments_not_deliverable", count=str(len(media_files)))))
         messages = messages[:LINE_MAX_MESSAGES_PER_CALL]
     try:
         await _LineClient(token).push(chat_id, messages)
         return {"success": True, "message_id": None}
     except Exception as exc:
-        return {"error": str(exc)}
+        return send_error(str(exc))
 
 
 _SETUP_PROMPTS = (  # (env var, prompt, masked)
@@ -978,30 +955,20 @@ _SETUP_PROMPTS = (  # (env var, prompt, masked)
 
 
 def interactive_setup() -> None:
-    """Minimal stdin wizard for ``hermes setup line`` (writes ``~/.hermes/.env``)."""
-    print("\nLINE Messaging API setup\n------------------------\n"
-          "Create a Messaging API channel at https://developers.line.biz/console/\nthen copy the values below.\n")
-    try:
-        from hermes_cli.config import get_env_value as _get_env, save_env_value as _set_env
-    except ImportError:
-        print("hermes_cli.config not available; set LINE_* vars manually in ~/.hermes/.env")
+    """``hermes setup line`` wizard (writes ``~/.hermes/.env``); CLI helpers are lazy-imported."""
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import print_header, print_info, prompt
+    from hermes_cli.setup_platforms import declines_reconfigure
+    print_header("LINE Messaging API")
+    if declines_reconfigure("LINE", "Reconfigure LINE?", "LINE_CHANNEL_ACCESS_TOKEN"):
         return
-
-    for var, prompt, secret in _SETUP_PROMPTS:
-        existing = _get_env(var) if callable(_get_env) else None
-        suffix = " [keep current]" if existing else ""
-        try:
-            if secret:
-                from hermes_cli.secret_prompt import masked_secret_prompt
-                value = masked_secret_prompt(f"{prompt}{suffix}: ")
-            else:
-                value = input(f"{prompt}{suffix}: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            continue
+    print_info("Create a Messaging API channel at https://developers.line.biz/console/ then copy the values below.")
+    for var, question, secret in _SETUP_PROMPTS:
+        suffix = " [keep current]" if get_env_value(var) else ""
+        value = prompt(f"{question}{suffix}", password=secret)
         if value:
-            _set_env(var, value)
-    print("Done. Set the webhook URL in the LINE console to <your-public-url>/line/webhook and enable 'Use webhook'.")
+            save_env_value(var, value)
+    print_info("Done. Set the webhook URL in the LINE console to <your-public-url>/line/webhook and enable 'Use webhook'.")
 
 
 def register(ctx) -> None:
@@ -1023,11 +990,3 @@ def register(ctx) -> None:
             "requires LINE_PUBLIC_URL configured to a publicly reachable HTTPS "
             "host. Slow responses surface a 'Get answer' button the user taps "
             "to fetch the reply via a fresh free token."))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from dataclasses import field  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

@@ -16,6 +16,7 @@ import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import {
   branchGroupForUser,
   type ChatMessage,
+  type ChatMessagePart,
   chatMessageText,
   completeOpenTimelineParts,
   textPart
@@ -418,6 +419,31 @@ export function finalizeInterruptedMessages(
     )
 }
 
+const markInterruptedToolCall = (part: ChatMessagePart): ChatMessagePart =>
+  part.type === 'tool-call' && part.completedAt === undefined && part.result === undefined
+    ? { ...part, interrupted: true }
+    : part
+
+/**
+ * Stop/redirect finalize: like `finalizeInterruptedMessages`, but tool calls
+ * still waiting on a result are marked interrupted, so they read as cut short
+ * by the user rather than as a lost result (#116195). A result that still
+ * arrives later takes precedence over the marker.
+ */
+export function finalizeUserInterruptedMessages(
+  messages: ChatMessage[],
+  streamId?: null | string,
+  occurredAt = Date.now() / 1000
+): ChatMessage[] {
+  const marked = messages.map(message =>
+    message.pending || message.id === streamId
+      ? { ...message, parts: message.parts.map(markInterruptedToolCall) }
+      : message
+  )
+
+  return finalizeInterruptedMessages(marked, streamId, occurredAt)
+}
+
 /**
  * Arrival-ordered mid-turn user insert (#73793, #83151).
  *
@@ -430,12 +456,23 @@ export function finalizeInterruptedMessages(
  * above it. Also retires the old insert-before-the-active-reply contract whose
  * `lastAssistantIndex` fallback could splice the bubble mid-thread when the
  * stream id was missing or stale (#83151).
+ *
+ * The correction also ends a regenerate's branch group. Output after it
+ * answers the correction, not the regenerated prompt, so it must not join the
+ * group: the runtime repository parents every group member to the group's
+ * user row, which made the post-correction reply a sibling of the sealed
+ * partial and dropped the partial and the correction from view (#119015).
  */
 export function appendMidTurnUserMessage<
-  State extends { interimBoundaryPending: boolean; messages: ChatMessage[]; streamId: null | string }
+  State extends {
+    interimBoundaryPending: boolean
+    messages: ChatMessage[]
+    pendingBranchGroup?: null | string
+    streamId: null | string
+  }
 >(state: State, message: ChatMessage): State {
   const liveId = state.streamId
-  const sealed = finalizeInterruptedMessages(state.messages, liveId)
+  const sealed = finalizeUserInterruptedMessages(state.messages, liveId)
   const sealedLiveKept = liveId !== null && sealed.some(row => row.id === liveId)
 
   const messages = [
@@ -446,6 +483,7 @@ export function appendMidTurnUserMessage<
   return {
     ...state,
     messages,
+    ...(state.pendingBranchGroup ? { pendingBranchGroup: null } : {}),
     streamId: null,
     interimBoundaryPending: state.interimBoundaryPending || sealedLiveKept
   }

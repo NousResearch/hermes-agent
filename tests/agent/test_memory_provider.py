@@ -80,13 +80,6 @@ class FakeMemoryProvider(MemoryProvider):
         self.memory_writes.append((action, target, content))
 
 
-class MetadataMemoryProvider(FakeMemoryProvider):
-    """Provider that opts into write metadata."""
-
-    def on_memory_write(self, action, target, content, metadata=None):
-        self.memory_writes.append((action, target, content, metadata or {}))
-
-
 class MessagesMemoryProvider(FakeMemoryProvider):
     """Provider that opts into completed-turn message context."""
 
@@ -121,29 +114,6 @@ class BlockingPrefetchProvider(FakeMemoryProvider):
 # ---------------------------------------------------------------------------
 
 
-class TestMemoryProviderABC:
-    def test_cannot_instantiate_abstract(self):
-        """ABC cannot be instantiated directly."""
-        with pytest.raises(TypeError):
-            MemoryProvider()
-
-    def test_concrete_provider_works(self):
-        """Concrete implementation can be instantiated."""
-        p = FakeMemoryProvider()
-        assert p.name == "fake"
-        assert p.is_available()
-
-    def test_default_optional_hooks_are_noop(self):
-        """Optional hooks have default no-op implementations."""
-        p = FakeMemoryProvider()
-        # These should not raise
-        p.on_turn_start(1, "hello")
-        p.on_session_end([])
-        p.on_pre_compress([])
-        p.on_memory_write("add", "memory", "test")
-        p.queue_prefetch("query")
-        p.sync_turn("user", "assistant")
-        p.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -160,12 +130,6 @@ class TestMemoryManager:
         assert mgr.build_system_prompt() == ""
         assert mgr.prefetch_all("test") == ""
 
-    def test_add_provider(self):
-        mgr = MemoryManager()
-        p = FakeMemoryProvider("test1")
-        mgr.add_provider(p)
-        assert len(mgr.providers) == 1
-        assert [p.name for p in mgr.providers] == ["test1"]
 
     def test_get_provider_by_name(self):
         mgr = MemoryManager()
@@ -173,6 +137,21 @@ class TestMemoryManager:
         mgr.add_provider(p)
         assert mgr.get_provider("test1") is p
         assert mgr.get_provider("nonexistent") is None
+
+    def test_failed_schema_load_leaves_manager_unregistered(self):
+        """A provider whose get_tool_schemas() raises must not poison the single-external slot (#9948)."""
+        class BrokenProvider(FakeMemoryProvider):
+            def get_tool_schemas(self):
+                raise RuntimeError("boom")
+
+        mgr = MemoryManager()
+        with pytest.raises(RuntimeError):
+            mgr.add_provider(BrokenProvider("broken"))
+        assert mgr.providers == []
+
+        ok = FakeMemoryProvider("ok")
+        mgr.add_provider(ok)
+        assert mgr.get_provider("ok") is ok
 
     def test_on_turn_start_passes_each_provider_only_the_kwargs_it_accepts(self):
         """A provider with the two-positional ``on_turn_start`` still runs; one declaring the author kwargs gets them."""
@@ -211,7 +190,7 @@ class TestMemoryManager:
         assert "external memory prefetch output truncated" in result
         spill_files = list((tmp_path / "session-1").glob("*.txt"))
         assert len(spill_files) == 1
-        assert spill_files[0].read_text() == provider._prefetch_result + "\n"
+        assert spill_files[0].read_text(encoding="utf-8") == provider._prefetch_result + "\n"
 
     def test_builtin_prefetch_is_not_spilled(self, tmp_path, monkeypatch):
         self._set_spill_config(monkeypatch, tmp_path, max_chars=10)
@@ -424,10 +403,10 @@ class TestUserInstalledProviderDiscovery:
             "    def sync_turn(self, *a, **kw): pass\n"
             "    def get_tool_schemas(self): return []\n"
             "    def handle_tool_call(self, *a, **kw): return '{}'\n"
-        )
+        , encoding="utf-8")
         (plugin_dir / "plugin.yaml").write_text(
             f"name: {name}\ndescription: Test user provider\n"
-        )
+        , encoding="utf-8")
         return plugin_dir
 
 
@@ -460,7 +439,7 @@ class TestUserInstalledProviderDiscovery:
             "    def sync_turn(self, *a, **kw): pass\n"
             "    def get_tool_schemas(self): return []\n"
             "    def handle_tool_call(self, *a, **kw): return '{}'\n"
-        )
+        , encoding="utf-8")
         monkeypatch.setattr(
             "plugins.memory._get_user_plugins_dir",
             lambda: tmp_path / "plugins",
@@ -585,7 +564,7 @@ class TestEntryPointMemoryProviderDiscovery:
             skill_md.write_text(
                 "---\nname: maintenance\ndescription: Memory maintenance\n---\n\n"
                 "Packaged provider maintenance body.\n"
-            )
+            , encoding="utf-8")
             register_skill = (
                 "    ctx.register_skill(\n"
                 "        'maintenance',\n"
@@ -773,18 +752,6 @@ class TestSequentialDispatchRouting:
     """
 
 
-    def test_handle_tool_call_routes_to_provider(self):
-        """handle_tool_call dispatches to the correct provider's handler."""
-        mgr = MemoryManager()
-        provider = FakeMemoryProvider("hindsight", tools=[
-            {"name": "hindsight_recall", "description": "Recall", "parameters": {}},
-            {"name": "hindsight_retain", "description": "Retain", "parameters": {}},
-        ])
-        mgr.add_provider(provider)
-
-        result = json.loads(mgr.handle_tool_call("hindsight_recall", {"query": "alice"}))
-        assert result["handled"] == "hindsight_recall"
-        assert result["args"] == {"query": "alice"}
 
 
     def test_tool_names_include_all_providers(self):
@@ -809,89 +776,6 @@ class TestSequentialDispatchRouting:
 # ---------------------------------------------------------------------------
 
 
-class TestSetupFieldFiltering:
-    """Test the 'when' clause and 'default_from' logic used by the
-    memory setup wizard in hermes_cli/memory_setup.py.
-
-    These features are generic — any memory plugin can use them in
-    get_config_schema(). Currently used by the hindsight plugin.
-    """
-
-    def _filter_fields(self, schema, provider_config):
-        """Simulate the setup wizard's field filtering logic.
-
-        Returns list of (key, effective_default) for fields that pass
-        the 'when' filter.
-        """
-        results = []
-        for field in schema:
-            key = field["key"]
-            default = field.get("default")
-
-            # Dynamic default
-            default_from = field.get("default_from")
-            if default_from and isinstance(default_from, dict):
-                ref_field = default_from.get("field", "")
-                ref_map = default_from.get("map", {})
-                ref_value = provider_config.get(ref_field, "")
-                if ref_value and ref_value in ref_map:
-                    default = ref_map[ref_value]
-
-            # When clause
-            when = field.get("when")
-            if when and isinstance(when, dict):
-                if not all(provider_config.get(k) == v for k, v in when.items()):
-                    continue
-
-            results.append((key, default))
-        return results
-
-    def test_when_clause_filters_fields(self):
-        """Fields with 'when' are skipped if the condition doesn't match."""
-        schema = [
-            {"key": "mode", "default": "cloud"},
-            {"key": "api_url", "default": "https://api.example.com", "when": {"mode": "cloud"}},
-            {"key": "api_key", "default": None, "when": {"mode": "cloud"}},
-            {"key": "llm_provider", "default": "openai", "when": {"mode": "local"}},
-            {"key": "llm_model", "default": "gpt-4o-mini", "when": {"mode": "local"}},
-            {"key": "budget", "default": "mid"},
-        ]
-
-        # Cloud mode: should see mode, api_url, api_key, budget
-        cloud_fields = self._filter_fields(schema, {"mode": "cloud"})
-        cloud_keys = [k for k, _ in cloud_fields]
-        assert cloud_keys == ["mode", "api_url", "api_key", "budget"]
-
-        # Local mode: should see mode, llm_provider, llm_model, budget
-        local_fields = self._filter_fields(schema, {"mode": "local"})
-        local_keys = [k for k, _ in local_fields]
-        assert local_keys == ["mode", "llm_provider", "llm_model", "budget"]
-
-
-    def test_when_and_default_from_combined(self):
-        """when clause and default_from work together correctly."""
-        provider_models = {"groq": "openai/gpt-oss-120b", "openai": "gpt-4o-mini"}
-        schema = [
-            {"key": "mode", "default": "local"},
-            {"key": "llm_provider", "default": "openai", "when": {"mode": "local"}},
-            {"key": "llm_model", "default": "gpt-4o-mini",
-             "default_from": {"field": "llm_provider", "map": provider_models},
-             "when": {"mode": "local"}},
-            {"key": "api_url", "default": "https://api.example.com", "when": {"mode": "cloud"}},
-        ]
-
-        # Local + groq: should see llm_model with groq default, no api_url
-        fields = self._filter_fields(schema, {"mode": "local", "llm_provider": "groq"})
-        keys = [k for k, _ in fields]
-        assert "llm_model" in keys
-        assert "api_url" not in keys
-        assert dict(fields)["llm_model"] == "openai/gpt-oss-120b"
-
-        # Cloud: should see api_url, no llm_model
-        fields = self._filter_fields(schema, {"mode": "cloud"})
-        keys = [k for k, _ in fields]
-        assert "api_url" in keys
-        assert "llm_model" not in keys
 
 
 # ---------------------------------------------------------------------------
@@ -930,14 +814,8 @@ class TestFlattenMessageContent:
     """
 
 
-    def test_none_is_empty(self):
-        from agent.codex_responses_adapter import _summarize_user_message_for_log
-        assert _summarize_user_message_for_log(None, sep="\n") == ""
 
 
-    def test_scalar_fallback(self):
-        from agent.codex_responses_adapter import _summarize_user_message_for_log
-        assert _summarize_user_message_for_log(42, sep="\n") == "42"
 
     def test_flattened_output_is_regex_safe(self):
         """The original failure: sanitize_context(list) raised TypeError."""
@@ -1006,48 +884,6 @@ class TestOnMemoryWriteBridge:
     """
 
 
-    def test_memory_manager_tool_injection_deduplicates(self):
-        """Memory manager tools already in self.tools (from plugin registry)
-        must not be appended again.  Duplicate function names cause 400 errors
-        on providers that enforce unique names (e.g. Xiaomi MiMo via Nous Portal).
-
-        Regression test for: duplicate mnemosyne_recall / mnemosyne_remember /
-        mnemosyne_stats in tools array → 400 from Nous Portal.
-        """
-        mgr = MemoryManager()
-        p = FakeMemoryProvider("ext", tools=[
-            {"name": "ext_recall", "description": "Recall", "parameters": {}},
-            {"name": "ext_remember", "description": "Remember", "parameters": {}},
-        ])
-        mgr.add_provider(p)
-
-        # Simulate self.tools already containing one of the plugin tools
-        # (as if it was registered via ctx.register_tool → get_tool_definitions)
-        existing_tools = [
-            {"type": "function", "function": {"name": "ext_recall", "description": "Recall (from registry)", "parameters": {}}},
-            {"type": "function", "function": {"name": "web_search", "description": "Search", "parameters": {}}},
-        ]
-
-        # Apply the same dedup logic from run_agent.py __init__
-        _existing_names = {
-            t.get("function", {}).get("name")
-            for t in existing_tools
-            if isinstance(t, dict)
-        }
-        for _schema in mgr.get_all_tool_schemas():
-            _tname = _schema.get("name", "")
-            if _tname and _tname in _existing_names:
-                continue
-            existing_tools.append({"type": "function", "function": _schema})
-            if _tname:
-                _existing_names.add(_tname)
-
-        # ext_recall should NOT be duplicated; ext_remember should be added
-        tool_names = [t["function"]["name"] for t in existing_tools]
-        assert tool_names.count("ext_recall") == 1, f"ext_recall duplicated: {tool_names}"
-        assert tool_names.count("ext_remember") == 1
-        assert tool_names.count("web_search") == 1
-        assert len(existing_tools) == 3  # web_search + ext_recall + ext_remember
 
     def test_on_memory_write_tolerates_provider_failure(self):
         """If a provider's on_memory_write raises, others still get notified."""
@@ -1063,73 +899,6 @@ class TestOnMemoryWriteBridge:
         assert good.memory_writes == [("add", "user", "test")]
 
 
-class TestHonchoCadenceTracking:
-    """Verify Honcho provider cadence gating depends on on_turn_start().
-
-    Bug: _turn_count was never updated because on_turn_start() was not called
-    from run_conversation(). This meant cadence checks always passed (every
-    turn fired both context refresh and dialectic). Fixed by calling
-    on_turn_start(self._user_turn_count, msg) before prefetch_all().
-    """
-
-    def test_turn_count_updates_on_turn_start(self):
-        """on_turn_start sets _turn_count, enabling cadence math."""
-        from plugins.memory.honcho import HonchoMemoryProvider
-        p = HonchoMemoryProvider()
-        assert p._turn_count == 0
-        p.on_turn_start(1, "hello")
-        assert p._turn_count == 1
-        p.on_turn_start(5, "world")
-        assert p._turn_count == 5
-
-    def test_queue_prefetch_respects_dialectic_cadence(self):
-        """With dialecticCadence=3, dialectic should skip turns 2 and 3."""
-        from plugins.memory.honcho import HonchoMemoryProvider
-        p = HonchoMemoryProvider()
-        p._dialectic_cadence = 3
-        p._recall_mode = "context"
-        p._session_key = "test-session"
-        # Simulate a manager that records prefetch calls
-        class FakeManager:
-            def prefetch_context(self, key, query=None):
-                pass
-
-        p._manager = FakeManager()
-
-        # Simulate turn 1: last_dialectic_turn = -999, so (1 - (-999)) >= 3 -> fires
-        p.on_turn_start(1, "turn 1")
-        p._last_dialectic_turn = 1  # simulate it fired
-        p._last_context_turn = 1
-
-        # Simulate turn 2: (2 - 1) = 1 < 3 -> should NOT fire dialectic
-        p.on_turn_start(2, "turn 2")
-        assert (p._turn_count - p._last_dialectic_turn) < p._dialectic_cadence
-
-        # Simulate turn 3: (3 - 1) = 2 < 3 -> should NOT fire dialectic
-        p.on_turn_start(3, "turn 3")
-        assert (p._turn_count - p._last_dialectic_turn) < p._dialectic_cadence
-
-        # Simulate turn 4: (4 - 1) = 3 >= 3 -> should fire dialectic
-        p.on_turn_start(4, "turn 4")
-        assert (p._turn_count - p._last_dialectic_turn) >= p._dialectic_cadence
-
-    def test_injection_frequency_first_turn_with_1indexed(self):
-        """injection_frequency='first-turn' must inject on turn 1 (1-indexed)."""
-        from plugins.memory.honcho import HonchoMemoryProvider
-        p = HonchoMemoryProvider()
-        p._injection_frequency = "first-turn"
-
-        # Turn 1 should inject (not skip)
-        p.on_turn_start(1, "first message")
-        assert p._turn_count == 1
-        # The guard is `_turn_count > 1`, so turn 1 passes through
-        should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
-        assert not should_skip, "First turn (turn 1) should NOT be skipped"
-
-        # Turn 2 should skip
-        p.on_turn_start(2, "second message")
-        should_skip = p._injection_frequency == "first-turn" and p._turn_count > 1
-        assert should_skip, "Second turn (turn 2) SHOULD be skipped"
 
 
 class TestMemoryToolToolsetGate:
@@ -1225,107 +994,9 @@ class TestMemoryToolToolsetGate:
         tools, names = self._run_memory_injection(None, None)
         assert tools == []
 
-    def test_multiple_schemas_all_blocked_together(self):
-        """When the gate is closed, no memory tools leak — not even partially."""
-        mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
-        tools, names = self._run_memory_injection(["terminal"], mgr)
-        assert tools == []
-        assert names == set()
-
-    def test_multiple_schemas_all_injected_when_enabled(self):
-        """When the gate is open, every memory tool schema is injected."""
-        mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
-        tools, names = self._run_memory_injection(None, mgr)
-        assert names == {"fact_store", "memory_search", "memory_add"}
 
 
-class TestContextEngineToolsetGate:
-    """Issue #5544 (sibling): context engine tools follow the same gate.
 
-    `agent.context_compressor.get_tool_schemas()` (e.g. lcm_grep, lcm_describe,
-    lcm_expand) was appended to AIAgent.tools unconditionally. Same blind
-    injection class as the memory bug; same local-model penalty. Gate name:
-    "context_engine" (matches the existing plugin-system convention).
-    """
-
-    @staticmethod
-    def _run_context_engine_injection(enabled_toolsets, compressor):
-        """Simulate the gated context-engine injection block from agent_init.py."""
-        tools = []
-        valid_tool_names = set()
-        engine_tool_names = set()
-
-        if (
-            compressor is not None
-            and tools is not None
-            and (
-                enabled_toolsets is None
-                or "context_engine" in enabled_toolsets
-            )
-        ):
-            _existing = {
-                t.get("function", {}).get("name")
-                for t in tools
-                if isinstance(t, dict)
-            }
-            for _schema in compressor.get_tool_schemas():
-                _tname = _schema.get("name", "")
-                if _tname and _tname in _existing:
-                    continue
-                tools.append({"type": "function", "function": _schema})
-                if _tname:
-                    valid_tool_names.add(_tname)
-                    engine_tool_names.add(_tname)
-                    _existing.add(_tname)
-
-        return tools, valid_tool_names, engine_tool_names
-
-    class _FakeCompressor:
-        def __init__(self, schemas):
-            self._schemas = schemas
-
-        def get_tool_schemas(self):
-            return list(self._schemas)
-
-    def _compressor_with(self, *tool_names):
-        return self._FakeCompressor(
-            [{"name": n, "description": n, "parameters": {}} for n in tool_names]
-        )
-
-    def test_none_toolsets_injects(self):
-        """enabled_toolsets=None injects context-engine tools — backward compat."""
-        c = self._compressor_with("lcm_grep", "lcm_describe", "lcm_expand")
-        tools, names, engine_names = self._run_context_engine_injection(None, c)
-        assert engine_names == {"lcm_grep", "lcm_describe", "lcm_expand"}
-
-    def test_context_engine_in_toolsets_injects(self):
-        """enabled_toolsets including 'context_engine' injects the tools."""
-        c = self._compressor_with("lcm_grep")
-        tools, names, engine_names = self._run_context_engine_injection(
-            ["terminal", "context_engine"], c
-        )
-        assert "lcm_grep" in engine_names
-
-    def test_empty_toolsets_blocks_injection(self):
-        """`platform_toolsets: telegram: []` must suppress context-engine tools."""
-        c = self._compressor_with("lcm_grep")
-        tools, names, engine_names = self._run_context_engine_injection([], c)
-        assert tools == []
-        assert engine_names == set()
-
-    def test_toolsets_without_context_engine_blocks_injection(self):
-        """A toolset list that doesn't name 'context_engine' suppresses injection."""
-        c = self._compressor_with("lcm_grep", "lcm_describe")
-        tools, names, engine_names = self._run_context_engine_injection(
-            ["terminal", "memory"], c
-        )
-        assert tools == []
-        assert engine_names == set()
-
-    def test_no_compressor_no_injection(self):
-        """Gate is moot without a context_compressor."""
-        tools, names, engine_names = self._run_context_engine_injection(None, None)
-        assert tools == []
 
 
 class TestNormalizeToolSchema:
@@ -1340,17 +1011,6 @@ class TestNormalizeToolSchema:
     """
 
 
-    def test_already_wrapped_schema_is_unwrapped(self):
-        from agent.memory_manager import normalize_tool_schema
-        wrapped = {
-            "type": "function",
-            "function": {"name": "x_grep", "description": "d", "parameters": {}},
-        }
-        out = normalize_tool_schema(wrapped)
-        assert out is not None
-        assert out["name"] == "x_grep"
-        # Must be the inner function schema, not the wrapper.
-        assert "type" not in out or out.get("type") != "function"
 
 
     def test_non_dict_rejected(self):

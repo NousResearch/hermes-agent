@@ -36,9 +36,19 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
+import { platformDefaultHermesHome } from './data-paths'
+import { type ControlMasterHolders, sharedControlMasterHolders } from './ssh-control-master-holders'
+
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 const DEFAULT_EXEC_TIMEOUT_MS = 20_000
 const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
+
+// Remote-side watchdog for probe commands, in seconds. runSsh SIGKILLs the
+// LOCAL ssh child on timeout, but the remote command keeps running as an
+// orphan (ppid=1) — a hung remote CLI (e.g. a wedged `hermes --version`)
+// accumulates orphans that busy-loop (#110478). Kept under
+// DEFAULT_EXEC_TIMEOUT_MS so the remote kill lands before the local timeout.
+const REMOTE_PROBE_TIMEOUT_SECS = 15
 // No-mux tunnels are one `ssh -N -L` child each; a transient child death
 // (network blip, sshd restart, laptop resume) used to instantly poison
 // isAlive() and cascade upstream into a full teardown that SIGTERM'd a
@@ -48,6 +58,7 @@ const DEFAULT_FORWARD_TIMEOUT_MS = 15_000
 const DEFAULT_TUNNEL_RESTART_LIMIT = 5
 const DEFAULT_TUNNEL_RESTART_DELAY_MS = 1_000
 const CONTROL_PERSIST_SECONDS = 300
+const CONTROL_FORWARD_KEEPALIVE_MS = Math.min(60_000, Math.floor((CONTROL_PERSIST_SECONDS * 1_000) / 2))
 
 // eslint-disable-next-line no-control-regex -- deliberately reject control chars in ssh targets
 const _CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/
@@ -164,12 +175,9 @@ function redactSecrets(text) {
 // across reconnects so ControlMaster reuse works, short so the full path stays
 // under sun_path's 104-byte limit.
 //
-// CRITICAL (macOS): the base dir must be SHORT. os.tmpdir() on macOS is the
-// per-user `/var/folders/xx/yyyy…/T/` (~49 bytes), and OpenSSH binds a
-// TEMPORARY listener at `<ControlPath>.<16 random chars>` while establishing
-// the master — so a path that itself fits 104 still overflows at bind time. We
-// root under a short per-user base (`~/.hermes/desktop-ssh`) so even worst case
-// (~72 bytes on macOS) stays clear. Windows has no AF_UNIX sun_path limit.
+// OpenSSH binds a temporary listener at `<ControlPath>.<16 random chars>`.
+// The home (and macOS's os.tmpdir()) can be too deep even when the socket
+// itself fits sun_path. Windows has no AF_UNIX sun_path limit.
 function controlSocketPath(user, host, port, baseDir?, identity: any = {}) {
   const dir = baseDir || defaultControlDir()
   const keyPathIdentity = path.normalize(String(identity.keyPath || ''))
@@ -189,14 +197,37 @@ function controlSocketPath(user, host, port, baseDir?, identity: any = {}) {
   return path.join(dir, `${id}.sock`)
 }
 
-function defaultControlDir() {
-  // POSIX: a SHORT, PER-USER base stays under the socket limit AND avoids a
-  // world-shared /tmp dir (no symlink-hijack surface). Created 0700 in open().
+function shortControlDir(): string {
+  // no-tmp: ok — AF_UNIX's short path budget rules out a deep HOME/TMPDIR; the parent and child are checked before use.
+  return `/tmp/hermes-ssh-${process.getuid!()}`
+}
+
+function defaultControlDir(): string {
   if (process.platform === 'win32') {
     return path.join(os.tmpdir(), 'hermes-desktop-ssh')
   }
 
-  return path.join(os.homedir(), '.hermes', 'desktop-ssh')
+  const homeDir = path.join(platformDefaultHermesHome(os.homedir()), 'desktop-ssh')
+
+  // Include the filename and OpenSSH's temporary-listener suffix in the byte budget.
+  return Buffer.byteLength(path.join(homeDir, '0123456789abcdef.sock.0123456789abcdef')) <= 104
+    ? homeDir
+    : shortControlDir()
+}
+
+function checkShortControlParent(): void {
+  // /tmp can be a symlink on macOS. Inspect its resolved directory before
+  // creating anything there; the sticky bit protects an owned child from rename.
+  const parent = path.dirname(shortControlDir())
+  const st = fs.statSync(fs.realpathSync(parent))
+
+  if (
+    !st.isDirectory() ||
+    (st.uid !== 0 && st.uid !== process.getuid!()) ||
+    ((st.mode & 0o022) !== 0 && (st.mode & 0o1000) === 0)
+  ) {
+    throw new Error(`Unsafe SSH control parent: ${parent} must be owned by root or this user and sticky if writable.`)
+  }
 }
 
 // Command construction (pure — the unit tests exercise these directly)
@@ -321,6 +352,40 @@ function buildInteractiveSshArgs(conn, remoteCwd, connectTimeoutMs?, remoteComma
   return args
 }
 
+// Wrap a remote probe command in a POSIX watchdog so a hung remote CLI is
+// killed REMOTELY after `timeoutSecs` instead of orphaning when the local ssh
+// child is SIGKILLed (#110478). Pure POSIX sh (dash, macOS sh) — deliberately
+// not GNU `timeout`, which macOS remotes do not ship.
+//
+// The wrapped command must be a SINGLE command: the watchdog kills its direct
+// child, so the exact invocation that can hang must be the direct child —
+// a hung grandchild of a compound wrapper would orphan anyway. (The ownership
+// probe nests the watchdog around the inner `serve --help` inside its
+// `$( ... )` for this reason; note the load-bearing space in `$( (`.)
+// The wrapped command keeps its stdout; the shell exits non-zero when the
+// watchdog fires and the probe's existing failure path handles it.
+//
+// The sleeper's stdio is detached (</dev/null >/dev/null 2>&1): killing the
+// sleeper subshell orphans its `sleep` grandchild, and an orphan holding the
+// session pipes would keep the ssh channel open until the full timeout even on
+// the healthy path. Detached, the orphan is a benign self-reaping `sleep`.
+function withRemoteTimeout(remoteCommand, timeoutSecs = REMOTE_PROBE_TIMEOUT_SECS) {
+  const secs = Number.isFinite(timeoutSecs) && timeoutSecs > 0 ? Math.floor(timeoutSecs) : REMOTE_PROBE_TIMEOUT_SECS
+
+  // Job control (`set -m`) puts the probe in its own process group so the
+  // watchdog can also reach a grandchild left behind by a launcher that runs
+  // the CLI without exec. Non-interactive zsh exits when asked to enable
+  // monitor mode, so skip that setup there and fall back to killing the direct
+  // child. Other shells retain the process-group cleanup where supported.
+  return (
+    `[ -n "\${ZSH_VERSION-}" ] || set -m 2>/dev/null; (${remoteCommand}) </dev/null & __htp=$!; set +m 2>/dev/null; ` +
+    `(sleep ${secs} </dev/null >/dev/null 2>&1; kill -9 -- -$__htp 2>/dev/null; kill -9 $__htp 2>/dev/null) & __htw=$!; ` +
+    `wait $__htp; __htrc=$?; ` +
+    `kill $__htw 2>/dev/null; wait $__htw 2>/dev/null; ` +
+    `exit $__htrc`
+  )
+}
+
 // Bind the local end to 127.0.0.1 ONLY — never 0.0.0.0 — so the tunnel does not
 // re-expose the remote dashboard to the client's LAN.
 function forwardSpec(localPort, remotePort, remoteHost = '127.0.0.1') {
@@ -332,6 +397,7 @@ function forwardSpec(localPort, remotePort, remoteHost = '127.0.0.1') {
 const SSH_ERROR = {
   UNREACHABLE: 'unreachable',
   AUTH_FAILED: 'auth-failed',
+  INTERACTIVE_AUTH: 'interactive-auth',
   HOST_KEY_CHANGED: 'host-key-changed',
   TIMEOUT: 'timeout',
   UNKNOWN: 'unknown'
@@ -348,6 +414,12 @@ function classifySshError(stderr) {
     )
   ) {
     return SSH_ERROR.HOST_KEY_CHANGED
+  }
+
+  if (
+    /Tailscale SSH requires an additional check|To authenticate, visit:\s*https:\/\/login\.tailscale\.com\//i.test(text)
+  ) {
+    return SSH_ERROR.INTERACTIVE_AUTH
   }
 
   if (
@@ -388,6 +460,16 @@ function sshErrorMessage(kind, conn, stderr?) {
         `ssh-agent first (e.g. \`ssh-add ~/.ssh/id_ed25519\`), or set an IdentityFile in ` +
         `~/.ssh/config. Original error: ${String(stderr || '').trim()}`
       )
+    case SSH_ERROR.INTERACTIVE_AUTH: {
+      const portArg = conn.port && conn.port !== 22 ? ` -p ${conn.port}` : ''
+
+      return (
+        `Tailscale SSH requires an interactive browser check for ${host}. ` +
+        `Hermes Desktop runs SSH non-interactively. In Terminal, run ` +
+        `\`ssh${portArg} ${host} true\`, complete the browser check, then retry. ` +
+        `If checks recur, use a key-authenticated OpenSSH route or adjust the tailnet SSH check policy.`
+      )
+    }
 
     case SSH_ERROR.UNREACHABLE:
       return `Could not reach ${host} over SSH. Check the host, port, and your network. Original error: ${String(stderr || '').trim()}`
@@ -402,8 +484,9 @@ function sshErrorMessage(kind, conn, stderr?) {
 
 // Spawn helper — runs an ssh invocation, races it against a hard timeout
 
-// Resolves { code, stdout, stderr }. On timeout the child is SIGKILLed and the
-// promise rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
+// Resolves { code, signal, stdout, stderr }. `signal` is Node's close signal
+// (null on a normal exit). On timeout the child is SIGKILLed and the promise
+// rejects with err.kind = TIMEOUT. `spawnFn` is injectable for tests.
 function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData, signal }: any = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -448,6 +531,10 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
 
       const err: any = new Error(`ssh timed out after ${timeoutMs}ms`)
       err.kind = SSH_ERROR.TIMEOUT
+      // Keep only a safe classification of buffered stderr. Tailscale's
+      // browser-check line carries a one-time URL that must not escape through
+      // Desktop errors or lifecycle logs.
+      err.stderrKind = classifySshError(stderr)
       signal?.removeEventListener('abort', onAbort)
       reject(err)
     }, timeoutMs)
@@ -493,7 +580,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
       signal?.removeEventListener('abort', onAbort)
       reject(error)
     })
-    child.on('close', code => {
+    child.on('close', (code, closeSignal) => {
       if (settled) {
         return
       }
@@ -501,9 +588,35 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData,
       settled = true
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
-      resolve({ code, stdout, stderr })
+      resolve({ code, signal: closeSignal || null, stdout, stderr })
     })
   })
+}
+
+function sshCloseSignal(value) {
+  if (!value || typeof value === 'string') {
+    return null
+  }
+
+  return typeof value.signal === 'string' && value.signal ? value.signal : null
+}
+
+function sshCloseStderr(value) {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (value && typeof value.stderr === 'string') {
+    return value.stderr
+  }
+
+  return value?.message || ''
+}
+
+// A normal exit is code 0 and no close signal. A signal death is not success,
+// even when the caller would otherwise treat a null code as a plain failure.
+function sshCloseOk(result) {
+  return Boolean(result) && !sshCloseSignal(result) && result.code === 0
 }
 
 function stopTunnelChild(child, timeoutMs = 5_000) {
@@ -560,6 +673,9 @@ class SshConnection {
   _opened: boolean
   _mux: boolean
   _tunnels: Map<string, any>
+  _controlMasters: ControlMasterHolders
+  _forwardedSpecs: Set<string>
+  _controlKeepaliveTimer: ReturnType<typeof setInterval> | null
 
   constructor(cfg, opts: any = {}) {
     if (!cfg || !cfg.host) {
@@ -591,6 +707,8 @@ class SshConnection {
         })
       : ''
     this._tunnels = new Map()
+    this._controlMasters = opts.controlMasterHolders || sharedControlMasterHolders
+    this._forwardedSpecs = new Set()
 
     this._spawnFn = opts.spawnFn || spawn
 
@@ -600,6 +718,7 @@ class SshConnection {
     this._forwardTimeoutMs = opts.forwardTimeoutMs ?? DEFAULT_FORWARD_TIMEOUT_MS
     this._tunnelRestartLimit = opts.tunnelRestartLimit ?? DEFAULT_TUNNEL_RESTART_LIMIT
     this._tunnelRestartDelayMs = opts.tunnelRestartDelayMs ?? DEFAULT_TUNNEL_RESTART_DELAY_MS
+    this._controlKeepaliveTimer = null
     this._opened = false
   }
 
@@ -614,16 +733,57 @@ class SshConnection {
     }
 
     if (stderrOrErr && stderrOrErr.kind === SSH_ERROR.TIMEOUT) {
-      const err: any = new Error(sshErrorMessage(SSH_ERROR.TIMEOUT, this))
-      err.kind = SSH_ERROR.TIMEOUT
+      const kind =
+        stderrOrErr.stderrKind === SSH_ERROR.INTERACTIVE_AUTH ? SSH_ERROR.INTERACTIVE_AUTH : SSH_ERROR.TIMEOUT
+
+      const err: any = new Error(sshErrorMessage(kind, this))
+      err.kind = kind
 
       return err
     }
 
-    const stderr = typeof stderrOrErr === 'string' ? stderrOrErr : stderrOrErr?.message || ''
+    const closeSignal = sshCloseSignal(stderrOrErr)
+    const stderr = sshCloseStderr(stderrOrErr)
+
+    // A signal death with empty stderr is a local process death, not proof the
+    // host was unreachable. Callers that pass UNREACHABLE as the empty-stderr
+    // fallback must not win here.
+    if (closeSignal && !String(stderr).trim()) {
+      const detail = `ssh process exited from signal ${closeSignal}`
+      const err: any = new Error(sshErrorMessage(SSH_ERROR.UNKNOWN, this, detail))
+      err.kind = SSH_ERROR.UNKNOWN
+      err.signal = closeSignal
+
+      return err
+    }
+
     const kind = stderr ? classifySshError(stderr) : fallbackKind
     const err: any = new Error(sshErrorMessage(kind, this, stderr))
     err.kind = kind
+
+    if (closeSignal) {
+      err.signal = closeSignal
+    }
+
+    return err
+  }
+
+  // The classified error only reaches the caller (the renderer shows friendly
+  // copy for its kind), so record what ssh actually did — exit code, close
+  // signal, stderr — in desktop.log. Without it a connect that dies right after
+  // TCP setup leaves nothing to diagnose it by (#80836).
+  _connectFailed(raw) {
+    const err = this._fail(raw, SSH_ERROR.UNREACHABLE)
+
+    if (err?.kind !== 'superseded') {
+      const code = raw && typeof raw === 'object' && 'code' in raw ? String(raw.code) : '?'
+      const stderr = String(sshCloseStderr(raw)).trim().slice(-500) || '(empty)'
+
+      this._logLine(
+        `connect to ${target(this.user, this.host)}:${this.port} failed ` +
+          `(kind=${err.kind}, exit=${code}, signal=${sshCloseSignal(raw) || 'none'}): ${stderr}`
+      )
+    }
 
     return err
   }
@@ -632,6 +792,45 @@ class SshConnection {
   // a live master is a no-op). No-mux: there is no master; validate auth +
   // reachability with a one-shot `ssh true` so failures classify identically.
   async open({ signal }: any = {}) {
+    if (!this._mux) {
+      return this._open({ signal })
+    }
+
+    // Claim the socket before dialing: a stale connection closing while this
+    // one is still attaching must not exit the master out from under it.
+    this._controlMasters.acquire(this.controlPath, this)
+
+    try {
+      await this._open({ signal })
+    } catch (error) {
+      this._controlMasters.release(this.controlPath, this)
+      throw error
+    }
+  }
+
+  async _open({ signal }: any = {}) {
+    if (this._mux) {
+      const controlDir = path.dirname(this.controlPath)
+
+      if (process.platform !== 'win32' && controlDir === shortControlDir()) {
+        checkShortControlParent()
+      }
+
+      fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 })
+
+      if (process.platform !== 'win32') {
+        const st = fs.lstatSync(controlDir)
+
+        if (st.isSymbolicLink() || !st.isDirectory() || st.uid !== process.getuid!()) {
+          throw new Error(`Unsafe SSH control dir: ${controlDir} is not a directory owned by this user (no symlinks).`)
+        }
+
+        if ((st.mode & 0o777) !== 0o700) {
+          fs.chmodSync(controlDir, 0o700)
+        }
+      }
+    }
+
     if (await this.isAlive({ signal })) {
       // -O check passing is not proof the master works: a ControlPersist master
       // can survive a failed teardown with wedged channels (observed on macOS
@@ -658,45 +857,17 @@ class SshConnection {
           signal
         })
       } catch (error) {
-        throw this._fail(error, SSH_ERROR.UNREACHABLE)
+        throw this._connectFailed(error)
       }
 
-      if (result.code !== 0) {
-        throw this._fail(result.stderr, SSH_ERROR.UNREACHABLE)
+      if (!sshCloseOk(result)) {
+        throw this._connectFailed(result)
       }
 
       this._opened = true
       this._logLine('connection verified (no-mux; per-operation ssh)')
 
       return
-    }
-
-    const controlDir = path.dirname(this.controlPath)
-
-    try {
-      fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 })
-    } catch {
-      void 0
-    }
-
-    if (process.platform !== 'win32') {
-      const st = fs.lstatSync(controlDir)
-
-      if (st.isSymbolicLink()) {
-        throw new Error(`Unsafe SSH control dir: ${controlDir} is a symlink.`)
-      }
-
-      if (!st.isDirectory()) {
-        throw new Error(`Unsafe SSH control dir: ${controlDir} is not a directory.`)
-      }
-
-      if (st.uid !== process.getuid!()) {
-        throw new Error(`Unsafe SSH control dir: ${controlDir} is owned by uid ${st.uid}, not ${process.getuid!()}.`)
-      }
-
-      if ((st.mode & 0o777) !== 0o700) {
-        fs.chmodSync(controlDir, 0o700)
-      }
     }
 
     const args = buildMasterArgs(this, this._connectTimeoutMs)
@@ -706,11 +877,11 @@ class SshConnection {
     try {
       result = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
     } catch (error) {
-      throw this._fail(error, SSH_ERROR.UNREACHABLE)
+      throw this._connectFailed(error)
     }
 
-    if (result.code !== 0) {
-      throw this._fail(result.stderr, SSH_ERROR.UNREACHABLE)
+    if (!sshCloseOk(result)) {
+      throw this._connectFailed(result)
     }
 
     this._opened = true
@@ -731,7 +902,7 @@ class SshConnection {
     try {
       const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn, signal })
 
-      return result.code === 0
+      return sshCloseOk(result)
     } catch (error: any) {
       if (error?.kind === 'superseded') {
         throw error
@@ -739,6 +910,32 @@ class SshConnection {
 
       return false
     }
+  }
+
+  // `ssh -O forward` does not keep a ControlPersist master busy by itself.
+  // Refresh the mux while Desktop owns local forwards so the 300s idle timer
+  // cannot silently remove their listener sockets. The finite persist timeout
+  // still cleans up an orphaned master if Desktop crashes.
+  _startControlKeepalive() {
+    if (!this._mux || this._controlKeepaliveTimer || this._forwardedSpecs.size === 0) {
+      return
+    }
+
+    this._controlKeepaliveTimer = setInterval(() => {
+      // Remote liveness owns reconnect/teardown. Keep refreshing through a
+      // transient failed check rather than turning one timeout into expiry.
+      void this.isAlive()
+    }, CONTROL_FORWARD_KEEPALIVE_MS)
+    this._controlKeepaliveTimer.unref?.()
+  }
+
+  _stopControlKeepalive() {
+    if (!this._controlKeepaliveTimer) {
+      return
+    }
+
+    clearInterval(this._controlKeepaliveTimer)
+    this._controlKeepaliveTimer = null
   }
 
   // A real exec through the master (`exit 0` works under POSIX shells and
@@ -751,7 +948,7 @@ class SshConnection {
         signal
       })
 
-      return result.code === 0
+      return sshCloseOk(result)
     } catch (error: any) {
       if (error?.kind === 'superseded') {
         throw error
@@ -800,8 +997,8 @@ class SshConnection {
       throw this._fail(error)
     }
 
-    if (result.code !== 0) {
-      throw this._fail(result.stderr)
+    if (!sshCloseOk(result)) {
+      throw this._fail(result)
     }
 
     return result.stdout
@@ -994,9 +1191,12 @@ class SshConnection {
       throw this._fail(error)
     }
 
-    if (result.code !== 0) {
-      throw this._fail(result.stderr)
+    if (!sshCloseOk(result)) {
+      throw this._fail(result)
     }
+
+    this._forwardedSpecs.add(spec)
+    this._startControlKeepalive()
   }
 
   // Cancel a previously-established forward. Best-effort: a failure here is
@@ -1031,12 +1231,24 @@ class SshConnection {
       this._logLine(`cancelled forward 127.0.0.1:${localPort}`)
     } catch (error: any) {
       this._logLine(`cancelForward failed (ignored): ${error.message}`)
+    } finally {
+      this._forwardedSpecs.delete(spec)
+
+      if (this._forwardedSpecs.size === 0) {
+        this._stopControlKeepalive()
+      }
     }
   }
 
-  // Tear down. Mux: exit the master (drops every forward with it). No-mux:
-  // kill the tunnel children. Best-effort; never throws.
+  // Tear down. Mux: exit the master (drops every forward with it) unless
+  // another connection still holds the same ControlPath — then only release
+  // this connection's claim (#97264). No-mux: kill the tunnel children.
+  // Best-effort; never throws.
   async close() {
+    this._stopControlKeepalive()
+    this._forwardedSpecs.clear()
+    const action = this._mux ? this._controlMasters.release(this.controlPath, this) : 'exit-master'
+
     if (!this._opened) {
       return
     }
@@ -1061,13 +1273,22 @@ class SshConnection {
       return
     }
 
+    if (action === 'release-only') {
+      this._opened = false
+      this._logLine(
+        `control master left running: ${this._controlMasters.count(this.controlPath)} other connection(s) still use it`
+      )
+
+      return
+    }
+
     const args = buildControlArgs(this, 'exit', [], this._connectTimeoutMs)
 
     try {
       const result: any = await runSsh(args, { timeoutMs: this._connectTimeoutMs, spawnFn: this._spawnFn })
 
-      if (result.code !== 0) {
-        throw this._fail(result.stderr)
+      if (!sshCloseOk(result)) {
+        throw this._fail(result)
       }
 
       this._logLine('control master closed')
@@ -1127,6 +1348,7 @@ export {
   buildInteractiveSshArgs,
   buildMasterArgs,
   classifySshError,
+  CONTROL_FORWARD_KEEPALIVE_MS,
   CONTROL_PERSIST_SECONDS,
   controlSocketPath,
   createSshProbeConnection,
@@ -1137,6 +1359,7 @@ export {
   hostArgs,
   pickLocalPort,
   redactSecrets,
+  REMOTE_PROBE_TIMEOUT_SECS,
   runSsh,
   SSH_ERROR,
   SshConnection,
@@ -1144,5 +1367,6 @@ export {
   stopTunnelChild,
   target,
   validateKeyPath,
-  validateSshTarget
+  validateSshTarget,
+  withRemoteTimeout
 }

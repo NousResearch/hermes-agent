@@ -21,6 +21,7 @@ failure never retires the handle: it is re-queued and logged at warning.
 
 from __future__ import annotations
 
+from contextvars import copy_context
 import heapq
 import itertools
 import logging
@@ -37,7 +38,7 @@ _CALLBACK_THREAD_PREFIX = "hermes-periodic-callback"
 class ScheduledHandle:
     """Cancel token for one scheduled periodic callback."""
 
-    __slots__ = ("_fn", "_interval", "_cancelled", "_scheduler", "_runner")
+    __slots__ = ("_fn", "_interval", "_cancelled", "_scheduler", "_runner", "_context")
 
     def __init__(self, scheduler: "PeriodicScheduler", fn: Callable[[], object], interval: float):
         self._scheduler = scheduler
@@ -45,6 +46,8 @@ class ScheduledHandle:
         self._interval = interval
         self._cancelled = False
         self._runner: Optional[threading.Thread] = None
+        # Safe to reuse because this scheduler never overlaps runs of one handle.
+        self._context = copy_context()
 
     @property
     def cancelled(self) -> bool:
@@ -113,7 +116,7 @@ class PeriodicScheduler:
     def _run_callback(self, handle: ScheduledHandle) -> None:
         stop = False
         try:
-            stop = handle._fn() is False
+            stop = handle._context.run(handle._fn) is False
         except Exception:
             logger.debug("periodic callback %r raised", handle._fn, exc_info=True)
         finally:

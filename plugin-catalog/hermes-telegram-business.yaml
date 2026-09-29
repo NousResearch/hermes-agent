@@ -5,6 +5,7 @@ description: 'Observe-with-approval Telegram Business Mode (secretary bot): ever
   needs owner approval before it is sent.'
 maintainer: NousResearch
 tier: official
+category: platform
 docs_url: https://github.com/NousResearch/hermes-telegram-business
 platforms: []
 capabilities:

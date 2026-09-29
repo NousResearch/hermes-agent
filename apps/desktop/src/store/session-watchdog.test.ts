@@ -2,14 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { errorRecoveryPlan } from '@/lib/error-surface'
 
 import { $activeSessionId, $selectedStoredSessionId, $unreadFinishedSessionIds } from './session'
 import {
-  $attentionSessionIds,
+  $sessionStates,
   $stalledSessionIds,
   $workingSessionIds,
   clearAllSessionStates,
-  getRecentlySettledSessionIds,
+  LIVE_TURN_EVENT_SILENCE_MS,
+  noteSessionEvent,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS
 } from './session-states'
@@ -21,111 +23,6 @@ const WATCHDOG_MS = SESSION_WATCHDOG_TIMEOUT_MS
 function state(over: Partial<ClientSessionState> = {}): ClientSessionState {
   return { ...createClientSessionState(null), storedSessionId: 's1', ...over }
 }
-
-describe('session status transitions', () => {
-  beforeEach(() => {
-    vi.useFakeTimers()
-    vi.setSystemTime(0)
-    clearAllSessionStates()
-    $unreadFinishedSessionIds.set([])
-    $selectedStoredSessionId.set(null)
-    $activeSessionId.set(null)
-  })
-
-  afterEach(() => {
-    vi.runOnlyPendingTimers()
-    vi.useRealTimers()
-    clearAllSessionStates()
-    $unreadFinishedSessionIds.set([])
-    $selectedStoredSessionId.set(null)
-    $activeSessionId.set(null)
-  })
-
-  it('adds a session to $workingSessionIds when busy transitions to true', () => {
-    const s = state({ busy: false, storedSessionId: 's1' })
-    publishSessionState('rt1', s)
-
-    publishSessionState('rt1', { ...s, busy: true })
-
-    expect($workingSessionIds.get()).toContain('s1')
-  })
-
-  it('removes a session from $workingSessionIds when busy transitions to false', () => {
-    const working = state({ busy: true, storedSessionId: 's1' })
-    publishSessionState('rt1', working)
-
-    expect($workingSessionIds.get()).toContain('s1')
-
-    publishSessionState('rt1', { ...working, busy: false })
-
-    expect($workingSessionIds.get()).not.toContain('s1')
-  })
-
-  it('adds a session to $attentionSessionIds when needsInput is true', () => {
-    const s = state({ busy: true, needsInput: false, storedSessionId: 's1' })
-    publishSessionState('rt1', s)
-
-    publishSessionState('rt1', { ...s, needsInput: true })
-
-    expect($attentionSessionIds.get()).toContain('s1')
-  })
-
-  it('marks a background session unread when its turn finishes', () => {
-    $selectedStoredSessionId.set('other-session')
-    const working = state({ busy: true, storedSessionId: 's1' })
-    publishSessionState('rt1', working)
-
-    publishSessionState('rt1', { ...working, busy: false })
-
-    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
-  })
-
-  it('does NOT mark unread when the finishing session is the active one', () => {
-    $selectedStoredSessionId.set('s1')
-    const working = state({ busy: true, storedSessionId: 's1' })
-    publishSessionState('rt1', working)
-
-    publishSessionState('rt1', { ...working, busy: false })
-
-    expect($unreadFinishedSessionIds.get()).toEqual([])
-  })
-
-  it('does NOT mark unread on idle→idle re-asserts (no prior working state)', () => {
-    $selectedStoredSessionId.set('other-session')
-    publishSessionState('rt1', state({ busy: false, storedSessionId: 's1' }))
-
-    expect($unreadFinishedSessionIds.get()).toEqual([])
-  })
-
-  it('grants settle grace when a working session goes idle', () => {
-    $selectedStoredSessionId.set('other')
-    const working = state({ busy: true, storedSessionId: 's1' })
-    publishSessionState('rt1', working)
-
-    publishSessionState('rt1', { ...working, busy: false })
-
-    expect(getRecentlySettledSessionIds()).toEqual(['s1'])
-  })
-
-  it('does not grant grace on idle→idle re-asserts', () => {
-    publishSessionState('rt1', state({ busy: false, storedSessionId: 's1' }))
-    expect(getRecentlySettledSessionIds()).toEqual([])
-  })
-
-  it('clears settle grace when the session goes busy again', () => {
-    $selectedStoredSessionId.set('other')
-    const working = state({ busy: true, storedSessionId: 's2' })
-    publishSessionState('rt1', working)
-    const idle = { ...working, busy: false }
-    publishSessionState('rt1', idle)
-
-    expect(getRecentlySettledSessionIds()).toEqual(['s2'])
-
-    publishSessionState('rt1', { ...idle, busy: true })
-
-    expect(getRecentlySettledSessionIds()).toEqual([])
-  })
-})
 
 describe('session watchdog', () => {
   beforeEach(() => {
@@ -212,10 +109,6 @@ describe('computed $workingSessionIds', () => {
     clearAllSessionStates()
   })
 
-  it('is empty when no sessions are busy', () => {
-    expect($workingSessionIds.get()).toEqual([])
-  })
-
   it('reflects busy sessions under the id their surfaces key on', () => {
     publishSessionState('rt1', state({ busy: true, storedSessionId: 's1' }))
     publishSessionState('rt2', state({ busy: false, storedSessionId: 's2' }))
@@ -235,27 +128,145 @@ describe('computed $workingSessionIds', () => {
   })
 })
 
-describe('computed $attentionSessionIds', () => {
+const SILENCE_MS = LIVE_TURN_EVENT_SILENCE_MS
+
+function partial(text: string, over: Partial<ClientSessionState> = {}): ClientSessionState {
+  return state({
+    awaitingResponse: true,
+    busy: true,
+    messages: [
+      {
+        id: 'a1',
+        parts: [{ type: 'text', text }],
+        pending: true,
+        role: 'assistant'
+      }
+    ],
+    model: 'any-model',
+    sawAssistantPayload: true,
+    streamId: 'a1',
+    turnLive: true,
+    turnStartedAt: Date.now(),
+    ...over
+  })
+}
+
+describe('live turn event silence', () => {
   beforeEach(() => {
+    vi.useFakeTimers()
     clearAllSessionStates()
+    $unreadFinishedSessionIds.set([])
+    $selectedStoredSessionId.set(null)
+    $activeSessionId.set(null)
   })
 
   afterEach(() => {
+    vi.runOnlyPendingTimers()
+    vi.useRealTimers()
     clearAllSessionStates()
+    $unreadFinishedSessionIds.set([])
+    $selectedStoredSessionId.set(null)
+    $activeSessionId.set(null)
   })
 
-  it('reflects sessions with needsInput=true and a storedSessionId', () => {
-    publishSessionState('rt1', state({ needsInput: true, storedSessionId: 's1' }))
-    publishSessionState('rt2', state({ needsInput: false, storedSessionId: 's2' }))
+  it('force-settles a silent live turn even after a partial payload and offers retry', () => {
+    $activeSessionId.set('rt1')
+    publishSessionState('rt1', partial('partial answer', { model: 'glm-5.3-flash', storedSessionId: 's1' }))
+    noteSessionEvent('rt1')
 
-    expect($attentionSessionIds.get()).toEqual(['s1'])
+    vi.advanceTimersByTime(SILENCE_MS)
+
+    const settled = $sessionStates.get().rt1
+    expect($workingSessionIds.get()).not.toContain('s1')
+    expect(settled?.busy).toBe(false)
+    expect(settled?.awaitingResponse).toBe(false)
+    expect(settled?.turnLive).toBe(false)
+    expect(settled?.messages.every(message => !message.pending)).toBe(true)
+    expect(
+      settled?.messages.some(message =>
+        message.parts.some(part => part.type === 'text' && part.text === 'partial answer')
+      )
+    ).toBe(true)
+
+    const failed = settled?.messages.find(message => message.errorSurface)
+    expect(failed?.errorSurface?.retryable).toBe(true)
+    expect(errorRecoveryPlan(failed?.errorSurface).retry).toBe(true)
+    expect(failed?.error).not.toMatch(/glm|deepseek|interrupted mid-run/i)
   })
 
-  it('clears when $sessionStates is cleared', () => {
-    publishSessionState('rt1', state({ needsInput: true, storedSessionId: 's1' }))
-    expect($attentionSessionIds.get()).toEqual(['s1'])
+  it('force-settles a silent live turn that never produced a payload', () => {
+    $activeSessionId.set('rt-empty')
+    publishSessionState(
+      'rt-empty',
+      state({ awaitingResponse: true, busy: true, model: 'deepseek-chat', storedSessionId: 's-empty', turnLive: true })
+    )
+    noteSessionEvent('rt-empty')
 
-    clearAllSessionStates()
-    expect($attentionSessionIds.get()).toEqual([])
+    vi.advanceTimersByTime(SILENCE_MS)
+
+    const settled = $sessionStates.get()['rt-empty']
+    expect($workingSessionIds.get()).not.toContain('s-empty')
+    expect(settled?.busy).toBe(false)
+    expect(settled?.turnLive).toBe(false)
+    const failed = settled?.messages.find(message => message.role === 'assistant' && message.errorSurface)
+    expect(failed?.errorSurface?.retryable).toBe(true)
+    expect(errorRecoveryPlan(failed?.errorSurface).retry).toBe(true)
+  })
+
+  it('does not settle a live turn that keeps producing events', () => {
+    publishSessionState('rt-live', partial('still working', { storedSessionId: 's-live' }))
+    noteSessionEvent('rt-live')
+
+    vi.advanceTimersByTime(SILENCE_MS - 1)
+    noteSessionEvent('rt-live')
+    vi.advanceTimersByTime(SILENCE_MS - 1)
+
+    expect($workingSessionIds.get()).toContain('s-live')
+    expect($sessionStates.get()['rt-live']?.messages.some(message => message.errorSurface)).toBe(false)
+  })
+
+  it('does not settle a turn the user is still answering', () => {
+    publishSessionState('rt-ask', partial('need a choice', { needsInput: true, storedSessionId: 's-ask' }))
+    noteSessionEvent('rt-ask')
+
+    vi.advanceTimersByTime(SILENCE_MS)
+
+    expect($workingSessionIds.get()).toContain('s-ask')
+    expect($sessionStates.get()['rt-ask']?.messages.some(message => message.errorSurface)).toBe(false)
+  })
+
+  it('settles only the session that stopped producing events', () => {
+    $activeSessionId.set('rt-a')
+    publishSessionState('rt-a', partial('a', { storedSessionId: 's-a' }))
+    publishSessionState('rt-b', partial('b', { storedSessionId: 's-b' }))
+    noteSessionEvent('rt-a')
+    noteSessionEvent('rt-b')
+
+    vi.advanceTimersByTime(SILENCE_MS - 1)
+    noteSessionEvent('rt-b')
+    vi.advanceTimersByTime(1)
+
+    expect($workingSessionIds.get()).not.toContain('s-a')
+    expect($workingSessionIds.get()).toContain('s-b')
+    expect($sessionStates.get()['rt-a']?.messages.some(message => message.errorSurface?.retryable)).toBe(true)
+    expect($sessionStates.get()['rt-b']?.busy).toBe(true)
+  })
+
+  it('does not stamp a retry when the turn settles before the silence window', () => {
+    const working = partial('done soon', { storedSessionId: 's-done' })
+    publishSessionState('rt-done', working)
+    noteSessionEvent('rt-done')
+    publishSessionState('rt-done', {
+      ...working,
+      awaitingResponse: false,
+      busy: false,
+      messages: working.messages.map(message => ({ ...message, pending: false })),
+      turnLive: false
+    })
+
+    vi.advanceTimersByTime(SILENCE_MS)
+
+    expect($sessionStates.get()['rt-done']?.messages.some(message => message.errorSurface)).toBe(false)
+    expect($workingSessionIds.get()).not.toContain('s-done')
   })
 })

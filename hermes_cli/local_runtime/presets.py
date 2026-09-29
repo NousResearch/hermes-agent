@@ -6,11 +6,11 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from hermes_cli.local_runtime.context_policy import (
-    RUNTIME_OVERHEAD_BYTES, launch_args, plan_launch, ub_logits_bytes)
+    RUNTIME_OVERHEAD_BYTES, fit_to_free_memory, launch_args, plan_launch, ub_logits_bytes)
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget, PhysicsRefusal, ctx_bytes, footprint_bytes, profile_from_gguf)
 from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
@@ -77,8 +77,13 @@ def _draft_fits(path: Path, profile, budget: HardwareBudget, window: int, overhe
 
 
 def preset_for_model(gguf: Path, budget: HardwareBudget,
-                     mtp_capable: set[str], *, requested_window: int | None = None) -> PresetEntry | None:
-    """The launch decision for one staged model, or None when its header is unreadable."""
+                     mtp_capable: set[str], *, requested_window: int | None = None,
+                     live: HardwareBudget | None = None) -> PresetEntry | None:
+    """The launch decision for one staged model, or None when its header is unreadable.
+
+    ``budget`` is the card's capacity; ``live`` (from ``hardware.launch_budget``) narrows the
+    window to what fits beside other programs now.
+    """
     from hermes_cli.local_runtime.catalog import entry_for_model
     from hermes_cli.local_runtime.growth import load_window_overrides
 
@@ -98,6 +103,9 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     plan = plan_launch(profile, budget, mtp_capable=is_mtp, fixed_overhead=fixed_overhead,
                        requested_window=(load_window_overrides().get(model_id)
                                          if requested_window is None else requested_window))
+    if live is not None:
+        plan = fit_to_free_memory(plan, profile, live, mtp_capable=is_mtp,
+                                  fixed_overhead=fixed_overhead)
     decision = plan.decision
     if isinstance(decision, PhysicsRefusal):
         return PresetEntry(model_id=model_id, window=0, spilled=False, refusal=decision.message)
@@ -134,19 +142,111 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
                        spilled=decision.spilled, keys=keys)
 
 
-def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
-                     mtp_capable: set[str] | None = None) -> list[PresetEntry]:
-    """Walk the staged models, run the launch decision per model, and write one INI. Refused
-    models get no section (the picker surfaces the refusal from the returned entries)."""
+def resident_footprint(gguf: Path, budget: HardwareBudget, window: int) -> int | None:
+    """Estimated bytes one staged model holds while loaded at ``window``, or None when unreadable."""
+    from hermes_cli.local_runtime.catalog import entry_for_model
+
+    model_id = model_id_from_stem(gguf.stem)
+    try:
+        profile = profile_from_gguf(read_gguf_header(gguf))
+    except (ValueError, OSError) as exc:
+        logger.debug("footprint skip %s: %s", gguf.name, exc)
+        return None
+    entry = entry_for_model(model_id)
+    is_mtp = entry.mtp if entry is not None else False
+    mmproj = entry.mmproj.size_bytes if entry is not None and _asset_path(entry.mmproj) else 0
+    plan = plan_launch(profile, budget, mtp_capable=is_mtp,
+                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + mmproj, requested_window=window)
+    if is_mtp and profile.kv_scale == 1.0:
+        profile = replace(profile, kv_scale=1.2)
+    return footprint_bytes(profile, window, overhead_bytes=plan.overhead_bytes)
+
+
+def _launch_footprint(gguf: Path, budget: HardwareBudget) -> int | None:
+    """Estimated resident bytes for one staged model at the window this policy grants it, or None
+    when it cannot be priced: an unreadable header, or a model the physics check refuses outright
+    (it never loads, so it must not shrink the residency cap)."""
+    from hermes_cli.local_runtime.catalog import entry_for_model
+    from hermes_cli.local_runtime.growth import load_window_overrides
+
+    model_id = model_id_from_stem(gguf.stem)
+    try:
+        profile = profile_from_gguf(read_gguf_header(gguf))
+    except (ValueError, OSError) as exc:
+        logger.debug("footprint skip %s: %s", gguf.name, exc)
+        return None
+    entry = entry_for_model(model_id)
+    is_mtp = entry.mtp if entry is not None else False
+    mmproj = entry.mmproj.size_bytes if entry is not None and _asset_path(entry.mmproj) else 0
+    plan = plan_launch(profile, budget, mtp_capable=is_mtp,
+                       fixed_overhead=RUNTIME_OVERHEAD_BYTES + mmproj,
+                       requested_window=load_window_overrides().get(model_id))
+    if isinstance(plan.decision, PhysicsRefusal):
+        return None
+    # Priced whole even when the plan spills: a spilled model still holds part of its weights on
+    # the device, and over-counting errs toward the side that cannot thrash.
+    return footprint_bytes(profile, plan.decision.window, overhead_bytes=plan.overhead_bytes)
+
+
+def admitted_residency_count(models_dir: Path, budget: HardwareBudget, configured: int) -> int:
+    """How many models the card may hold resident at once: priced against the budget, not a count.
+
+    Residency used to be bounded by a count alone, so a second model was admitted against an
+    already-full card. On Windows/WDDM that over-commit is not refused — the allocation is paged
+    to host memory, and that child decodes at a third of its speed for the rest of its life: no
+    error, no UI hint, and ejecting the incumbent afterwards does not repair it (only a clean
+    reload does). Capping the count instead has llama.cpp evict its LRU *before* the incoming
+    child allocates, which is the only placement that fits.
+
+    The cap rises above one only while the LARGEST staged model still fits TWICE — any pair of
+    staged models then fits by construction. ``configured`` stays a ceiling (a user's smaller
+    number is honoured), and an unpriceable input (no usable device memory, no readable model)
+    keeps today's behaviour.
+    """
     from hermes_cli.local_runtime.bootstrap import staged_in
 
-    entries: list[PresetEntry] = []
-    sections: list[str] = []
+    if configured <= 1 or budget.usable_vram_bytes <= 0:
+        return configured
+    largest = 0
     for gguf in staged_in(models_dir):
-        entry = preset_for_model(gguf, budget, mtp_capable or set())
-        if entry is None:
-            continue
-        entries.append(entry)
+        need = _launch_footprint(gguf, budget)
+        if need:
+            largest = max(largest, need)
+    if largest <= 0:
+        return configured
+    return max(1, min(configured, budget.usable_vram_bytes // largest))
+
+
+def plan_presets(models_dir: Path, budget: HardwareBudget, mtp_capable: set[str] | None = None,
+                 *, live: HardwareBudget | None = None) -> list[PresetEntry]:
+    """The launch decision for every staged model; unreadable headers are skipped."""
+    from hermes_cli.local_runtime.bootstrap import staged_in
+
+    entries = (preset_for_model(gguf, budget, mtp_capable or set(), live=live)
+               for gguf in staged_in(models_dir))
+    return [entry for entry in entries if entry is not None]
+
+
+def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path,
+                     mtp_capable: set[str] | None = None, *,
+                     live: HardwareBudget | None = None) -> list[PresetEntry]:
+    """Plan every staged model and write one INI. Refused models get no section (the picker
+    surfaces the refusal from the returned entries)."""
+    entries = plan_presets(models_dir, budget, mtp_capable, live=live)
+    write_presets(entries, preset_path)
+    return entries
+
+
+def write_presets(entries: list[PresetEntry], preset_path: Path) -> None:
+    from utils import atomic_write_text
+
+    atomic_write_text(preset_path, render_presets(entries), tmp_prefix=f".{preset_path.name}_", mode=0o600)
+    logger.info("wrote %d preset sections to %s", sum(e.keys is not None for e in entries), preset_path)
+
+
+def render_presets(entries: list[PresetEntry]) -> str:
+    sections: list[str] = []
+    for entry in entries:
         # INI comments preserve non-flag facts atomically with the launch policy.
         sections.append("# hermes-decision: " + json.dumps({
             "model_id": entry.model_id, "window": entry.window,
@@ -154,20 +254,7 @@ def generate_presets(models_dir: Path, budget: HardwareBudget, preset_path: Path
         if entry.keys is not None:
             body = "\n".join(f"{k} = {v}" for k, v in entry.keys.items())
             sections.append(f"[{entry.model_id}]\n{body}\n")
-
-    preset_path.parent.mkdir(parents=True, exist_ok=True)
-    import os
-    import tempfile
-
-    fd, tmp = tempfile.mkstemp(prefix=preset_path.name, suffix=".tmp", dir=preset_path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write("\n".join(sections))
-        os.replace(tmp, preset_path)
-    finally:
-        Path(tmp).unlink(missing_ok=True)
-    logger.info("wrote %d preset sections to %s", sum(e.keys is not None for e in entries), preset_path)
-    return entries
+    return "\n".join(sections)
 
 
 def read_preset_decisions(preset_path: Path | None = None) -> dict[str, PresetEntry]:
@@ -182,7 +269,7 @@ def read_preset_decisions(preset_path: Path | None = None) -> dict[str, PresetEn
     out: dict[str, PresetEntry] = {}
     try:
         parser = configparser.ConfigParser(interpolation=None)
-        text = preset_path.read_text(encoding="utf-8")
+        text = preset_path.read_text(encoding="utf-8-sig")
         parser.read_string(text)
         recorded = {}
         for line in text.splitlines():

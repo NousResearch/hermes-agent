@@ -17,6 +17,7 @@ import { createPluginI18n, type PluginI18n } from '@/i18n'
 import { readKey, writeKey } from '@/lib/storage'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
 
+import { type GatewayEventListener, onGatewayEvent } from './events'
 import { registry } from './registry'
 import type { Contribution } from './types'
 
@@ -83,6 +84,26 @@ export interface PluginContext {
    *  that aren't contributions or sockets (store subscriptions, timers). Runs
    *  alongside every other disposer when the plugin deactivates. */
   onDispose: (fn: () => void) => void
+  /** Hear the gateway stream by event type (`'*'` = everything). Tracked like
+   *  every other registration: unload/reload/disable removes the listener, so
+   *  a subscription made after `register()` returns (a timer, a socket
+   *  callback) can never outlive the plugin the way a bare `host.onEvent`
+   *  there would. */
+  onEvent: (type: string, listener: GatewayEventListener) => () => void
+  /** Scoped timers: cleared when the plugin unloads/reloads/disables, so a
+   *  poller cannot outlive the plugin the way a bare `setInterval` does (the
+   *  host never sees a bare global — it is the author's leak). Each returns
+   *  a disposer that cancels early. */
+  setTimeout: (fn: () => void, ms: number) => () => void
+  setInterval: (fn: () => void, ms: number) => () => void
+  /** Scoped `addEventListener` on any target (window, document, a node):
+   *  removed on unload/reload/disable. Returns a disposer. */
+  addEventListener: (
+    target: EventTarget,
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: AddEventListenerOptions | boolean
+  ) => () => void
   /** REST to this plugin's own backend namespace (`/api/plugins/<id>`); `path`
    *  is relative ('/board'). The sanctioned door for a plugin that ships a
    *  `plugin_api.py` — profile-aware, namespace-scoped by construction. Use
@@ -194,6 +215,61 @@ function createPluginOs(pluginId: string): PluginOs {
   }
 }
 
+/** Timers and DOM listeners a plugin takes out through `ctx`, retired as ONE
+ *  tracked disposer. A fired timeout drops out of the set on its own, so a
+ *  long-lived plugin firing many one-shots does not accumulate cleanups. */
+function createPluginLifetime(track: (dispose: () => void) => () => void) {
+  const cleanups = new Set<() => void>()
+  let tracked = false
+
+  const scoped = (cleanup: () => void) => {
+    // Registered with the host on first use, so a plugin that never takes a
+    // timer or listener out adds nothing to its disposer list.
+    if (!tracked) {
+      tracked = true
+      track(() => {
+        cleanups.forEach(pending => pending())
+        cleanups.clear()
+      })
+    }
+
+    cleanups.add(cleanup)
+
+    return () => {
+      cleanups.delete(cleanup)
+      cleanup()
+    }
+  }
+
+  return {
+    setTimeout: (fn: () => void, ms: number) => {
+      const clear = () => globalThis.clearTimeout(id)
+
+      const id = globalThis.setTimeout(() => {
+        cleanups.delete(clear)
+        fn()
+      }, ms)
+
+      return scoped(clear)
+    },
+    setInterval: (fn: () => void, ms: number) => {
+      const id = globalThis.setInterval(fn, ms)
+
+      return scoped(() => globalThis.clearInterval(id))
+    },
+    addEventListener: (
+      target: EventTarget,
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: AddEventListenerOptions | boolean
+    ) => {
+      target.addEventListener(type, listener, options)
+
+      return scoped(() => target.removeEventListener(type, listener, options))
+    }
+  }
+}
+
 /** Build the scoped context handed to a plugin's `register`. `onDispose`
  *  receives every registration's disposer (the loader's unload/reload hook). */
 export function createPluginContext(pluginId: string, onDispose?: (dispose: () => void) => void): PluginContext {
@@ -211,6 +287,8 @@ export function createPluginContext(pluginId: string, onDispose?: (dispose: () =
     register: c => track(registry.register(scope(c))),
     registerMany: cs => track(registry.registerMany(cs.map(scope))),
     onDispose: fn => void track(fn),
+    onEvent: (type, listener) => track(onGatewayEvent(type, listener)),
+    ...createPluginLifetime(track),
     rest: <T>(path: string, opts?: PluginRestOptions) => pluginRest<T>(pluginId, path, opts),
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
     os: createPluginOs(pluginId),

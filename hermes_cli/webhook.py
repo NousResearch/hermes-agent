@@ -29,7 +29,7 @@ def _load_subscriptions() -> Dict[str, dict]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -62,6 +62,12 @@ def _get_webhook_base_url() -> str:
     if ":" in display_host and not display_host.startswith("["):
         display_host = f"[{display_host}]"
     return f"http://{display_host}:{wh.get('port', 8644)}"
+
+
+def _route_url(name: str, route: dict) -> str:
+    profile = route.get("profile", "default")
+    prefix = f"/p/{profile}" if profile != "default" else ""
+    return f"{_get_webhook_base_url()}{prefix}/webhooks/{name}"
 
 
 def _setup_hint() -> str:
@@ -112,7 +118,22 @@ def _cmd_subscribe(args):
 
     subs = _load_subscriptions()
     is_update = name in subs
-    secret = args.secret or secrets.token_urlsafe(32)
+    existing = subs.get(name, {})
+    profile_arg = getattr(args, "route_profile", None)
+    if profile_arg is None:
+        profile = existing.get("profile", "default")
+    else:
+        from hermes_cli.profiles import normalize_profile_name, profile_exists, validate_profile_name
+        try:
+            profile = normalize_profile_name(profile_arg)
+            validate_profile_name(profile)
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return
+        if not profile_exists(profile):
+            print(f"Error: Profile '{profile}' does not exist.")
+            return
+    secret = args.secret or existing.get("secret") or secrets.token_urlsafe(32)
     events = [e.strip() for e in args.events.split(",")] if args.events else []
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
@@ -121,15 +142,39 @@ def _cmd_subscribe(args):
         "prompt": args.prompt or "",
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
         "deliver": args.deliver or "log",
+        "profile": profile,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     if getattr(args, "deliver_only", False):
+        if getattr(args, "cron_job", ""):
+            print(
+                "Error: --deliver-only and --cron-job are mutually exclusive. "
+                "--deliver-only pushes the rendered template as a message; "
+                "--cron-job fires an existing cron job (which handles its own "
+                "delivery)."
+            )
+            return
         if route["deliver"] == "log":
             print(
                 "Error: --deliver-only requires --deliver to be a real target "
                 "(telegram, discord, slack, github_comment, etc.) — not 'log'.")
             return
         route["deliver_only"] = True
+    if getattr(args, "mirror_to_session", False):
+        route["mirror_to_session"] = True
+    cron_job = (getattr(args, "cron_job", "") or "").strip()
+    if cron_job:
+        # Validate the reference up-front so a typo surfaces here, not on the first inbound event.
+        from cron.jobs import AmbiguousJobReference, resolve_job_ref
+        try:
+            job = resolve_job_ref(cron_job)
+        except AmbiguousJobReference as e:
+            print(f"Error: {e}")
+            return
+        if job is None:
+            print(f"Error: no cron job matches '{cron_job}'. List jobs with: hermes cron list")
+            return
+        route["cron_job"] = job["id"]
     script = (getattr(args, "script", "") or "").strip()
     if script:
         route["script"] = script
@@ -139,12 +184,17 @@ def _cmd_subscribe(args):
     _save_subscriptions(subs)
 
     print(f"\n  {'Updated' if is_update else 'Created'} webhook subscription: {name}")
-    print(f"  URL:    {_get_webhook_base_url()}/webhooks/{name}")
+    print(f"  URL:    {_route_url(name, route)}")
+    print(f"  Profile: {profile}")
     print(f"  Secret: {secret}")
     print(f"  Events: {', '.join(events) or '(all)'}")
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
+    if route.get("mirror_to_session"):
+        print("  Replies: each delivery is mirrored into the target chat's session")
+    if route.get("cron_job"):
+        print(f"  Mode: cron-job trigger — fires job '{route['cron_job']}' on each event")
     if route.get("prompt"):
         prompt_preview = route["prompt"][:80] + ("..." if len(route["prompt"]) > 80 else "")
         print(f"  {'Message' if route.get('deliver_only') else 'Prompt'}: {prompt_preview}")
@@ -162,18 +212,21 @@ def _cmd_list(args):
         print("  Create one with: hermes webhook subscribe <name>")
         return
 
-    base_url = _get_webhook_base_url()
     print(f"\n  {len(subs)} webhook subscription(s):\n")
     for name, route in subs.items():
         events = ", ".join(route.get("events", [])) or "(all)"
         deliver = route.get("deliver", "log")
         if route.get("deliver_only"):
             deliver = f"{deliver} (direct — no agent)"
+        if route.get("cron_job"):
+            deliver = f"cron job '{route['cron_job']}'"
         desc = route.get("description", "")
         print(f"  ◆ {name}")
         if desc:
             print(f"    {desc}")
-        print(f"    URL:     {base_url}/webhooks/{name}")
+        profile = route.get("profile", "default")
+        print(f"    URL:     {_route_url(name, route)}")
+        print(f"    Profile: {profile}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
         if route.get("script"):
@@ -201,7 +254,7 @@ def _cmd_test(args):
         print(f"  No subscription named '{name}'.")
         return
     secret = subs[name].get("secret", "")
-    url = f"{_get_webhook_base_url()}/webhooks/{name}"
+    url = _route_url(name, subs[name])
     payload = args.payload or '{"test": true, "event_type": "test", "message": "Hello from hermes webhook test"}'
     sig = "sha256=" + hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
     print(f"  Sending test POST to {url}")
@@ -224,27 +277,3 @@ _ACTIONS = {
     "list": _cmd_list, "ls": _cmd_list,
     "remove": _cmd_remove, "rm": _cmd_remove,
     "test": _cmd_test}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import os  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'atomic_replace': ('utils', 'atomic_replace'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

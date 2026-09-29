@@ -232,9 +232,10 @@ async def test_pinned_mautrix_typed_edit_keeps_new_content(include_new_content: 
 
     assert isinstance(decrypted_edit.content.serialize().get("m.new_content"), dict)
     assert state == (
-        MatrixEffectiveEvent({"msgtype": "m.text", "body": "after"}, original["content"], edited=True, replacement_id="$edit")
+        MatrixEffectiveEvent({"msgtype": "m.text", "body": "after"}, original["content"], edited=True, replacement_id="$edit",
+                             event_type="m.room.message")
         if include_new_content else
-        MatrixEffectiveEvent({"msgtype": "m.text", "body": "before"}, original["content"])
+        MatrixEffectiveEvent({"msgtype": "m.text", "body": "before"}, original["content"], event_type="m.room.message")
     )
 
 

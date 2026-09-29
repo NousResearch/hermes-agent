@@ -77,7 +77,7 @@ async def history_entry(
         )
         stored = cache.store_resolved(room_id, event_id, entry, before)
         return (stored, state.plain_original_content) if stored is not None else None
-    body = poll_context(content, raw.get("type")) or content.get("body")
+    body = poll_context(content, state.event_type) or content.get("body")
     if not isinstance(body, str):
         return None
     body = body.strip()

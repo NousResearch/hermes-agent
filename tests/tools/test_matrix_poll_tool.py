@@ -161,3 +161,35 @@ async def test_results_and_writes_fail_closed_and_polls_remain_passive(problem):
             "msgtype": None, "thread_id": None, "timestamp": 50, "sender_authorized": True,
         }], "errors": []}
         assert entry.text == visible["events"][0]["body"]
+
+
+@pytest.mark.asyncio
+async def test_encrypted_stable_poll_end_appears_in_reads_and_history():
+    from mautrix.types.event.base import GenericEvent
+
+    content = {"m.relates_to": {"rel_type": "m.reference", "event_id": "$poll"},
+               "m.text": [{"body": "The poll has closed."}]}
+    clear: Any = {"room_id": ROOM, "event_id": "$end", "sender": "@alice:server",
+                  "origin_server_ts": 70, "type": "m.poll.end", "content": content}
+    decrypted = GenericEvent.deserialize(clear)
+    encrypted = {"room_id": ROOM, "event_id": "$end", "sender": "@alice:server", "origin_server_ts": 70,
+                 "type": "m.room.encrypted", "content": {
+                     "algorithm": "m.megolm.v1.aes-sha2", "ciphertext": "x", "session_id": "s",
+                     "m.relates_to": content["m.relates_to"]}}
+
+    async def request(method, path, **kwargs):
+        return encrypted if "/event/" in path else {"chunk": []}
+
+    client = SimpleNamespace(api=SimpleNamespace(request=AsyncMock(side_effect=request)),
+                             crypto=SimpleNamespace(decrypt_megolm_event=AsyncMock(return_value=decrypted)))
+    adapter = adapter_for(client, "@bot:server")
+
+    visible = await read_matrix_context(adapter, "event", ROOM, "$end", 1, requester="@alice:server")
+    parsed = await history_entry(client, encrypted, MatrixEventContextCache(), ROOM)
+
+    closure = "[poll end event; closure authority must be checked]"
+    assert visible == {"events": [{
+        "event_id": "$end", "sender": "@alice:server", "body": closure,
+        "msgtype": None, "thread_id": None, "timestamp": 70, "sender_authorized": True,
+    }], "errors": []}
+    assert parsed is not None and parsed[0].text == closure

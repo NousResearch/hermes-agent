@@ -179,6 +179,10 @@ class MatrixApprovalMixin:
         prompt = self._approval_prompts_by_event.get(reacts_to)
         if prompt is None:
             return False
+        if prompt.resolved:
+            # A decided card keeps its reactions until its terminal edit lands, so no other
+            # reaction handler acts on an approval card.
+            return True
         task = self._create_approval_task(
             self._resolve_matrix_approval_reaction(room_id, reacts_to, key, sender, prompt),
             prompt,

@@ -931,3 +931,52 @@ def test_continuation_uses_live_store_policy_and_current_membership(
                 source.user_id,
                 "group",
             )
+
+
+@pytest.mark.parametrize(
+    ("attach", "revalidation_error", "refreshes"),
+    [
+        (False, None, [False]),
+        (True, None, [False, True]),
+        (True, "members unavailable", [False, True]),
+    ],
+)
+def test_membership_is_refreshed_only_before_continuation_bookkeeping(
+    destinations, caplog, attach, revalidation_error, refreshes
+):
+    """Delivery reuses the synced room identity. The owner refreshes it only when a seed or
+    mirror follows, and a failed refresh skips that bookkeeping without reporting the delivered
+    message as failed."""
+    import logging
+
+    runner, owners = destinations
+    home, adapter, room = owners["default"]
+    resolve_identity = adapter._resolve_room_identity
+    seen = []
+
+    async def identity(room_id, *, force_refresh=False):
+        seen.append(force_refresh)
+        if force_refresh and revalidation_error:
+            raise ValueError(revalidation_error)
+        return await resolve_identity(room_id, force_refresh=force_refresh)
+
+    adapter._resolve_room_identity = identity
+    with (
+        _profile_runtime_scope(home, {}),
+        caplog.at_level(logging.INFO, logger="cron.scheduler"),
+    ):
+        error = _deliver_result(
+            {"id": "refresh", "deliver": f"matrix:{room}", "attach_to_session": attach},
+            "Scheduled brief",
+            runner.adapters,
+            SimpleNamespace(is_running=lambda: True),
+        )
+
+    seeded = [key for key in adapter._session_store._entries if room in key]
+    assert (error, seen, bool(seeded)) == (
+        None,
+        refreshes,
+        attach and not revalidation_error,
+    )
+    assert "live adapter delivery" not in caplog.text
+    assert ("continuation skipped" in caplog.text) == bool(revalidation_error)

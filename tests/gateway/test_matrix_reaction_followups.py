@@ -1274,7 +1274,8 @@ def test_split_matrix_send_reports_every_delivered_event():
                 return ["abcd", "ef"]
 
         adapter = object.__new__(SplitAdapter)
-        adapter._check_room_encryption = AsyncMock(return_value=False)
+        adapter._e2ee_mode = "off"
+        adapter._client = None
         adapter.max_message_length = 4
         adapter.format_message = lambda text: text
         adapter._build_text_message_content = lambda text: {"body": text}

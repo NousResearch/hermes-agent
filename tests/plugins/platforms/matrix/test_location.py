@@ -113,6 +113,47 @@ def room_message(event, text):
         ),
         (
             {
+                "geo_uri": "geo:1,2;u=3",
+                "body": "Location geo:1,2;u=3 at 2026-09-29T10:00:00.000Z",
+                "org.matrix.msc3488.location": {"uri": "geo:1,2;u=3"},
+            },
+            "📍 Location: 1.0, 2.0; uncertainty: 3.0 m",
+        ),
+        (
+            {
+                "geo_uri": "geo:1,2",
+                "body": "User Location geo:1,2 at 2026-09-29T10:00:00.000Z",
+            },
+            "📍 Location: 1.0, 2.0",
+        ),
+        (
+            {
+                "geo_uri": "geo:1,2;u=3",
+                "body": "Location was shared at geo:1,2;u=3",
+            },
+            "📍 Location: 1.0, 2.0; uncertainty: 3.0 m",
+        ),
+        (
+            {
+                "geo_uri": "geo:1,2",
+                "body": "geo:1,2",
+                "org.matrix.msc3488.location": {
+                    "uri": "geo:1,2",
+                    "description": "geo:1,2",
+                },
+            },
+            "📍 Location: 1.0, 2.0",
+        ),
+        (
+            {
+                "geo_uri": "geo:1,2",
+                "body": "Meeting point",
+                "org.matrix.msc3488.location": {"description": "geo:1,2"},
+            },
+            "📍 Location: 1.0, 2.0 (Meeting point)",
+        ),
+        (
+            {
                 "geo_uri": "geo:40.5694,9.7845",
                 "org.matrix.msc3488.location": {"description": "Current position"},
             },

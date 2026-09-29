@@ -16,6 +16,7 @@ _GEO_URI = re.compile(
     re.IGNORECASE | re.ASCII,
 )
 _UNCERTAINTY = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+_DEFAULT_LABELS = frozenset({"Location", "Posizione"})
 
 
 @dataclass(frozen=True)
@@ -26,9 +27,7 @@ class GeoPoint:
     uncertainty: float | None = None
 
     @classmethod
-    def from_uri(cls, uri: object) -> GeoPoint | None:
-        if not isinstance(uri, str):
-            return None
+    def from_uri(cls, uri: str) -> GeoPoint | None:
         match = _GEO_URI.fullmatch(uri)
         if match is None:
             return None
@@ -79,21 +78,31 @@ class GeoPoint:
         return text
 
 
+def _label(text: object, uri: str) -> str | None:
+    if not isinstance(text, str):
+        return None
+    text = text.strip()
+    # Clients write generated text when the sender gives no label: matrix-js-sdk
+    # sends "Location <uri> at <time>", Element X "Location was shared at <uri>",
+    # and Element Android sets the body and the MSC3488 description to the URI.
+    if not text or text in _DEFAULT_LABELS or uri in text:
+        return None
+    return text
+
+
 def format_location_content(content: Mapping[str, object]) -> str | None:
     location = content.get("org.matrix.msc3488.location")
     if not isinstance(location, dict):
         location = {}
-    point = GeoPoint.from_uri(location.get("uri", content.get("geo_uri")))
+    uri = location.get("uri", content.get("geo_uri"))
+    if not isinstance(uri, str):
+        return None
+    point = GeoPoint.from_uri(uri)
     if point is None:
         return None
 
-    description = location.get("description")
     text = point.as_text()
-    if isinstance(description, str) and description.strip():
-        text += f" ({description.strip()})"
-        return text
-
-    body = content.get("body")
-    if isinstance(body, str) and body.strip() not in ("", "Location", "Posizione"):
-        text += f" ({body.strip()})"
+    label = _label(location.get("description"), uri) or _label(content.get("body"), uri)
+    if label is not None:
+        text += f" ({label})"
     return text

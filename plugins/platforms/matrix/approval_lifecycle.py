@@ -136,7 +136,7 @@ class MatrixApprovalMixin:
         """Reaction-driven approval: the bot seeds one reaction per offered choice."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        approval_id = str((prompt.metadata or {}).get("approval_id") or "")
+        approval_id = str(prompt.request_id or (prompt.metadata or {}).get("approval_id") or "")
         if not approval_id:
             # Without the exact request, a reaction on this card could answer another command.
             return SendResult(success=False, error="Matrix approval cards need the request's approval_id")

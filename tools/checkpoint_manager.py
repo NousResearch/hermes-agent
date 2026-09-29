@@ -1153,6 +1153,9 @@ class CheckpointManager:
         )
         if not ok:
             return {"success": False, "error": f"Could not inspect checkpoint: {err}"}
+        # ``_run_git`` decodes ``-z`` output with ``os.fsdecode``.  Split the
+        # decoded NUL stream directly: encoding the whole string as UTF-8
+        # would reject POSIX surrogate escapes for valid non-UTF-8 filenames.
         nested_repos = [
             record.split("\t", 1)[1]
             for record in tree_out.split("\x00")

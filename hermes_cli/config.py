@@ -2050,16 +2050,25 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     return loaded
 
 
-def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None) -> None:
+def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None,
+                        leading_content_on_create: Optional[str] = None, canonical_top_level: bool = False) -> None:
     """THE ``config.yaml`` writer: fail-closed (``require_readable_config_before_write``) and
     comment-preserving (ruamel round-trip merge of *data* onto the on-disk document). Every code
     path that persists a config.yaml — ``save_config``, ``config set``, migrations, plugin
     bookkeeping, gateway/TUI RPCs, auth resets — goes through here; a PyYAML dump of a config
-    path anywhere else is rejected by ``scripts/check_config_yaml_writers.py`` (#92554)."""
+    path anywhere else is rejected by ``scripts/check_config_yaml_writers.py`` (#92554).
+    ``canonical_top_level`` orders a freshly created file's top level canonically and, with
+    ``leading_content_on_create``, seeds the profile-propagation header; existing files keep
+    their author-intended order and comments untouched (#125489)."""
     from utils import atomic_roundtrip_yaml_save
 
     _refuse_failed_read(config_path, data)
-    atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+    atomic_roundtrip_yaml_save(
+        config_path, data,
+        extra_content_on_create=extra_content_on_create,
+        leading_content_on_create=leading_content_on_create,
+        top_level_order=CONFIG_TOP_LEVEL_ORDER if canonical_top_level else None,
+    )
 
 
 def load_config() -> Dict[str, Any]:
@@ -2379,6 +2388,48 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         return expanded
 
 
+# Canonical top-level key order for config.yaml files Hermes itself creates. Settings a reader
+# reaches for first (model routing, fallbacks, agent behavior) lead; everything else follows
+# alphabetically so the layout is stable no matter which code path wrote the file. Existing
+# user files are never rewritten into this order — only fresh documents get it (#125489).
+CONFIG_TOP_LEVEL_ORDER = [
+    "model", "providers", "fallback_providers", "fallback",
+    "agent", "approvals", "auth", "auxiliary",
+    "bedrock", "bot_desktop", "bot_mode", "browser",
+    "checkpoints", "code_execution", "command_allowlist", "compression",
+    "computer_use", "context", "context_file_max_chars", "context_file_read_timeout",
+    "credential_pool_strategies", "cron", "curator", "dashboard",
+    "database", "delegation", "desktop", "discord",
+    "display", "doctor", "file_read_max_chars", "gateway",
+    "goals", "honcho", "hooks", "hooks_auto_accept",
+    "human_delay", "kanban", "local_runtime", "logging",
+    "loops", "lsp", "matrix", "mattermost",
+    "max_concurrent_sessions", "max_live_sessions", "mcp", "mcp_discovery_timeout",
+    "mcp_single_query_discovery_timeout", "memory", "moa", "model_catalog",
+    "model_overrides", "models_dev", "monitoring", "network",
+    "nous", "onboarding", "openrouter", "paste_collapse_char_threshold",
+    "paste_collapse_threshold", "paste_collapse_threshold_fallback", "personalities", "platform_hints",
+    "plugins", "prefill_messages_file", "privacy", "prompt_caching",
+    "proxy", "quick_commands", "runtime", "secrets",
+    "security", "session", "sessions", "skills",
+    "slack", "streaming", "stt", "telegram",
+    "telemetry", "terminal", "timezone", "tool_loop_guardrails",
+    "tool_output", "tools", "toolsets", "tts",
+    "updates", "vault", "vertex", "vision",
+    "voice", "wake_word", "web", "whatsapp",
+    "x_search",
+]
+
+# Header seeded above a config.yaml Hermes itself creates. States the one propagation rule a
+# fresh file cannot show on its own: new profiles seed only the model block; everything else
+# needs --clone / --clone-all (#125489).
+CONFIG_FILE_HEADER = """\
+# Hermes Agent configuration. Unlisted settings keep their schema defaults; comments and
+# ordering in this file are yours — Hermes preserves them when it writes.
+# Profile note: `hermes profile create` seeds only the `model` block into the new profile.
+# Everything else must be copied with --clone (config/.env/SOUL.md) or --clone-all.
+"""
+
 _SECURITY_COMMENT = """
 # ── Security ──────────────────────────────────────────────────────────
 # Secret redaction is ON by default — strings that look like API keys,
@@ -2487,7 +2538,12 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_config_write(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
+        atomic_config_write(
+            config_path, normalized,
+            extra_content_on_create=_commented_sections_for_save(normalized),
+            leading_content_on_create=CONFIG_FILE_HEADER,
+            canonical_top_level=True,
+        )
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)

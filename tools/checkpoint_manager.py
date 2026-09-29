@@ -1157,8 +1157,12 @@ class CheckpointManager:
         if nested_repos:
             blocked_repos = nested_repos
             if file_path:
-                root_path = Path(abs_dir).resolve()
-                requested_path = (root_path / file_path).resolve()
+                # Select by the path as recorded in the checkpoint, not by
+                # where it points now: a captured file later replaced by a
+                # symlink into a nested repo is still recoverable. Resolved
+                # confinement is enforced separately by _validate_file_path.
+                root_path = Path(abs_dir)
+                requested_path = Path(os.path.normpath(root_path / file_path))
                 try:
                     requested_rel = requested_path.relative_to(root_path)
                 except ValueError:

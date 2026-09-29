@@ -141,3 +141,34 @@ def test_inspection_failure_leaves_files_and_history_untouched(checkpoint, monke
     assert "inspection unavailable" in result["error"]
     assert durable_state(work) == before
     assert not list(cm._store_path().glob("restore-inspect-*"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+@pytest.mark.parametrize("safe", [False, True])
+def test_captured_file_replaced_by_symlink_into_nested_repo_restores(checkpoint, safe):
+    mgr, work, commit = checkpoint
+    notes = work / "notes.txt"
+    notes.unlink()
+    notes.symlink_to(work / "tool" / "main.py")
+    result = mgr.restore(str(work), commit, file_path="notes.txt", safe=safe)
+    assert result["success"] is True, result
+    assert not notes.is_symlink()
+    assert notes.read_text() == "before\n"
+    assert (work / "tool" / "main.py").read_text() == "agent overwrite\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+@pytest.mark.parametrize("spec", [None, "tool", "tool/main.py"])
+def test_gitlink_replaced_by_unrelated_symlink_still_refuses(checkpoint, tmp_path, spec):
+    mgr, work, commit = checkpoint
+    (work / "tool").rename(tmp_path / "moved-tool")
+    other = work / "other"
+    other.mkdir()
+    (other / "main.py").write_text("unrelated\n")
+    (work / "tool").symlink_to(other, target_is_directory=True)
+    before = durable_state(work)
+    result = mgr.restore(str(work), commit, file_path=spec)
+    assert result["success"] is False
+    assert result["nested_repositories"] == ["tool"]
+    assert (work / "tool").is_symlink()
+    assert durable_state(work) == before

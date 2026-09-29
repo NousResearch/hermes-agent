@@ -87,10 +87,12 @@ Hermes checks access again before returning results or sending a poll action.
 
 Results examine up to 100 related events by default, with a maximum of 200.
 Truncated history or missing decryption keys makes results incomplete and hides
-all vote totals. Hermes refuses to vote or close a poll with incomplete state.
-Encrypted polls use the receiving bot's current encryption session and require
-available keys. Native poll display and voting also depend on the Matrix client's
-poll support.
+all vote totals. Hermes still votes in and closes a poll with incomplete
+results, and the tool result reports that the results were incomplete. If one of
+the unread events had already closed the poll, Matrix clients ignore the new vote
+or closure. Encrypted polls use the receiving bot's current encryption session
+and require available keys. Native poll display and voting also depend on the
+Matrix client's poll support.
 
 ### Session Model in Matrix
 

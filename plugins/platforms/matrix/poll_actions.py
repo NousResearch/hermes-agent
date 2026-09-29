@@ -226,8 +226,6 @@ async def matrix_poll_action(adapter: Any, room_id: str, requester: str, action:
         results = snapshot.results()
         if action == "results":
             return results
-        if not results["complete"]:
-            raise ValueError("Poll state is incomplete; read complete results before voting or closing")
         if results["closed"]:
             raise ValueError("The poll is already closed")
         poll = snapshot.poll
@@ -245,6 +243,7 @@ async def matrix_poll_action(adapter: Any, room_id: str, requester: str, action:
         else:
             raise ValueError("Unknown Matrix poll action")
         sent_id = await _send_native(session, event_type, content, creator=poll.creator if action == "close" else None)
-        return {"poll_id": event_id, "event_id": sent_id, "actor": session.actor, "action": action}
+        return {"poll_id": event_id, "event_id": sent_id, "actor": session.actor, "action": action,
+                "complete": results["complete"], "incomplete_reasons": results["incomplete_reasons"]}
     except Exception as exc:
         return {"error": str(exc)}

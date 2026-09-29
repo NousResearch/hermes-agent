@@ -249,14 +249,15 @@ def test_native_poll_exchange_remains_passive(
     '''))
     assert (len(gateway.model.main_requests()), gateway.model.aux_requests(), len(gateway.model.requests)) == (17, [], 17)
     results = _tool_results(gateway)
-    hidden, closed = results[-4], results[-1]
-    receipt = results[-2]
-    assert receipt == {
-        "poll_id": bot_poll, "event_id": receipt.get("event_id"),
-        "actor": live_room.bot.user_id, "action": "close",
-    }, results[-4:]
-    assert isinstance(receipt["event_id"], str) and receipt["event_id"].startswith("$"), results[-4:]
-    assert ([answer["votes"] for answer in hidden["answers"]], hidden["voters"], hidden["results_visible"]) == ([None, None], None, False)
+    hidden, vote, receipt, closed = results[-4:]
+    for action, sent in (("vote", vote), ("close", receipt)):
+        assert sent == {
+            "poll_id": bot_poll, "event_id": sent.get("event_id"), "actor": live_room.bot.user_id,
+            "action": action, "complete": True, "incomplete_reasons": [],
+        }, results[-4:]
+        assert isinstance(sent["event_id"], str) and sent["event_id"].startswith("$"), results[-4:]
+    assert (hidden["complete"], [answer["votes"] for answer in hidden["answers"]], hidden["voters"],
+            hidden["results_visible"]) == (True, [None, None], None, False), results[-4:]
     assert (closed["complete"], closed["closed"], closed["voters"]) == (True, True, 2), results[-4:]
     assert [(answer["id"], answer["votes"]) for answer in closed["answers"]] == [(first_id, 1), (second_id, 1)]
     linux_nio_observer.run_python(prefix + f"POLL = {bot_poll!r}\nEND = {results[-2]['event_id']!r}\n" + dedent('''

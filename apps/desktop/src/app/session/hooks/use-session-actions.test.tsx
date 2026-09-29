@@ -5220,11 +5220,57 @@ describe('openNewSessionTile workspace target', () => {
       vi.mocked(requestGatewayForAgent).mockReset()
     }
 
-    expect(createParams).toMatchObject({ hidden: true, profile: 'writer' })
+    expect(createParams).toMatchObject({ profile: 'writer' })
     expect(createParams).not.toHaveProperty('model')
     expect(createParams).not.toHaveProperty('provider')
     expect(createParams).not.toHaveProperty('reasoning_effort')
     expect(createParams).not.toHaveProperty('fast')
+  })
+
+  // A Bot Mode side chat ("New chat with this bot", the tab-strip "+") is an
+  // ordinary conversation in the bot's profile, so it must be born LISTED.
+  // Only the plumbing sessions are hidden, and they mint their own rows
+  // elsewhere; hiding the whole mode here stranded every side chat — invisible
+  // in the Sessions sidebar, skipped by `/resume`, and unreachable once its tab
+  // closed, because `last_session` (what "Open recent session" opens) never
+  // reports a hidden row.
+  it('creates a Bot-workspace side chat listed, never hidden', async () => {
+    let createParams: Record<string, unknown> | undefined
+
+    vi.mocked(requestGatewayForAgent).mockImplementation(async (_connectionId, _profile, method, params) => {
+      if (method === 'session.create') {
+        createParams = params as Record<string, unknown>
+
+        return {
+          info: { cwd: '', model: 'profile-default-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: 'stored-bot-side-chat'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    const route = { connectionId: 'local', mode: 'local' as const, profile: 'writer', targetProfile: 'writer' }
+
+    try {
+      await act(async () => {
+        await handle!.openNewSessionTile('center', {
+          listed: false,
+          route,
+          workspaceScope: { ownerRoute: route, workspaceMode: 'bots', workspaceOwnerKey: 'bot:local::writer' }
+        })
+      })
+    } finally {
+      vi.mocked(requestGatewayForAgent).mockReset()
+    }
+
+    expect(createParams).not.toHaveProperty('hidden')
   })
 
   it('keeps an unlisted named local legacy-profile tile owned by its bare profile', async () => {

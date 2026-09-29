@@ -97,6 +97,12 @@ class _ProcessingState:
     def defer(self) -> None:
         self.phase = _ProcessingPhase.DEFERRED
 
+    def defer_unstarted(self) -> None:
+        """Defer an input that has not started. The adapter completes a started input when its
+        handler returns."""
+        if self.phase is _ProcessingPhase.PENDING:
+            self.phase = _ProcessingPhase.DEFERRED
+
     def take_pending_input(self, pending_text: str) -> Optional["MessageEvent"]:
         pending_indices: set[int] = set()
         remaining = pending_text

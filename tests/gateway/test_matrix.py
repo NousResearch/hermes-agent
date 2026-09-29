@@ -1850,6 +1850,40 @@ async def test_mention_catch_up_stops_at_the_previous_turn(scope, latest_turn_ev
     )
 
 
+@pytest.mark.parametrize("scope", ["room", "thread"])
+@pytest.mark.asyncio
+async def test_mention_catch_up_passes_over_bot_status_notices(scope):
+    """A status notice, such as a heartbeat or a restart notice, does not answer a turn."""
+    from gateway.run import _non_conversational_metadata
+
+    relates_to = _CATCH_UP_THREAD if scope == "thread" else {}
+    history: list[dict] = []
+    adapter = _catch_up_adapter(history, thread=scope == "thread")
+    adapter._is_sender_authorized = MagicMock(return_value=True)
+    adapter._client.send_message_event = AsyncMock(return_value="$status")
+    if scope == "thread":
+        adapter._thread_require_mention = True
+        await adapter._threads.mark_async("$root")
+    status_metadata = _non_conversational_metadata(
+        {"thread_id": "$root"} if scope == "thread" else None, platform=Platform.MATRIX,
+    )
+    await adapter.send(_CATCH_UP_ROOM, "Still working", metadata=status_metadata)
+    history.extend([
+        _catch_up_message("$gated-2", "@bob:example.org", "Gated two", relates_to),
+        {"event_id": "$status", "sender": "@bot:example.org",
+         "content": adapter._client.send_message_event.await_args.args[2]},
+        _catch_up_message("$gated-1", "@bob:example.org", "Gated one", relates_to),
+        _catch_up_message("$reply", "@bot:example.org", "Previous answer", relates_to),
+        _catch_up_message("$older", "@bob:example.org", "Older", relates_to),
+    ])
+    event = await _catch_up_trigger(adapter, relates_to)
+
+    context = await adapter.fetch_mention_context(event)
+
+    heading = "Earlier messages in this thread" if scope == "thread" else "Recent room messages"
+    assert context == f"[{heading}]\n[bob] Gated one\n[bob] Gated two"
+
+
 @pytest.mark.parametrize("scope", ["free_room", "require_mention_off", "bot_thread"])
 @pytest.mark.asyncio
 async def test_mention_catch_up_skips_scopes_where_every_message_starts_a_turn(scope):

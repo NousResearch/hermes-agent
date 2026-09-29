@@ -720,7 +720,25 @@ def _dispatch_skill(rid, params, session, name, arg):
         sc = _tools_mod("agent.skill_commands")
         cmds, key = sc.get_skill_commands(), f"/{name}"
         if key in cmds:
-            msg = sc.build_skill_invocation_message(key, arg, task_id=session.get("session_key", "") if session else "")
+            # Stacked leading /skill tokens (up to 5, cli.py + gateway parity, #74705): the
+            # first token matched above; consume any further leading skill tokens from `arg`,
+            # then build one invocation that loads every skill over the remaining instruction.
+            extra_keys, user_instruction = sc.split_stacked_skill_commands(arg)
+            if extra_keys:
+                stacked = sc.build_stacked_skill_invocation_message(
+                    [key, *extra_keys], user_instruction,
+                    task_id=session.get("session_key", "") if session else "")
+                if stacked:
+                    msg, loaded_names, missing = stacked
+                    notice = f"⚡ Loading {len(loaded_names)} stacked skills: {', '.join(loaded_names)}"
+                    if missing:
+                        notice += f"\nSkipped missing skills: {', '.join(missing)}"
+                    return _ok(rid, {
+                        "type": "skill", "message": msg, "name": cmds[key].get("name", name),
+                        "notice": notice, "display": _skill_scaffold_projection(msg)})
+            msg = sc.build_skill_invocation_message(
+                key, user_instruction,
+                task_id=session.get("session_key", "") if session else "")
             if msg:  # UIs render `display`, never `message`.
                 return _ok(rid, {
                     "type": "skill", "message": msg, "name": cmds[key].get("name", name),

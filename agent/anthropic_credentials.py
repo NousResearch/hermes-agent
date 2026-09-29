@@ -639,13 +639,13 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
-def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[str]:
+def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False, model: Optional[str] = None) -> Optional[str]:
     """First available Anthropic OAuth token from credential_pool, read-only: enumerates with ``clear_expired=False,
     refresh=False`` (never ``select()``) so diagnostic call sites (account_usage, ``hermes models``) never mutate
     auth.json or hit the network; refresh-on-expiry belongs to the API call path's pool recovery."""
     try:
         from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
-        entries, _pending = load_pool("anthropic")._available_entries(clear_expired=False, refresh=False)
+        entries, _pending = load_pool("anthropic")._available_entries(clear_expired=False, refresh=False, model=model)
     except Exception:
         logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
         return None
@@ -704,7 +704,7 @@ def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
         return _available_anthropic_token(api_key, model)
     # The pool's claude_code row mirrors the same externally owned refresh grant.
     return _available_anthropic_token(
-        _resolve_anthropic_pool_token(skip_borrowed=True) or _resolve_claude_code_token_from_credentials(_read_creds()),
+        _resolve_anthropic_pool_token(skip_borrowed=True, model=model) or _resolve_claude_code_token_from_credentials(_read_creds()),
         model,
     )
 

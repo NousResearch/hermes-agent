@@ -443,6 +443,37 @@ def auth_adapter():
     return _make_adapter(api_key="sk-secret")
 
 
+@pytest.mark.asyncio
+async def test_chat_completions_explicit_runtime_is_locked_and_reported(adapter, monkeypatch):
+    captured = {}
+
+    async def run_agent(**kwargs):
+        captured.update(kwargs)
+        return ({
+            "final_response": "ok",
+            "runtime": {"provider": "actual-provider", "model": "actual-model"},
+        }, {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+
+    monkeypatch.setattr(adapter, "_run_agent", run_agent)
+    async with TestClient(TestServer(_create_app(adapter))) as client:
+        response = await client.post("/v1/chat/completions", json={
+            "model": "requested-model",
+            "provider": "requested-provider",
+            "messages": [{"role": "user", "content": "hello"}],
+        })
+        payload = await response.json()
+
+    assert response.status == 200
+    assert captured["confirmed_runtime_lock"] is True
+    assert captured["requested_runtime"] == {
+        "provider": "requested-provider", "model": "requested-model",
+    }
+    assert payload["model"] == "actual-model"
+    assert payload["runtime"] == {
+        "provider": "actual-provider", "model": "actual-model",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Adapter internals
 # ---------------------------------------------------------------------------

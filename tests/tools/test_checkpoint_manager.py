@@ -287,6 +287,37 @@ class TestRestore:
         assert "rollback was not performed" in result["error"]
         assert (nested / "main.py").read_text() == "agent overwrite\n"
 
+    def test_restore_selective_scope_ignores_unrelated_nested_repository(self, mgr, tmp_path):
+        project = tmp_path / "project"
+        nested = project / "nested"
+        nested.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=nested, check=True)
+        (nested / "main.py").write_text("committed\n")
+        subprocess.run(["git", "add", "main.py"], cwd=nested, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "initial"],
+            cwd=nested, check=True,
+        )
+        notes = project / "notes.txt"
+        notes.write_text("before\n")
+        assert mgr.ensure_checkpoint(str(project), "initial") is True
+        checkpoint = mgr.list_checkpoints(str(project))[0]["hash"]
+
+        notes.write_text("after\n")
+        (nested / "main.py").write_text("agent overwrite\n")
+        result = mgr.restore(str(project), checkpoint, file_path="notes.txt")
+
+        assert result["success"] is True
+        assert notes.read_text() == "before\n"
+        assert (nested / "main.py").read_text() == "agent overwrite\n"
+
+        for requested in ("nested", "nested/main.py"):
+            notes.write_text("changed again\n")
+            result = mgr.restore(str(project), checkpoint, file_path=requested)
+            assert result["success"] is False
+            assert result["nested_repositories"] == ["nested"]
+            assert (nested / "main.py").read_text() == "agent overwrite\n"
+
     def test_restore_unknown_hash_fails(self, mgr, work_dir):
         assert mgr.restore(str(work_dir), "abc123")["success"] is False  # no checkpoints
         mgr.ensure_checkpoint(str(work_dir), "initial")

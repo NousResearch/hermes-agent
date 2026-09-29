@@ -56,7 +56,7 @@ import re
 import shutil
 import subprocess
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
@@ -1154,15 +1154,38 @@ class CheckpointManager:
             if record.startswith(b"160000 commit ") and b"\t" in record
         ]
         if nested_repos:
-            paths = ", ".join(nested_repos)
-            return {
-                "success": False,
-                "error": (
-                    "Checkpoint contains nested git repositories that were not captured "
-                    f"({paths}); rollback was not performed"
-                ),
-                "nested_repositories": nested_repos,
-            }
+            blocked_repos = nested_repos
+            if file_path:
+                root_path = Path(abs_dir).resolve()
+                requested_path = (root_path / file_path).resolve()
+                try:
+                    requested_rel = requested_path.relative_to(root_path)
+                except ValueError:
+                    requested_rel = Path(file_path)
+                requested_parts = tuple(requested_rel.parts)
+
+                def _scope_intersects_nested_repo(repo_path: str) -> bool:
+                    repo_parts = tuple(PurePosixPath(repo_path).parts)
+                    return (
+                        requested_parts[:len(repo_parts)] == repo_parts
+                        or repo_parts[:len(requested_parts)] == requested_parts
+                    )
+
+                blocked_repos = [
+                    repo for repo in nested_repos
+                    if _scope_intersects_nested_repo(repo)
+                ]
+
+            if blocked_repos:
+                paths = ", ".join(blocked_repos)
+                return {
+                    "success": False,
+                    "error": (
+                        "Checkpoint contains nested git repositories that were not captured "
+                        f"({paths}); rollback was not performed"
+                    ),
+                    "nested_repositories": blocked_repos,
+                }
 
         skipped_user_edits: List[str] = []
         kept_oversize: List[str] = []

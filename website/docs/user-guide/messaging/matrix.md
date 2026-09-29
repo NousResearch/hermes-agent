@@ -760,7 +760,13 @@ Transcripts land on the room's own session, so a spoken question and a typed fol
 one conversation. Hermes publishes its own call membership state event on join and clears it
 on leave, so clients show it as a participant like anyone else.
 
-Full setup, commands, and the `matrix.rtc` tuning knobs: [Voice Mode][voice-mode].
+Hermes supports Element Call's default `compatibility` mode (`org.matrix.msc3401.call.member`
+state events and the `/sfu/get` token endpoint), not the `matrix_2_0` mode (`m.rtc.member`
+and `/get_token`). The person who runs `/voice join` must publish through the same MatrixRTC
+service as the bot's homeserver, so calls stay within one deployment. Prompt cleanup after a
+client crashes depends on the homeserver supporting delayed events (MSC4140).
+
+Full setup, commands, limitations and the `matrix.rtc` tuning knobs: [Voice Mode][voice-mode].
 
 [voice-mode]: ../features/voice-mode.md
 

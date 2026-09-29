@@ -102,12 +102,13 @@ def test_reap_continues_past_one_bad_entry(monkeypatch, tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_owner_pid_alive_counts_only_process_lookup_as_dead(monkeypatch):
+def test_owner_pid_alive_without_fingerprint_ignores_kill_errors(monkeypatch):
     assert cua_backend_daemon._owner_alive(os.getpid(), None) is True
 
     def _denied(pid, sig):
         raise PermissionError(13, "denied")
 
+    # A bare-pid marker cannot prove pid reuse, so even a denied probe stays alive.
     monkeypatch.setattr(cua_backend_daemon.os, "kill", _denied)
     assert cua_backend_daemon._owner_alive(os.getpid(), None) is True
 
@@ -129,6 +130,22 @@ def test_owner_alive_treats_recycled_pid_as_dead(monkeypatch):
 
 @pytest.mark.platforms("posix")
 def test_owner_alive_degrades_to_bare_pid_when_fingerprint_unreadable(monkeypatch):
+    monkeypatch.setattr(cua_backend_daemon, "_owner_start_fingerprint", lambda pid: None)
+    assert cua_backend_daemon._owner_alive(os.getpid(), 111111) is True
+
+
+@pytest.mark.platforms("posix")
+def test_owner_alive_checks_fingerprint_when_pid_belongs_to_another_user(monkeypatch):
+    # EPERM means the pid exists under a different uid; psutil still reads its start time on
+    # macOS, so a mismatched fingerprint unmasks a recycled pid that landed on a root process,
+    # while an unreadable fingerprint and a matching one stay fail-closed.
+    def _denied(pid, sig):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(cua_backend_daemon.os, "kill", _denied)
+    monkeypatch.setattr(cua_backend_daemon, "_owner_start_fingerprint", lambda pid: 424242)
+    assert cua_backend_daemon._owner_alive(os.getpid(), 111111) is False
+    assert cua_backend_daemon._owner_alive(os.getpid(), 424199) is True
     monkeypatch.setattr(cua_backend_daemon, "_owner_start_fingerprint", lambda pid: None)
     assert cua_backend_daemon._owner_alive(os.getpid(), 111111) is True
 
@@ -156,6 +173,25 @@ def test_reap_leaves_recycled_looking_daemon_when_fingerprint_unreadable(monkeyp
     assert recorder.calls == []
     assert sock.exists()
     assert marker.exists()
+
+
+@pytest.mark.platforms("posix")
+def test_reap_stops_daemon_whose_owner_pid_was_recycled_by_another_user(monkeypatch, tmp_path):
+    # The recycled pid landed on a root-owned process: os.kill raises EPERM, but the start
+    # fingerprint is still readable and no longer matches the recorded owner.
+    sock, marker = _stage_daemon(tmp_path, "hc-rootrecycled123.sock", owner="1", start=111111)
+
+    def _denied(pid, sig):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(cua_backend_daemon.os, "kill", _denied)
+    monkeypatch.setattr(cua_backend_daemon, "_owner_start_fingerprint", lambda pid: 424242)
+
+    recorder = _reap(monkeypatch, tmp_path, [str(sock)])
+
+    assert recorder.calls == [["cua-driver", "stop", "--socket", str(sock)]]
+    assert not sock.exists()
+    assert not marker.exists()
 
 
 @pytest.mark.platforms("posix")

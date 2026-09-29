@@ -105,17 +105,21 @@ def _owner_start_fingerprint(pid: int) -> Optional[int]:
         return None
 
 def _owner_alive(pid: int, recorded_start: Optional[int]) -> bool:
-    """pidfile-style liveness probe with a PID-reuse guard. Only ProcessLookupError counts as dead
-    (PermissionError means the pid exists but belongs to another user), and a recorded start-time
+    """pidfile-style liveness probe with a PID-reuse guard. Only ProcessLookupError counts as dead.
+    PermissionError (the pid exists under another uid) still falls through to the start-time check:
+    psutil reads other users' start times on macOS as a normal user, so a readable fingerprint that
+    no longer matches unmasked a recycled pid even when it landed on a root process. A recorded
     fingerprint that no longer matches the live pid counts as dead too — the kernel recycled the
-    number, so the recorded owner is gone even though the pid answers. Every ambiguity (no
-    recorded fingerprint for a pre-upgrade marker, current fingerprint unreadable, comparator
-    junk) resolves to "alive", so the reap below errs toward leaving a daemon running rather
-    than stopping one another Hermes still owns."""
+    number, so the recorded owner is gone even though the pid answers. Every ambiguity (no recorded
+    fingerprint for a pre-upgrade marker, current fingerprint unreadable, comparator junk, any other
+    os.kill error) resolves to "alive", so the reap below errs toward leaving a daemon running
+    rather than stopping one another Hermes still owns."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
+    except PermissionError:
+        pass
     except OSError:
         return True
     if recorded_start is None:

@@ -115,3 +115,97 @@ def test_windows_setup_does_not_inject_cross_minor_venv(tmp_path, monkeypatch):
 
     assert str(site_packages) not in gateway_run.sys.path
     assert os.environ["PYTHONPATH"] == "existing-pythonpath"
+
+
+def test_windows_setup_injects_matching_minor_venv(tmp_path, monkeypatch):
+    """The guard must only skip: a venv for the running minor still gets injected.
+
+    Without this the suite only exercises the reject leg, so hard-coding the
+    predicate to always skip -- which strips every venv and reproduces the
+    original detached-gateway ImportError -- would stay green.
+    """
+    venv_dir = _venv(tmp_path, f"version_info = {_running()}.9.final.0\n")
+    site_packages = venv_dir / "Lib" / "site-packages"
+    site_packages.mkdir(parents=True)
+
+    project_root = tmp_path / "project"
+    gateway_file = project_root / "gateway" / "run.py"
+    gateway_file.parent.mkdir(parents=True)
+    monkeypatch.setattr(gateway_run, "__file__", str(gateway_file))
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run.sys, "path", ["existing-entry"])
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+    monkeypatch.setenv("PYTHONPATH", "existing-pythonpath")
+
+    gateway_run._ensure_windows_gateway_venv_imports()
+
+    site_entry = str(site_packages.resolve())
+    project_entry = str(project_root.resolve())
+    assert site_entry in gateway_run.sys.path
+    assert project_entry in gateway_run.sys.path
+    # site-packages must win over the pre-existing path for third-party imports.
+    assert gateway_run.sys.path.index(site_entry) < gateway_run.sys.path.index("existing-entry")
+    pythonpath = os.environ["PYTHONPATH"].split(os.pathsep)
+    assert site_entry in pythonpath
+    assert pythonpath[-1] == "existing-pythonpath"
+    assert os.environ["VIRTUAL_ENV"] == str(venv_dir.resolve())
+
+
+def test_windows_setup_falls_back_to_project_venv(tmp_path, monkeypatch):
+    """With no VIRTUAL_ENV the in-tree ``venv/`` is the candidate that matters.
+
+    That fall-back is how the detached cron gateway finds its packages at all;
+    dropping it leaves every other assertion in this file satisfied.
+    """
+    project_root = tmp_path / "project"
+    gateway_file = project_root / "gateway" / "run.py"
+    gateway_file.parent.mkdir(parents=True)
+    venv_dir = _venv(project_root, f"version_info = {_running()}.9.final.0\n")
+    site_packages = venv_dir / "Lib" / "site-packages"
+    site_packages.mkdir(parents=True)
+
+    monkeypatch.setattr(gateway_run, "__file__", str(gateway_file))
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run.sys, "path", ["existing-entry"])
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+    gateway_run._ensure_windows_gateway_venv_imports()
+
+    assert str(site_packages.resolve()) in gateway_run.sys.path
+    assert os.environ["VIRTUAL_ENV"] == str(venv_dir.resolve())
+
+
+def test_windows_setup_skips_venv_without_site_packages(tmp_path, monkeypatch):
+    """A candidate with no ``Lib/site-packages`` is not a venv worth overlaying."""
+    venv_dir = _venv(tmp_path, f"version_info = {_running()}.9.final.0\n")
+
+    project_root = tmp_path / "project"
+    gateway_file = project_root / "gateway" / "run.py"
+    gateway_file.parent.mkdir(parents=True)
+    monkeypatch.setattr(gateway_run, "__file__", str(gateway_file))
+    monkeypatch.setattr(gateway_run.sys, "platform", "win32")
+    monkeypatch.setattr(gateway_run.sys, "path", ["existing-entry"])
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+    monkeypatch.setenv("PYTHONPATH", "existing-pythonpath")
+
+    gateway_run._ensure_windows_gateway_venv_imports()
+
+    assert gateway_run.sys.path == ["existing-entry"]
+    assert os.environ["PYTHONPATH"] == "existing-pythonpath"
+
+
+def test_setup_is_a_noop_off_windows(tmp_path, monkeypatch):
+    """Only Windows launchers lose PYTHONPATH; POSIX must be left untouched."""
+    venv_dir = _venv(tmp_path, f"version_info = {_running()}.9.final.0\n")
+    (venv_dir / "Lib" / "site-packages").mkdir(parents=True)
+
+    monkeypatch.setattr(gateway_run.sys, "platform", "linux")
+    monkeypatch.setattr(gateway_run.sys, "path", ["existing-entry"])
+    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
+    monkeypatch.setenv("PYTHONPATH", "existing-pythonpath")
+
+    gateway_run._ensure_windows_gateway_venv_imports()
+
+    assert gateway_run.sys.path == ["existing-entry"]
+    assert os.environ["PYTHONPATH"] == "existing-pythonpath"

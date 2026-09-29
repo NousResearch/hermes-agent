@@ -879,6 +879,7 @@ gateway:
     usage_idle: "Usage : /steer <prompt>  (aucun agent en cours ; envoi comme message normal)"
     queued_starting: "L'agent démarre encore — /steer mis en file pour le prochain tour."
     queued_no_agent: "Aucun agent actif — /steer mis en file pour le prochain tour."
+    queued_turn_finished: "Le tour de l'agent est terminé. /steer mis en file pour le prochain tour."
     failed: "⚠️ Échec de l'orientation : {error}"
     rejected_empty: "Orientation rejetée (contenu vide)."
     target_subagents: "l'exécution et ses sous-agents actifs"

@@ -753,6 +753,7 @@ gateway:
     usage_idle: "用法：/steer <提示词>  （当前没有运行中的代理；将作为普通消息发送）"
     queued_starting: "代理仍在启动——/steer 已排队至下一回合。"
     queued_no_agent: "没有活跃的代理——/steer 已排队至下一回合。"
+    queued_turn_finished: "代理的这一回合已结束。/steer 已排队至下一回合。"
     failed: "⚠️ 引导失败：{error}"
     rejected_empty: "引导被拒绝（内容为空）。"
     target_subagents: "运行及其活跃的子代理"

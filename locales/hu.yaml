@@ -763,6 +763,7 @@ gateway:
     usage_idle: "Használat: /steer <prompt>  (nem fut ügynök; normál üzenetként küldöm el)"
     queued_starting: "Az ügynök még indul — a /steer a következő körre került sorba."
     queued_no_agent: "Nincs aktív ügynök — a /steer a következő körre került sorba."
+    queued_turn_finished: "Az ügynök köre véget ért. A /steer a következő körre került sorba."
     failed: "⚠️ A beirányítás sikertelen: {error}"
     rejected_empty: "A beirányítás elutasítva (üres tartalom)."
     target_subagents: "futó feladatba és az aktív alügynök(ök)be"

@@ -753,6 +753,7 @@ gateway:
     usage_idle: "Úsáid: /steer <leid>  (níl aon ghníomhaire ag rith; á seoladh mar ghnáth-theachtaireacht)"
     queued_starting: "Tá an gníomhaire fós ag tosú — /steer curtha i scuaine don chéad seal eile."
     queued_no_agent: "Níl aon ghníomhaire gníomhach — /steer curtha i scuaine don chéad seal eile."
+    queued_turn_finished: "Tá seal an ghníomhaire críochnaithe. /steer curtha i scuaine don chéad seal eile."
     failed: "⚠️ Theip ar an stiúradh: {error}"
     rejected_empty: "Diúltaíodh don stiúradh (pálasta folamh)."
     target_subagents: "rith agus a fho-ghníomhaire(í) gníomhach(a)"

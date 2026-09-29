@@ -753,6 +753,7 @@ gateway:
     usage_idle: "Uso: /steer <prompt>  (nenhum agente em execução; enviando como mensagem normal)"
     queued_starting: "O agente ainda está iniciando — /steer enfileirado para o próximo turno."
     queued_no_agent: "Nenhum agente ativo — /steer enfileirado para o próximo turno."
+    queued_turn_finished: "O turno do agente terminou. /steer enfileirado para o próximo turno."
     failed: "⚠️ Falha no redirecionamento: {error}"
     rejected_empty: "Redirecionamento rejeitado (conteúdo vazio)."
     target_subagents: "execução e seu(s) subagente(s) ativo(s)"

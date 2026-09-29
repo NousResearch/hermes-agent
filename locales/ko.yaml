@@ -753,6 +753,7 @@ gateway:
     usage_idle: "사용법: /steer <prompt>  (실행 중인 에이전트가 없어 일반 메시지로 보내요)"
     queued_starting: "에이전트가 아직 시작 중이에요 — /steer를 다음 턴 대기열에 넣었어요."
     queued_no_agent: "활성 에이전트가 없어요 — /steer를 다음 턴 대기열에 넣었어요."
+    queued_turn_finished: "에이전트 턴이 끝났어요. /steer를 다음 턴 대기열에 넣었어요."
     failed: "⚠️ 조정 실패: {error}"
     rejected_empty: "조정이 거부되었어요 (내용이 비어 있어요)."
     target_subagents: "실행과 활성 서브에이전트"

@@ -753,6 +753,7 @@ gateway:
     usage_idle: "Kullanım: /steer <prompt>  (çalışan ajan yok; normal mesaj olarak gönderiliyor)"
     queued_starting: "Ajan hâlâ başlatılıyor — /steer bir sonraki tur için sıraya alındı."
     queued_no_agent: "Aktif ajan yok — /steer bir sonraki tur için sıraya alındı."
+    queued_turn_finished: "Ajanın turu bitti. /steer bir sonraki tur için sıraya alındı."
     failed: "⚠️ Yönlendirme başarısız oldu: {error}"
     rejected_empty: "Yönlendirme reddedildi (boş içerik)."
     target_subagents: "çalıştırma ve aktif alt ajan(lar)ı"

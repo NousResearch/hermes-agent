@@ -266,7 +266,9 @@ describe('useVoiceConversation playback rearm', () => {
     // The reply is silenced, but the conversation stays live and re-listens.
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
     expect(mocks.stopVoicePlayback).toHaveBeenCalledTimes(2)
-    expect(mocks.consumePendingResponse).toHaveBeenCalledTimes(2)
+    // The interrupted reply is consumed: handleTurn's pre-submit consume
+    // (main) plus the settle-time consume this PR adds.
+    expect(mocks.consumePendingResponse).toHaveBeenCalledTimes(3)
     expect(hook.result.current.status).toBe('listening')
   })
 
@@ -286,7 +288,9 @@ describe('useVoiceConversation playback rearm', () => {
     // No fallback playback, but the loop re-arms the mic instead of wedging.
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
     expect(mocks.playSpeechText).not.toHaveBeenCalled()
-    expect(mocks.consumePendingResponse).toHaveBeenCalledTimes(2)
+    // The interrupted reply is consumed: handleTurn's pre-submit consume
+    // (main) plus the settle-time consume this PR adds.
+    expect(mocks.consumePendingResponse).toHaveBeenCalledTimes(3)
     expect(hook.result.current.status).toBe('listening')
   })
 
@@ -302,7 +306,9 @@ describe('useVoiceConversation playback rearm', () => {
     })
 
     await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
-    expect(mocks.consumePendingResponse).toHaveBeenCalledTimes(2)
+    // The interrupted reply is consumed: handleTurn's pre-submit consume
+    // (main) plus the settle-time consume this PR adds.
+    expect(mocks.consumePendingResponse).toHaveBeenCalledTimes(3)
     expect(hook.result.current.status).toBe('listening')
   })
 
@@ -367,7 +373,7 @@ describe('useVoiceConversation playback rearm', () => {
     expect(pendingResponse.mock.calls.length).toBe(pollsAtUnmount)
   })
 
-  it('does not play the next fallback sentence or re-arm after Stop', async () => {
+  it('does not play the next fallback sentence after Stop, and re-arms the mic', async () => {
     mocks.useFallbackSpeech()
     mocks.deferFallbackPlayback()
     const { finishResponse, hook } = renderIncrementalFallbackConversation()
@@ -381,9 +387,11 @@ describe('useVoiceConversation playback rearm', () => {
       mocks.finishFallbackPlayback()
     })
 
-    await waitFor(() => expect(hook.result.current.status).toBe('idle'))
+    // Stop silences the reply, not the conversation (#108301): the next
+    // fallback sentence must not play, but the mic re-arms and listens.
+    await waitFor(() => expect(mocks.handle.start).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
     expect(mocks.playSpeechText).toHaveBeenCalledTimes(1)
-    expect(mocks.handle.start).toHaveBeenCalledTimes(1)
   })
 
   it('speaks a sealed interim bubble while a tool is still running', async () => {

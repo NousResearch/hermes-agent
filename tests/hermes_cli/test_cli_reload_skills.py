@@ -23,6 +23,35 @@ def _make_cli():
 
 
 class TestReloadSkillsCLI:
+    def test_reload_keeps_plugin_skill_lookup_live_after_plugin_lifecycle(self, tmp_path, monkeypatch):
+        import cli as cli_mod
+        from hermes_cli import plugins
+
+        home = tmp_path / "home"
+        plugin = home / "plugins" / "live-probe"
+        skill = plugin / "skills" / "guide" / "SKILL.md"
+        skill.parent.mkdir(parents=True)
+        (plugin / "plugin.yaml").write_text("name: live-probe\nversion: 0.1.0\n")
+        (plugin / "__init__.py").write_text(
+            "from pathlib import Path\ndef register(ctx):\n"
+            "    ctx.register_skill('guide', Path(__file__).parent / 'skills' / 'guide' / 'SKILL.md')\n")
+        skill.write_text("---\nname: guide\ndescription: Live guide.\n---\nBody.\n")
+        config = home / "config.yaml"
+        config.write_text("plugins:\n  enabled: [live-probe]\n")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(cli_mod, "_skill_commands", None)
+        plugins._reset_plugin_managers_for_tests()
+        try:
+            shell = _make_cli()
+            shell._reload_skills()
+            assert "/live-probe:guide" in cli_mod.get_skill_commands()
+            config.write_text("plugins:\n  enabled: [live-probe]\nskills:\n  disabled: [guide]\n")
+            assert "/live-probe:guide" not in cli_mod.get_skill_commands()
+            config.write_text("plugins:\n  enabled: [live-probe]\n")
+            assert "/live-probe:guide" in cli_mod.get_skill_commands()
+        finally:
+            plugins._reset_plugin_managers_for_tests()
+
     def test_reports_added_and_removed_and_queues_note(self, capsys):
         cli = _make_cli()
         with patch(

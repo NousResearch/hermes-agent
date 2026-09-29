@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import time
 import urllib.request
@@ -291,6 +292,13 @@ def linux_nio_observer(
         yield observer
 
 
+def _host_user() -> str:
+    """Return the container user that lets this user delete what a container writes to a bind mount."""
+    if facts.os_family() == "windows":
+        return "10000:10000"
+    return f"{os.getuid()}:{os.getgid()}"
+
+
 @pytest.fixture
 def gateway(
     tmp_path: Path,
@@ -301,7 +309,7 @@ def gateway(
     _, _, network = synapse
     room_id = live_room.room_id
     home = tmp_path / "hermes"
-    home.mkdir(mode=0o777)
+    home.mkdir()
     with FakeLLMServer([Text("Matrix live reply")], bind_host="0.0.0.0") as model:
         write_hermes_home(
             home,
@@ -316,16 +324,17 @@ def gateway(
                 f"MATRIX_HOME_ROOM={room_id}\n"
                 "MATRIX_E2EE_MODE=optional\nMATRIX_REACTIONS=false\nMATRIX_AUTO_THREAD=false\n"
             )
-        home.chmod(0o777)
 
         with DockerContainer(
             gateway_image,
             network=network,
             entrypoint="/opt/hermes/.venv/bin/python",
-            user="10000:10000",
+            user=_host_user(),
             working_dir="/opt/hermes",
             extra_hosts={"host.docker.internal": "host-gateway"},
-        ).with_command("-m hermes_cli.main gateway run").with_volume_mapping(home, "/opt/data", "rw") as container:
+        ).with_command("-m hermes_cli.main gateway run").with_volume_mapping(
+            home, "/opt/data", "rw"
+        ).with_env("HOME", "/opt/data") as container:
             def connected() -> bool:
                 output = container.get_wrapped_container().logs().decode(errors="replace")
                 gateway_log = home / "logs" / "gateway.log"
@@ -340,3 +349,8 @@ def gateway(
                 details=lambda: container.get_wrapped_container().logs().decode(errors="replace")[-6000:],
             )
             yield LiveGateway(container, model)
+
+    # The test runner ignores errors when it deletes its temporary directory, so files that the
+    # container wrote and this user cannot delete would remain on the host. Removing the home here
+    # makes such files fail the test.
+    shutil.rmtree(home)

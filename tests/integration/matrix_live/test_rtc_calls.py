@@ -16,7 +16,9 @@ import pytest
 from testcontainers.core.container import DockerContainer
 
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, write_hermes_home
-from tests.integration.matrix_live.conftest import REPO_ROOT, _host_route, _host_user, _register, _wait_for
+from tests.integration.matrix_live.conftest import (
+    REPO_ROOT, _gateway_ready, _host_route, _host_user, _register, _wait_for,
+)
 
 SFU_IMAGE = "livekit/livekit-server:v1.13.6@sha256:e37d68f172556d02aa77968b9fc55ef481468c0315fa38e4fa6c56ce72e3a815"
 AUTH_IMAGE = "ghcr.io/element-hq/lk-jwt-service:sha-7991c1f@sha256:b2eb41f06d9d7425781c96399f29758638daac574463b5ce5847df55ae70b83b"
@@ -97,8 +99,8 @@ def rtc_gateway(tmp_path, gateway_image, synapse, live_room, rtc_services):
                 .with_volume_mapping(home, "/opt/data", "rw") \
                 .with_volume_mapping(REPO_ROOT / "tests/integration/matrix_live", "/matrix_live", "ro") as container:
             _wait_for(lambda: (home / "logs/gateway.log").exists()
-                      and f"Matrix: joined {live_room.room_id}" in (home / "logs/gateway.log").read_text(errors="replace"),
-                      "MatrixRTC gateway initial sync", timeout=45,
+                      and _gateway_ready((home / "logs/gateway.log").read_text(errors="replace"), live_room.room_id),
+                      "MatrixRTC gateway start-up", timeout=45,
                       details=lambda: container.get_wrapped_container().logs().decode(errors="replace")[-6000:])
             yield container, model, home
     shutil.rmtree(home)

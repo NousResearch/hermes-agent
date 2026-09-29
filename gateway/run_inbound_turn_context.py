@@ -44,7 +44,7 @@ async def prepend_turn_context_note(
     # Adapters that keep the no-op hook skip the session lookup below.
     if getattr(type(adapter), "prepare_turn_context", None) in (None, BasePlatformAdapter.prepare_turn_context):
         return message_text
-    entry = runner.session_store.lookup_by_session_key(session_key)
+    entry = await runner.async_session_store.lookup_by_session_key(session_key)
     update = await adapter.prepare_turn_context(
         event, origin=entry.origin if entry else None,
         acknowledged_state=acknowledged_channel_state(history),

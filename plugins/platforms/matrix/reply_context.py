@@ -69,6 +69,29 @@ def _split_reply_fallback(body: str) -> tuple[str, str]:
     return (head, "") if idx >= len(lines) else (head + "\n", "\n".join(lines[idx:]))
 
 
+_MATRIX_REPLY_FALLBACK_FIRST_LINE_RE = re.compile(r"^> (?:\* )?<@[^>\s]+>")
+
+def _has_reply_fallback(body: str, content: dict) -> bool:
+    """Whether a reply's body starts with a legacy reply fallback instead of the user's own quote.
+
+    Matrix 1.13 (MSC2781) removed reply fallbacks, so a modern client sends the reply as typed
+    and a leading ``> `` block is the user's quotation. A legacy client marks its fallback with
+    an ``<mx-reply>`` element at the start of the HTML body. Its plain fallback starts with the
+    quoted sender's pill (``> <@user:srv>``, or ``> * <@user:srv>`` for an emote) and ends with
+    a blank line.
+    """
+    if not body.startswith("> "):
+        return False
+    formatted_body = content.get("formatted_body")
+    if (content.get("format") == "org.matrix.custom.html" and isinstance(formatted_body, str)
+            and formatted_body.lstrip().startswith("<mx-reply>")):
+        return True
+    if not _MATRIX_REPLY_FALLBACK_FIRST_LINE_RE.match(body):
+        return False
+    quote_block, reply_text = _split_reply_fallback(body)
+    return quote_block.endswith("\n\n") or not reply_text
+
+
 class MatrixReplyContextMixin:
     async def _resolve_message_context(
         self, room_id: str, sender: str, event_id: str, body: str, source_content: dict,
@@ -112,9 +135,9 @@ class MatrixReplyContextMixin:
             # Strip the mention from the reply text only: the quote block carries the
             # ``> <@bot:srv> ...`` reply pill, which _extract_reply_context parses later
             # for reply_to_author_id. A whole-body replace rewrote the pill to ``> <>``
-            # and silently dropped the replied-to author (#111233). Only a real reply carries a
-            # pill; a hand-typed blockquote in a plain message is stripped whole as before.
-            if relates_to.get("m.in_reply_to"):
+            # and silently dropped the replied-to author (#111233). Without a fallback, a leading
+            # quote is the user's own text, so the mention is stripped from the whole body.
+            if relates_to.get("m.in_reply_to") and _has_reply_fallback(body, source_content):
                 quote_block, reply_text = _split_reply_fallback(body)
                 body = quote_block + self._strip_mention(reply_text)
             else:
@@ -142,14 +165,14 @@ class MatrixReplyContextMixin:
         return body, is_dm, chat_type, thread_id, display_name, source
 
     async def _extract_reply_context(
-        self, room_id: str, body: str, relates_to: dict
+        self, room_id: str, body: str, source_content: dict, relates_to: dict
     ) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
         """Return (body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name). Captures
         the inline reply fallback (``> <@user:srv> text\\n\\nreply``) BEFORE stripping it, so the
         prompt layer can render "[Replying to: ...]" like Signal/Slack/Telegram."""
         reply_to = (relates_to.get("m.in_reply_to") or {}).get("event_id")
         reply_to_text = reply_to_author_id = reply_to_author_name = None
-        if reply_to and body.startswith("> "):
+        if reply_to and _has_reply_fallback(body, source_content):
             reply_to_text, reply_to_author_id = _extract_reply_fallback(body)
             body = _strip_reply_fallback(body)
             # Resolve the replied-to author's display name (falls back to localpart).
@@ -172,7 +195,7 @@ class MatrixReplyContextMixin:
             return None
         body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
         body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name = (
-            await self._extract_reply_context(room_id, body, relates_to))
+            await self._extract_reply_context(room_id, body, source_content, relates_to))
         media_msgtype = extra.pop("media_msgtype", None)
         if media_msgtype is None:
             # Re-normalize after reply stripping so ``> quoted\n\n!model`` is still a command.

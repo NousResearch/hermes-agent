@@ -97,7 +97,6 @@ async def test_card_controls_and_terminal_work_remain_with_the_owner(tmp_path, m
             (home, f"$card-{index}", True) for index, home in enumerate(homes)
         ]
         assert adapter._approval_prompts_by_event == {}
-        assert adapter._approval_prompt_by_session == {}
     finally:
         for session, _ in entries:
             approval.clear_session(session)

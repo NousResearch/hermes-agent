@@ -788,7 +788,6 @@ class TestMatrixApprovalCardLifecycle:
             )
 
         assert set(adapter._approval_prompts_by_event) == {"$evt1", "$evt2"}
-        assert adapter._approval_prompt_by_session["sess-1"] == {"$evt1", "$evt2"}
         assert adapter._approval_prompts_by_event["$evt1"].approval_id == "approval-1"
         assert adapter._approval_prompts_by_event["$evt2"].approval_id == "approval-2"
 
@@ -871,7 +870,7 @@ class TestMatrixApprovalCardLifecycle:
             prompt2 = adapter._approval_prompts_by_event.get("$evt2")
             if prompt2 is not None:
                 prompt2.resolved = True
-                adapter._forget_matrix_approval_prompt("$evt2", prompt2)
+                adapter._forget_matrix_approval_prompt("$evt2")
             approval_mod.clear_session(session_key)
             for task in getattr(adapter, "_approval_tasks", set()):
                 task.cancel()
@@ -902,7 +901,6 @@ class TestMatrixApprovalCardLifecycle:
         prompt.summary = "Deletes the bounded directory and its contents."
         prompt.state = "pending_summarized"
         adapter._approval_prompts_by_event["$target"] = prompt
-        adapter._approval_prompt_by_session["sess-1"] = {"$target"}
         adapter.edit_message = AsyncMock(return_value=types.SimpleNamespace(success=True))
         adapter._redact_bot_approval_reactions = AsyncMock()
 
@@ -954,7 +952,6 @@ class TestMatrixApprovalCardLifecycle:
             command="rm -rf /tmp/x",
         )
         adapter._approval_prompts_by_event[prompt.message_id] = prompt
-        adapter._approval_prompt_by_session[prompt.session_key] = {prompt.message_id}
         adapter._redact_bot_approval_reactions = AsyncMock()
         adapter._finalize_matrix_approval_prompt = AsyncMock()
 
@@ -1000,7 +997,6 @@ class TestMatrixApprovalCardLifecycle:
             command=entry.data["command"],
         )
         adapter._approval_prompts_by_event[prompt.message_id] = prompt
-        adapter._approval_prompt_by_session[prompt.session_key] = {prompt.message_id}
         adapter._redact_bot_approval_reactions = AsyncMock()
         adapter._finalize_matrix_approval_prompt = AsyncMock()
 
@@ -1264,7 +1260,6 @@ async def test_finalize_keeps_registry_until_edit_succeeds(monkeypatch):
 
     adapter = MatrixAdapter.__new__(MatrixAdapter)
     adapter._approval_prompts_by_event = {}
-    adapter._approval_prompt_by_session = {}
     prompt = _MatrixApprovalPrompt(
         session_key="s1",
         chat_id="!r",
@@ -1274,7 +1269,6 @@ async def test_finalize_keeps_registry_until_edit_succeeds(monkeypatch):
         description="test",
     )
     adapter._approval_prompts_by_event["$e1"] = prompt
-    adapter._approval_prompt_by_session["s1"] = {"$e1"}
     attempts = {"n": 0}
 
     class _Res:

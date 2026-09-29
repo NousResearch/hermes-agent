@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING, TypeVar
 
 from gateway.platforms.base import ExecApprovalPrompt, SendResult
-from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 
 if TYPE_CHECKING:
     from plugins.platforms.matrix.approval_cards import MatrixApprovalSummaryConfig
@@ -97,7 +96,6 @@ class MatrixApprovalMixin:
         _closing: bool
         _approval_reaction_map: dict[str, str]
         _approval_prompts_by_event: dict[str, _MatrixApprovalPrompt]
-        _approval_prompt_by_session: dict[str, set[str]]
         _approval_tasks: set[asyncio.Task[Any]]
 
         async def _send_reaction_prompt(
@@ -129,19 +127,7 @@ class MatrixApprovalMixin:
     _approval_clock: Callable[[], float] = staticmethod(time.monotonic)
     _approval_sleep: Callable[[float], Awaitable[None]] = staticmethod(asyncio.sleep)
 
-    # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
-    # the smart-deny/scope wording lives in the reaction legend below).
-    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n"
-
-    _EA_CMD_BUDGET = 2000
-
     _EA_REACTIONS = {"once": "✅", "session": "🌀", "always": "♾️", "deny": "❌"}
-
-    _EA_LEGEND = {"once": "✅ = approve once", "session": "🌀 = approve for this session",
-                  "always": "♾️ = approve always", "deny": "❎ = deny"}
-
-    _EA_TYPED_HINT = {"session": "Reply `!approve session` to approve this pattern for the session, ",
-                      "always": "`!approve always` to approve permanently, "}
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Reaction-driven approval: the bot seeds one reaction per offered choice."""
@@ -168,7 +154,6 @@ class MatrixApprovalMixin:
         send_meta = {**(prompt.metadata or {}), "matrix_formatted_body": html_body}
 
         def _make(message_id, requester, expires_at):
-            self._approval_prompt_by_session.setdefault(session_key, set()).add(message_id)
             return _MatrixApprovalPrompt(
                 session_key=session_key, chat_id=chat_id, message_id=message_id, requester_user_id=requester,
                 expires_at=expires_at, approval_id=approval_id,
@@ -280,7 +265,7 @@ class MatrixApprovalMixin:
             if unfinished:
                 logger.warning("Matrix: %d approval card(s) were not updated before disconnect", len(unfinished))
         for prompt in prompts:
-            self._forget_matrix_approval_prompt(prompt.message_id, prompt)
+            self._forget_matrix_approval_prompt(prompt.message_id)
 
     async def _show_closed_approval(self, prompt: _MatrixApprovalPrompt) -> None:
         seeded, prompt.bot_reaction_events = prompt.bot_reaction_events, {}
@@ -293,24 +278,9 @@ class MatrixApprovalMixin:
             return_exceptions=True,
         )
 
-    def _forget_matrix_approval_prompt(
-        self,
-        target_event_id: str,
-        prompt: "_MatrixApprovalPrompt",
-    ) -> None:
+    def _forget_matrix_approval_prompt(self, target_event_id: str) -> None:
         """Remove one approval card without disturbing concurrent cards."""
         self._approval_prompts_by_event.pop(target_event_id, None)
-        events = self._approval_prompt_by_session.get(prompt.session_key)
-        if events is None:
-            return
-        if isinstance(events, set):
-            events.discard(target_event_id)
-            empty = not events
-        else:
-            # Legacy in-memory representation stored one event id directly.
-            empty = events == target_event_id
-        if empty:
-            self._approval_prompt_by_session.pop(prompt.session_key, None)
 
     def _cancel_approval_summary_task(self, prompt: "_MatrixApprovalPrompt") -> None:
         task = getattr(prompt, "summary_task", None)
@@ -416,7 +386,7 @@ class MatrixApprovalMixin:
         async with prompt.presentation_lock:
             if prompt.terminal_visible:
                 # Already compacted (e.g. watcher + reaction both fired).
-                self._forget_matrix_approval_prompt(target_event_id, prompt)
+                self._forget_matrix_approval_prompt(target_event_id)
                 return _TerminalEdit.VISIBLE
             if prompt.terminal_choice is None:
                 prompt.terminal_choice, prompt.terminal_actor = choice, actor
@@ -440,7 +410,7 @@ class MatrixApprovalMixin:
                 prompt.terminal_visible = True
                 prompt.state = f"terminal_{choice}"
                 prompt.generation += 1
-                self._forget_matrix_approval_prompt(target_event_id, prompt)
+                self._forget_matrix_approval_prompt(target_event_id)
                 return _TerminalEdit.VISIBLE
             logger.warning(
                 "Matrix: terminal approval edit failed for %s: %s",

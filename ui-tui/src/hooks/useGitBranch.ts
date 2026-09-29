@@ -34,10 +34,14 @@ const fetchBranch = (cwd: string): Promise<null | string> => {
   return p
 }
 
-export function useGitBranch(cwd: string): null | string {
+export function useGitBranch(cwd: string, enabled = true): null | string {
   const [branch, setBranch] = useState<null | string>(() => cache.get(cwd)?.branch ?? null)
 
   useEffect(() => {
+    if (!enabled) {
+      return
+    }
+
     let cancelled = false
 
     const tick = async () => {
@@ -66,7 +70,7 @@ export function useGitBranch(cwd: string): null | string {
       cancelled = true
       clearInterval(id)
     }
-  }, [cwd])
+  }, [cwd, enabled])
 
   return branch
 }

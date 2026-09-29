@@ -41,6 +41,10 @@ def test_depth1_clone_of_a_tagless_origin_gets_its_commit_graph(tmp_path):
     assert _git(clone, "rev-list", "--count", "HEAD").stdout.strip() == "3"
     # History really was missing: fetched commits-only, as a tree:0 partial clone.
     assert _git(clone, "config", "remote.origin.partialclonefilter").stdout.strip() == "tree:0"
+    # The clone's own depth-1 pack is a partial-clone pack now too, or git 2.53+ crashes every
+    # later fetch in pack-objects (#124272).
+    packs = list((clone / ".git" / "objects" / "pack").glob("pack-*.pack"))
+    assert packs and all(p.with_suffix(".promisor").exists() for p in packs)
 
 
 def test_depth_prefetch_on_a_full_clone_restores_ancestry_and_keeps_it_full(tmp_path):

@@ -211,6 +211,18 @@ def refuse_foreign_owned_venv(project_root: Path) -> None:
             )
 
 
+#: The completion tails import the CLI (so prepare_launch) while the pending marker is armed.
+#: The lock-ancestry check covers that only under a live claim; an unwritable, expired or
+#: absent one (an installer run) would start a tail inside the tail, recursively.
+_TAIL_SCRIPTS = frozenset({"source_completion.py", "update_completion.py"})
+
+
+def _is_tail_script(root: Path, argv0: str) -> bool:
+    """Exact own-script identity; argv is not inherited by the processes a tail spawns."""
+    script = Path(argv0)
+    return script.name in _TAIL_SCRIPTS and script.resolve().parent == root / "hermes_cli"
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -223,10 +235,15 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """
     import os
     import sys
+
+    root = Path(project_root).resolve()
+    # sys.argv[0] is this process's script identity; *argv* carries only the command.
+    if _is_tail_script(root, sys.argv[0]):
+        return None
+
     from hermes_cli._parser import command_argv
     from hermes_cli.steward import read_install_stamp
 
-    root = Path(project_root).resolve()
     if (command_argv(argv)[:1] == ["pm"]
             or _METADATA_FLAGS & set(argv)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
@@ -253,9 +270,8 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
         try:
-            # The tail imports the application, whose entry point runs this very function:
-            # under the launching process's own claim (its pid is our ancestor) we ARE that
-            # tail and owe nothing — without this, a pending marker recurses forever.
+            # Under the launching update's own claim (its pid is our ancestor) a process it
+            # spawned owes no tail: that obligation is the updater's.
             if not lock.acquired and read_live_update() is not None:
                 if current:
                     return None

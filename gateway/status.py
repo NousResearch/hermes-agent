@@ -834,11 +834,13 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
         if profile_flag_value(command_lc) == profile_name.lower():
             return True
         return command_line_names_hermes_home(command_lc, home_lc)
-    # Default profile: accept unless argv names another profile (any spelling the CLI pre-parser
+    # Default profile: accept unless argv names ANOTHER profile (any spelling the CLI pre-parser
     # accepts, ``--profile=ops`` included -- a substring test let that gateway pass as the default's)
     # or a conflicting explicit HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually
-    # arrives via the env).
-    if profile_flag_value(command_lc) is not None:
+    # arrives via the env). ``--profile default`` names this profile: a hand-written launchd plist
+    # mirrors the named-profile service shape, and rejecting it reported a live default gateway
+    # as stopped (#100817).
+    if profile_flag_value(command_lc) not in (None, "default"):
         return False
     return not hermes_home_assignments(command_lc) or command_line_names_hermes_home(command_lc, home_lc)
 
@@ -1447,8 +1449,12 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
     if name != "default" and not _same_hermes_home(profile_dir, get_default_hermes_root() / "profiles" / name):
         return None
     topology = host_gateway_topology()
+    # The multiplexer's record lives in the home that LAUNCHED it; a named-hosted multiplexer leaves
+    # a possibly stale standalone record at the default root, which must not be projected.
+    launch_home = get_default_hermes_root()
     if topology is not None and topology.serves(name):
         pid: Optional[int] = topology.pid
+        launch_home = topology.home or launch_home
     elif name != "default" and named_profile_served_by_running_multiplexer(name):
         # Config-derived fallback for a record that predates ``served_profiles``.
         pid = live_default_gateway_pid()
@@ -1456,7 +1462,7 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
         return None
     if pid is None:
         return None
-    return pid, read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}
+    return pid, read_runtime_status(launch_home / "gateway_state.json") or {}
 
 
 def shared_listener_mirror_platforms(runtime: Optional[dict[str, Any]], profile: str) -> dict[str, Any]:
@@ -1495,6 +1501,13 @@ def profile_platforms_from_multiplexer(runtime: Optional[dict[str, Any]], profil
     prefix = f"{profile}:"
     own = {key[len(prefix):]: value for key, value in plats.items()
            if isinstance(key, str) and key.startswith(prefix) and isinstance(value, dict)}
+    if profile == "default":
+        # The flat keys ARE the default's own adapters (a multiplex host's primary map is always
+        # ``default``, whoever launched it; a standalone gateway writes only flat keys). Dropping
+        # them projected ``{}`` for the one profile the record never prefixes → "Restart needed"
+        # forever on /api/status and the Messaging card (#123088, #123869).
+        own.update({key: value for key, value in plats.items()
+                    if isinstance(key, str) and ":" not in key and isinstance(value, dict)})
     return {**shared_listener_mirror_platforms(runtime, profile), **own}
 
 

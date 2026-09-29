@@ -27,6 +27,7 @@ import { MESSAGE_PARTS_COMPONENTS } from '@/components/assistant-ui/thread/messa
 import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { ResponseMessageIds, responseMessageRole } from '@/components/assistant-ui/thread/response-group'
 import { ResponseLoadingIndicator, TurnActivityIndicator } from '@/components/assistant-ui/thread/status'
+import { threadMessageIndex } from '@/components/assistant-ui/thread/thread-message-index'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
 import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
@@ -65,6 +66,7 @@ import { markAssistantIdSpoken } from '@/lib/spoken-reply'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { DESKTOP_BUTTON_ACTIONS, recordAction } from '@/store/desktop-metrics'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { notifyError } from '@/store/notifications'
 import { startManualProviderOAuth } from '@/store/onboarding'
@@ -125,34 +127,28 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
   const interAgentSender = useAuiState(s => {
     const messages = s.thread.messages
 
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].id !== s.message.id) {
-        continue
+    // Shared id->index map: a per-row scan for its own position was
+    // mounted-rows x transcript-length on every streamed chunk (#126486).
+    for (let j = threadMessageIndex(messages, s.message.id) - 1; j >= 0; j--) {
+      const prev = messages[j]
+
+      // A background completion starts its own continuation: the reply it
+      // triggers is the user's answer, never a reply to an earlier delivery.
+      if (prev.role === 'assistant' || responseMessageRole(prev) === 'background') {
+        return null
       }
 
-      for (let j = i - 1; j >= 0; j--) {
-        const prev = messages[j]
+      if (prev.role === 'user') {
+        const match = AGENT_MESSAGE_RE.exec(messageContentText(prev.content as never).trim())
 
-        // A background completion starts its own continuation: the reply it
-        // triggers is the user's answer, never a reply to an earlier delivery.
-        if (prev.role === 'assistant' || responseMessageRole(prev) === 'background') {
+        if (!match) {
           return null
         }
 
-        if (prev.role === 'user') {
-          const match = AGENT_MESSAGE_RE.exec(messageContentText(prev.content as never).trim())
+        const sender = (match[1] || match[3] || 'agent').trim()
 
-          if (!match) {
-            return null
-          }
-
-          const sender = (match[1] || match[3] || 'agent').trim()
-
-          return dispatchedTo(messages.slice(0, j), [match[1], match[2], match[3]]) ? null : sender
-        }
+        return dispatchedTo(messages.slice(0, j), [match[1], match[2], match[3]]) ? null : sender
       }
-
-      return null
     }
 
     return null
@@ -696,7 +692,8 @@ const CompressConversationAction: FC<{ label: string }> = ({ label }) => {
     }
 
     triggerHaptic('submit')
-    void delegate.executeSlash('/compress', sessionId).catch(error => {
+    // A button, not a typed command: kept out of the slash-command usage count.
+    void delegate.executeSlash('/compress', sessionId, { typed: false }).catch(error => {
       notifyError(error, t.assistant.thread.errorCompressFailed)
     })
   }, [sessionId, t.assistant.thread.errorCompressFailed])
@@ -940,7 +937,14 @@ const ErrorRecoveryActions: FC = () => {
       )}
       {plan.retry && (
         <ActionBarPrimitive.Reload asChild>
-          <button className="aui-error-action" onClick={() => triggerHaptic('submit')} type="button">
+          <button
+            className="aui-error-action"
+            onClick={() => {
+              triggerHaptic('submit')
+              recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
+            }}
+            type="button"
+          >
             <RefreshCwIcon className="size-3" />
             {copy.errorRetry}
           </button>
@@ -1029,7 +1033,13 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
             <GitForkIcon className="size-3.5" />
           </TooltipIconButton>
         )}
-        <CopyButton appearance="icon" buttonSize="icon" label={copy.copy} text={getMessageText} />
+        <CopyButton
+          appearance="icon"
+          buttonSize="icon"
+          label={copy.copy}
+          onCopied={() => recordAction(DESKTOP_BUTTON_ACTIONS.messageCopy, 'click')}
+          text={getMessageText}
+        />
         {fullResponseAvailable && (
           <CopyButton appearance="icon" buttonSize="icon" label={copy.copyFullResponse} text={getFullResponseText} />
         )}
@@ -1040,7 +1050,13 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
           messageId={messageId}
         />
         <ActionBarPrimitive.Reload asChild>
-          <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>
+          <TooltipIconButton
+            onClick={() => {
+              triggerHaptic('submit')
+              recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
+            }}
+            tooltip={copy.refresh}
+          >
             <RefreshCwIcon className="size-3.5" />
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>

@@ -3131,9 +3131,12 @@ class MatrixAdapter(BasePlatformAdapter):
         because every message there has already started a turn.
 
         The scan stops at the bot's own last reply or the last mention that the gate
-        admitted, whichever is later. The transcript already contains that event, and an
-        earlier catch-up covered the messages before it. The bot's status notices are not
-        replies, so the scan continues past them and leaves them out."""
+        admitted, whichever is later. That event belongs to the previous turn in this room
+        or thread, and an earlier catch-up covered the messages before it. The previous turn
+        can belong to another session, for example after `/new` or when each mention starts
+        its own automatic thread. The scan still stops there, so the first turn after a
+        reset does not receive the conversation that the reset discarded. The bot's status
+        notices are not replies, so the scan continues past them and leaves them out."""
         source = event.source
         content = event.raw_message
         if event.internal or source.chat_type == "dm" or not isinstance(content, dict):

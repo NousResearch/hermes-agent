@@ -906,11 +906,11 @@ def test_request_review_rollback_discards_staged_copies(kanban_home):
 def test_undeclared_scratch_content_warns_and_events(kanban_home):
     """#93164: files not declared in kanban_complete(artifacts) used to be
     destroyed silently. Non-trivial leftovers now leave a task event."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         t = kb.create_task(conn, title="render chart")
         task = kb.get_task(conn, t)
-        ws = kb.resolve_workspace(task)
-        kb.set_workspace_path(conn, t, ws)
+        ws = kbw.resolve_workspace(task)
+        kbw.set_workspace_path(conn, t, ws)
         undeclared = ws / "deliverable.txt"
         undeclared.write_bytes(b"x" * 4096)  # >1KB: non-trivial
 
@@ -933,11 +933,11 @@ def test_undeclared_scratch_content_warns_and_events(kanban_home):
 def test_small_scratch_leftovers_stay_silent(kanban_home):
     """Empty scaffolding / sub-1KB bookkeeping files don't flag every
     completion — only non-trivial content emits the discarded event."""
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         t = kb.create_task(conn, title="quick note")
         task = kb.get_task(conn, t)
-        ws = kb.resolve_workspace(task)
-        kb.set_workspace_path(conn, t, ws)
+        ws = kbw.resolve_workspace(task)
+        kbw.set_workspace_path(conn, t, ws)
         (ws / "scaffold.tmp").write_bytes(b"x" * 10)  # <1KB: trivial
 
         assert kb.complete_task(conn, t, result="ok")
@@ -1000,15 +1000,15 @@ def test_deferred_parent_cleanup_also_signals(kanban_home, tmp_path, caplog):
 
     child_dir = tmp_path / "persistent-child"
     child_dir.mkdir()
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         parent = kb.create_task(conn, title="scratch parent")
         child = kb.create_task(
             conn, title="dir child", workspace_kind="dir",
             workspace_path=str(child_dir),
         )
         kb.link_tasks(conn, parent, child)
-        parent_ws = kb.resolve_workspace(kb.get_task(conn, parent))
-        kb.set_workspace_path(conn, parent, parent_ws)
+        parent_ws = kbw.resolve_workspace(kb.get_task(conn, parent))
+        kbw.set_workspace_path(conn, parent, parent_ws)
         (parent_ws / "undeclared.md").write_text("q" * 2048)  # over the 1KB floor
 
         with caplog.at_level(logging.WARNING, logger=kb._log.name):

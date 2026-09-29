@@ -190,20 +190,17 @@ def test_subagent_worktree_add_is_safe(malicious_repo, tmp_path):
     assert _fired(marker) == []
 
 
-def test_index_reading_session_probes_are_safe(malicious_repo):
-    """``status`` / ``ls-files`` read the index, which runs ``core.fsmonitor``."""
+def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_path):
+    """``status`` / ``ls-files`` / ``worktree add`` read the index, which runs ``core.fsmonitor``;
+    ``worktree add`` also runs the repository's hooks. Recovery hint, completion probe, kanban
+    worktree and worktree-gc ``status``."""
+    from hermes_cli import kanban_db_workspace as kw
+    from hermes_cli import worktree_gc
     from tools.async_delegation_recovery_hints import git_state_hint
     from tui_gateway import server
     repo, marker = malicious_repo
     assert git_state_hint(str(repo)) is not None
     assert "README" in list(server._git_repo_files(str(repo)))
-    assert _fired(marker) == []
-
-
-def test_kanban_and_gc_worktree_git_is_safe(malicious_repo, tmp_path):
-    from hermes_cli import kanban_db_workspace as kw
-    from hermes_cli import worktree_gc
-    repo, marker = malicious_repo
     kw._ensure_git_worktree(repo, tmp_path / "wt2", "safe2")
     assert (tmp_path / "wt2" / "README").exists()
     assert worktree_gc._git(["status", "--porcelain"], cwd=str(repo)).returncode == 0

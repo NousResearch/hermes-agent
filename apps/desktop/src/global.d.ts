@@ -314,9 +314,6 @@ declare global {
         saved: boolean
       }>
       saveImageFromUrl: (url: string) => Promise<boolean>
-      /** Edit verb against the window's focused element (the custom context
-       *  menu's Cut/Copy/Paste/Select all). */
-      contextMenuEdit?: (command: 'copy' | 'cut' | 'paste' | 'selectAll') => Promise<void>
       /** Copy the image under the LAST context-menu gesture (Chromium tracks
        *  its coordinates on the main-process context-menu event). */
       contextMenuCopyImage?: () => Promise<void>

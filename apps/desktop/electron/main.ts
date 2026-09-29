@@ -17607,22 +17607,6 @@ ipcMain.handle('hermes:saveGatewayFile', (_event, payload) => saveGatewayFile(pa
 
 ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
 
-// The custom context menu's edit verbs. They act on the SENDER's focused
-// element, so the renderer restores focus to the editable before invoking.
-ipcMain.handle('hermes:context-menu:edit', (event, command) => {
-  const contents = event.sender
-
-  if (command === 'copy') {
-    contents.copy()
-  } else if (command === 'cut') {
-    contents.cut()
-  } else if (command === 'paste') {
-    contents.paste()
-  } else if (command === 'selectAll') {
-    contents.selectAll()
-  }
-})
-
 // Copy the image under the sender's LAST context-menu gesture. Chromium only
 // exposes image bytes through copyImageAt, and only main saw the coordinates.
 ipcMain.handle('hermes:context-menu:copy-image', event => {

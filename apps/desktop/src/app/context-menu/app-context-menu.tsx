@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router'
 
+import { EDIT_COMPOSER_ROOT, requestComposerInsert } from '@/app/chat/composer/focus'
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
@@ -17,6 +18,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { type Translations, useI18n } from '@/i18n'
+import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
@@ -131,6 +133,66 @@ function terminalSections(open: Extract<OpenContextMenu, { kind: 'terminal' }>, 
   ]
 }
 
+/** Insert plain text into a form field the way the user's own paste would: a range
+ *  replacement plus the `input` event React listens for. `execCommand('insertText')`
+ *  is deliberately avoided here — composer/undo-history.ts documents why. */
+function insertIntoFormField(field: HTMLInputElement | HTMLTextAreaElement, text: string) {
+  const start = field.selectionStart ?? field.value.length
+  const end = field.selectionEnd ?? start
+
+  field.setRangeText(text, start, end, 'end')
+  field.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertFromPaste' }))
+}
+
+/** Same for a contenteditable host: replace the current range, leave the caret
+ *  after the inserted text, then announce the edit. */
+function insertIntoContentEditable(host: HTMLElement, text: string) {
+  const selection = window.getSelection()
+
+  if (!selection || selection.rangeCount === 0) {
+    host.append(document.createTextNode(text))
+  } else {
+    const range = selection.getRangeAt(0)
+    const node = document.createTextNode(text)
+
+    range.deleteContents()
+    range.insertNode(node)
+    range.setStartAfter(node)
+    range.collapse(true)
+    selection.removeAllRanges()
+    selection.addRange(range)
+  }
+
+  host.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertFromPaste' }))
+}
+
+function deleteFormFieldSelection(field: HTMLInputElement | HTMLTextAreaElement) {
+  const start = field.selectionStart ?? 0
+  const end = field.selectionEnd ?? start
+
+  field.setRangeText('', start, end, 'end')
+  field.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteByCut' }))
+}
+
+function deleteContentEditableSelection(host: HTMLElement) {
+  window.getSelection()?.deleteFromDocument()
+  host.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteByCut' }))
+}
+
+/** The text the edit verbs act on. A form field carries its selection on the
+ *  element — Chrome never reflects it into `window.getSelection()` — while
+ *  everything else uses the document selection the resolver captured. */
+function selectedTextOf(editable: HTMLElement | null): string {
+  if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+    const start = editable.selectionStart ?? 0
+    const end = editable.selectionEnd ?? 0
+
+    return start === end ? '' : editable.value.slice(start, end)
+  }
+
+  return window.getSelection()?.toString() ?? ''
+}
+
 function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Translations): ReactNode[][] {
   const copy = t.contextMenu
   const { spellcheck, target } = open
@@ -141,12 +203,10 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   const openInApp = !hudForcesNativeLinks()
   const showResolvedCopy = linkIsWeb && isRemoteGateway() && isLoopbackUrl(linkUrl)
 
-  // The edit verbs and spell-check actions act on the sender's FOCUSED
-  // element in main. Focus cannot be restored while the menu is open: the
-  // radix content is a focus trap, so a focus() here is immediately stolen
-  // back, the command then runs against `body`, and select-all grabs the
-  // WHOLE transcript instead of the field. Close the menu first, then focus
-  // and dispatch on the next frame — after the trap is unmounted.
+  // Focus cannot be restored while the menu is open: the radix content is a focus
+  // trap, so a focus() here is immediately stolen back and the action runs against
+  // `body`. Close the menu first, then focus and run on the next frame — after the
+  // trap is unmounted.
   const withEditableFocus = (action: () => void) => {
     const editable = target.editable
 
@@ -157,8 +217,64 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
     })
   }
 
+  // Every edit verb runs in the renderer, scoped to the field the menu was opened
+  // on. Main's copy/cut/paste act on whatever IT considers focused, and the radix
+  // content is a focus trap: by the time the command landed, focus could be back on
+  // the menu (or the whole transcript, for select all) and the verb did nothing.
+  // selectAll already runs this way; cut/copy/paste join it. The clipboard itself
+  // still goes through main (`readClipboard`/`writeClipboard`), which has no focus
+  // gate — the same pair the terminal paste uses — and the text is inserted through
+  // the target's own path, so the composer keeps its sanitize/chip pipeline.
+  const composerRoot = target.editable?.closest(EDIT_COMPOSER_ROOT) ?? null
+
   const editableCommand = (command: 'copy' | 'cut' | 'paste') => {
-    withEditableFocus(() => void window.hermesDesktop?.contextMenuEdit?.(command))
+    withEditableFocus(() => {
+      const editable = target.editable
+
+      if (command === 'paste') {
+        void window.hermesDesktop?.readClipboard?.().then(text => {
+          const pasted = sanitizeComposerInput((text ?? '').trim())
+
+          if (!pasted) {
+            return
+          }
+
+          if (composerRoot) {
+            requestComposerInsert(pasted, { mode: 'inline' })
+
+            return
+          }
+
+          if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+            insertIntoFormField(editable, pasted)
+
+            return
+          }
+
+          if (editable) {
+            insertIntoContentEditable(editable, pasted)
+          }
+        })
+
+        return
+      }
+
+      const text = selectedTextOf(editable) || target.selectionText
+
+      if (!text) {
+        return
+      }
+
+      void writeClipboardText(text)
+
+      if (command === 'cut') {
+        if (editable instanceof HTMLInputElement || editable instanceof HTMLTextAreaElement) {
+          deleteFormFieldSelection(editable)
+        } else if (editable) {
+          deleteContentEditableSelection(editable)
+        }
+      }
+    })
   }
 
   // Select all runs entirely in the renderer, scoped to the editable itself.

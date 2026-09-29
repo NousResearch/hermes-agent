@@ -185,8 +185,22 @@ def _vault_page_tool(name: str) -> InlineToolExecutor:
         from tools import browser_vault_tool  # noqa: F401 — registers the real handler
         from tools.registry import registry
 
+        preview_callback = getattr(agent, "drive_preview_callback", None)
+        if "target" not in args:
+            # The callback also exists on headless/TUI agents. Resolve this
+            # session's actual surface, including tools deferred behind tool_call.
+            # Missing preview transport must refuse, never retarget to a browser.
+            names = getattr(agent, "valid_tool_names", ())
+            preview_available = "drive_preview" in names
+            if not preview_available and "tool_call" in names:
+                from agent.tool_executor import _tool_search_scoped_names
+
+                preview_available = "drive_preview" in _tool_search_scoped_names(agent)
+            if preview_available:
+                args = {**args, "target": "preview"}
+
         return registry.dispatch(name, args, task_id=ctx.effective_task_id,
-                                 preview_callback=getattr(agent, "drive_preview_callback", None))
+                                 preview_callback=preview_callback)
     return execute
 
 

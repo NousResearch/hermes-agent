@@ -580,10 +580,17 @@ menu arrives in the current room or thread. Only the person who requested the
 menu can select a choice, and that person must still pass the gateway's user
 policy. The first valid selection starts one follow-up in the original session.
 
-Menus expire after five minutes. A new menu replaces the previous menu in the
-same session. Menus are local to the running gateway and disappear on restart;
-ask the agent for another menu if a choice is no longer active. Approval and
-picker controls are processed before menu selections.
+A new menu replaces the previous menu in the same session, and Hermes removes
+its own reactions from the replaced menu. Menus expire after five minutes. A
+reaction on an expired menu gets a reply saying that it has expired, and Hermes
+removes its own reactions from that menu. A choice from a conversation that has
+since been reset with `/new` is refused with a notice. Context compression continues the same conversation, so it
+does not affect a pending menu. Menus are local to the running gateway and
+disappear on restart; ask the agent for another menu if a choice is no longer
+active.
+
+A reaction on an approval prompt or model picker affects only that prompt, even
+when a menu is pending in the same room.
 
 ### Image-pack stickers
 

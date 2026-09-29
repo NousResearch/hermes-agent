@@ -64,23 +64,17 @@ class TestApprovalCardFormatting:
             assert "♾️" not in text
             assert "always" not in text.lower()
 
-    def test_pending_summarized_keeps_self_contained_plaintext_fallback(self):
-        text, html = format_pending_summarized(
-            command="git reset --hard HEAD~1",
-            description="git reset --hard (destroys uncommitted changes)",
-            summary="Discards recent local commits and uncommitted work.",
+    def test_pending_summarized_card_keeps_the_command_expanded(self):
+        card = dict(command="git reset --hard HEAD~1", description="git reset --hard (destroys uncommitted changes)")
+        summary = "Discards recent local commits and uncommitted work."
+        expanded_text, expanded_html = format_pending_expanded(**card)
+        assert expanded_html is not None
+        assert format_pending_summarized(**card, summary=summary) == (
+            expanded_text.replace("```\n\n", f"```\n\nAdvisory interpretation: {summary}\n\n", 1),
+            expanded_html.replace(
+                "</pre>", f"</pre><blockquote><strong>Advisory interpretation:</strong> {summary}</blockquote>", 1,
+            ),
         )
-        assert "Advisory interpretation" in text
-        assert "Dangerous command requires approval" in text
-        # Plaintext clients cannot rely on formatted HTML or the original event.
-        assert "git reset --hard HEAD~1" in text
-        assert html is not None
-        assert "Dangerous command requires approval" in html
-        assert "<details>" in html
-        assert html.index("Advisory interpretation") < html.index("<details>")
-        assert "<summary>Full command</summary>" in html
-        assert "git reset --hard HEAD~1" in html
-        assert "Discards recent local commits" in html
 
     def test_pending_summarized_preserves_typed_and_reaction_actions(self):
         text, html = format_pending_summarized(
@@ -432,8 +426,8 @@ class TestMatrixApprovalCardLifecycle:
         )
         assert html is not None
         tainted_html = html.replace(
-            "<details>",
-            '<details open onclick="alert(1)" style="display:block">',
+            "<blockquote>",
+            '<blockquote onclick="alert(1)" style="display:block">',
         ) + "<script>alert(2)</script>"
 
         result = await adapter.edit_message(
@@ -480,11 +474,9 @@ class TestMatrixApprovalCardLifecycle:
             assert required in new_content["body"]
             assert required in new_content["formatted_body"]
         assert new_content["formatted_body"].index(
-            "Advisory interpretation"
-        ) < new_content["formatted_body"].index("<details>")
-        assert "<strong>Advisory interpretation:</strong>" in new_content["formatted_body"]
-        assert "<summary>Full command</summary>" in new_content["formatted_body"]
-        assert "systemctl restart example.service" in new_content["formatted_body"]
+            "<pre>systemctl restart example.service</pre>"
+        ) < new_content["formatted_body"].index("<blockquote><strong>Advisory interpretation:</strong>")
+        assert "<details>" not in new_content["formatted_body"]
         assert "<script" not in new_content["formatted_body"]
         assert "alert(" not in new_content["formatted_body"]
         assert " onclick=" not in new_content["formatted_body"]
@@ -1118,9 +1110,8 @@ class TestMatrixApprovalCardLifecycle:
         assert "✅ once" in body
         meta = adapter.edit_message.await_args.kwargs.get("metadata") or {}
         html = meta.get("matrix_formatted_body") or ""
-        assert html.index("Advisory interpretation") < html.index("<details>")
-        assert "<summary>Full command</summary>" in html
-        assert "docker restart example" in html
+        assert html.index("<pre>docker restart example</pre>") < html.index("Advisory interpretation")
+        assert "<details>" not in html
 
     @pytest.mark.asyncio
     async def test_summary_edit_failure_does_not_advance_presented_state(self, monkeypatch):

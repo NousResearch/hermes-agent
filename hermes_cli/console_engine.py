@@ -669,7 +669,9 @@ def _guard_exports(db, session_ids: list[str]) -> None:
 
 @_captured
 def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> None:
-    ns = _parse("sessions export", args, "output", "--source", "--session-id")
+    ns = _parse("sessions export", args, "output", "--source", "--session-id",
+                (("--lineage",), dict(choices=["single", "logical"], default="single")))
+    logical = ns.lineage == "logical"
     with _session_db() as db:
         if ns.session_id:
             resolved_session_id = db.resolve_session_id(ns.session_id)
@@ -678,13 +680,14 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> None:
             _guard_exports(db, [resolved_session_id])
             # Transfer projection: every row with its active/compacted flags, so an import of this
             # JSONL restores a compacted session's whole history instead of only its live rows.
-            rows = [db.export_session(resolved_session_id, include_inactive=True)]
+            export = db.export_session_lineage if logical else db.export_session
+            rows = [export(resolved_session_id, include_inactive=True)]
             if not rows[0]:
                 raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
         else:
             found = db.search_sessions(source=ns.source, limit=100000)
             _guard_exports(db, [session["id"] for session in found])
-            rows = db.export_all(source=ns.source, include_inactive=True)
+            rows = db.export_all(source=ns.source, include_inactive=True, lineage=ns.lineage)
         text = "\n".join(json.dumps(row, ensure_ascii=False) for row in rows)
         if text:
             text += "\n"
@@ -825,7 +828,7 @@ _BUILTIN_COMMANDS = (
      "Trigger this cron job?"),
     (("config", "migrate"), "config migrate", "Update config with new options.", _config_migrate,
      "Update Hermes configuration with missing defaults?"),
-    (("sessions", "export"), "sessions export <output> [--source SOURCE] [--session-id ID]",
+    (("sessions", "export"), "sessions export <output> [--source SOURCE] [--session-id ID] [--lineage single|logical]",
      "Export sessions to JSONL.", _sessions_export, "Export session data?"),
     (("sessions", "rename"), "sessions rename <session> <title>", "Rename a session.",
      _sessions_rename, "Rename this session?"),
